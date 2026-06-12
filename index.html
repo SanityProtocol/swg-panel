@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>swg-panel</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="appbar">
+  <a class="brand" href="#/" aria-label="Overview">
+    <span class="brand-mark" aria-hidden="true"></span><span class="brand-name">swg<span>panel</span></span>
+  </a>
+  <nav class="tabs" id="tabs">
+    <a href="#/" data-tab="overview">Overview</a>
+    <a href="#/nodes" data-tab="nodes">Nodes</a>
+    <a href="#/users" data-tab="users">Users</a>
+  </nav>
+  <div class="appbar-right">
+    <div class="livepill" id="livepill" title="Users online now"><span class="dot"></span><b id="kpi-online">—</b> online</div>
+    <button class="btn btn-primary" id="add-peer-btn"><span class="plus">+</span> Add peer</button>
+  </div>
+</header>
+
+<main id="view" class="view"></main>
+
+<div id="overlay" class="overlay" aria-hidden="true"><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script src="vendor/qrcode.js"></script>
+<script src="reconcile.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

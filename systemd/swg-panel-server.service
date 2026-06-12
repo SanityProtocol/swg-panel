@@ -1,0 +1,33 @@
+[Unit]
+Description=swg-panel — control plane (UI + node-sync API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Serves the UI, its own TLS + login, the /wgstats board, and the node-sync API. Reads
+# and writes the roster (users.json) + node store (nodes.json); needs no root. Nodes reach
+# it over OUTBOUND HTTPS, so the panel opens no connections to them.
+User=swgpanel
+Group=swg
+ExecStart=/opt/swg-panel/swg-panel-server
+Environment=SWG_PANEL_FLEET=/etc/swg-panel/fleet.json
+Environment=SWG_PANEL_WEB=/opt/swg-panel
+Environment=SWG_PANEL_HOST=0.0.0.0
+Environment=SWG_PANEL_PORT=8443
+Environment=SWG_PANEL_AUTH=/etc/swg-panel/auth
+Environment=SWG_PANEL_TLS_CERT=/etc/swg-panel/tls/fullchain.pem
+Environment=SWG_PANEL_TLS_KEY=/etc/swg-panel/tls/key.pem
+Restart=on-failure
+RestartSec=2
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/swg-panel /var/www/wgstats
+ProtectHome=true
+PrivateTmp=true
+# only needed if SWG_PANEL_PORT < 1024 (e.g. 443):
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

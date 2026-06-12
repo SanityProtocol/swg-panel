@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""
+swg-noded — node daemon. One outbound-only HTTPS loop, no inbound, no rsync.
+
+Every `interval` seconds:
+  1. sample each managed interface  -> snapshot {peers + per-interface meta}
+  2. POST it to the panel's /api/node/sync with the node's bearer token
+  3. the panel replies with this node's DESIRED peer set (from the roster)
+  4. reconcile: add desired-but-missing peers, remove present-but-undesired ones,
+     each applied through swg-agent locally.
+
+The panel is the source of truth; the node converges to it and self-heals. Only
+outbound HTTPS to the panel is required, so edge/Russian nodes need no inbound.
+
+Config (/etc/swg-agent/config.json), see config.example.json:
+  interfaces, endpoint_host, dns  — as before
+  panel: { url, token, verify, fingerprint }
+  node:  { interval, agent, sudo }
+"""
+
+import contextlib
+import hashlib
+import http.client
+import json
+import os
+import socket
+import ssl
+import subprocess
+import sys
+import time
+import urllib.parse
+
+CONFIG_PATH = os.environ.get("SWG_AGENT_CONFIG", "/etc/swg-agent/config.json")
+STATE_DIR   = os.environ.get("SWG_NODED_STATE", "/var/lib/swg-noded")
+AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
+            "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
+
+
+# ───────────────────────── parsing (pure) ─────────────────────────
+
+def parse_dump(out):
+    lines = out.strip().splitlines()
+    iface_line = lines[0].split("\t") if lines else []
+    peers = []
+    for line in lines[1:]:
+        f = line.split("\t")
+        if len(f) < 8:
+            continue
+        peers.append({
+            "public_key": f[0],
+            "endpoint": None if f[2] in ("(none)", "") else f[2],
+            "allowed_ips": f[3],
+            "last_handshake": int(f[4]) if f[4].isdigit() else 0,
+            "rx_bytes": int(f[5]) if f[5].isdigit() else 0,
+            "tx_bytes": int(f[6]) if f[6].isdigit() else 0,
+        })
+    return iface_line, peers
+
+
+def parse_interface_section(conf_text):
+    info, in_iface = {}, False
+    for line in conf_text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_iface = (s.lower() == "[interface]")
+            continue
+        if in_iface and "=" in s and not s.startswith("#"):
+            k, v = s.split("=", 1)
+            info[k.strip()] = v.strip()
+    return info
+
+
+def awg_params(info):
+    out = {}
+    for k in AWG_KEYS:
+        if k in info:
+            v = info[k]
+            out[k] = int(v) if v.isdigit() else v
+    return out
+
+
+def build_meta(iface_line, conf_text, endpoint_host, dns):
+    info = parse_interface_section(conf_text)
+    addr = info.get("Address", "").split(",")[0].strip()
+    subnet = None
+    if addr and "/" in addr:
+        try:
+            import ipaddress
+            subnet = str(ipaddress.ip_network(addr, strict=False))
+        except Exception:
+            subnet = addr.rsplit("/", 1)[0]
+    port = int(iface_line[2]) if len(iface_line) > 2 and iface_line[2].isdigit() else None
+    return {
+        "public_key": iface_line[1] if len(iface_line) > 1 else None,
+        "listen_port": port,
+        "endpoint": (f"{endpoint_host}:{port}" if endpoint_host and port else None),
+        "address": addr or None,
+        "subnet": subnet,
+        "awg_params": awg_params(info),
+        "dns": dns or [],
+    }
+
+
+def peer_view(peers, last, dt, online_max, now):
+    out = []
+    for p in peers:
+        age = (now - p["last_handshake"]) if p["last_handshake"] else None
+        prev = last.get(p["public_key"])
+        rs = ts = 0.0
+        if prev and dt > 0:
+            rs = max(0, p["rx_bytes"] - prev[0]) / dt
+            ts = max(0, p["tx_bytes"] - prev[1]) / dt
+        out.append({
+            "public_key": p["public_key"], "endpoint": p["endpoint"],
+            "allowed_ips": p["allowed_ips"], "rx_bytes": p["rx_bytes"], "tx_bytes": p["tx_bytes"],
+            "rx_speed": rs, "tx_speed": ts, "handshake_age": age,
+            "online": age is not None and age <= online_max,
+        })
+    return out
+
+
+# ───────────────────────── io ─────────────────────────
+
+def run(args, input_text=None, timeout=20):
+    return subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout)
+
+
+def run_agent(agent, sudo, payload):
+    prefix = ["sudo", "-n"] if sudo else []
+    try:
+        p = run(prefix + [agent], input_text=json.dumps(payload))
+    except Exception as e:
+        return {"ok": False, "op": payload.get("op"), "error": str(e), "code": "internal"}
+    out = (p.stdout or "").strip()
+    if not out:
+        return {"ok": False, "op": payload.get("op"),
+                "error": (p.stderr or "").strip() or "no response", "code": "internal"}
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return {"ok": False, "op": payload.get("op"), "error": "agent non-JSON", "code": "internal"}
+
+
+def post_json(url, token, obj, panel, timeout=20):
+    """POST JSON to the panel. TLS posture comes from `panel`:
+         fingerprint set -> pin sha256 (verified during the handshake, before any
+                            bytes are sent, and fails closed if it can't be read);
+         verify true     -> system CA verification;
+         otherwise       -> unverified (self-signed; encrypted but no MITM protection).
+    Returns (status, dict). status 0 means the request never completed."""
+    body = json.dumps(obj).encode()
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + token}
+    u = urllib.parse.urlparse(url)
+    host = u.hostname
+    port = u.port or (443 if u.scheme == "https" else 80)
+    path = (u.path or "/") + (("?" + u.query) if u.query else "")
+    fp = (panel.get("fingerprint") or "").replace(":", "").lower().strip()
+    conn = None
+    try:
+        if u.scheme == "http":
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        elif u.scheme == "https":
+            if panel.get("verify", False) and not fp:
+                ctx = ssl.create_default_context()
+            else:
+                ctx = ssl._create_unverified_context()
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+            if fp:
+                conn.connect()                      # TLS handshake before sending the token
+                der = conn.sock.getpeercert(True)
+                if not der or hashlib.sha256(der).hexdigest() != fp:
+                    return 0, {"error": "tls fingerprint mismatch"}
+        else:
+            return 0, {"error": f"unsupported url scheme {u.scheme!r}"}
+        conn.request("POST", path, body=body, headers=headers)
+        resp = conn.getresponse()
+        data = (resp.read().decode() or "{}")
+        if resp.status >= 400:
+            return resp.status, {"error": data[:200]}
+        return resp.status, json.loads(data)
+    except Exception as e:
+        return 0, {"error": str(e)}
+    finally:
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+
+# ───────────────────────── snapshot ─────────────────────────
+
+def build_snapshot(node_cfg, online_max, last_samples, now=None):
+    now = now or int(time.time())
+    interfaces = {}
+    for iface, ic in (node_cfg.get("interfaces") or {}).items():
+        cmd = ic.get("cmd", ["awg"])
+        try:
+            dump = run(cmd + ["show", iface, "dump"]).stdout
+        except Exception:
+            continue
+        iface_line, raw = parse_dump(dump)
+        try:
+            conf_text = open(ic["conf"]).read()
+        except OSError:
+            conf_text = ""
+        st = last_samples.setdefault(iface, {"peers": {}, "t": now})
+        dt = max(1e-6, now - st["t"])
+        peers = peer_view(raw, st["peers"], dt, online_max, now)
+        st["peers"] = {p["public_key"]: (p["rx_bytes"], p["tx_bytes"]) for p in raw}
+        st["t"] = now
+        interfaces[iface] = {
+            "peers": peers,
+            "meta": build_meta(iface_line, conf_text,
+                               node_cfg.get("endpoint_host"), node_cfg.get("dns", [])),
+        }
+    return {"hostname": socket.gethostname(), "generated_at": now, "interfaces": interfaces}
+
+
+# ───────────────────────── reconcile ─────────────────────────
+
+def current_pubkeys(node_cfg, iface):
+    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
+    cmd = ic.get("cmd", ["awg"])
+    try:
+        _, peers = parse_dump(run(cmd + ["show", iface, "dump"]).stdout)
+        return {p["public_key"] for p in peers}
+    except Exception:
+        return None
+
+
+def reconcile(node_cfg, desired_by_iface, agent, sudo):
+    """Apply the panel's desired peer set. Only ever called on a valid sync reply."""
+    res = {"added": 0, "removed": 0, "errors": []}
+    for iface in (node_cfg.get("interfaces") or {}):
+        desired = {p["public_key"]: p for p in (desired_by_iface.get(iface) or [])}
+        current = current_pubkeys(node_cfg, iface)
+        if current is None:
+            res["errors"].append(f"{iface}: cannot read interface")
+            continue
+        for pk, p in desired.items():
+            if pk in current:
+                continue
+            r = run_agent(agent, sudo, {
+                "op": "add-peer", "iface": iface, "public_key": pk,
+                "allowed_ips": p.get("allowed_ips", ""),
+                "preshared_key": p.get("preshared_key", "none"),
+                "name": p.get("name", "")})
+            if r.get("ok"):
+                res["added"] += 1
+            else:
+                res["errors"].append(f"add {pk[:8]}: {r.get('error')}")
+        for pk in current - set(desired):
+            r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
+            if r.get("ok"):
+                res["removed"] += 1
+            else:
+                res["errors"].append(f"remove {pk[:8]}: {r.get('error')}")
+    return res
+
+
+# ───────────────────────── main loop ─────────────────────────
+
+def main():
+    node_cfg = json.load(open(CONFIG_PATH))
+    panel = node_cfg.get("panel") or {}
+    nd = node_cfg.get("node") or {}
+    if not panel.get("url") or not panel.get("token"):
+        sys.exit("config needs a 'panel' block with url + token")
+    url = panel["url"].rstrip("/") + "/api/node/sync"
+    token = panel["token"]
+    interval = nd.get("interval", 5)
+    online_max = nd.get("online_max", 180)
+    agent = nd.get("agent", "/opt/swg-agent/swg-agent")
+    sudo = bool(nd.get("sudo"))
+    os.makedirs(STATE_DIR, exist_ok=True)
+    last_samples = {}
+    print(f"swg-noded: panel={panel['url']} interval={interval}s "
+          f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
+    while True:
+        t0 = time.time()
+        try:
+            snap = build_snapshot(node_cfg, online_max, last_samples)
+            status, reply = post_json(url, token, {"snapshot": snap}, panel)
+            if status == 200 and isinstance(reply.get("desired"), dict):
+                r = reconcile(node_cfg, reply["desired"], agent, sudo)
+                if r["added"] or r["removed"] or r["errors"]:
+                    print(f"reconcile: +{r['added']} -{r['removed']} "
+                          f"errors={r['errors'][:3]}", flush=True)
+                interval = reply.get("interval", interval)
+            elif status == 0:
+                print("sync error:", reply.get("error"), flush=True)
+            else:
+                print(f"sync HTTP {status}: {reply.get('error')}", flush=True)
+        except Exception as e:
+            print("loop error:", e, flush=True)
+        time.sleep(max(0.5, interval - (time.time() - t0)))
+
+
+if __name__ == "__main__":
+    main()

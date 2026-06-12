@@ -1,0 +1,27 @@
+[Unit]
+Description=swg-noded — HTTPS sync to the panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as ROOT: it samples the kernel wg/awg interface ("awg show <if> dump") and runs
+# swg-agent, which writes the interface .conf under /etc. Both need privilege. The daemon
+# opens NO listening socket — it only makes OUTBOUND HTTPS to the panel, posting its
+# snapshot and reconciling the desired peer set it gets back. Set node.sudo=false in
+# config.json so the agent is run directly (no sudo hop).
+#
+# ProtectSystem=true keeps /usr and /boot read-only but leaves /etc writable so the agent
+# can persist peers (full/strict would break that).
+ExecStart=/opt/swg-noded/swg-noded
+Environment=SWG_AGENT_CONFIG=/etc/swg-agent/config.json
+Environment=SWG_NODED_STATE=/var/lib/swg-noded
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

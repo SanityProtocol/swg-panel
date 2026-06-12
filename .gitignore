@@ -1,0 +1,10 @@
+# local runtime / secrets — never commit
+data/
+.env
+*.pem
+id_swgpush*
+# previews & build cruft
+dryrun/
+__pycache__/
+*.pyc
+.DS_Store

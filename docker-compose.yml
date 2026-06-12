@@ -1,0 +1,60 @@
+# swg-panel — Docker. Copy .env.example to .env and fill it, then pick a profile:
+#
+#   Panel only (host):      docker compose --profile host up -d
+#   Node only:              docker compose --profile node up -d
+#   Panel + local node:     docker compose --profile host-node up -d
+#
+# Nodes reach the panel over OUTBOUND HTTPS. Create each node in the panel's Nodes
+# screen to get its NODE_TOKEN. For host-node, set PANEL_URL=https://swg-panel:8443
+# (the panel's service name on the compose network).
+services:
+  swg-panel:
+    build: .
+    # Or pull a prebuilt image instead of building:
+    # image: ghcr.io/sanityprotocol/swg-panel:latest
+    container_name: swg-panel
+    restart: unless-stopped
+    profiles: ["host", "host-node"]
+    ports:
+      - "${PANEL_PORT:-8443}:8443"        # use "443:8443" to serve on 443
+    environment:
+      PANEL_USER: "${PANEL_USER:-admin}"
+      PANEL_PASSWORD: "${PANEL_PASSWORD:?set PANEL_PASSWORD in .env}"
+      PANEL_DOMAIN: "${PANEL_DOMAIN:-localhost}"
+      TLS: "${TLS:-selfsigned}"           # selfsigned | none  (or mount a real cert below)
+    volumes:
+      - ./data/etc:/etc/swg-panel         # fleet.json + nodes.json + auth + tls/ persist here
+      - ./data/lib:/var/lib/swg-panel     # roster (users.json), node store, stored configs
+      - ./data/stats:/var/www/wgstats     # status snapshots (fed by node syncs)
+      # --- mount a real cert instead of self-signed (e.g. a Cloudflare Origin cert) ---
+      # - ./tls/fullchain.pem:/etc/swg-panel/tls/fullchain.pem:ro
+      # - ./tls/key.pem:/etc/swg-panel/tls/key.pem:ro
+
+  swg-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    # image: ghcr.io/sanityprotocol/swg-node:latest
+    container_name: swg-node
+    restart: unless-stopped
+    profiles: ["node", "host-node"]
+    cap_add: ["NET_ADMIN"]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    sysctls:
+      - net.ipv4.ip_forward=1
+    ports:
+      - "${NODE_LISTEN_PORT:-51820}:${NODE_LISTEN_PORT:-51820}/udp"   # wg listen port
+    environment:
+      PANEL_URL: "${PANEL_URL:?set PANEL_URL (host-node: https://swg-panel:8443)}"
+      NODE_TOKEN: "${NODE_TOKEN:?create the node in the Nodes screen, then set NODE_TOKEN}"
+      NODE_ENDPOINT: "${NODE_ENDPOINT:?public IP/host clients dial for this node}"
+      NODE_IFACE: "${NODE_IFACE:-awg0}"
+      NODE_LISTEN_PORT: "${NODE_LISTEN_PORT:-51820}"
+      NODE_ADDRESS: "${NODE_ADDRESS:-10.8.0.1/24}"
+      TLS_VERIFY: "${TLS_VERIFY:-no}"     # yes to verify the panel's cert (real CA)
+      DNS: "${DNS:-1.1.1.1}"
+    volumes:
+      - ./data/node:/var/lib/swg-noded
+      # Full AmneziaWG server conf (obfuscation params). Without it, a plain-WireGuard
+      # interface is generated from NODE_ADDRESS / NODE_LISTEN_PORT:
+      # - ./awg0.conf:/etc/swg-node/awg0.conf:ro

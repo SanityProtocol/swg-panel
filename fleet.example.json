@@ -1,0 +1,8 @@
+{
+  "roster_path":   "/var/lib/swg-panel/users.json",
+  "nodes_path":    "/var/lib/swg-panel/nodes.json",
+  "stats_dir":     "/var/www/wgstats",
+  "store_configs": false,
+  "config_dir":    "/var/lib/swg-panel/configs",
+  "node_interval": 5
+}

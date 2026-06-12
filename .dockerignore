@@ -1,0 +1,6 @@
+.git
+data
+.env
+dryrun
+__pycache__
+*.pyc

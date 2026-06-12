@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""
+swg-agent — node-side peer manager for swg-panel.
+
+Reads ONE JSON request on stdin, performs a wg / AmneziaWG peer operation on a
+*managed* interface, and writes ONE JSON response on stdout (exit 0 on success,
+1 on error). Designed to be the forced command behind a dedicated SSH key:
+
+  command="/opt/swg-agent/swg-agent",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding ssh-ed25519 AAAA... swg-panel
+
+so the panel can ONLY run these operations — never a shell.
+
+Config: /etc/swg-agent/config.json   (see config.example.json)
+Only interfaces listed there are touchable; S2S / exit tunnels are simply absent.
+
+v1 targets native host interfaces (awg/wg on the host). The per-interface "cmd"
+prefix is configurable for future container support.
+"""
+
+import contextlib
+import fcntl
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+CONFIG_PATH = os.environ.get("SWG_AGENT_CONFIG", "/etc/swg-agent/config.json")
+AUDIT_PATH  = os.environ.get("SWG_AGENT_AUDIT",  "/var/log/swg-agent/audit.log")
+LOCK_PATH   = os.environ.get("SWG_AGENT_LOCK",   "/run/swg-agent.lock")
+VERSION     = "1.0"
+
+PUBKEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+AWG_KEYS  = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
+             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
+
+
+class AgentError(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+        self.msg = msg
+
+
+# ───────────────────────── helpers ─────────────────────────
+
+def load_config():
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except Exception as e:
+        raise AgentError("internal", f"cannot read {CONFIG_PATH}: {e}")
+
+
+def iface_cfg(cfg, iface):
+    ifaces = cfg.get("interfaces", {})
+    if iface not in ifaces:
+        raise AgentError("iface_not_managed", f"interface {iface!r} is not managed")
+    return ifaces[iface]
+
+
+def run(args, input_text=None, check=True):
+    p = subprocess.run(args, input=input_text, capture_output=True, text=True)
+    if check and p.returncode != 0:
+        raise AgentError("internal", f"{' '.join(args)} failed: {p.stderr.strip()}")
+    return p.stdout
+
+
+def read_conf(path):
+    with open(path) as f:
+        return f.read()
+
+
+def write_conf_atomic(path, text):
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def parse_dump(out):
+    """First line = interface, rest = peers (tab-separated `wg show <i> dump`)."""
+    lines = out.strip().splitlines()
+    iface_line = lines[0].split("\t") if lines else []
+    peers = []
+    for line in lines[1:]:
+        f = line.split("\t")
+        if len(f) < 8:
+            continue
+        peers.append({
+            "public_key": f[0],
+            "endpoint": None if f[2] in ("(none)", "") else f[2],
+            "allowed_ips": f[3],
+            "last_handshake": int(f[4]) if f[4].isdigit() else 0,
+            "rx_bytes": int(f[5]) if f[5].isdigit() else 0,
+            "tx_bytes": int(f[6]) if f[6].isdigit() else 0,
+        })
+    return iface_line, peers
+
+
+def parse_interface_section(conf_text):
+    """Key->value of the first [Interface] section."""
+    info, in_iface = {}, False
+    for line in conf_text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_iface = (s.lower() == "[interface]")
+            continue
+        if in_iface and "=" in s and not s.startswith("#"):
+            k, v = s.split("=", 1)
+            info[k.strip()] = v.strip()
+    return info
+
+
+def awg_params(info):
+    out = {}
+    for k in AWG_KEYS:
+        if k in info:
+            v = info[k]
+            out[k] = int(v) if v.isdigit() else v
+    return out
+
+
+def iface_net(info):
+    addr = info.get("Address", "").split(",")[0].strip()
+    if not addr:
+        raise AgentError("internal", "interface conf has no Address")
+    return ipaddress.ip_interface(addr)          # .ip = server addr, .network = subnet
+
+
+def used_ips(peers):
+    out = set()
+    for p in peers:
+        for cidr in p["allowed_ips"].split(","):
+            cidr = cidr.strip()
+            if cidr:
+                out.add(cidr.split("/")[0])
+    return out
+
+
+def next_free_ip(info, peers):
+    net = iface_net(info)
+    taken = used_ips(peers) | {str(net.ip)}
+    for host in net.network.hosts():
+        if str(host) not in taken:
+            return str(host)
+    raise AgentError("subnet_full", "no free addresses in subnet")
+
+
+def wg_dump(ic, iface):
+    return run(ic["cmd"] + ["show", iface, "dump"])
+
+
+def gen_psk(ic):
+    return run(ic["cmd"] + ["genpsk"]).strip()
+
+
+def append_peer_to_conf(path, pub, psk, allowed, name):
+    block = "\n"
+    if name:
+        block += f"# name: {name}\n"
+    block += "[Peer]\n"
+    block += f"PublicKey = {pub}\n"
+    if psk:
+        block += f"PresharedKey = {psk}\n"
+    block += f"AllowedIPs = {allowed}\n"
+    with open(path, "a") as f:
+        f.write(block)
+
+
+def remove_peer_from_conf(path, pub):
+    lines = read_conf(path).splitlines()
+    starts = [i for i, l in enumerate(lines) if l.strip().lower() == "[peer]"]
+    target = None
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        if any(re.match(rf"\s*PublicKey\s*=\s*{re.escape(pub)}\s*$", b) for b in lines[start:end]):
+            target = (start, end)
+            break
+    if target is None:
+        return
+    start, end = target
+    # also drop a leading "# name:" comment and blank lines directly above [Peer]
+    while start - 1 >= 0 and (lines[start - 1].strip() == ""
+                              or lines[start - 1].strip().lower().startswith("# name:")):
+        start -= 1
+    new_lines = lines[:start] + lines[end:]
+    write_conf_atomic(path, ("\n".join(new_lines).rstrip("\n") + "\n") if new_lines else "")
+
+
+@contextlib.contextmanager
+def locked():
+    os.makedirs(os.path.dirname(LOCK_PATH) or "/run", exist_ok=True)
+    f = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
+
+
+def audit(op, req):
+    try:
+        os.makedirs(os.path.dirname(AUDIT_PATH), exist_ok=True)
+        with open(AUDIT_PATH, "a") as f:
+            f.write(json.dumps({
+                "ts": int(time.time()), "op": op,
+                "iface": req.get("iface"), "public_key": req.get("public_key"),
+                "allowed_ips": req.get("allowed_ips"), "name": req.get("name"),
+            }) + "\n")
+    except Exception:
+        pass   # auditing must never fail the operation
+
+
+# ───────────────────────── operations ─────────────────────────
+
+def op_describe(cfg, req):
+    out = {"hostname": os.uname().nodename, "agent_version": VERSION, "interfaces": {}}
+    want = req.get("iface")
+    for iface, ic in cfg.get("interfaces", {}).items():
+        if want and iface != want:
+            continue
+        iface_line, peers = parse_dump(wg_dump(ic, iface))
+        info = parse_interface_section(read_conf(ic["conf"]))
+        net = iface_net(info)
+        port = int(iface_line[2]) if len(iface_line) > 2 and iface_line[2].isdigit() else None
+        out["interfaces"][iface] = {
+            "public_key": iface_line[1] if len(iface_line) > 1 else None,
+            "listen_port": port,
+            "endpoint": f"{cfg.get('endpoint_host', '')}:{port}" if port else None,
+            "address": str(net),
+            "subnet": str(net.network),
+            "peer_count": len(peers),
+            "used_ips": sorted(used_ips(peers)),
+            "awg_params": awg_params(info),
+            "dns": cfg.get("dns", []),
+        }
+    return out
+
+
+def op_list_peers(cfg, req):
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)
+    _, peers = parse_dump(wg_dump(ic, iface))
+    return {"iface": iface, "peers": peers}
+
+
+def op_next_ip(cfg, req):
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)
+    _, peers = parse_dump(wg_dump(ic, iface))
+    info = parse_interface_section(read_conf(ic["conf"]))
+    return {"iface": iface, "next_ip": next_free_ip(info, peers) + "/32"}
+
+
+def op_add_peer(cfg, req):
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)
+    pub = req.get("public_key", "")
+    if not PUBKEY_RE.match(pub):
+        raise AgentError("bad_pubkey", "public_key is not a valid WireGuard key")
+    allowed = req.get("allowed_ips", "")
+    name = req.get("name")
+    psk_req = req.get("preshared_key", "auto")
+
+    info = parse_interface_section(read_conf(ic["conf"]))
+    iface_line, peers = parse_dump(wg_dump(ic, iface))
+
+    if any(p["public_key"] == pub for p in peers):
+        raise AgentError("peer_exists", "a peer with this public key already exists")
+
+    # IP is always explicit; validate in-subnet, not the server, not taken.
+    if "/" not in allowed:
+        raise AgentError("bad_request", "allowed_ips must be CIDR, e.g. 10.0.0.5/32")
+    ip = allowed.split("/")[0]
+    net = iface_net(info)
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        raise AgentError("bad_request", f"invalid ip {ip}")
+    if addr not in net.network:
+        raise AgentError("bad_request", f"{ip} not in subnet {net.network}")
+    if ip == str(net.ip):
+        raise AgentError("ip_in_use", f"{ip} is the server address")
+    if ip in used_ips(peers):
+        raise AgentError("ip_in_use", f"{ip} already assigned")
+
+    # PSK: default auto-generate; explicit value honored; "none"/false disables.
+    if psk_req in (None, "none", False):
+        psk = None
+    elif psk_req in ("auto", "", True):
+        psk = gen_psk(ic)
+    else:
+        psk = psk_req
+
+    # 1) apply to the running interface (surgical — never touches other peers)
+    args = ic["cmd"] + ["set", iface, "peer", pub, "allowed-ips", allowed]
+    if psk:
+        args += ["preshared-key", "/dev/stdin"]
+    run(args, input_text=(psk + "\n") if psk else None)
+
+    # 2) persist to the conf
+    append_peer_to_conf(ic["conf"], pub, psk, allowed, name)
+
+    port = int(iface_line[2]) if len(iface_line) > 2 and iface_line[2].isdigit() else None
+    return {
+        "public_key": pub,
+        "allowed_ips": allowed,
+        "preshared_key": psk,
+        "server_public_key": iface_line[1] if len(iface_line) > 1 else None,
+        "endpoint": f"{cfg.get('endpoint_host', '')}:{port}" if port else None,
+        "awg_params": awg_params(info),
+        "dns": cfg.get("dns", []),
+    }
+
+
+def op_remove_peer(cfg, req):
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)
+    pub = req.get("public_key", "")
+    if not PUBKEY_RE.match(pub):
+        raise AgentError("bad_pubkey", "public_key is not a valid WireGuard key")
+    _, peers = parse_dump(wg_dump(ic, iface))
+    match = next((p for p in peers if p["public_key"] == pub), None)
+    if not match:
+        raise AgentError("peer_not_found", "no peer with this public key")
+    run(ic["cmd"] + ["set", iface, "peer", pub, "remove"])
+    remove_peer_from_conf(ic["conf"], pub)
+    return {"removed": pub, "freed_ip": match["allowed_ips"]}
+
+
+# ───────────────────────── dispatch ─────────────────────────
+
+def respond(ok, op, data=None, error=None, code=None):
+    out = {"ok": ok, "op": op}
+    if ok:
+        out["data"] = data
+    else:
+        out["error"] = error
+        out["code"] = code
+    print(json.dumps(out))
+    sys.exit(0 if ok else 1)
+
+
+READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
+WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer}
+
+
+def main():
+    try:
+        req = json.load(sys.stdin)
+    except Exception as e:
+        respond(False, None, error=f"invalid JSON request: {e}", code="bad_request")
+    op = req.get("op")
+    try:
+        cfg = load_config()
+        if op in READ_OPS:
+            respond(True, op, data=READ_OPS[op](cfg, req))
+        elif op in WRITE_OPS:
+            with locked():
+                data = WRITE_OPS[op](cfg, req)
+            audit(op, req)
+            respond(True, op, data=data)
+        else:
+            respond(False, op, error=f"unknown op {op!r}", code="unknown_op")
+    except AgentError as e:
+        respond(False, op, error=e.msg, code=e.code)
+    except KeyError as e:
+        respond(False, op, error=f"missing field {e}", code="bad_request")
+    except Exception as e:
+        respond(False, op, error=str(e), code="internal")
+
+
+if __name__ == "__main__":
+    main()

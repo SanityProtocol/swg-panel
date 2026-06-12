@@ -1,0 +1,17 @@
+{
+  "interfaces": {
+    "awg0": { "cmd": ["awg"], "conf": "/etc/amnezia/amneziawg/awg0.conf" }
+  },
+  "endpoint_host": "203.0.113.7",
+  "dns": ["1.1.1.1"],
+  "panel": {
+    "url": "https://panel.example.net:8443",
+    "token": "PASTE_THE_ONE_TIME_TOKEN_FROM_THE_NODES_SCREEN",
+    "verify": false
+  },
+  "node": {
+    "interval": 5,
+    "agent": "/opt/swg-agent/swg-agent",
+    "sudo": false
+  }
+}

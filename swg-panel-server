@@ -1,0 +1,658 @@
+#!/usr/bin/env python3
+"""
+swg-panel-server — the panel broker.
+
+Serves the app and brokers peer operations to nodes over a per-node transport
+(local subprocess / ssh forced-command / async queue). A peer is one identity
+that can be deployed to several nodes for redundancy: the panel picks an address
+free on every selected node, pushes the same pubkey + IP + PSK to each, and
+records the node set. Reads (describe / next-ip) for local & ssh hit the agent
+live; for queue nodes they come from the node's pushed snapshot.
+
+The browser generates the private key and PSK. The PSK transits once to
+configure each node and is never written to the roster. Per-node client configs
+are stored only when store_configs is on (then they contain the private key).
+
+Config: /etc/swg-panel/fleet.json   (see fleet.example.json)
+Standalone: set SWG_PANEL_TLS_CERT/KEY + SWG_PANEL_AUTH and bind 0.0.0.0 to serve
+HTTPS + Basic-Auth + /wgstats directly. Or bind 127.0.0.1 behind your own nginx.
+"""
+
+import base64
+import contextlib
+import fcntl
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+import ssl
+import subprocess
+import threading
+import time
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+FLEET_PATH = os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
+WEB_DIR    = os.environ.get("SWG_PANEL_WEB", os.path.dirname(os.path.abspath(__file__)))
+BIND_HOST  = os.environ.get("SWG_PANEL_HOST", "127.0.0.1")
+BIND_PORT  = int(os.environ.get("SWG_PANEL_PORT", "8088"))
+# Self-contained mode: serve TLS + Basic-Auth directly, no reverse proxy needed.
+TLS_CERT   = os.environ.get("SWG_PANEL_TLS_CERT", "")   # fullchain.pem; blank => plain HTTP
+TLS_KEY    = os.environ.get("SWG_PANEL_TLS_KEY", "")
+AUTH_FILE  = os.environ.get("SWG_PANEL_AUTH", "")        # file "user:pbkdf2_sha256$...."; blank => no auth
+NODE_OFFLINE = 30   # seconds since last sync before a node reads "offline"
+_api_lock = threading.Lock()   # serialize roster/node read-modify-write across handler threads
+
+STATIC = {
+    "/": "index.html", "/index.html": "index.html",
+    "/app.css": "app.css", "/app.js": "app.js",
+    "/reconcile.js": "reconcile.js", "/vendor/qrcode.js": "vendor/qrcode.js",
+}
+CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css",
+          ".js": "text/javascript", ".json": "application/json"}
+
+
+# ───────────────────────── utils ─────────────────────────
+
+def err(op, msg, code="internal"):
+    return {"ok": False, "op": op, "error": msg, "code": code}
+
+
+def verify_password(stored, password):
+    # stored = "pbkdf2_sha256$<iterations>$<salt_b64>$<hash_b64>"
+    try:
+        algo, iters, salt_b64, hash_b64 = stored.split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                                     base64.b64decode(salt_b64), int(iters))
+        return hmac.compare_digest(actual, base64.b64decode(hash_b64))
+    except Exception:
+        return False
+
+
+def load_auth():
+    if not AUTH_FILE:
+        return None
+    try:
+        user, _, h = open(AUTH_FILE).read().strip().partition(":")
+        if user and h:
+            return (user, h)
+    except OSError:
+        pass
+    return None
+
+
+def cfg_hash(pubkey, node):
+    return hashlib.sha256((pubkey + "|" + node).encode()).hexdigest() + ".conf"
+
+
+def atomic_write(path, text, mode=0o600):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp." + uuid.uuid4().hex[:8]
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(fd, "w") as f:
+            f.write(text); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def load_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except (json.JSONDecodeError, OSError):
+        return default
+
+
+# ───────────────────────── roster ─────────────────────────
+
+def roster_load(path):
+    r = load_json(path, {})
+    return r if isinstance(r, dict) else {}
+
+
+def roster_save(path, roster):
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp." + uuid.uuid4().hex[:8]
+    with open(tmp, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        json.dump(roster, f, indent=2); f.write("\n"); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def entry_nodes(e):
+    if isinstance(e.get("nodes"), list) and e["nodes"]:
+        return list(dict.fromkeys(e["nodes"]))
+    return [e["node"]] if e.get("node") else []
+
+
+def roster_set(roster, pubkey, entry):
+    roster[pubkey] = {
+        "name": entry.get("name", ""),
+        "ip": (entry.get("ip", "") or "").split("/")[0],
+        "if": entry.get("if", ""),
+        "type": entry.get("type", "user"),
+        "psk": entry.get("psk", ""),
+        "nodes": list(dict.fromkeys(entry.get("nodes", []))),
+        "created_at": entry.get("created_at", int(time.time())),
+        "deleted_at": entry.get("deleted_at"),
+    }
+    return roster
+
+
+# ───────────────────────── node store + sync ─────────────────────────
+
+def make_token_hash(token, iters=200000):
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, iters)
+    return f"pbkdf2_sha256${iters}${base64.b64encode(salt).decode()}${base64.b64encode(h).decode()}"
+
+
+def nodes_load(path):
+    d = load_json(path, {})
+    return d if isinstance(d, dict) else {}
+
+
+def nodes_save(path, nodes):
+    atomic_write(path, json.dumps(nodes, indent=2) + "\n", mode=0o600)
+
+
+def find_node_by_token(nodes, token):
+    if not token:
+        return None, None
+    for nid, n in nodes.items():
+        if verify_password(n.get("token_hash", ""), token):
+            return nid, n
+    return None, None
+
+
+def desired_for_node(roster, node_id):
+    """Peers the roster assigns to this node, grouped by each peer's own interface.
+
+    A node may serve several interfaces (e.g. awg100 + wg99); each peer carries the
+    interface it belongs to, so we never push a peer onto the wrong one.
+    """
+    out = {}
+    for pk, e in roster.items():
+        if not isinstance(e, dict) or e.get("deleted_at"):
+            continue
+        if node_id not in entry_nodes(e):
+            continue
+        iface = e.get("if") or ""
+        if not iface:
+            continue
+        ip = (e.get("ip") or "").split("/")[0]
+        out.setdefault(iface, []).append({
+            "public_key": pk,
+            "allowed_ips": (ip + "/32") if ip else "",
+            "preshared_key": e.get("psk") or "none",
+            "name": e.get("name", ""),
+        })
+    return out
+
+
+# ───────────────────────── node snapshots → reads ─────────────────────────
+
+def node_describe(snapshot):
+    """Server/interface info from a node's pushed snapshot (config-building + UI)."""
+    interfaces = {}
+    for iface, blk in (snapshot.get("interfaces") or {}).items():
+        meta = blk.get("meta") or {}
+        peers = blk.get("peers") or []
+        used = sorted({(p.get("allowed_ips") or "").split("/")[0]
+                       for p in peers if p.get("allowed_ips")})
+        interfaces[iface] = {
+            "public_key": meta.get("public_key"), "listen_port": meta.get("listen_port"),
+            "endpoint": meta.get("endpoint"), "address": meta.get("address"),
+            "subnet": meta.get("subnet"), "awg_params": meta.get("awg_params", {}),
+            "dns": meta.get("dns", []), "used_ips": used, "peer_count": len(peers),
+        }
+    return {"ok": True, "op": "describe",
+            "data": {"hostname": snapshot.get("hostname"), "interfaces": interfaces}}
+
+
+def panel_next_ip(snaps, roster, nodes, iface):
+    """Lowest address free on every selected node's iface AND unclaimed in the roster."""
+    used, subnet = set(), None
+    for node in nodes:
+        snap = snaps.get(node)
+        if not snap:
+            return err("next-ip", f"{node}: no snapshot yet (is the node online?)", "offline")
+        blk = (snap.get("interfaces") or {}).get(iface)
+        if not blk:
+            return err("next-ip", f"{node} has no interface {iface!r}", "bad_request")
+        meta = blk.get("meta") or {}
+        for p in (blk.get("peers") or []):
+            ip = (p.get("allowed_ips") or "").split("/")[0]
+            if ip:
+                used.add(ip)
+        used.add((meta.get("address") or "").split("/")[0])
+        if subnet is None:
+            subnet = meta.get("subnet")
+    for e in roster.values():
+        if isinstance(e, dict) and e.get("ip") and not e.get("deleted_at"):
+            used.add(e["ip"].split("/")[0])
+    if not subnet:
+        return err("next-ip", "no subnet info in snapshot")
+    net = ipaddress.ip_network(subnet, strict=False)
+    for host in net.hosts():
+        if str(host) not in used:
+            return {"ok": True, "op": "next-ip",
+                    "data": {"iface": iface, "next_ip": str(host) + "/32", "subnet": subnet}}
+    return err("next-ip", "no free addresses across selected nodes", "subnet_full")
+
+
+# ───────────────────────── API ─────────────────────────
+
+def api(method, path, qs, body, deps):
+    fleet = deps["fleet"]; roster_path = deps["roster_path"]
+    nodes = nodes_load(deps["nodes_path"])
+    snaps = deps.get("node_snaps") or {}; seen = deps.get("node_seen") or {}
+    now = deps.get("now", lambda: int(time.time()))
+    store_configs = bool(fleet.get("store_configs")); config_dir = fleet.get("config_dir")
+
+    def known(node):
+        return node in nodes
+
+    if method == "GET" and path == "/api/fleet":
+        out = [{"name": name, "color": c.get("color"), "transport": "https",
+                "stats_file": c.get("stats_file", f"stats-{name}.json")}
+               for name, c in nodes.items()]
+        return 200, {"ok": True, "data": {"nodes": out, "store_configs": store_configs}}
+
+    if method == "GET" and path == "/api/nodes":
+        out = []
+        for name, c in nodes.items():
+            snap = snaps.get(name) or {}
+            ls = seen.get(name)
+            online = ls is not None and (now() - ls) <= NODE_OFFLINE
+            pc = rx = tx = 0
+            for blk in (snap.get("interfaces") or {}).values():
+                ps = blk.get("peers") or []
+                pc += len(ps)
+                rx += sum(p.get("rx_speed", 0) or 0 for p in ps)
+                tx += sum(p.get("tx_speed", 0) or 0 for p in ps)
+            out.append({"name": name, "color": c.get("color"),
+                        "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
+                        "last_seen": ls,
+                        "status": "online" if online else ("dangling" if ls is None else "offline"),
+                        "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
+                        "hostname": snap.get("hostname"),
+                        "interfaces": list((snap.get("interfaces") or {}).keys())})
+        return 200, {"ok": True, "data": {"nodes": out}}
+
+    if method == "GET" and path == "/api/roster":
+        return 200, {"ok": True, "data": roster_load(roster_path)}
+
+    if method == "GET" and path == "/api/config":
+        pk = (qs.get("pubkey") or [""])[0]; node = (qs.get("node") or [""])[0]
+        if not (store_configs and config_dir and pk and node):
+            return 404, {"ok": False, "error": "config not stored", "code": "not_found"}
+        text = None
+        with contextlib.suppress(OSError):
+            with open(os.path.join(config_dir, cfg_hash(pk, node))) as f:
+                text = f.read()
+        if text is None:
+            return 404, {"ok": False, "error": "config not stored", "code": "not_found"}
+        return 200, {"ok": True, "data": {"config": text}}
+
+    if method == "GET" and path == "/api/describe":
+        node = (qs.get("node") or [""])[0]
+        if not known(node):
+            return 400, {"ok": False, "error": f"unknown node {node!r}", "code": "bad_request"}
+        snap = snaps.get(node)
+        if not snap:
+            return 400, {"ok": False, "error": "node has not reported yet (is swg-noded running?)",
+                         "code": "offline"}
+        d = node_describe(snap)
+        ep = (nodes.get(node) or {}).get("endpoint_host")   # value set in the Nodes screen wins
+        if ep:
+            for ifc in d["data"]["interfaces"].values():
+                port = ifc.get("listen_port")
+                ifc["endpoint"] = f"{ep}:{port}" if port else ifc.get("endpoint")
+        return 200, d
+
+    if method == "GET" and path == "/api/next-ip":
+        sel = [n for n in (qs.get("nodes") or [""])[0].split(",") if n]
+        iface = (qs.get("iface") or [""])[0]
+        if not sel or not iface:
+            return 400, {"ok": False, "error": "need nodes and iface", "code": "bad_request"}
+        bad = [n for n in sel if not known(n)]
+        if bad:
+            return 400, {"ok": False, "error": f"unknown node(s): {', '.join(bad)}", "code": "bad_request"}
+        r = panel_next_ip(snaps, roster_load(roster_path), sel, iface)
+        return (200 if r.get("ok") else 400), r
+
+    if method == "POST" and path == "/api/add-peer":
+        sel = body.get("nodes") or ([body["node"]] if body.get("node") else [])
+        for f in ("iface", "public_key", "allowed_ips"):
+            if not body.get(f):
+                return 400, {"ok": False, "error": f"missing {f}", "code": "bad_request"}
+        if not sel:
+            return 400, {"ok": False, "error": "select at least one node", "code": "bad_request"}
+        bad = [n for n in sel if not known(n)]
+        if bad:
+            return 400, {"ok": False, "error": f"unknown node(s): {', '.join(bad)}", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        existing = roster.get(body["public_key"])
+        merged = entry_nodes(existing) if existing else []
+        for n in sel:
+            if n not in merged:
+                merged.append(n)
+        psk = body.get("preshared_key", "")
+        if psk in ("none", "auto", None, False):
+            psk = (existing or {}).get("psk", "")
+        roster_set(roster, body["public_key"], {
+            "name": body.get("name", (existing or {}).get("name", "")),
+            "ip": body["allowed_ips"], "if": body["iface"], "type": body.get("type", "user"),
+            "psk": psk, "nodes": merged,
+            "created_at": (existing or {}).get("created_at", now())})
+        roster_save(roster_path, roster)
+        if store_configs and config_dir and isinstance(body.get("configs"), dict):
+            for node, conf in body["configs"].items():
+                if known(node) and isinstance(conf, str):
+                    with contextlib.suppress(OSError):
+                        atomic_write(os.path.join(config_dir, cfg_hash(body["public_key"], node)),
+                                     conf, mode=0o600)
+        return 200, {"ok": True, "data": {"public_key": body["public_key"], "nodes": merged}}
+
+    if method == "POST" and path == "/api/remove-peer":
+        pk = body.get("public_key")
+        if not pk:
+            return 400, {"ok": False, "error": "missing public_key", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        e = roster.get(pk) or {}
+        all_nodes = entry_nodes(e)
+        targets = body.get("nodes") or all_nodes
+
+        def del_cfgs(ns):
+            if store_configs and config_dir:
+                for n in ns:
+                    with contextlib.suppress(OSError):
+                        os.unlink(os.path.join(config_dir, cfg_hash(pk, n)))
+        remaining = [n for n in all_nodes if n not in targets]
+        if remaining:
+            if pk in roster:
+                roster[pk]["nodes"] = remaining
+            del_cfgs(targets)
+        else:
+            roster.pop(pk, None); del_cfgs(all_nodes)
+        roster_save(roster_path, roster)
+        return 200, {"ok": True, "data": {"public_key": pk, "nodes": remaining}}
+
+    if method == "POST" and path == "/api/rename":
+        pk, name = body.get("public_key"), body.get("name")
+        if not pk or name is None:
+            return 400, {"ok": False, "error": "missing public_key or name", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        if pk not in roster:
+            return 404, {"ok": False, "error": "peer not in roster", "code": "not_found"}
+        roster[pk]["name"] = str(name).strip()
+        roster_save(roster_path, roster)
+        return 200, {"ok": True, "data": {"public_key": pk, "name": roster[pk]["name"]}}
+
+    if method == "POST" and path == "/api/adopt":
+        for f in ("node", "iface", "public_key"):
+            if not body.get(f):
+                return 400, {"ok": False, "error": f"missing {f}", "code": "bad_request"}
+        if not known(body["node"]):
+            return 400, {"ok": False, "error": f"unknown node {body['node']!r}", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        pk = body["public_key"]
+        psk = body.get("preshared_key", "")
+        if psk in ("none", "auto", None, False):
+            psk = ""
+        if pk in roster:
+            ns = entry_nodes(roster[pk])
+            if body["node"] not in ns:
+                ns.append(body["node"])
+            roster[pk]["nodes"] = ns
+            if not roster[pk].get("ip") and body.get("allowed_ips"):
+                roster[pk]["ip"] = body["allowed_ips"].split("/")[0]
+            if psk and not roster[pk].get("psk"):
+                roster[pk]["psk"] = psk
+        else:
+            roster_set(roster, pk, {"name": body.get("name", ""), "ip": body.get("allowed_ips", ""),
+                       "if": body["iface"], "type": body.get("type", "user"), "psk": psk,
+                       "nodes": [body["node"]], "created_at": now()})
+        roster_save(roster_path, roster)
+        return 200, {"ok": True, "data": {"public_key": pk, "nodes": entry_nodes(roster[pk])}}
+
+    if method == "POST" and path == "/api/nodes/create":
+        name = (body.get("name") or "").strip()
+        if not name or len(name) > 40 or not all(c.isalnum() or c in "-_" for c in name):
+            return 400, {"ok": False, "error": "name must be 1–40 chars: letters, digits, - or _",
+                         "code": "bad_request"}
+        if name in nodes:
+            return 409, {"ok": False, "error": f"node {name!r} already exists", "code": "exists"}
+        token = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+        nodes[name] = {"name": name, "color": body.get("color") or "#34d399",
+                       "endpoint_host": (body.get("endpoint_host") or "").strip(),
+                       "stats_file": f"stats-{name}.json",
+                       "token_hash": make_token_hash(token), "created": now()}
+        nodes_save(deps["nodes_path"], nodes)
+        return 200, {"ok": True, "data": {"name": name, "token": token}}
+
+    if method == "POST" and path == "/api/nodes/update":
+        name = (body.get("name") or "").strip()
+        if name not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if "color" in body:
+            nodes[name]["color"] = body.get("color") or nodes[name].get("color")
+        if "endpoint_host" in body:
+            nodes[name]["endpoint_host"] = (body.get("endpoint_host") or "").strip()
+        nodes_save(deps["nodes_path"], nodes)
+        return 200, {"ok": True, "data": {"name": name}}
+
+    if method == "POST" and path == "/api/nodes/rotate":
+        name = (body.get("name") or "").strip()
+        if name not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        token = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
+        nodes[name]["token_hash"] = make_token_hash(token)
+        nodes_save(deps["nodes_path"], nodes)
+        return 200, {"ok": True, "data": {"name": name, "token": token}}
+
+    if method == "POST" and path == "/api/nodes/delete":
+        name = (body.get("name") or "").strip()
+        if name not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        del nodes[name]
+        nodes_save(deps["nodes_path"], nodes)
+        roster = roster_load(roster_path); changed = False
+        for pk in list(roster.keys()):
+            ns = entry_nodes(roster[pk])
+            if name in ns:
+                ns = [n for n in ns if n != name]; changed = True
+                if ns:
+                    roster[pk]["nodes"] = ns
+                else:
+                    roster.pop(pk, None)
+        if changed:
+            roster_save(roster_path, roster)
+        (deps.get("node_snaps") or {}).pop(name, None)
+        (deps.get("node_seen") or {}).pop(name, None)
+        sd = deps.get("stats_dir")
+        if sd:
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(sd, f"stats-{name}.json"))
+        return 200, {"ok": True, "data": {"name": name}}
+
+    return 404, {"ok": False, "error": "not found", "code": "bad_request"}
+
+
+# ───────────────────────── HTTP shell ─────────────────────────
+
+class Handler(BaseHTTPRequestHandler):
+    deps = None
+
+    def _send(self, code, obj):
+        payload = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        with contextlib.suppress(BrokenPipeError):
+            self.wfile.write(payload)
+
+    def _static(self, key):
+        full = os.path.normpath(os.path.join(WEB_DIR, STATIC[key]))
+        if not full.startswith(os.path.realpath(WEB_DIR)) and not full.startswith(WEB_DIR):
+            return self.send_error(403)
+        try:
+            with open(full, "rb") as f:
+                data = f.read()
+        except OSError:
+            return self.send_error(404)
+        _, ext = os.path.splitext(full)
+        self.send_response(200)
+        self.send_header("Content-Type", CTYPES.get(ext, "application/octet-stream"))
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        with contextlib.suppress(BrokenPipeError):
+            self.wfile.write(data)
+
+    def _authed(self):
+        creds = Handler.deps.get("auth")
+        if not creds:
+            return True
+        hdr = self.headers.get("Authorization", "")
+        if hdr.startswith("Basic "):
+            try:
+                user, _, pw = base64.b64decode(hdr[6:]).decode("utf-8", "replace").partition(":")
+            except Exception:
+                user, pw = "", ""
+            if hmac.compare_digest(user, creds[0]) and verify_password(creds[1], pw):
+                return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="swg-panel"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
+    def _wgstats(self, path):
+        name = os.path.basename(path)          # basename strips any traversal
+        if not name.endswith(".json") or "/" in name or name.startswith("."):
+            return self.send_error(404)
+        full = os.path.join(Handler.deps.get("stats_dir", "/var/www/wgstats"), name)
+        try:
+            with open(full, "rb") as f:
+                data = f.read()
+        except OSError:
+            data = b"{}"                        # before the first snapshot lands
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        with contextlib.suppress(BrokenPipeError):
+            self.wfile.write(data)
+
+    def _node_sync(self):
+        nodes = nodes_load(Handler.deps["nodes_path"])
+        hdr = self.headers.get("Authorization", "")
+        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
+        nid, node = find_node_by_token(nodes, token)
+        if not nid:
+            return self._send(401, {"error": "invalid node token"})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length) or "{}")
+        except Exception:
+            return self._send(400, {"error": "bad body"})
+        snap = body.get("snapshot") or {}
+        Handler.deps.setdefault("node_snaps", {})[nid] = snap
+        Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
+        stats_dir = Handler.deps.get("stats_dir")
+        if stats_dir and snap:
+            sf = node.get("stats_file", f"stats-{nid}.json")
+            with contextlib.suppress(Exception):
+                atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)
+        roster = roster_load(Handler.deps["roster_path"])
+        desired = desired_for_node(roster, nid)
+        interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
+        return self._send(200, {"desired": desired, "interval": interval})
+
+    def do_GET(self):
+        if not self._authed():
+            return
+        u = urlparse(self.path)
+        if u.path.startswith("/wgstats/"):
+            return self._wgstats(u.path)
+        if u.path in STATIC:
+            return self._static(u.path)
+        if u.path.startswith("/api/"):
+            try:
+                code, obj = api("GET", u.path, parse_qs(u.query), {}, self.deps)
+            except Exception as e:
+                code, obj = 500, {"ok": False, "error": str(e), "code": "internal"}
+            return self._send(code, obj)
+        self.send_error(404)
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path == "/api/node/sync":
+            return self._node_sync()
+        if not self._authed():
+            return
+        if not u.path.startswith("/api/"):
+            return self.send_error(404)
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            bodyobj = json.loads(raw or b"{}")
+            if not isinstance(bodyobj, dict):
+                raise ValueError
+        except (json.JSONDecodeError, ValueError):
+            return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
+        try:
+            with _api_lock:                       # mutations are read-modify-write; serialize them
+                code, obj = api("POST", u.path, {}, bodyobj, self.deps)
+        except Exception as e:
+            code, obj = 500, {"ok": False, "error": str(e), "code": "internal"}
+        self._send(code, obj)
+
+    def log_message(self, *a):
+        pass
+
+
+def main():
+    fleet = load_json(FLEET_PATH, None)
+    if fleet is None:
+        raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
+    nodes_path = fleet.get("nodes_path", "/var/lib/swg-panel/nodes.json")
+    Handler.deps = {"fleet": fleet,
+                    "roster_path": fleet.get("roster_path", "/var/lib/swg-panel/users.json"),
+                    "stats_dir": fleet.get("stats_dir", "/var/www/wgstats"),
+                    "nodes_path": nodes_path, "nodes": nodes_load(nodes_path),
+                    "node_snaps": {}, "node_seen": {},
+                    "auth": load_auth(),
+                    "now": lambda: int(time.time())}
+    srv = ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler)
+    scheme = "http"
+    if TLS_CERT and TLS_KEY:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(TLS_CERT, TLS_KEY)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        scheme = "https"
+    auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
+    print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
+    with contextlib.suppress(KeyboardInterrupt):
+        srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
