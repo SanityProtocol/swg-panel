@@ -161,7 +161,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   if $DRYRUN; then priv="<generated-on-real-run>"; else priv="$("$cmd" genkey)"; fi
   { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\n' "$priv" "$addr" "$port"
     printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
-    [ "$cmd" = awg ] && awg_obfuscation; } | writef "$conf" 600
+    if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
   if [ "$cmd" = awg ]; then run awg-quick up "$name"; run systemctl enable "awg-quick@$name"
   else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
   IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; LAST_IFACE="$name"
@@ -214,20 +214,10 @@ if [ "$SERVE_MODE" = standalone ] && { [ -z "$PANEL_DOMAIN" ] || [ "$PANEL_DOMAI
 fi
 [ -z "$BASIC_PASS" ] && BASIC_PASS="$(head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16)"
 
-# Initial panel login — suggest admin + 3 random digits; let the operator set both. Password
-# is confirmed; the suggested random one is used if left blank (and printed at the end).
+# Initial panel login — username suggested as admin + 3 random digits; the password is
+# auto-generated (printed at the end) and can be changed later under the Account tab.
 if [ "${BASIC_USER}" = admin ]; then BASIC_USER="admin$(( RANDOM % 900 + 100 ))"; fi
 ask "Panel admin username" "$BASIC_USER" BASIC_USER
-if [ -z "${BASIC_PASS_SET:-}" ] && ! $DRYRUN; then
-  _p1=""; _p2="x"
-  while [ "$_p1" != "$_p2" ]; do
-    read -rsp "Panel admin password (blank = use suggested '${BASIC_PASS}'): " _p1 </dev/tty || true; echo
-    [ -z "$_p1" ] && { _p1="$BASIC_PASS"; _p2="$_p1"; break; }
-    read -rsp "Confirm password: " _p2 </dev/tty || true; echo
-    [ "$_p1" != "$_p2" ] && warn "passwords didn't match — try again"
-  done
-  BASIC_PASS="$_p1"
-fi
 
 echo; info "Plan: method=$METHOD role=$ROLE store_configs=$STORE_CONFIGS"
 

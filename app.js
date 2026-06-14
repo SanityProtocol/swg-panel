@@ -137,19 +137,33 @@ function getConfig(pubkey, node) {
   if (Store.storeConfigs) return api.config(pubkey, node).then(r => r.ok ? r.data.config : null).catch(() => null);
   return Promise.resolve(null);
 }
-function qrSVG(text) {
-  try {
-    const q = qrcode(0, "Q");            // higher error-correction → more scannable when slightly blurred
-    q.addData(text); q.make();
-    const svg = q.createSvgTag({ cellSize: 10, margin: 4 });   // big modules + proper quiet zone
-    return svg.replace("<svg ", '<svg shape-rendering="crispEdges" ');
-  }
+function qrDataURL(text, targetPx) {
+  // Render to a canvas at an INTEGER module size (no fractional scaling) → crisp, scannable.
+  const q = qrcode(0, "L");            // low EC = fewest modules = biggest squares for a given size
+  q.addData(text); q.make();
+  const n = q.getModuleCount(), quiet = 4, total = n + quiet * 2;
+  const cell = Math.max(3, Math.floor((targetPx || 360) / total));
+  const size = total * cell;
+  const c = document.createElement("canvas"); c.width = c.height = size;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = "#000";
+  for (let r = 0; r < n; r++)
+    for (let col = 0; col < n; col++)
+      if (q.isDark(r, col)) ctx.fillRect((col + quiet) * cell, (r + quiet) * cell, cell, cell);
+  return c.toDataURL("image/png");
+}
+function qrSVG(text) {                  // name kept; now a crisp canvas-rendered image
+  try { return `<img class="qrimg" alt="config QR" src="${qrDataURL(text, 360)}">`; }
   catch (e) { return '<div class="qr-fail">config too large<br>to encode as QR</div>'; }
 }
-function qrZoom(conf, label) {           // fullscreen overlay so a phone camera can lock on easily
+function qrZoom(conf, label) {          // fullscreen overlay sized for easy camera lock-on
+  let img;
+  try { img = `<img class="qrimg" alt="config QR" src="${qrDataURL(conf, 700)}">`; }
+  catch (e) { img = '<div class="qr-fail">config too large to encode</div>'; }
   const ov = document.createElement("div");
   ov.className = "qr-overlay";
-  ov.innerHTML = `<div class="qr-overlay-inner"><div class="qr-overlay-card">${qrSVG(conf)}</div>` +
+  ov.innerHTML = `<div class="qr-overlay-inner"><div class="qr-overlay-card">${img}</div>` +
     `<div class="qr-overlay-cap">${label ? esc(label) : "Scan in WireGuard / AmneziaWG"}</div></div>`;
   ov.onclick = () => ov.remove();
   document.body.appendChild(ov);
@@ -503,15 +517,18 @@ function UserScreen(params) {
   }
   function startRename() {
     const p = Store.peer(pubkey) || p0;
+    uiBusy = true;   // pause auto-refresh so typing isn't wiped mid-edit
     $("#u-nameline").innerHTML = `<span class="name-edit"><input id="u-rn" value="${esc(p.name)}" maxlength="64" placeholder="name"><button class="btn btn-mini" id="u-rn-save">${ICON.check}</button></span>`;
     const inp = $("#u-rn"); inp.focus(); inp.select();
+    const cancel = () => { uiBusy = false; renderNameline(); };
     const save = async () => {
       const r = await api.rename({ public_key: pubkey, name: inp.value.trim() });
       if (!r.ok) { toast("Rename failed: " + (r.error || r.code || ""), "err"); return; }
+      uiBusy = false;
       toast("Renamed.", "ok"); await Store.poll(); renderNameline(); $("#u-crumb").textContent = inp.value.trim() || "unnamed";
     };
     $("#u-rn-save").onclick = save;
-    inp.onkeydown = e => { if (e.key === "Enter") save(); if (e.key === "Escape") renderNameline(); };
+    inp.onkeydown = e => { if (e.key === "Enter") save(); if (e.key === "Escape") cancel(); };
   }
   function renderIdentity() {
     const p = Store.peer(pubkey); if (!p) return;
@@ -986,7 +1003,9 @@ const ROUTES = [
   { re: /^\/account$/, fn: AccountScreen, tab: "account" },
 ];
 let activeUpdate = null;
+let uiBusy = false;   // when true (e.g. an inline editor is open), suppress auto-refresh re-renders
 function mountRoute() {
+  uiBusy = false;
   const path = (location.hash || "#/").replace(/^#/, "") || "/";
   let route = null, params = {};
   for (const r of ROUTES) { const m = path.match(r.re); if (m) { route = r; (r.keys || []).forEach((k, i) => params[k] = m[i + 1]); break; } }
@@ -999,7 +1018,7 @@ function mountRoute() {
 }
 function refreshScreen() { mountRoute(); }
 window.addEventListener("hashchange", mountRoute);
-Store.subscribe(() => { updateChrome(); if (activeUpdate) activeUpdate(); });
+Store.subscribe(() => { updateChrome(); if (activeUpdate && !uiBusy) activeUpdate(); });
 
 // ───────────────────────── boot ─────────────────────────
 (async () => {

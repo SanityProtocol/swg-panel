@@ -79,7 +79,18 @@ def awg_params(info):
     return out
 
 
-def build_meta(iface_line, conf_text, endpoint_host, dns):
+def derive_pubkey(cmd, priv):
+    """Server public key from a private key (used when the interface is down / dump is empty)."""
+    if not priv:
+        return None
+    try:
+        out = run((cmd or ["awg"]) + ["pubkey"], input_text=priv + "\n").stdout.strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None):
     info = parse_interface_section(conf_text)
     addr = info.get("Address", "").split(",")[0].strip()
     subnet = None
@@ -90,8 +101,9 @@ def build_meta(iface_line, conf_text, endpoint_host, dns):
         except Exception:
             subnet = addr.rsplit("/", 1)[0]
     port = int(iface_line[2]) if len(iface_line) > 2 and iface_line[2].isdigit() else None
+    pub = iface_line[1] if len(iface_line) > 1 and iface_line[1] else derive_pubkey(cmd, info.get("PrivateKey"))
     return {
-        "public_key": iface_line[1] if len(iface_line) > 1 else None,
+        "public_key": pub,
         "listen_port": port,
         "endpoint": (f"{endpoint_host}:{port}" if endpoint_host and port else None),
         "address": addr or None,
@@ -210,7 +222,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         interfaces[iface] = {
             "peers": peers,
             "meta": build_meta(iface_line, conf_text,
-                               node_cfg.get("endpoint_host"), node_cfg.get("dns", [])),
+                               node_cfg.get("endpoint_host"), node_cfg.get("dns", []), cmd),
         }
     return {"hostname": socket.gethostname(), "generated_at": now, "interfaces": interfaces}
 
