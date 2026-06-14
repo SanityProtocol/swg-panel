@@ -47,15 +47,50 @@ detect_wg(){ IF_CMD=(); IF_CONF=(); local f n
   for f in /etc/amnezia/amneziawg/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=awg; IF_CONF[$n]="$f"; done
   for f in /etc/wireguard/*.conf;        do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg;  IF_CONF[$n]="$f"; done
 }
-install_wg(){ local kind; read -rp "  Install (a)mneziawg or (w)ireguard? [a]: " kind </dev/tty || true; kind="${kind:-a}"
-  if [ "$kind" = w ]; then run apt-get update -qq; run apt-get install -y wireguard
-  else run apt-get update -qq; run apt-get install -y software-properties-common; run add-apt-repository -y ppa:amnezia/ppa; run apt-get update -qq; run apt-get install -y amneziawg; fi; }
+ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent)
+  local cmd="$1"
+  if [ "$cmd" = wg ]; then have wg && return 0; run apt-get update -qq; run apt-get install -y wireguard
+  else have awg && return 0; run apt-get update -qq; run apt-get install -y software-properties-common
+       run add-apt-repository -y ppa:amnezia/ppa; run apt-get update -qq; run apt-get install -y amneziawg; fi
+}
+awg_obfuscation(){ # emit AmneziaWG v2 obfuscation — H1–H4 as distinct, non-overlapping ranges
+  local s1 s2 b1 b2 b3 b4 w=15
+  s1=$(( 15 + RANDOM % 136 )); s2=$(( 15 + RANDOM % 136 ))
+  while [ "$s1" -eq "$s2" ] || [ $((s1+56)) -eq "$s2" ]; do s2=$(( 15 + RANDOM % 136 )); done
+  b1=$(( 5 + (RANDOM*RANDOM) % 900000000 ));          b2=$(( 1000000000 + (RANDOM*RANDOM) % 900000000 ))
+  b3=$(( 2000000000 + (RANDOM*RANDOM) % 900000000 )); b4=$(( 3000000000 + (RANDOM*RANDOM) % 900000000 ))
+  printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
+    "$s1" "$s2" "$b1" $((b1+w)) "$b2" $((b2+w)) "$b3" $((b3+w)) "$b4" $((b4+w))
+}
+server_addr(){ have python3 || die "python3 required for the tunnel address (also needed by the daemon)"
+  python3 - "$1" <<'PY'
+import ipaddress, sys
+n = ipaddress.ip_network(sys.argv[1], strict=False)
+print(f"{next(n.hosts())}/{n.prefixlen}")
+PY
+}
+create_iface(){ # prompt, gen server key, write conf (AWG v2 w/ H-ranges, or plain WG), bring up, register
+  local _proto proto name port subnet addr conf cmd priv dir
+  ask "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto; proto="${_proto:-a}"
+  case "$proto" in w|wg|wireguard) proto=wg; cmd=wg; dir=/etc/wireguard;;
+                                *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
+  ask "Interface name" "$([ "$cmd" = awg ] && echo awg0 || echo wg0)" name
+  ask "Listen port"    "51820" port
+  ask "Tunnel subnet (CIDR; server takes the first host)" "10.8.0.0/24" subnet
+  addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"; ensure_wg_tools "$cmd"
+  if $DRYRUN; then priv="<generated-on-real-run>"; else priv="$("$cmd" genkey)"; fi
+  { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\n' "$priv" "$addr" "$port"
+    [ "$cmd" = awg ] && awg_obfuscation; } | writef "$conf" 600
+  if [ "$cmd" = awg ]; then run awg-quick up "$name"; run systemctl enable "awg-quick@$name"
+  else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
+  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; ok "created $proto interface '$name' on :$port (server $addr)"
+}
 choose_ifaces(){
   detect_wg
   if [ "${#IF_CMD[@]}" -eq 0 ]; then
-    warn "No wg/awg interfaces found."; local d; ask_yn "Install now?" y _ans; d="$_ans"
-    [ "$d" = yes ] && { install_wg; detect_wg; }
-    [ "${#IF_CMD[@]}" -eq 0 ] && { warn "No interfaces yet."; $DRYRUN || die "create an interface, then re-run"; IF_CMD[awg0]=awg; IF_CONF[awg0]=/etc/amnezia/amneziawg/awg0.conf; }
+    warn "No wg/awg interface found."; local doit; ask_yn "Create one now? (installs wg/awg if needed)" y doit
+    [ "$doit" = yes ] && create_iface
+    [ "${#IF_CMD[@]}" -eq 0 ] && { $DRYRUN || die "create an interface, then re-run"; IF_CMD[awg0]=awg; IF_CONF[awg0]=/etc/amnezia/amneziawg/awg0.conf; }
   fi
   local names=("${!IF_CMD[@]}")
   if [ -n "$MANAGE_IFACES" ]; then IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"

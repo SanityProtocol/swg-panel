@@ -4,6 +4,7 @@
 # its own server interface (mounted conf for obfuscation, or generated plain-WG).
 set -eu
 log(){ printf '\033[0;36m[swg-node]\033[0m %s\n' "$*"; }
+rand32(){ od -An -N4 -tu4 /dev/urandom | tr -d ' '; }   # one unsigned 32-bit int
 
 : "${PANEL_URL:?PANEL_URL required (host-node: https://swg-panel:8443)}"
 : "${NODE_TOKEN:?NODE_TOKEN required (create the node in the Nodes screen)}"
@@ -19,11 +20,25 @@ if [ ! -f "$CONF" ]; then
     cp "$SRC_CONF" "$CONF"; log "using mounted interface conf ($SRC_CONF)"
   else
     PRIV="${SERVER_PRIVKEY:-$(awg genkey)}"
-    { echo "[Interface]";
-      echo "PrivateKey = $PRIV";
-      echo "Address = ${NODE_ADDRESS:-10.8.0.1/24}";
-      echo "ListenPort = ${NODE_LISTEN_PORT:-51820}"; } > "$CONF"
-    log "generated a plain-WireGuard conf (mount $SRC_CONF for AmneziaWG obfuscation params)"
+    {
+      echo "[Interface]"
+      echo "PrivateKey = $PRIV"
+      echo "Address = ${NODE_ADDRESS:-10.8.0.1/24}"
+      echo "ListenPort = ${NODE_LISTEN_PORT:-51820}"
+      if [ "${NODE_PLAIN_WG:-no}" != yes ]; then
+        s1=$(( 15 + $(rand32) % 136 )); s2=$(( 15 + $(rand32) % 136 ))
+        while [ "$s1" -eq "$s2" ] || [ $((s1+56)) -eq "$s2" ]; do s2=$(( 15 + $(rand32) % 136 )); done
+        b1=$(( 5 + $(rand32) % 900000000 ));          b2=$(( 1000000000 + $(rand32) % 900000000 ))
+        b3=$(( 2000000000 + $(rand32) % 900000000 )); b4=$(( 3000000000 + $(rand32) % 900000000 ))
+        printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
+          "$s1" "$s2" "$b1" $((b1+15)) "$b2" $((b2+15)) "$b3" $((b3+15)) "$b4" $((b4+15))
+      fi
+    } > "$CONF"
+    if [ "${NODE_PLAIN_WG:-no}" = yes ]; then
+      log "generated a plain-WireGuard conf (unset NODE_PLAIN_WG for AmneziaWG v2 obfuscation)"
+    else
+      log "generated an AmneziaWG v2 conf with H1–H4 ranges (set NODE_PLAIN_WG=yes for plain WireGuard)"
+    fi
   fi
 fi
 chmod 600 "$CONF"

@@ -80,10 +80,10 @@ detect_wg(){
 choose_ifaces(){ # populates SELECTED[] (names); installs wg/awg if absent
   detect_wg
   if [ "${#IF_CMD[@]}" -eq 0 ]; then
-    warn "No WireGuard/AmneziaWG configs found in /etc/wireguard or /etc/amnezia/amneziawg."
-    local doit; ask_yn "Install now?" y doit
-    if [ "$doit" = yes ]; then install_wg; detect_wg; fi
-    [ "${#IF_CMD[@]}" -eq 0 ] && die "Still no interfaces. Create one, then re-run (or set MANAGE_IFACES)."
+    warn "No WireGuard/AmneziaWG interface found in /etc/wireguard or /etc/amnezia/amneziawg."
+    local doit; ask_yn "Create one now? (installs wg/awg if needed)" y doit
+    [ "$doit" = yes ] && create_iface
+    [ "${#IF_CMD[@]}" -eq 0 ] && die "No interface. Create one, then re-run (or set MANAGE_IFACES)."
   fi
   local names=("${!IF_CMD[@]}")
   if [ -n "$MANAGE_IFACES" ]; then
@@ -98,11 +98,53 @@ choose_ifaces(){ # populates SELECTED[] (names); installs wg/awg if absent
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }; done
   ok "Managing: ${SELECTED[*]}"
 }
-install_wg(){
-  local kind; read -rp "  Install (a)mneziawg or (w)ireguard? [a]: " kind </dev/tty || true; kind="${kind:-a}"
-  if [ "$kind" = w ]; then run apt-get update -qq; run apt-get install -y wireguard;
-  else run apt-get update -qq; run apt-get install -y software-properties-common;
-       run add-apt-repository -y ppa:amnezia/ppa; run apt-get update -qq; run apt-get install -y amneziawg; fi
+ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent)
+  local cmd="$1"
+  if [ "$cmd" = wg ]; then
+    have wg && return 0
+    run apt-get update -qq; run apt-get install -y wireguard
+  else
+    have awg && return 0
+    run apt-get update -qq; run apt-get install -y software-properties-common
+    run add-apt-repository -y ppa:amnezia/ppa; run apt-get update -qq; run apt-get install -y amneziawg
+  fi
+}
+awg_obfuscation(){ # emit AmneziaWG v2 obfuscation lines — H1–H4 as distinct, non-overlapping ranges
+  local s1 s2 b1 b2 b3 b4 w=15
+  s1=$(( 15 + RANDOM % 136 )); s2=$(( 15 + RANDOM % 136 ))
+  while [ "$s1" -eq "$s2" ] || [ $((s1+56)) -eq "$s2" ]; do s2=$(( 15 + RANDOM % 136 )); done
+  b1=$(( 5          + (RANDOM*RANDOM) % 900000000 ))   # four disjoint bands keep the ranges
+  b2=$(( 1000000000 + (RANDOM*RANDOM) % 900000000 ))   # distinct and non-overlapping, all > 4
+  b3=$(( 2000000000 + (RANDOM*RANDOM) % 900000000 ))
+  b4=$(( 3000000000 + (RANDOM*RANDOM) % 900000000 ))
+  printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
+    "$s1" "$s2" "$b1" $((b1+w)) "$b2" $((b2+w)) "$b3" $((b3+w)) "$b4" $((b4+w))
+}
+server_addr(){ # server_addr <cidr> -> "<first-host>/<prefix>"
+  have python3 || die "python3 is required to compute the tunnel address (it's also needed by the daemon)"
+  python3 - "$1" <<'PY'
+import ipaddress, sys
+n = ipaddress.ip_network(sys.argv[1], strict=False)
+print(f"{next(n.hosts())}/{n.prefixlen}")
+PY
+}
+create_iface(){ # prompt, gen server key, write conf (AWG v2 w/ H-ranges, or plain WG), bring up, register
+  local _proto proto name port subnet addr conf cmd priv dir
+  ask "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto; proto="${_proto:-a}"
+  case "$proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
+                                *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
+  ask "Interface name" "$([ "$cmd" = awg ] && echo awg0 || echo wg0)" name
+  ask "Listen port"    "51820"        port
+  ask "Tunnel subnet (CIDR; server takes the first host)" "10.8.0.0/24" subnet
+  addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"
+  ensure_wg_tools "$cmd"
+  if $DRYRUN; then priv="<generated-on-real-run>"; else priv="$("$cmd" genkey)"; fi
+  { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\n' "$priv" "$addr" "$port"
+    [ "$cmd" = awg ] && awg_obfuscation; } | writef "$conf" 600
+  if [ "$cmd" = awg ]; then run awg-quick up "$name"; run systemctl enable "awg-quick@$name"
+  else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
+  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"
+  ok "created $proto interface '$name' on :$port (server $addr)"
 }
 
 # ───────────────────────── prompts ─────────────────────────

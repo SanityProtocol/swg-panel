@@ -673,7 +673,9 @@ async function refreshAddr() {
 }
 async function doCreate() {
   const name = $("#c-name").value.trim(), iface = $("#c-iface").value;
-  const nodes = selectedCreateNodes(), ip = $("#c-ip").value.trim(), psk = $("#c-psk").value.trim();
+  const nodes = selectedCreateNodes(), ip = $("#c-ip").value.trim();
+  let psk = $("#c-psk").value.trim();
+  if (!psk) { psk = genPSK(); $("#c-psk").value = psk; }   // PSK is mandatory — never create a peer without one
   const allowed = $("#c-allowed").value.trim() || "0.0.0.0/0, ::/0";
   const msg = $("#c-msg");
   if (!nodes.length) { msg.className = "formmsg err"; msg.textContent = "Select at least one server."; return; }
@@ -684,10 +686,10 @@ async function doCreate() {
     const configs = {};
     for (const n of nodes) {
       const info = (createCache[n].interfaces || {})[iface];
-      configs[n] = buildConf({ privkey: keys.priv, address: ip, dns: info.dns, awg_params: info.awg_params, server_pubkey: info.public_key, psk: psk || null, endpoint: info.endpoint, allowed });
+      configs[n] = buildConf({ privkey: keys.priv, address: ip, dns: info.dns, awg_params: info.awg_params, server_pubkey: info.public_key, psk, endpoint: info.endpoint, allowed });
     }
     msg.textContent = "creating on " + nodes.length + " server" + (nodes.length > 1 ? "s" : "") + "…";
-    const body = { nodes, iface, public_key: keys.pub, allowed_ips: ip, preshared_key: psk || "none", name, type: "user" };
+    const body = { nodes, iface, public_key: keys.pub, allowed_ips: ip, preshared_key: psk, name, type: "user" };
     if (Store.storeConfigs) body.configs = configs;
     const r = await api.addPeer(body);
     if (!r.ok) { msg.className = "formmsg err"; msg.textContent = "Failed: " + (r.error || r.code || "unknown"); $("#c-create").disabled = false; return; }

@@ -136,6 +136,11 @@ def entry_nodes(e):
     return [e["node"]] if e.get("node") else []
 
 
+def gen_psk():
+    """A WireGuard/AmneziaWG preshared key: 32 random bytes, base64 (stdlib only)."""
+    return base64.b64encode(os.urandom(32)).decode()
+
+
 def roster_set(roster, pubkey, entry):
     roster[pubkey] = {
         "name": entry.get("name", ""),
@@ -352,6 +357,8 @@ def api(method, path, qs, body, deps):
         psk = body.get("preshared_key", "")
         if psk in ("none", "auto", None, False):
             psk = (existing or {}).get("psk", "")
+        if not psk and not existing:
+            psk = gen_psk()          # PSK is mandatory for every new peer; never mutate an existing one
         roster_set(roster, body["public_key"], {
             "name": body.get("name", (existing or {}).get("name", "")),
             "ip": body["allowed_ips"], "if": body["iface"], "type": body.get("type", "user"),
@@ -364,7 +371,7 @@ def api(method, path, qs, body, deps):
                     with contextlib.suppress(OSError):
                         atomic_write(os.path.join(config_dir, cfg_hash(body["public_key"], node)),
                                      conf, mode=0o600)
-        return 200, {"ok": True, "data": {"public_key": body["public_key"], "nodes": merged}}
+        return 200, {"ok": True, "data": {"public_key": body["public_key"], "nodes": merged, "preshared_key": psk}}
 
     if method == "POST" and path == "/api/remove-peer":
         pk = body.get("public_key")
