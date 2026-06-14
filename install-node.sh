@@ -94,26 +94,38 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
   IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; LAST_IFACE="$name"; ok "created $proto interface '$name' on :$port (server $addr, NAT out $wan)"
 }
-choose_ifaces(){
+choose_ifaces(){ # populates SELECTED[] via a looped menu: 'new' creates an interface, names finalize selection
   detect_wg
-  if [ "${#IF_CMD[@]}" -eq 0 ]; then
-    warn "No wg/awg interface found."; local doit; ask_yn "Create one now? (installs wg/awg if needed)" y doit
-    [ "$doit" = yes ] && create_iface
-    [ "${#IF_CMD[@]}" -eq 0 ] && { $DRYRUN || die "create an interface, then re-run"; IF_CMD[awg0]=awg; IF_CONF[awg0]=/etc/amnezia/amneziawg/awg0.conf; }
-  fi
-  local names=("${!IF_CMD[@]}")
-  if [ -n "$MANAGE_IFACES" ]; then IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
+  if [ -n "$MANAGE_IFACES" ]; then
+    IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
   else
-    echo "  Detected interfaces:"; local i=1; for n in "${names[@]}"; do echo "    $i) $n (${IF_CMD[$n]}) ${IF_CONF[$n]}"; i=$((i+1)); done
-    local pick; read -rp "  Manage which? (comma indices, or 'all'): " pick </dev/tty || true; pick="${pick:-all}"
-    if [ "$pick" = all ]; then SELECTED=("${names[@]}"); else SELECTED=(); IFS=',' read -ra idx <<< "$pick"; for j in "${idx[@]}"; do j="${j// /}"; [ -n "$j" ] && SELECTED+=("${names[$((j-1))]}"); done; fi
-  fi
-  if [ -z "$MANAGE_IFACES" ]; then
+    if [ "${#IF_CMD[@]}" -eq 0 ]; then
+      warn "No wg/awg interface found."; local doit; ask_yn "Create one now? (installs wg/awg only if missing)" y doit
+      [ "$doit" = yes ] && create_iface
+      [ "${#IF_CMD[@]}" -eq 0 ] && { $DRYRUN || die "create an interface, then re-run"; IF_CMD[awg0]=awg; IF_CONF[awg0]=/etc/amnezia/amneziawg/awg0.conf; }
+    fi
     while :; do
-      local more; ask_yn "Install an additional interface? (awg 2.0 or plain wg)" n more
-      [ "$more" = yes ] || break
-      create_iface
-      [ -n "${LAST_IFACE:-}" ] && SELECTED+=("$LAST_IFACE"); LAST_IFACE=""
+      local names=("${!IF_CMD[@]}") word=interfaces
+      [ "${#names[@]}" -eq 1 ] && word=interface
+      echo; echo "  ${#names[@]} $word found:"
+      for n in "${names[@]}"; do echo "    $n (${IF_CMD[$n]})"; done
+      echo "  To create an additional interface, enter \"new\"."
+      echo "  To select interfaces and proceed, enter the interface names separated by comma."
+      local pick
+      if ! read -rp "  > " pick </dev/tty 2>/dev/null; then
+        warn "no interactive input — selecting all detected interfaces"; SELECTED=("${names[@]}"); break
+      fi
+      pick="${pick//[[:space:]]/}"
+      if [ "$pick" = new ]; then create_iface; continue; fi
+      [ -z "$pick" ] && { warn "enter \"new\", or interface names separated by comma"; continue; }
+      local sel=() bad=0 r; IFS=',' read -ra req <<< "$pick"
+      for r in "${req[@]}"; do
+        [ -z "$r" ] && continue
+        if [ -n "${IF_CMD[$r]:-}" ]; then sel+=("$r"); else warn "unknown interface: $r"; bad=1; fi
+      done
+      [ "$bad" -eq 1 ] && continue
+      [ "${#sel[@]}" -eq 0 ] && { warn "select at least one interface"; continue; }
+      SELECTED=("${sel[@]}"); break
     done
   fi
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }; done
