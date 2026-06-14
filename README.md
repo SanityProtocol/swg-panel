@@ -54,26 +54,20 @@ You never edit `users.json` or `nodes.json` by hand — the UI does it.
 
 ## Quick start
 
-### A — one box (panel + entry server), bare-metal
+### A — bare-metal
 
-On a server that already runs (or will run) wg/awg:
+Run one command on each box; you pick **host** (panel only) or **host+node** (panel that's also an entry server) when asked:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
 ```
 
-Answer **host+node** when asked for the role, give it your public IP and interface, choose a TLS mode, and set an admin password. When it finishes, open `https://<your-host>:8443/`, log in, and you will find this box already listed under **Nodes**. Add peers from the UI (see [Managing peers](#managing-peers)).
+The installer walks you through the role, TLS, and an admin login, and handles the wg/awg interface for you: it lists any it finds (you choose which to manage), offers to **create one** if there are none, and then asks whether you want to **add more** — each new interface can be **AmneziaWG** (with the 2.0 obfuscation profile this project uses) or plain **WireGuard**, and is automatically NAT'd to the internet. When it finishes, open `https://<your-host>/`, log in, and:
 
-### B — a panel and separate nodes, bare-metal
+- For **host+node**, this box is already listed under **Nodes** — add peers and you're done.
+- For **host**, add each entry server from the UI: **Nodes → Add node** prints a one-time token and the exact `install-node.sh` command to run there (see [Adding a node](#adding-a-node)).
 
-1. **Panel** — on the control box:
-   ```
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
-   ```
-   Answer **host** for the role. Open the UI and log in.
-2. **Each node** — in the UI, **Nodes → Add node**, then run the command it prints on the entry server (see [Adding a node](#adding-a-node)).
-
-### C — Docker
+### B — Docker
 
 ```
 git clone https://github.com/SanityProtocol/swg-panel && cd swg-panel
@@ -90,12 +84,13 @@ Open `https://<host>:8443/`. For a node, or a panel-plus-local-node, see [Docker
 | prompt | meaning |
 |---|---|
 | **Role** | `host` (panel only) or `host+node` (also an entry server) |
-| **Node name / public IP / interface** | *(host+node only)* identity + address clients dial for this box |
+| **Node name / public IP** | *(host+node only)* identity + address clients dial for this box |
+| **Interfaces** | *(host+node only)* which existing wg/awg interfaces to manage; offers to **create** one if none exist, then to **add more** — each AmneziaWG (2.0 obfuscation) or plain WireGuard. New interfaces are generated with a server key, a tunnel subnet, and an automatic forward + masquerade (`PostUp`/`PostDown`) so clients reach the internet. |
 | **Panel domain / IP** | the hostname or IP the panel is reached at |
-| **Port** | default **8443** (use 443 if you want; the unit adds the bind capability) |
+| **Port** | default **443** (the unit adds the bind capability for ports < 1024) |
 | **TLS mode** | `selfsigned` · `letsencrypt` · `cloudflare` · `manual` · `none` |
 | **Serve mode** | `standalone` (default, self-contained) or `nginx` (reverse-proxied) |
-| **Admin user / password** | the web login |
+| **Admin user / password** | the web login — suggests `admin` + 3 digits; password is entered and confirmed (changeable later under **Account**) |
 
 **TLS modes:**
 - **selfsigned** — instant; browsers warn once. Good for getting going or behind a tunnel.
@@ -117,11 +112,11 @@ sudo -E ROLE=host TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.ne
 Nodes are managed entirely from the UI — the installer no longer asks about them.
 
 1. **Nodes → Add node** — give it a name, the public IP/host clients will dial, and a colour. You get a **one-time enrollment token** and the exact command to run.
-2. **On the entry server**, with wg/awg already set up, run that command (a clone of the repo provides the script):
+2. **On the entry server**, run that command (a clone of the repo provides the script):
    ```
-   sudo PANEL_URL="https://panel.example.net:8443" NODE_TOKEN="<token>" ./install-node.sh
+   sudo PANEL_URL="https://panel.example.net" NODE_TOKEN="<token>" ./install-node.sh
    ```
-   It also asks for the interface to manage and this node's public endpoint, then installs `swg-noded` and points it at the panel.
+   It manages the wg/awg interface for you exactly like the host installer: lists existing interfaces, offers to **create** one (AmneziaWG 2.0 or plain WireGuard) if none exist, asks whether to **add more**, sets up the forward + masquerade automatically, and then installs `swg-noded` pointed at the panel.
 3. Within a few seconds the node turns **online** in the Nodes screen.
 
 If the panel uses a self-signed cert, the node does not verify it by default (the token is the credential, and the channel is still encrypted). To verify instead, answer yes to the TLS prompt for a real cert, or pin a self-signed one by passing `TLS_FINGERPRINT=<sha256-hex>` (its sha256 is checked during the TLS handshake, before the token is sent).
@@ -132,11 +127,14 @@ If the panel uses a self-signed cert, the node does not verify it by default (th
 
 A **peer** is one identity (a keypair + IP + PSK) that can be deployed to several nodes at once for redundancy — the client fails over between them by changing its `Endpoint`.
 
-- **Add peer** — pick the interface and one or more nodes, optionally a name. The panel allocates a free IP; your browser generates the keypair and PSK and builds the config(s). You are shown the **config + QR once** — the private key is never stored.
+- **Add peer** — pick the interface and one or more nodes, optionally a name. The panel allocates a free IP; your browser generates the keypair and PSK and builds the config(s). You are shown the **config + QR once** — the private key is never stored. The QR is large and tap-to-fullscreen for easy phone scanning.
 - **Assign / unassign** — deploying the same identity to more nodes just adds its public key + PSK there; the client config gains another endpoint to fail over to.
+- **Copy to another server** — from a peer's page, copy it to a server it isn't on yet. It reuses the same key + PSK but gets a **fresh IP** from that server's subnet (a distinct tunnel sharing the identity). Needs the client private key, so it works when `store_configs` is on or right after the peer was created.
 - **Remove** — drops the peer from the roster; every node it lived on removes it on the next sync.
 
 Live status (online, partial, dangling, …) is computed every refresh from the nodes' snapshots — a peer stays "online" while one replica is briefly unreachable.
+
+**Account** — change the panel username/password under the **Account** tab; it takes effect immediately (you're asked to sign in again).
 
 ## Docker
 
@@ -155,7 +153,7 @@ Configure via `.env` (copied from `.env.example`):
 
 The flow is the same as bare-metal: bring up the panel, **Nodes → Add node** to get a token, set `NODE_TOKEN`, then start the node profile.
 
-**Two images.** `swg-panel` is pure Python (small, low-risk). `swg-node` builds the userspace **`amneziawg-go`** datapath plus the `awg` tools — a container cannot load the host's kernel module — and needs `NET_ADMIN` + `/dev/net/tun`. Mount a full AmneziaWG server `.conf` at `/etc/swg-node/<iface>.conf` for obfuscation; without one, a plain-WireGuard interface is generated. For best throughput, prefer a **bare-metal** node with the kernel module.
+**Two images.** `swg-panel` is pure Python (small, low-risk). `swg-node` builds the userspace **`amneziawg-go`** datapath plus the `awg` tools — a container cannot load the host's kernel module — and needs `NET_ADMIN` + `/dev/net/tun`. With no mounted conf it generates an **AmneziaWG 2.0** interface (H-ranges, S1–S4, a conservative QUIC `I1`) by default; set `NODE_PLAIN_WG=yes` for plain WireGuard, or mount a full server `.conf` at `/etc/swg-node/<iface>.conf` to use your own. The masquerade for the tunnel subnet is added automatically (compose already sets `ip_forward` + `NET_ADMIN`). For best throughput, prefer a **bare-metal** node with the kernel module.
 
 ## Configuration reference
 
@@ -181,7 +179,7 @@ The flow is the same as bare-metal: bring up the panel, **Nodes → Add node** t
   "interfaces": { "awg0": { "cmd": ["awg"], "conf": "/etc/amnezia/amneziawg/awg0.conf" } },
   "endpoint_host": "203.0.113.7",
   "dns": ["1.1.1.1"],
-  "panel": { "url": "https://panel.example.net:8443", "token": "…", "verify": false },
+  "panel": { "url": "https://panel.example.net", "token": "…", "verify": false },
   "node":  { "interval": 5, "agent": "/opt/swg-agent/swg-agent", "sudo": false }
 }
 ```
@@ -209,4 +207,5 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 - **A node is "offline."** It synced before but has gone quiet — check the daemon and the node's outbound network.
 - **Peers don't appear on a node.** Confirm the peer is assigned to that node and that its interface matches one the node actually serves. Reads come from the node's latest snapshot, so a freshly added node needs one sync first.
 - **Browser warns about the certificate.** Expected with `selfsigned`. Use a real cert for production, or accept the warning behind a trusted tunnel.
+- **Client connects (handshake works) but has no internet / `rx` climbs while `tx` stays ~0.** The node is decrypting packets but not routing them out. Interfaces created by the installer set this up automatically; for a hand-made interface, enable forwarding (`net.ipv4.ip_forward=1`) and add a masquerade for the tunnel subnet out the WAN nic (`iptables -t nat -A POSTROUTING -s <subnet> -o <wan> -j MASQUERADE`).
 - **`acme.sh` failed to issue.** `letsencrypt` needs port 80 reachable; if 80 is taken, use `cloudflare` (DNS-01, no port 80).

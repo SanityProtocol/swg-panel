@@ -92,7 +92,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
     [ "$cmd" = awg ] && awg_obfuscation; } | writef "$conf" 600
   if [ "$cmd" = awg ]; then run awg-quick up "$name"; run systemctl enable "awg-quick@$name"
   else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
-  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; ok "created $proto interface '$name' on :$port (server $addr, NAT out $wan)"
+  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; LAST_IFACE="$name"; ok "created $proto interface '$name' on :$port (server $addr, NAT out $wan)"
 }
 choose_ifaces(){
   detect_wg
@@ -107,6 +107,14 @@ choose_ifaces(){
     echo "  Detected interfaces:"; local i=1; for n in "${names[@]}"; do echo "    $i) $n (${IF_CMD[$n]}) ${IF_CONF[$n]}"; i=$((i+1)); done
     local pick; read -rp "  Manage which? (comma indices, or 'all'): " pick </dev/tty || true; pick="${pick:-all}"
     if [ "$pick" = all ]; then SELECTED=("${names[@]}"); else SELECTED=(); IFS=',' read -ra idx <<< "$pick"; for j in "${idx[@]}"; do j="${j// /}"; [ -n "$j" ] && SELECTED+=("${names[$((j-1))]}"); done; fi
+  fi
+  if [ -z "$MANAGE_IFACES" ]; then
+    while :; do
+      local more; ask_yn "Install an additional interface? (awg 2.0 or plain wg)" n more
+      [ "$more" = yes ] || break
+      create_iface
+      [ -n "${LAST_IFACE:-}" ] && SELECTED+=("$LAST_IFACE"); LAST_IFACE=""
+    done
   fi
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }; done
   ok "Managing: ${SELECTED[*]}"

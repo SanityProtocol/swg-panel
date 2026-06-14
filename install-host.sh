@@ -95,6 +95,15 @@ choose_ifaces(){ # populates SELECTED[] (names); installs wg/awg if absent
       SELECTED=(); IFS=',' read -ra idx <<< "$pick"; for j in "${idx[@]}"; do j="${j// /}"; [ -n "$j" ] && SELECTED+=("${names[$((j-1))]}"); done
     fi
   fi
+  # Offer to install brand-new additional interface(s) beyond what's selected (default: no).
+  if [ -z "$MANAGE_IFACES" ]; then
+    while :; do
+      local more; ask_yn "Install an additional interface? (awg 2.0 or plain wg)" n more
+      [ "$more" = yes ] || break
+      create_iface
+      [ -n "${LAST_IFACE:-}" ] && SELECTED+=("$LAST_IFACE"); LAST_IFACE=""
+    done
+  fi
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }; done
   ok "Managing: ${SELECTED[*]}"
 }
@@ -155,7 +164,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
     [ "$cmd" = awg ] && awg_obfuscation; } | writef "$conf" 600
   if [ "$cmd" = awg ]; then run awg-quick up "$name"; run systemctl enable "awg-quick@$name"
   else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
-  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"
+  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; LAST_IFACE="$name"
   ok "created $proto interface '$name' on :$port (server $addr, NAT out $wan)"
 }
 
@@ -368,7 +377,7 @@ Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=${STATE_DIR} ${STATS_DIR}
+ReadWritePaths=${ETC_DIR} ${STATE_DIR} ${STATS_DIR}
 ProtectHome=true
 PrivateTmp=true
 
