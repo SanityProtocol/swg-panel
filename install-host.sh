@@ -163,7 +163,7 @@ if [ "$HOST_HAS_WG" = yes ]; then
 fi
 ask "Serve mode: standalone (self-contained, no nginx) or nginx?" "standalone" SERVE_MODE
 case "$SERVE_MODE" in standalone|nginx) ;; *) die "SERVE_MODE must be standalone or nginx";; esac
-[ -z "$PORT" ] && { [ "$SERVE_MODE" = standalone ] && PORT=8443 || PORT=8088; }
+[ -z "$PORT" ] && { [ "$SERVE_MODE" = standalone ] && PORT=443 || PORT=8088; }
 [ "$SERVE_MODE" = standalone ] && ask "Public HTTPS port for the panel" "$PORT" PORT
 DEF_DOM="_"
 if [ "$SERVE_MODE" = standalone ]; then
@@ -406,7 +406,15 @@ obtain_cert_standalone(){
         info "Issuing via Cloudflare DNS-01 for $PANEL_DOMAIN"
       else args+=(--standalone); info "Issuing via Let's Encrypt HTTP-01 (acme standalone :80) for $PANEL_DOMAIN"; fi
       [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
-      if ! run "$ACME" "${args[@]}"; then warn "issuance failed — falling back to a self-signed cert."; mk_selfsigned; return; fi
+      local rc=0; run "$ACME" "${args[@]}" || rc=$?
+      # acme.sh exit 2 = RENEW_SKIP (a valid cert already exists, not due for renewal) — that's fine.
+      if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+        if $DRYRUN || $ACME --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then
+          warn "acme.sh returned $rc but a cert for $PANEL_DOMAIN exists — installing it."
+        else
+          warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; mk_selfsigned; return
+        fi
+      fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
       run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
           --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl restart swg-panel-server"
