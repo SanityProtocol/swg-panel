@@ -81,7 +81,7 @@ choose_ifaces(){ # populates SELECTED[] (names); installs wg/awg if absent
   detect_wg
   if [ "${#IF_CMD[@]}" -eq 0 ]; then
     warn "No WireGuard/AmneziaWG configs found in /etc/wireguard or /etc/amnezia/amneziawg."
-    local doit; ask_yn "Install now?" y doit _ans_inst; doit="$_ans_inst"
+    local doit; ask_yn "Install now?" y doit
     if [ "$doit" = yes ]; then install_wg; detect_wg; fi
     [ "${#IF_CMD[@]}" -eq 0 ] && die "Still no interfaces. Create one, then re-run (or set MANAGE_IFACES)."
   fi
