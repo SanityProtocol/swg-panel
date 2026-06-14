@@ -22,6 +22,7 @@ services:
       PANEL_PASSWORD: "${PANEL_PASSWORD:?set PANEL_PASSWORD in .env}"
       PANEL_DOMAIN: "${PANEL_DOMAIN:-localhost}"
       TLS: "${TLS:-selfsigned}"           # selfsigned | none  (or mount a real cert below)
+      SWG_PANEL_BASE: "${PANEL_BASE:-}"   # optional subpath mount, e.g. /swg (blank = root)
     volumes:
       - ./data/etc:/etc/swg-panel         # fleet.json + nodes.json + auth + tls/ persist here
       - ./data/lib:/var/lib/swg-panel     # roster (users.json), node store, stored configs
@@ -44,17 +45,22 @@ services:
       - net.ipv4.ip_forward=1
     ports:
       - "${NODE_LISTEN_PORT:-51820}:${NODE_LISTEN_PORT:-51820}/udp"   # wg listen port
+      # Multiple interfaces? Publish each one's ListenPort here too, e.g.:
+      # - "51821:51821/udp"
     environment:
       PANEL_URL: "${PANEL_URL:?set PANEL_URL (host-node: https://swg-panel:8443)}"
       NODE_TOKEN: "${NODE_TOKEN:?create the node in the Nodes screen, then set NODE_TOKEN}"
       NODE_ENDPOINT: "${NODE_ENDPOINT:?public IP/host clients dial for this node}"
+      # Single interface (default), or several via NODE_IFACES (see .env.example):
       NODE_IFACE: "${NODE_IFACE:-awg0}"
+      NODE_IFACES: "${NODE_IFACES:-}"     # "name:port:addr[:proto],…"  (blank = use NODE_IFACE)
       NODE_LISTEN_PORT: "${NODE_LISTEN_PORT:-51820}"
       NODE_ADDRESS: "${NODE_ADDRESS:-10.8.0.1/24}"
       TLS_VERIFY: "${TLS_VERIFY:-no}"     # yes to verify the panel's cert (real CA)
       DNS: "${DNS:-1.1.1.1}"
     volumes:
       - ./data/node:/var/lib/swg-noded
-      # Full AmneziaWG server conf (obfuscation params). Without it, a plain-WireGuard
-      # interface is generated from NODE_ADDRESS / NODE_LISTEN_PORT:
+      # Full AmneziaWG server conf(s) with your own obfuscation params. Every file
+      # mounted under /etc/swg-node/*.conf becomes a managed interface:
       # - ./awg0.conf:/etc/swg-node/awg0.conf:ro
+      # - ./wg1.conf:/etc/swg-node/wg1.conf:ro

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # install-host.sh — set up the swg-panel host (server + UI + collector + receiver).
 #
-# Two roles, chosen by ROLE below (or asked): host (panel only) or host+node.
-#   single                         everything on this one box; this host is the only node
-#   multi + HOST_HAS_WG=yes        panel here AND wg/awg here, plus remote nodes
-#   multi + HOST_HAS_WG=no         panel here, wg/awg only on remote nodes
+# Two roles, chosen in Step 1 (or via ROLE): master or host.
+#   master  panel + this box also runs wg/awg interfaces (an entry server)
+#   host    panel only; wg/awg nodes are deployed separately
 #
 # Fill the CONFIG block to run unattended, or leave blanks to be prompted.
 # Run as root. Use --dry-run to render every file under ./dryrun and execute nothing.
@@ -12,22 +11,22 @@ set -euo pipefail
 
 # ───────────────────────── CONFIG (blank = ask) ─────────────────────────
 METHOD="${METHOD:-baremetal}"          # baremetal (systemd). For Docker, use docker-compose instead.
-ROLE="${ROLE:-}"                       # host (panel only) | host+node (panel + this box is also an entry server)
-HOST_NODE_NAME="${HOST_NODE_NAME:-}"   # node name for THIS box (host+node only)
-HOST_ENDPOINT_IP="${HOST_ENDPOINT_IP:-}" # public IP clients dial for this box's wg (host+node only)
-MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = pick from detected; host+node only)
+ROLE="${ROLE:-}"                       # master (panel + this box is an entry server) | host (panel only)
+HOST_NODE_NAME="${HOST_NODE_NAME:-}"   # node name for THIS box (master only)
+HOST_ENDPOINT_IP="${HOST_ENDPOINT_IP:-}" # public IP clients dial for this box's wg (master only)
+MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected; master only)
 
-PANEL_DOMAIN="${PANEL_DOMAIN:-}"       # domain or IP for the URL/cert; blank = this host's IP (fine for standalone)
+PANEL_DOMAIN="${PANEL_DOMAIN:-}"       # panel URL: IP, host, or host/subpath (e.g. vpn.example.com/swg). Blank = this host's IP.
 STORE_CONFIGS="${STORE_CONFIGS:-false}"
 
-SERVE_MODE="${SERVE_MODE:-}"           # standalone (self-contained: own TLS+login, no nginx) | nginx  (blank = ask)
+SERVE_MODE="${SERVE_MODE:-}"           # internal (self-contained) | nginx | caddy | skip  (blank = ask)
 # TLS — how to obtain the certificate:
-TLS_MODE="${TLS_MODE:-}"               # selfsigned | letsencrypt | cloudflare | manual | none  (blank = ask)
+TLS_MODE="${TLS_MODE:-}"               # cloudflare | letsencrypt | selfsigned | skip  (blank = ask)
 ACME_EMAIL="${ACME_EMAIL:-}"           # account email for letsencrypt/cloudflare
 CF_TOKEN="${CF_TOKEN:-}"               # cloudflare: API token with Zone:DNS:Edit
 CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-}"     # cloudflare: optional account id
-CERT_FULLCHAIN="${CERT_FULLCHAIN:-}"   # manual: path to fullchain.pem (also where acme installs it)
-CERT_KEY="${CERT_KEY:-}"               # manual: path to private key.pem
+CERT_FULLCHAIN="${CERT_FULLCHAIN:-}"   # skip-with-own-cert: path to fullchain.pem
+CERT_KEY="${CERT_KEY:-}"               # skip-with-own-cert: path to private key.pem
 BASIC_USER="${BASIC_USER:-admin}"
 BASIC_PASS="${BASIC_PASS:-}"           # blank -> random, printed at the end
 
@@ -43,6 +42,7 @@ STATE_DIR="${STATE_DIR:-/var/lib/swg-panel}"
 STATS_DIR="${STATS_DIR:-/var/www/wgstats}"
 PANEL_USER="${PANEL_USER:-swgpanel}"
 PORT="${PORT:-}"
+PANEL_BASE="${PANEL_BASE:-}"           # derived from PANEL_DOMAIN's path (e.g. /swg); blank = served at root
 TLS_DIR="${TLS_DIR:-/etc/swg-panel/tls}"
 ACME_WEBROOT="${ACME_WEBROOT:-/var/www/acme}"
 # ────────────────────────────────────────────────────────────────────────
@@ -69,49 +69,63 @@ ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi
   read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
 
+detect_public_ip(){ # best public IPv4: default-route source, then first hostname -I
+  local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
+  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  printf '%s' "$ip"; }
+detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
+
+parse_panel_url(){ # parse_panel_url <input> -> sets PANEL_HOST_NOPORT, PANEL_BASE, URL_PORT
+  local u="$1" hostport rest
+  u="${u#http://}"; u="${u#https://}"; u="${u%/}"
+  hostport="${u%%/*}"                       # host[:port]
+  rest="${u#"$hostport"}"                    # remaining /path (may be empty)
+  PANEL_BASE="$rest"; [ "$PANEL_BASE" = "/" ] && PANEL_BASE=""
+  PANEL_BASE="${PANEL_BASE%/}"               # no trailing slash
+  case "$hostport" in
+    *:*) PANEL_HOST_NOPORT="${hostport%%:*}"; URL_PORT="${hostport##*:}";;
+    *)   PANEL_HOST_NOPORT="$hostport"; URL_PORT="";;
+  esac
+}
+
 # ───────────────────────── wg/awg detection ─────────────────────────
 declare -A IF_CMD IF_CONF
-detect_wg(){
-  IF_CMD=(); IF_CONF=()
-  local f n
-  for f in /etc/amnezia/amneziawg/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=awg; IF_CONF[$n]="$f"; done
-  for f in /etc/wireguard/*.conf;        do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg;  IF_CONF[$n]="$f"; done
+detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc/wireguard for wg
+  IF_CMD=(); IF_CONF=(); local f n
+  if [ -d /etc/amnezia ]; then
+    while IFS= read -r f; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=awg; IF_CONF[$n]="$f"
+    done < <(find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null)
+  fi
+  for f in /etc/wireguard/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
 }
-choose_ifaces(){ # populates SELECTED[] via a looped menu: 'new' creates an interface, names finalize selection
+choose_ifaces(){ # populate SELECTED[] — all detected interfaces are managed; 'new' creates more
   detect_wg
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
   else
+    info "Checking for wg / awg on this host…"
     if [ "${#IF_CMD[@]}" -eq 0 ]; then
-      warn "No WireGuard/AmneziaWG interface found in /etc/wireguard or /etc/amnezia/amneziawg."
-      local doit; ask_yn "Create one now? (installs wg/awg only if missing)" y doit
+      warn "No wg / awg interfaces found in /etc/wireguard or /etc/amnezia."
+      local doit; ask_yn "Create one now? (installs WireGuard / AmneziaWG only if missing)" y doit
       [ "$doit" = yes ] && create_iface
+      detect_wg
       [ "${#IF_CMD[@]}" -eq 0 ] && die "No interface. Create one, then re-run (or set MANAGE_IFACES)."
     fi
+    local names=() pick
     while :; do
-      local names=("${!IF_CMD[@]}") word=interfaces
-      [ "${#names[@]}" -eq 1 ] && word=interface
-      echo; echo "  ${#names[@]} $word found:"
-      for n in "${names[@]}"; do echo "    $n (${IF_CMD[$n]})"; done
-      echo "  To create an additional interface, enter \"new\"."
-      echo "  To select interfaces and proceed, enter the interface names separated by comma."
-      local pick
-      if ! read -rp "  > " pick </dev/tty 2>/dev/null; then
-        warn "no interactive input — selecting all detected interfaces"; SELECTED=("${names[@]}"); break
+      detect_wg; names=("${!IF_CMD[@]}")
+      echo; printf "  Available interfaces:"; for n in "${names[@]}"; do printf ' %s (%s)' "$n" "${IF_CMD[$n]}"; done; echo
+      if ! read -rp "  Press Enter to proceed with the setup or enter \"new\" to create an additional interface: " pick </dev/tty 2>/dev/null; then
+        warn "no interactive input — managing all detected interfaces"; break
       fi
       pick="${pick//[[:space:]]/}"
-      if [ "$pick" = new ]; then create_iface; continue; fi
-      [ -z "$pick" ] && { warn "enter \"new\", or interface names separated by comma"; continue; }
-      local sel=() bad=0 r; IFS=',' read -ra req <<< "$pick"
-      for r in "${req[@]}"; do
-        [ -z "$r" ] && continue
-        if [ -n "${IF_CMD[$r]:-}" ]; then sel+=("$r"); else warn "unknown interface: $r"; bad=1; fi
-      done
-      [ "$bad" -eq 1 ] && continue
-      [ "${#sel[@]}" -eq 0 ] && { warn "select at least one interface"; continue; }
-      SELECTED=("${sel[@]}"); break
+      [ "$pick" = new ] && { create_iface; continue; }
+      [ -z "$pick" ] && break
+      warn "enter nothing to proceed, or \"new\" to add another interface"
     done
+    SELECTED=("${names[@]}")          # every detected interface ends up in the web panel
   fi
+  detect_wg
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }; done
   ok "Managing: ${SELECTED[*]}"
 }
@@ -149,7 +163,6 @@ n = ipaddress.ip_network(sys.argv[1], strict=False)
 print(f"{next(n.hosts())}/{n.prefixlen}")
 PY
 }
-detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
 create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain WG), NAT it to the WAN, bring up, register
   local _proto proto name port subnet addr conf cmd priv dir wan up down
   ask "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto; proto="${_proto:-a}"
@@ -158,7 +171,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   ask "Interface name" "$([ "$cmd" = awg ] && echo awg0 || echo wg0)" name
   ask "Listen port"    "51820"        port
   ask "Tunnel subnet (CIDR; server takes the first host)" "10.8.0.0/24" subnet
-  ask "WAN egress interface (clients are NAT'd out this)" "$(detect_wan || echo eth0)" wan
+  ask "WAN egress interface (clients are NAT'd out using this)" "$(detect_wan || echo eth0)" wan
   addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"
   ensure_wg_tools "$cmd"
   # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
@@ -180,54 +193,109 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
 $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; rm -rf "$PREFIX"; }
 
-ask "Role: host (panel only) or host+node (panel + this box is also an entry server)?" "host" ROLE
-case "$ROLE" in host|host+node) ;; node) die "for a node-only box run install-node.sh, not this script";; *) die "ROLE must be 'host' or 'host+node'";; esac
+# ═══════════════ I. PANEL SETUP ═══════════════
+echo; info "PANEL SETUP"
+
+# Step 1 — server role
+ROLE_SEL=""
+case "$ROLE" in master|host+node) ROLE_SEL=master;; host) ROLE_SEL=host;; node) die "for a node-only box run install-node.sh, not this script";; esac
+echo
+echo "Step 1. Server role:"
+echo
+echo "  master (default)"
+echo "      Masternode — this server will host the panel and run WG/AWG interfaces"
+echo "  host"
+echo "      This server will host only the panel. WG/AWG nodes will be deployed separately"
+echo
+ask "Select role" "master" ROLE_SEL
+case "$ROLE_SEL" in master) ROLE="host+node";; host) ROLE="host";; *) die "role must be 'master' or 'host'";; esac
 HOST_HAS_WG=no; [ "$ROLE" = "host+node" ] && HOST_HAS_WG=yes
 
-declare -a SELECTED
-if [ "$HOST_HAS_WG" = yes ]; then
-  ask "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname)" HOST_NODE_NAME
-  ask "Public IP clients dial for THIS box" "" HOST_ENDPOINT_IP
-  info "Checking wg/awg on this host…"; choose_ifaces
-fi
-ask "Serve mode: standalone (self-contained, no nginx) or nginx?" "standalone" SERVE_MODE
-case "$SERVE_MODE" in standalone|nginx) ;; *) die "SERVE_MODE must be standalone or nginx";; esac
-[ -z "$PORT" ] && { [ "$SERVE_MODE" = standalone ] && PORT=443 || PORT=8088; }
-[ "$SERVE_MODE" = standalone ] && ask "Public HTTPS port for the panel" "$PORT" PORT
-DEF_DOM="_"
-if [ "$SERVE_MODE" = standalone ]; then
-  DEF_DOM="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
-  [ -z "$DEF_DOM" ] && DEF_DOM="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-  [ -z "$DEF_DOM" ] && DEF_DOM="_"
-fi
-ask "Panel domain or IP (URL + certificate)" "$DEF_DOM" PANEL_DOMAIN
-[ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=manual
-DEF_TLS="letsencrypt"; [ "$SERVE_MODE" = standalone ] && DEF_TLS="selfsigned"
-ask "TLS cert: selfsigned, letsencrypt, cloudflare, manual or none?" "$DEF_TLS" TLS_MODE
+# Step 2 — panel URL (may include a subpath, e.g. vpn.example.com/swg)
+echo
+echo "Step 2. Panel URL"
+echo "      Where the panel is reached — an IP, a host, or a host with a subpath to"
+echo "      live under an existing site (e.g. vpn.example.com/swg)."
+DEF_URL="$(detect_public_ip)"; [ -z "$DEF_URL" ] && DEF_URL=localhost
+ask "Enter panel URL" "$DEF_URL" PANEL_DOMAIN
+parse_panel_url "$PANEL_DOMAIN"
+PANEL_DOMAIN="$PANEL_HOST_NOPORT"
+[ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
+[ -n "$PANEL_BASE" ] && ok "panel will be served under subpath ${PANEL_BASE}/"
+
+# Step 3 — TLS certificate
+echo
+echo "Step 3. TLS certificate"
+echo
+echo "  cloudflare (default)"
+echo "      Cloudflare DNS-01 — requires a Zone:DNS:Edit API token and account email"
+echo "  letsencrypt"
+echo "      Issue a Let's Encrypt certificate using acme.sh"
+echo "  selfsigned"
+echo "      OK for testing / playing around"
+echo "  skip"
+echo "      If you are planning to use your own certificate (or terminate TLS elsewhere)"
+echo
+[ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
+ask "Select TLS certificate" "cloudflare" TLS_MODE
 case "$TLS_MODE" in
-  selfsigned) ;;
   cloudflare)  ask "Cloudflare API token (Zone:DNS:Edit)" "" CF_TOKEN; ask "ACME account email" "" ACME_EMAIL;;
   letsencrypt) ask "ACME account email" "" ACME_EMAIL;;
-  manual)      ask "Path to fullchain.pem" "" CERT_FULLCHAIN; ask "Path to private key.pem" "" CERT_KEY;;
-  none) ;;
-  *) die "TLS_MODE must be selfsigned|letsencrypt|cloudflare|manual|none";;
+  selfsigned) ;;
+  skip|manual|none) TLS_MODE=skip;;
+  *) die "TLS must be cloudflare|letsencrypt|selfsigned|skip";;
 esac
 if [ "$TLS_MODE" = letsencrypt ] || [ "$TLS_MODE" = cloudflare ]; then
-  case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS_MODE=$TLS_MODE needs a real domain in PANEL_DOMAIN (not an IP)";; esac
-  case "$PANEL_DOMAIN" in *.*) : ;; *) die "PANEL_DOMAIN must be a FQDN for $TLS_MODE";; esac
+  case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS_MODE needs a real domain in the panel URL (not an IP) — use selfsigned for an IP";; esac
+  case "$PANEL_DOMAIN" in *.*) : ;; *) die "panel URL must be a FQDN for $TLS_MODE";; esac
 fi
-if [ "$SERVE_MODE" = standalone ] && { [ -z "$PANEL_DOMAIN" ] || [ "$PANEL_DOMAIN" = "_" ]; }; then
-  PANEL_DOMAIN="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-  [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
-fi
-[ -z "$BASIC_PASS" ] && BASIC_PASS="$(head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16)"
 
-# Initial panel login — username suggested as admin + 3 random digits; the password is
-# auto-generated (printed at the end) and can be changed later under the Account tab.
+# Step 4 — web serve mode
+echo
+echo "Step 4. Web serve mode:"
+echo
+echo "  internal (default)"
+echo "      Self-contained, no separate web-server is required"
+echo "  nginx"
+echo "      Web content will be served via an Nginx reverse proxy"
+echo "  caddy"
+echo "      Web content will be served via a Caddy reverse proxy"
+echo "  skip"
+echo "      If you are planning to configure the web server manually"
+echo
+case "$SERVE_MODE" in standalone) SERVE_MODE=internal;; esac
+ask "Select mode" "internal" SERVE_MODE
+case "$SERVE_MODE" in internal|nginx|caddy|skip) ;; *) die "mode must be internal|nginx|caddy|skip";; esac
+
+# port: internal serves the public port itself; proxy/manual modes keep the panel on a loopback port
+if [ "$SERVE_MODE" = internal ]; then
+  [ -z "$PORT" ] && PORT="${URL_PORT:-443}"
+  ask "Public HTTPS port for the panel" "$PORT" PORT
+else
+  [ -z "$PORT" ] && PORT="${URL_PORT:-8088}"
+fi
+
+# Admin login — username suggested as admin + 3 random digits; password auto-generated (printed at the end).
+[ -z "$BASIC_PASS" ] && BASIC_PASS="$(head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16)"
 if [ "${BASIC_USER}" = admin ]; then BASIC_USER="admin$(( RANDOM % 900 + 100 ))"; fi
 ask "Panel admin username" "$BASIC_USER" BASIC_USER
 
-echo; info "Plan: method=$METHOD role=$ROLE store_configs=$STORE_CONFIGS"
+# ═══════════════ II. NODE SETUP (master only) ═══════════════
+declare -a SELECTED
+if [ "$HOST_HAS_WG" = yes ]; then
+  echo; info "NODE SETUP"
+  echo
+  echo "Step 1. Node name for THIS box"
+  ask "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname)" HOST_NODE_NAME
+  echo
+  echo "Step 2. Endpoint IP clients dial for THIS box"
+  ask "Endpoint IP clients dial for THIS box" "$(detect_public_ip)" HOST_ENDPOINT_IP
+  echo
+  echo "Step 3. WireGuard / AmneziaWG setup"
+  choose_ifaces
+fi
+
+echo; info "Plan: method=$METHOD role=$ROLE serve=$SERVE_MODE tls=$TLS_MODE base=${PANEL_BASE:-/} store_configs=$STORE_CONFIGS"
 
 # ───────────────────────── users / dirs ─────────────────────────
 info "Users, groups, directories"
@@ -258,13 +326,11 @@ if [ "$HOST_HAS_WG" = yes ]; then
   mkdir -p "$PREFIX$NODED_DIR"; cp "$SRC/swg-noded" "$PREFIX$NODED_DIR/"; chmod 755 "$PREFIX$NODED_DIR/swg-noded"
   mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent"
 
-  # how the local node reaches the local panel
-  LOCAL_SCHEME=https; [ "$TLS_MODE" = none ] && LOCAL_SCHEME=http
-  LOCAL_VERIFY=false; case "$TLS_MODE" in letsencrypt|cloudflare|manual) LOCAL_VERIFY=true;; esac
-  if [ "$SERVE_MODE" = standalone ]; then
-    if [ "$LOCAL_VERIFY" = true ]; then LOCAL_PANEL_URL="${LOCAL_SCHEME}://${PANEL_DOMAIN}:${PORT}"
-    else LOCAL_PANEL_URL="${LOCAL_SCHEME}://127.0.0.1:${PORT}"; fi
-  else LOCAL_PANEL_URL="${LOCAL_SCHEME}://${PANEL_DOMAIN}"; fi
+  # the local node always reaches the local panel on loopback (works for every serve mode);
+  # scheme is https only when the panel terminates TLS itself (internal mode with a cert).
+  LOCAL_SCHEME=http
+  [ "$SERVE_MODE" = internal ] && [ "$TLS_MODE" != skip ] && LOCAL_SCHEME=https
+  LOCAL_PANEL_URL="${LOCAL_SCHEME}://127.0.0.1:${PORT}${PANEL_BASE}"
 
   if [ -f "$PREFIX/etc/swg-agent/config.json" ]; then
     ok "keeping existing /etc/swg-agent/config.json (local node already enrolled)"
@@ -285,7 +351,7 @@ $IFJSON
   "panel": {
     "url": "${LOCAL_PANEL_URL}",
     "token": "${LOCAL_TOKEN}",
-    "verify": ${LOCAL_VERIFY}
+    "verify": false
   },
   "node": {
     "interval": 5,
@@ -346,11 +412,13 @@ EOF
 run chown "$PANEL_USER:swg" "$ETC_DIR/fleet.json" 2>/dev/null || true
 
 # ───────────────────────── panel-server service ─────────────────────────
-write_panel_unit(){   # bind/TLS/auth depend on SERVE_MODE; called from the serve section
+write_panel_unit(){   # bind/TLS/base depend on SERVE_MODE; called from the serve section
   local bind="127.0.0.1" extra=""
-  if [ "$SERVE_MODE" = standalone ]; then
-    bind="0.0.0.0"
-    extra="Environment=SWG_PANEL_AUTH=${ETC_DIR}/auth"
+  extra="Environment=SWG_PANEL_AUTH=${ETC_DIR}/auth"            # panel does its own login in every serve mode
+  [ -n "$PANEL_BASE" ] && extra="$extra
+Environment=SWG_PANEL_BASE=${PANEL_BASE}"
+  if [ "$SERVE_MODE" = internal ]; then
+    bind="0.0.0.0"                                              # internal mode faces the network directly
     [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ] && extra="$extra
 Environment=SWG_PANEL_TLS_CERT=${CERT_FULLCHAIN}
 Environment=SWG_PANEL_TLS_KEY=${CERT_KEY}"
@@ -387,27 +455,21 @@ EOF
 # (no push receiver — nodes connect outbound over HTTPS; enroll them in the Nodes screen)
 
 # ───────────────────────── login + TLS + serve mode ─────────────────────────
-mk_auth_file(){   # standalone: pbkdf2 login file;  nginx: apr1 htpasswd
-  if [ "$SERVE_MODE" = standalone ]; then
-    mkdir -p "$PREFIX$ETC_DIR"
-    if $DRYRUN; then echo "    [skip] write ${ETC_DIR}/auth (pbkdf2 login for $BASIC_USER)"
-      printf '%s:pbkdf2_sha256$200000$DRYRUN$DRYRUN\n' "$BASIC_USER" > "$PREFIX$ETC_DIR/auth"
-    else
-      python3 - "$BASIC_USER" "$BASIC_PASS" > "$PREFIX$ETC_DIR/auth" <<'PYAUTH'
+mk_auth_file(){   # panel login file (pbkdf2) — used by every serve mode so the Account tab works
+  mkdir -p "$PREFIX$ETC_DIR"
+  if $DRYRUN; then echo "    [skip] write ${ETC_DIR}/auth (pbkdf2 login for $BASIC_USER)"
+    printf '%s:pbkdf2_sha256$200000$DRYRUN$DRYRUN\n' "$BASIC_USER" > "$PREFIX$ETC_DIR/auth"
+  else
+    python3 - "$BASIC_USER" "$BASIC_PASS" > "$PREFIX$ETC_DIR/auth" <<'PYAUTH'
 import sys, os, hashlib, base64
 u, pw = sys.argv[1], sys.argv[2]
 salt = os.urandom(16); it = 200000
 h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, it)
 print("%s:pbkdf2_sha256$%d$%s$%s" % (u, it, base64.b64encode(salt).decode(), base64.b64encode(h).decode()))
 PYAUTH
-    fi
-    chmod 640 "$PREFIX$ETC_DIR/auth" 2>/dev/null || true; run chown root:swg "$ETC_DIR/auth"
-    ok "login: $BASIC_USER  (stored hashed in ${ETC_DIR}/auth)"
-  else
-    HTPATH="/etc/nginx/.htpasswd-swg"
-    if $DRYRUN; then echo "    [skip] htpasswd $BASIC_USER -> $HTPATH"
-    else mkdir -p "$PREFIX/etc/nginx"; echo "$BASIC_USER:$(openssl passwd -apr1 "$BASIC_PASS")" > "$PREFIX$HTPATH"; fi
   fi
+  chmod 640 "$PREFIX$ETC_DIR/auth" 2>/dev/null || true; run chown root:swg "$ETC_DIR/auth"
+  ok "login: $BASIC_USER  (stored hashed in ${ETC_DIR}/auth)"
 }
 cert_perms(){ run chown root:swg "$TLS_DIR/fullchain.pem" "$TLS_DIR/key.pem" 2>/dev/null || true
   chmod 644 "$PREFIX$TLS_DIR/fullchain.pem" 2>/dev/null || true; chmod 640 "$PREFIX$TLS_DIR/key.pem" 2>/dev/null || true; }
@@ -416,22 +478,24 @@ find_acme(){ ACME=""; local a; for a in /root/.acme.sh/acme.sh "${HOME:-/root}/.
 ensure_acme(){ find_acme && return 0
   info "Installing acme.sh"; run sh -c "curl -fsSL https://get.acme.sh | sh -s email=${ACME_EMAIL:-admin@$PANEL_DOMAIN}"
   find_acme && return 0; $DRYRUN && { ACME=/root/.acme.sh/acme.sh; return 0; }
-  die "acme.sh not found after install — install it manually or use TLS_MODE=selfsigned/manual"; }
+  die "acme.sh not found after install — install it manually or use TLS=selfsigned/skip"; }
 mk_selfsigned(){ CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; mkdir -p "$PREFIX$TLS_DIR"
   if $DRYRUN; then echo "    [skip] openssl self-signed -> $TLS_DIR (CN=$PANEL_DOMAIN)"; : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"
   else run openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$CERT_KEY" -out "$CERT_FULLCHAIN" -subj "/CN=${PANEL_DOMAIN}" -addext "subjectAltName=$(san_for "$PANEL_DOMAIN")"; fi
   cert_perms; ok "self-signed certificate for ${PANEL_DOMAIN} (10y)"; }
+use_provided_certs(){   # skip-with-own-cert: copy caller-supplied cert into $TLS_DIR; 0 if used, 1 if none
+  [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ] || return 1
+  mkdir -p "$PREFIX$TLS_DIR"
+  $DRYRUN || { cp "$CERT_FULLCHAIN" "$PREFIX$TLS_DIR/fullchain.pem"; cp "$CERT_KEY" "$PREFIX$TLS_DIR/key.pem"; }
+  CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; cert_perms
+  ok "using provided certificate (copied into $TLS_DIR)"; return 0; }
 
-# ---- standalone: the panel serves its own TLS; cert lands in $TLS_DIR ----
-obtain_cert_standalone(){
+# ---- internal: the panel serves its own TLS; cert lands in $TLS_DIR ----
+obtain_cert_internal(){
   mkdir -p "$PREFIX$TLS_DIR"
   case "$TLS_MODE" in
-    none) CERT_FULLCHAIN=""; CERT_KEY=""; return 0;;
+    skip) use_provided_certs || { CERT_FULLCHAIN=""; CERT_KEY=""; ok "TLS skipped — panel will serve plain HTTP"; }; return 0;;
     selfsigned) mk_selfsigned;;
-    manual)
-      [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] || die "manual TLS needs CERT_FULLCHAIN and CERT_KEY"
-      $DRYRUN || { cp "$CERT_FULLCHAIN" "$PREFIX$TLS_DIR/fullchain.pem"; cp "$CERT_KEY" "$PREFIX$TLS_DIR/key.pem"; }
-      CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; cert_perms; ok "using provided certificate (copied into $TLS_DIR)";;
     letsencrypt|cloudflare)
       ensure_acme
       local args=(--issue -d "$PANEL_DOMAIN" --server letsencrypt --keylength ec-256)
@@ -453,34 +517,57 @@ obtain_cert_standalone(){
       run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
           --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl restart swg-panel-server"
       cert_perms; ok "issued + installed certificate via $TLS_MODE (auto-renews)";;
-    *) die "TLS_MODE must be selfsigned|letsencrypt|cloudflare|manual|none";;
+    *) die "TLS must be cloudflare|letsencrypt|selfsigned|skip";;
   esac
 }
-serve_standalone(){
+serve_internal(){
   # acme's --install-cert reloadcmd runs `systemctl restart swg-panel-server` immediately,
   # so the unit must exist (and be loaded) BEFORE issuance — write+enable a TLS-less
   # placeholder first, then rewrite with the real cert paths and restart for real.
   write_panel_unit
   run systemctl daemon-reload
   run systemctl enable --now swg-panel-server
-  obtain_cert_standalone
+  obtain_cert_internal
   write_panel_unit
   run systemctl daemon-reload
   if [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then run systemctl restart swg-panel-server; fi
   if command -v ufw >/dev/null 2>&1; then run ufw allow "${PORT}/tcp" 2>/dev/null || true; fi
   local sch="https"; [ -n "${CERT_FULLCHAIN:-}" ] || sch="http"
-  [ "$sch" = http ] && warn "TLS=none — login travels in the clear. Use selfsigned/letsencrypt/cloudflare for real use."
-  ok "Standalone: panel serves ${sch}://${PANEL_DOMAIN}:${PORT}/ directly (no nginx)"
+  [ "$sch" = http ] && warn "TLS skipped — login travels in the clear. Use selfsigned/letsencrypt/cloudflare for real use."
+  ok "Internal: panel serves ${sch}://${PANEL_DOMAIN}:${PORT}${PANEL_BASE}/ directly (no extra web server)"
 }
 
-# ---- nginx: panel on loopback, nginx terminates TLS + auth ----
-write_vhost(){   # write_vhost bootstrap|tls
+# ---- reverse-proxy (nginx / caddy): panel on loopback, proxy terminates TLS ----
+setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to use
+  case "$TLS_MODE" in
+    selfsigned) mk_selfsigned;;
+    skip) use_provided_certs || { CERT_FULLCHAIN=""; CERT_KEY=""; ok "TLS skipped — proxy will serve plain HTTP (or add your own cert)"; }; return 0;;
+    letsencrypt|cloudflare)
+      mkdir -p "$PREFIX$TLS_DIR"; ensure_acme
+      local args=(--issue -d "$PANEL_DOMAIN" --server letsencrypt --keylength ec-256)
+      if [ "$TLS_MODE" = cloudflare ]; then [ -n "$CF_TOKEN" ] || die "cloudflare needs CF_TOKEN"
+        export CF_Token="$CF_TOKEN"; [ -n "$CF_ACCOUNT_ID" ] && export CF_Account_ID="$CF_ACCOUNT_ID"; args+=(--dns dns_cf)
+      elif [ "$SERVE_MODE" = nginx ]; then args+=(--webroot "$ACME_WEBROOT")    # nginx already serves :80 for the challenge
+      else args+=(--standalone); fi                                            # caddy not up yet → acme can hold :80
+      [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
+      local reload="systemctl reload nginx"; [ "$SERVE_MODE" = caddy ] && reload="systemctl reload caddy"
+      if ! run "$ACME" "${args[@]}"; then warn "issuance failed — proxy will serve plain HTTP."; CERT_FULLCHAIN=""; CERT_KEY=""; return 0; fi
+      CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
+      run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"
+      cert_perms; ok "issued + installed certificate via $TLS_MODE";;
+    *) die "TLS must be cloudflare|letsencrypt|selfsigned|skip";;
+  esac
+}
+proxy_loc(){ [ -n "$PANEL_BASE" ] && printf '%s/' "$PANEL_BASE" || printf '/'; }   # nginx location path
+
+write_vhost(){   # write_vhost bootstrap|tls    (nginx)
+  local loc; loc="$(proxy_loc)"
   if [ "$1" = tls ]; then
     writef /etc/nginx/sites-available/swg-panel.conf 644 <<EOF
 server {
     listen 80;
     server_name ${PANEL_DOMAIN};
-    location ^~ /.well-known/acme-challenge/ { auth_basic off; root ${ACME_WEBROOT}; }
+    location ^~ /.well-known/acme-challenge/ { root ${ACME_WEBROOT}; }
     location / { return 301 https://\$host\$request_uri; }
 }
 server {
@@ -488,14 +575,12 @@ server {
     server_name ${PANEL_DOMAIN};
     ssl_certificate ${CERT_FULLCHAIN};
     ssl_certificate_key ${CERT_KEY};
-    auth_basic "swg-panel";
-    auth_basic_user_file ${HTPATH};
 
-    location /wgstats/ { alias ${STATS_DIR}/; add_header Cache-Control "no-store"; }
-    location / {
+    location ${loc} {
         proxy_pass http://127.0.0.1:${PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
@@ -504,15 +589,12 @@ EOF
 server {
     listen 80;
     server_name ${PANEL_DOMAIN};
-    location ^~ /.well-known/acme-challenge/ { auth_basic off; root ${ACME_WEBROOT}; }
-
-    auth_basic "swg-panel";
-    auth_basic_user_file ${HTPATH};
-    location /wgstats/ { alias ${STATS_DIR}/; add_header Cache-Control "no-store"; }
-    location / {
+    location ^~ /.well-known/acme-challenge/ { root ${ACME_WEBROOT}; }
+    location ${loc} {
         proxy_pass http://127.0.0.1:${PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
@@ -520,43 +602,69 @@ EOF
   if [ -d /etc/nginx/sites-enabled ]; then run ln -sf /etc/nginx/sites-available/swg-panel.conf /etc/nginx/sites-enabled/swg-panel.conf
   elif [ -d /etc/nginx/conf.d ]; then cp "$PREFIX/etc/nginx/sites-available/swg-panel.conf" "$PREFIX/etc/nginx/conf.d/swg-panel.conf"; fi
 }
-setup_tls(){   # nginx-mode cert into $TLS_DIR
-  case "$TLS_MODE" in
-    selfsigned) mk_selfsigned;;
-    none) CERT_FULLCHAIN=""; CERT_KEY=""; return 0;;
-    manual) [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] || die "manual TLS needs CERT_FULLCHAIN and CERT_KEY"
-            $DRYRUN || { [ -f "$CERT_FULLCHAIN" ] || warn "cert not found yet: $CERT_FULLCHAIN"; }; ok "using provided certificate: $CERT_FULLCHAIN";;
-    letsencrypt|cloudflare)
-      mkdir -p "$PREFIX$TLS_DIR"; ensure_acme
-      local args=(--issue -d "$PANEL_DOMAIN" --server letsencrypt --keylength ec-256)
-      if [ "$TLS_MODE" = cloudflare ]; then [ -n "$CF_TOKEN" ] || die "cloudflare needs CF_TOKEN"
-        export CF_Token="$CF_TOKEN"; [ -n "$CF_ACCOUNT_ID" ] && export CF_Account_ID="$CF_ACCOUNT_ID"; args+=(--dns dns_cf)
-      else args+=(--webroot "$ACME_WEBROOT"); fi
-      [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
-      if ! run "$ACME" "${args[@]}"; then warn "issuance failed — staying on :80."; CERT_FULLCHAIN=""; CERT_KEY=""; return 0; fi
-      CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
-      run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "systemctl reload nginx"
-      cert_perms; ok "issued + installed certificate via $TLS_MODE";;
-    *) die "TLS_MODE must be selfsigned|letsencrypt|cloudflare|manual|none";;
-  esac
-}
 serve_nginx(){
   mkdir -p "$PREFIX$ACME_WEBROOT"
   write_panel_unit
+  run systemctl daemon-reload; run systemctl enable --now swg-panel-server
   write_vhost bootstrap
   run nginx -t && run systemctl reload nginx || warn "nginx -t failed (is nginx installed?) — fix, then: systemctl reload nginx"
-  setup_tls
+  setup_tls_proxy
   if [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then
     write_vhost tls
     run nginx -t && run systemctl reload nginx || warn "nginx -t failed after enabling TLS — check $CERT_FULLCHAIN"
-    ok "nginx: TLS enabled for https://${PANEL_DOMAIN}/"
+    ok "nginx: TLS enabled for https://${PANEL_DOMAIN}${PANEL_BASE}/"
   else warn "nginx: serving on :80 without TLS — front with TLS before exposing."; fi
+}
+
+ensure_caddy_import(){   # make the main Caddyfile import our drop-in
+  local main=/etc/caddy/Caddyfile
+  if $DRYRUN; then echo "    [skip] ensure 'import conf.d/*.caddy' in $main"; return 0; fi
+  mkdir -p /etc/caddy/conf.d; touch "$main"
+  grep -qF 'conf.d/*.caddy' "$main" 2>/dev/null || printf '\nimport conf.d/*.caddy\n' >> "$main"
+}
+write_caddy_site(){
+  local site="$PANEL_DOMAIN" tls="" handle="handle"
+  [ -n "$PANEL_BASE" ] && handle="handle ${PANEL_BASE}/*"
+  if [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then tls="    tls ${CERT_FULLCHAIN} ${CERT_KEY}"
+  elif [ "$TLS_MODE" = selfsigned ]; then tls="    tls internal"
+  elif [ "$TLS_MODE" = skip ]; then site="http://${PANEL_DOMAIN}"; fi
+  writef /etc/caddy/conf.d/swg-panel.caddy 644 <<EOF
+${site} {
+${tls}
+    ${handle} {
+        reverse_proxy 127.0.0.1:${PORT}
+    }
+}
+EOF
+  ensure_caddy_import
+}
+serve_caddy(){
+  have caddy || warn "caddy not found — install it (https://caddyserver.com), then re-run or 'systemctl reload caddy'"
+  write_panel_unit
+  run systemctl daemon-reload; run systemctl enable --now swg-panel-server
+  setup_tls_proxy            # caddy isn't up yet, so acme standalone (:80) is free for letsencrypt
+  write_caddy_site
+  run systemctl reload caddy 2>/dev/null || run systemctl restart caddy 2>/dev/null || warn "couldn't (re)load caddy — start it after checking /etc/caddy/conf.d/swg-panel.caddy"
+  local sch="https"; { [ "$TLS_MODE" = skip ] && [ -z "${CERT_FULLCHAIN:-}" ]; } && sch="http"
+  ok "caddy: serving ${sch}://${PANEL_DOMAIN}${PANEL_BASE}/"
+}
+
+serve_skip(){
+  write_panel_unit
+  run systemctl daemon-reload; run systemctl enable --now swg-panel-server
+  ok "Panel running on 127.0.0.1:${PORT}${PANEL_BASE} — configure your web server to proxy to it."
+  echo "    nginx example:"
+  echo "      location $(proxy_loc) { proxy_pass http://127.0.0.1:${PORT}; proxy_set_header Host \$host; }"
 }
 
 info "Login + TLS ($SERVE_MODE)"
 mk_auth_file
-case "$SERVE_MODE" in standalone) serve_standalone;; nginx) serve_nginx;; esac
-
+case "$SERVE_MODE" in
+  internal) serve_internal;;
+  nginx)    serve_nginx;;
+  caddy)    serve_caddy;;
+  skip)     serve_skip;;
+esac
 
 # ───────────────────────── enable ─────────────────────────
 info "Enable services"
@@ -567,14 +675,24 @@ run systemctl enable --now swg-panel-server
 
 # ───────────────────────── handoff ─────────────────────────
 echo; ok "Host install complete."
-if [ "$SERVE_MODE" = standalone ]; then
-  SCH=https; [ -n "${CERT_FULLCHAIN:-}" ] || SCH=http
-  echo "  UI:    ${SCH}://${PANEL_DOMAIN}:${PORT}/   (login: ${BASIC_USER} / ${BASIC_PASS})"
-  command -v ufw >/dev/null 2>&1 || echo "         open TCP ${PORT} in your firewall if it isn't already"
-  [ "$TLS_MODE" = selfsigned ] && echo "         self-signed cert — the browser warns once, that's expected"
-elif [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then echo "  UI:    https://${PANEL_DOMAIN}/   (login: ${BASIC_USER} / ${BASIC_PASS})"
-else echo "  UI:    http://${PANEL_DOMAIN}/  [no TLS]   (login: ${BASIC_USER} / ${BASIC_PASS})"; fi
-echo "  Local: curl -s 127.0.0.1:${PORT}/api/fleet"
+case "$SERVE_MODE" in
+  internal)
+    SCH=https; [ -n "${CERT_FULLCHAIN:-}" ] || SCH=http
+    PORTSUF=""; [ "$PORT" != 443 ] && PORTSUF=":${PORT}"
+    echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/   (login: ${BASIC_USER} / ${BASIC_PASS})"
+    command -v ufw >/dev/null 2>&1 || echo "         open TCP ${PORT} in your firewall if it isn't already"
+    [ "$TLS_MODE" = selfsigned ] && echo "         self-signed cert — the browser warns once, that's expected"
+    ;;
+  nginx|caddy)
+    SCH=https; { [ "$TLS_MODE" = skip ] && [ -z "${CERT_FULLCHAIN:-}" ]; } && SCH=http
+    echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PANEL_BASE}/   (login: ${BASIC_USER} / ${BASIC_PASS})"
+    ;;
+  skip)
+    echo "  Panel: http://127.0.0.1:${PORT}${PANEL_BASE}/   (login: ${BASIC_USER} / ${BASIC_PASS})"
+    echo "         point your web server at it (proxy ${PANEL_BASE:-/} → 127.0.0.1:${PORT})"
+    ;;
+esac
+echo "  Local: curl -s 127.0.0.1:${PORT}${PANEL_BASE}/api/fleet"
 echo
 echo "Add entry servers from the UI: Nodes → Add node issues a one-time token and the"
 echo "exact install-node.sh command to run on each server (outbound HTTPS only — no inbound)."

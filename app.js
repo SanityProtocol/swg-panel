@@ -10,6 +10,11 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const b64 = u => { let s = ""; for (const x of u) s += String.fromCharCode(x); return btoa(s); };
 
+// Mount-point prefix: when the panel is served under a subpath (e.g. /swg), <base href>
+// carries it, so absolute API/stats paths must be prefixed to stay inside the mount.
+const BASE = (() => { try { return new URL(document.baseURI).pathname.replace(/\/+$/, ""); } catch (_) { return ""; } })();
+const url = p => BASE + p;   // p is a root-absolute path like "/api/fleet"
+
 function ago(sec) {
   if (sec == null) return "—";
   const d = Math.max(0, Math.floor(Date.now() / 1000 - sec));
@@ -47,8 +52,8 @@ const ICON = {
 
 // ───────────────────────── api ─────────────────────────
 const api = {
-  async get(p) { const r = await fetch(p); return r.json(); },
-  async post(p, b) { const r = await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }); return r.json(); },
+  async get(p) { const r = await fetch(url(p)); return r.json(); },
+  async post(p, b) { const r = await fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }); return r.json(); },
   fleet() { return this.get("/api/fleet"); },
   roster() { return this.get("/api/roster"); },
   describe(node) { return this.get("/api/describe?node=" + encodeURIComponent(node)); },
@@ -94,7 +99,7 @@ const Store = {
   async loadStats() {
     const out = {};
     await Promise.all(this.fleet.map(async n => {
-      try { const r = await fetch("/wgstats/" + n.stats_file, { cache: "no-store" }); if (r.ok) out[n.name] = await r.json(); } catch (_) {}
+      try { const r = await fetch(url("/wgstats/" + n.stats_file), { cache: "no-store" }); if (r.ok) out[n.name] = await r.json(); } catch (_) {}
     }));
     return out;
   },
@@ -887,9 +892,12 @@ async function doNodeCreate() {
   showNodeToken(r.data.name, r.data.token, true);
 }
 
+const BOOTSTRAP_URL = "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh";
 function enrollCommand(token) {
-  // install-node.sh reads PANEL_URL + NODE_TOKEN; it prompts for interface + endpoint on the node.
-  return `sudo PANEL_URL="${location.origin}" NODE_TOKEN="${token}" ./install-node.sh`;
+  // One-liner: fetch the repo and run install-node.sh with the key + panel URL.
+  // -host carries the mount subpath so the node posts to <origin><base>/api/node/sync;
+  // the installer prompts for name, endpoint and interfaces on the node itself.
+  return `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s node -key ${token} -host ${location.origin}${BASE}`;
 }
 function showNodeToken(name, token, isNew) {
   const cmd = enrollCommand(token);
@@ -902,7 +910,7 @@ function showNodeToken(name, token, isNew) {
       <div class="field"><label>Run on the node</label>
         <div class="cmdrow"><div class="tokenbox">${esc(cmd)}</div>
           <button class="copyaction" data-cp="${esc(cmd)}">${ICON.copy} Copy</button></div>
-        <div class="hint">Clone the repo on the node, then run this from its directory. It installs <span class="mono">swg-noded</span>, points it here, and the node appears once it syncs.</div></div>
+        <div class="hint">Paste this on the entry server. It fetches the installer, installs <span class="mono">swg-noded</span> pointed here, prompts for the node's name, endpoint and interfaces, and the node appears once it syncs.</div></div>
     </div>
     <div class="sheet-foot"><span class="grow"></span><button class="btn btn-primary" data-close>Done</button></div>`);
   $$("#sheet .copyaction").forEach(b => b.onclick = () => { navigator.clipboard.writeText(b.dataset.cp); toast("Copied.", "ok", 1500); });

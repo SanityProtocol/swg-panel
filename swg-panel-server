@@ -42,6 +42,8 @@ BIND_PORT  = int(os.environ.get("SWG_PANEL_PORT", "8088"))
 TLS_CERT   = os.environ.get("SWG_PANEL_TLS_CERT", "")   # fullchain.pem; blank => plain HTTP
 TLS_KEY    = os.environ.get("SWG_PANEL_TLS_KEY", "")
 AUTH_FILE  = os.environ.get("SWG_PANEL_AUTH", "")        # file "user:pbkdf2_sha256$...."; blank => no auth
+# Mount the panel under a subpath (e.g. /swg) to live inside an existing site. Blank => served at root.
+PANEL_BASE = "/" + os.environ.get("SWG_PANEL_BASE", "").strip("/") if os.environ.get("SWG_PANEL_BASE", "").strip("/") else ""
 NODE_OFFLINE = 30   # seconds since last sync before a node reads "offline"
 _api_lock = threading.Lock()   # serialize roster/node read-modify-write across handler threads
 
@@ -52,6 +54,21 @@ STATIC = {
 }
 CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css",
           ".js": "text/javascript", ".json": "application/json"}
+
+
+def strip_base(path):
+    """Remove the configured subpath prefix from a request path.
+
+    Returns the root-relative path ("/...", with "/" for the base itself) or None
+    when the request falls outside the mount point. With no PANEL_BASE this is a no-op.
+    """
+    if not PANEL_BASE:
+        return path
+    if path == PANEL_BASE:
+        return "/"
+    if path.startswith(PANEL_BASE + "/"):
+        return path[len(PANEL_BASE):]
+    return None
 
 
 # ───────────────────────── utils ─────────────────────────
@@ -593,6 +610,8 @@ class Handler(BaseHTTPRequestHandler):
                 data = f.read()
         except OSError:
             return self.send_error(404)
+        if PANEL_BASE and STATIC[key] == "index.html":   # point the SPA's <base> at the mount point
+            data = data.replace(b'<base href="/">', ('<base href="%s/">' % PANEL_BASE).encode())
         _, ext = os.path.splitext(full)
         self.send_response(200)
         self.send_header("Content-Type", CTYPES.get(ext, "application/octet-stream"))
@@ -666,13 +685,16 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return
         u = urlparse(self.path)
-        if u.path.startswith("/wgstats/"):
-            return self._wgstats(u.path)
-        if u.path in STATIC:
-            return self._static(u.path)
-        if u.path.startswith("/api/"):
+        path = strip_base(u.path)
+        if path is None:
+            return self.send_error(404)
+        if path.startswith("/wgstats/"):
+            return self._wgstats(path)
+        if path in STATIC:
+            return self._static(path)
+        if path.startswith("/api/"):
             try:
-                code, obj = api("GET", u.path, parse_qs(u.query), {}, self.deps)
+                code, obj = api("GET", path, parse_qs(u.query), {}, self.deps)
             except Exception as e:
                 code, obj = 500, {"ok": False, "error": str(e), "code": "internal"}
             return self._send(code, obj)
@@ -680,11 +702,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        if u.path == "/api/node/sync":
+        path = strip_base(u.path)
+        if path == "/api/node/sync":
             return self._node_sync()
         if not self._authed():
             return
-        if not u.path.startswith("/api/"):
+        if path is None or not path.startswith("/api/"):
             return self.send_error(404)
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)
@@ -699,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
         try:
             with _api_lock:                       # mutations are read-modify-write; serialize them
-                code, obj = api("POST", u.path, {}, bodyobj, self.deps)
+                code, obj = api("POST", path, {}, bodyobj, self.deps)
         except Exception as e:
             code, obj = 500, {"ok": False, "error": str(e), "code": "internal"}
         self._send(code, obj)

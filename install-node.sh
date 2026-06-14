@@ -6,19 +6,21 @@
 # and receives its desired peer set, then reconciles locally. No inbound access,
 # no SSH keys, no rsync, no queue.
 #
-# First add the node in the panel's "Nodes" screen — it hands you a one-time token
+# First add the node in the panel's "Nodes" screen — it hands you a one-time key
 # and the exact command to run here, e.g.:
-#     sudo PANEL_URL="https://panel.example.net:8443" NODE_TOKEN="…" ./install-node.sh
+#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
+#     | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
 #
 # Fill CONFIG to run unattended, or be prompted. Run as root. --dry-run renders
 # files under ./dryrun and executes nothing.
 set -euo pipefail
 
 # ───────────────────────── CONFIG (blank = ask) ─────────────────────────
-PANEL_URL="${PANEL_URL:-}"             # https://host:port of the panel
-NODE_TOKEN="${NODE_TOKEN:-}"           # one-time enrollment token from the Nodes screen
+PANEL_URL="${PANEL_URL:-}"             # https://host[:port][/subpath] of the panel   (bootstrap: -host)
+NODE_TOKEN="${NODE_TOKEN:-}"           # one-time enrollment key from the Nodes screen (bootstrap: -key)
+NODE_NAME="${NODE_NAME:-}"             # name for THIS node (display / unit description; blank = hostname)
 ENDPOINT_IP="${ENDPOINT_IP:-}"         # public IP/host clients dial for THIS node's wg
-MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = pick from detected)
+MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected)
 DNS="${DNS:-1.1.1.1}"
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes = verify panel's cert (real CA); no = self-signed
 TLS_FINGERPRINT="${TLS_FINGERPRINT:-}" # optional: pin panel cert sha256 (hex) instead of verify
@@ -42,10 +44,20 @@ writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$ful
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi; read -rp "$p${d:+ [$d]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; }
 ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi; read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true; v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
 
+detect_public_ip(){ # best public IPv4: default-route source, then first hostname -I
+  local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
+  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  printf '%s' "$ip"; }
+detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
+
 declare -A IF_CMD IF_CONF; declare -a SELECTED
-detect_wg(){ IF_CMD=(); IF_CONF=(); local f n
-  for f in /etc/amnezia/amneziawg/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=awg; IF_CONF[$n]="$f"; done
-  for f in /etc/wireguard/*.conf;        do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg;  IF_CONF[$n]="$f"; done
+detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc/wireguard for wg
+  IF_CMD=(); IF_CONF=(); local f n
+  if [ -d /etc/amnezia ]; then
+    while IFS= read -r f; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=awg; IF_CONF[$n]="$f"
+    done < <(find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null)
+  fi
+  for f in /etc/wireguard/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
 }
 ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent)
   local cmd="$1"
@@ -71,7 +83,6 @@ n = ipaddress.ip_network(sys.argv[1], strict=False)
 print(f"{next(n.hosts())}/{n.prefixlen}")
 PY
 }
-detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
 create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain WG), NAT it to the WAN, bring up, register
   local _proto proto name port subnet addr conf cmd priv dir wan up down
   ask "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto; proto="${_proto:-a}"
@@ -80,7 +91,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   ask "Interface name" "$([ "$cmd" = awg ] && echo awg0 || echo wg0)" name
   ask "Listen port"    "51820" port
   ask "Tunnel subnet (CIDR; server takes the first host)" "10.8.0.0/24" subnet
-  ask "WAN egress interface (clients are NAT'd out this)" "$(detect_wan || echo eth0)" wan
+  ask "WAN egress interface (clients are NAT'd out using this)" "$(detect_wan || echo eth0)" wan
   addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"; ensure_wg_tools "$cmd"
   up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
   down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
@@ -94,40 +105,34 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
   IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; LAST_IFACE="$name"; ok "created $proto interface '$name' on :$port (server $addr, NAT out $wan)"
 }
-choose_ifaces(){ # populates SELECTED[] via a looped menu: 'new' creates an interface, names finalize selection
+choose_ifaces(){ # populate SELECTED[] — all detected interfaces are managed; 'new' creates more
   detect_wg
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
   else
+    info "Checking for wg / awg on this host…"
     if [ "${#IF_CMD[@]}" -eq 0 ]; then
-      warn "No wg/awg interface found."; local doit; ask_yn "Create one now? (installs wg/awg only if missing)" y doit
+      warn "No wg / awg interfaces found in /etc/wireguard or /etc/amnezia."
+      local doit; ask_yn "Create one now? (installs WireGuard / AmneziaWG only if missing)" y doit
       [ "$doit" = yes ] && create_iface
+      detect_wg
       [ "${#IF_CMD[@]}" -eq 0 ] && { $DRYRUN || die "create an interface, then re-run"; IF_CMD[awg0]=awg; IF_CONF[awg0]=/etc/amnezia/amneziawg/awg0.conf; }
     fi
+    local names=() pick
     while :; do
-      local names=("${!IF_CMD[@]}") word=interfaces
-      [ "${#names[@]}" -eq 1 ] && word=interface
-      echo; echo "  ${#names[@]} $word found:"
-      for n in "${names[@]}"; do echo "    $n (${IF_CMD[$n]})"; done
-      echo "  To create an additional interface, enter \"new\"."
-      echo "  To select interfaces and proceed, enter the interface names separated by comma."
-      local pick
-      if ! read -rp "  > " pick </dev/tty 2>/dev/null; then
-        warn "no interactive input — selecting all detected interfaces"; SELECTED=("${names[@]}"); break
+      detect_wg; names=("${!IF_CMD[@]}")
+      echo; printf "  Available interfaces:"; for n in "${names[@]}"; do printf ' %s (%s)' "$n" "${IF_CMD[$n]}"; done; echo
+      if ! read -rp "  Press Enter to proceed with the setup or enter \"new\" to create an additional interface: " pick </dev/tty 2>/dev/null; then
+        warn "no interactive input — managing all detected interfaces"; break
       fi
       pick="${pick//[[:space:]]/}"
-      if [ "$pick" = new ]; then create_iface; continue; fi
-      [ -z "$pick" ] && { warn "enter \"new\", or interface names separated by comma"; continue; }
-      local sel=() bad=0 r; IFS=',' read -ra req <<< "$pick"
-      for r in "${req[@]}"; do
-        [ -z "$r" ] && continue
-        if [ -n "${IF_CMD[$r]:-}" ]; then sel+=("$r"); else warn "unknown interface: $r"; bad=1; fi
-      done
-      [ "$bad" -eq 1 ] && continue
-      [ "${#sel[@]}" -eq 0 ] && { warn "select at least one interface"; continue; }
-      SELECTED=("${sel[@]}"); break
+      [ "$pick" = new ] && { create_iface; continue; }
+      [ -z "$pick" ] && break
+      warn "enter nothing to proceed, or \"new\" to add another interface"
     done
+    SELECTED=("${names[@]}")          # every detected interface ends up in the web panel
   fi
+  detect_wg
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }; done
   ok "Managing: ${SELECTED[*]}"
 }
@@ -135,16 +140,30 @@ choose_ifaces(){ # populates SELECTED[] via a looped menu: 'new' creates an inte
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
 $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; rm -rf "$PREFIX"; }
 
-ask "Panel URL (https://host:port)" "" PANEL_URL
-ask "Node enrollment token (from the Nodes screen)" "" NODE_TOKEN
-ask "Public IP clients dial for THIS node" "$ENDPOINT_IP" ENDPOINT_IP
-[ -n "$PANEL_URL" ]  || $DRYRUN || die "PANEL_URL required — create the node in the panel's Nodes screen first"
-[ -n "$NODE_TOKEN" ] || $DRYRUN || die "NODE_TOKEN required — copy it from the Nodes screen"
-case "$PANEL_URL" in https://*) ;; *) warn "PANEL_URL is not https:// — the token would travel in clear. Continue only if you know why.";; esac
+# ═══════════════ NODE SETUP ═══════════════
+echo; info "NODE SETUP"
+
+# Panel connection — normally supplied by the install command's -host / -key flags.
+ask "Panel URL (https://host[/subpath])" "" PANEL_URL
+ask "Node enrollment key (from the Nodes screen)" "" NODE_TOKEN
+[ -n "$PANEL_URL" ]  || $DRYRUN || die "panel URL required — pass -host, or create the node in the Nodes screen first"
+[ -n "$NODE_TOKEN" ] || $DRYRUN || die "node key required — pass -key (copy it from the Nodes screen)"
+case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   ask_yn "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n TLS_VERIFY
 fi
-info "Checking wg/awg…"; choose_ifaces
+
+echo
+echo "Step 1. Node name for THIS box"
+ask "Node name" "$(hostname -s 2>/dev/null || hostname)" NODE_NAME
+
+echo
+echo "Step 2. Endpoint IP clients dial for this node"
+ask "Endpoint IP clients dial for this node" "$(detect_public_ip)" ENDPOINT_IP
+
+echo
+echo "Step 3. WireGuard / AmneziaWG setup"
+choose_ifaces
 
 # ───────────────────────── install binaries ─────────────────────────
 info "Agent + daemon"
@@ -178,12 +197,12 @@ $IFJSON
   }
 }
 EOF
-warn "config.json holds the node token (mode 640, root:root). Treat it as a secret."
+warn "config.json holds the node key (mode 640, root:root). Treat it as a secret."
 
 # ───────────────────────── daemon service (root) ─────────────────────────
 writef /etc/systemd/system/swg-noded.service 644 <<EOF
 [Unit]
-Description=swg-noded (HTTPS sync to panel) — ${ENDPOINT_IP}
+Description=swg-noded (HTTPS sync to panel) — ${NODE_NAME}
 After=network-online.target
 Wants=network-online.target
 
@@ -208,7 +227,7 @@ info "Enable daemon"
 run systemctl daemon-reload
 run systemctl enable --now swg-noded
 
-echo; ok "Node install complete — syncing to ${PANEL_URL} every ${INTERVAL}s."
+echo; ok "Node '${NODE_NAME}' install complete — syncing to ${PANEL_URL} every ${INTERVAL}s."
 echo
 echo "It should turn green in the panel's Nodes screen within ~${INTERVAL}s."
 echo "Logs:   journalctl -u swg-noded -f"

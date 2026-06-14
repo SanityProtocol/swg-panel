@@ -27,7 +27,9 @@ A single stdlib-Python program. It serves the web UI, its own TLS + login, the
 
 `SWG_PANEL_FLEET`, `SWG_PANEL_WEB`, `SWG_PANEL_HOST`, `SWG_PANEL_PORT`, `SWG_PANEL_AUTH`
 (a `user:pbkdf2_sha256$…` file; blank = no login), `SWG_PANEL_TLS_CERT` /
-`SWG_PANEL_TLS_KEY` (blank = plain HTTP).
+`SWG_PANEL_TLS_KEY` (blank = plain HTTP), and `SWG_PANEL_BASE` (optional subpath mount,
+e.g. `/swg` — the server strips it from request paths and rewrites the SPA's `<base href>`
+so the panel can live under an existing site; blank = served at root).
 
 ## Endpoints
 
@@ -39,13 +41,19 @@ A single stdlib-Python program. It serves the web UI, its own TLS + login, the
 **Admin** — HTTP Basic auth; mutations are serialized:
 
 - `GET  /api/fleet` · `GET /api/nodes` · `GET /api/roster` · `GET /api/describe?node=` ·
-  `GET /api/next-ip?nodes=&iface=` · `GET /api/config?pubkey=&node=`
-- `POST /api/add-peer` · `POST /api/remove-peer` · `POST /api/rename` · `POST /api/adopt`
-- `POST /api/nodes/create` (→ one-time token) · `/api/nodes/update` · `/api/nodes/rotate`
-  (→ new token) · `/api/nodes/delete`
+  `GET /api/next-ip?nodes=&iface=` · `GET /api/config?pubkey=&node=` · `GET /api/account`
+- `POST /api/add-peer` · `POST /api/copy-peer` · `POST /api/remove-peer` ·
+  `POST /api/rename` · `POST /api/adopt` · `POST /api/account` (change login)
+- `POST /api/nodes/create` (→ one-time key) · `/api/nodes/update` · `/api/nodes/rotate`
+  (→ new key) · `/api/nodes/delete`
 
 ## TLS + serve modes
 
-Standalone (default) binds `0.0.0.0:PORT` and serves its own TLS + login. The installer
-can also put it behind nginx. Certificates come from `selfsigned`, `letsencrypt`
-(`acme.sh --standalone`, needs port 80), `cloudflare` (DNS-01, no port 80), or `manual`.
+The installer offers four serve modes. **internal** (default) binds `0.0.0.0:PORT` and
+serves its own TLS + login. **nginx** / **caddy** keep the panel on a loopback port and put
+a reverse proxy in front (TLS terminated there; a subpath becomes a `location`/`handle`
+block). **skip** leaves the panel on loopback for you to front yourself. Every mode uses the
+panel's own pbkdf2 login (`SWG_PANEL_AUTH`), so the Account tab works throughout.
+
+Certificates come from `cloudflare` (DNS-01, no port 80; the default), `letsencrypt`
+(`acme.sh`, port 80), `selfsigned`, or `skip` (bring your own / terminate elsewhere).
