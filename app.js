@@ -57,6 +57,9 @@ const api = {
   removePeer(body) { return this.post("/api/remove-peer", body); },
   rename(body) { return this.post("/api/rename", body); },
   adopt(body) { return this.post("/api/adopt", body); },
+  account() { return this.get("/api/account"); },
+  accountSave(body) { return this.post("/api/account", body); },
+  copyPeer(body) { return this.post("/api/copy-peer", body); },
   config(pubkey, node) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node)); },
   nodes() { return this.get("/api/nodes"); },
   nodeCreate(b) { return this.post("/api/nodes/create", b); },
@@ -116,6 +119,7 @@ const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3
 function buildConf(o) {
   const L = ["[Interface]", "PrivateKey = " + o.privkey, "Address = " + o.address];
   if (o.dns && o.dns.length) L.push("DNS = " + o.dns.join(", "));
+  L.push("MTU = " + (o.mtu || 1280));
   for (const k of AWG_ORDER) if (o.awg_params && o.awg_params[k] != null) L.push(k + " = " + o.awg_params[k]);
   L.push("", "[Peer]", "PublicKey = " + o.server_pubkey);
   if (o.psk) L.push("PresharedKey = " + o.psk);
@@ -134,8 +138,21 @@ function getConfig(pubkey, node) {
   return Promise.resolve(null);
 }
 function qrSVG(text) {
-  try { const q = qrcode(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 4, margin: 1 }); }
+  try {
+    const q = qrcode(0, "Q");            // higher error-correction → more scannable when slightly blurred
+    q.addData(text); q.make();
+    const svg = q.createSvgTag({ cellSize: 10, margin: 4 });   // big modules + proper quiet zone
+    return svg.replace("<svg ", '<svg shape-rendering="crispEdges" ');
+  }
   catch (e) { return '<div class="qr-fail">config too large<br>to encode as QR</div>'; }
+}
+function qrZoom(conf, label) {           // fullscreen overlay so a phone camera can lock on easily
+  const ov = document.createElement("div");
+  ov.className = "qr-overlay";
+  ov.innerHTML = `<div class="qr-overlay-inner"><div class="qr-overlay-card">${qrSVG(conf)}</div>` +
+    `<div class="qr-overlay-cap">${label ? esc(label) : "Scan in WireGuard / AmneziaWG"}</div></div>`;
+  ov.onclick = () => ov.remove();
+  document.body.appendChild(ov);
 }
 
 // ───────────────────────── per-node throughput from stats ─────────────────────────
@@ -429,13 +446,54 @@ function UserScreen(params) {
         <button class="btn btn-mini warn" id="u-remove">Remove peer</button>
       </div>
       <div class="identity" id="u-identity"></div>
-      <div class="section-title"><h2>Deployed on</h2><span class="count" id="u-depcount"></span></div>
+      <div class="section-title"><h2>Deployed on</h2><span class="count" id="u-depcount"></span>
+        <div class="grow"></div>
+        <div class="copyto" id="u-copyto"></div>
+      </div>
       <div class="deploys" id="u-deploys"></div>
     </div>`;
 
   renderNameline();
   $("#u-remove").onclick = () => removePeerFlow(pubkey, p0.nodes);
+  renderCopyTo();
   buildDeploys();   // async; builds QR cards once
+
+  function renderCopyTo() {
+    const on = new Set(p0.nodes || []);
+    const targets = Store.fleet.filter(n => !on.has(n.name));
+    const box = $("#u-copyto");
+    if (!targets.length) { box.innerHTML = ""; return; }
+    box.innerHTML = `<select class="selwrap" id="u-copysel"><option value="">Copy to server…</option>` +
+      targets.map(n => `<option value="${esc(n.name)}">${esc(n.name)}</option>`).join("") + `</select>`;
+    $("#u-copysel").onchange = e => { const t = e.target.value; if (t) copyToServer(t); e.target.value = ""; };
+  }
+
+  async function copyToServer(target) {
+    toast("Copying to " + target + "…", "info", 2000);
+    // need the client's private key — from this session's configs, or stored configs if enabled
+    let src = (Store.sessionConfigs[pubkey] && Object.values(Store.sessionConfigs[pubkey])[0]) || null;
+    if (!src && Store.storeConfigs && p0.nodes && p0.nodes.length) {
+      const c = await api.config(pubkey, p0.nodes[0]); if (c.ok) src = c.data.config;
+    }
+    if (!src) { toast("Can't copy: the private key isn't available (enable store_configs, or copy right after creating).", "err", 6000); return; }
+    const { priv, psk } = parseConf(src);
+    const iface = p0.iface;
+    const d = await api.describe(target);
+    if (!d.ok) { toast("Target server unreachable: " + (d.error || ""), "err"); return; }
+    const info = (d.data.interfaces || {})[iface];
+    if (!info) { toast(`Server ${target} has no interface ${iface}.`, "err", 5000); return; }
+    const nip = await api.nextIp([target], iface);
+    if (!nip.ok) { toast("No free address on " + target + ": " + (nip.error || ""), "err"); return; }
+    const ip = nip.data.next_ip;
+    const conf = buildConf({ privkey: priv, address: ip, dns: info.dns, awg_params: info.awg_params,
+      server_pubkey: info.public_key, psk, endpoint: info.endpoint, allowed: "0.0.0.0/0, ::/0" });
+    const r = await api.copyPeer({ public_key: pubkey, to_node: target, iface, allowed_ips: ip,
+      preshared_key: psk, configs: Store.storeConfigs ? { [target]: conf } : undefined });
+    if (!r.ok) { toast("Copy failed: " + (r.error || r.code || "unknown"), "err"); return; }
+    (Store.sessionConfigs[pubkey] = Store.sessionConfigs[pubkey] || {})[target] = conf;
+    toast("Copied to " + target + " (" + ip.split("/")[0] + ").", "ok");
+    await Store.poll(); refreshScreen();
+  }
 
   function renderNameline() {
     const p = Store.peer(pubkey) || p0;
@@ -476,7 +534,7 @@ function UserScreen(params) {
       const conf = await getConfig(pubkey, n);
       const cell = $("#dep-" + cssid(n)); if (!cell) continue;
       const col = Store.nodeColor(n);
-      const qr = conf ? `<div class="qr">${qrSVG(conf)}</div>`
+      const qr = conf ? `<div class="qr" data-qrzoom="${cssid(n)}" title="Tap to enlarge for scanning">${qrSVG(conf)}</div>`
         : `<div class="qr-none">config shown right after creation${Store.storeConfigs ? "" : ", or enable store_configs to keep it"}</div>`;
       cell.className = "deploy";
       cell.innerHTML = `
@@ -491,6 +549,8 @@ function UserScreen(params) {
       if (conf) {
         cell.querySelector(`[data-dl="${cssid(n)}"]`).onclick = () => downloadConf(conf, (p.name || "peer") + "-" + n);
         cell.querySelector(`[data-cp="${cssid(n)}"]`).onclick = () => { navigator.clipboard.writeText(conf); toast("Config for " + n + " copied.", "ok", 1800); };
+        const qz = cell.querySelector(`[data-qrzoom="${cssid(n)}"]`);
+        if (qz) qz.onclick = () => qrZoom(conf, (p.name || "peer") + " · " + n);
       }
     }
     patchDeploys();
@@ -882,12 +942,48 @@ function removeNode(node) {
 }
 
 // ───────────────────────── router ─────────────────────────
+function AccountScreen() {
+  $("#view").innerHTML = `
+    <div class="screen">
+      <div class="crumb"><b>Account</b></div>
+      <div class="card" style="max-width:520px">
+        <h3 style="margin:0 0 4px">Admin login</h3>
+        <p class="hint" style="margin:0 0 18px">Change the panel username and password. Takes effect immediately — you'll be asked to sign in again.</p>
+        <div id="acc-msg" class="formmsg" style="display:none"></div>
+        <div class="field"><label>Username</label><input id="acc-user" autocomplete="username"></div>
+        <div class="field"><label>Current password</label><input id="acc-cur" type="password" autocomplete="current-password" placeholder="required to confirm changes"></div>
+        <div class="field"><label>New password</label><input id="acc-new" type="password" autocomplete="new-password" placeholder="leave blank to keep current"></div>
+        <div class="field"><label>Confirm new password</label><input id="acc-new2" type="password" autocomplete="new-password"></div>
+        <div style="margin-top:8px"><button class="btn btn-primary" id="acc-save">Save changes</button></div>
+      </div>
+    </div>`;
+  const msg = $("#acc-msg");
+  const show = (t, ok) => { msg.style.display = "block"; msg.className = "formmsg " + (ok ? "ok" : "err"); msg.textContent = t; };
+  api.account().then(r => { if (r.ok && r.data.username) $("#acc-user").value = r.data.username;
+    if (r.ok && !r.data.auth_enabled) show("This panel has no login configured — changes are disabled.", false); });
+  $("#acc-save").onclick = async () => {
+    const username = $("#acc-user").value.trim();
+    const cur = $("#acc-cur").value, np = $("#acc-new").value, np2 = $("#acc-new2").value;
+    if (!username) return show("Username can't be empty.", false);
+    if (!cur) return show("Enter your current password to confirm.", false);
+    if (np && np !== np2) return show("New passwords don't match.", false);
+    if (np && np.length < 8) return show("New password must be at least 8 characters.", false);
+    $("#acc-save").disabled = true; show("Saving…", true);
+    const r = await api.accountSave({ username, current_password: cur, new_password: np });
+    if (!r.ok) { $("#acc-save").disabled = false; return show(r.error || "Failed to update.", false); }
+    show("Updated. Reloading — sign in with your new credentials…", true);
+    setTimeout(() => location.reload(), 1400);   // Basic-Auth: force re-auth with the new creds
+  };
+  return () => {};
+}
+
 const ROUTES = [
   { re: /^\/$/, fn: OverviewScreen, tab: "overview" },
   { re: /^\/node\/(.+)$/, fn: NodeScreen, tab: "overview", keys: ["node"] },
   { re: /^\/nodes$/, fn: NodesScreen, tab: "nodes" },
   { re: /^\/users$/, fn: UsersScreen, tab: "users" },
   { re: /^\/user\/(.+)$/, fn: UserScreen, tab: "users", keys: ["pubkey"] },
+  { re: /^\/account$/, fn: AccountScreen, tab: "account" },
 ];
 let activeUpdate = null;
 function mountRoute() {

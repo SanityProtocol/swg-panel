@@ -28,10 +28,12 @@ if [ ! -f "$CONF" ]; then
       if [ "${NODE_PLAIN_WG:-no}" != yes ]; then
         s1=$(( 15 + $(rand32) % 136 )); s2=$(( 15 + $(rand32) % 136 ))
         while [ "$s1" -eq "$s2" ] || [ $((s1+56)) -eq "$s2" ]; do s2=$(( 15 + $(rand32) % 136 )); done
+        s3=$(( 15 + $(rand32) % 86 )); s4=$(( 15 + $(rand32) % 86 ))
         b1=$(( 5 + $(rand32) % 900000000 ));          b2=$(( 1000000000 + $(rand32) % 900000000 ))
         b3=$(( 2000000000 + $(rand32) % 900000000 )); b4=$(( 3000000000 + $(rand32) % 900000000 ))
-        printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
-          "$s1" "$s2" "$b1" $((b1+15)) "$b2" $((b2+15)) "$b3" $((b3+15)) "$b4" $((b4+15))
+        printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nS3 = %s\nS4 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
+          "$s1" "$s2" "$s3" "$s4" "$b1" $((b1+15)) "$b2" $((b2+15)) "$b3" $((b3+15)) "$b4" $((b4+15))
+        printf 'I1 = <b 0xc300000001><r 1200>\n'   # conservative QUIC v1 Initial mimicry (no <c>/<t>)
       fi
     } > "$CONF"
     if [ "${NODE_PLAIN_WG:-no}" = yes ]; then
@@ -47,6 +49,15 @@ chmod 600 "$CONF"
 export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
 log "bringing up $IFACE via userspace amneziawg-go"
 awg-quick up "$IFACE" || { log "awg-quick up failed — check NET_ADMIN + /dev/net/tun"; exit 1; }
+
+# 2b) NAT the tunnel subnet out the WAN (compose sets ip_forward + NET_ADMIN; we add the masquerade)
+WAN="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)"; WAN="${WAN:-eth0}"
+SUBNET="$(python3 -c "import ipaddress,os;print(ipaddress.ip_network(os.environ.get('NODE_ADDRESS','10.8.0.1/24'),strict=False))" 2>/dev/null || echo 10.8.0.0/24)"
+if iptables -t nat -C POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE 2>/dev/null; then :; else
+  iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$WAN" -j MASQUERADE \
+    && log "NAT: masquerading $SUBNET out $WAN" \
+    || log "WARNING: could not add MASQUERADE rule (need NET_ADMIN) — clients may have no internet"
+fi
 
 # 3) swg-agent config: declarative HTTPS sync to the panel
 VERIFY=false; [ "${TLS_VERIFY:-no}" = yes ] && VERIFY=true

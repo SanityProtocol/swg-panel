@@ -53,14 +53,16 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   else have awg && return 0; run apt-get update -qq; run apt-get install -y software-properties-common
        run add-apt-repository -y ppa:amnezia/ppa; run apt-get update -qq; run apt-get install -y amneziawg; fi
 }
-awg_obfuscation(){ # emit AmneziaWG v2 obfuscation — H1–H4 as distinct, non-overlapping ranges
-  local s1 s2 b1 b2 b3 b4 w=15
+awg_obfuscation(){ # AmneziaWG v2 obfuscation — H1–H4 ranges, S1–S4, conservative QUIC-Initial I1
+  local s1 s2 s3 s4 b1 b2 b3 b4 w=15
   s1=$(( 15 + RANDOM % 136 )); s2=$(( 15 + RANDOM % 136 ))
   while [ "$s1" -eq "$s2" ] || [ $((s1+56)) -eq "$s2" ]; do s2=$(( 15 + RANDOM % 136 )); done
+  s3=$(( 15 + RANDOM % 86 )); s4=$(( 15 + RANDOM % 86 ))
   b1=$(( 5 + (RANDOM*RANDOM) % 900000000 ));          b2=$(( 1000000000 + (RANDOM*RANDOM) % 900000000 ))
   b3=$(( 2000000000 + (RANDOM*RANDOM) % 900000000 )); b4=$(( 3000000000 + (RANDOM*RANDOM) % 900000000 ))
-  printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
-    "$s1" "$s2" "$b1" $((b1+w)) "$b2" $((b2+w)) "$b3" $((b3+w)) "$b4" $((b4+w))
+  printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nS3 = %s\nS4 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
+    "$s1" "$s2" "$s3" "$s4" "$b1" $((b1+w)) "$b2" $((b2+w)) "$b3" $((b3+w)) "$b4" $((b4+w))
+  printf 'I1 = <b 0xc300000001><r 1200>\n'   # QUIC v1 Initial prefix + random; no <c>/<t> (Android-safe)
 }
 server_addr(){ have python3 || die "python3 required for the tunnel address (also needed by the daemon)"
   python3 - "$1" <<'PY'
@@ -69,21 +71,28 @@ n = ipaddress.ip_network(sys.argv[1], strict=False)
 print(f"{next(n.hosts())}/{n.prefixlen}")
 PY
 }
-create_iface(){ # prompt, gen server key, write conf (AWG v2 w/ H-ranges, or plain WG), bring up, register
-  local _proto proto name port subnet addr conf cmd priv dir
+detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
+create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain WG), NAT it to the WAN, bring up, register
+  local _proto proto name port subnet addr conf cmd priv dir wan up down
   ask "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto; proto="${_proto:-a}"
   case "$proto" in w|wg|wireguard) proto=wg; cmd=wg; dir=/etc/wireguard;;
                                 *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
   ask "Interface name" "$([ "$cmd" = awg ] && echo awg0 || echo wg0)" name
   ask "Listen port"    "51820" port
   ask "Tunnel subnet (CIDR; server takes the first host)" "10.8.0.0/24" subnet
+  ask "WAN egress interface (clients are NAT'd out this)" "$(detect_wan || echo eth0)" wan
   addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"; ensure_wg_tools "$cmd"
+  up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+  down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+  printf 'net.ipv4.ip_forward = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
+  run sysctl -q -w net.ipv4.ip_forward=1
   if $DRYRUN; then priv="<generated-on-real-run>"; else priv="$("$cmd" genkey)"; fi
   { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\n' "$priv" "$addr" "$port"
+    printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
     [ "$cmd" = awg ] && awg_obfuscation; } | writef "$conf" 600
   if [ "$cmd" = awg ]; then run awg-quick up "$name"; run systemctl enable "awg-quick@$name"
   else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
-  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; ok "created $proto interface '$name' on :$port (server $addr)"
+  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; ok "created $proto interface '$name' on :$port (server $addr, NAT out $wan)"
 }
 choose_ifaces(){
   detect_wg

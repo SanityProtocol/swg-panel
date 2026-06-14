@@ -149,6 +149,7 @@ def roster_set(roster, pubkey, entry):
         "type": entry.get("type", "user"),
         "psk": entry.get("psk", ""),
         "nodes": list(dict.fromkeys(entry.get("nodes", []))),
+        "node_ips": dict(entry.get("node_ips", {}) or {}),   # per-node IP overrides (cross-server copies)
         "created_at": entry.get("created_at", int(time.time())),
         "deleted_at": entry.get("deleted_at"),
     }
@@ -161,6 +162,10 @@ def make_token_hash(token, iters=200000):
     salt = os.urandom(16)
     h = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, iters)
     return f"pbkdf2_sha256${iters}${base64.b64encode(salt).decode()}${base64.b64encode(h).decode()}"
+
+
+# password hashing reuses the same pbkdf2_sha256 format verify_password() understands
+make_pw_hash = make_token_hash
 
 
 def nodes_load(path):
@@ -196,7 +201,7 @@ def desired_for_node(roster, node_id):
         iface = e.get("if") or ""
         if not iface:
             continue
-        ip = (e.get("ip") or "").split("/")[0]
+        ip = ((e.get("node_ips") or {}).get(node_id) or e.get("ip") or "").split("/")[0]
         out.setdefault(iface, []).append({
             "public_key": pk,
             "allowed_ips": (ip + "/32") if ip else "",
@@ -245,8 +250,12 @@ def panel_next_ip(snaps, roster, nodes, iface):
         if subnet is None:
             subnet = meta.get("subnet")
     for e in roster.values():
-        if isinstance(e, dict) and e.get("ip") and not e.get("deleted_at"):
-            used.add(e["ip"].split("/")[0])
+        if isinstance(e, dict) and not e.get("deleted_at"):
+            if e.get("ip"):
+                used.add(e["ip"].split("/")[0])
+            for nip in (e.get("node_ips") or {}).values():
+                if nip:
+                    used.add(nip.split("/")[0])
     if not subnet:
         return err("next-ip", "no subnet info in snapshot")
     net = ipaddress.ip_network(subnet, strict=False)
@@ -298,6 +307,36 @@ def api(method, path, qs, body, deps):
 
     if method == "GET" and path == "/api/roster":
         return 200, {"ok": True, "data": roster_load(roster_path)}
+
+    if method == "GET" and path == "/api/account":
+        creds = deps.get("auth")
+        return 200, {"ok": True, "data": {"username": creds[0] if creds else None,
+                                          "auth_enabled": bool(creds)}}
+
+    if method == "POST" and path == "/api/account":
+        creds = deps.get("auth")
+        if not creds:
+            return 403, {"ok": False, "error": "login is not enabled on this panel", "code": "no_auth"}
+        if not AUTH_FILE:
+            return 400, {"ok": False, "error": "no auth file configured (SWG_PANEL_AUTH unset)", "code": "no_auth_file"}
+        cur = body.get("current_password", "")
+        if not verify_password(creds[1], cur):
+            return 403, {"ok": False, "error": "current password is incorrect", "code": "bad_password"}
+        new_user = (body.get("username") or creds[0]).strip()
+        new_pw = body.get("new_password") or ""
+        if not new_user:
+            return 400, {"ok": False, "error": "username cannot be empty", "code": "bad_request"}
+        if ":" in new_user:
+            return 400, {"ok": False, "error": "username cannot contain ':'", "code": "bad_request"}
+        if new_pw and len(new_pw) < 8:
+            return 400, {"ok": False, "error": "new password must be at least 8 characters", "code": "weak_password"}
+        new_hash = make_pw_hash(new_pw) if new_pw else creds[1]
+        try:
+            atomic_write(AUTH_FILE, f"{new_user}:{new_hash}\n", mode=0o600)
+        except OSError as e:
+            return 500, {"ok": False, "error": f"could not write auth file: {e}", "code": "internal"}
+        deps["auth"] = (new_user, new_hash)          # hot-reload in-process; no restart
+        return 200, {"ok": True, "data": {"username": new_user, "password_changed": bool(new_pw)}}
 
     if method == "GET" and path == "/api/config":
         pk = (qs.get("pubkey") or [""])[0]; node = (qs.get("node") or [""])[0]
@@ -372,6 +411,39 @@ def api(method, path, qs, body, deps):
                         atomic_write(os.path.join(config_dir, cfg_hash(body["public_key"], node)),
                                      conf, mode=0o600)
         return 200, {"ok": True, "data": {"public_key": body["public_key"], "nodes": merged, "preshared_key": psk}}
+
+    if method == "POST" and path == "/api/copy-peer":
+        # Replicate an existing peer onto another server: SAME key + SAME PSK, NEW IP on the
+        # target's subnet (a distinct peer sharing identity). The base ip on other nodes is untouched.
+        pk = body.get("public_key", "")
+        to_node = body.get("to_node", "")
+        ip = (body.get("allowed_ips") or "").split("/")[0]
+        if not pk or not to_node or not ip:
+            return 400, {"ok": False, "error": "need public_key, to_node, allowed_ips", "code": "bad_request"}
+        if not known(to_node):
+            return 400, {"ok": False, "error": f"unknown node {to_node!r}", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        e = roster.get(pk)
+        if not isinstance(e, dict) or e.get("deleted_at"):
+            return 404, {"ok": False, "error": "peer not in roster", "code": "not_found"}
+        iface = body.get("iface") or e.get("if") or ""
+        merged = entry_nodes(e)
+        if to_node not in merged:
+            merged.append(to_node)
+        node_ips = dict(e.get("node_ips", {}) or {})
+        node_ips[to_node] = ip
+        roster_set(roster, pk, {
+            "name": e.get("name", ""), "ip": e.get("ip", ""), "if": iface,
+            "type": e.get("type", "user"), "psk": e.get("psk", ""),
+            "nodes": merged, "node_ips": node_ips,
+            "created_at": e.get("created_at", now())})
+        roster_save(roster_path, roster)
+        if store_configs and config_dir and isinstance(body.get("configs"), dict):
+            for node, conf in body["configs"].items():
+                if known(node) and isinstance(conf, str):
+                    with contextlib.suppress(OSError):
+                        atomic_write(os.path.join(config_dir, cfg_hash(pk, node)), conf, mode=0o600)
+        return 200, {"ok": True, "data": {"public_key": pk, "to_node": to_node, "ip": ip, "iface": iface}}
 
     if method == "POST" and path == "/api/remove-peer":
         pk = body.get("public_key")

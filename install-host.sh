@@ -109,16 +109,20 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
     run add-apt-repository -y ppa:amnezia/ppa; run apt-get update -qq; run apt-get install -y amneziawg
   fi
 }
-awg_obfuscation(){ # emit AmneziaWG v2 obfuscation lines — H1–H4 as distinct, non-overlapping ranges
-  local s1 s2 b1 b2 b3 b4 w=15
+awg_obfuscation(){ # emit AmneziaWG v2 obfuscation — H1–H4 ranges, S1–S4, and a conservative QUIC-Initial I1
+  local s1 s2 s3 s4 b1 b2 b3 b4 w=15
   s1=$(( 15 + RANDOM % 136 )); s2=$(( 15 + RANDOM % 136 ))
   while [ "$s1" -eq "$s2" ] || [ $((s1+56)) -eq "$s2" ]; do s2=$(( 15 + RANDOM % 136 )); done
-  b1=$(( 5          + (RANDOM*RANDOM) % 900000000 ))   # four disjoint bands keep the ranges
-  b2=$(( 1000000000 + (RANDOM*RANDOM) % 900000000 ))   # distinct and non-overlapping, all > 4
+  s3=$(( 15 + RANDOM % 86 )); s4=$(( 15 + RANDOM % 86 ))   # v2 init/response junk sizes
+  b1=$(( 5          + (RANDOM*RANDOM) % 900000000 ))       # four disjoint bands keep H1–H4
+  b2=$(( 1000000000 + (RANDOM*RANDOM) % 900000000 ))       # distinct and non-overlapping, all > 4
   b3=$(( 2000000000 + (RANDOM*RANDOM) % 900000000 ))
   b4=$(( 3000000000 + (RANDOM*RANDOM) % 900000000 ))
-  printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
-    "$s1" "$s2" "$b1" $((b1+w)) "$b2" $((b2+w)) "$b3" $((b3+w)) "$b4" $((b4+w))
+  printf 'Jc = 4\nJmin = 40\nJmax = 70\nS1 = %s\nS2 = %s\nS3 = %s\nS4 = %s\nH1 = %s-%s\nH2 = %s-%s\nH3 = %s-%s\nH4 = %s-%s\n' \
+    "$s1" "$s2" "$s3" "$s4" "$b1" $((b1+w)) "$b2" $((b2+w)) "$b3" $((b3+w)) "$b4" $((b4+w))
+  # Conservative QUIC-Initial mimicry on I1 only (no <c> counters, no <t> — keeps amneziawg-go/Android working).
+  # 0xc3 = long-header Initial first byte; 0x00000001 = QUIC v1; then random payload.
+  printf 'I1 = <b 0xc300000001><r 1200>\n'
 }
 server_addr(){ # server_addr <cidr> -> "<first-host>/<prefix>"
   have python3 || die "python3 is required to compute the tunnel address (it's also needed by the daemon)"
@@ -128,23 +132,31 @@ n = ipaddress.ip_network(sys.argv[1], strict=False)
 print(f"{next(n.hosts())}/{n.prefixlen}")
 PY
 }
-create_iface(){ # prompt, gen server key, write conf (AWG v2 w/ H-ranges, or plain WG), bring up, register
-  local _proto proto name port subnet addr conf cmd priv dir
+detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
+create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain WG), NAT it to the WAN, bring up, register
+  local _proto proto name port subnet addr conf cmd priv dir wan up down
   ask "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto; proto="${_proto:-a}"
   case "$proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
                                 *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
   ask "Interface name" "$([ "$cmd" = awg ] && echo awg0 || echo wg0)" name
   ask "Listen port"    "51820"        port
   ask "Tunnel subnet (CIDR; server takes the first host)" "10.8.0.0/24" subnet
+  ask "WAN egress interface (clients are NAT'd out this)" "$(detect_wan || echo eth0)" wan
   addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"
   ensure_wg_tools "$cmd"
+  # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
+  up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+  down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+  printf 'net.ipv4.ip_forward = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
+  run sysctl -q -w net.ipv4.ip_forward=1
   if $DRYRUN; then priv="<generated-on-real-run>"; else priv="$("$cmd" genkey)"; fi
   { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\n' "$priv" "$addr" "$port"
+    printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
     [ "$cmd" = awg ] && awg_obfuscation; } | writef "$conf" 600
   if [ "$cmd" = awg ]; then run awg-quick up "$name"; run systemctl enable "awg-quick@$name"
   else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
   IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"
-  ok "created $proto interface '$name' on :$port (server $addr)"
+  ok "created $proto interface '$name' on :$port (server $addr, NAT out $wan)"
 }
 
 # ───────────────────────── prompts ─────────────────────────
@@ -192,6 +204,21 @@ if [ "$SERVE_MODE" = standalone ] && { [ -z "$PANEL_DOMAIN" ] || [ "$PANEL_DOMAI
   [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
 fi
 [ -z "$BASIC_PASS" ] && BASIC_PASS="$(head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16)"
+
+# Initial panel login — suggest admin + 3 random digits; let the operator set both. Password
+# is confirmed; the suggested random one is used if left blank (and printed at the end).
+if [ "${BASIC_USER}" = admin ]; then BASIC_USER="admin$(( RANDOM % 900 + 100 ))"; fi
+ask "Panel admin username" "$BASIC_USER" BASIC_USER
+if [ -z "${BASIC_PASS_SET:-}" ] && ! $DRYRUN; then
+  _p1=""; _p2="x"
+  while [ "$_p1" != "$_p2" ]; do
+    read -rsp "Panel admin password (blank = use suggested '${BASIC_PASS}'): " _p1 </dev/tty || true; echo
+    [ -z "$_p1" ] && { _p1="$BASIC_PASS"; _p2="$_p1"; break; }
+    read -rsp "Confirm password: " _p2 </dev/tty || true; echo
+    [ "$_p1" != "$_p2" ] && warn "passwords didn't match — try again"
+  done
+  BASIC_PASS="$_p1"
+fi
 
 echo; info "Plan: method=$METHOD role=$ROLE store_configs=$STORE_CONFIGS"
 
