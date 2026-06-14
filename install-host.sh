@@ -415,8 +415,16 @@ obtain_cert_standalone(){
   esac
 }
 serve_standalone(){
+  # acme's --install-cert reloadcmd runs `systemctl restart swg-panel-server` immediately,
+  # so the unit must exist (and be loaded) BEFORE issuance — write+enable a TLS-less
+  # placeholder first, then rewrite with the real cert paths and restart for real.
+  write_panel_unit
+  run systemctl daemon-reload
+  run systemctl enable --now swg-panel-server
   obtain_cert_standalone
   write_panel_unit
+  run systemctl daemon-reload
+  if [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then run systemctl restart swg-panel-server; fi
   if command -v ufw >/dev/null 2>&1; then run ufw allow "${PORT}/tcp" 2>/dev/null || true; fi
   local sch="https"; [ -n "${CERT_FULLCHAIN:-}" ] || sch="http"
   [ "$sch" = http ] && warn "TLS=none — login travels in the clear. Use selfsigned/letsencrypt/cloudflare for real use."
