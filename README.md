@@ -1,3 +1,9 @@
+<h1 align="center">🚧 WORK IN PROGRESS 🚧</h1>
+<h2 align="center">PROJECT NOT READY</h2>
+<p align="center"><code>1.0.0-alpha</code></p>
+
+---
+
 # swg-panel
 
 A self-hosted control panel for running a small WireGuard / AmneziaWG service across one or more entry servers. The panel is the source of truth for your peers; each entry server (a **node**) syncs to it over **outbound HTTPS** and converges on the peer set it has been assigned — so nodes need no inbound access, no SSH, and no rsync.
@@ -58,25 +64,39 @@ Four one-liners — each **prompts for whatever it needs**. Choose a method (bar
 
 ### A — bare-metal (systemd)
 
-```
-# panel        — asks the role: master (panel + this box is a node) or host (panel only)
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
+**Panel** — asks the role: master (panel + this box is a node) or host (panel only)
 
-# entry server — asks for the panel URL + the key from Nodes → Add node
+```
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
+```
+
+**Node** — asks for the panel URL + the key from Nodes → Add node
+
+```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
 ```
 
 ### B — Docker
 
-```
-# panel        — installs Docker if needed, asks for a domain + admin username (password auto-generated)
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+**Panel** — installs Docker if needed, asks for a domain + admin username (password auto-generated)
 
-# entry server — asks for the panel URL + the key from Nodes → Add node
+```
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+```
+
+**Node** — asks for the panel URL + the key from Nodes → Add node
+
+```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 ```
 
 Open the panel URL, log in, and add entry servers from **Nodes → Add node** — it prints the exact bare-metal *and* Docker command (key pre-filled) for each. Details: [Installing the panel](#installing-the-panel) · [Adding a node](#adding-a-node) · [Docker](#docker).
+
+**Update** any box later, in place (auto-detects what's installed):
+
+```
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
+```
 
 ## Installing the panel
 
@@ -208,6 +228,7 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 - **Rotate a node's token:** Nodes → ⋯ → Rotate token, then re-run the install command (or update the node's `config.json`).
 - **Remove a node:** Nodes → Remove. Stop `swg-noded` on the box itself to take it offline.
 - **Back up:** `users.json` + `nodes.json` (under `/var/lib/swg-panel`) are the whole state. Copy them somewhere safe.
+- **Update:** `… | sudo bash -s update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
 - **Uninstall:** `… | sudo bash -s uninstall` (or `./uninstall.sh`). It stops the services and removes the panel/node files; it asks before touching wg/awg, and can keep the roster + node store for a reinstall.
 
 ## Security

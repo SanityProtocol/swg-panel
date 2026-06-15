@@ -37,7 +37,7 @@ NODE_IFACE="${NODE_IFACE:-awg0}"
 NODE_IFACES="${NODE_IFACES:-}"         # several interfaces: "name:port:addr[:proto],…"
 NODE_LISTEN_PORT="${NODE_LISTEN_PORT:-51820}"
 NODE_ADDRESS="${NODE_ADDRESS:-10.8.0.1/24}"
-TLS_VERIFY="${TLS_VERIFY:-no}"
+TLS_VERIFY="${TLS_VERIFY:-}"           # yes/no; blank = ask (node profile) / default no
 DNS="${DNS:-1.1.1.1}"
 
 DRYRUN=false
@@ -56,6 +56,9 @@ detect_public_ip(){ local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n
 ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps a tty); else use default
   if printf '%s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then printf '%s' "${v:-$d}"
   else printf '%s' "$d"; fi; }
+ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (default when blank / no tty)
+  v="$(ask_tty "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N'))" "")"
+  case "${v:-$d}" in [Yy]*) printf yes;; *) printf no;; esac; }
 rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16; }
 
 # ───────────────────────── flags ─────────────────────────
@@ -71,6 +74,7 @@ while [ $# -gt 0 ]; do
     -key|--key|-token)      NODE_TOKEN="${2:-}"; shift 2 || shift;;
     -host|--host|-url)      PANEL_URL="${2:-}"; shift 2 || shift;;
     -endpoint|--endpoint)   NODE_ENDPOINT="${2:-}"; shift 2 || shift;;
+    -verify|--verify)       TLS_VERIFY="${2:-}"; shift 2 || shift;;
     -iface|--iface)         NODE_IFACE="${2:-}"; shift 2 || shift;;
     -ifaces|--ifaces)       NODE_IFACES="${2:-}"; shift 2 || shift;;
     --dry-run)              shift;;
@@ -93,14 +97,17 @@ ask_panel_login(){   # match bare-metal: prompt domain + username, auto-generate
   [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
   PANEL_USER="$(ask_tty "Panel admin username" "${PANEL_USER:-admin}")"; [ -z "$PANEL_USER" ] && PANEL_USER=admin
   [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
+  return 0   # never let a short-circuited && above make the function (and set -e) fail
 }
-ask_node_conn(){     # prompt panel URL + key (for node / host-node)
+ask_node_conn(){     # prompt panel URL + key + endpoint + TLS-verify (for node)
   [ -z "$PANEL_URL" ]   && PANEL_URL="$(ask_tty "Panel URL (https://host[/subpath])" "")"
   [ -n "$PANEL_URL" ]   || die "panel URL required — pass -host (or enter it)"
   [ -z "$NODE_TOKEN" ]  && NODE_TOKEN="$(ask_tty "Node enrollment key (from Nodes → Add node)" "")"
   [ -n "$NODE_TOKEN" ]  || die "node key required — pass -key (create the node in the Nodes screen first)"
   [ -z "$NODE_ENDPOINT" ] && NODE_ENDPOINT="$(ask_tty "Endpoint IP clients dial for this node" "$(detect_public_ip)")"
   [ -n "$NODE_ENDPOINT" ] || die "node endpoint required — pass -endpoint"
+  [ -z "$TLS_VERIFY" ]  && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (no if the panel uses a self-signed cert)" n)"
+  return 0
 }
 case "$PROFILE" in
   host)
@@ -114,12 +121,14 @@ case "$PROFILE" in
     [ -n "$NODE_TOKEN" ]  || die "node key required — bring up 'docker host' first, add the node, then re-run as host-node with -key"
     [ -z "$NODE_ENDPOINT" ] && NODE_ENDPOINT="$(ask_tty "Endpoint IP clients dial for this node" "$(detect_public_ip)")"
     [ -n "$NODE_ENDPOINT" ] || die "node endpoint required — pass -endpoint"
+    TLS_VERIFY="${TLS_VERIFY:-no}"   # local node → local panel is self-signed on the compose net
     ;;
   node)
     ask_node_conn
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac
+TLS_VERIFY="${TLS_VERIFY:-no}"   # concrete value for .env (host profile leaves it unset)
 
 # ───────────────────────── ensure Docker ─────────────────────────
 info "Docker"
@@ -133,7 +142,7 @@ else COMPOSE="docker compose"; $DRYRUN || warn "docker compose plugin not detect
 # ───────────────────────── stage project ─────────────────────────
 info "Staging project in $INSTALL_DIR"
 mkdir -p "$PREFIX$INSTALL_DIR"
-for f in docker-compose.yml Dockerfile Dockerfile.node .dockerignore \
+for f in docker-compose.yml Dockerfile Dockerfile.node .dockerignore VERSION \
          swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
   [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
 done

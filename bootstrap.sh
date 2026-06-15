@@ -3,7 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
 #   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node -key SECURE_NODE_KEY -host https://HOST_URL
-#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker -pass SECRET -domain panel.example.net
+#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+#   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update   # update an install in place
 #
 # The node one-liner takes the enrollment key + panel URL straight from the Nodes
 # screen; the installer prompts for the rest (name, endpoint, interfaces) on /dev/tty.
@@ -19,7 +20,7 @@
 set -euo pipefail
 REPO="${SWG_REPO:-https://github.com/SanityProtocol/swg-panel}"
 REF="${SWG_REF:-main}"
-ROLE="${1:-}"; case "$ROLE" in host|node|docker|uninstall) ;; *) echo "usage: bootstrap.sh host|node|docker|uninstall [flags]" >&2; exit 1;; esac
+ROLE="${1:-}"; case "$ROLE" in host|node|docker|update|uninstall) ;; *) echo "usage: bootstrap.sh host|node|docker|update|uninstall [flags]" >&2; exit 1;; esac
 shift || true; [ "${1:-}" = "--" ] && shift || true
 
 # Map convenience flags (for the node one-liner) into the env the installers read;
@@ -49,6 +50,6 @@ else
   echo "need git, or curl+tar, to fetch the repo" >&2; exit 1
 fi
 cd "$TMP/swg-panel"
-SCRIPT="install-$ROLE.sh"; [ "$ROLE" = uninstall ] && SCRIPT="uninstall.sh"
+SCRIPT="install-$ROLE.sh"; [ "$ROLE" = uninstall ] && SCRIPT="uninstall.sh"; [ "$ROLE" = update ] && SCRIPT="update.sh"
 echo ":: running $SCRIPT"
 bash "./$SCRIPT" ${PASS[@]+"${PASS[@]}"}      # bash …  => exec bit not required
