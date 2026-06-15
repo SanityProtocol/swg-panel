@@ -26,6 +26,7 @@ import hmac
 import ipaddress
 import json
 import os
+import signal
 import ssl
 import subprocess
 import threading
@@ -791,6 +792,16 @@ def main():
         ctx.load_cert_chain(TLS_CERT, TLS_KEY)
         srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
         scheme = "https"
+        # SIGHUP reloads the cert into the live context (new connections pick it up) so
+        # automated renewal — e.g. acme.sh --reloadcmd in the container — has zero downtime.
+        def _reload_tls(_sig, _frm):
+            try:
+                ctx.load_cert_chain(TLS_CERT, TLS_KEY)
+                print("reloaded TLS certificate (SIGHUP)", flush=True)
+            except Exception as e:
+                print(f"TLS reload failed (keeping old cert): {e}", flush=True)
+        with contextlib.suppress(ValueError, OSError, AttributeError):
+            signal.signal(signal.SIGHUP, _reload_tls)
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
     print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     with contextlib.suppress(KeyboardInterrupt):

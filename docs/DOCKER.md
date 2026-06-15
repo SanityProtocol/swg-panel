@@ -38,9 +38,13 @@ same options as bare-metal:
 
 acme.sh state and the issued cert persist under `./data/etc` (`/etc/swg-panel/{acme,tls}`),
 so a restart renews/reuses rather than re-issuing. A cert mounted over
-`/etc/swg-panel/tls/fullchain.pem` always wins and skips acme entirely. Cert **renewal** is
-not yet cron-driven in the container — recreate it (`docker compose up -d --force-recreate
-swg-panel`) before expiry, or mount your own cert.
+`/etc/swg-panel/tls/fullchain.pem` always wins and skips acme entirely.
+
+**Renewal** is automatic for `letsencrypt`/`cloudflare`: the container runs `acme.sh --cron`
+every 12h, re-issues once a cert nears expiry, and signals the panel (`SIGHUP`) to reload the
+new cert into its live TLS context — **no downtime, no restart**. `cf15` (15y) and
+`selfsigned` (10y) are long-lived and not auto-renewed; `none` and mounted certs are managed
+by you.
 
 ## By hand
 

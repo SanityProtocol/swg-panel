@@ -40,8 +40,11 @@ selfsigned(){ mkdir -p "$(dirname "$SWG_PANEL_TLS_CERT")"
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$SWG_PANEL_TLS_KEY" -out "$SWG_PANEL_TLS_CERT" \
     -subj "/CN=$PANEL_DOMAIN" -addext "subjectAltName=$san" >/dev/null 2>&1
   log "generated self-signed certificate (CN=$PANEL_DOMAIN, 10y)"; }
+# --reloadcmd is stored by acme.sh and re-run on every future renewal: SIGHUP makes the
+# panel (PID 1) reload the new cert into its live TLS context with no downtime.
 acme_install(){ acme --install-cert -d "$PANEL_DOMAIN" --ecc \
-  --key-file "$SWG_PANEL_TLS_KEY" --fullchain-file "$SWG_PANEL_TLS_CERT" >/dev/null 2>&1 \
+  --key-file "$SWG_PANEL_TLS_KEY" --fullchain-file "$SWG_PANEL_TLS_CERT" \
+  --reloadcmd 'kill -HUP 1' >/dev/null 2>&1 \
   || log "WARNING: acme --install-cert failed — the panel may fall back to no/old cert"; }
 
 if [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -f "$SWG_PANEL_TLS_CERT" ]; then
@@ -110,6 +113,16 @@ JSON
 fi
 mkdir -p "$STATS_DIR" /var/lib/swg-panel
 [ -f /var/lib/swg-panel/nodes.json ] || { echo '{}' > /var/lib/swg-panel/nodes.json; log "seeded empty nodes.json"; }
+
+# 4) Auto-renewal — only the acme-managed modes have something to renew. acme.sh re-issues
+#    a cert once it enters its renewal window and then runs the saved --reloadcmd (kill -HUP 1),
+#    so the panel reloads the fresh cert without a restart. cf15/selfsigned (long-lived) and
+#    none/mounted certs aren't acme-managed, so no loop is started for them.
+case "${TLS:-selfsigned}" in
+  letsencrypt|cloudflare)
+    ( while sleep 43200; do acme --cron >/dev/null 2>&1 || true; done ) &
+    log "TLS auto-renewal enabled (acme.sh --cron every 12h; reload via SIGHUP, no downtime)" ;;
+esac
 
 log "starting swg-panel-server on ${SWG_PANEL_HOST:-0.0.0.0}:${SWG_PANEL_PORT:-8443}"
 exec "${SWG_PANEL_BIN:-/opt/swg-panel/swg-panel-server}"
