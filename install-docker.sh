@@ -96,19 +96,27 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
 
 # ── turn-proxy (vk-turn-proxy) — host systemd service forwarding to the published wg port ──
 TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"; TURN_RECORD="${TURN_RECORD:-/etc/swg-agent/turn-proxy.json}"
-declare -A TP_LISTEN TP_CONNECT
+declare -A TP_LISTEN TP_CONNECT TP_WRAP
 turn_repo_owner(){ case "$1" in
   wings) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
   kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
   main) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
-detect_turn(){ TP_LISTEN=(); TP_CONNECT=(); local u name exe lis con
+gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }
+  openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+turn_wrap_flags(){ local k; case "$1" in   # per-fork obfuscation flags (verified from each binary's -h)
+  anton48)      k="$(gen_wrap_key)"; printf -- '-wrap-srtp -wrap-key %s' "$k";;
+  samosvalishe) k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;
+  wings)        k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;
+  *) printf '';; esac; }
+detect_turn(){ TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con wk
   for u in /etc/systemd/system/*.service; do [ -e "$u" ] || continue
     exe="$(sed -n 's/^ExecStart=//p' "$u" 2>/dev/null | head -1)"
     case "$exe" in *-listen*-connect*|*-connect*-listen*) ;; *) continue;; esac
     name="$(basename "$u" .service)"
     lis="$(printf '%s\n' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
     con="$(printf '%s\n' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
-    TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"; done; }
+    wk="$(printf '%s\n' "$exe" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
+    TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"; TP_WRAP[$name]="$wk"; done; }
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }
   curl -fsSL "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
@@ -121,7 +129,7 @@ install_turn_binary(){ local key="$1" owner="$2" listen="$3" connect="$4" extra=
   elif ! { curl -fsSL "$url" -o "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then warn "download failed ($url) — skipping"; return 0; fi
   ver="$(turn_latest_tag "$owner")"
   printf '%s\n' "$owner" | writef "$dir/repo.txt" 644; printf '%s\n' "${ver:-unknown}" | writef "$dir/version.txt" 644
-  writef "/etc/systemd/system/$svc.service" 644 <<EOF
+  writef "/etc/systemd/system/$svc.service" 600 <<EOF
 [Unit]
 Description=vk-turn-proxy ($owner) — ${listen} → ${connect}
 After=network-online.target
@@ -148,10 +156,13 @@ install_turn_proxy(){ echo
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
   ask_valid "Turn-proxy listen port" "56000" port v_port "port must be 1–65535"
   ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${NODE_LISTEN_PORT:-51820}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
-  extra=""; [ "$sel" = anton48 ] && extra="-srtp"; ask "Extra server flags (optional)" "$extra" extra
-  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$extra"; }
+  local wrap extra; wrap="$(turn_wrap_flags "$sel")"
+  [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
+                 || warn "$sel has no wrap/srtp obfuscation flags — installing plain (-listen/-connect only)."
+  ask "Extra server flags (optional)" "" extra
+  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap${extra:+ $extra}"; }
 write_turn_record(){ detect_turn; local json="" sep="" n
-  for n in "${!TP_LISTEN[@]}"; do json+="$sep    { \"service\": \"$n\", \"listen\": \"${TP_LISTEN[$n]}\", \"connect\": \"${TP_CONNECT[$n]}\" }"; sep=$',\n'; done
+  for n in "${!TP_LISTEN[@]}"; do json+="$sep    { \"service\": \"$n\", \"listen\": \"${TP_LISTEN[$n]}\", \"connect\": \"${TP_CONNECT[$n]}\", \"wrap_key\": \"${TP_WRAP[$n]}\" }"; sep=$',\n'; done
   writef "$TURN_RECORD" 640 <<EOF
 {
   "turn_proxies": [
