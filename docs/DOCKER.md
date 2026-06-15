@@ -62,10 +62,15 @@ under a subpath.
 
 ## Images
 
-- **`swg-panel`** (`Dockerfile`) — pure Python + openssl + bundled **acme.sh**. Serves the
-  UI, issues/serves TLS (see above), login, and the node-sync API. State persists in
-  `./data` (`/etc/swg-panel`, `/var/lib/swg-panel`, `/var/www/wgstats`). Mount a real cert
-  over `/etc/swg-panel/tls/` to override acme.
+By default `docker-compose.yml` **pulls prebuilt multi-arch images from GHCR**
+(`ghcr.io/sanityprotocol/swg-panel`, `…/swg-node`) — no local build, no Docker Hub limit.
+`PULL_POLICY=always` to always re-pull the latest. To build from source instead, comment the
+`image:` line and uncomment the `build:` block for that service.
+
+- **`swg-panel`** — pure Python + openssl + bundled **acme.sh**. Serves the UI, issues/serves
+  TLS (see above), login, and the node-sync API. State persists in `./data`
+  (`/etc/swg-panel`, `/var/lib/swg-panel`, `/var/www/wgstats`). Mount a real cert over
+  `/etc/swg-panel/tls/` to override acme.
 - **`swg-node`** (`Dockerfile.node`) — builds the userspace **`amneziawg-go`** datapath
   plus the `awg` tools, brings the interface up, and runs `swg-noded`. A container cannot
   load the host kernel module, so this is the userspace path. Requires `NET_ADMIN` +

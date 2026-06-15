@@ -25,13 +25,14 @@ INSTALL_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 # Panel
 PANEL_PASSWORD="${PANEL_PASSWORD:-}"
 PANEL_USER="${PANEL_USER:-admin}"
-PANEL_DOMAIN="${PANEL_DOMAIN:-}"
-PANEL_BASE="${PANEL_BASE:-}"            # optional subpath mount, e.g. /swg
+PANEL_DOMAIN="${PANEL_DOMAIN:-}"        # host/IP only; a full URL (host[:port][/subpath]) is parsed in Step 1
+PANEL_BASE="${PANEL_BASE:-}"            # optional subpath mount, e.g. /swg (also derivable from the URL)
+PANEL_HOST_NOPORT=""; URL_PORT=""       # filled by parse_panel_url
 TLS="${TLS:-}"                         # letsencrypt|cloudflare|cf15|selfsigned|none (blank = ask)
 ACME_EMAIL="${ACME_EMAIL:-}"           # account email for letsencrypt/cloudflare
 CF_TOKEN="${CF_TOKEN:-}"               # cloudflare DNS-01: API token with Zone:DNS:Edit + Zone:Read
 CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-${CF_ORIGIN_KEY:-}}"  # cf15: API token with Zone:SSL and Certificates:Edit
-PANEL_PORT="${PANEL_PORT:-8443}"
+PANEL_PORT="${PANEL_PORT:-}"           # host-published port; blank = derive from URL, else 443 (Step 1)
 # Node
 PANEL_URL="${PANEL_URL:-}"
 NODE_TOKEN="${NODE_TOKEN:-}"
@@ -48,10 +49,10 @@ ARGS=("$@"); for a in "${ARGS[@]+"${ARGS[@]}"}"; do [ "$a" = "--dry-run" ] && DR
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 
 c(){ printf '\033[%sm' "$1"; }
-info(){ echo "$(c '0;36')▸$(c 0) $*"; }
-ok(){   echo "$(c '0;32')✓$(c 0) $*"; }
-warn(){ echo "$(c '0;33')!$(c 0) $*" >&2; }
-die(){  echo "$(c '0;31')✗ $*$(c 0)" >&2; exit 1; }
+info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }   # every ▸ line is bold (matches bare-metal)
+ok(){   echo "${C_GREEN}✓${RESET} $*"; }
+warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
+die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
 detect_public_ip(){ local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
@@ -64,9 +65,9 @@ ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (de
   case "${v:-$d}" in [Yy]*) printf yes;; *) printf no;; esac; }
 rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16; }
 
-# ── extra helpers for the turn-proxy step (shared idiom with the bare-metal installers) ──
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_RED=$'\033[31m'
-else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_RED=""; fi
+# ── styling shared with the bare-metal installers (same palette + bold ▸ headers) ──
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_GREY=$'\033[90m'; C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'
+else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C_YEL=""; fi
 b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
@@ -79,6 +80,19 @@ v_hostport(){ case "$1" in *:*) v_host "${1%%:*}" && v_port "${1##*:}";; *) retu
 v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cftoken(){ [ -n "$1" ]; }
 v_cforigin(){ [ -n "$1" ]; }
+v_url(){     case "$1" in ""|*" "*) return 1;; esac
+             local h="${1#http://}"; h="${h#https://}"; h="${h%%/*}"; h="${h%%:*}"; v_host "$h"; }
+v_httpsurl(){ case "$1" in https://*|http://*) v_host "$(x="${1#http://}"; x="${x#https://}"; x="${x%%/*}"; printf '%s' "${x%%:*}")";; *) return 1;; esac; }
+v_token(){   [ -n "$1" ] && [ "${#1}" -ge 8 ]; }
+# parse_panel_url <input> -> PANEL_HOST_NOPORT, PANEL_BASE (subpath), URL_PORT  (same logic as bare-metal)
+parse_panel_url(){ local u="$1" hostport rest
+  u="${u#http://}"; u="${u#https://}"; u="${u%/}"
+  hostport="${u%%/*}"; rest="${u#"$hostport"}"
+  PANEL_BASE="$rest"; [ "$PANEL_BASE" = "/" ] && PANEL_BASE=""; PANEL_BASE="${PANEL_BASE%/}"
+  case "$hostport" in
+    *:*) PANEL_HOST_NOPORT="${hostport%%:*}"; URL_PORT="${hostport##*:}";;
+    *)   PANEL_HOST_NOPORT="$hostport"; URL_PORT="";;
+  esac; }
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   while :; do
@@ -224,23 +238,33 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ───────────────────────── per-profile requirements ─────────────────────────
 # Compose interpolates the whole file (both services), so every referenced var must be
 # non-empty even when its service isn't in the active profile — fill sane placeholders.
-info "DOCKER SETUP (profile: $PROFILE)"
-ask_panel_login(){   # match bare-metal: prompt domain only; login is auto-generated (change it later in the panel)
-  [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN="$(ask_tty "Panel domain or IP" "$(detect_public_ip)")"
-  [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
+ask_panel_login(){   # Step 1 — Panel URL (identical look + parsing to bare-metal); login auto-generated
+  echo
+  echo "$(b 'Step 1. Panel URL')"
+  echo
+  echo "      Where the panel is reached — an IP, a host, or a host with a subpath to"
+  echo "      live under an existing site (e.g. $(b 'vpn.example.com/swg'))."
+  echo
+  local def="${PANEL_DOMAIN:-$(detect_public_ip)}"; [ -z "$def" ] && def=localhost
+  PANEL_DOMAIN=""   # ask_valid skips if non-empty; force the prompt and parse the result
+  ask_valid "Enter panel URL (https://…)" "$def" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
+  parse_panel_url "$PANEL_DOMAIN"
+  PANEL_DOMAIN="$PANEL_HOST_NOPORT"; [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
+  [ -n "$PANEL_BASE" ] && ok "panel will be served under subpath ${PANEL_BASE}/"
+  PANEL_PORT="${PANEL_PORT:-${URL_PORT:-443}}"   # honor :port from the URL; else default 443 (host-published port)
   [ "${PANEL_USER:-admin}" = admin ] && PANEL_USER="admin$(( RANDOM % 900 + 100 ))"   # admin+3 digits, like bare-metal (-user overrides)
   [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
   return 0   # never let a short-circuited && above make the function (and set -e) fail
 }
-ask_panel_tls(){     # match bare-metal Step 3 — issued INSIDE the container by the bundled acme.sh
-  if [ -z "$TLS" ]; then
-    echo; echo "$(b 'TLS certificate')"
-    menu "$(b "$(col "$C_BLUE" 'letsencrypt (default)')")" "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
-    menu "$(col "$C_BLUE" cloudflare)"                    "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
-    menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
-    menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
-    menu "$(col "$C_GREEN" none)"                         "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
-  fi
+ask_panel_tls(){     # Step 2 — TLS certificate (same look as bare-metal); issued INSIDE the container by acme.sh
+  echo
+  echo "$(b 'Step 2. TLS certificate')"
+  echo
+  menu "$(b "$(col "$C_BLUE" 'letsencrypt (default)')")" "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
+  menu "$(col "$C_BLUE" cloudflare)"                    "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+  menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
+  menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
+  menu "$(col "$C_GREY" none)"                          "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
   ask_choice "Select TLS certificate" "letsencrypt" TLS "letsencrypt cloudflare cf15 selfsigned none"
   case "$TLS" in letsencrypt|cloudflare|cf15)
     case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS needs a domain (FQDN), not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
@@ -256,31 +280,38 @@ ask_panel_tls(){     # match bare-metal Step 3 — issued INSIDE the container b
   esac
   return 0
 }
-ask_node_conn(){     # prompt panel URL + key + endpoint + TLS-verify (for node)
-  [ -z "$PANEL_URL" ]   && PANEL_URL="$(ask_tty "Panel URL (https://host[/subpath])" "")"
-  [ -n "$PANEL_URL" ]   || die "panel URL required — pass -host (or enter it)"
-  [ -z "$NODE_TOKEN" ]  && NODE_TOKEN="$(ask_tty "Node enrollment key (from Nodes → Add node)" "")"
-  [ -n "$NODE_TOKEN" ]  || die "node key required — pass -key (create the node in the Nodes screen first)"
-  [ -z "$NODE_ENDPOINT" ] && NODE_ENDPOINT="$(ask_tty "Endpoint IP clients dial for this node" "$(detect_public_ip)")"
-  [ -n "$NODE_ENDPOINT" ] || die "node endpoint required — pass -endpoint"
-  [ -z "$TLS_VERIFY" ]  && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (no if the panel uses a self-signed cert)" n)"
+ask_node_conn(){     # NODE SETUP — panel connection + endpoint, styled like bare-metal install-node.sh
+  # Panel connection — normally supplied by the install command's -host / -key flags.
+  ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
+  ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
+  case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
+  [ -z "$TLS_VERIFY" ] && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n)"
+  echo
+  echo "$(b 'Step 1. Endpoint IP clients dial for this node')"
+  echo
+  ask_valid "Endpoint IP clients dial for this node" "${NODE_ENDPOINT:-$(detect_public_ip)}" NODE_ENDPOINT v_host "enter an IP address or hostname"
   return 0
 }
 case "$PROFILE" in
   host)
+    echo; info "PANEL SETUP"
     ask_panel_login; ask_panel_tls
     NODE_TOKEN="${NODE_TOKEN:-set-in-nodes-screen}"; PANEL_URL="${PANEL_URL:-https://swg-panel:8443}"; NODE_ENDPOINT="${NODE_ENDPOINT:-127.0.0.1}"
     ;;
   host-node)
+    echo; info "PANEL SETUP"
     ask_panel_login; ask_panel_tls
-    [ -z "$PANEL_URL" ] && PANEL_URL="https://swg-panel:8443"   # local node reaches the panel on the compose net
-    [ -z "$NODE_TOKEN" ]  && NODE_TOKEN="$(ask_tty "Node enrollment key (from Nodes → Add node)" "")"
-    [ -n "$NODE_TOKEN" ]  || die "node key required — bring up 'docker host' first, add the node, then re-run as host-node with -key"
-    [ -z "$NODE_ENDPOINT" ] && NODE_ENDPOINT="$(ask_tty "Endpoint IP clients dial for this node" "$(detect_public_ip)")"
-    [ -n "$NODE_ENDPOINT" ] || die "node endpoint required — pass -endpoint"
-    TLS_VERIFY="${TLS_VERIFY:-no}"   # local node → local panel is self-signed on the compose net
+    PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
+    TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
+    echo; info "NODE SETUP"
+    ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "bring up 'docker host' first, add the node, then re-run as host-node with this key"
+    echo
+    echo "$(b 'Step 1. Endpoint IP clients dial for this node')"
+    echo
+    ask_valid "Endpoint IP clients dial for this node" "${NODE_ENDPOINT:-$(detect_public_ip)}" NODE_ENDPOINT v_host "enter an IP address or hostname"
     ;;
   node)
+    echo; info "NODE SETUP"
     ask_node_conn
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
@@ -339,8 +370,10 @@ ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 
 # ───────────────────────── bring it up ─────────────────────────
 info "Starting compose profile '$PROFILE'"
-if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d --build)"
-else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d --build ); fi
+# Default compose pulls prebuilt images from GHCR (pull_policy: missing). If you switch
+# docker-compose.yml back to building from source, re-run with: $COMPOSE … up -d --build
+if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d)"
+else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d ); fi
 
 # ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
 # Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
@@ -354,7 +387,10 @@ echo; ok "Docker install complete (profile: $PROFILE)."
 case "$PROFILE" in
   host|host-node)
     SCH=https; [ "$TLS" = none ] && SCH=http
-    echo "  UI:    ${SCH}://${PANEL_DOMAIN}:${PANEL_PORT}${PANEL_BASE}/   (login: ${PANEL_USER} / ${PANEL_PASSWORD})"
+    # omit the port suffix for the scheme's default (443 https / 80 http), like a browser would
+    PORTSUF=":${PANEL_PORT}"
+    if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
+    echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/   (login: ${PANEL_USER} / ${PANEL_PASSWORD})"
     echo "  Then:  Nodes → Add node for each entry server (gives a one-time key + command)."
     [ "$PROFILE" = host-node ] && echo "  This box also runs a local node (swg-node) against the panel."
     ;;
