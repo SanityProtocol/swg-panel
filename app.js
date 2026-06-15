@@ -565,6 +565,10 @@ function UserScreen(params) {
       const col = Store.nodeColor(n);
       const qr = conf ? `<div class="qr" data-qrzoom="${cssid(n)}" title="Tap to enlarge for scanning">${qrSVG(conf)}</div>`
         : `<div class="qr-none">config shown right after creation${Store.storeConfigs ? "" : ", or enable store_configs to keep it"}</div>`;
+      const tps = (Store.stats[n] && Store.stats[n].turn_proxies) || [];
+      const turnHtml = tps.map(tp => `<div class="row"><span class="k">turn-proxy</span><span class="vv">${esc(tp.listen || "—")}` +
+        (tp.wrap_key ? ` · key <span class="addr">${esc(String(tp.wrap_key).slice(0, 8))}…</span><button class="copybtn" data-copykey="${esc(tp.wrap_key)}" title="Copy wrap key">${ICON.copy}</button>` : "") +
+        `</span></div>`).join("");
       cell.className = "deploy";
       cell.innerHTML = `
         <div class="deploy-head"><span class="dot" id="depdot-${cssid(n)}" style="background:${col}"></span><span class="nm">${esc(n)}</span><span class="grow"></span><span id="depbadge-${cssid(n)}"></span></div>
@@ -573,8 +577,11 @@ function UserScreen(params) {
             <div class="row"><span class="k">handshake</span><span class="vv" id="depseen-${cssid(n)}">—</span></div>
             <div class="row"><span class="k">transfer</span><span class="vv" id="deprate-${cssid(n)}">—</span></div>
             <div class="row"><span class="k">endpoint</span><span class="vv" id="depep-${cssid(n)}">—</span></div>
+            <div class="row"><span class="k">transport</span><span class="vv" id="depvia-${cssid(n)}">—</span></div>
+            ${turnHtml}
           </div></div>
         ${conf ? `<div class="acts"><button class="btn btn-mini" data-dl="${cssid(n)}">${ICON.download} Config</button><button class="btn btn-mini" data-cp="${cssid(n)}">${ICON.copy} Copy</button></div>` : ""}`;
+      cell.querySelectorAll("[data-copykey]").forEach(b => b.onclick = () => { navigator.clipboard.writeText(b.dataset.copykey); toast("Wrap key copied.", "ok", 1800); });
       if (conf) {
         cell.querySelector(`[data-dl="${cssid(n)}"]`).onclick = () => downloadConf(conf, (p.name || "peer") + "-" + n);
         cell.querySelector(`[data-cp="${cssid(n)}"]`).onclick = () => { navigator.clipboard.writeText(conf); toast("Config for " + n + " copied.", "ok", 1800); };
@@ -593,6 +600,8 @@ function UserScreen(params) {
       const sv = $("#depseen-" + id); if (sv) sv.textContent = obs ? seen(obs.handshake_age) : "—";
       const rv = $("#deprate-" + id); if (rv) rv.textContent = obs ? "↓ " + rate(obs.rx_speed) + "  ↑ " + rate(obs.tx_speed) : "—";
       const ev = $("#depep-" + id); if (ev && obs && obs.endpoint) ev.textContent = obs.endpoint;
+      const vv = $("#depvia-" + id);
+      if (vv) vv.textContent = d.via === "turn" ? "via turn-proxy" : (d.via === "direct" ? "direct" : "—");
     });
   }
   function adderCardHTML(p) {

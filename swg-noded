@@ -32,6 +32,7 @@ import urllib.parse
 
 CONFIG_PATH = os.environ.get("SWG_AGENT_CONFIG", "/etc/swg-agent/config.json")
 STATE_DIR   = os.environ.get("SWG_NODED_STATE", "/var/lib/swg-noded")
+TURN_RECORD = os.environ.get("SWG_TURN_RECORD", "/etc/swg-agent/turn-proxy.json")
 AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
 
@@ -200,6 +201,18 @@ def post_json(url, token, obj, panel, timeout=20):
 
 # ───────────────────────── snapshot ─────────────────────────
 
+def load_turn_proxies():
+    """Turn-proxies installed on this box (written by the installer) — listen/connect/wrap_key.
+    Forwarded to the panel so it can flag turn-proxied clients and build their configs."""
+    try:
+        with open(TURN_RECORD) as f:
+            d = json.load(f)
+        tp = d.get("turn_proxies") if isinstance(d, dict) else None
+        return tp if isinstance(tp, list) else []
+    except Exception:
+        return []
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     interfaces = {}
@@ -224,7 +237,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "meta": build_meta(iface_line, conf_text,
                                node_cfg.get("endpoint_host"), node_cfg.get("dns", []), cmd),
         }
-    return {"hostname": socket.gethostname(), "generated_at": now, "interfaces": interfaces}
+    return {"hostname": socket.gethostname(), "generated_at": now,
+            "interfaces": interfaces, "turn_proxies": load_turn_proxies()}
 
 
 # ───────────────────────── reconcile ─────────────────────────

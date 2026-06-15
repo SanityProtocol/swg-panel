@@ -157,7 +157,7 @@ A **peer** is one identity (a keypair + IP + PSK) that can be deployed to severa
 - **Copy to another server** — from a peer's page, copy it to a server it isn't on yet. It reuses the same key + PSK but gets a **fresh IP** from that server's subnet (a distinct tunnel sharing the identity). Needs the client private key, so it works when `store_configs` is on or right after the peer was created.
 - **Remove** — drops the peer from the roster; every node it lived on removes it on the next sync.
 
-Live status (online, partial, dangling, …) is computed every refresh from the nodes' snapshots — a peer stays "online" while one replica is briefly unreachable.
+Live status (online, partial, dangling, …) is computed every refresh from the nodes' snapshots — a peer stays "online" while one replica is briefly unreachable. Each deployment also shows its **transport** — **direct** or **via turn-proxy** (inferred when the client's observed endpoint matches a node's turn-proxy) — and, where a turn-proxy is present, the proxy endpoint + **wrap key** to set up the vk-turn-proxy client app.
 
 **Account** — change the panel username/password under the **Account** tab; it takes effect immediately (you're asked to sign in again).
 

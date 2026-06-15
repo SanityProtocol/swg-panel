@@ -55,10 +55,15 @@ also writes it to `stats_dir/<stats_file>` for the status board:
                  "rx_speed": 0, "tx_speed": 0 } ],
     "meta":  { "public_key": "…", "listen_port": 51820, "endpoint": "203.0.113.7:51820",
                "address": "10.8.0.1/24", "subnet": "10.8.0.0/24",
-               "awg_params": { "Jc": 4, "…": 0 }, "dns": ["1.1.1.1"] } } } }
+               "awg_params": { "Jc": 4, "…": 0 }, "dns": ["1.1.1.1"] } } },
+  "turn_proxies": [ { "service": "vk-turn-proxy-anton48", "listen": "203.0.113.7:56000",
+                      "connect": "127.0.0.1:51820", "wrap_key": "<64hex>" } ] }
 ```
 
 `meta` is what the panel and the browser use to allocate IPs and build client configs.
+`turn_proxies` (from the node's `/etc/swg-agent/turn-proxy.json`) lets the panel mark a
+client **via turn-proxy** — its observed `endpoint` IP equals a turn-proxy's `connect` IP
+(the proxy forwards from there) — vs **direct**, and exposes the `wrap_key` for client setup.
 
 ## Status (derived, never stored)
 

@@ -44,6 +44,22 @@ function reconcile(roster, stats, now, cfg) {
     }
   }
 
+  // turn-proxy connect-IPs per node: a turn-proxied client reaches wg THROUGH the local
+  // proxy, so wg sees its endpoint as the proxy's connect IP (typically 127.0.0.1).
+  function ipOf(hostport) {
+    if (!hostport) return "";
+    const s = String(hostport);
+    return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0];
+  }
+  const turnIp = {};
+  for (const node of Object.keys(stats)) {
+    const set = new Set();
+    for (const tp of ((stats[node] && stats[node].turn_proxies) || [])) {
+      const ip = ipOf(tp && tp.connect); if (ip) set.add(ip);
+    }
+    turnIp[node] = set;
+  }
+
   const managed = {};
   const peers = Object.keys(roster).map(function (pubkey) {
     const e = roster[pubkey] || {};
@@ -58,7 +74,9 @@ function reconcile(roster, stats, now, cfg) {
       else if (e.deleted_at) st = obs ? "removing" : "gone";
       else if (obs) st = obs.online ? "online" : "ready";
       else st = (now - (e.created_at || 0) * 1000) <= cfg.graceMs ? "pending" : "dangling";
-      return { node: node, status: st, online: !!(obs && obs.online), observed: obs };
+      // transport: how this client reached the node — through a local turn-proxy or directly
+      const via = (obs && obs.endpoint) ? ((turnIp[node] && turnIp[node].has(ipOf(obs.endpoint))) ? "turn" : "direct") : null;
+      return { node: node, status: st, online: !!(obs && obs.online), observed: obs, via: via };
     });
 
     const live = deployments.filter(d => nodeStatus[d.node] === "live");
