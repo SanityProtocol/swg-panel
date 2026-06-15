@@ -71,7 +71,7 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
-ask(){ local v p="$1" d="${2:-}"; read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v 2>/dev/null </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
+ask(){ local v p="$1" d="${2:-}"; read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
 v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1; local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; }
 v_host(){ v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
 v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
@@ -82,7 +82,7 @@ v_cforigin(){ [ -n "$1" ]; }
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   while :; do
-    if read -rp "$p [$(col "$C_BLUE" "$d")]: " v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
+    if read -rp "$p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; return; }; done
     [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
@@ -92,7 +92,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
 ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return; fi
   while :; do
-    if read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
+    if read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     if "$fn" "$v"; then printf -v "$var" '%s' "$v"; return; fi
     [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
@@ -196,6 +196,7 @@ while [ $# -gt 0 ]; do
     --profile)              PROFILE="${2:-host}"; shift 2 || shift;;
     host|node|host-node)    PROFILE="$1"; shift;;          # bare positional profile (e.g. "docker node")
     -pass|--pass|-password) PANEL_PASSWORD="${2:-}"; shift 2 || shift;;
+    -user|--user|-username) PANEL_USER="${2:-}"; shift 2 || shift;;
     -domain|--domain)       PANEL_DOMAIN="${2:-}"; shift 2 || shift;;
     -base|--base)           PANEL_BASE="${2:-}"; shift 2 || shift;;
     -port|--port)           PANEL_PORT="${2:-}"; shift 2 || shift;;
@@ -224,11 +225,10 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Compose interpolates the whole file (both services), so every referenced var must be
 # non-empty even when its service isn't in the active profile — fill sane placeholders.
 info "DOCKER SETUP (profile: $PROFILE)"
-ask_panel_login(){   # match bare-metal: prompt domain + username, auto-generate the password (printed at the end)
+ask_panel_login(){   # match bare-metal: prompt domain only; login is auto-generated (change it later in the panel)
   [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN="$(ask_tty "Panel domain or IP" "$(detect_public_ip)")"
   [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
-  [ "${PANEL_USER:-admin}" = admin ] && PANEL_USER="admin$(( RANDOM % 900 + 100 ))"   # suggest admin+3 digits, like bare-metal
-  PANEL_USER="$(ask_tty "Panel admin username" "$PANEL_USER")"; [ -z "$PANEL_USER" ] && PANEL_USER=admin
+  [ "${PANEL_USER:-admin}" = admin ] && PANEL_USER="admin$(( RANDOM % 900 + 100 ))"   # admin+3 digits, like bare-metal (-user overrides)
   [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
   return 0   # never let a short-circuited && above make the function (and set -e) fail
 }

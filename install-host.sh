@@ -492,10 +492,10 @@ else
   [ -z "$PORT" ] && PORT="${URL_PORT:-8088}"
 fi
 
-# Admin login — username suggested as admin + 3 random digits; password auto-generated (printed at the end).
+# Admin login — auto-generated (username admin + 3 random digits, password random); both are
+# printed at the end and can be changed later in the panel (Account). Override via BASIC_USER=/BASIC_PASS= env.
 [ -z "$BASIC_PASS" ] && BASIC_PASS="$(head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16)"
 if [ "${BASIC_USER}" = admin ]; then BASIC_USER="admin$(( RANDOM % 900 + 100 ))"; fi
-ask_valid "Panel admin username" "$BASIC_USER" BASIC_USER v_user "1–40 chars, no ':' or spaces"
 
 # ═══════════════ II. NODE SETUP (master only) ═══════════════
 declare -a SELECTED
