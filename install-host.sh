@@ -529,6 +529,9 @@ run usermod -d "$STATE_DIR" -g swg "$PANEL_USER"
 for d in "$PANEL_DIR" "$ETC_DIR" "$STATE_DIR" "$STATS_DIR"; do mkdir -p "$PREFIX$d"; done
 run chown "$PANEL_USER:swg" "$STATE_DIR"; run chmod 750 "$STATE_DIR"
 run chown "$PANEL_USER:swg" "$STATS_DIR"; run chmod 2775 "$STATS_DIR"   # panel writes node snapshots here for the dashboard
+# the panel user must rewrite the auth file (Account tab) — that's an atomic temp+rename in
+# ETC_DIR, so the dir needs group(swg) write; setgid keeps new files in group swg.
+run chown root:swg "$ETC_DIR"; run chmod 2775 "$ETC_DIR"
 [ "$STORE_CONFIGS" = true ] && { mkdir -p "$PREFIX$STATE_DIR/configs"; run chown "$PANEL_USER:swg" "$STATE_DIR/configs"; run chmod 750 "$STATE_DIR/configs"; }
 
 # ───────────────────────── panel files ─────────────────────────
