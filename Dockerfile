@@ -8,11 +8,20 @@
 # anonymous pull-rate limit — no account needed. Prebuilt images are also on GHCR (see CI).
 FROM public.ecr.aws/docker/library/python:3.12-slim
 
+# acme.sh is pinned + installed from its release tarball (not the piped get.acme.sh installer,
+# which exits 0 even when its own download fails — silently shipping an image with no acme.sh).
+# Download is retried, then `acme.sh --version` VERIFIES it landed so a bad fetch fails the build.
+ARG ACME_VERSION=3.1.3
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssl ca-certificates curl socat \
+ && apt-get install -y --no-install-recommends openssl ca-certificates curl socat tar \
  && rm -rf /var/lib/apt/lists/* \
- && curl -fsSL https://get.acme.sh | sh -s -- --home /opt/acme.sh --nocron --noprofile \
- && ln -sf /opt/acme.sh/acme.sh /usr/local/bin/acme.sh
+ && curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+      "https://github.com/acmesh-official/acme.sh/archive/refs/tags/${ACME_VERSION}.tar.gz" -o /tmp/acme.tar.gz \
+ && mkdir -p /tmp/acme && tar -xzf /tmp/acme.tar.gz -C /tmp/acme --strip-components=1 \
+ && ( cd /tmp/acme && ./acme.sh --install --home /opt/acme.sh --nocron --noprofile ) \
+ && ln -sf /opt/acme.sh/acme.sh /usr/local/bin/acme.sh \
+ && /opt/acme.sh/acme.sh --version \
+ && rm -rf /tmp/acme /tmp/acme.tar.gz
 
 WORKDIR /opt/swg-panel
 COPY swg-panel-server app.css app.js index.html reconcile.js VERSION ./
