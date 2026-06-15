@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 ### B — Docker
 
-**Panel** — installs Docker if needed, asks for a domain + admin username (password auto-generated)
+**Panel** — installs Docker if needed, asks for a domain + TLS choice (login auto-generated, change it later in the panel)
 
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
