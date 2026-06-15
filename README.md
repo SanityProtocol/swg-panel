@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
 - **cloudflare** — real cert via DNS-01; **never uses port 80**. The token needs `Zone:DNS:Edit` + `Zone:Read`.
-- **cf15** — Cloudflare **Origin** certificate, **15 years**, issued via the CF API (needs the *Origin CA Key*). ⚠️ Only trusted **behind Cloudflare's proxy** (orange cloud) — a direct hit to the origin shows an untrusted cert. No renewal needed for 15 years.
+- **cf15** — Cloudflare **Origin** certificate, **15 years**, issued via the CF API (needs an **API token** with `Zone` → `SSL and Certificates` → `Edit`; the legacy Origin CA Key is deprecated). ⚠️ Only trusted **behind Cloudflare's proxy** (orange cloud) — a direct hit to the origin shows an untrusted cert. No renewal needed for 15 years.
 - **selfsigned** — instant; browsers warn once. Good for getting going or behind a tunnel.
 - **skip** — bring your own cert (set `CERT_FULLCHAIN`/`CERT_KEY`), or terminate TLS elsewhere. With no cert the panel/proxy serves plain HTTP.
 

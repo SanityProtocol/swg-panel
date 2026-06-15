@@ -25,7 +25,7 @@ TLS_MODE="${TLS_MODE:-}"               # cloudflare | letsencrypt | selfsigned |
 ACME_EMAIL="${ACME_EMAIL:-}"           # account email for letsencrypt/cloudflare
 CF_TOKEN="${CF_TOKEN:-}"               # cloudflare: API token with Zone:DNS:Edit
 CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-}"     # cloudflare: optional account id
-CF_ORIGIN_KEY="${CF_ORIGIN_KEY:-}"     # cf15: Cloudflare Origin CA Key (My Profile → API Tokens → Origin CA Key)
+CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-${CF_ORIGIN_KEY:-}}"  # cf15: API token with Zone:SSL and Certificates:Edit (the Origin CA Key is deprecated)
 CERT_FULLCHAIN="${CERT_FULLCHAIN:-}"   # skip-with-own-cert: path to fullchain.pem
 CERT_KEY="${CERT_KEY:-}"               # skip-with-own-cert: path to private key.pem
 BASIC_USER="${BASIC_USER:-admin}"
@@ -453,7 +453,7 @@ echo "$(b 'Step 3. TLS certificate')"
 echo
 menu "$(b "$(col "$C_BLUE" 'letsencrypt (default)')")" "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
 menu "$(col "$C_BLUE" cloudflare)"                    "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
-menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs the Origin CA Key"
+menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
 menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
 menu "$(col "$C_GREY" skip)"                          "If you are planning to use your own certificate (or terminate TLS elsewhere)"
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
@@ -470,7 +470,7 @@ case "$TLS_MODE" in
                ask_valid "ACME account email"                                     "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
   cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy."
                warn "$PANEL_DOMAIN must be on Cloudflare with the orange cloud ON; a direct hit to the origin shows an untrusted cert."
-               ask_valid "Cloudflare Origin CA Key (My Profile → API Tokens → Origin CA Key → View)" "" CF_ORIGIN_KEY v_cforigin "paste the Origin CA Key (starts with v1.0-…)";;
+               ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "" CF_ORIGIN_TOKEN v_cforigin "paste an API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;
 esac
 
 # Step 4 — web server
@@ -715,22 +715,24 @@ use_provided_certs(){   # skip-with-own-cert: copy caller-supplied cert into $TL
   $DRYRUN || { cp "$CERT_FULLCHAIN" "$PREFIX$TLS_DIR/fullchain.pem"; cp "$CERT_KEY" "$PREFIX$TLS_DIR/key.pem"; }
   CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; cert_perms
   ok "using provided certificate (copied into $TLS_DIR)"; return 0; }
-mk_cf_origin(){   # cf15: request a 15-year Cloudflare Origin certificate via the CF API (Origin CA Key)
+mk_cf_origin(){   # cf15: request a 15-year Cloudflare Origin certificate via the CF API
+  # Auth is a Bearer API token (Zone:SSL and Certificates:Edit). The old Origin CA Key /
+  # X-Auth-User-Service-Key header is deprecated by Cloudflare (sunset 2026-09-30).
   CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; mkdir -p "$PREFIX$TLS_DIR"
-  [ -n "${CF_ORIGIN_KEY:-}" ] || die "cf15 needs CF_ORIGIN_KEY (Cloudflare Origin CA Key)"
+  [ -n "${CF_ORIGIN_TOKEN:-}" ] || die "cf15 needs CF_ORIGIN_TOKEN (API token with Zone:SSL and Certificates:Edit)"
   if $DRYRUN; then echo "    [skip] request Cloudflare Origin certificate (15y, origin-ecc) for $PANEL_DOMAIN"
     : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"; cert_perms; ok "cf15 origin certificate (dry-run placeholder)"; return 0; fi
   local key csr cert
   key="$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null)" || die "openssl: EC key generation failed"
   csr="$(printf '%s\n' "$key" | openssl req -new -key /dev/stdin -subj "/CN=${PANEL_DOMAIN}" 2>/dev/null)" || die "openssl: CSR generation failed"
   info "Requesting a 15-year Cloudflare Origin certificate for $PANEL_DOMAIN…"
-  cert="$(CF_ORIGIN_KEY="$CF_ORIGIN_KEY" python3 - "$PANEL_DOMAIN" "$csr" <<'PY'
+  cert="$(CF_ORIGIN_TOKEN="$CF_ORIGIN_TOKEN" python3 - "$PANEL_DOMAIN" "$csr" <<'PY'
 import sys, os, json, urllib.request, urllib.error
 domain, csr = sys.argv[1], sys.argv[2]
 body = json.dumps({"hostnames": [domain], "requested_validity": 5475,
                    "request_type": "origin-ecc", "csr": csr}).encode()
 req = urllib.request.Request("https://api.cloudflare.com/client/v4/certificates", data=body, method="POST",
-      headers={"Content-Type": "application/json", "X-Auth-User-Service-Key": os.environ["CF_ORIGIN_KEY"]})
+      headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ["CF_ORIGIN_TOKEN"]})
 try:
     with urllib.request.urlopen(req, timeout=30) as r: d = json.load(r)
 except urllib.error.HTTPError as e:
@@ -740,7 +742,7 @@ except Exception as e:
 if d.get("success"): sys.stdout.write(d["result"]["certificate"])
 else: sys.stderr.write(json.dumps(d.get("errors", d))[:300]); sys.exit(1)
 PY
-)" || die "Cloudflare Origin CA request failed — check the Origin CA Key and that $PANEL_DOMAIN is on this Cloudflare account"
+)" || die "Cloudflare Origin CA request failed — check the API token (Zone:SSL and Certificates:Edit) and that $PANEL_DOMAIN is on this Cloudflare account"
   printf '%s\n' "$cert" > "$PREFIX$CERT_FULLCHAIN"
   printf '%s\n' "$key"  > "$PREFIX$CERT_KEY"
   cert_perms; ok "issued Cloudflare Origin certificate (15y) for ${PANEL_DOMAIN} — valid only behind Cloudflare's proxy"; }
