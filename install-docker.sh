@@ -210,8 +210,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --profile)              PROFILE="${2:-host}"; shift 2 || shift;;
     host|node|host-node)    PROFILE="$1"; shift;;          # bare positional profile (e.g. "docker node")
-    -pass|--pass|-password) PANEL_PASSWORD="${2:-}"; shift 2 || shift;;
-    -user|--user|-username) PANEL_USER="${2:-}"; shift 2 || shift;;
+    -pass|--pass|-password) PANEL_PASSWORD="${2:-}"; PANEL_LOGIN_SET=1; shift 2 || shift;;
+    -user|--user|-username) PANEL_USER="${2:-}"; PANEL_LOGIN_SET=1; shift 2 || shift;;
     -domain|--domain)       PANEL_DOMAIN="${2:-}"; shift 2 || shift;;
     -base|--base)           PANEL_BASE="${2:-}"; shift 2 || shift;;
     -port|--port)           PANEL_PORT="${2:-}"; shift 2 || shift;;
@@ -373,12 +373,28 @@ EOF
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
 ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 
+# ── login reconciliation ──────────────────────────────────────────────────────
+# The entrypoint writes data/etc/auth only when it is MISSING, so a restart never clobbers a
+# password changed in the UI. But on a REINSTALL over a reused data dir the old login persists —
+# which would make the credentials printed below wrong. Detect a pre-existing auth file:
+#   • -user/-pass given → apply that login (drop the stale auth so the entrypoint rewrites it)
+#   • otherwise         → keep the existing login and say so, instead of printing creds that don't work
+AUTH_HOST="$PREFIX$INSTALL_DIR/data/etc/auth"; LOGIN_KEPT=false; RECREATE=""
+if [ "$PROFILE" != node ] && [ -f "$AUTH_HOST" ]; then
+  if [ "${PANEL_LOGIN_SET:-0}" = 1 ]; then
+    info "Existing panel data found — applying the -user/-pass login you specified."
+    $DRYRUN || rm -f "$AUTH_HOST"; RECREATE="--force-recreate"
+  else
+    LOGIN_KEPT=true
+  fi
+fi
+
 # ───────────────────────── bring it up ─────────────────────────
 info "Starting compose profile '$PROFILE'"
 # Default compose pulls prebuilt images from GHCR (pull_policy: missing). If you switch
 # docker-compose.yml back to building from source, re-run with: $COMPOSE … up -d --build
-if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d)"
-else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d ); fi
+if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE)"
+else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE ); fi
 
 # ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
 # Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
@@ -395,7 +411,15 @@ case "$PROFILE" in
     # omit the port suffix for the scheme's default (443 https / 80 http), like a browser would
     PORTSUF=":${PANEL_PORT}"
     if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
-    echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/   (login: ${PANEL_USER} / ${PANEL_PASSWORD})"
+    if [ "$LOGIN_KEPT" = true ]; then
+      echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/"
+      warn "login UNCHANGED — this data dir already had a panel login (from an earlier install), so the new credentials were NOT applied."
+      echo "         To reset it to a known login:"
+      echo "           cd $INSTALL_DIR && sudo rm -f data/etc/auth && $COMPOSE --profile $PROFILE up -d --force-recreate"
+      echo "         that regenerates the login from .env: $(b "${PANEL_USER} / ${PANEL_PASSWORD}")"
+    else
+      echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/   (login: ${PANEL_USER} / ${PANEL_PASSWORD})"
+    fi
     echo "  Then:  Nodes → Add node for each entry server (gives a one-time key + command)."
     [ "$PROFILE" = host-node ] && echo "  This box also runs a local node (swg-node) against the panel."
     ;;
