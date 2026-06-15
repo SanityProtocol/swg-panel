@@ -306,8 +306,8 @@ PANEL_DOMAIN="$PANEL_HOST_NOPORT"
 echo
 echo "$(b 'Step 3. TLS certificate')"
 echo
-menu "$(b "$(col "$C_BLUE" 'cloudflare (default)')")" "Cloudflare DNS-01 — requires a Zone:DNS:Edit API token and account email"
-menu "$(col "$C_BLUE" letsencrypt)"                   "Issue a Let's Encrypt certificate using acme.sh"
+menu "$(b "$(col "$C_BLUE" 'cloudflare (default)')")" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+menu "$(col "$C_BLUE" letsencrypt)"                   "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
 menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
 menu "$(col "$C_GREY" skip)"                          "If you are planning to use your own certificate (or terminate TLS elsewhere)"
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
@@ -575,13 +575,19 @@ obtain_cert_internal(){
         info "Issuing $PANEL_DOMAIN via Let's Encrypt — DNS-01 challenge through Cloudflare (can take ~30–60s while DNS propagates)…"
       else args+=(--standalone); info "Issuing $PANEL_DOMAIN via Let's Encrypt — HTTP-01 (acme standalone needs :80 free)…"; fi
       [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
-      local rc=0; run "$ACME" "${args[@]}" || rc=$?
-      # acme.sh exit 2 = RENEW_SKIP (a valid cert already exists, not due for renewal) — that's fine.
-      if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
-        if $DRYRUN || $ACME --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then
-          warn "acme.sh returned $rc but a cert for $PANEL_DOMAIN exists — installing it."
-        else
-          warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; mk_selfsigned; return
+      # Re-run? acme.sh already manages this domain → install the existing cert instead of
+      # re-issuing (a fresh --issue errors on the existing domain key). Renewals run from acme's cron.
+      if ! $DRYRUN && "$ACME" --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then
+        ok "acme.sh already has a cert for $PANEL_DOMAIN — installing it (auto-renews via acme's cron)"
+      else
+        local rc=0; run "$ACME" "${args[@]}" || rc=$?
+        # acme.sh exit 2 = RENEW_SKIP (a valid cert already exists, not due for renewal) — that's fine.
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+          if $DRYRUN || "$ACME" --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then
+            warn "acme.sh exit $rc, but a cert for $PANEL_DOMAIN already exists — installing it."
+          else
+            warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; mk_selfsigned; return
+          fi
         fi
       fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
@@ -623,7 +629,15 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
       else args+=(--standalone); fi                                            # caddy not up yet → acme can hold :80
       [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
       local reload="systemctl reload nginx"; [ "$SERVE_MODE" = caddy ] && reload="systemctl reload caddy"
-      if ! run "$ACME" "${args[@]}"; then warn "issuance failed — proxy will serve plain HTTP."; CERT_FULLCHAIN=""; CERT_KEY=""; return 0; fi
+      # Re-run? install the existing cert instead of re-issuing (avoids the domain-key error).
+      if ! $DRYRUN && "$ACME" --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then
+        ok "acme.sh already has a cert for $PANEL_DOMAIN — installing it (auto-renews via acme's cron)"
+      else
+        local rc=0; run "$ACME" "${args[@]}" || rc=$?
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && ! { $DRYRUN || "$ACME" --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; }; then
+          warn "issuance failed (acme.sh exit $rc) — proxy will serve plain HTTP."; CERT_FULLCHAIN=""; CERT_KEY=""; return 0
+        fi
+      fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
       run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"
       cert_perms; ok "issued + installed certificate via $TLS_MODE";;
