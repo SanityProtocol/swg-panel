@@ -17,14 +17,20 @@ services:
     profiles: ["host", "host-node"]
     ports:
       - "${PANEL_PORT:-8443}:8443"        # use "443:8443" to serve on 443
+      - "80:80"                           # ONLY needed for TLS=letsencrypt (HTTP-01); harmless otherwise
     environment:
       PANEL_USER: "${PANEL_USER:-admin}"
       PANEL_PASSWORD: "${PANEL_PASSWORD:?set PANEL_PASSWORD in .env}"
       PANEL_DOMAIN: "${PANEL_DOMAIN:-localhost}"
-      TLS: "${TLS:-selfsigned}"           # selfsigned | none  (or mount a real cert below)
+      # TLS is issued INSIDE the container by the bundled acme.sh — same options as bare-metal:
+      #   letsencrypt | cloudflare | cf15 | selfsigned | none   (or mount a real cert below)
+      TLS: "${TLS:-selfsigned}"
+      ACME_EMAIL: "${ACME_EMAIL:-}"       # letsencrypt/cloudflare account email
+      CF_TOKEN: "${CF_TOKEN:-}"           # cloudflare DNS-01: token with Zone:DNS:Edit + Zone:Read
+      CF_ORIGIN_TOKEN: "${CF_ORIGIN_TOKEN:-}"  # cf15: token with Zone:SSL and Certificates:Edit
       SWG_PANEL_BASE: "${PANEL_BASE:-}"   # optional subpath mount, e.g. /swg (blank = root)
     volumes:
-      - ./data/etc:/etc/swg-panel         # fleet.json + nodes.json + auth + tls/ persist here
+      - ./data/etc:/etc/swg-panel         # fleet.json + nodes.json + auth + tls/ + acme/ persist here
       - ./data/lib:/var/lib/swg-panel     # roster (users.json), node store, stored configs
       - ./data/stats:/var/www/wgstats     # status snapshots (fed by node syncs)
       # --- mount a real cert instead of self-signed (e.g. a Cloudflare Origin cert) ---

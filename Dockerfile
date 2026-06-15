@@ -1,15 +1,18 @@
 # swg-panel — control-plane (broker + UI) image.
 # Self-contained: serves its own TLS + login + the /wgstats board. Nodes reach the
 # panel over OUTBOUND HTTPS (no ssh, no inbound) — add them in the Nodes screen.
-# Pure Python + openssl; no wg tooling here. Nodes run bare-metal (install-node.sh)
-# or as the companion swg-node image (see docker-compose.yml / Dockerfile.node).
+# Python + openssl + acme.sh (bundled, so the container can issue real TLS certs:
+# letsencrypt / cloudflare / cf15 — same options as bare-metal). Nodes run bare-metal
+# (install-node.sh) or as the companion swg-node image (see Dockerfile.node).
 # Base from AWS ECR Public (mirrors Docker Hub official images) to dodge Docker Hub's
 # anonymous pull-rate limit — no account needed. Prebuilt images are also on GHCR (see CI).
 FROM public.ecr.aws/docker/library/python:3.12-slim
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends openssl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends openssl ca-certificates curl socat \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL https://get.acme.sh | sh -s -- --home /opt/acme.sh --nocron --noprofile \
+ && ln -sf /opt/acme.sh/acme.sh /usr/local/bin/acme.sh
 
 WORKDIR /opt/swg-panel
 COPY swg-panel-server app.css app.js index.html reconcile.js VERSION ./

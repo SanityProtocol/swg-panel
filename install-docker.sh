@@ -27,7 +27,10 @@ PANEL_PASSWORD="${PANEL_PASSWORD:-}"
 PANEL_USER="${PANEL_USER:-admin}"
 PANEL_DOMAIN="${PANEL_DOMAIN:-}"
 PANEL_BASE="${PANEL_BASE:-}"            # optional subpath mount, e.g. /swg
-TLS="${TLS:-selfsigned}"               # selfsigned | none
+TLS="${TLS:-}"                         # letsencrypt|cloudflare|cf15|selfsigned|none (blank = ask)
+ACME_EMAIL="${ACME_EMAIL:-}"           # account email for letsencrypt/cloudflare
+CF_TOKEN="${CF_TOKEN:-}"               # cloudflare DNS-01: API token with Zone:DNS:Edit + Zone:Read
+CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-${CF_ORIGIN_KEY:-}}"  # cf15: API token with Zone:SSL and Certificates:Edit
 PANEL_PORT="${PANEL_PORT:-8443}"
 # Node
 PANEL_URL="${PANEL_URL:-}"
@@ -73,6 +76,9 @@ v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1;
 v_host(){ v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
 v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 v_hostport(){ case "$1" in *:*) v_host "${1%%:*}" && v_port "${1##*:}";; *) return 1;; esac; }
+v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
+v_cftoken(){ [ -n "$1" ]; }
+v_cforigin(){ [ -n "$1" ]; }
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   while :; do
@@ -194,6 +200,9 @@ while [ $# -gt 0 ]; do
     -base|--base)           PANEL_BASE="${2:-}"; shift 2 || shift;;
     -port|--port)           PANEL_PORT="${2:-}"; shift 2 || shift;;
     -tls|--tls)             TLS="${2:-}"; shift 2 || shift;;
+    -email|--email)         ACME_EMAIL="${2:-}"; shift 2 || shift;;
+    -cf-token|--cf-token)   CF_TOKEN="${2:-}"; shift 2 || shift;;
+    -cf-origin|--cf-origin) CF_ORIGIN_TOKEN="${2:-}"; shift 2 || shift;;
     -key|--key|-token)      NODE_TOKEN="${2:-}"; shift 2 || shift;;
     -host|--host|-url)      PANEL_URL="${2:-}"; shift 2 || shift;;
     -endpoint|--endpoint)   NODE_ENDPOINT="${2:-}"; shift 2 || shift;;
@@ -223,6 +232,30 @@ ask_panel_login(){   # match bare-metal: prompt domain + username, auto-generate
   [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
   return 0   # never let a short-circuited && above make the function (and set -e) fail
 }
+ask_panel_tls(){     # match bare-metal Step 3 — issued INSIDE the container by the bundled acme.sh
+  if [ -z "$TLS" ]; then
+    echo; echo "$(b 'TLS certificate')"
+    menu "$(b "$(col "$C_BLUE" 'letsencrypt (default)')")" "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
+    menu "$(col "$C_BLUE" cloudflare)"                    "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+    menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
+    menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
+    menu "$(col "$C_GREEN" none)"                         "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
+  fi
+  ask_choice "Select TLS certificate" "letsencrypt" TLS "letsencrypt cloudflare cf15 selfsigned none"
+  case "$TLS" in letsencrypt|cloudflare|cf15)
+    case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS needs a domain (FQDN), not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
+    case "$PANEL_DOMAIN" in *.*) : ;; *) die "TLS=$TLS needs a domain (FQDN), not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac ;;
+  esac
+  case "$TLS" in
+    letsencrypt) ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com"
+                 warn "letsencrypt validates over HTTP-01 — publish port 80 to the panel container (compose maps 80:80)";;
+    cloudflare)  ask_valid "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "$CF_TOKEN" CF_TOKEN v_cftoken "the API token can't be empty"
+                 ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+    cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy (orange cloud)."
+                 ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "$CF_ORIGIN_TOKEN" CF_ORIGIN_TOKEN v_cforigin "paste an API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;
+  esac
+  return 0
+}
 ask_node_conn(){     # prompt panel URL + key + endpoint + TLS-verify (for node)
   [ -z "$PANEL_URL" ]   && PANEL_URL="$(ask_tty "Panel URL (https://host[/subpath])" "")"
   [ -n "$PANEL_URL" ]   || die "panel URL required — pass -host (or enter it)"
@@ -235,11 +268,11 @@ ask_node_conn(){     # prompt panel URL + key + endpoint + TLS-verify (for node)
 }
 case "$PROFILE" in
   host)
-    ask_panel_login
+    ask_panel_login; ask_panel_tls
     NODE_TOKEN="${NODE_TOKEN:-set-in-nodes-screen}"; PANEL_URL="${PANEL_URL:-https://swg-panel:8443}"; NODE_ENDPOINT="${NODE_ENDPOINT:-127.0.0.1}"
     ;;
   host-node)
-    ask_panel_login
+    ask_panel_login; ask_panel_tls
     [ -z "$PANEL_URL" ] && PANEL_URL="https://swg-panel:8443"   # local node reaches the panel on the compose net
     [ -z "$NODE_TOKEN" ]  && NODE_TOKEN="$(ask_tty "Node enrollment key (from Nodes → Add node)" "")"
     [ -n "$NODE_TOKEN" ]  || die "node key required — bring up 'docker host' first, add the node, then re-run as host-node with -key"
@@ -252,6 +285,7 @@ case "$PROFILE" in
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac
+TLS="${TLS:-selfsigned}"         # concrete value for .env (node profile never prompts for it)
 TLS_VERIFY="${TLS_VERIFY:-no}"   # concrete value for .env (host profile leaves it unset)
 
 # ───────────────────────── ensure Docker ─────────────────────────
@@ -284,6 +318,9 @@ PANEL_USER=$PANEL_USER
 PANEL_DOMAIN=$PANEL_DOMAIN
 PANEL_BASE=$PANEL_BASE
 TLS=$TLS
+ACME_EMAIL=$ACME_EMAIL
+CF_TOKEN=$CF_TOKEN
+CF_ORIGIN_TOKEN=$CF_ORIGIN_TOKEN
 PANEL_PORT=$PANEL_PORT
 
 # ───────── Node (profiles: node, host-node) ─────────

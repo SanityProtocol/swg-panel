@@ -18,9 +18,29 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 ```
 
 Flags skip the matching prompt (the panel's enroll command uses them): `-pass`, `-domain`,
-`-base` (subpath, e.g. `/swg`), `-port`, `-tls selfsigned|none`, `-key`, `-host`, `-endpoint`,
-`-iface`, `-ifaces`. `--profile <p>` also still works. Re-run from `/opt/swg-panel-docker`
-after editing `.env`: `docker compose --profile <p> up -d`.
+`-base` (subpath, e.g. `/swg`), `-port`, `-tls letsencrypt|cloudflare|cf15|selfsigned|none`,
+`-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`.
+`--profile <p>` also still works. Re-run from `/opt/swg-panel-docker` after editing `.env`:
+`docker compose --profile <p> up -d`.
+
+## TLS
+
+The panel image bundles **acme.sh**, so the container issues real certificates itself — the
+same options as bare-metal:
+
+| `TLS=` | What it does | Needs |
+|---|---|---|
+| `letsencrypt` | Let's Encrypt over HTTP-01 | port **80** published (compose maps `80:80`), DNS → this host, `ACME_EMAIL` |
+| `cloudflare` | Let's Encrypt over DNS-01 (no port 80) | `CF_TOKEN` (Zone:DNS:Edit + Zone:Read), `ACME_EMAIL` |
+| `cf15` | 15-year Cloudflare **Origin** cert — only valid behind CF's proxy | `CF_ORIGIN_TOKEN` (Zone → SSL and Certificates → Edit) |
+| `selfsigned` | self-signed (default) — fine for testing | — |
+| `none` | plain HTTP — only behind a tunnel/reverse-proxy | — |
+
+acme.sh state and the issued cert persist under `./data/etc` (`/etc/swg-panel/{acme,tls}`),
+so a restart renews/reuses rather than re-issuing. A cert mounted over
+`/etc/swg-panel/tls/fullchain.pem` always wins and skips acme entirely. Cert **renewal** is
+not yet cron-driven in the container — recreate it (`docker compose up -d --force-recreate
+swg-panel`) before expiry, or mount your own cert.
 
 ## By hand
 
@@ -38,9 +58,10 @@ under a subpath.
 
 ## Images
 
-- **`swg-panel`** (`Dockerfile`) — pure Python + openssl. Serves the UI, TLS, login, and
-  the node-sync API. State persists in `./data` (`/etc/swg-panel`, `/var/lib/swg-panel`,
-  `/var/www/wgstats`). Mount a real cert over `/etc/swg-panel/tls/` if you have one.
+- **`swg-panel`** (`Dockerfile`) — pure Python + openssl + bundled **acme.sh**. Serves the
+  UI, issues/serves TLS (see above), login, and the node-sync API. State persists in
+  `./data` (`/etc/swg-panel`, `/var/lib/swg-panel`, `/var/www/wgstats`). Mount a real cert
+  over `/etc/swg-panel/tls/` to override acme.
 - **`swg-node`** (`Dockerfile.node`) — builds the userspace **`amneziawg-go`** datapath
   plus the `awg` tools, brings the interface up, and runs `swg-noded`. A container cannot
   load the host kernel module, so this is the userspace path. Requires `NET_ADMIN` +
