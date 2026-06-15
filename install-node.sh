@@ -33,16 +33,69 @@ DRYRUN=false; [ "${1:-}" = "--dry-run" ] && DRYRUN=true
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-c(){ printf '\033[%sm' "$1"; }
-info(){ echo "$(c '0;36')▸$(c 0) $*"; }
-ok(){   echo "$(c '0;32')✓$(c 0) $*"; }
-warn(){ echo "$(c '0;33')!$(c 0) $*" >&2; }
-die(){  echo "$(c '0;31')✗ $*$(c 0)" >&2; exit 1; }
+# ── colours / styling (honour NO_COLOR + non-tty) ──
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  BOLD=$'\033[1m'; RESET=$'\033[0m'
+  C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_GREY=$'\033[90m'; C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'
+else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C_YEL=""; fi
+b(){   printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
+col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
+info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }   # every ▸ line is bold
+ok(){   echo "${C_GREEN}✓${RESET} $*"; }
+warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
+die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
-ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi; read -rp "$p${d:+ [$d]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; }
-ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi; read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true; v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
+menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
+
+ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
+  read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; }
+ask_yn(){ local v p="$1" d="${2:-y}"; if [ -n "${!3:-}" ]; then return; fi
+  read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
+  v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
+
+# ── input validators (0 = ok) ──
+v_proto(){   case "$1" in a|awg|amneziawg|w|wg|wireguard) return 0;; *) return 1;; esac; }
+v_ip(){      printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+             local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; return 0; }
+v_host(){    v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
+v_httpsurl(){ case "$1" in https://*|http://*) v_host "$(x="${1#http://}"; x="${x#https://}"; x="${x%%/*}"; printf '%s' "${x%%:*}")";; *) return 1;; esac; }
+v_port(){    case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }
+v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
+v_token(){   [ -n "$1" ] && [ "${#1}" -ge 8 ]; }
+v_subnet(){  have python3 || return 0; python3 -c "import ipaddress,sys;ipaddress.ip_network(sys.argv[1],strict=False)" "$1" >/dev/null 2>&1; }
+
+# ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
+ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
+  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done
+    warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
+  while :; do
+    if read -rp "$p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    v="${v:-$d}"; forced=no
+    case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
+    for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; return; }; done
+    [ "$forced" = yes ] && { warn "forcing unrecognised value: $v"; printf -v "$var" '%s' "$v"; return; }
+    [ $rc -ne 0 ] && die "‘$v’ is not one of: $opts (and no interactive input to re-prompt)"
+    warn "‘$v’ isn't one of: $(col "$C_BLUE" "$opts")"
+    echo "  re-enter, or append $(b ' --force') to use your value anyway"
+  done; }
+
+# ask_valid <prompt> <default> <var> <validator> <hint>  — re-prompts on bad input; ' --force' overrides
+ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
+  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return
+    warn "ignoring invalid $var='${!var}' ($hint)"; fi
+  while :; do
+    if read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    v="${v:-$d}"; forced=no
+    case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
+    if "$fn" "$v"; then printf -v "$var" '%s' "$v"; return; fi
+    [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
+    [ $rc -ne 0 ] && die "no valid value for ‘$p’ (got '${v:-empty}') and no interactive input to re-prompt"
+    warn "$hint"
+    echo "  re-enter, or append $(b ' --force') to use it anyway"
+  done; }
 
 detect_public_ip(){ # best public IPv4: default-route source, then first hostname -I
   local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
@@ -59,11 +112,14 @@ detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc
   fi
   for f in /etc/wireguard/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
 }
-ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent)
+ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools if missing (idempotent, non-fatal -> 0/1)
   local cmd="$1"
-  if [ "$cmd" = wg ]; then have wg && return 0; run apt-get update -qq; run apt-get install -y wireguard
-  else have awg && return 0; run apt-get update -qq; run apt-get install -y software-properties-common
-       run add-apt-repository -y ppa:amnezia/ppa; run apt-get update -qq; run apt-get install -y amneziawg; fi
+  have "$cmd" && return 0
+  if [ "$cmd" = wg ]; then run apt-get update -qq || true; run apt-get install -y wireguard || true
+  else run apt-get update -qq || true; run apt-get install -y software-properties-common || true
+       run add-apt-repository -y ppa:amnezia/ppa || true; run apt-get update -qq || true; run apt-get install -y amneziawg || true; fi
+  $DRYRUN && return 0
+  have "$cmd"
 }
 awg_obfuscation(){ # AmneziaWG v2 obfuscation — H1–H4 ranges, S1–S4, conservative QUIC-Initial I1
   local s1 s2 s3 s4 b1 b2 b3 b4 w=15
@@ -84,26 +140,46 @@ print(f"{next(n.hosts())}/{n.prefixlen}")
 PY
 }
 create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain WG), NAT it to the WAN, bring up, register
-  local _proto proto name port subnet addr conf cmd priv dir wan up down
-  ask "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto; proto="${_proto:-a}"
-  case "$proto" in w|wg|wireguard) proto=wg; cmd=wg; dir=/etc/wireguard;;
-                                *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
-  ask "Interface name" "$([ "$cmd" = awg ] && echo awg0 || echo wg0)" name
-  ask "Listen port"    "51820" port
-  ask "Tunnel subnet (CIDR; server takes the first host)" "10.8.0.0/24" subnet
-  ask "WAN egress interface (clients are NAT'd out using this)" "$(detect_wan || echo eth0)" wan
-  addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"; ensure_wg_tools "$cmd"
+  local _proto proto name port subnet addr conf cmd priv dir wan up down idx defname defport defsub upok
+  idx=${#IF_CMD[@]}                              # offset defaults so a 2nd/3rd iface doesn't collide
+  ask_choice "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto "a w awg wg amneziawg wireguard"
+  case "$_proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
+                                 *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
+  defname="$([ "$cmd" = awg ] && echo "awg$idx" || echo "wg$idx")"
+  while [ -n "${IF_CMD[$defname]:-}" ] || [ -e "/etc/amnezia/amneziawg/$defname.conf" ] || [ -e "/etc/wireguard/$defname.conf" ]; do
+    idx=$((idx+1)); defname="$([ "$cmd" = awg ] && echo "awg$idx" || echo "wg$idx")"; done
+  while :; do
+    ask_valid "Interface name" "$defname" name v_iface "1–15 chars: letters, digits, - or _"
+    if [ -n "${IF_CMD[$name]:-}" ] || [ -e "/etc/amnezia/amneziawg/$name.conf" ] || [ -e "/etc/wireguard/$name.conf" ]; then
+      warn "interface '$name' already exists — pick another name"; name=""; continue
+    fi
+    break
+  done
+  defport=$((51820 + idx)); defsub="10.$(( (8 + idx) % 255 )).0.0/24"
+  ask_valid "Listen port" "$defport" port v_port "port must be 1–65535"
+  ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
+  ask_valid "WAN egress interface (clients are NAT'd out using this)" "$(detect_wan || echo eth0)" wan v_iface "enter a network interface name"
+  addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"
+  if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; return 0; fi
   up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
   down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
   printf 'net.ipv4.ip_forward = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
   run sysctl -q -w net.ipv4.ip_forward=1
-  if $DRYRUN; then priv="<generated-on-real-run>"; else priv="$("$cmd" genkey)"; fi
+  if $DRYRUN; then priv="<generated-on-real-run>"
+  elif ! priv="$("$cmd" genkey 2>/dev/null)" || [ -z "$priv" ]; then warn "'$cmd genkey' failed — skipping interface '$name'"; return 0; fi
   { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\n' "$priv" "$addr" "$port"
     printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
     if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
-  if [ "$cmd" = awg ]; then run awg-quick up "$name"; run systemctl enable "awg-quick@$name"
-  else                     run wg-quick  up "$name"; run systemctl enable "wg-quick@$name"; fi
-  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; LAST_IFACE="$name"; ok "created $proto interface '$name' on :$port (server $addr, NAT out $wan)"
+  # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)
+  upok=yes
+  if [ "$cmd" = awg ]; then run awg-quick up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "awg-quick@$name" || true; }
+  else                     run wg-quick  up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "wg-quick@$name"  || true; }; fi
+  if [ "$upok" = no ]; then
+    warn "couldn't bring up '$name' (a port or subnet may already be in use) — removing its conf; try again with different values"
+    run rm -f "$conf"; return 0
+  fi
+  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; LAST_IFACE="$name"
+  ok "created $proto interface $(col "$C_GREEN" "$name") on :$port (server $addr, NAT out $wan)"
 }
 choose_ifaces(){ # populate SELECTED[] — all detected interfaces are managed; 'new' creates more
   detect_wg
@@ -118,23 +194,29 @@ choose_ifaces(){ # populate SELECTED[] — all detected interfaces are managed; 
       detect_wg
       [ "${#IF_CMD[@]}" -eq 0 ] && { $DRYRUN || die "create an interface, then re-run"; IF_CMD[awg0]=awg; IF_CONF[awg0]=/etc/amnezia/amneziawg/awg0.conf; }
     fi
-    local names=() pick
+    local names=() pick n
     while :; do
       detect_wg; names=("${!IF_CMD[@]}")
-      echo; printf "  Available interfaces:"; for n in "${names[@]}"; do printf ' %s (%s)' "$n" "${IF_CMD[$n]}"; done; echo
-      if ! read -rp "  Press Enter to proceed with the setup or enter \"new\" to create an additional interface: " pick </dev/tty 2>/dev/null; then
-        warn "no interactive input — managing all detected interfaces"; break
+      echo
+      printf "  Available interfaces:"
+      for n in "${names[@]}"; do printf ' %s %s' "$(col "$C_GREEN" "$n")" "$(b "(${IF_CMD[$n]})")"; done
+      echo; echo
+      # print the prompt with printf (NOT read -p) so it always shows; never hide it via 2>/dev/null
+      printf '  Press %s to proceed with the setup or enter "%s" to create an additional interface: ' "$(b Enter)" "$(col "$C_BLUE" new)"
+      if ! read -r pick </dev/tty; then
+        echo; warn "no interactive input — managing all detected interfaces"; break
       fi
       pick="${pick//[[:space:]]/}"
       [ "$pick" = new ] && { create_iface; continue; }
       [ -z "$pick" ] && break
-      warn "enter nothing to proceed, or \"new\" to add another interface"
+      warn "type nothing to proceed, or \"new\" to add another interface"
     done
     SELECTED=("${names[@]}")          # every detected interface ends up in the web panel
   fi
   detect_wg
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }; done
-  ok "Managing: ${SELECTED[*]}"
+  [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
+  ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
 }
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
@@ -144,25 +226,28 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 echo; info "NODE SETUP"
 
 # Panel connection — normally supplied by the install command's -host / -key flags.
-ask "Panel URL (https://host[/subpath])" "" PANEL_URL
-ask "Node enrollment key (from the Nodes screen)" "" NODE_TOKEN
-[ -n "$PANEL_URL" ]  || $DRYRUN || die "panel URL required — pass -host, or create the node in the Nodes screen first"
-[ -n "$NODE_TOKEN" ] || $DRYRUN || die "node key required — pass -key (copy it from the Nodes screen)"
+if $DRYRUN; then ask "Panel URL (https://host[/subpath])" "" PANEL_URL
+else ask_valid "Panel URL (https://host[/subpath])" "" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"; fi
+if $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "" NODE_TOKEN
+else ask_valid "Node enrollment key (from the Nodes screen)" "" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
 case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   ask_yn "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n TLS_VERIFY
 fi
 
 echo
-echo "Step 1. Node name for THIS box"
-ask "Node name" "$(hostname -s 2>/dev/null || hostname)" NODE_NAME
+echo "$(b 'Step 1. Node name for THIS box')"
+echo
+ask_valid "Node name" "$(hostname -s 2>/dev/null || hostname)" NODE_NAME v_name "1–40 chars: letters, digits, - or _"
 
 echo
-echo "Step 2. Endpoint IP clients dial for this node"
-ask "Endpoint IP clients dial for this node" "$(detect_public_ip)" ENDPOINT_IP
+echo "$(b 'Step 2. Endpoint IP clients dial for this node')"
+echo
+ask_valid "Endpoint IP clients dial for this node" "$(detect_public_ip)" ENDPOINT_IP v_host "enter an IP address or hostname"
 
 echo
-echo "Step 3. WireGuard / AmneziaWG setup"
+echo "$(b 'Step 3. WireGuard / AmneziaWG setup')"
+echo
 choose_ifaces
 
 # ───────────────────────── install binaries ─────────────────────────
