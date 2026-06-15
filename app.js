@@ -893,24 +893,30 @@ async function doNodeCreate() {
 }
 
 const BOOTSTRAP_URL = "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh";
-function enrollCommand(token) {
-  // One-liner: fetch the repo and run install-node.sh with the key + panel URL.
-  // -host carries the mount subpath so the node posts to <origin><base>/api/node/sync;
-  // the installer prompts for name, endpoint and interfaces on the node itself.
-  return `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s node -key ${token} -host ${location.origin}${BASE}`;
+function enrollCommands(token) {
+  // -host carries the mount subpath so the node posts to <origin><base>/api/node/sync.
+  // The installer prompts for endpoint (+ interfaces, bare-metal) on the node itself.
+  const host = `${location.origin}${BASE}`;
+  return {
+    bare: `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s node -key ${token} -host ${host}`,
+    docker: `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s docker node -key ${token} -host ${host}`,
+  };
 }
 function showNodeToken(name, token, isNew) {
-  const cmd = enrollCommand(token);
+  const cmds = enrollCommands(token);
   openSheet(`<div class="sheet-head"><h3>${isNew ? "Node created" : "New token"} · ${esc(name)}</h3><button class="x" data-close>×</button></div>
     <div class="sheet-body">
       <div class="notice warn">${ICON.warn}<span><b>Shown once.</b> This token authenticates the node to the panel — copy it now. You can rotate it later if it leaks.</span></div>
       <div class="field" style="margin-top:15px"><label>Enrollment token</label>
         <div class="cmdrow"><div class="tokenbox">${esc(token)}</div>
           <button class="copyaction" data-cp="${esc(token)}">${ICON.copy} Copy</button></div></div>
-      <div class="field"><label>Run on the node</label>
-        <div class="cmdrow"><div class="tokenbox">${esc(cmd)}</div>
-          <button class="copyaction" data-cp="${esc(cmd)}">${ICON.copy} Copy</button></div>
-        <div class="hint">Paste this on the entry server. It fetches the installer, installs <span class="mono">swg-noded</span> pointed here, prompts for the node's name, endpoint and interfaces, and the node appears once it syncs.</div></div>
+      <div class="field"><label>Run on the node — <span style="color:#60a5fa;font-weight:700">bare-metal</span></label>
+        <div class="cmdrow"><div class="tokenbox">${esc(cmds.bare)}</div>
+          <button class="copyaction" data-cp="${esc(cmds.bare)}">${ICON.copy} Copy</button></div></div>
+      <div class="field"><label>Run on the node — <span style="color:#c084e8;font-weight:700">docker</span></label>
+        <div class="cmdrow"><div class="tokenbox">${esc(cmds.docker)}</div>
+          <button class="copyaction" data-cp="${esc(cmds.docker)}">${ICON.copy} Copy</button></div>
+        <div class="hint">Pick one. Both fetch the installer and prompt for the node's endpoint; <b>bare-metal</b> installs <span class="mono">swg-noded</span> via systemd and sets up the wg/awg interface, <b>docker</b> runs the <span class="mono">swg-node</span> container (auto-generating an AmneziaWG interface). The node appears once it syncs.</div></div>
     </div>
     <div class="sheet-foot"><span class="grow"></span><button class="btn btn-primary" data-close>Done</button></div>`);
   $$("#sheet .copyaction").forEach(b => b.onclick = () => { navigator.clipboard.writeText(b.dataset.cp); toast("Copied.", "ok", 1500); });

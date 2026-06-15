@@ -53,11 +53,16 @@ have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
 detect_public_ip(){ local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
   [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"; printf '%s' "$ip"; }
+ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps a tty); else use default
+  if printf '%s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then printf '%s' "${v:-$d}"
+  else printf '%s' "$d"; fi; }
+rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16; }
 
 # ───────────────────────── flags ─────────────────────────
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile)              PROFILE="${2:-host}"; shift 2 || shift;;
+    host|node|host-node)    PROFILE="$1"; shift;;          # bare positional profile (e.g. "docker node")
     -pass|--pass|-password) PANEL_PASSWORD="${2:-}"; shift 2 || shift;;
     -domain|--domain)       PANEL_DOMAIN="${2:-}"; shift 2 || shift;;
     -base|--base)           PANEL_BASE="${2:-}"; shift 2 || shift;;
@@ -82,23 +87,36 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ───────────────────────── per-profile requirements ─────────────────────────
 # Compose interpolates the whole file (both services), so every referenced var must be
 # non-empty even when its service isn't in the active profile — fill sane placeholders.
+info "DOCKER SETUP (profile: $PROFILE)"
+ask_panel_login(){   # match bare-metal: prompt domain + username, auto-generate the password (printed at the end)
+  [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN="$(ask_tty "Panel domain or IP" "$(detect_public_ip)")"
+  [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
+  PANEL_USER="$(ask_tty "Panel admin username" "${PANEL_USER:-admin}")"; [ -z "$PANEL_USER" ] && PANEL_USER=admin
+  [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
+}
+ask_node_conn(){     # prompt panel URL + key (for node / host-node)
+  [ -z "$PANEL_URL" ]   && PANEL_URL="$(ask_tty "Panel URL (https://host[/subpath])" "")"
+  [ -n "$PANEL_URL" ]   || die "panel URL required — pass -host (or enter it)"
+  [ -z "$NODE_TOKEN" ]  && NODE_TOKEN="$(ask_tty "Node enrollment key (from Nodes → Add node)" "")"
+  [ -n "$NODE_TOKEN" ]  || die "node key required — pass -key (create the node in the Nodes screen first)"
+  [ -z "$NODE_ENDPOINT" ] && NODE_ENDPOINT="$(ask_tty "Endpoint IP clients dial for this node" "$(detect_public_ip)")"
+  [ -n "$NODE_ENDPOINT" ] || die "node endpoint required — pass -endpoint"
+}
 case "$PROFILE" in
   host)
-    [ -n "$PANEL_PASSWORD" ] || die "panel password required — pass -pass"
-    [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN="$(detect_public_ip)"; [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
+    ask_panel_login
     NODE_TOKEN="${NODE_TOKEN:-set-in-nodes-screen}"; PANEL_URL="${PANEL_URL:-https://swg-panel:8443}"; NODE_ENDPOINT="${NODE_ENDPOINT:-127.0.0.1}"
     ;;
   host-node)
-    [ -n "$PANEL_PASSWORD" ] || die "panel password required — pass -pass"
-    [ -n "$NODE_TOKEN" ]     || die "node key required (Nodes → Add node first) — pass -key"
-    [ -n "$NODE_ENDPOINT" ]  || die "node endpoint required — pass -endpoint"
-    [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN="$(detect_public_ip)"; [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
-    PANEL_URL="${PANEL_URL:-https://swg-panel:8443}"
+    ask_panel_login
+    [ -z "$PANEL_URL" ] && PANEL_URL="https://swg-panel:8443"   # local node reaches the panel on the compose net
+    [ -z "$NODE_TOKEN" ]  && NODE_TOKEN="$(ask_tty "Node enrollment key (from Nodes → Add node)" "")"
+    [ -n "$NODE_TOKEN" ]  || die "node key required — bring up 'docker host' first, add the node, then re-run as host-node with -key"
+    [ -z "$NODE_ENDPOINT" ] && NODE_ENDPOINT="$(ask_tty "Endpoint IP clients dial for this node" "$(detect_public_ip)")"
+    [ -n "$NODE_ENDPOINT" ] || die "node endpoint required — pass -endpoint"
     ;;
   node)
-    [ -n "$NODE_TOKEN" ]    || die "node key required — pass -key"
-    [ -n "$PANEL_URL" ]     || die "panel URL required — pass -host https://your-panel"
-    [ -n "$NODE_ENDPOINT" ] || die "node endpoint required — pass -endpoint"
+    ask_node_conn
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac

@@ -18,7 +18,7 @@ set -euo pipefail
 # ───────────────────────── CONFIG (blank = ask) ─────────────────────────
 PANEL_URL="${PANEL_URL:-}"             # https://host[:port][/subpath] of the panel   (bootstrap: -host)
 NODE_TOKEN="${NODE_TOKEN:-}"           # one-time enrollment key from the Nodes screen (bootstrap: -key)
-NODE_NAME="${NODE_NAME:-}"             # name for THIS node (display / unit description; blank = hostname)
+NODE_NAME="${NODE_NAME:-}"             # local label for this box's systemd unit + final message only (NOT the panel name; blank = hostname)
 ENDPOINT_IP="${ENDPOINT_IP:-}"         # public IP/host clients dial for THIS node's wg
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected)
 DNS="${DNS:-1.1.1.1}"
@@ -235,18 +235,18 @@ if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   ask_yn "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n TLS_VERIFY
 fi
 
-echo
-echo "$(b 'Step 1. Node name for THIS box')"
-echo
-ask_valid "Node name" "$(hostname -s 2>/dev/null || hostname)" NODE_NAME v_name "1–40 chars: letters, digits, - or _"
+# The node's panel name comes from Nodes → Add node (matched by the enrollment token),
+# NOT from here. NODE_NAME is only a local label for this box's systemd unit + final
+# message, so default it to the hostname and don't prompt for it.
+NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"
 
 echo
-echo "$(b 'Step 2. Endpoint IP clients dial for this node')"
+echo "$(b 'Step 1. Endpoint IP clients dial for this node')"
 echo
 ask_valid "Endpoint IP clients dial for this node" "$(detect_public_ip)" ENDPOINT_IP v_host "enter an IP address or hostname"
 
 echo
-echo "$(b 'Step 3. WireGuard / AmneziaWG setup')"
+echo "$(b 'Step 2. WireGuard / AmneziaWG setup')"
 echo
 choose_ifaces
 

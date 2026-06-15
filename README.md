@@ -54,28 +54,29 @@ You never edit `users.json` or `nodes.json` by hand — the UI does it.
 
 ## Quick start
 
-### A — bare-metal
+Four one-liners — each **prompts for whatever it needs**. Choose a method (bare-metal or Docker) per box; mix freely.
 
-One command on the panel box:
+### A — bare-metal (systemd)
 
 ```
+# panel        — asks the role: master (panel + this box is a node) or host (panel only)
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
+
+# entry server — asks for the panel URL + the key from Nodes → Add node
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
 ```
-
-It runs **Panel setup** (role · URL · TLS · serve mode), then — for a `master` — **Node setup** (name · endpoint · interfaces); see [Installing the panel](#installing-the-panel). The default role is **master** (panel *and* this box as an entry server); choose **host** for panel-only. Open the panel URL, log in, and:
-
-- **master** — this box is already under **Nodes**; add peers and you're done.
-- **host** — **Nodes → Add node** gives a one-time token and the one-liner to run on each entry server (see [Adding a node](#adding-a-node)).
 
 ### B — Docker
 
-One line — it installs Docker if needed, writes `.env`, and brings up the panel:
-
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker -pass SECRET -domain panel.example.net
+# panel        — installs Docker if needed, asks for a domain + admin username (password auto-generated)
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+
+# entry server — asks for the panel URL + the key from Nodes → Add node
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 ```
 
-Open `https://<host>:8443/`. For a node, or a panel-plus-local-node, see [Docker](#docker).
+Open the panel URL, log in, and add entry servers from **Nodes → Add node** — it prints the exact bare-metal *and* Docker command (key pre-filled) for each. Details: [Installing the panel](#installing-the-panel) · [Adding a node](#adding-a-node) · [Docker](#docker).
 
 ## Installing the panel
 
@@ -118,7 +119,7 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
    curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
      | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
    ```
-   It runs **Node setup** (name · endpoint · interfaces) like the host installer and starts `swg-noded`. Prefer Docker? Use `… bash -s docker --profile node -key … -host … -endpoint …`.
+   It runs **Node setup** (endpoint · interfaces) and starts `swg-noded`. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
 3. Within a few seconds the node turns **online** in the Nodes screen.
 
 With a self-signed panel cert the node doesn't verify it by default — the token is the credential and the channel is still encrypted. To verify instead, use a real cert and answer yes to the TLS prompt, or pin the self-signed one with `TLS_FINGERPRINT=<sha256-hex>` (checked during the handshake, before the token is sent).
@@ -140,19 +141,18 @@ Live status (online, partial, dangling, …) is computed every refresh from the 
 
 ## Docker
 
-**One-liner** — installs Docker if missing, stages the project under `/opt/swg-panel-docker`, writes `.env`, and brings up a profile:
+**One-liner** — installs Docker if missing, stages the project under `/opt/swg-panel-docker`, writes `.env`, brings up a profile, and **prompts for what it needs**:
 
 ```
-# panel only
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
-  | sudo bash -s docker -pass SECRET -domain panel.example.net
-
-# panel + a local node          (add --profile host-node + the node's key/endpoint)
-… | sudo bash -s docker --profile host-node -pass SECRET -key NODE_KEY -endpoint 203.0.113.7
-
-# node only
-… | sudo bash -s docker --profile node -key NODE_KEY -host https://panel.example.net -endpoint 203.0.113.7
+# panel
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+# entry server (node)
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
+# panel + a local node
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host-node
 ```
+
+Flags skip the prompts (the panel's enroll command uses them): `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
 **Or by hand** — one compose file, three profiles:
 

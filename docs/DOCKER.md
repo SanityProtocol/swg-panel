@@ -5,23 +5,22 @@ Two images and one compose file with three profiles.
 ## One-liner
 
 `install-docker.sh` (via `bootstrap.sh docker`) installs Docker if missing, stages the
-project under `/opt/swg-panel-docker`, writes `.env`, and brings up a profile:
+project under `/opt/swg-panel-docker`, writes `.env`, and brings up a profile — passing the
+profile as a bare word (`host` / `node` / `host-node`) and **prompting for what it needs**:
 
 ```
-# panel only
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
-  | sudo bash -s docker -pass SECRET -domain panel.example.net
-
+# panel        — asks for a domain + admin username (password auto-generated)
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+# entry server — asks for the panel URL + key (from Nodes → Add node) + endpoint
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 # panel + a local node
-… | sudo bash -s docker --profile host-node -pass SECRET -key NODE_KEY -endpoint 203.0.113.7
-
-# node only
-… | sudo bash -s docker --profile node -key NODE_KEY -host https://panel.example.net -endpoint 203.0.113.7
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host-node
 ```
 
-Flags: `--profile host|node|host-node`, `-pass`, `-domain`, `-base` (subpath, e.g. `/swg`),
-`-port`, `-tls selfsigned|none`, `-key`, `-host`, `-endpoint`, `-iface`. Re-run from
-`/opt/swg-panel-docker` after editing `.env`: `docker compose --profile <p> up -d`.
+Flags skip the matching prompt (the panel's enroll command uses them): `-pass`, `-domain`,
+`-base` (subpath, e.g. `/swg`), `-port`, `-tls selfsigned|none`, `-key`, `-host`, `-endpoint`,
+`-iface`, `-ifaces`. `--profile <p>` also still works. Re-run from `/opt/swg-panel-docker`
+after editing `.env`: `docker compose --profile <p> up -d`.
 
 ## By hand
 
