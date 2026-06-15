@@ -218,7 +218,8 @@ info "DOCKER SETUP (profile: $PROFILE)"
 ask_panel_login(){   # match bare-metal: prompt domain + username, auto-generate the password (printed at the end)
   [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN="$(ask_tty "Panel domain or IP" "$(detect_public_ip)")"
   [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
-  PANEL_USER="$(ask_tty "Panel admin username" "${PANEL_USER:-admin}")"; [ -z "$PANEL_USER" ] && PANEL_USER=admin
+  [ "${PANEL_USER:-admin}" = admin ] && PANEL_USER="admin$(( RANDOM % 900 + 100 ))"   # suggest admin+3 digits, like bare-metal
+  PANEL_USER="$(ask_tty "Panel admin username" "$PANEL_USER")"; [ -z "$PANEL_USER" ] && PANEL_USER=admin
   [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
   return 0   # never let a short-circuited && above make the function (and set -e) fail
 }

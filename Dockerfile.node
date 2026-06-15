@@ -6,7 +6,7 @@
 # locally). Needs NET_ADMIN + /dev/net/tun. For best throughput, prefer a
 # bare-metal node (install-node.sh) with the kernel module.
 
-FROM golang:1.22-bookworm AS build
+FROM public.ecr.aws/docker/library/golang:1.22-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends git make build-essential \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -18,7 +18,7 @@ RUN git clone --depth=1 https://github.com/amnezia-vpn/amneziawg-tools \
  && make -C amneziawg-tools/src \
  && make -C amneziawg-tools/src install DESTDIR=/out PREFIX=/usr WITH_BASHCOMPLETION=no WITH_SYSTEMDUNITS=no
 
-FROM python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 iptables ca-certificates procps \
  && rm -rf /var/lib/apt/lists/*
