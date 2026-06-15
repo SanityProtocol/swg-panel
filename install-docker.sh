@@ -61,6 +61,118 @@ ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (de
   case "${v:-$d}" in [Yy]*) printf yes;; *) printf no;; esac; }
 rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16; }
 
+# ── extra helpers for the turn-proxy step (shared idiom with the bare-metal installers) ──
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_RED=$'\033[31m'
+else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_RED=""; fi
+b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
+col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
+menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
+writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
+ask(){ local v p="$1" d="${2:-}"; read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v 2>/dev/null </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
+v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1; local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; }
+v_host(){ v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
+v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+v_hostport(){ case "$1" in *:*) v_host "${1%%:*}" && v_port "${1##*:}";; *) return 1;; esac; }
+ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
+  if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
+  while :; do
+    if read -rp "$p [$(col "$C_BLUE" "$d")]: " v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
+    v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
+    for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; return; }; done
+    [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
+    [ $rc -ne 0 ] && die "‘$v’ is not one of: $opts"
+    warn "‘$v’ isn't one of: $opts"; echo "  re-enter, or append ' --force' to use it anyway"
+  done; }
+ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
+  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return; fi
+  while :; do
+    if read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
+    v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
+    if "$fn" "$v"; then printf -v "$var" '%s' "$v"; return; fi
+    [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
+    [ $rc -ne 0 ] && die "no valid value for ‘$p’"
+    warn "$hint"; echo "  re-enter, or append ' --force' to use it anyway"
+  done; }
+
+# ── turn-proxy (vk-turn-proxy) — host systemd service forwarding to the published wg port ──
+TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"; TURN_RECORD="${TURN_RECORD:-/etc/swg-agent/turn-proxy.json}"
+declare -A TP_LISTEN TP_CONNECT
+turn_repo_owner(){ case "$1" in
+  wings) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
+  kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
+  main) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
+detect_turn(){ TP_LISTEN=(); TP_CONNECT=(); local u name exe lis con
+  for u in /etc/systemd/system/*.service; do [ -e "$u" ] || continue
+    exe="$(sed -n 's/^ExecStart=//p' "$u" 2>/dev/null | head -1)"
+    case "$exe" in *-listen*-connect*|*-connect*-listen*) ;; *) continue;; esac
+    name="$(basename "$u" .service)"
+    lis="$(printf '%s\n' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
+    con="$(printf '%s\n' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
+    TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"; done; }
+turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }
+  curl -fsSL "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
+install_turn_binary(){ local key="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver
+  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+  dir="$TURN_DIR/$key"; bin="$dir/server"; svc="vk-turn-proxy-$key"
+  url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
+  mkdir -p "$PREFIX$dir"; info "Installing $owner ($listen → $connect)…"
+  if $DRYRUN; then echo "    [skip] curl -fsSL $url -o $bin"
+  elif ! { curl -fsSL "$url" -o "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then warn "download failed ($url) — skipping"; return 0; fi
+  ver="$(turn_latest_tag "$owner")"
+  printf '%s\n' "$owner" | writef "$dir/repo.txt" 644; printf '%s\n' "${ver:-unknown}" | writef "$dir/version.txt" 644
+  writef "/etc/systemd/system/$svc.service" 644 <<EOF
+[Unit]
+Description=vk-turn-proxy ($owner) — ${listen} → ${connect}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=${bin} -listen ${listen} -connect ${connect} ${extra}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
+  ok "installed turn-proxy $(col "$C_GREEN" "$key") ($owner ${ver:-?}) — $listen → $connect"; }
+install_turn_proxy(){ echo
+  menu "$(col "$C_BLUE" wings)"        "For Android — https://github.com/WINGS-N/vk-turn-proxy"
+  menu "$(col "$C_BLUE" samosvalishe)" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
+  menu "$(col "$C_BLUE" kiper292)"     "For Android — https://github.com/kiper292/vk-turn-proxy"
+  menu "$(col "$C_BLUE" anton48)"      "For iOS — https://github.com/anton48/vk-turn-proxy"
+  local sel=""; ask_choice "Select turn-proxy repository or enter $(col "$C_RED" skip) to just proceed" "skip" sel "wings samosvalishe kiper292 anton48 skip"
+  [ "$sel" = skip ] && return 0
+  local owner pub port connect extra; owner="$(turn_repo_owner "$sel")"
+  ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
+  ask_valid "Turn-proxy listen port" "56000" port v_port "port must be 1–65535"
+  ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${NODE_LISTEN_PORT:-51820}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
+  extra=""; [ "$sel" = anton48 ] && extra="-srtp"; ask "Extra server flags (optional)" "$extra" extra
+  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$extra"; }
+write_turn_record(){ detect_turn; local json="" sep="" n
+  for n in "${!TP_LISTEN[@]}"; do json+="$sep    { \"service\": \"$n\", \"listen\": \"${TP_LISTEN[$n]}\", \"connect\": \"${TP_CONNECT[$n]}\" }"; sep=$',\n'; done
+  writef "$TURN_RECORD" 640 <<EOF
+{
+  "turn_proxies": [
+$json
+  ]
+}
+EOF
+}
+choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; detect_turn; local names ans n
+  while :; do
+    detect_turn; names=("${!TP_LISTEN[@]}")
+    if [ "${#names[@]}" -eq 0 ]; then echo; warn "No turn-proxy servers found on this box."
+      printf '  Press %s to skip and proceed or enter "%s" to install a turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"
+    else echo; printf "  Installed turn-proxy servers:"
+      for n in "${names[@]}"; do printf ' %s %s' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done; echo; echo
+      printf '  Press %s to proceed or enter "%s" to install another turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"; fi
+    if ! read -r ans 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
+    ans="${ans//[[:space:]]/}"; [ "$ans" = new ] && { install_turn_proxy; continue; }
+    [ -z "$ans" ] && break; warn 'type nothing to proceed, or "new" to install a turn-proxy server'
+  done; write_turn_record; }
+
 # ───────────────────────── flags ─────────────────────────
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -180,6 +292,13 @@ ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 info "Starting compose profile '$PROFILE'"
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d --build)"
 else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d --build ); fi
+
+# ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
+# Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
+if [ "$PROFILE" = node ] || [ "$PROFILE" = host-node ]; then
+  echo; info "TURN-PROXY setup (https://github.com/cacggghp/vk-turn-proxy)"; echo
+  choose_turn_proxy
+fi
 
 # ───────────────────────── handoff ─────────────────────────
 echo; ok "Docker install complete (profile: $PROFILE)."

@@ -10,7 +10,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/swg-panel
-COPY swg-panel-server app.css app.js index.html reconcile.js ./
+COPY swg-panel-server app.css app.js index.html reconcile.js VERSION ./
 COPY vendor/ ./vendor/
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh ./swg-panel-server

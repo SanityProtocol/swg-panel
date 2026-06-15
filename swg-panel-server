@@ -47,6 +47,47 @@ PANEL_BASE = "/" + os.environ.get("SWG_PANEL_BASE", "").strip("/") if os.environ
 NODE_OFFLINE = 30   # seconds since last sync before a node reads "offline"
 _api_lock = threading.Lock()   # serialize roster/node read-modify-write across handler threads
 
+
+def _read_version():
+    for p in (os.path.join(WEB_DIR, "VERSION"),
+              os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")):
+        try:
+            with open(p) as f:
+                v = f.read().strip()
+                if v:
+                    return v
+        except OSError:
+            pass
+    return ""
+
+
+def _short_ver(s):
+    for tok in s.replace(",", " ").split():
+        t = tok.lstrip("vV")
+        if t and t[0].isdigit():
+            return t
+    return s.strip()
+
+
+def _detect_versions():
+    """swg-panel version + whatever stack tooling is present on the panel host
+    (awg / wg / docker). Computed once at startup; nodes vary, this is the host."""
+    out = {"panel": _read_version()}
+    for key, args in (("awg", ["awg", "--version"]),
+                      ("wg", ["wg", "--version"]),
+                      ("docker", ["docker", "--version"])):
+        try:
+            p = subprocess.run(args, capture_output=True, text=True, timeout=3)
+            line = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()
+            if line:
+                out[key] = _short_ver(line[0])
+        except Exception:
+            pass
+    return {k: v for k, v in out.items() if v}
+
+
+VERSIONS = _detect_versions()
+
 STATIC = {
     "/": "index.html", "/index.html": "index.html",
     "/app.css": "app.css", "/app.js": "app.js",
@@ -299,7 +340,7 @@ def api(method, path, qs, body, deps):
         out = [{"name": name, "color": c.get("color"), "transport": "https",
                 "stats_file": c.get("stats_file", f"stats-{name}.json")}
                for name, c in nodes.items()]
-        return 200, {"ok": True, "data": {"nodes": out, "store_configs": store_configs}}
+        return 200, {"ok": True, "data": {"nodes": out, "store_configs": store_configs, "versions": VERSIONS}}
 
     if method == "GET" and path == "/api/nodes":
         out = []

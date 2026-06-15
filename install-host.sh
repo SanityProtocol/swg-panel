@@ -25,6 +25,7 @@ TLS_MODE="${TLS_MODE:-}"               # cloudflare | letsencrypt | selfsigned |
 ACME_EMAIL="${ACME_EMAIL:-}"           # account email for letsencrypt/cloudflare
 CF_TOKEN="${CF_TOKEN:-}"               # cloudflare: API token with Zone:DNS:Edit
 CF_ACCOUNT_ID="${CF_ACCOUNT_ID:-}"     # cloudflare: optional account id
+CF_ORIGIN_KEY="${CF_ORIGIN_KEY:-}"     # cf15: Cloudflare Origin CA Key (My Profile → API Tokens → Origin CA Key)
 CERT_FULLCHAIN="${CERT_FULLCHAIN:-}"   # skip-with-own-cert: path to fullchain.pem
 CERT_KEY="${CERT_KEY:-}"               # skip-with-own-cert: path to private key.pem
 BASIC_USER="${BASIC_USER:-admin}"
@@ -92,6 +93,8 @@ v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15
 v_user(){    case "$1" in ""|*:*|*" "*) return 1;; esac; [ "${#1}" -le 40 ]; }
 v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cftoken(){ [ -n "$1" ] && [ "${#1}" -ge 10 ]; }
+v_cforigin(){ [ -n "$1" ] && [ "${#1}" -ge 20 ]; }
+v_hostport(){ case "$1" in *:*) v_host "${1%%:*}" && v_port "${1##*:}";; *) return 1;; esac; }
 v_subnet(){  have python3 || return 0; python3 -c "import ipaddress,sys;ipaddress.ip_network(sys.argv[1],strict=False)" "$1" >/dev/null 2>&1; }
 
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
@@ -190,6 +193,119 @@ choose_ifaces(){ # populate SELECTED[] — all detected interfaces are managed; 
   [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
   ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
 }
+
+# ───────────────────────── turn-proxy (vk-turn-proxy) ─────────────────────────
+# Tunnels WireGuard/AmneziaWG through VK/Yandex TURN servers. Config is the systemd
+# unit's CLI args: -listen <pub-ip:port>  -connect <wg-ip:port>. We detect any such
+# unit, can install the binary from a fork's GitHub releases, and record listen→connect
+# so the panel can later tell a turn-proxied client (peer endpoint IP == a turn listen IP)
+# from a direct wg/awg one. https://github.com/cacggghp/vk-turn-proxy
+TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
+TURN_RECORD="${TURN_RECORD:-/etc/swg-agent/turn-proxy.json}"
+declare -A TP_LISTEN TP_CONNECT
+turn_repo_owner(){ case "$1" in
+  wings) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
+  kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
+  main) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
+detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -connect is a turn-proxy
+  TP_LISTEN=(); TP_CONNECT=(); local u name exe lis con
+  for u in /etc/systemd/system/*.service; do
+    [ -e "$u" ] || continue
+    exe="$(sed -n 's/^ExecStart=//p' "$u" 2>/dev/null | head -1)"
+    case "$exe" in *-listen*-connect*|*-connect*-listen*) ;; *) continue;; esac
+    name="$(basename "$u" .service)"
+    lis="$(printf '%s\n' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
+    con="$(printf '%s\n' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
+    TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"
+  done
+}
+turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <owner/repo>
+  curl -fsSL "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
+install_turn_binary(){ # <key> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
+  local key="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver
+  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+  dir="$TURN_DIR/$key"; bin="$dir/server"; svc="vk-turn-proxy-$key"
+  url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
+  mkdir -p "$PREFIX$dir"
+  info "Installing $owner ($listen → $connect)…"
+  if $DRYRUN; then echo "    [skip] curl -fsSL $url -o $bin"
+  elif ! { curl -fsSL "$url" -o "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then
+    warn "download failed ($url) — skipping this turn-proxy"; return 0
+  fi
+  ver="$(turn_latest_tag "$owner")"
+  printf '%s\n' "$owner"        | writef "$dir/repo.txt" 644
+  printf '%s\n' "${ver:-unknown}" | writef "$dir/version.txt" 644
+  writef "/etc/systemd/system/$svc.service" 644 <<EOF
+[Unit]
+Description=vk-turn-proxy ($owner) — ${listen} → ${connect}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=${bin} -listen ${listen} -connect ${connect} ${extra}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
+  ok "installed turn-proxy $(col "$C_GREEN" "$key") ($owner ${ver:-?}) — $listen → $connect"
+}
+install_turn_proxy(){   # repo selection + params, then install
+  echo
+  menu "$(col "$C_BLUE" wings)"        "For Android — https://github.com/WINGS-N/vk-turn-proxy"
+  menu "$(col "$C_BLUE" samosvalishe)" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
+  menu "$(col "$C_BLUE" kiper292)"     "For Android — https://github.com/kiper292/vk-turn-proxy"
+  menu "$(col "$C_BLUE" anton48)"      "For iOS — https://github.com/anton48/vk-turn-proxy"
+  local sel=""; ask_choice "Select turn-proxy repository or enter $(col "$C_RED" skip) to just proceed with the node setup" "skip" sel "wings samosvalishe kiper292 anton48 skip"
+  [ "$sel" = skip ] && return 0
+  local owner pub port connect extra; owner="$(turn_repo_owner "$sel")"
+  ask_valid "Public IP this turn-proxy is reached at" "$(detect_public_ip)" pub v_host "an IP or hostname"
+  ask_valid "Turn-proxy listen port" "56000" port v_port "port must be 1–65535"
+  ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:51820" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
+  extra=""; [ "$sel" = anton48 ] && extra="-srtp"
+  ask "Extra server flags (optional)" "$extra" extra
+  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$extra"
+}
+write_turn_record(){   # record detected turn-proxies for the panel (Phase 2: direct-vs-turn by listen IP)
+  detect_turn; local json="" sep="" n
+  for n in "${!TP_LISTEN[@]}"; do
+    json+="$sep    { \"service\": \"$n\", \"listen\": \"${TP_LISTEN[$n]}\", \"connect\": \"${TP_CONNECT[$n]}\" }"; sep=$',\n'
+  done
+  writef "$TURN_RECORD" 640 <<EOF
+{
+  "turn_proxies": [
+$json
+  ]
+}
+EOF
+}
+choose_turn_proxy(){   # looped menu — list installed, Enter to proceed, "new" to install another
+  info "Checking for turn-proxy servers on this host…"
+  detect_turn
+  local names ans n
+  while :; do
+    detect_turn; names=("${!TP_LISTEN[@]}")
+    if [ "${#names[@]}" -eq 0 ]; then
+      echo; warn "No turn-proxy servers found on this box."
+      printf '  Press %s to skip and proceed with the setup or enter "%s" to install a turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"
+    else
+      echo; printf "  Installed turn-proxy servers:"
+      for n in "${names[@]}"; do printf ' %s %s' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done
+      echo; echo
+      printf '  Press %s to proceed with the setup or enter "%s" to install another turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"
+    fi
+    if ! read -r ans 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
+    ans="${ans//[[:space:]]/}"
+    [ "$ans" = new ] && { install_turn_proxy; continue; }
+    [ -z "$ans" ] && break
+    warn 'type nothing to proceed, or "new" to install a turn-proxy server'
+  done
+  write_turn_record
+}
+
 ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent, non-fatal -> 0/1)
   local cmd="$1"
   have "$cmd" && return 0
@@ -306,22 +422,26 @@ PANEL_DOMAIN="$PANEL_HOST_NOPORT"
 echo
 echo "$(b 'Step 3. TLS certificate')"
 echo
-menu "$(b "$(col "$C_BLUE" 'cloudflare (default)')")" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
-menu "$(col "$C_BLUE" letsencrypt)"                   "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
+menu "$(b "$(col "$C_BLUE" 'letsencrypt (default)')")" "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
+menu "$(col "$C_BLUE" cloudflare)"                    "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs the Origin CA Key"
 menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
 menu "$(col "$C_GREY" skip)"                          "If you are planning to use your own certificate (or terminate TLS elsewhere)"
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
 case "$TLS_MODE" in manual|none) TLS_MODE=skip;; esac
-ask_choice "Select TLS certificate" "cloudflare" TLS_MODE "cloudflare letsencrypt selfsigned skip"
-# ACME needs a real FQDN — check before asking for credentials
-if [ "$TLS_MODE" = letsencrypt ] || [ "$TLS_MODE" = cloudflare ]; then
+ask_choice "Select TLS certificate" "letsencrypt" TLS_MODE "letsencrypt cloudflare cf15 selfsigned skip"
+# every public-CA / origin mode needs a real FQDN — check before asking for credentials
+case "$TLS_MODE" in letsencrypt|cloudflare|cf15)
   case "$PANEL_DOMAIN" in *.*) : ;; *) die "TLS=$TLS_MODE needs a domain (FQDN) in the panel URL, not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
-  case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS_MODE needs a real domain (not an IP) — re-run and pick selfsigned for an IP";; esac
-fi
+  case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS_MODE needs a real domain (not an IP) — re-run and pick selfsigned for an IP";; esac ;;
+esac
 case "$TLS_MODE" in
+  letsencrypt) ask_valid "ACME account email"                                     "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
   cloudflare)  ask_valid "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "" CF_TOKEN  v_cftoken "the API token can't be empty"
                ask_valid "ACME account email"                                     "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
-  letsencrypt) ask_valid "ACME account email"                                     "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+  cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy."
+               warn "$PANEL_DOMAIN must be on Cloudflare with the orange cloud ON; a direct hit to the origin shows an untrusted cert."
+               ask_valid "Cloudflare Origin CA Key (My Profile → API Tokens → Origin CA Key → View)" "" CF_ORIGIN_KEY v_cforigin "paste the Origin CA Key (starts with v1.0-…)";;
 esac
 
 # Step 4 — web server
@@ -364,6 +484,10 @@ if [ "$HOST_HAS_WG" = yes ]; then
   echo "$(b 'Step 3. WireGuard / AmneziaWG setup')"
   echo
   choose_ifaces
+  echo
+  echo "$(b 'Step 4. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"
+  echo
+  choose_turn_proxy
 fi
 
 echo; info "Plan: method=$METHOD role=$ROLE serve=$SERVE_MODE tls=$TLS_MODE base=${PANEL_BASE:-/} store_configs=$STORE_CONFIGS"
@@ -562,6 +686,35 @@ use_provided_certs(){   # skip-with-own-cert: copy caller-supplied cert into $TL
   $DRYRUN || { cp "$CERT_FULLCHAIN" "$PREFIX$TLS_DIR/fullchain.pem"; cp "$CERT_KEY" "$PREFIX$TLS_DIR/key.pem"; }
   CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; cert_perms
   ok "using provided certificate (copied into $TLS_DIR)"; return 0; }
+mk_cf_origin(){   # cf15: request a 15-year Cloudflare Origin certificate via the CF API (Origin CA Key)
+  CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; mkdir -p "$PREFIX$TLS_DIR"
+  [ -n "${CF_ORIGIN_KEY:-}" ] || die "cf15 needs CF_ORIGIN_KEY (Cloudflare Origin CA Key)"
+  if $DRYRUN; then echo "    [skip] request Cloudflare Origin certificate (15y, origin-ecc) for $PANEL_DOMAIN"
+    : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"; cert_perms; ok "cf15 origin certificate (dry-run placeholder)"; return 0; fi
+  local key csr cert
+  key="$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null)" || die "openssl: EC key generation failed"
+  csr="$(printf '%s\n' "$key" | openssl req -new -key /dev/stdin -subj "/CN=${PANEL_DOMAIN}" 2>/dev/null)" || die "openssl: CSR generation failed"
+  info "Requesting a 15-year Cloudflare Origin certificate for $PANEL_DOMAIN…"
+  cert="$(CF_ORIGIN_KEY="$CF_ORIGIN_KEY" python3 - "$PANEL_DOMAIN" "$csr" <<'PY'
+import sys, os, json, urllib.request, urllib.error
+domain, csr = sys.argv[1], sys.argv[2]
+body = json.dumps({"hostnames": [domain], "requested_validity": 5475,
+                   "request_type": "origin-ecc", "csr": csr}).encode()
+req = urllib.request.Request("https://api.cloudflare.com/client/v4/certificates", data=body, method="POST",
+      headers={"Content-Type": "application/json", "X-Auth-User-Service-Key": os.environ["CF_ORIGIN_KEY"]})
+try:
+    with urllib.request.urlopen(req, timeout=30) as r: d = json.load(r)
+except urllib.error.HTTPError as e:
+    d = json.load(e)
+except Exception as e:
+    sys.stderr.write(str(e)); sys.exit(1)
+if d.get("success"): sys.stdout.write(d["result"]["certificate"])
+else: sys.stderr.write(json.dumps(d.get("errors", d))[:300]); sys.exit(1)
+PY
+)" || die "Cloudflare Origin CA request failed — check the Origin CA Key and that $PANEL_DOMAIN is on this Cloudflare account"
+  printf '%s\n' "$cert" > "$PREFIX$CERT_FULLCHAIN"
+  printf '%s\n' "$key"  > "$PREFIX$CERT_KEY"
+  cert_perms; ok "issued Cloudflare Origin certificate (15y) for ${PANEL_DOMAIN} — valid only behind Cloudflare's proxy"; }
 
 # ---- internal: the panel serves its own TLS; cert lands in $TLS_DIR ----
 obtain_cert_internal(){
@@ -569,6 +722,7 @@ obtain_cert_internal(){
   case "$TLS_MODE" in
     skip) use_provided_certs || { CERT_FULLCHAIN=""; CERT_KEY=""; ok "TLS skipped — panel will serve plain HTTP"; }; return 0;;
     selfsigned) mk_selfsigned;;
+    cf15) mk_cf_origin;;
     letsencrypt|cloudflare)
       ensure_acme
       local args=(--issue -d "$PANEL_DOMAIN" --server letsencrypt --keylength ec-256)
@@ -620,6 +774,7 @@ serve_internal(){
 setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to use
   case "$TLS_MODE" in
     selfsigned) mk_selfsigned;;
+    cf15) mk_cf_origin;;
     skip) use_provided_certs || { CERT_FULLCHAIN=""; CERT_KEY=""; ok "TLS skipped — proxy will serve plain HTTP (or add your own cert)"; }; return 0;;
     letsencrypt|cloudflare)
       mkdir -p "$PREFIX$TLS_DIR"; ensure_acme

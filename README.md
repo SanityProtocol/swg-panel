@@ -106,16 +106,18 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 |---|---|---|
 | Panel · 1 | **Role** | `master` (default — panel + this box is an entry server) or `host` (panel only) |
 | Panel · 2 | **Panel URL** | IP, host, or host with a subpath (`vpn.example.com/swg`) to mount the panel under an existing site. Default is this host's public IP. |
-| Panel · 3 | **TLS** | `cloudflare` (default) · `letsencrypt` · `selfsigned` · `skip` |
+| Panel · 3 | **TLS** | `letsencrypt` (default) · `cloudflare` · `cf15` · `selfsigned` · `skip` |
 | Panel · 4 | **Serve mode** | `internal` (default, self-contained) · `nginx` · `caddy` · `skip` |
 | Panel | **Port / admin** | port (default **443** for `internal`; the unit adds the bind capability for ports < 1024) and the web login — suggests `admin` + 3 digits; changeable later under **Account** |
 | Node · 1 | **Node name** | *(master)* this box's node name (default: hostname) |
 | Node · 2 | **Endpoint IP** | *(master)* public IP clients dial for this box (default: detected) |
 | Node · 3 | **Interfaces** | *(master)* manages **every** wg/awg interface found (scanning all of `/etc/amnezia` and `/etc/wireguard`); offers to **create** one if none exist; press **Enter** to proceed or **`new`** to add another. New interfaces get a server key, tunnel subnet, and an automatic forward + masquerade (`PostUp`/`PostDown`) so clients reach the internet. |
+| Node · 4 | **Turn-proxy** | *(master)* optional [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — tunnels wg/awg through VK/Yandex TURN servers. Detects any installed proxy (by its `-listen`/`-connect` unit) and lists it; **Enter** to skip or **`new`** to install one of the forks (`wings`/`samosvalishe`/`kiper292` for Android, `anton48` for iOS) — fetches the release binary, writes a unit + `version.txt`, and records `listen→connect` for the panel. |
 
 **TLS:**
-- **cloudflare** (default) — real cert via DNS-01; **never uses port 80**. The token needs `Zone:DNS:Edit` + `Zone:Read`.
-- **letsencrypt** — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
+- **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
+- **cloudflare** — real cert via DNS-01; **never uses port 80**. The token needs `Zone:DNS:Edit` + `Zone:Read`.
+- **cf15** — Cloudflare **Origin** certificate, **15 years**, issued via the CF API (needs the *Origin CA Key*). ⚠️ Only trusted **behind Cloudflare's proxy** (orange cloud) — a direct hit to the origin shows an untrusted cert. No renewal needed for 15 years.
 - **selfsigned** — instant; browsers warn once. Good for getting going or behind a tunnel.
 - **skip** — bring your own cert (set `CERT_FULLCHAIN`/`CERT_KEY`), or terminate TLS elsewhere. With no cert the panel/proxy serves plain HTTP.
 

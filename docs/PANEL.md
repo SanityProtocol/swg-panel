@@ -55,5 +55,6 @@ a reverse proxy in front (TLS terminated there; a subpath becomes a `location`/`
 block). **skip** leaves the panel on loopback for you to front yourself. Every mode uses the
 panel's own pbkdf2 login (`SWG_PANEL_AUTH`), so the Account tab works throughout.
 
-Certificates come from `cloudflare` (DNS-01, no port 80; the default), `letsencrypt`
-(`acme.sh`, port 80), `selfsigned`, or `skip` (bring your own / terminate elsewhere).
+Certificates come from `letsencrypt` (`acme.sh`, port 80; the default), `cloudflare`
+(DNS-01, no port 80), `cf15` (a 15-year Cloudflare **Origin** cert via the CF API — only
+valid behind Cloudflare's proxy), `selfsigned`, or `skip` (bring your own / terminate elsewhere).

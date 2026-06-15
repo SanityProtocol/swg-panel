@@ -75,7 +75,7 @@ const api = {
 
 // ───────────────────────── store ─────────────────────────
 const Store = {
-  fleet: [], storeConfigs: false, roster: {}, stats: {}, nodes: [],
+  fleet: [], storeConfigs: false, versions: {}, roster: {}, stats: {}, nodes: [],
   recon: { peers: [], orphans: [], nodeStatus: {} },
   sessionConfigs: {},        // pubkey -> { node -> confText }   (built at creation, in-memory)
   recentlyCreated: {},       // pubkey -> ts (for row flash)
@@ -84,12 +84,13 @@ const Store = {
     const f = await api.fleet();
     this.fleet = (f.data && f.data.nodes) || [];
     this.storeConfigs = !!(f.data && f.data.store_configs);
+    this.versions = (f.data && f.data.versions) || {};
     await this.poll();
     setInterval(() => this.poll().catch(() => {}), 5000);
   },
   async poll() {
     const [f, r, nodes, stats] = await Promise.all([api.fleet(), api.roster(), api.nodes(), this.loadStats()]);
-    if (f && f.data) { this.fleet = f.data.nodes || []; this.storeConfigs = !!f.data.store_configs; }
+    if (f && f.data) { this.fleet = f.data.nodes || []; this.storeConfigs = !!f.data.store_configs; this.versions = f.data.versions || this.versions; }
     this.roster = (r && r.data) || {};
     this.nodes = (nodes && nodes.data && nodes.data.nodes) || [];
     this.stats = stats;
@@ -200,6 +201,12 @@ function toast(msg, kind = "info", ms = 3600) {
 function updateChrome() {
   const online = Store.livePeers().filter(p => p.online).length;
   $("#kpi-online").textContent = online;
+  const v = Store.versions || {}, el = $("#appver");
+  if (el && v.panel) {
+    const tools = ["awg", "wg", "docker"].filter(k => v[k]).map(k => k + " " + v[k]);
+    el.innerHTML = `<b>${esc(v.panel)}</b>` + (tools.length ? `<span class="tools"> · ${esc(tools.join(" · "))}</span>` : "");
+    el.title = "swg-panel " + v.panel + (tools.length ? "  ·  " + tools.join("  ·  ") : "");
+  }
 }
 function setNav(tab) {
   $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === tab));

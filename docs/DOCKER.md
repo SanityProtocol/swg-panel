@@ -66,6 +66,13 @@ The entrypoint manages one or several interfaces, from the first source that app
 Publish each interface's `ListenPort` in the compose `ports:` list so clients can reach
 it. All managed interfaces sync to the panel and appear in the Nodes screen.
 
+## Turn-proxy
+
+`docker node` / `docker host-node` run a **TURN-PROXY** step after `compose up` (same as
+bare-metal): it installs [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) as a
+**host** systemd service forwarding to the container's published wg port
+(`-connect 127.0.0.1:<NODE_LISTEN_PORT>`). Press Enter to skip, or `new` to install a fork.
+
 ## Note
 
 The `swg-node` image compiles `amneziawg-go` from source at build time and exercises a

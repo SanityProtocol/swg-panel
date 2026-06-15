@@ -39,6 +39,8 @@ button{font-family:inherit}
 .brand-mark::after{content:"";position:absolute;inset:4px;border-radius:2px;background:var(--bg)}
 .brand-name{font-weight:700;letter-spacing:.04em;font-size:15px;color:var(--ink)}
 .brand-name span{color:var(--dim);font-weight:500}
+.appver{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;margin-left:-2px}
+.appver b{color:var(--dim);font-weight:600}
 .tabs{display:flex;gap:4px}
 .tabs a{padding:7px 14px;border-radius:99px;font-size:13.5px;color:var(--dim);font-weight:500;
   transition:color .15s,background .15s;position:relative}
@@ -308,6 +310,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 /* ───── responsive: collapse tables to cards ───── */
 @media(max-width:680px){
   .appbar{gap:14px;padding:0 14px}.tabs a{padding:7px 11px}
+  .appver .tools{display:none}   /* keep just the panel version on small screens */
   .view{padding:16px 13px 70px}
   .statgrid{grid-template-columns:1fr 1fr}
   thead{display:none}
