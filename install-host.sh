@@ -91,6 +91,8 @@ v_host(){    v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) retu
 v_url(){     case "$1" in ""|*" "*) return 1;; esac
              local h="${1#http://}"; h="${h#https://}"; h="${h%%/*}"; h="${h%%:*}"; v_host "$h"; }
 v_port(){    case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+port_free(){ have ss || return 0; [ -z "$(ss -lnuH "sport = :$1" 2>/dev/null)" ]; }   # UDP port not already bound
+v_freeport(){ v_port "$1" && port_free "$1"; }
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }
 v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
 v_user(){    case "$1" in ""|*:*|*" "*) return 1;; esac; [ "${#1}" -le 40 ]; }
@@ -280,7 +282,7 @@ EOF
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
   local sel="$1" owner pub port connect extra; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "$(detect_public_ip)" pub v_host "an IP or hostname"
-  ask_valid "Turn-proxy listen port" "56000" port v_port "port must be 1–65535"
+  ask_valid "Turn-proxy listen port" "56000" port v_freeport "port 1–65535 and free (not already in use)"
   detect_turn; local _n; for _n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$_n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$_n' — pick another port (enter 'new' again)"; return 0; }; done
   local ports defport=51820 disp n p proto first; ports="$(turn_wg_ports)"
   if [ -n "$ports" ]; then
@@ -392,7 +394,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
     break
   done
   defport=$((51820 + idx)); defsub="10.$(( (8 + idx) % 255 )).0.0/24"
-  ask_valid "Listen port" "$defport" port v_port "port must be 1–65535"
+  ask_valid "Listen port" "$defport" port v_freeport "port 1–65535 and free (not already in use)"
   ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
   ask_valid "WAN egress interface (clients are NAT'd out using this)" "$(detect_wan || echo eth0)" wan v_iface "enter a network interface name"
   addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"
