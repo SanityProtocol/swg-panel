@@ -92,17 +92,27 @@ if [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
     case "$names" in *swg-panel*) case "$names" in *swg-node*) prof=host-node;; *) prof=host;; esac;; *swg-node*) prof=node;; esac
   fi
   prof="${prof:-host}"
-  if should_update "docker ($prof)" "$DOCKER_DIR"; then
-    info "restaging + rebuild ($DOCKER_DIR)"
-    for f in docker-compose.yml Dockerfile Dockerfile.node .dockerignore VERSION \
-             swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
-      [ -e "$SRC/$f" ] && run cp -a "$SRC/$f" "$DOCKER_DIR/"
-    done
-    [ -d "$SRC/vendor" ] && run cp -a "$SRC/vendor" "$DOCKER_DIR/"
-    [ -d "$SRC/docker" ] && run cp -a "$SRC/docker" "$DOCKER_DIR/"
-    if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
-    if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof up -d --build)"
-    else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" up -d --build ) && ok "docker ($prof) rebuilt + restarted" || warn "compose rebuild failed — check $DOCKER_DIR"; fi
+  if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
+  if grep -qE '^[[:space:]]*build:' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+    # build-from-source deployment → restage the source and rebuild (don't touch the user's compose/.env)
+    if should_update "docker ($prof, source build)" "$DOCKER_DIR"; then
+      info "restaging source + rebuilding ($DOCKER_DIR)"
+      for f in Dockerfile Dockerfile.node Dockerfile.turn .dockerignore VERSION \
+               swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
+        [ -e "$SRC/$f" ] && run cp -a "$SRC/$f" "$DOCKER_DIR/"
+      done
+      [ -d "$SRC/vendor" ] && run cp -a "$SRC/vendor" "$DOCKER_DIR/"
+      [ -d "$SRC/docker" ] && run cp -a "$SRC/docker" "$DOCKER_DIR/"; stamp "$DOCKER_DIR"
+      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof up -d --build)"
+      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" up -d --build ) && ok "docker ($prof) rebuilt + restarted" || warn "compose rebuild failed — check $DOCKER_DIR"; fi
+    fi
+  else
+    # prebuilt-image deployment (default) → just pull the newest image + recreate (no restaging)
+    if confirm "Pull the latest image for $(col_l "docker ($prof)")?"; then
+      info "pulling latest image + recreating ($DOCKER_DIR)"
+      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d)"
+      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" pull && $COMPOSE --profile "$prof" up -d ) && ok "docker ($prof) image pulled + recreated" || warn "compose pull/up failed — check $DOCKER_DIR"; fi
+    else warn "docker ($prof): skipped"; fi
   fi
 fi
 

@@ -20,8 +20,10 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 Flags skip the matching prompt (the panel's enroll command uses them): `-pass`, `-domain`,
 `-base` (subpath, e.g. `/swg`), `-port`, `-tls letsencrypt|cloudflare|cf15|selfsigned|none`,
 `-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`.
-`--profile <p>` also still works. Re-run from `/opt/swg-panel-docker` after editing `.env`:
-`docker compose --profile <p> up -d`.
+`--profile <p>` also still works. By default the installer **pulls** prebuilt images and stages
+only `docker-compose.yml` + `.env` (no source/build context on the host); pass **`--build`** to
+stage the full source and build the images locally instead. Re-run from `/opt/swg-panel-docker`
+after editing `.env`: `docker compose --profile <p> up -d`.
 
 ## TLS
 

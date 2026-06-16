@@ -21,6 +21,7 @@ set -euo pipefail
 
 # ───────────────────────── config (env or flags) ─────────────────────────
 PROFILE="${PROFILE:-host}"
+BUILD="${BUILD:-false}"                 # true = build images from source (stages full context); default pulls from GHCR
 INSTALL_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 # Panel
 PANEL_PASSWORD="${PANEL_PASSWORD:-}"
@@ -240,6 +241,7 @@ while [ $# -gt 0 ]; do
     -verify|--verify)       TLS_VERIFY="${2:-}"; shift 2 || shift;;
     -iface|--iface)         NODE_IFACE="${2:-}"; shift 2 || shift;;
     -ifaces|--ifaces)       NODE_IFACES="${2:-}"; shift 2 || shift;;
+    --build)                BUILD=true; shift;;
     --dry-run)              shift;;
     *)                      shift;;
   esac
@@ -378,15 +380,25 @@ elif have docker-compose; then COMPOSE="docker-compose"
 else COMPOSE="docker compose"; $DRYRUN || warn "docker compose plugin not detected — install it if 'up' fails"; fi
 
 # ───────────────────────── stage project ─────────────────────────
+# Default pulls prebuilt images from GHCR, so only the compose file is needed on the host
+# (.env is written below, data/ is created by compose). --build also stages the full build
+# context and flips the compose file to build-from-source.
 info "Staging project in $INSTALL_DIR"
 mkdir -p "$PREFIX$INSTALL_DIR"
-for f in docker-compose.yml Dockerfile Dockerfile.node .dockerignore VERSION \
-         swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
-  [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
-done
-[ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
-[ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
-ok "staged build context"
+cp -a "$SRC/docker-compose.yml" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
+if $BUILD; then
+  for f in Dockerfile Dockerfile.node Dockerfile.turn .dockerignore VERSION \
+           swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
+    [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
+  done
+  [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
+  [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
+  # flip compose: comment the GHCR image: lines, uncomment the build: blocks
+  sed -i -E 's@^( *)image: (ghcr.io/[^:]*/swg-(panel|node):latest)@\1# image: \2@; s@^( *)# build: \.@\1build: .@; s@^( *)# (build:)$@\1\2@; s@^( *)#   (context: \.)@\1  \2@; s@^( *)#   (dockerfile: Dockerfile.node)@\1  \2@' "$PREFIX$INSTALL_DIR/docker-compose.yml"
+  ok "staged full build context (--build: images built from source)"
+else
+  ok "staged compose file (images pulled prebuilt from GHCR — no build context needed)"
+fi
 
 # ───────────────────────── write .env ─────────────────────────
 mkdir -p "$PREFIX$INSTALL_DIR"
@@ -433,11 +445,10 @@ if [ "$PROFILE" != node ]; then
 fi
 
 # ───────────────────────── bring it up ─────────────────────────
-info "Starting compose profile '$PROFILE'"
-# Default compose pulls prebuilt images from GHCR (pull_policy: missing). If you switch
-# docker-compose.yml back to building from source, re-run with: $COMPOSE … up -d --build
-if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE)"
-else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE ); fi
+info "Starting compose profile '$PROFILE'$($BUILD && echo ' (building from source)')"
+BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from GHCR
+if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
+else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
 
 # ── surface the cert outcome (don't let a silent self-signed fallback hide as a Cloudflare 526) ──
 if [ "$PROFILE" != node ] && [ "$TLS" != none ] && ! $DRYRUN && have openssl; then
