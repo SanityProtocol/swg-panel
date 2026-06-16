@@ -210,8 +210,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --profile)              PROFILE="${2:-host}"; shift 2 || shift;;
     host|node|host-node)    PROFILE="$1"; shift;;          # bare positional profile (e.g. "docker node")
-    -pass|--pass|-password) PANEL_PASSWORD="${2:-}"; PANEL_LOGIN_SET=1; shift 2 || shift;;
-    -user|--user|-username) PANEL_USER="${2:-}"; PANEL_LOGIN_SET=1; shift 2 || shift;;
+    -pass|--pass|-password) PANEL_PASSWORD="${2:-}"; shift 2 || shift;;
+    -user|--user|-username) PANEL_USER="${2:-}"; shift 2 || shift;;
     -domain|--domain)       PANEL_DOMAIN="${2:-}"; shift 2 || shift;;
     -base|--base)           PANEL_BASE="${2:-}"; shift 2 || shift;;
     -port|--port)           PANEL_PORT="${2:-}"; shift 2 || shift;;
@@ -373,20 +373,14 @@ EOF
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
 ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 
-# ── login reconciliation ──────────────────────────────────────────────────────
-# The entrypoint writes data/etc/auth only when it is MISSING, so a restart never clobbers a
-# password changed in the UI. But on a REINSTALL over a reused data dir the old login persists —
-# which would make the credentials printed below wrong. Detect a pre-existing auth file:
-#   • -user/-pass given → apply that login (drop the stale auth so the entrypoint rewrites it)
-#   • otherwise         → keep the existing login and say so, instead of printing creds that don't work
-AUTH_HOST="$PREFIX$INSTALL_DIR/data/etc/auth"; LOGIN_KEPT=false; RECREATE=""
-if [ "$PROFILE" != node ] && [ -f "$AUTH_HOST" ]; then
-  if [ "${PANEL_LOGIN_SET:-0}" = 1 ]; then
-    info "Existing panel data found — applying the -user/-pass login you specified."
-    $DRYRUN || rm -f "$AUTH_HOST"; RECREATE="--force-recreate"
-  else
-    LOGIN_KEPT=true
-  fi
+# ── reset the panel login on every install (matches bare-metal) ────────────────
+# The container writes data/etc/auth only when it is MISSING, so a reused data dir would
+# otherwise keep the OLD login. Drop any existing auth and --force-recreate, so the entrypoint
+# rewrites it from the freshly-generated .env credentials printed below. (Node has no login.)
+RECREATE=""
+if [ "$PROFILE" != node ]; then
+  $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth"
+  RECREATE="--force-recreate"
 fi
 
 # ───────────────────────── bring it up ─────────────────────────
@@ -411,15 +405,7 @@ case "$PROFILE" in
     # omit the port suffix for the scheme's default (443 https / 80 http), like a browser would
     PORTSUF=":${PANEL_PORT}"
     if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
-    if [ "$LOGIN_KEPT" = true ]; then
-      echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/"
-      warn "login UNCHANGED — this data dir already had a panel login (from an earlier install), so the new credentials were NOT applied."
-      echo "         To reset it to a known login:"
-      echo "           cd $INSTALL_DIR && sudo rm -f data/etc/auth && $COMPOSE --profile $PROFILE up -d --force-recreate"
-      echo "         that regenerates the login from .env: $(b "${PANEL_USER} / ${PANEL_PASSWORD}")"
-    else
-      echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/   (login: ${PANEL_USER} / ${PANEL_PASSWORD})"
-    fi
+    echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/   (login: ${PANEL_USER} / ${PANEL_PASSWORD})"
     echo "  Then:  Nodes → Add node for each entry server (gives a one-time key + command)."
     [ "$PROFILE" = host-node ] && echo "  This box also runs a local node (swg-node) against the panel."
     ;;
