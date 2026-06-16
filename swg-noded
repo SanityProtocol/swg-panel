@@ -235,7 +235,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         interfaces[iface] = {
             "peers": peers,
             "meta": build_meta(iface_line, conf_text,
-                               node_cfg.get("endpoint_host"), node_cfg.get("dns", []), cmd),
+                               ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
+                               node_cfg.get("dns", []), cmd),
         }
     return {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies()}
