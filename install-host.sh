@@ -1004,15 +1004,23 @@ if [ "$HOST_HAS_WG" = yes ] && [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $
       "$(bb "${IF_ENDPOINT[$n]:-$HOST_ENDPOINT_IP}:$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
   done
 fi
-detect_turn 2>/dev/null || true
-if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
-  for n in "${!TP_LISTEN[@]}"; do wk="${TP_WRAP[$n]}"
-    printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+wrap-key $(b "$wk")}"
-  done
+# turn-proxy + interface info only matter when this box is also a node (master); a panel-only host has none
+if [ "$HOST_HAS_WG" = yes ]; then
+  detect_turn 2>/dev/null || true
+  if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
+    for n in "${!TP_LISTEN[@]}"; do wk="${TP_WRAP[$n]}"
+      printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+wrap-key $(b "$wk")}"
+    done
+  fi
 fi
 echo
 echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')  (gives a one-time key + one-liner)"
-echo "  Firewall  open TCP $(b "$PORT")$([ "${#TP_LISTEN[@]}" -gt 0 ] && echo ' + the turn-proxy UDP ports') if not already"
-echo "  Edit      panel $(b /etc/swg-panel/)  ·  interfaces $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)"
+if [ "$HOST_HAS_WG" = yes ]; then
+  echo "  Firewall  open TCP $(b "$PORT")$([ "${#TP_LISTEN[@]}" -gt 0 ] && echo ' + the turn-proxy UDP ports') if not already"
+  echo "  Edit      panel $(b /etc/swg-panel/)  ·  interfaces $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)"
+else
+  echo "  Firewall  open TCP $(b "$PORT") if not already"
+  echo "  Edit      panel $(b /etc/swg-panel/)"
+fi
 [ "$TLS_MODE" = selfsigned ] && echo "  Note      self-signed cert — the browser warns once, that's expected"
 $DRYRUN && { echo; ok "DRY RUN done — inspect ./dryrun"; }
