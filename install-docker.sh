@@ -419,13 +419,16 @@ EOF
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
 ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 
-# ── reset the panel login on every install (matches bare-metal) ────────────────
-# The container writes data/etc/auth only when it is MISSING, so a reused data dir would
-# otherwise keep the OLD login. Drop any existing auth and --force-recreate, so the entrypoint
-# rewrites it from the freshly-generated .env credentials printed below. (Node has no login.)
+# ── reset login + cert on every install (matches bare-metal) ───────────────────
+# The entrypoint only writes data/etc/auth and data/etc/tls/* when they're MISSING, so a reused
+# data dir keeps the OLD login AND an OLD cert (e.g. a self-signed left by a previously-failed
+# letsencrypt run, which then gets served instead of the TLS mode you just picked → Cloudflare 526).
+# Drop both and --force-recreate so the entrypoint re-applies the freshly-chosen login + TLS mode.
+# (acme state in data/etc/acme is kept, so letsencrypt/cloudflare reuse their cached cert.)
 RECREATE=""
 if [ "$PROFILE" != node ]; then
-  $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth"
+  $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth" \
+                   "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
   RECREATE="--force-recreate"
 fi
 
@@ -435,6 +438,25 @@ info "Starting compose profile '$PROFILE'"
 # docker-compose.yml back to building from source, re-run with: $COMPOSE … up -d --build
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE)"
 else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE ); fi
+
+# ── surface the cert outcome (don't let a silent self-signed fallback hide as a Cloudflare 526) ──
+if [ "$PROFILE" != node ] && [ "$TLS" != none ] && ! $DRYRUN && have openssl; then
+  iss=""; for _i in 1 2 3 4 5 6; do
+    iss="$(echo | openssl s_client -connect "127.0.0.1:$PANEL_PORT" -servername "$PANEL_DOMAIN" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)"
+    [ -n "$iss" ] && break; sleep 2
+  done
+  case "$iss" in
+    *"CN=$PANEL_DOMAIN"|*"CN = $PANEL_DOMAIN")   # issuer == the domain ⇒ self-signed
+      [ "$TLS" = selfsigned ] || {
+        warn "TLS=$(b "$TLS") was selected, but the panel is serving a $(b 'SELF-SIGNED') cert — issuance failed and fell back."
+        echo "         See why: $(b "$COMPOSE -f $INSTALL_DIR/docker-compose.yml logs swg-panel | grep -i cert")"
+        echo "         letsencrypt needs :80 reachable (breaks behind Cloudflare); behind the orange cloud use"
+        echo "         $(b cloudflare) (DNS-01) or $(b cf15), and set Cloudflare SSL/TLS to $(b 'Full (strict)')."
+      } ;;
+    "") : ;;   # couldn't read it (port not up yet) — skip
+    *) ok "panel is serving a real certificate (issuer:${iss#*=})" ;;
+  esac
+fi
 
 # ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
 # Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
