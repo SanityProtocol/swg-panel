@@ -298,34 +298,31 @@ ask_panel_tls(){     # Step 2 — TLS certificate (same look as bare-metal); iss
   esac
   return 0
 }
-ask_node_conn(){     # NODE SETUP — panel connection + endpoint, styled like bare-metal install-node.sh
+ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the per-interface wg/awg step)
   # Panel connection — normally supplied by the install command's -host / -key flags.
   ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
   ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
   case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
   [ -z "$TLS_VERIFY" ] && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n)"
-  echo
-  echo "$(b 'Step 1. Endpoint IP clients dial for this node')"
-  echo
-  ask_valid "Endpoint IP clients dial for this node" "${NODE_ENDPOINT:-$(detect_public_ip)}" NODE_ENDPOINT v_host "enter an IP address or hostname"
   return 0
 }
-ask_node_iface(){    # Step 2 — WG/AWG interface (container-managed); mirrors bare-metal's single-interface prompts
+ask_node_iface(){    # Step 1 — WG/AWG interface (container-managed) + its endpoint; mirrors bare-metal
   echo
-  echo "$(b 'Step 2. WireGuard / AmneziaWG setup')"
+  echo "$(b 'Step 1. WireGuard / AmneziaWG setup')   (this interface has its own endpoint IP)"
   echo
   echo "      The interface is brought up INSIDE the swg-node container from these values."
-  echo "      Need several interfaces or custom AmneziaWG obfuscation? set $(b NODE_IFACES) in"
-  echo "      $INSTALL_DIR/.env, or mount $(b /etc/swg-node/*.conf) (see docs/DOCKER.md)."
+  echo "      Need several interfaces (each with its own endpoint) or custom AmneziaWG obfuscation?"
+  echo "      set $(b NODE_IFACES) in $INSTALL_DIR/.env, or mount $(b /etc/swg-node/*.conf) (see docs/DOCKER.md)."
   echo
-  local _proto def_if d_if d_port d_addr
-  d_if="$NODE_IFACE"; d_port="$NODE_LISTEN_PORT"; d_addr="$NODE_ADDRESS"
+  local _proto def_if d_if d_port d_addr d_ep
+  d_if="$NODE_IFACE"; d_port="$NODE_LISTEN_PORT"; d_addr="$NODE_ADDRESS"; d_ep="${NODE_ENDPOINT:-$(detect_public_ip)}"
   ask_choice "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) NODE_PLAIN_WG=yes; def_if=wg0;; *) NODE_PLAIN_WG=no; def_if=awg0;; esac
   case "$d_if" in ""|awg0|wg0) d_if="$def_if";; esac        # default name follows the protocol
   NODE_IFACE="";       ask_valid "Interface name" "$d_if" NODE_IFACE v_iface "1–15 chars: letters, digits, - or _"
   NODE_LISTEN_PORT=""; ask_valid "Listen port" "$d_port" NODE_LISTEN_PORT v_freeport "port 1–65535 and free (not already in use)"
   NODE_ADDRESS="";     ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$d_addr" NODE_ADDRESS v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
+  NODE_ENDPOINT="";    ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$NODE_IFACE") (this interface's public IP/host)" "$d_ep" NODE_ENDPOINT v_host "enter an IP address or hostname"
   return 0
 }
 case "$PROFILE" in
@@ -341,10 +338,6 @@ case "$PROFILE" in
     TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
     echo; info "NODE SETUP"
     ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "bring up 'docker host' first, add the node, then re-run as host-node with this key"
-    echo
-    echo "$(b 'Step 1. Endpoint IP clients dial for this node')"
-    echo
-    ask_valid "Endpoint IP clients dial for this node" "${NODE_ENDPOINT:-$(detect_public_ip)}" NODE_ENDPOINT v_host "enter an IP address or hostname"
     ask_node_iface
     ;;
   node)
@@ -428,7 +421,7 @@ else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE ); fi
 # ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
 # Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
 if [ "$PROFILE" = node ] || [ "$PROFILE" = host-node ]; then
-  echo; echo "$(b 'Step 3. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"; echo
+  echo; echo "$(b 'Step 2. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"; echo
   choose_turn_proxy
 fi
 
@@ -446,8 +439,8 @@ case "$PROFILE" in node|host-node)
   echo "  Node      → syncs to $(bb "$PANEL_URL")   ·  endpoint $(bb "$NODE_ENDPOINT")"
   echo; echo "  $(b 'Interface') (in the swg-node container):"
   if [ -n "$NODE_IFACES" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"
-    for e in "${_ifs[@]}"; do IFS=':' read -r _nm _pt _ad _pr <<< "$e"
-      printf '    %s %-9s endpoint %s  subnet %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$_nm")")" "${_pr:-amneziawg}" "$(bb "$NODE_ENDPOINT:$_pt")" "$(b "$_ad")"; done
+    for e in "${_ifs[@]}"; do IFS=':' read -r _nm _pt _ad _pr _ep <<< "$e"
+      printf '    %s %-9s endpoint %s  subnet %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$_nm")")" "${_pr:-amneziawg}" "$(bb "${_ep:-$NODE_ENDPOINT}:$_pt")" "$(b "$_ad")"; done
   else _pr=amneziawg; [ "$NODE_PLAIN_WG" = yes ] && _pr=wireguard
     printf '    %s %-9s endpoint %s  subnet %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb "$NODE_ENDPOINT:$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
   fi

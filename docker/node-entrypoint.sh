@@ -20,6 +20,13 @@ rand32(){ od -An -N4 -tu4 /dev/urandom | tr -d ' '; }   # one unsigned 32-bit in
 AWG_DIR=/etc/amnezia/amneziawg
 mkdir -p "$AWG_DIR" /var/lib/swg-noded /etc/swg-agent
 MANAGED=""                                  # space-separated interface names
+IFJSON=""; IFSEP=""                          # swg-agent interfaces map (built per-interface, with its endpoint)
+add_iface(){ # add_iface <name> <endpoint>  — record an interface + its own endpoint for the config
+  MANAGED="$MANAGED $1"
+  IFJSON="$IFJSON$IFSEP    \"$1\": { \"cmd\": [\"awg\"], \"conf\": \"$AWG_DIR/$1.conf\", \"endpoint_host\": \"${2:-$NODE_ENDPOINT}\" }"
+  IFSEP=",
+"
+}
 
 # emit AmneziaWG v2 obfuscation params (H1–H4 ranges, S1–S4, conservative QUIC-Initial I1)
 gen_awg_params(){
@@ -55,11 +62,12 @@ if ls /etc/swg-node/*.conf >/dev/null 2>&1 || { [ -n "${CONF_SRC:-}" ] && [ -f "
     [ -f "$src" ] || continue
     name="$(basename "$src" .conf)"; dest="$AWG_DIR/$name.conf"
     [ -f "$dest" ] || cp "$src" "$dest"
-    chmod 600 "$dest"; MANAGED="$MANAGED $name"
+    chmod 600 "$dest"; add_iface "$name" "$NODE_ENDPOINT"   # mounted confs carry no endpoint → node-level
     log "interface $name from mounted conf ($src)"
   done
 elif [ -n "${NODE_IFACES:-}" ]; then
-  # spec: name:port:address[:proto]  (comma-separated). proto "wg" => plain WireGuard.
+  # spec: name:port:address[:proto[:endpoint]]  (comma-separated). proto "wg" => plain WireGuard;
+  # endpoint = the public IP/host clients dial for THIS interface (defaults to NODE_ENDPOINT).
   OIFS="$IFS"; IFS=','
   for entry in $NODE_IFACES; do
     IFS="$OIFS"
@@ -67,12 +75,13 @@ elif [ -n "${NODE_IFACES:-}" ]; then
     port="$(echo "$entry" | cut -d: -f2)"; port="${port:-51820}"
     addr="$(echo "$entry" | cut -d: -f3)"; addr="${addr:-10.8.0.1/24}"
     proto="$(echo "$entry" | cut -d: -f4)"
+    ep="$(echo "$entry" | cut -d: -f5)"; ep="${ep:-$NODE_ENDPOINT}"
     [ -n "$name" ] || { log "skipping malformed NODE_IFACES entry: $entry"; IFS=','; continue; }
     plain=no; [ "$proto" = wg ] && plain=yes
     [ -z "$proto" ] && [ "${NODE_PLAIN_WG:-no}" = yes ] && plain=yes
     if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"
     else gen_conf "$name" "$port" "$addr" "$plain"; fi
-    MANAGED="$MANAGED $name"; IFS=','
+    add_iface "$name" "$ep"; IFS=','
   done
   IFS="$OIFS"
 else
@@ -81,7 +90,7 @@ else
   plain=no; [ "${NODE_PLAIN_WG:-no}" = yes ] && plain=yes
   if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"
   else gen_conf "$name" "${NODE_LISTEN_PORT:-51820}" "${NODE_ADDRESS:-10.8.0.1/24}" "$plain"; fi
-  MANAGED="$MANAGED $name"
+  add_iface "$name" "$NODE_ENDPOINT"
 fi
 
 [ -n "$MANAGED" ] || { log "no interfaces to manage"; exit 1; }
@@ -107,16 +116,10 @@ for IFACE in $MANAGED; do
   esac
 done
 
-# ───────── 3) swg-agent config: declarative HTTPS sync, all interfaces listed ─────────
+# ───────── 3) swg-agent config: declarative HTTPS sync, all interfaces listed (with per-interface endpoints) ─────────
 VERIFY=false; [ "${TLS_VERIFY:-no}" = yes ] && VERIFY=true
 FP=""; [ -n "${TLS_FINGERPRINT:-}" ] && FP=",
     \"fingerprint\": \"${TLS_FINGERPRINT}\""
-IFJSON=""; SEP=""
-for IFACE in $MANAGED; do
-  IFJSON="$IFJSON$SEP    \"$IFACE\": { \"cmd\": [\"awg\"], \"conf\": \"$AWG_DIR/$IFACE.conf\" }"
-  SEP=",
-"
-done
 cat > /etc/swg-agent/config.json <<JSON
 {
   "interfaces": {

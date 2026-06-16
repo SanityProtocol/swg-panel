@@ -64,7 +64,7 @@ services:
       NODE_ENDPOINT: "${NODE_ENDPOINT:?public IP/host clients dial for this node}"
       # Single interface (default), or several via NODE_IFACES (see .env.example):
       NODE_IFACE: "${NODE_IFACE:-awg0}"
-      NODE_IFACES: "${NODE_IFACES:-}"     # "name:port:addr[:proto],…"  (blank = use NODE_IFACE)
+      NODE_IFACES: "${NODE_IFACES:-}"     # "name:port:addr[:proto[:endpoint]],…"  (blank = use NODE_IFACE)
       NODE_LISTEN_PORT: "${NODE_LISTEN_PORT:-51820}"
       NODE_ADDRESS: "${NODE_ADDRESS:-10.8.0.1/24}"
       NODE_MTU: "${NODE_MTU:-1280}"        # interface MTU; 1280 leaves headroom for turn-proxy obfuscation

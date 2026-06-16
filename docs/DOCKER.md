@@ -87,9 +87,10 @@ The entrypoint manages one or several interfaces, from the first source that app
          - ./awg0.conf:/etc/swg-node/awg0.conf:ro
          - ./wg1.conf:/etc/swg-node/wg1.conf:ro
    ```
-2. **`NODE_IFACES`** — generate several: `name:port:address[:proto]` entries,
-   comma-separated (`:wg` = plain WireGuard, otherwise AmneziaWG v2). Example:
-   `awg0:51820:10.8.0.1/24,wg1:51821:10.9.0.1/24:wg`.
+2. **`NODE_IFACES`** — generate several: `name:port:address[:proto[:endpoint]]` entries,
+   comma-separated (`:wg` = plain WireGuard, otherwise AmneziaWG v2; `endpoint` = the public
+   IP/host clients dial for that interface, defaulting to `NODE_ENDPOINT`). Example with a
+   per-interface endpoint each: `awg0:51820:10.8.0.1/24:awg:203.0.113.5,wg1:51821:10.9.0.1/24:wg:203.0.113.6`.
 3. **Single (default)** — `NODE_IFACE` / `NODE_LISTEN_PORT` / `NODE_ADDRESS`, AmneziaWG v2
    (or plain with `NODE_PLAIN_WG=yes`).
 
