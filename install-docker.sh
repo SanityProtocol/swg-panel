@@ -446,14 +446,14 @@ case "$PROFILE" in node|host-node)
   echo; echo "  $(b 'Interface') (in the swg-node container):"
   if [ -n "$NODE_IFACES" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"
     for e in "${_ifs[@]}"; do IFS=':' read -r _nm _pt _ad _pr <<< "$e"
-      printf '    %s %-9s port %s  subnet %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$_nm")")" "${_pr:-amneziawg}" "$(bb ":$_pt")" "$(b "$_ad")"; done
+      printf '    %s %-9s endpoint %s  subnet %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$_nm")")" "${_pr:-amneziawg}" "$(bb "$NODE_ENDPOINT:$_pt")" "$(b "$_ad")"; done
   else _pr=amneziawg; [ "$NODE_PLAIN_WG" = yes ] && _pr=wireguard
-    printf '    %s %-9s port %s  subnet %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb ":$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
+    printf '    %s %-9s endpoint %s  subnet %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb "$NODE_ENDPOINT:$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
   fi
   detect_turn 2>/dev/null || true
   if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances (host services → the node container):"
     for n in "${!TP_LISTEN[@]}"; do wk="${TP_WRAP[$n]}"
-      printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+key $(b "${wk:0:12}…")}"; done
+      printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+wrap-key $(b "$wk")}"; done
   fi ;;
 esac
 echo
