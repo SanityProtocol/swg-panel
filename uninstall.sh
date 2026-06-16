@@ -76,18 +76,10 @@ rm_node(){
   REMOVED_NODE=true; ok "swg-node removed"
 }
 
-rm_docker(){
-  info "Removing the Docker deployment ($DOCKER_DIR)"
-  if command -v docker >/dev/null 2>&1; then
-    local DC=""
-    if docker compose version >/dev/null 2>&1; then DC="docker compose"
-    elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
-    [ -n "$DC" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] && \
-      run sh -c "cd '$DOCKER_DIR' && $DC --profile host --profile node --profile host-node down --remove-orphans"
-    run sh -c 'docker rm -f swg-panel swg-node >/dev/null 2>&1 || true'
-    local RMI="${REMOVE_DOCKER_IMAGES:-}"; ask_yn "  Remove the pulled swg-panel / swg-node images too?" n RMI
-    [ "$RMI" = yes ] && run sh -c 'docker rmi ghcr.io/sanityprotocol/swg-panel:latest ghcr.io/sanityprotocol/swg-node:latest swg-panel-docker-swg-panel swg-panel-docker-swg-node >/dev/null 2>&1 || true'
-  else warn "docker not found — removing the deployment files only."; fi
+# swg-panel and swg-node are SEPARATE containers — remove each on its own. The shared
+# deployment dir / network / images / data are only torn down once BOTH are gone.
+docker_running(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; }
+docker_remove_dir(){
   local KEEP="${KEEP_DOCKER_DATA:-}"; ask_yn "  Keep the data dir ($DOCKER_DIR/data: login, nodes, certs) for a future reinstall?" n KEEP
   if [ "$KEEP" = yes ]; then
     rmrf "$DOCKER_DIR/.env" "$DOCKER_DIR/docker-compose.yml" "$DOCKER_DIR/Dockerfile" "$DOCKER_DIR/Dockerfile.node" \
@@ -96,8 +88,22 @@ rm_docker(){
          "$DOCKER_DIR/index.html" "$DOCKER_DIR/app.css" "$DOCKER_DIR/app.js" "$DOCKER_DIR/reconcile.js"
     ok "Kept $DOCKER_DIR/data"
   else rmrf "$DOCKER_DIR"; fi
-  ok "Docker deployment removed"
 }
+docker_cleanup_if_last(){   # only tears down the shared bits when NO swg container remains
+  if docker_running swg-panel || docker_running swg-node; then return 0; fi
+  if command -v docker >/dev/null 2>&1; then
+    local DC=""; if docker compose version >/dev/null 2>&1; then DC="docker compose"; elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
+    [ -n "$DC" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] && run sh -c "cd '$DOCKER_DIR' && $DC down --remove-orphans >/dev/null 2>&1 || true"   # drop the network
+    local RMI="${REMOVE_DOCKER_IMAGES:-}"; ask_yn "  Remove the pulled swg-panel / swg-node images too?" n RMI
+    [ "$RMI" = yes ] && run sh -c 'docker rmi ghcr.io/sanityprotocol/swg-panel:latest ghcr.io/sanityprotocol/swg-node:latest swg-panel-docker-swg-panel swg-panel-docker-swg-node >/dev/null 2>&1 || true'
+  fi
+  docker_remove_dir
+}
+rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
+  run sh -c 'docker rm -f swg-panel >/dev/null 2>&1 || true'; docker_cleanup_if_last; ok "swg-panel container removed"; }
+rm_docker_node(){  info "Removing Docker node container (swg-node)"
+  run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'; docker_cleanup_if_last; ok "swg-node container removed"; }
+rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"; docker_remove_dir; ok "Docker deployment files removed"; }
 
 down_ifaces(){ local dir="$1" tool="$2" f n
   for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"
@@ -144,13 +150,17 @@ add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); }
 [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f $SD/swg-noded.service ] && \
   add "swg-node" "bare-metal entry server (swg-noded)" rm_node
 
-DOCKER_OK=false
-{ [ -f "$DOCKER_DIR/docker-compose.yml" ] || [ -f "$DOCKER_DIR/.env" ]; } && DOCKER_OK=true
-if ! $DOCKER_OK && command -v docker >/dev/null 2>&1; then
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qE '^swg-(panel|node)$' && DOCKER_OK=true; fi
-if $DOCKER_OK; then
-  dsvc=""; command -v docker >/dev/null 2>&1 && dsvc="$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^swg-(panel|node)$' | tr '\n' ' ')"
-  add "Docker deployment" "${dsvc:-$DOCKER_DIR}[docker]" rm_docker
+# Docker: the panel and node are separate containers — offer each independently. If the
+# deployment dir exists but neither container does, offer a files-only cleanup.
+DPANEL=false; DNODE=false
+if command -v docker >/dev/null 2>&1; then
+  docker_running swg-panel && DPANEL=true
+  docker_running swg-node  && DNODE=true
+fi
+$DPANEL && add "Docker panel (swg-panel)" "container swg-panel" rm_docker_panel
+$DNODE  && add "Docker node (swg-node)"   "container swg-node"   rm_docker_node
+if ! $DPANEL && ! $DNODE && { [ -f "$DOCKER_DIR/docker-compose.yml" ] || [ -f "$DOCKER_DIR/.env" ]; }; then
+  add "Docker deployment (files)" "$DOCKER_DIR" rm_docker_files
 fi
 
 awg_present(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.service >/dev/null 2>&1 \

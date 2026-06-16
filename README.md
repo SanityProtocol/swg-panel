@@ -231,7 +231,7 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 - **Remove a node:** Nodes → Remove. Stop `swg-noded` on the box itself to take it offline.
 - **Back up:** `users.json` + `nodes.json` (under `/var/lib/swg-panel`) are the whole state. Copy them somewhere safe.
 - **Update:** `… | sudo bash -s update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
-- **Uninstall:** `… | sudo bash -s uninstall` (or `./uninstall.sh`). Lists every installed component — the panel, a bare-metal node, a Docker deployment, AmneziaWG, WireGuard, and **each** turn-proxy server — then loops through and asks to uninstall or keep each one. Nothing is removed without a yes; can keep the roster / node store / Docker data dir for a reinstall. `--yes` removes everything, `--dry-run` previews.
+- **Uninstall:** `… | sudo bash -s uninstall` (or `./uninstall.sh`). Lists every installed component — the panel, a bare-metal node, the Docker panel and node containers, AmneziaWG, WireGuard, and **each** turn-proxy server — then loops through and asks to uninstall or keep each one. Nothing is removed without a yes; can keep the roster / node store / Docker data dir for a reinstall. `--yes` removes everything, `--dry-run` previews.
 
 ## Security
 
