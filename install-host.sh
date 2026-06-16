@@ -243,10 +243,12 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <owner/repo>
   curl -fsSL "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
-install_turn_binary(){ # <key> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
-  local key="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver
+install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
+  local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst
   case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
-  dir="$TURN_DIR/$key"; bin="$dir/server"; svc="vk-turn-proxy-$key"
+  # key each instance by <fork>-<port> so one fork can run many times (different ports + wrap keys)
+  port="${listen##*:}"; inst="$fork-$port"; dir="$TURN_DIR/$inst"; bin="$dir/server"; svc="vk-turn-proxy-$inst"
+  if [ -e "/etc/systemd/system/$svc.service" ]; then warn "turn-proxy $svc already exists — pick another port"; return 0; fi
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   mkdir -p "$PREFIX$dir"
   info "Installing $owner ($listen → $connect)…"
@@ -272,7 +274,7 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
-  ok "installed turn-proxy $(col "$C_GREEN" "$key") ($owner ${ver:-?}) — $listen → $connect"
+  ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"
 }
 install_turn_proxy(){   # repo selection + params, then install
   echo
@@ -285,6 +287,7 @@ install_turn_proxy(){   # repo selection + params, then install
   local owner pub port connect extra; owner="$(turn_repo_owner "$sel")"
   ask_valid "Public IP this turn-proxy is reached at" "$(detect_public_ip)" pub v_host "an IP or hostname"
   ask_valid "Turn-proxy listen port" "56000" port v_port "port must be 1–65535"
+  detect_turn; local _n; for _n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$_n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$_n' — pick another port (enter 'new' again)"; return 0; }; done
   local ports defport=51820 disp n p proto first; ports="$(turn_wg_ports)"
   if [ -n "$ports" ]; then
     defport="$(printf '%s\n' "$ports" | head -1 | cut -d: -f2)"; disp=""; first=1
