@@ -177,14 +177,8 @@ WantedBy=multi-user.target
 EOF
   run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
   ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"; }
-install_turn_proxy(){ echo
-  menu "$(col "$C_BLUE" wings)"        "For Android — https://github.com/WINGS-N/vk-turn-proxy"
-  menu "$(col "$C_BLUE" samosvalishe)" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
-  menu "$(col "$C_BLUE" kiper292)"     "For Android — https://github.com/kiper292/vk-turn-proxy"
-  menu "$(col "$C_BLUE" anton48)"      "For iOS — https://github.com/anton48/vk-turn-proxy"
-  local sel=""; ask_choice "Select turn-proxy repository or enter $(col "$C_RED" skip) to just proceed" "skip" sel "wings samosvalishe kiper292 anton48 skip"
-  [ "$sel" = skip ] && return 0
-  local owner pub port connect extra; owner="$(turn_repo_owner "$sel")"
+install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
+  local sel="$1" owner pub port connect extra; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
   ask_valid "Turn-proxy listen port" "56000" port v_port "port must be 1–65535"
   detect_turn; local n; for n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$n' — pick another port (enter 'new' again)"; return 0; }; done
@@ -204,17 +198,22 @@ $json
 }
 EOF
 }
-choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; detect_turn; local names ans n
+choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; local sel names n
   while :; do
     detect_turn; names=("${!TP_LISTEN[@]}")
-    if [ "${#names[@]}" -eq 0 ]; then echo; warn "No turn-proxy servers found on this box."
-      printf '  Press %s to skip and proceed or enter "%s" to install a turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"
-    else echo; echo "  Installed turn-proxy servers:"
-      for n in "${names[@]}"; do printf '    %s %s\n' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done; echo
-      printf '  Press %s to proceed or enter "%s" to install another turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"; fi
-    if ! read -r ans 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
-    ans="${ans//[[:space:]]/}"; [ "$ans" = new ] && { install_turn_proxy; continue; }
-    [ -z "$ans" ] && break; warn 'type nothing to proceed, or "new" to install a turn-proxy server'
+    echo
+    if [ "${#names[@]}" -gt 0 ]; then echo "  Installed turn-proxy servers:"
+      for n in "${names[@]}"; do printf '    %s %s\n' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done; echo; fi
+    echo "  Here is a list of turn-proxy branches available for installation:"; echo
+    menu "$(col "$C_BLUE" wings)"        "For Android — https://github.com/WINGS-N/vk-turn-proxy"
+    menu "$(col "$C_BLUE" samosvalishe)" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
+    menu "$(col "$C_BLUE" kiper292)"     "For Android — https://github.com/kiper292/vk-turn-proxy"
+    menu "$(col "$C_BLUE" anton48)"      "For iOS — https://github.com/anton48/vk-turn-proxy"
+    printf '  Select a turn-proxy repository to install or just press %s to skip and proceed with the setup: ' "$(b Enter)"
+    if ! read -r sel 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
+    sel="${sel//[[:space:]]/}"; [ -z "$sel" ] && break
+    case "$sel" in wings|samosvalishe|kiper292|anton48) install_turn_proxy "$sel"; continue;;
+      *) warn "‘$sel’ isn't one of: wings samosvalishe kiper292 anton48 (or press Enter to skip)";; esac
   done; write_turn_record; }
 
 # ───────────────────────── flags ─────────────────────────
