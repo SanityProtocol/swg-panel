@@ -147,7 +147,7 @@ detect_turn(){ TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con
     wk="$(printf '%s\n' "$exe" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
     TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"; TP_WRAP[$name]="$wk"; done; }
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }
-  curl -fsSL "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+  curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
 # One instance == one systemd unit, keyed by <fork>-<port> so the SAME fork can run many times
 # (2× wings, 3× samosvalishe, …) — each on its own port with its own wrap key.
@@ -156,9 +156,9 @@ install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra
   port="${listen##*:}"; inst="$fork-$port"; dir="$TURN_DIR/$inst"; bin="$dir/server"; svc="vk-turn-proxy-$inst"
   if [ -e "/etc/systemd/system/$svc.service" ]; then warn "turn-proxy $svc already exists — pick another port"; return 0; fi
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
-  mkdir -p "$PREFIX$dir"; info "Installing $owner ($listen → $connect)…"
+  mkdir -p "$PREFIX$dir"; info "Installing $owner ($listen → $connect) — downloading the binary from GitHub (up to ~2 min)…"
   if $DRYRUN; then echo "    [skip] curl -fsSL $url -o $bin"
-  elif ! { curl -fsSL "$url" -o "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then warn "download failed ($url) — skipping"; return 0; fi
+  elif ! { curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 --retry-all-errors "$url" -o "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then warn "download failed ($url) — skipping"; return 0; fi
   ver="$(turn_latest_tag "$owner")"
   printf '%s\n' "$owner" | writef "$dir/repo.txt" 644; printf '%s\n' "${ver:-unknown}" | writef "$dir/version.txt" 644
   writef "/etc/systemd/system/$svc.service" 600 <<EOF

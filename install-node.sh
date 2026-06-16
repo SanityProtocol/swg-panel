@@ -267,7 +267,7 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
   done
 }
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <owner/repo>
-  curl -fsSL "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+  curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
 install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
   local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst
@@ -277,9 +277,9 @@ install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> 
   if [ -e "/etc/systemd/system/$svc.service" ]; then warn "turn-proxy $svc already exists — pick another port"; return 0; fi
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   mkdir -p "$PREFIX$dir"
-  info "Installing $owner ($listen → $connect)…"
+  info "Installing $owner ($listen → $connect) — downloading the binary from GitHub (up to ~2 min)…"
   if $DRYRUN; then echo "    [skip] curl -fsSL $url -o $bin"
-  elif ! { curl -fsSL "$url" -o "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then
+  elif ! { curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 --retry-all-errors "$url" -o "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then
     warn "download failed ($url) — skipping this turn-proxy"; return 0
   fi
   ver="$(turn_latest_tag "$owner")"
