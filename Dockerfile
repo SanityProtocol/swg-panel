@@ -19,8 +19,12 @@ RUN apt-get update \
       "https://github.com/acmesh-official/acme.sh/archive/refs/tags/${ACME_VERSION}.tar.gz" -o /tmp/acme.tar.gz \
  && mkdir -p /tmp/acme && tar -xzf /tmp/acme.tar.gz -C /tmp/acme --strip-components=1 \
  && ( cd /tmp/acme && ./acme.sh --install --home /opt/acme.sh --nocron --noprofile ) \
+ # bundle the DNS plugins so 'cloudflare' (DNS-01) never has to fetch dns_cf.sh from GitHub at
+ # runtime (which fails on networks that can't reach GitHub); verify the cf plugin is present.
+ && mkdir -p /opt/acme.sh/dnsapi && cp -rf /tmp/acme/dnsapi/. /opt/acme.sh/dnsapi/ \
  && ln -sf /opt/acme.sh/acme.sh /usr/local/bin/acme.sh \
  && /opt/acme.sh/acme.sh --version \
+ && test -f /opt/acme.sh/dnsapi/dns_cf.sh \
  && rm -rf /tmp/acme /tmp/acme.tar.gz
 
 WORKDIR /opt/swg-panel

@@ -60,17 +60,26 @@ elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
     letsencrypt)
       [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
       log "issuing $PANEL_DOMAIN via Let's Encrypt (HTTP-01 standalone on :80)…"
-      if acme --issue -d "$PANEL_DOMAIN" --standalone --server letsencrypt --keylength ec-256 >/dev/null 2>&1 \
-         || acme_has_cert; then acme_install; log "Let's Encrypt cert installed"
-      else log "WARNING: letsencrypt issuance failed (is :80 published + reachable?) — falling back to self-signed"; selfsigned; fi ;;
+      # capture acme's full output so a failure shows WHY in 'docker logs' (don't hide it in /dev/null)
+      if _out="$(acme --issue -d "$PANEL_DOMAIN" --standalone --server letsencrypt --keylength ec-256 2>&1)" || acme_has_cert; then
+        acme_install; log "Let's Encrypt cert installed"
+      else
+        printf '%s\n' "$_out" | sed 's/^/[acme] /'
+        log "WARNING: letsencrypt issuance FAILED (see [acme] lines above). HTTP-01 needs port 80 reachable from the internet and breaks behind Cloudflare's proxy — use TLS=cloudflare (DNS-01) or cf15. Falling back to self-signed."
+        selfsigned
+      fi ;;
     cloudflare)
       [ -n "${CF_TOKEN:-}" ] || { log "WARNING: TLS=cloudflare but CF_TOKEN unset — falling back to self-signed"; selfsigned; }
       if [ -n "${CF_TOKEN:-}" ]; then
         [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
         log "issuing $PANEL_DOMAIN via Let's Encrypt (DNS-01 through Cloudflare)…"
-        if CF_Token="$CF_TOKEN" acme --issue -d "$PANEL_DOMAIN" --dns dns_cf --server letsencrypt --keylength ec-256 >/dev/null 2>&1 \
-           || acme_has_cert; then acme_install; log "Cloudflare DNS-01 cert installed"
-        else log "WARNING: cloudflare issuance failed — falling back to self-signed"; selfsigned; fi
+        if _out="$(CF_Token="$CF_TOKEN" acme --issue -d "$PANEL_DOMAIN" --dns dns_cf --server letsencrypt --keylength ec-256 2>&1)" || acme_has_cert; then
+          acme_install; log "Cloudflare DNS-01 cert installed"
+        else
+          printf '%s\n' "$_out" | sed 's/^/[acme] /'
+          log "WARNING: cloudflare (DNS-01) issuance FAILED (see [acme] lines above) — check the token has Zone:DNS:Edit + Zone:Read and that $PANEL_DOMAIN is on that account. Falling back to self-signed."
+          selfsigned
+        fi
       fi ;;
     cf15)
       [ -n "${CF_ORIGIN_TOKEN:-}" ] || { log "WARNING: TLS=cf15 but CF_ORIGIN_TOKEN unset — falling back to self-signed"; selfsigned; }

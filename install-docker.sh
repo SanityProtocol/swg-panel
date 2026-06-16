@@ -442,8 +442,9 @@ else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE ); fi
 # ── surface the cert outcome (don't let a silent self-signed fallback hide as a Cloudflare 526) ──
 if [ "$PROFILE" != node ] && [ "$TLS" != none ] && ! $DRYRUN && have openssl; then
   iss=""; for _i in 1 2 3 4 5 6; do
-    iss="$(echo | openssl s_client -connect "127.0.0.1:$PANEL_PORT" -servername "$PANEL_DOMAIN" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)"
-    [ -n "$iss" ] && break; sleep 2
+    # NB: '|| true' — a failed openssl pipeline must NOT abort the script under set -o pipefail
+    iss="$(echo | openssl s_client -connect "127.0.0.1:$PANEL_PORT" -servername "$PANEL_DOMAIN" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || true)"
+    [ -n "$iss" ] && break; sleep 2 || true
   done
   case "$iss" in
     *"CN=$PANEL_DOMAIN"|*"CN = $PANEL_DOMAIN")   # issuer == the domain ⇒ self-signed
