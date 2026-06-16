@@ -37,6 +37,13 @@ ACME="/opt/acme.sh/acme.sh"; ACME_CFG="${ACME_CONFIG:-/etc/swg-panel/acme}"
 acme(){ "$ACME" --config-home "$ACME_CFG" "$@"; }
 # reliable "is there an ISSUED cert?" check — `acme --info` returns 0 even with none, so check disk
 acme_has_cert(){ [ -s "$ACME_CFG/${PANEL_DOMAIN}_ecc/${PANEL_DOMAIN}.cer" ] || [ -s "$ACME_CFG/${PANEL_DOMAIN}/${PANEL_DOMAIN}.cer" ]; }
+# call after a failed acme run with its output — flag the common, confusing causes
+acme_hint(){ case "$1" in
+  *"too many certificates"*|*"rateLimited"*|*"rate limit"*)
+    log "  ↳ This is a Let's Encrypt RATE LIMIT (max 5 certs per exact domain per 7 days), NOT a config error. Use TLS=cf15 (Cloudflare Origin cert — not rate-limited) now, or wait for the retry-after time above.";;
+  *"Invalid response from"*|*"404"*|*"Timeout during connect"*)
+    log "  ↳ HTTP-01 couldn't reach this box on :80 (firewall, or it's behind Cloudflare's proxy). Use TLS=cloudflare (DNS-01) or cf15, or grey-cloud the record.";;
+esac; }
 selfsigned(){ mkdir -p "$(dirname "$SWG_PANEL_TLS_CERT")"
   case "$PANEL_DOMAIN" in *[a-zA-Z]*) san="DNS:$PANEL_DOMAIN";; *) san="IP:$PANEL_DOMAIN";; esac
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$SWG_PANEL_TLS_KEY" -out "$SWG_PANEL_TLS_CERT" \
@@ -66,7 +73,7 @@ elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
       else
         printf '%s\n' "$_out" | sed 's/^/[acme] /'
         log "WARNING: letsencrypt issuance FAILED (see [acme] lines above). HTTP-01 needs port 80 reachable from the internet and breaks behind Cloudflare's proxy — use TLS=cloudflare (DNS-01) or cf15. Falling back to self-signed."
-        selfsigned
+        acme_hint "$_out"; selfsigned
       fi ;;
     cloudflare)
       [ -n "${CF_TOKEN:-}" ] || { log "WARNING: TLS=cloudflare but CF_TOKEN unset — falling back to self-signed"; selfsigned; }
@@ -78,7 +85,7 @@ elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
         else
           printf '%s\n' "$_out" | sed 's/^/[acme] /'
           log "WARNING: cloudflare (DNS-01) issuance FAILED (see [acme] lines above) — check the token has Zone:DNS:Edit + Zone:Read and that $PANEL_DOMAIN is on that account. Falling back to self-signed."
-          selfsigned
+          acme_hint "$_out"; selfsigned
         fi
       fi ;;
     cf15)
