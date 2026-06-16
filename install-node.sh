@@ -21,6 +21,7 @@ NODE_TOKEN="${NODE_TOKEN:-}"           # one-time enrollment key from the Nodes 
 NODE_NAME="${NODE_NAME:-}"             # local label for this box's systemd unit + final message only (NOT the panel name; blank = hostname)
 ENDPOINT_IP="${ENDPOINT_IP:-}"         # public IP/host clients dial for THIS node's wg
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected)
+WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 DNS="${DNS:-1.1.1.1}"
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes = verify panel's cert (real CA); no = self-signed
 TLS_FINGERPRINT="${TLS_FINGERPRINT:-}" # optional: pin panel cert sha256 (hex) instead of verify
@@ -168,7 +169,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   run sysctl -q -w net.ipv4.ip_forward=1
   if $DRYRUN; then priv="<generated-on-real-run>"
   elif ! priv="$("$cmd" genkey 2>/dev/null)" || [ -z "$priv" ]; then warn "'$cmd genkey' failed — skipping interface '$name'"; return 0; fi
-  { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\n' "$priv" "$addr" "$port"
+  { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\nMTU = %s\n' "$priv" "$addr" "$port" "$WG_MTU"
     printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
     if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
   # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)

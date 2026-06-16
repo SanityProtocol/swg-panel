@@ -41,6 +41,7 @@ NODE_IFACE="${NODE_IFACE:-awg0}"
 NODE_IFACES="${NODE_IFACES:-}"         # several interfaces: "name:port:addr[:proto],…"
 NODE_LISTEN_PORT="${NODE_LISTEN_PORT:-51820}"
 NODE_ADDRESS="${NODE_ADDRESS:-10.8.0.1/24}"
+NODE_MTU="${NODE_MTU:-1280}"           # interface MTU; 1280 leaves headroom for turn-proxy obfuscation
 NODE_PLAIN_WG="${NODE_PLAIN_WG:-}"     # yes = plain WireGuard; blank/no = AmneziaWG v2 (Step 2 sets it)
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes/no; blank = ask (node profile) / default no
 DNS="${DNS:-1.1.1.1}"
@@ -391,6 +392,7 @@ NODE_IFACE=$NODE_IFACE
 NODE_IFACES=$NODE_IFACES
 NODE_LISTEN_PORT=$NODE_LISTEN_PORT
 NODE_ADDRESS=$NODE_ADDRESS
+NODE_MTU=$NODE_MTU
 NODE_PLAIN_WG=$NODE_PLAIN_WG
 TLS_VERIFY=$TLS_VERIFY
 DNS=$DNS

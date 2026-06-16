@@ -15,6 +15,7 @@ ROLE="${ROLE:-}"                       # master (panel + this box is an entry se
 HOST_NODE_NAME="${HOST_NODE_NAME:-}"   # node name for THIS box (master only)
 HOST_ENDPOINT_IP="${HOST_ENDPOINT_IP:-}" # public IP clients dial for this box's wg (master only)
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected; master only)
+WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 
 PANEL_DOMAIN="${PANEL_DOMAIN:-}"       # panel URL: IP, host, or host/subpath (e.g. vpn.example.com/swg). Blank = this host's IP.
 STORE_CONFIGS="${STORE_CONFIGS:-false}"
@@ -401,7 +402,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   run sysctl -q -w net.ipv4.ip_forward=1
   if $DRYRUN; then priv="<generated-on-real-run>"
   elif ! priv="$("$cmd" genkey 2>/dev/null)" || [ -z "$priv" ]; then warn "'$cmd genkey' failed — skipping interface '$name'"; return 0; fi
-  { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\n' "$priv" "$addr" "$port"
+  { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\nMTU = %s\n' "$priv" "$addr" "$port" "$WG_MTU"
     printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
     if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
   # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)

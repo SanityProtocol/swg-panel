@@ -41,6 +41,7 @@ gen_conf(){
     echo "PrivateKey = $(awg genkey)"
     echo "Address = $_addr"
     echo "ListenPort = $_port"
+    echo "MTU = ${NODE_MTU:-1280}"   # headroom for turn-proxy obfuscation overhead
     [ "$_plain" = yes ] || gen_awg_params
   } > "$_dest"
   chmod 600 "$_dest"
