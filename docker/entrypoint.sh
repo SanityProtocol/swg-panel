@@ -35,6 +35,8 @@ fi
 #    under /etc/swg-panel/acme (mounted volume), so a restart renews/reuses rather than re-issues.
 ACME="/opt/acme.sh/acme.sh"; ACME_CFG="${ACME_CONFIG:-/etc/swg-panel/acme}"
 acme(){ "$ACME" --config-home "$ACME_CFG" "$@"; }
+# reliable "is there an ISSUED cert?" check — `acme --info` returns 0 even with none, so check disk
+acme_has_cert(){ [ -s "$ACME_CFG/${PANEL_DOMAIN}_ecc/${PANEL_DOMAIN}.cer" ] || [ -s "$ACME_CFG/${PANEL_DOMAIN}/${PANEL_DOMAIN}.cer" ]; }
 selfsigned(){ mkdir -p "$(dirname "$SWG_PANEL_TLS_CERT")"
   case "$PANEL_DOMAIN" in *[a-zA-Z]*) san="DNS:$PANEL_DOMAIN";; *) san="IP:$PANEL_DOMAIN";; esac
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$SWG_PANEL_TLS_KEY" -out "$SWG_PANEL_TLS_CERT" \
@@ -59,7 +61,7 @@ elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
       [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
       log "issuing $PANEL_DOMAIN via Let's Encrypt (HTTP-01 standalone on :80)…"
       if acme --issue -d "$PANEL_DOMAIN" --standalone --server letsencrypt --keylength ec-256 >/dev/null 2>&1 \
-         || acme --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then acme_install; log "Let's Encrypt cert installed"
+         || acme_has_cert; then acme_install; log "Let's Encrypt cert installed"
       else log "WARNING: letsencrypt issuance failed (is :80 published + reachable?) — falling back to self-signed"; selfsigned; fi ;;
     cloudflare)
       [ -n "${CF_TOKEN:-}" ] || { log "WARNING: TLS=cloudflare but CF_TOKEN unset — falling back to self-signed"; selfsigned; }
@@ -67,7 +69,7 @@ elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
         [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
         log "issuing $PANEL_DOMAIN via Let's Encrypt (DNS-01 through Cloudflare)…"
         if CF_Token="$CF_TOKEN" acme --issue -d "$PANEL_DOMAIN" --dns dns_cf --server letsencrypt --keylength ec-256 >/dev/null 2>&1 \
-           || acme --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then acme_install; log "Cloudflare DNS-01 cert installed"
+           || acme_has_cert; then acme_install; log "Cloudflare DNS-01 cert installed"
         else log "WARNING: cloudflare issuance failed — falling back to self-signed"; selfsigned; fi
       fi ;;
     cf15)

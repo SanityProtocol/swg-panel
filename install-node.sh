@@ -353,9 +353,9 @@ choose_turn_proxy(){   # looped menu — list installed, Enter to proceed, "new"
       echo; warn "No turn-proxy servers found on this box."
       printf '  Press %s to skip and proceed with the setup or enter "%s" to install a turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"
     else
-      echo; printf "  Installed turn-proxy servers:"
-      for n in "${names[@]}"; do printf ' %s %s' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done
-      echo; echo
+      echo; echo "  Installed turn-proxy servers:"
+      for n in "${names[@]}"; do printf '    %s %s\n' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done
+      echo
       printf '  Press %s to proceed with the setup or enter "%s" to install another turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"
     fi
     if ! read -r ans 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi

@@ -328,9 +328,9 @@ choose_turn_proxy(){   # looped menu — list installed, Enter to proceed, "new"
       echo; warn "No turn-proxy servers found on this box."
       printf '  Press %s to skip and proceed with the setup or enter "%s" to install a turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"
     else
-      echo; printf "  Installed turn-proxy servers:"
-      for n in "${names[@]}"; do printf ' %s %s' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done
-      echo; echo
+      echo; echo "  Installed turn-proxy servers:"
+      for n in "${names[@]}"; do printf '    %s %s\n' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done
+      echo
       printf '  Press %s to proceed with the setup or enter "%s" to install another turn-proxy server: ' "$(b Enter)" "$(col "$C_BLUE" new)"
     fi
     if ! read -r ans 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
@@ -715,6 +715,9 @@ cert_perms(){ run chown root:swg "$TLS_DIR/fullchain.pem" "$TLS_DIR/key.pem" 2>/
   chmod 644 "$PREFIX$TLS_DIR/fullchain.pem" 2>/dev/null || true; chmod 640 "$PREFIX$TLS_DIR/key.pem" 2>/dev/null || true; }
 san_for(){ case "$1" in *[a-zA-Z]*) echo "DNS:$1";; *) echo "IP:$1";; esac; }
 find_acme(){ ACME=""; local a; for a in /root/.acme.sh/acme.sh "${HOME:-/root}/.acme.sh/acme.sh" "$(command -v acme.sh 2>/dev/null || true)"; do [ -n "$a" ] && [ -x "$a" ] && { ACME="$a"; return 0; }; done; return 1; }
+# does acme.sh actually hold an ISSUED cert for <domain>?  (`--info` returns 0 even with no cert,
+# e.g. on a clean box right after --register-account — so check the cert file on disk instead)
+acme_has_cert(){ local h; h="$(dirname "${ACME:-/root/.acme.sh/acme.sh}")"; [ -s "$h/${1}_ecc/${1}.cer" ] || [ -s "$h/${1}/${1}.cer" ]; }
 ensure_acme(){ find_acme && return 0
   info "Installing acme.sh"; run sh -c "curl -fsSL https://get.acme.sh | sh -s email=${ACME_EMAIL:-admin@$PANEL_DOMAIN}"
   find_acme && return 0; $DRYRUN && { ACME=/root/.acme.sh/acme.sh; return 0; }
@@ -776,15 +779,15 @@ obtain_cert_internal(){
         info "Issuing $PANEL_DOMAIN via Let's Encrypt — DNS-01 challenge through Cloudflare (can take ~30–60s while DNS propagates)…"
       else args+=(--standalone); info "Issuing $PANEL_DOMAIN via Let's Encrypt — HTTP-01 (acme standalone needs :80 free)…"; fi
       [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
-      # Re-run? acme.sh already manages this domain → install the existing cert instead of
-      # re-issuing (a fresh --issue errors on the existing domain key). Renewals run from acme's cron.
-      if ! $DRYRUN && "$ACME" --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then
+      # Re-run? acme.sh already holds a cert for this domain → install it instead of re-issuing.
+      # Renewals run from acme's cron. (First install on a clean box has no cert → issue below.)
+      if ! $DRYRUN && acme_has_cert "$PANEL_DOMAIN"; then
         ok "acme.sh already has a cert for $PANEL_DOMAIN — installing it (auto-renews via acme's cron)"
       else
         local rc=0; run "$ACME" "${args[@]}" || rc=$?
         # acme.sh exit 2 = RENEW_SKIP (a valid cert already exists, not due for renewal) — that's fine.
         if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
-          if $DRYRUN || "$ACME" --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then
+          if $DRYRUN || acme_has_cert "$PANEL_DOMAIN"; then
             warn "acme.sh exit $rc, but a cert for $PANEL_DOMAIN already exists — installing it."
           else
             warn "issuance failed (acme.sh exit $rc) — falling back to a self-signed cert."; mk_selfsigned; return
@@ -831,12 +834,12 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
       else args+=(--standalone); fi                                            # caddy not up yet → acme can hold :80
       [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
       local reload="systemctl reload nginx"; [ "$SERVE_MODE" = caddy ] && reload="systemctl reload caddy"
-      # Re-run? install the existing cert instead of re-issuing (avoids the domain-key error).
-      if ! $DRYRUN && "$ACME" --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; then
+      # Re-run? install the existing cert instead of re-issuing. First install → no cert → issue.
+      if ! $DRYRUN && acme_has_cert "$PANEL_DOMAIN"; then
         ok "acme.sh already has a cert for $PANEL_DOMAIN — installing it (auto-renews via acme's cron)"
       else
         local rc=0; run "$ACME" "${args[@]}" || rc=$?
-        if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && ! { $DRYRUN || "$ACME" --info -d "$PANEL_DOMAIN" >/dev/null 2>&1; }; then
+        if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && ! { $DRYRUN || acme_has_cert "$PANEL_DOMAIN"; }; then
           warn "issuance failed (acme.sh exit $rc) — proxy will serve plain HTTP."; CERT_FULLCHAIN=""; CERT_KEY=""; return 0
         fi
       fi
