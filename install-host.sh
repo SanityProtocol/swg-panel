@@ -453,8 +453,18 @@ echo "      Where the panel is reached — an IP, a host, or a host with a subpa
 echo "      live under an existing site (e.g. $(b 'vpn.example.com/swg'))."
 echo
 DEF_URL="$(detect_public_ip)"; [ -z "$DEF_URL" ] && DEF_URL=localhost
-ask_valid "Enter panel URL (https://…)" "$DEF_URL" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
-parse_panel_url "$PANEL_DOMAIN"
+while :; do
+  PANEL_DOMAIN=""; ask_valid "Enter panel URL (https://…)" "$DEF_URL" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
+  parse_panel_url "$PANEL_DOMAIN"
+  { [ -z "$URL_PORT" ] || v_cfport "$URL_PORT"; } && break   # no port or a Cloudflare-proxyable one → fine
+  warn "Port $(col "$C_YEL" "$URL_PORT") is NOT a standard HTTPS port Cloudflare's proxy (orange cloud) forwards."
+  echo "         Cloudflare proxies HTTPS only on: $(b '443, 2053, 2083, 2087, 2096, 8443')."
+  echo "         Behind the orange cloud the panel on $URL_PORT is unreachable, so $(b cloudflare)/$(b cf15)"
+  echo "         certificates won't work. ($(b letsencrypt)/$(b selfsigned) on a directly-reachable port is fine.)"
+  _url_ans=""; ask_choice "Proceed with port $URL_PORT, or change the URL?" "proceed" _url_ans "proceed change"
+  [ "$_url_ans" = proceed ] && break
+  DEF_URL="$PANEL_HOST_NOPORT"   # offer the host without the rejected port as the new default
+done
 PANEL_DOMAIN="$PANEL_HOST_NOPORT"
 [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
 [ -n "$PANEL_BASE" ] && ok "panel will be served under subpath ${PANEL_BASE}/"
