@@ -53,5 +53,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # scope per image so the two matrix builds don't share/clobber one cache, and
+          # ignore-error so a flaky gha cache ('error writing layer blob: not_found') can't
+          # fail the publish — the image still builds + pushes.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }},ignore-error=true
