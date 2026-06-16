@@ -62,6 +62,7 @@ else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C
 b(){   printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (handoff URL / login)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
+conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
 info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }   # every ▸ line is bold
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
 warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
@@ -960,28 +961,33 @@ run systemctl daemon-reload
 run systemctl enable --now swg-panel-server
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
 
-# ───────────────────────── handoff ─────────────────────────
+# ───────────────────────── SUMMARY ─────────────────────────
 echo; ok "Host install complete."
 case "$SERVE_MODE" in
-  internal)
-    SCH=https; [ -n "${CERT_FULLCHAIN:-}" ] || SCH=http
-    PORTSUF=""; [ "$PORT" != 443 ] && PORTSUF=":${PORT}"
-    echo "  UI:    $(bb "${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/")   (login: $(bb "$BASIC_USER") / $(bb "$BASIC_PASS"))"
-    command -v ufw >/dev/null 2>&1 || echo "         open TCP ${PORT} in your firewall if it isn't already"
-    [ "$TLS_MODE" = selfsigned ] && echo "         self-signed cert — the browser warns once, that's expected"
-    ;;
-  nginx|caddy)
-    SCH=https; { [ "$TLS_MODE" = skip ] && [ -z "${CERT_FULLCHAIN:-}" ]; } && SCH=http
-    echo "  UI:    $(bb "${SCH}://${PANEL_DOMAIN}${PANEL_BASE}/")   (login: $(bb "$BASIC_USER") / $(bb "$BASIC_PASS"))"
-    ;;
-  skip)
-    echo "  Panel: $(bb "http://127.0.0.1:${PORT}${PANEL_BASE}/")   (login: $(bb "$BASIC_USER") / $(bb "$BASIC_PASS"))"
-    echo "         point your web server at it (proxy ${PANEL_BASE:-/} → 127.0.0.1:${PORT})"
-    ;;
+  internal) SCH=https; [ -n "${CERT_FULLCHAIN:-}" ] || SCH=http
+            PORTSUF=""; [ "$PORT" != 443 ] && PORTSUF=":${PORT}"; UI="${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/";;
+  nginx|caddy) SCH=https; { [ "$TLS_MODE" = skip ] && [ -z "${CERT_FULLCHAIN:-}" ]; } && SCH=http; UI="${SCH}://${PANEL_DOMAIN}${PANEL_BASE}/";;
+  skip) UI="http://127.0.0.1:${PORT}${PANEL_BASE}/";;
 esac
-echo "  Local: curl -s 127.0.0.1:${PORT}${PANEL_BASE}/api/fleet"
+echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
+echo "  Panel     $(bb "$UI")"
+echo "  Login     $(bb "$BASIC_USER") / $(bb "$BASIC_PASS")   (change later in the panel → Account)"
+echo "  TLS       $(b "$TLS_MODE")  ·  Web server $(b "$SERVE_MODE") (port $(b "$PORT"))"
+if [ "$HOST_HAS_WG" = yes ] && [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (this box, node '$(b "$HOST_NODE_NAME")'):"
+  for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
+    printf '    %s %-9s port %s  subnet %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \
+      "$(bb ":$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
+  done
+fi
+detect_turn 2>/dev/null || true
+if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
+  for n in "${!TP_LISTEN[@]}"; do wk="${TP_WRAP[$n]}"
+    printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+key $(b "${wk:0:12}…")}"
+  done
+fi
 echo
-echo "Add entry servers from the UI: Nodes → Add node issues a one-time token and the"
-echo "exact one-liner to run on each server (outbound HTTPS only — no inbound)."
-[ "$HOST_HAS_WG" = yes ] && echo "This box is enrolled as node '${HOST_NODE_NAME}'; it appears in Nodes once swg-noded syncs."
+echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')  (gives a one-time key + one-liner)"
+echo "  Firewall  open TCP $(b "$PORT")$([ "${#TP_LISTEN[@]}" -gt 0 ] && echo ' + the turn-proxy UDP ports') if not already"
+echo "  Edit      panel $(b /etc/swg-panel/)  ·  interfaces $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)"
+[ "$TLS_MODE" = selfsigned ] && echo "  Note      self-signed cert — the browser warns once, that's expected"
 $DRYRUN && { echo; ok "DRY RUN done — inspect ./dryrun"; }

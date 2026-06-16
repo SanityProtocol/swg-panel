@@ -40,7 +40,9 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_GREY=$'\033[90m'; C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'
 else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C_YEL=""; fi
 b(){   printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
+bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (summary highlights)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
+conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
 info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }   # every ▸ line is bold
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
 warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
@@ -464,10 +466,25 @@ info "Enable daemon"
 run systemctl daemon-reload
 run systemctl enable --now swg-noded
 
-echo; ok "Node '${NODE_NAME}' install complete — syncing to ${PANEL_URL} every ${INTERVAL}s."
+echo; ok "Node '$(bb "$NODE_NAME")' install complete."
+# ───────────────────────── SUMMARY ─────────────────────────
+echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
+echo "  Node      $(bb "$NODE_NAME")  →  syncs to $(bb "$PANEL_URL") every ${INTERVAL}s"
+echo "  Endpoint  $(bb "$ENDPOINT_IP")  (the address clients dial for this node)"
+if [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (manage peers in the panel):"
+  for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
+    printf '    %s %-9s port %s  subnet %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \
+      "$(bb ":$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
+  done
+fi
+detect_turn
+if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
+  for n in "${!TP_LISTEN[@]}"; do wk="${TP_WRAP[$n]}"
+    printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+key $(b "${wk:0:12}…")}"
+  done
+fi
 echo
-echo "It should turn green in the panel's Nodes screen within ~${INTERVAL}s."
-echo "Logs:   journalctl -u swg-noded -f"
-echo "Config: /etc/swg-agent/config.json"
-[ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "TLS:    not verifying the panel cert (self-signed). To pin it instead, set TLS_FINGERPRINT to its sha256 and re-run."
+echo "  Edit      interfaces in $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)  ·  daemon $(b /etc/swg-agent/config.json)"
+echo "  Logs      $(b 'journalctl -u swg-noded -f')  ·  turns green in the panel's Nodes screen in ~${INTERVAL}s"
+[ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       not verifying the panel cert (self-signed) — set TLS_FINGERPRINT to pin it"
 $DRYRUN && { echo; ok "DRY RUN done — inspect ./dryrun"; }

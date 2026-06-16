@@ -177,8 +177,10 @@ $ASSUME_YES && info "--yes: every component will be uninstalled (you'll still be
             || echo "  You will be prompted to uninstall or keep each component. Please pay attention."
 echo
 
+DID_REMOVE=(); DID_KEEP=()
 for i in $(seq 0 $((N-1))); do
-  if ask_comp "${CLABEL[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; else info "Kept ${CLABEL[$i]}."; fi
+  if ask_comp "${CLABEL[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
+  else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}"); fi
   echo
 done
 
@@ -188,5 +190,11 @@ if { $REMOVED_PANEL || $REMOVED_NODE; } && getent group swg >/dev/null 2>&1; the
 fi
 rmdir /etc/swg-agent 2>/dev/null || true
 
-echo; ok "Uninstall complete."
-$DRYRUN && info "That was a dry run — re-run without --dry-run to apply."
+echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
+if [ "${#DID_REMOVE[@]}" -gt 0 ]; then echo "  $(b Removed):"
+  for x in "${DID_REMOVE[@]}"; do echo "    $(c '0;31')✗$(c 0) $x"; done; fi
+if [ "${#DID_KEEP[@]}" -gt 0 ]; then echo "  $(b Kept):"
+  for x in "${DID_KEEP[@]}"; do echo "    $(c '0;32')•$(c 0) $x"; done; fi
+echo
+$DRYRUN && ok "DRY RUN — nothing was actually removed; re-run without --dry-run to apply." \
+        || ok "Uninstall complete."

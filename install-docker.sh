@@ -431,22 +431,33 @@ if [ "$PROFILE" = node ] || [ "$PROFILE" = host-node ]; then
   choose_turn_proxy
 fi
 
-# ───────────────────────── handoff ─────────────────────────
+# ───────────────────────── SUMMARY ─────────────────────────
 echo; ok "Docker install complete (profile: $PROFILE)."
-case "$PROFILE" in
-  host|host-node)
-    SCH=https; [ "$TLS" = none ] && SCH=http
-    # omit the port suffix for the scheme's default (443 https / 80 http), like a browser would
-    PORTSUF=":${PANEL_PORT}"
-    if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
-    echo "  UI:    $(bb "${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/")   (login: $(bb "$PANEL_USER") / $(bb "$PANEL_PASSWORD"))"
-    echo "  Then:  Nodes → Add node for each entry server (gives a one-time key + command)."
-    [ "$PROFILE" = host-node ] && echo "  This box also runs a local node (swg-node) against the panel."
-    ;;
-  node)
-    echo "  Node syncing to ${PANEL_URL} (endpoint ${NODE_ENDPOINT}); it turns green in the Nodes screen shortly."
-    ;;
+echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
+case "$PROFILE" in host|host-node)
+  SCH=https; [ "$TLS" = none ] && SCH=http
+  PORTSUF=":${PANEL_PORT}"; if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
+  echo "  Panel     $(bb "${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/")"
+  echo "  Login     $(bb "$PANEL_USER") / $(bb "$PANEL_PASSWORD")   (change later in the panel → Account)"
+  echo "  TLS       $(b "$TLS")  ·  host port $(b "$PANEL_PORT")" ;;
 esac
-echo "  Dir:   $INSTALL_DIR   (edit .env there, then: $COMPOSE --profile $PROFILE up -d)"
-echo "  Logs:  cd $INSTALL_DIR && $COMPOSE logs -f"
+case "$PROFILE" in node|host-node)
+  echo "  Node      → syncs to $(bb "$PANEL_URL")   ·  endpoint $(bb "$NODE_ENDPOINT")"
+  echo; echo "  $(b 'Interface') (in the swg-node container):"
+  if [ -n "$NODE_IFACES" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"
+    for e in "${_ifs[@]}"; do IFS=':' read -r _nm _pt _ad _pr <<< "$e"
+      printf '    %s %-9s port %s  subnet %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$_nm")")" "${_pr:-amneziawg}" "$(bb ":$_pt")" "$(b "$_ad")"; done
+  else _pr=amneziawg; [ "$NODE_PLAIN_WG" = yes ] && _pr=wireguard
+    printf '    %s %-9s port %s  subnet %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb ":$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
+  fi
+  detect_turn 2>/dev/null || true
+  if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances (host services → the node container):"
+    for n in "${!TP_LISTEN[@]}"; do wk="${TP_WRAP[$n]}"
+      printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+key $(b "${wk:0:12}…")}"; done
+  fi ;;
+esac
+echo
+echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile $PROFILE up -d")"
+echo "  Logs      $(b "cd $INSTALL_DIR && $COMPOSE logs -f")"
+case "$PROFILE" in host|host-node) echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')";; esac
 $DRYRUN && { echo; ok "DRY RUN done — inspect ./dryrun$INSTALL_DIR/.env"; }
