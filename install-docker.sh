@@ -205,7 +205,9 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
     detect_turn; names=("${!TP_LISTEN[@]}")
     echo
     if [ "${#names[@]}" -gt 0 ]; then echo "  Installed turn-proxy servers:"
-      for n in "${names[@]}"; do printf '    %s %s\n' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done; echo; fi
+      for n in "${names[@]}"; do printf '    %s %s\n' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done
+    else warn "No turn-proxy servers found on this box."; fi
+    echo
     echo "  Here is a list of turn-proxy branches available for installation:"; echo
     menu "$(col "$C_BLUE" wings)"        "For Android — https://github.com/WINGS-N/vk-turn-proxy"
     menu "$(col "$C_BLUE" samosvalishe)" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
