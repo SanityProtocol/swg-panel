@@ -59,6 +59,7 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_GREY=$'\033[90m'; C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'
 else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C_YEL=""; fi
 b(){   printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
+bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (handoff URL / login)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }   # every ▸ line is bold
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
@@ -961,16 +962,16 @@ case "$SERVE_MODE" in
   internal)
     SCH=https; [ -n "${CERT_FULLCHAIN:-}" ] || SCH=http
     PORTSUF=""; [ "$PORT" != 443 ] && PORTSUF=":${PORT}"
-    echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/   (login: ${BASIC_USER} / ${BASIC_PASS})"
+    echo "  UI:    $(bb "${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/")   (login: $(bb "$BASIC_USER") / $(bb "$BASIC_PASS"))"
     command -v ufw >/dev/null 2>&1 || echo "         open TCP ${PORT} in your firewall if it isn't already"
     [ "$TLS_MODE" = selfsigned ] && echo "         self-signed cert — the browser warns once, that's expected"
     ;;
   nginx|caddy)
     SCH=https; { [ "$TLS_MODE" = skip ] && [ -z "${CERT_FULLCHAIN:-}" ]; } && SCH=http
-    echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PANEL_BASE}/   (login: ${BASIC_USER} / ${BASIC_PASS})"
+    echo "  UI:    $(bb "${SCH}://${PANEL_DOMAIN}${PANEL_BASE}/")   (login: $(bb "$BASIC_USER") / $(bb "$BASIC_PASS"))"
     ;;
   skip)
-    echo "  Panel: http://127.0.0.1:${PORT}${PANEL_BASE}/   (login: ${BASIC_USER} / ${BASIC_PASS})"
+    echo "  Panel: $(bb "http://127.0.0.1:${PORT}${PANEL_BASE}/")   (login: $(bb "$BASIC_USER") / $(bb "$BASIC_PASS"))"
     echo "         point your web server at it (proxy ${PANEL_BASE:-/} → 127.0.0.1:${PORT})"
     ;;
 esac

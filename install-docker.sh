@@ -69,6 +69,7 @@ rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16; }
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_GREY=$'\033[90m'; C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'
 else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C_YEL=""; fi
 b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
+bb(){ printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (handoff URL / login)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
@@ -405,7 +406,7 @@ case "$PROFILE" in
     # omit the port suffix for the scheme's default (443 https / 80 http), like a browser would
     PORTSUF=":${PANEL_PORT}"
     if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
-    echo "  UI:    ${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/   (login: ${PANEL_USER} / ${PANEL_PASSWORD})"
+    echo "  UI:    $(bb "${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/")   (login: $(bb "$PANEL_USER") / $(bb "$PANEL_PASSWORD"))"
     echo "  Then:  Nodes → Add node for each entry server (gives a one-time key + command)."
     [ "$PROFILE" = host-node ] && echo "  This box also runs a local node (swg-node) against the panel."
     ;;
