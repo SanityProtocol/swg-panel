@@ -41,6 +41,7 @@ NODE_IFACE="${NODE_IFACE:-awg0}"
 NODE_IFACES="${NODE_IFACES:-}"         # several interfaces: "name:port:addr[:proto],…"
 NODE_LISTEN_PORT="${NODE_LISTEN_PORT:-51820}"
 NODE_ADDRESS="${NODE_ADDRESS:-10.8.0.1/24}"
+NODE_PLAIN_WG="${NODE_PLAIN_WG:-}"     # yes = plain WireGuard; blank/no = AmneziaWG v2 (Step 2 sets it)
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes/no; blank = ask (node profile) / default no
 DNS="${DNS:-1.1.1.1}"
 
@@ -82,6 +83,8 @@ v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cftoken(){ [ -n "$1" ]; }
 v_cforigin(){ [ -n "$1" ]; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
+v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
+v_subnet(){  have python3 || return 0; python3 -c "import ipaddress,sys;ipaddress.ip_network(sys.argv[1],strict=False)" "$1" >/dev/null 2>&1; }
 v_url(){     case "$1" in ""|*" "*) return 1;; esac
              local h="${1#http://}"; h="${h#https://}"; h="${h%%/*}"; h="${h%%:*}"; v_host "$h"; }
 v_httpsurl(){ case "$1" in https://*|http://*) v_host "$(x="${1#http://}"; x="${x#https://}"; x="${x%%/*}"; printf '%s' "${x%%:*}")";; *) return 1;; esac; }
@@ -298,6 +301,24 @@ ask_node_conn(){     # NODE SETUP — panel connection + endpoint, styled like b
   ask_valid "Endpoint IP clients dial for this node" "${NODE_ENDPOINT:-$(detect_public_ip)}" NODE_ENDPOINT v_host "enter an IP address or hostname"
   return 0
 }
+ask_node_iface(){    # Step 2 — WG/AWG interface (container-managed); mirrors bare-metal's single-interface prompts
+  echo
+  echo "$(b 'Step 2. WireGuard / AmneziaWG setup')"
+  echo
+  echo "      The interface is brought up INSIDE the swg-node container from these values."
+  echo "      Need several interfaces or custom AmneziaWG obfuscation? set $(b NODE_IFACES) in"
+  echo "      $INSTALL_DIR/.env, or mount $(b /etc/swg-node/*.conf) (see docs/DOCKER.md)."
+  echo
+  local _proto def_if d_if d_port d_addr
+  d_if="$NODE_IFACE"; d_port="$NODE_LISTEN_PORT"; d_addr="$NODE_ADDRESS"
+  ask_choice "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto "a w awg wg amneziawg wireguard"
+  case "$_proto" in w|wg|wireguard) NODE_PLAIN_WG=yes; def_if=wg0;; *) NODE_PLAIN_WG=no; def_if=awg0;; esac
+  case "$d_if" in ""|awg0|wg0) d_if="$def_if";; esac        # default name follows the protocol
+  NODE_IFACE="";       ask_valid "Interface name" "$d_if" NODE_IFACE v_iface "1–15 chars: letters, digits, - or _"
+  NODE_LISTEN_PORT=""; ask_valid "Listen port" "$d_port" NODE_LISTEN_PORT v_port "port must be 1–65535"
+  NODE_ADDRESS="";     ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$d_addr" NODE_ADDRESS v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
+  return 0
+}
 case "$PROFILE" in
   host)
     echo; info "PANEL SETUP"
@@ -315,10 +336,12 @@ case "$PROFILE" in
     echo "$(b 'Step 1. Endpoint IP clients dial for this node')"
     echo
     ask_valid "Endpoint IP clients dial for this node" "${NODE_ENDPOINT:-$(detect_public_ip)}" NODE_ENDPOINT v_host "enter an IP address or hostname"
+    ask_node_iface
     ;;
   node)
     echo; info "NODE SETUP"
     ask_node_conn
+    ask_node_iface
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac
@@ -368,6 +391,7 @@ NODE_IFACE=$NODE_IFACE
 NODE_IFACES=$NODE_IFACES
 NODE_LISTEN_PORT=$NODE_LISTEN_PORT
 NODE_ADDRESS=$NODE_ADDRESS
+NODE_PLAIN_WG=$NODE_PLAIN_WG
 TLS_VERIFY=$TLS_VERIFY
 DNS=$DNS
 EOF
@@ -394,7 +418,7 @@ else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE ); fi
 # ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
 # Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
 if [ "$PROFILE" = node ] || [ "$PROFILE" = host-node ]; then
-  echo; info "TURN-PROXY setup (https://github.com/cacggghp/vk-turn-proxy)"; echo
+  echo; echo "$(b 'Step 3. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"; echo
   choose_turn_proxy
 fi
 
