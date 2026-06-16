@@ -71,6 +71,9 @@ services:
       NODE_PLAIN_WG: "${NODE_PLAIN_WG:-}"  # yes = plain WireGuard; blank/no = AmneziaWG v2
       TLS_VERIFY: "${TLS_VERIFY:-no}"     # yes to verify the panel's cert (real CA)
       DNS: "${DNS:-1.1.1.1}"
+      # turn-proxies run as host systemd services; the installer writes their record into
+      # ./data/node (mounted below), and swg-noded reads it here to report them to the panel.
+      SWG_TURN_RECORD: "/var/lib/swg-noded/turn-proxy.json"
     volumes:
       - ./data/node:/var/lib/swg-noded
       # Full AmneziaWG server conf(s) with your own obfuscation params. Every file

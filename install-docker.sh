@@ -121,7 +121,10 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   done; }
 
 # ── turn-proxy (vk-turn-proxy) — host systemd service forwarding to the published wg port ──
-TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"; TURN_RECORD="${TURN_RECORD:-/etc/swg-agent/turn-proxy.json}"
+# The turn-proxy runs as a HOST systemd service (forwards to the node container's published wg
+# port). Its record goes into ./data/node, which is bind-mounted into swg-node at
+# /var/lib/swg-noded, so swg-noded (SWG_TURN_RECORD) reports the turn-proxies to the panel.
+TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"; TURN_RECORD="${TURN_RECORD:-$INSTALL_DIR/data/node/turn-proxy.json}"
 declare -A TP_LISTEN TP_CONNECT TP_WRAP
 turn_repo_owner(){ case "$1" in
   wings) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
@@ -146,9 +149,12 @@ detect_turn(){ TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }
   curl -fsSL "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
-install_turn_binary(){ local key="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver
+# One instance == one systemd unit, keyed by <fork>-<port> so the SAME fork can run many times
+# (2× wings, 3× samosvalishe, …) — each on its own port with its own wrap key.
+install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst
   case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
-  dir="$TURN_DIR/$key"; bin="$dir/server"; svc="vk-turn-proxy-$key"
+  port="${listen##*:}"; inst="$fork-$port"; dir="$TURN_DIR/$inst"; bin="$dir/server"; svc="vk-turn-proxy-$inst"
+  if [ -e "/etc/systemd/system/$svc.service" ]; then warn "turn-proxy $svc already exists — pick another port"; return 0; fi
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   mkdir -p "$PREFIX$dir"; info "Installing $owner ($listen → $connect)…"
   if $DRYRUN; then echo "    [skip] curl -fsSL $url -o $bin"
@@ -170,7 +176,7 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
-  ok "installed turn-proxy $(col "$C_GREEN" "$key") ($owner ${ver:-?}) — $listen → $connect"; }
+  ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"; }
 install_turn_proxy(){ echo
   menu "$(col "$C_BLUE" wings)"        "For Android — https://github.com/WINGS-N/vk-turn-proxy"
   menu "$(col "$C_BLUE" samosvalishe)" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
@@ -181,6 +187,7 @@ install_turn_proxy(){ echo
   local owner pub port connect extra; owner="$(turn_repo_owner "$sel")"
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
   ask_valid "Turn-proxy listen port" "56000" port v_port "port must be 1–65535"
+  detect_turn; local n; for n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$n' — pick another port (enter 'new' again)"; return 0; }; done
   ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${NODE_LISTEN_PORT:-51820}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
   local wrap extra; wrap="$(turn_wrap_flags "$sel")"
   [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
