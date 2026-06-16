@@ -153,7 +153,7 @@ parse_panel_url(){ # parse_panel_url <input> -> sets PANEL_HOST_NOPORT, PANEL_BA
 }
 
 # ───────────────────────── wg/awg detection ─────────────────────────
-declare -A IF_CMD IF_CONF
+declare -A IF_CMD IF_CONF IF_ENDPOINT   # IF_ENDPOINT: per-interface public IP clients dial
 detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc/wireguard for wg
   IF_CMD=(); IF_CONF=(); local f n
   if [ -d /etc/amnezia ]; then
@@ -195,7 +195,11 @@ choose_ifaces(){ # populate SELECTED[] — all detected interfaces are managed; 
     SELECTED=("${names[@]}")          # every detected interface ends up in the web panel
   fi
   detect_wg
-  for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }; done
+  local _ep
+  for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
+    [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
+    _ep=""; ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$n") (this interface's public IP/host)" "$(detect_public_ip)" _ep v_host "enter an IP address or hostname"
+    IF_ENDPOINT[$n]="$_ep"; done
   [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
   ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
 }
@@ -378,7 +382,7 @@ print(f"{next(n.hosts())}/{n.prefixlen}")
 PY
 }
 create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain WG), NAT it to the WAN, bring up, register
-  local _proto proto name port subnet addr conf cmd priv dir wan up down idx defname defport defsub upok
+  local _proto proto name port subnet addr conf cmd priv dir wan up down idx defname defport defsub upok ep
   idx=${#IF_CMD[@]}                              # offset defaults so a 2nd/3rd iface doesn't collide
   ask_choice "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
@@ -397,6 +401,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   ask_valid "Listen port" "$defport" port v_freeport "port 1–65535 and free (not already in use)"
   ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
   ask_valid "WAN egress interface (clients are NAT'd out using this)" "$(detect_wan || echo eth0)" wan v_iface "enter a network interface name"
+  ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$name") (this interface's public IP/host)" "$(detect_public_ip)" ep v_host "enter an IP address or hostname"
   addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"
   if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; return 0; fi
   # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
@@ -417,7 +422,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
     warn "couldn't bring up '$name' (a port or subnet may already be in use) — removing its conf; try again with different values"
     run rm -f "$conf"; return 0
   fi
-  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; LAST_IFACE="$name"
+  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; IF_ENDPOINT[$name]="$ep"; LAST_IFACE="$name"
   ok "created $proto interface $(col "$C_GREEN" "$name") on :$port (server $addr, NAT out $wan)"
 }
 
@@ -517,15 +522,11 @@ if [ "$HOST_HAS_WG" = yes ]; then
   echo
   ask_valid "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname)" HOST_NODE_NAME v_name "1–40 chars: letters, digits, - or _"
   echo
-  echo "$(b 'Step 2. Endpoint IP clients dial for THIS box')"
-  echo
-  ask_valid "Endpoint IP clients dial for THIS box" "$(detect_public_ip)" HOST_ENDPOINT_IP v_host "enter an IP address or hostname"
-  echo
-  echo "$(b 'Step 3. WireGuard / AmneziaWG setup')"
+  echo "$(b 'Step 2. WireGuard / AmneziaWG setup')   (each interface has its own endpoint IP)"
   echo
   choose_ifaces
   echo
-  echo "$(b 'Step 4. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"
+  echo "$(b 'Step 3. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"
   echo
   choose_turn_proxy
 fi
@@ -580,7 +581,10 @@ if [ "$HOST_HAS_WG" = yes ]; then
     LOCAL_TOKHASH="$(python3 -c 'import hashlib,os,base64,sys;t=sys.argv[1].encode();s=os.urandom(16);h=hashlib.pbkdf2_hmac("sha256",t,s,200000);print("pbkdf2_sha256$200000$"+base64.b64encode(s).decode()+"$"+base64.b64encode(h).decode())' "$LOCAL_TOKEN")"
     IFJSON=""; sep=""
     for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
-      IFJSON+="$sep    \"$n\": { \"cmd\": [\"${IF_CMD[$n]}\"], \"conf\": \"${IF_CONF[$n]}\" }"; sep=$',\n'; done
+      IFJSON+="$sep    \"$n\": { \"cmd\": [\"${IF_CMD[$n]}\"], \"conf\": \"${IF_CONF[$n]}\", \"endpoint_host\": \"${IF_ENDPOINT[$n]:-}\" }"; sep=$',\n'; done
+    # node-level endpoint_host is now a fallback (panel uses each interface's own); default it to the first interface's
+    if [ -z "$HOST_ENDPOINT_IP" ]; then for n in "${SELECTED[@]}"; do [ -n "${IF_ENDPOINT[$n]:-}" ] && { HOST_ENDPOINT_IP="${IF_ENDPOINT[$n]}"; break; }; done; fi
+    [ -z "$HOST_ENDPOINT_IP" ] && HOST_ENDPOINT_IP="$(detect_public_ip)"
     writef /etc/swg-agent/config.json 640 <<EOF
 {
   "interfaces": {
@@ -630,7 +634,7 @@ info "nodes.json + fleet.json"
 if [ "$HOST_HAS_WG" = yes ] && [ -n "$LOCAL_TOKHASH" ]; then
   writef "$STATE_DIR/nodes.json" 600 <<EOF
 {
-  "${HOST_NODE_NAME}": { "name": "${HOST_NODE_NAME}", "color": "${PALETTE[0]}", "endpoint_host": "${HOST_ENDPOINT_IP}", "stats_file": "stats-${HOST_NODE_NAME}.json", "token_hash": "${LOCAL_TOKHASH}", "created": $(date +%s 2>/dev/null || echo 0) }
+  "${HOST_NODE_NAME}": { "name": "${HOST_NODE_NAME}", "color": "${PALETTE[0]}", "endpoint_host": "", "stats_file": "stats-${HOST_NODE_NAME}.json", "token_hash": "${LOCAL_TOKHASH}", "created": $(date +%s 2>/dev/null || echo 0) }
 }
 EOF
 elif [ ! -f "$PREFIX$STATE_DIR/nodes.json" ]; then
@@ -979,7 +983,7 @@ echo "  TLS       $(b "$TLS_MODE")  ·  Web server $(b "$SERVE_MODE") (port $(b 
 if [ "$HOST_HAS_WG" = yes ] && [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (this box, node '$(b "$HOST_NODE_NAME")'):"
   for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
     printf '    %s %-9s endpoint %s  subnet %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \
-      "$(bb "$HOST_ENDPOINT_IP:$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
+      "$(bb "${IF_ENDPOINT[$n]:-$HOST_ENDPOINT_IP}:$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
   done
 fi
 detect_turn 2>/dev/null || true
