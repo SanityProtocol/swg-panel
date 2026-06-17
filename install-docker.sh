@@ -372,7 +372,7 @@ ask_node_iface(){    # Step 1 — WG/AWG interface (container-managed) + its end
   echo
   echo "      The interface is brought up INSIDE the swg-node container from these values."
   echo "      Need several interfaces (each with its own endpoint) or custom AmneziaWG obfuscation?"
-  echo "      set $(b NODE_IFACES) in $INSTALL_DIR/.env, or mount $(b /etc/swg-node/*.conf) (see docs/DOCKER.md)."
+  echo "      set $(b NODE_IFACES) in $INSTALL_DIR/.env, or mount $(b /etc/swg-node/*.conf) (see $INSTALL_DIR/docker-compose.yml)."
   echo
   local _proto def_if d_if d_port d_addr d_ep
   d_if="$NODE_IFACE"; d_port="$NODE_LISTEN_PORT"; d_addr="$NODE_ADDRESS"; d_ep="${NODE_ENDPOINT:-$(detect_public_ip)}"
