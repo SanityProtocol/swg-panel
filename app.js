@@ -242,14 +242,12 @@ const Store = {
   recentlyCreated: {},       // id -> ts (row flash)
   pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
   rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
-  history: {},               // node -> [{cpu,mem,disk}]  — short rolling series for sparklines
-  HISTORY_MAX: 40,
   async init() {
     await this.poll();
     setInterval(() => this.poll().catch(() => {}), 5000);
   },
-  // One round trip: /api/state bundles roster + nodes + per-node interface meta (describe)
-  // + raw snapshots. Status is still derived in the browser via reconcile.js.
+  // One round trip: /api/state bundles roster + nodes (incl. health_history) + per-node
+  // interface meta + raw snapshots. Status is still derived in the browser via reconcile.js.
   _server: { roster: { version: 1, users: {}, peers: {} }, nodes: [] },   // pristine, last fetched
   async poll() {
     const s = await api.state();
@@ -259,17 +257,7 @@ const Store = {
     this.stats = d.snapshots || {};
     this.storeConfigs = !!d.store_configs;
     this.versions = d.versions || this.versions;
-    this.pushHistory(d.nodes || []);   // once per real poll (not on optimistic re-render)
     this.apply();
-  },
-  // Append a health sample per node for the sparklines (kept only in-memory, this session).
-  pushHistory(nodes) {
-    for (const n of nodes) {
-      const pc = healthPct(n.health);
-      const h = (this.history[n.name] = this.history[n.name] || []);
-      h.push(pc);
-      if (h.length > this.HISTORY_MAX) h.splice(0, h.length - this.HISTORY_MAX);
-    }
   },
   // Re-derive everything the UI reads from a PRISTINE copy of server data + the optimistic
   // overlay. Confirmed ops (done) are dropped first — fresh server data already reflects them
@@ -1128,15 +1116,6 @@ function NodesScreen() {
 }
 // load/util tone: green under 70%, amber to 90%, red above.
 function htone(pct) { return pct >= 90 ? "hot" : (pct >= 70 ? "warn" : "ok"); }
-// CPU / memory / worst-disk as percentages (CPU is load-per-core), or null if no data.
-function healthPct(health) {
-  if (!health) return null;
-  const cpu = Array.isArray(health.load) ? (health.load[0] || 0) / (health.ncpu || 1) * 100 : null;
-  const mem = (health.mem && health.mem.total) ? health.mem.used / health.mem.total * 100 : null;
-  let disk = null;
-  for (const d of (health.disk || [])) if (d.total) disk = Math.max(disk || 0, d.used / d.total * 100);
-  return { cpu, mem, disk };
-}
 // Threshold alerts for a node: disk/memory > 90%, CPU saturated (load-per-core > 1.5).
 function healthAlerts(health) {
   const out = [];
@@ -1175,8 +1154,9 @@ function HealthMeter({ label, pct, text, tone, spark }) {
 // to the essentials for the node card; the detail page shows every mount + uptime + sparklines.
 function NodeHealth({ health, node, compact }) {
   if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
-  const hist = (node && Store.history[node]) || [];
-  const sp = key => (compact || hist.length < 2) ? null : hist.map(s => (s ? s[key] : null));
+  // server-side RRD history (survives refresh/restart): {cpu:[],mem:[],disk:[]} per node
+  const hh = (node && (Store.nodes || []).find(n => n.name === node) || {}).health_history || null;
+  const sp = key => (compact || !hh || !hh[key] || hh[key].length < 2) ? null : hh[key];
   const alerts = healthAlerts(health);
   const meters = [];
   if (Array.isArray(health.load)) {

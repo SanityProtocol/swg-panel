@@ -28,6 +28,7 @@ import json
 import os
 import signal
 import ssl
+import struct
 import subprocess
 import threading
 import time
@@ -441,6 +442,97 @@ def panel_next_ip(snaps, roster, nodes, iface):
     return err("next-ip", "no free addresses across selected nodes", "subnet_full")
 
 
+# ───────────────── node health history (RRD-style binary ring) ─────────────────
+#
+# A tiny round-robin file per node under stats_dir (health-<node>.rrd): fixed size,
+# one slot per HRRD_STEP-second bucket, HRRD_SLOTS slots = a 24h window that wraps and
+# overwrites the oldest. Each slot keeps the LAST cpu/mem/disk percent seen in its
+# bucket (consolidation), so 5s syncs naturally downsample to 1-minute points.
+# Stdlib `struct`, O(1) seek+write per sync, survives restart, ~11 KB/node. Reads
+# return the most recent points for the sparklines. Lock guards concurrent node syncs.
+
+HRRD_MAGIC = b"SWGH"
+HRRD_STEP = 60          # seconds per bucket (1-minute resolution)
+HRRD_SLOTS = 1440       # 24h of buckets
+HRRD_VIEW = 60          # points returned for the UI sparkline
+HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, step, slots
+HRRD_SLOT = struct.Struct("<IBBBx")           # bucket, cpu, mem, disk, pad  (8 bytes)
+HRRD_NA = 255
+_hrrd_lock = threading.Lock()
+
+
+def health_pcts(health):
+    """(cpu, mem, disk) integer percentages from a snapshot health block, NA where absent.
+    CPU is load-per-core; disk is the busiest mount."""
+    if not isinstance(health, dict):
+        return None
+    def pc(used, total):
+        return HRRD_NA if not total else max(0, min(100, round(used / total * 100)))
+    cpu = HRRD_NA
+    load = health.get("load")
+    if isinstance(load, list) and load:
+        cpu = max(0, min(100, round((load[0] or 0) / (health.get("ncpu") or 1) * 100)))
+    m = health.get("mem") or {}
+    mem = pc(m.get("used", 0), m.get("total", 0))
+    disk = HRRD_NA
+    for d in (health.get("disk") or []):
+        if d.get("total"):
+            disk = max(0 if disk == HRRD_NA else disk, pc(d["used"], d["total"]))
+    return (cpu, mem, disk)
+
+
+def _hrrd_ok(path):
+    try:
+        with open(path, "rb") as f:
+            magic, _ver, step, slots = HRRD_HEAD.unpack(f.read(HRRD_HEAD.size))
+        return magic == HRRD_MAGIC and step == HRRD_STEP and slots == HRRD_SLOTS
+    except (OSError, struct.error):
+        return False
+
+
+def hrrd_update(path, ts, cpu, mem, disk):
+    bucket = int(ts) // HRRD_STEP
+    idx = bucket % HRRD_SLOTS
+    with _hrrd_lock:
+        if not _hrrd_ok(path):                    # (re)create: header + zeroed slots
+            with contextlib.suppress(OSError):
+                with open(path, "wb") as f:
+                    f.write(HRRD_HEAD.pack(HRRD_MAGIC, 1, HRRD_STEP, HRRD_SLOTS))
+                    f.write(b"\x00" * (HRRD_SLOT.size * HRRD_SLOTS))
+        with contextlib.suppress(OSError):
+            with open(path, "r+b") as f:
+                f.seek(HRRD_HEAD.size + idx * HRRD_SLOT.size)
+                f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF))
+
+
+def hrrd_read(path, want=HRRD_VIEW):
+    """Most recent `want` recorded buckets as {t, cpu, mem, disk} (NA -> None)."""
+    with _hrrd_lock:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+    if len(data) < HRRD_HEAD.size or data[:4] != HRRD_MAGIC:
+        return None
+    rows = []
+    base = HRRD_HEAD.size
+    for i in range(HRRD_SLOTS):
+        off = base + i * HRRD_SLOT.size
+        if off + HRRD_SLOT.size > len(data):
+            break
+        b, c, m, d = HRRD_SLOT.unpack_from(data, off)
+        if b:
+            rows.append((b, c, m, d))
+    if not rows:
+        return None
+    rows.sort()
+    rows = rows[-want:]
+    na = lambda v: None if v == HRRD_NA else v
+    return {"t": [r[0] * HRRD_STEP for r in rows],
+            "cpu": [na(r[1]) for r in rows], "mem": [na(r[2]) for r in rows], "disk": [na(r[3]) for r in rows]}
+
+
 # ───────────────────────── API ─────────────────────────
 
 def api(method, path, qs, body, deps):
@@ -459,6 +551,8 @@ def api(method, path, qs, body, deps):
                for name, c in nodes.items()]
         return 200, {"ok": True, "data": {"nodes": out, "store_configs": store_configs, "versions": VERSIONS}}
 
+    stats_dir = deps.get("stats_dir")
+
     def nodes_view():
         out = []
         for name, c in nodes.items():
@@ -471,6 +565,7 @@ def api(method, path, qs, body, deps):
                 pc += len(ps)
                 rx += sum(p.get("rx_speed", 0) or 0 for p in ps)
                 tx += sum(p.get("tx_speed", 0) or 0 for p in ps)
+            hh = hrrd_read(os.path.join(stats_dir, f"health-{name}.rrd")) if stats_dir else None
             out.append({"name": name, "color": c.get("color"),
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "last_seen": ls,
@@ -478,6 +573,7 @@ def api(method, path, qs, body, deps):
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
                         "hostname": snap.get("hostname"),
                         "health": snap.get("health"),     # per-node load/mem/disk/uptime (additive)
+                        "health_history": hh,             # recent cpu/mem/disk % series (RRD-style ring)
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 
@@ -917,6 +1013,8 @@ def api(method, path, qs, body, deps):
         if sd:
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(sd, f"stats-{name}.json"))
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(sd, f"health-{name}.rrd"))
         return 200, {"ok": True, "data": {"name": name}}
 
     return 404, {"ok": False, "error": "not found", "code": "bad_request"}
@@ -1011,6 +1109,10 @@ class Handler(BaseHTTPRequestHandler):
             sf = node.get("stats_file", f"stats-{nid}.json")
             with contextlib.suppress(Exception):
                 atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)
+            hp = health_pcts(snap.get("health"))     # append one point to the per-node RRD ring
+            if hp:
+                with contextlib.suppress(Exception):
+                    hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), *hp)
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
