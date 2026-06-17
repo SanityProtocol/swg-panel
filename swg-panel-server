@@ -289,6 +289,22 @@ def peer_set(roster, pid, fields, now):
     return roster["peers"][pid]
 
 
+def unassign_peer(p, store_configs, config_dir, now):
+    """Detach a peer from its user AND revoke the old holder's access.
+
+    The PSK is panel-owned and mixed into every WireGuard handshake, so rotating it
+    here makes the config already on the previous owner's device fail on the node's
+    next sync — instant revocation with no client in the loop. The keypair is left
+    intact (re-keying needs the browser, where the private key lives); the peer is
+    parked, present on its nodes but unusable until it's re-issued to someone.
+    """
+    p["user_id"] = None
+    p["psk"] = gen_psk()
+    p["modified_at"] = now
+    for t in p.get("targets", []):
+        del_config(store_configs, config_dir, p.get("pubkey", ""), t["node"], t["iface"])
+
+
 # ───────────────────────── node store + sync ─────────────────────────
 
 def make_token_hash(token, iters=200000):
@@ -423,7 +439,7 @@ def api(method, path, qs, body, deps):
                for name, c in nodes.items()]
         return 200, {"ok": True, "data": {"nodes": out, "store_configs": store_configs, "versions": VERSIONS}}
 
-    if method == "GET" and path == "/api/nodes":
+    def nodes_view():
         out = []
         for name, c in nodes.items():
             snap = snaps.get(name) or {}
@@ -442,7 +458,40 @@ def api(method, path, qs, body, deps):
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
                         "hostname": snap.get("hostname"),
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
-        return 200, {"ok": True, "data": {"nodes": out}}
+        return out
+
+    def describe_view():
+        """Per-node interface metadata (server key / endpoint / subnet / awg / dns) the
+        create + copy flows need, with the panel's endpoint_host override applied — so the
+        UI builds client configs without a describe round-trip per node."""
+        out = {}
+        for name in nodes:
+            snap = snaps.get(name)
+            if not snap:
+                continue
+            d = node_describe(snap)["data"]["interfaces"]
+            ep = (nodes.get(name) or {}).get("endpoint_host")
+            if ep:
+                for ifc in d.values():
+                    port = ifc.get("listen_port")
+                    ifc["endpoint"] = f"{ep}:{port}" if port else ifc.get("endpoint")
+            out[name] = d
+        return out
+
+    if method == "GET" and path == "/api/nodes":
+        return 200, {"ok": True, "data": {"nodes": nodes_view()}}
+
+    if method == "GET" and path == "/api/state":
+        # One consolidated read: everything the UI polls for, in a single round trip.
+        # Status is NOT computed here — the browser derives it from roster + snapshots via
+        # reconcile.js (the single source of truth), so this stays a raw-data bundle.
+        return 200, {"ok": True, "data": {
+            "roster": roster_load(roster_path),          # {version, users, peers}
+            "nodes": nodes_view(),                       # fleet metadata + live counters
+            "describe": describe_view(),                 # per-node interface meta for config building
+            "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
+            "store_configs": store_configs, "versions": VERSIONS,
+        }}
 
     if method == "GET" and path == "/api/roster":
         return 200, {"ok": True, "data": roster_load(roster_path)}
@@ -553,11 +602,12 @@ def api(method, path, qs, body, deps):
         roster = roster_load(roster_path)
         if uid not in roster["users"]:
             return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
-        # Deleting a user never silently wipes live peers — their peers go unassigned.
+        # Deleting a user never silently wipes their peers — they go unassigned. But each
+        # is PSK-rotated so the (now ex-)user's saved configs stop working immediately.
         freed = 0
         for p in roster["peers"].values():
             if p.get("user_id") == uid:
-                p["user_id"] = None; p["modified_at"] = now(); freed += 1
+                unassign_peer(p, store_configs, config_dir, now()); freed += 1
         del roster["users"][uid]
         roster_save(roster_path, roster)
         return 200, {"ok": True, "data": {"id": uid, "unassigned_peers": freed}}
@@ -565,16 +615,30 @@ def api(method, path, qs, body, deps):
     # ─────────────── peers (credential + targets) ───────────────
 
     if method == "POST" and path == "/api/peers/create":
-        # "New peer on interface" — mint a NEW credential (its own key + PSK) with one target.
+        # Mint a NEW credential (own key + PSK) and deploy it to one or more targets in a
+        # single atomic write. Accepts targets:[{node,iface,ip}, ...]; a lone `target` is
+        # still honoured. Per-target client configs come in body.configs keyed "node|iface".
         pubkey = (body.get("pubkey") or "").strip()
-        target = body.get("target") or {}
-        for f in ("node", "iface", "ip"):
-            if not target.get(f):
-                return 400, {"ok": False, "error": f"target.{f} is required", "code": "bad_request"}
+        targets = body.get("targets")
+        if not isinstance(targets, list) or not targets:
+            t = body.get("target")
+            targets = [t] if t else []
         if not pubkey:
             return 400, {"ok": False, "error": "pubkey is required", "code": "bad_request"}
-        if not known(target["node"]):
-            return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
+        if not targets:
+            return 400, {"ok": False, "error": "at least one target is required", "code": "bad_request"}
+        for t in targets:
+            for f in ("node", "iface", "ip"):
+                if not (t or {}).get(f):
+                    return 400, {"ok": False, "error": f"target.{f} is required", "code": "bad_request"}
+            if not known(t["node"]):
+                return 400, {"ok": False, "error": f"unknown node {t['node']!r}", "code": "bad_request"}
+        seen = set()
+        for t in targets:
+            k = (t["node"], t["iface"])
+            if k in seen:
+                return 400, {"ok": False, "error": f"duplicate target {t['node']}/{t['iface']}", "code": "bad_request"}
+            seen.add(k)
         roster = roster_load(roster_path)
         if find_peer_by_pubkey(roster, pubkey):
             return 409, {"ok": False, "error": "a peer with this key already exists "
@@ -582,16 +646,22 @@ def api(method, path, qs, body, deps):
         uid = body.get("user_id")
         if uid and uid not in roster["users"]:
             return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
-        if not target.get("type"):
-            target["type"] = iface_type(snaps, target["node"], target["iface"])
+        for t in targets:
+            if not t.get("type"):
+                t["type"] = iface_type(snaps, t["node"], t["iface"])
         psk = body.get("psk") or gen_psk()      # PSK is panel-owned; auto-mint when the client omits one
         pid = gen_id()
         while pid in roster["peers"]:
             pid = gen_id()
         p = peer_set(roster, pid, {"user_id": uid or None, "pubkey": pubkey,
-                                   "psk": psk, "targets": [target]}, now())
+                                   "psk": psk, "targets": targets}, now())
         roster_save(roster_path, roster)
-        save_config(store_configs, config_dir, pubkey, target["node"], target["iface"], body.get("config"))
+        configs = body.get("configs") or {}
+        for t in targets:
+            conf = configs.get(t["node"] + "|" + t["iface"])
+            if conf is None and len(targets) == 1:
+                conf = body.get("config")   # single-target back-compat
+            save_config(store_configs, config_dir, pubkey, t["node"], t["iface"], conf)
         return 200, {"ok": True, "data": p}
 
     if method == "POST" and path == "/api/peers/add-target":
@@ -625,16 +695,15 @@ def api(method, path, qs, body, deps):
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
         kept = [t for t in p["targets"] if not (t["node"] == node and t["iface"] == iface)]
+        if not kept:
+            # Never silently delete via the last target — deletion is an explicit, gated act
+            # (and only for unassigned peers). Caller must use peers/delete instead.
+            return 409, {"ok": False, "error": "this is the peer's only deployment — "
+                         "delete the peer instead (unassign it first)", "code": "last_target"}
         del_config(store_configs, config_dir, p["pubkey"], node, iface)
-        if kept:
-            p2 = peer_set(roster, pid, {"targets": kept}, now())
-            roster_save(roster_path, roster)
-            return 200, {"ok": True, "data": p2}
-        for t in p["targets"]:        # last target gone → the credential exists nowhere; drop the peer
-            del_config(store_configs, config_dir, p["pubkey"], t["node"], t["iface"])
-        del roster["peers"][pid]
+        p2 = peer_set(roster, pid, {"targets": kept}, now())
         roster_save(roster_path, roster)
-        return 200, {"ok": True, "data": {"id": pid, "deleted": True}}
+        return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/delete":
         pid = body.get("peer_id") or ""
@@ -642,24 +711,60 @@ def api(method, path, qs, body, deps):
         p = roster["peers"].get(pid)
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if p.get("user_id"):
+            # Deletion is for unassigned peers only — unassign first (which also revokes the
+            # holder by rotating the PSK). Keeps an assigned peer from vanishing in one click.
+            return 409, {"ok": False, "error": "peer is assigned to a user — unassign it first",
+                         "code": "assigned"}
         for t in p["targets"]:
             del_config(store_configs, config_dir, p["pubkey"], t["node"], t["iface"])
         del roster["peers"][pid]
         roster_save(roster_path, roster)
         return 200, {"ok": True, "data": {"id": pid, "deleted": True}}
 
-    if method == "POST" and path == "/api/peers/assign":
-        # assign / reassign / unassign — user_id None makes the peer unassigned (grey).
+    if method == "POST" and path == "/api/peers/unassign":
+        # Detach from the user and REVOKE the old holder (rotate PSK). Server-side, no
+        # browser needed — used directly, and as the first half of a reassignment.
         pid = body.get("peer_id") or ""
-        uid = body.get("user_id")
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
-        if uid and uid not in roster["users"]:
-            return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
-        p2 = peer_set(roster, pid, {"user_id": uid or None}, now())
+        unassign_peer(p, store_configs, config_dir, now())
         roster_save(roster_path, roster)
+        return 200, {"ok": True, "data": p}
+
+    if method == "POST" and path == "/api/peers/rekey":
+        # Assign a peer to a user with a FRESH credential. The browser mints a new keypair
+        # + PSK and rebuilds the config for every target, so the new owner gets a working
+        # config and never inherits a key a previous owner could still hold. Used for both
+        # first assignment (unassigned -> user) and reassignment (after unassign).
+        pid = body.get("peer_id") or ""
+        uid = body.get("user_id") or ""
+        pubkey = (body.get("pubkey") or "").strip()
+        if not pubkey:
+            return 400, {"ok": False, "error": "pubkey is required (reassignment mints a fresh key)",
+                         "code": "bad_request"}
+        roster = roster_load(roster_path)
+        p = roster["peers"].get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if uid not in roster["users"]:
+            return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
+        clash = find_peer_by_pubkey(roster, pubkey)
+        if clash and clash["id"] != pid:
+            return 409, {"ok": False, "error": "another peer already uses this key", "code": "exists"}
+        old_pubkey = p.get("pubkey", "")
+        if old_pubkey and old_pubkey != pubkey:
+            for t in p.get("targets", []):
+                del_config(store_configs, config_dir, old_pubkey, t["node"], t["iface"])
+        psk = body.get("psk") or gen_psk()
+        p2 = peer_set(roster, pid, {"user_id": uid, "pubkey": pubkey, "psk": psk}, now())
+        roster_save(roster_path, roster)
+        configs = body.get("configs") or {}
+        for t in p2["targets"]:
+            save_config(store_configs, config_dir, pubkey, t["node"], t["iface"],
+                        configs.get(t["node"] + "|" + t["iface"]))
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/adopt":

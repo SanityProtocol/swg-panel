@@ -181,6 +181,20 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .peercard-head .grow{flex:1}
 .row2{display:flex;gap:12px}
 .row2 .field{flex:1;min-width:0}
+.ownerctl{display:inline-flex;align-items:center;gap:6px}
+.rowacts{white-space:nowrap}
+.rowacts .btn-mini{margin-left:6px}
+/* multi-target picker (new peer) */
+.targetpick{display:flex;flex-direction:column;gap:6px}
+.targetopt{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:7px 10px;background:var(--surface-2)}
+.targetopt.sel{border-color:var(--line-solid)}
+.targetopt .topt-main{display:flex;align-items:center;gap:9px;flex:1;cursor:pointer;min-width:0}
+.targetopt .box{width:17px;height:17px;border:1.5px solid var(--line-solid);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;flex:none;color:var(--online)}
+.targetopt.sel .box{border-color:var(--online)}
+.targetopt .swatch{width:10px;height:10px;border-radius:50%;flex:none}
+.targetopt .nm{font-weight:500;color:var(--ink)}
+.targetopt .tp{font-size:11px;color:var(--faint)}
+.targetopt .topt-ip{width:130px;flex:none;padding:5px 8px;font-size:12.5px}
 
 /* ───── node pips (redundancy signature) ───── */
 .pips{display:inline-flex;gap:5px;align-items:center}

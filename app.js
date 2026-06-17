@@ -163,9 +163,7 @@ function qrZoom(conf, label) {
 const api = {
   async get(p) { const r = await fetch(url(p)); return r.json(); },
   async post(p, b) { const r = await fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }); return r.json(); },
-  fleet() { return this.get("/api/fleet"); },
-  roster() { return this.get("/api/roster"); },
-  describe(node) { return this.get("/api/describe?node=" + encodeURIComponent(node)); },
+  state() { return this.get("/api/state"); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -184,7 +182,8 @@ const api = {
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },
   peerDelete(b) { return this.post("/api/peers/delete", b); },
-  peerAssign(b) { return this.post("/api/peers/assign", b); },
+  peerUnassign(b) { return this.post("/api/peers/unassign", b); },
+  peerRekey(b) { return this.post("/api/peers/rekey", b); },
   peerAdopt(b) { return this.post("/api/peers/adopt", b); },
   peerSaveConfig(b) { return this.post("/api/peers/save-config", b); },
 };
@@ -195,37 +194,35 @@ function useStore() { const [, set] = useState(0); useEffect(() => bus.sub(() =>
 
 const Store = {
   fleet: [], storeConfigs: false, versions: {},
-  roster: { version: 1, users: {}, peers: {} }, stats: {}, nodes: [],
+  roster: { version: 1, users: {}, peers: {} }, stats: {}, nodes: [], describe: {},
   recon: { peers: [], users: [], orphans: [], nodeStatus: {} },
   sessionConfigs: {},        // pubkey -> { "node|iface" -> confText }   (built at creation, in-memory)
   configEpoch: 0,            // bumps when a config is re-issued, so QR cards re-read it
   recentlyCreated: {},       // id -> ts (row flash)
   async init() {
-    const f = await api.fleet();
-    this.fleet = (f.data && f.data.nodes) || [];
-    this.storeConfigs = !!(f.data && f.data.store_configs);
-    this.versions = (f.data && f.data.versions) || {};
     await this.poll();
     setInterval(() => this.poll().catch(() => {}), 5000);
   },
+  // One round trip: /api/state bundles roster + nodes + per-node interface meta (describe)
+  // + raw snapshots. Status is still derived in the browser via reconcile.js.
   async poll() {
-    const [f, r, nodes, stats] = await Promise.all([api.fleet(), api.roster(), api.nodes(), this.loadStats()]);
-    if (f && f.data) { this.fleet = f.data.nodes || []; this.storeConfigs = !!f.data.store_configs; this.versions = f.data.versions || this.versions; }
-    this.roster = (r && r.data) || { version: 1, users: {}, peers: {} };
-    this.nodes = (nodes && nodes.data && nodes.data.nodes) || [];
-    this.stats = stats;
-    this.recon = reconcile(this.roster, stats, Date.now());
+    const s = await api.state();
+    const d = (s && s.data) || {};
+    this.roster = d.roster || { version: 1, users: {}, peers: {} };
+    this.nodes = d.nodes || [];
+    this.describe = d.describe || {};
+    this.stats = d.snapshots || {};
+    this.storeConfigs = !!d.store_configs;
+    this.versions = d.versions || this.versions;
+    // fleet shape the UI expects (name/color/transport/stats_file) — derived from nodes
+    this.fleet = this.nodes.map(n => ({ name: n.name, color: n.color, transport: "https", stats_file: "stats-" + n.name + ".json" }));
+    this.recon = reconcile(this.roster, this.stats, Date.now());
     bus.emit();
-  },
-  async loadStats() {
-    const out = {};
-    await Promise.all(this.fleet.map(async n => {
-      try { const r = await fetch(url("/wgstats/" + n.stats_file), { cache: "no-store" }); if (r.ok) out[n.name] = await r.json(); } catch (_) {}
-    }));
-    return out;
   },
   node(name) { return this.fleet.find(n => n.name === name); },
   nodeColor(name) { const n = this.node(name); return (n && n.color) || "#5f7569"; },
+  ifacesOf(node) { return Object.keys(this.describe[node] || {}); },
+  ifaceMeta(node, iface) { return (this.describe[node] || {})[iface] || null; },
   peer(id) { return this.recon.peers.find(p => p.id === id); },
   user(id) { return this.recon.users.find(u => u.id === id); },
   peersOfUser(id) { return this.recon.peers.filter(p => p.user_id === id); },
@@ -283,18 +280,50 @@ function TargetPips({ peer }) {
 }
 
 // inline user assignment <select>
-function AssignSelect({ peer }) {
+// Assign an unassigned peer to a user with a FRESH credential: mint a new keypair + PSK in
+// the browser, rebuild the client config for every target, push via rekey. The new owner
+// gets a working config; nobody inherits a key a previous holder could still have.
+async function assignPeerToUser(peer, userId) {
+  if (!userId) return;
+  try {
+    const keys = await genKeys();
+    const psk = genPSK();
+    const configs = {};
+    for (const t of peer.targets) {
+      const m = Store.ifaceMeta(t.node, t.iface);
+      if (!m) { toast("Can't issue config: " + t.node + " hasn't reported interface " + t.iface + ".", "err", 5000); return; }
+      configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: t.ip + "/32", dns: m.dns, mtu: 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk, endpoint: m.endpoint, allowed: "0.0.0.0/0, ::/0", keepalive: 25 });
+    }
+    const r = await api.peerRekey({ peer_id: peer.id, user_id: userId, pubkey: keys.pub, psk, configs });
+    if (!r.ok) { toast("Assign failed: " + (r.error || r.code || ""), "err"); return; }
+    Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
+    toast("Assigned — fresh config issued.", "ok"); await Store.poll();
+  } catch (e) { toast("Assign error: " + e.message, "err"); }
+}
+
+// Owner controls: assigned peers can only be Unassigned (revokes the holder); unassigned
+// peers offer Assign-to (fresh key) and Delete. Deletion is gated to unassigned peers.
+function PeerOwnerControls({ peer, showDelete }) {
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  const onChange = async e => {
-    const uid = e.target.value || null;
-    const r = await api.peerAssign({ peer_id: peer.id, user_id: uid });
-    if (!r.ok) { toast("Assign failed: " + (r.error || ""), "err"); return; }
-    toast(uid ? "Assigned." : "Unassigned.", "ok"); await Store.poll();
-  };
-  return html`<select class="selwrap mini" onChange=${onChange}>
-    <option value="" selected=${peer.unassigned}>— unassigned —</option>
-    ${users.map(u => html`<option value=${u.id} selected=${peer.user_id === u.id}>${u.name}${u.tag ? " · " + u.tag : ""}</option>`)}
-  </select>`;
+  if (!peer.unassigned) {
+    return html`<${DangerButton} label="Unassign" confirm="Unassign — revoke access?" onConfirm=${async () => {
+      const r = await api.peerUnassign({ peer_id: peer.id });
+      if (!r.ok) { toast("Unassign failed: " + (r.error || ""), "err"); return; }
+      delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++;
+      toast("Unassigned — previous access revoked.", "ok"); await Store.poll();
+    }}/>`;
+  }
+  return html`<span class="ownerctl">
+    <select class="selwrap mini" onChange=${e => { const uid = e.target.value; e.target.value = ""; if (uid) assignPeerToUser(peer, uid); }}>
+      <option value="">Assign to…</option>
+      ${users.map(u => html`<option value=${u.id}>${u.name}${u.tag ? " · " + u.tag : ""}</option>`)}
+    </select>
+    ${showDelete ? html`<${DangerButton} label="Delete" confirm="Delete peer?" onConfirm=${async () => {
+      const r = await api.peerDelete({ peer_id: peer.id });
+      if (!r.ok) { toast("Delete failed: " + (r.error || ""), "err"); return; }
+      toast("Peer deleted.", "ok"); await Store.poll();
+    }}/>` : null}
+  </span>`;
 }
 
 // confirm-on-second-click button
@@ -374,12 +403,8 @@ function Overview() {
 function NodeDetail({ node: rawName }) {
   const name = decodeURIComponent(rawName);
   const node = Store.node(name);
-  const [meta, setMeta] = useState(null);
-  const [metaErr, setMetaErr] = useState(null);
-  useEffect(() => {
-    if (!node) return;
-    api.describe(name).then(r => { if (r.ok) setMeta(r.data.interfaces || {}); else setMetaErr(r.error || "describe failed"); }).catch(() => setMetaErr("unreachable"));
-  }, [name]);
+  const meta = Store.describe[name] || null;       // interface meta from the consolidated state
+  const metaErr = (node && !meta) ? "node has not reported yet" : null;
 
   if (!node) return html`<div class="screen"><div class="crumb"><a href="#/">Overview</a><span class="sep">/</span><b>${name}</b></div>
     <div class="empty"><b>Unknown server</b>“${name}” isn't in the fleet.</div></div>`;
@@ -502,13 +527,20 @@ function PeersScreen() {
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
             <td data-label="Name" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.name || html`<span class="faint">unassigned</span>`}</td>
             <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
-            <td data-label="User"><${AssignSelect} peer=${p}/></td>
+            <td data-label="User"><${PeerOwnerControls} peer=${p} showDelete=${false}/></td>
             <td data-label="Last"><span class="when">${seen(t.observed ? t.observed.handshake_age : null)}</span></td>
-            <td data-label="" style="text-align:right"><${DangerButton} label="Remove" confirm="Remove?" onConfirm=${async () => {
-              const r = await api.peerRemoveTarget({ peer_id: p.id, node, iface });
-              if (!r.ok) { toast("Remove failed: " + (r.error || ""), "err"); return; }
-              toast("Removed from " + node + "/" + iface + ".", "ok"); await Store.poll();
-            }}/></td></tr>`;
+            <td data-label="" style="text-align:right" class="rowacts">
+              <${DangerButton} label="Remove" confirm="Remove here?" onConfirm=${async () => {
+                const r = await api.peerRemoveTarget({ peer_id: p.id, node, iface });
+                if (!r.ok) { toast(r.code === "last_target" ? "Only deployment — unassign, then Delete the peer." : "Remove failed: " + (r.error || ""), "err", 4500); return; }
+                toast("Removed from " + node + "/" + iface + ".", "ok"); await Store.poll();
+              }}/>
+              ${p.unassigned ? html`<${DangerButton} label="Delete" confirm="Delete peer?" onConfirm=${async () => {
+                const r = await api.peerDelete({ peer_id: p.id });
+                if (!r.ok) { toast("Delete failed: " + (r.error || ""), "err"); return; }
+                toast("Peer deleted.", "ok"); await Store.poll();
+              }}/>` : null}
+            </td></tr>`;
         }) : html`<tr><td colspan="6" class="empty"><b>No peers here</b>${iface ? "Create one, or copy an existing peer onto this interface." : "This server hasn't reported any interfaces yet."}</td></tr>`}
       </tbody></table></div>
 
@@ -560,16 +592,12 @@ function UsersScreen() {
     ${unassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">Unassigned peers</h2><span class="count">${unassigned.length}</span></div>
       <div class="tablewrap"><table>
-        <thead><tr><th>Status</th><th>Key</th><th>Targets</th><th>Assign to</th><th></th></tr></thead>
+        <thead><tr><th>Status</th><th>Key</th><th>Targets</th><th style="text-align:right">Assign / delete</th></tr></thead>
         <tbody>${unassigned.map(p => html`<tr>
           <td data-label="Status"><${Badge} s=${p.status}/></td>
           <td data-label="Key" class="addr clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.pubkey.slice(0, 20)}…</td>
           <td data-label="Targets">${p.targets.map(t => t.node + "/" + t.iface).join(", ")}</td>
-          <td data-label="Assign to"><${AssignSelect} peer=${p}/></td>
-          <td data-label="" style="text-align:right"><${DangerButton} label="Delete" confirm="Delete?" onConfirm=${async () => {
-            const r = await api.peerDelete({ peer_id: p.id }); if (!r.ok) { toast("Delete failed: " + (r.error || ""), "err"); return; }
-            toast("Peer deleted.", "ok"); await Store.poll();
-          }}/></td></tr>`)}</tbody></table></div>
+          <td data-label="" style="text-align:right" class="rowacts"><${PeerOwnerControls} peer=${p} showDelete=${true}/></td></tr>`)}</tbody></table></div>
     <//>` : null}
   </div>`;
 }
@@ -630,19 +658,15 @@ function UserEditCard({ user, done }) {
   </div>`;
 }
 
-// one credential: its targets, each a QR card; plus add-target / reassign / delete
+// one credential: its targets, each a QR card; owner controls + edit + add-target
 function PeerCard({ peer }) {
   return html`<div class="peercard">
     <div class="peercard-head">
       <span class="addr">${peer.pubkey.slice(0, 22)}…</span>
       <button class="copybtn" title="Copy public key" onClick=${() => copy(peer.pubkey, "Public key copied")}><${Ic} i="copy"/></button>
       <span class="grow"></span>
-      <span class="assignwrap"><${AssignSelect} peer=${peer}/></span>
-      <button class="btn btn-mini" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/> Edit</button>
-      <${DangerButton} label="Delete peer" confirm="Delete everywhere?" onConfirm=${async () => {
-        const r = await api.peerDelete({ peer_id: peer.id }); if (!r.ok) { toast("Delete failed: " + (r.error || ""), "err"); return; }
-        toast("Peer deleted.", "ok"); await Store.poll();
-      }}/>
+      ${peer.unassigned ? null : html`<button class="btn btn-mini" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/> Edit</button>`}
+      <span class="assignwrap"><${PeerOwnerControls} peer=${peer} showDelete=${true}/></span>
     </div>
     <div class="deploys">
       ${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t}/>`)}
@@ -800,14 +824,19 @@ function CreateUserSheet() {
   <//>`;
 }
 
-// New peer (mint a fresh keypair) — optionally pre-bound to a user / node / iface
+// All deployable (node, iface) targets known from the consolidated state.
+function allTargets() {
+  const out = [];
+  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {})) out.push({ node, iface });
+  return out;
+}
+
+// New peer (mint a fresh keypair) deployed to one OR MORE (node,iface) targets at once.
 function openCreatePeer(prefill) { openModal(html`<${CreatePeerSheet} prefill=${prefill || {}}/>`); }
 function CreatePeerSheet({ prefill }) {
-  const [cache, setCache] = useState({});           // node -> describe data
-  const [ready, setReady] = useState(false);
-  const [iface, setIface] = useState(prefill.iface || "");
-  const [node, setNode] = useState(prefill.node || "");
-  const [ip, setIp] = useState(""); const [ipHint, setIpHint] = useState("");
+  const targets = useMemo(allTargets, [Store.describe]);
+  // selected: tkey -> { node, iface, ip, ipHint }
+  const [sel, setSel] = useState({});
   const [psk, setPsk] = useState(genPSK());
   const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
   const [dns, setDns] = useState(""); const dnsTouched = useRef(false);
@@ -818,54 +847,55 @@ function CreatePeerSheet({ prefill }) {
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    setMsg({ k: "work", t: "reading servers…" });
-    Promise.all(Store.fleet.map(n => api.describe(n.name).then(r => r.ok ? [n.name, r.data] : null).catch(() => null)))
-      .then(rs => {
-        const c = {}; rs.forEach(x => { if (x) c[x[0]] = x[1]; }); setCache(c); setReady(true); setMsg(null);
-        const ifset = new Set(); Object.values(c).forEach(d => Object.keys(d.interfaces || {}).forEach(i => ifset.add(i)));
-        const list = Array.from(ifset);
-        if (!list.length) { setMsg({ k: "err", t: "No servers reachable." }); return; }
-        const wantIf = (prefill.iface && list.includes(prefill.iface)) ? prefill.iface : list[0];
-        setIface(wantIf);
-      });
-  }, []);
+  const allocIp = async (node, iface) => {
+    const k = tkey(node, iface);
+    setSel(s => ({ ...s, [k]: { node, iface, ip: "", ipHint: "finding a free address…" } }));
+    const r = await api.nextIp([node], iface);
+    setSel(s => s[k] ? { ...s, [k]: { node, iface, ip: r.ok ? r.data.next_ip : "", ipHint: r.ok ? "" : (r.error || "no free address") } } : s);
+    if (!dnsTouched.current) { const m = Store.ifaceMeta(node, iface); if (m) setDns((m.dns || []).join(", ")); }
+  };
+  const toggle = (node, iface) => {
+    const k = tkey(node, iface);
+    if (sel[k]) { setSel(s => { const n = { ...s }; delete n[k]; return n; }); }
+    else allocIp(node, iface);
+  };
+  const setIp = (k, v) => setSel(s => s[k] ? { ...s, [k]: { ...s[k], ip: v } } : s);
 
-  const nodesWithIface = useMemo(() => Store.fleet.filter(n => cache[n.name] && (cache[n.name].interfaces || {})[iface]).map(n => n.name), [cache, iface]);
-  const ifaceList = useMemo(() => { const s = new Set(); Object.values(cache).forEach(d => Object.keys(d.interfaces || {}).forEach(i => s.add(i))); return Array.from(s); }, [cache]);
-
-  // once iface known, default the node and fetch a free ip
+  // preselect from prefill (node+iface, or every iface on a node) once targets are known
   useEffect(() => {
-    if (!ready || !iface) return;
-    let n = node;
-    if (!n || !nodesWithIface.includes(n)) { n = nodesWithIface[0] || ""; setNode(n); }
-    if (!n) { setIp(""); setIpHint("No server offers " + iface + "."); return; }
-    const info = (cache[n].interfaces || {})[iface];
-    if (info && !dnsTouched.current) setDns((info.dns || []).join(", "));   // default DNS from the node's iface
-    setIp(""); setIpHint("finding a free address on " + n + "…");
-    api.nextIp([n], iface).then(r => { if (r.ok) { setIp(r.data.next_ip); setIpHint("Next free address" + (r.data.subnet ? " · " + r.data.subnet : "") + "."); } else { setIp(""); setIpHint(r.error || "couldn't pick an address"); } });
-  }, [ready, iface, node]);
+    if (!targets.length || Object.keys(sel).length) return;
+    if (prefill.node && prefill.iface) allocIp(prefill.node, prefill.iface);
+    else if (prefill.node) targets.filter(t => t.node === prefill.node).slice(0, 1).forEach(t => allocIp(t.node, t.iface));
+  }, [targets]);
 
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const chosen = Object.values(sel);
 
   const create = async () => {
-    if (!node) return setMsg({ k: "err", t: "Pick a server." });
-    if (!ip.trim()) return setMsg({ k: "err", t: "No address — check server reachability." });
-    setBusy(true); setMsg({ k: "work", t: "generating keys…" });
+    if (!chosen.length) return setMsg({ k: "err", t: "Pick at least one target." });
+    const missing = chosen.filter(t => !String(t.ip).trim());
+    if (missing.length) return setMsg({ k: "err", t: "No address for " + missing.map(t => t.node + "/" + t.iface).join(", ") + "." });
+    setBusy(true); setMsg({ k: "work", t: "generating key…" });
     try {
-      const info = (cache[node].interfaces || {})[iface];
       const keys = await genKeys();
-      const ipClean = ip.trim();
+      const pskV = psk.trim() || genPSK();
       const dnsArr = dns.split(",").map(s => s.trim()).filter(Boolean);
-      const conf = buildConf({ privkey: keys.priv, address: ipClean, dns: dnsArr, mtu: mtu.trim() || 1280, awg_params: info.awg_params, server_pubkey: info.public_key, psk: psk.trim(), endpoint: info.endpoint, allowed: allowed.trim() || "0.0.0.0/0, ::/0", keepalive: keepalive.trim() });
-      setMsg({ k: "work", t: "creating on " + node + "…" });
-      const body = { user_id: userId || null, pubkey: keys.pub, psk: psk.trim(), target: { node, iface, ip: ipClean.split("/")[0], type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" } };
-      if (Store.storeConfigs) body.config = conf;
+      const tgts = [], configs = {};
+      for (const t of chosen) {
+        const m = Store.ifaceMeta(t.node, t.iface); if (!m) continue;
+        const ipClean = String(t.ip).trim().split("/")[0];
+        tgts.push({ node: t.node, iface: t.iface, ip: ipClean, type: (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg" });
+        const conf = buildConf({ privkey: keys.priv, address: ipClean + "/32", dns: dnsArr, mtu: mtu.trim() || 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk: pskV, endpoint: m.endpoint, allowed: allowed.trim() || "0.0.0.0/0, ::/0", keepalive: keepalive.trim() });
+        configs[tkey(t.node, t.iface)] = conf;
+      }
+      setMsg({ k: "work", t: "creating on " + tgts.length + " target" + (tgts.length > 1 ? "s" : "") + "…" });
+      const body = { user_id: userId || null, pubkey: keys.pub, psk: pskV, targets: tgts };
+      if (Store.storeConfigs) body.configs = configs;
       const r = await api.peerCreate(body);
       if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: "Failed: " + (r.error || r.code || "unknown") }); }
-      (Store.sessionConfigs[keys.pub] = Store.sessionConfigs[keys.pub] || {})[tkey(node, iface)] = conf;
+      Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
       Store.recentlyCreated[r.data.id] = Date.now();
-      toast("Peer created on " + node + "/" + iface + ".", "ok");
+      toast("Peer created on " + tgts.length + " target" + (tgts.length > 1 ? "s" : "") + ".", "ok");
       closeModal(); await Store.poll();
       go(userId ? "#/user/" + encodeURIComponent(userId) : "#/peer/" + encodeURIComponent(r.data.id));
     } catch (e) { setBusy(false); setMsg({ k: "err", t: "Error: " + e.message }); }
@@ -878,15 +908,19 @@ function CreatePeerSheet({ prefill }) {
         <option value="">— unassigned —</option>
         ${users.map(u => html`<option value=${u.id}>${u.name}${u.tag ? " · " + u.tag : ""}</option>`)}
       </select></div>
-    <div class="field"><label>Interface</label>
-      <select class="selwrap" value=${iface} onChange=${e => setIface(e.target.value)}>
-        ${ifaceList.length ? ifaceList.map(i => html`<option value=${i}>${i}</option>`) : html`<option>…</option>`}
-      </select></div>
-    <div class="field"><label>Server</label>
-      <select class="selwrap" value=${node} onChange=${e => setNode(e.target.value)}>
-        ${nodesWithIface.length ? nodesWithIface.map(n => html`<option value=${n}>${n}</option>`) : html`<option value="">no server offers ${iface}</option>`}
-      </select></div>
-    <div class="field"><label>Address</label><input value=${ip} onInput=${e => setIp(e.target.value)} placeholder="auto"/><div class="hint">${ipHint}</div></div>
+    <div class="field"><label>Targets <span class="faint" style="text-transform:none;letter-spacing:0">— one, or several for redundancy</span></label>
+      ${!targets.length ? html`<div class="hint">No interfaces reported yet — is a node online?</div>`
+        : html`<div class="targetpick">${targets.map(t => {
+            const k = tkey(t.node, t.iface); const s = sel[k];
+            return html`<div class=${"targetopt " + (s ? "sel" : "")}>
+              <label class="topt-main" onClick=${() => toggle(t.node, t.iface)}>
+                <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
+                <span class="swatch" style=${"background:" + Store.nodeColor(t.node)}></span>
+                <span class="nm">${t.node}</span><span class="tp">${t.iface}</span></label>
+              ${s ? html`<input class="topt-ip" value=${s.ip} placeholder=${s.ipHint || "address"} onInput=${e => setIp(k, e.target.value)}/>` : null}
+            </div>`;
+          })}</div>`}
+    </div>
     <div class="field"><label>Preshared key</label><div class="inline"><input value=${psk} onInput=${e => setPsk(e.target.value)}/><button class="btn btn-ghost" title="Regenerate" onClick=${() => { setPsk(genPSK()); toast("New preshared key.", "info", 1500); }}>↻</button></div></div>
     <button class="advtoggle" onClick=${() => setAdv(a => !a)}><span>${adv ? "▾" : "▸"}</span> Advanced</button>
     ${adv ? html`<div class="adv open">
@@ -906,20 +940,14 @@ function CreatePeerSheet({ prefill }) {
 // private key (session config, or stored) to build the new client config / QR.
 function openAddTarget(peer) { openModal(html`<${AddTargetSheet} peer=${peer}/>`); }
 function AddTargetSheet({ peer }) {
-  const [cache, setCache] = useState({});
   const [iface, setIface] = useState(""); const [node, setNode] = useState("");
   const [ip, setIp] = useState(""); const [ipHint, setIpHint] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const srcConf = anySessionConf(peer.pubkey);
 
-  useEffect(() => {
-    Promise.all(Store.fleet.map(n => api.describe(n.name).then(r => r.ok ? [n.name, r.data] : null).catch(() => null)))
-      .then(rs => { const c = {}; rs.forEach(x => { if (x) c[x[0]] = x[1]; }); setCache(c); });
-  }, []);
-
   const have = new Set(peer.targets.map(t => tkey(t.node, t.iface)));
-  const ifaceList = useMemo(() => { const s = new Set(); Object.values(cache).forEach(d => Object.keys(d.interfaces || {}).forEach(i => s.add(i))); return Array.from(s); }, [cache]);
-  const nodesWithIface = useMemo(() => Store.fleet.filter(n => cache[n.name] && (cache[n.name].interfaces || {})[iface] && !have.has(tkey(n.name, iface))).map(n => n.name), [cache, iface]);
+  const ifaceList = useMemo(() => { const s = new Set(); Object.values(Store.describe).forEach(ifs => Object.keys(ifs || {}).forEach(i => s.add(i))); return Array.from(s); }, [Store.describe]);
+  const nodesWithIface = useMemo(() => Object.keys(Store.describe).filter(n => (Store.describe[n] || {})[iface] && !have.has(tkey(n, iface))), [Store.describe, iface]);
 
   useEffect(() => { if (!ifaceList.length) return; if (!iface) setIface(ifaceList[0]); }, [ifaceList]);
   useEffect(() => {
@@ -929,13 +957,13 @@ function AddTargetSheet({ peer }) {
     if (!n) { setIp(""); setIpHint("No free server for " + iface + "."); return; }
     setIp(""); setIpHint("finding a free address on " + n + "…");
     api.nextIp([n], iface).then(r => { if (r.ok) { setIp(r.data.next_ip); setIpHint("Next free address."); } else { setIp(""); setIpHint(r.error || "couldn't pick an address"); } });
-  }, [iface, node, cache]);
+  }, [iface, node]);
 
   const deploy = async () => {
     if (!node) return setMsg({ k: "err", t: "Pick a server." });
     if (!ip.trim()) return setMsg({ k: "err", t: "No address available." });
     setBusy(true); setMsg({ k: "work", t: "deploying to " + node + "…" });
-    const info = (cache[node].interfaces || {})[iface];
+    const info = Store.ifaceMeta(node, iface);
     const ipClean = ip.trim().split("/")[0];
     let conf = null;
     if (srcConf) { const s = parseFullConf(srcConf); conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); }
