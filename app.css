@@ -166,6 +166,19 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
 .b-orphan{background:rgba(192,132,232,.14);color:var(--orphan)}
 .b-unknown{background:rgba(95,117,105,.16);color:var(--unknown)}
+.b-unassigned{background:rgba(95,117,105,.16);color:var(--unknown)}
+.b-empty{background:rgba(95,117,105,.12);color:var(--faint)}
+
+/* ───── users / peers (first-class model) ───── */
+.tagchip{display:inline-flex;align-items:center;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;
+  background:rgba(125,211,252,.12);color:#7dd3fc}
+.c-note{color:var(--faint);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.selwrap.mini{min-width:130px;padding:5px 8px;font-size:12px}
+.assignwrap{display:inline-flex;align-items:center}
+.peercard{border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 0 16px;background:var(--surface-2)}
+.peercard-head{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.peercard-head .addr{font-size:12.5px}
+.peercard-head .grow{flex:1}
 
 /* ───── node pips (redundancy signature) ───── */
 .pips{display:inline-flex;gap:5px;align-items:center}

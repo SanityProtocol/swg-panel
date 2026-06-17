@@ -18,6 +18,7 @@
   <nav class="tabs" id="tabs">
     <a href="#/" data-tab="overview">Overview</a>
     <a href="#/nodes" data-tab="nodes">Nodes</a>
+    <a href="#/peers" data-tab="peers">Peers</a>
     <a href="#/users" data-tab="users">Users</a>
     <a href="#/account" data-tab="account">Account</a>
   </nav>
@@ -32,8 +33,18 @@
 <div id="overlay" class="overlay" aria-hidden="true"><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
 <div id="toasts" class="toasts" aria-live="polite"></div>
 
+<!-- qrcode is a UMD lib: load as a classic script so it sets the global `qrcode`. -->
 <script src="vendor/qrcode.js"></script>
-<script src="reconcile.js"></script>
-<script src="app.js"></script>
+<!-- Buildless: vendored Preact + htm as ESM, resolved via an import map. No bundler,
+     no npm tree shipped — edit app.js and reload. Bare specifiers below resolve
+     against <base href>, so they keep working under SWG_PANEL_BASE subpaths too. -->
+<script type="importmap">
+{ "imports": {
+    "preact": "./vendor/preact.module.js",
+    "preact/hooks": "./vendor/hooks.module.js",
+    "htm": "./vendor/htm.module.js"
+} }
+</script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

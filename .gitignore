@@ -3,6 +3,7 @@ data/
 .env
 *.pem
 id_swgpush*
+CLAUDE.md
 # previews & build cruft
 dryrun/
 __pycache__/
