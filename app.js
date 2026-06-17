@@ -242,6 +242,8 @@ const Store = {
   recentlyCreated: {},       // id -> ts (row flash)
   pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
   rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
+  history: {},               // node -> [{cpu,mem,disk}]  — short rolling series for sparklines
+  HISTORY_MAX: 40,
   async init() {
     await this.poll();
     setInterval(() => this.poll().catch(() => {}), 5000);
@@ -257,7 +259,17 @@ const Store = {
     this.stats = d.snapshots || {};
     this.storeConfigs = !!d.store_configs;
     this.versions = d.versions || this.versions;
+    this.pushHistory(d.nodes || []);   // once per real poll (not on optimistic re-render)
     this.apply();
+  },
+  // Append a health sample per node for the sparklines (kept only in-memory, this session).
+  pushHistory(nodes) {
+    for (const n of nodes) {
+      const pc = healthPct(n.health);
+      const h = (this.history[n.name] = this.history[n.name] || []);
+      h.push(pc);
+      if (h.length > this.HISTORY_MAX) h.splice(0, h.length - this.HISTORY_MAX);
+    }
   },
   // Re-derive everything the UI reads from a PRISTINE copy of server data + the optimistic
   // overlay. Confirmed ops (done) are dropped first — fresh server data already reflects them
@@ -445,10 +457,13 @@ function DangerButton({ label, confirm, onConfirm, className }) {
 
 // ═════════════════════════ SCREEN: OVERVIEW ═════════════════════════
 function Overview() {
-  const peers = Store.recon.peers, fleet = Store.fleet, ns = Store.recon.nodeStatus;
+  const peers = Store.recon.peers, users = Store.recon.users, fleet = Store.fleet, ns = Store.recon.nodeStatus;
   const online = peers.filter(p => p.online).length;
-  const redundant = peers.filter(p => new Set(p.targets.map(t => t.node)).size >= 2).length;
+  const partial = peers.filter(p => p.status === "partial").length;
+  const offline = peers.filter(p => ["dangling", "unknown"].includes(p.status)).length;
   const liveNodes = fleet.filter(n => ns[n.name] === "live").length;
+  const ifaceCount = Object.values(Store.describe).reduce((a, d) => a + Object.keys(d || {}).length, 0);
+  const nodesAlerting = (Store.nodes || []).filter(n => healthAlerts(n.health).length).length;
   let rx = 0, tx = 0;
   fleet.forEach(n => { const snap = Store.stats[n.name]; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { rx += pp.rx_speed || 0; tx += pp.tx_speed || 0; } });
 
@@ -458,12 +473,17 @@ function Overview() {
   const orphans = Store.recon.orphans;
   const why = { dangling: "missing on every server", partial: "missing on some servers", pending: "just created, not seen yet", unknown: "server stale — can't confirm" };
 
+  const recent = users.map(u => ({ ts: u.created_at, kind: "user", label: u.name, href: "#/user/" + encodeURIComponent(u.id) }))
+    .concat(peers.map(p => ({ ts: p.created_at, kind: "peer", label: p.title || p.name || "unassigned peer", href: "#/peer/" + encodeURIComponent(p.id) })))
+    .filter(e => e.ts).sort((a, b) => b.ts - a.ts).slice(0, 6);
+
   return html`<div class="screen">
     <div class="statgrid">
-      <div class="stat accent"><div class="k"><${Ic} i="check"/> Online now</div><div class="v">${online}<small> / ${peers.length}</small></div><div class="sub">peers connected</div></div>
+      <a class="stat accent clk" href="#/connections"><div class="k"><${Ic} i="check"/> Online now</div><div class="v">${online}<small> / ${peers.length}</small></div><div class="sub">live connections →</div></a>
+      <a class="stat clk" href="#/users"><div class="k">Users</div><div class="v">${users.length}</div><div class="sub">${peers.length} peers total</div></a>
+      <a class="stat clk" href="#/users"><div class="k">Peer status</div><div class="v" style="font-size:17px"><span style="color:var(--online)">${online}</span> · <span style="color:var(--partial)">${partial}</span> · <span style="color:var(--dangling)">${offline}</span></div><div class="sub">online · partial · offline</div></a>
+      <a class="stat clk" href="#/nodes"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleet.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></a>
       <div class="stat"><div class="k">Throughput</div><div class="v" style="font-size:19px">↓ ${rate(rx)}</div><div class="sub">↑ ${rate(tx)} aggregate</div></div>
-      <div class="stat"><div class="k">Redundancy</div><div class="v">${redundant}<small> / ${peers.length}</small></div><div class="sub">on two or more servers</div></div>
-      <div class="stat"><div class="k">Fleet</div><div class="v">${liveNodes}<small> / ${fleet.length}</small></div><div class="sub">servers reporting</div></div>
     </div>
 
     <div class="section-title"><h2>Fleet</h2><span class="count">${fleet.length} servers</span><span class="grow"></span></div>
@@ -487,6 +507,23 @@ function Overview() {
         </a>`;
       }) : html`<div class="allclear">No servers configured in fleet.json.</div>`}
     </div>
+
+    ${(Store.nodes || []).some(n => n.health) ? html`<${Fragment}>
+      <div class="section-title"><h2>Fleet health</h2><span class="grow"></span></div>
+      <div class="hrollup">${(Store.nodes || []).filter(n => n.health).map(n => {
+        const al = healthAlerts(n.health);
+        return html`<a class="hcard" href=${"#/node/" + encodeURIComponent(n.name)} key=${n.name}>
+          <div class="hcard-top"><span class="nsw" style=${"background:" + (n.color || "#5f7569")}></span><b>${n.name}</b>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
+          <${NodeHealth} health=${n.health} node=${n.name} compact=${true}/>
+        </a>`;
+      })}</div>
+    <//>` : null}
+
+    ${recent.length ? html`<${Fragment}>
+      <div class="section-title"><h2>Recent activity</h2></div>
+      <div class="actlist">${recent.map(e => html`<a class="act-row" href=${e.href} key=${e.kind + e.href}>
+        <span class=${"actkind " + e.kind}>${e.kind}</span><span class="name">${e.label}</span><span class="grow"></span><span class="when">${ago(e.ts)}</span></a>`)}</div>
+    <//>` : null}
 
     <div class="section-title"><h2>Needs attention</h2><span class="grow"></span></div>
     ${(!probs.length && !unassigned.length && !orphans.length)
@@ -541,7 +578,7 @@ function NodeDetail({ node: rawName }) {
 
     ${nrec.health ? html`<${Fragment}>
       <div class="section-title"><h2>Health</h2></div>
-      <div class="healthgrid"><${NodeHealth} health=${nrec.health} compact=${false}/></div>
+      <div class="healthgrid"><${NodeHealth} health=${nrec.health} node=${name} compact=${false}/></div>
     <//>` : null}
 
     <div class="section-title"><h2>Interfaces</h2><span class="count">${meta ? Object.keys(meta).length : 0}</span></div>
@@ -731,6 +768,95 @@ function PeersScreen() {
       <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged here</h2></div>
       <div class="tablewrap"><table><tbody>${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}</tbody></table></div>
     <//>` : null}
+  </div>`;
+}
+
+// ═════════════════════════ SCREEN: CONNECTIONS (live monitor) ═════════════════════════
+// Read-only over the enriched snapshot: every target the node currently knows about becomes a
+// row. Filters/sort live in module state so a 5s poll never loses them; Preact + keyed rows
+// keep scroll position and update cells in place.
+function connRows() {
+  const out = [];
+  for (const p of Store.recon.peers) {
+    const u = p.user_id ? Store.user(p.user_id) : null;
+    for (const t of p.targets) {
+      const obs = t.observed; if (!obs) continue;          // only present-on-node connections
+      out.push({
+        key: p.id + "|" + t.node + "|" + t.iface, pid: p.id, uid: u ? u.id : null,
+        user: u ? u.name : "", peer: p.title || p.name || "", unassigned: p.unassigned,
+        node: t.node, iface: t.iface, endpoint: obs.endpoint || "", ip: t.ip || "",
+        hs: (obs.handshake_age == null ? null : obs.handshake_age),
+        rxb: obs.rx_bytes || 0, txb: obs.tx_bytes || 0, rx: obs.rx_speed || 0, tx: obs.tx_speed || 0,
+        online: !!obs.online, via: t.via,
+      });
+    }
+  }
+  return out;
+}
+const connView = { node: "", iface: "", user: "", q: "", online: false, sort: "rate", dir: -1 };
+const CONN_DEFDIR = { rate: -1, hs: 1, peer: 1, user: 1, node: 1 };
+function ConnectionsScreen() {
+  useStore();
+  const [, force] = useState(0);
+  const bump = () => force(x => x + 1);
+  const sortBy = col => { if (connView.sort === col) connView.dir = -connView.dir; else { connView.sort = col; connView.dir = CONN_DEFDIR[col] || 1; } bump(); };
+
+  const all = connRows();
+  const ifaceList = Array.from(new Set(Object.values(Store.describe).flatMap(d => Object.keys(d || {})))).sort();
+  const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const q = connView.q.toLowerCase();
+  let rows = all.filter(r => {
+    if (connView.node && r.node !== connView.node) return false;
+    if (connView.iface && r.iface !== connView.iface) return false;
+    if (connView.user && r.uid !== connView.user) return false;
+    if (connView.online && !r.online) return false;
+    if (q && !((r.user + " " + r.peer + " " + r.node + " " + r.iface + " " + r.endpoint + " " + r.ip).toLowerCase().includes(q))) return false;
+    return true;
+  });
+  const keyf = { rate: r => r.rx + r.tx, hs: r => (r.hs == null ? Infinity : r.hs), peer: r => r.peer.toLowerCase(), user: r => r.user.toLowerCase(), node: r => r.node + "|" + r.iface }[connView.sort] || (r => r.rx + r.tx);
+  rows = rows.sort((a, b) => { const A = keyf(a), B = keyf(b); return (A < B ? -1 : A > B ? 1 : 0) * connView.dir; });
+  const onlineCount = all.filter(r => r.online).length;
+  const arrow = col => connView.sort === col ? (connView.dir < 0 ? " ↓" : " ↑") : "";
+
+  return html`<div class="screen">
+    <div class="toolbar">
+      <div class="search"><${Ic} i="search"/><input placeholder="Search peer, user, endpoint, IP…" value=${connView.q} onInput=${e => { connView.q = e.target.value.trim(); bump(); }}/></div>
+      <select class="selwrap" value=${connView.node} onChange=${e => { connView.node = e.target.value; bump(); }}>
+        <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.name}>${n.name}</option>`)}
+      </select>
+      <select class="selwrap" value=${connView.iface} onChange=${e => { connView.iface = e.target.value; bump(); }}>
+        <option value="">All interfaces</option>${ifaceList.map(i => html`<option value=${i}>${i}</option>`)}
+      </select>
+      <select class="selwrap" value=${connView.user} onChange=${e => { connView.user = e.target.value; bump(); }}>
+        <option value="">All users</option>${users.map(u => html`<option value=${u.id}>${u.name}</option>`)}
+      </select>
+      <label class="chk"><input type="checkbox" checked=${connView.online} onChange=${e => { connView.online = e.target.checked; bump(); }}/> online only</label>
+    </div>
+
+    <div class="section-title"><h2>Live connections</h2><span class="count">${rows.length} shown · ${onlineCount} online</span></div>
+    <div class="tablewrap"><table class="conntable">
+      <thead><tr>
+        <th></th>
+        <th class="clk" onClick=${() => sortBy("peer")}>Peer${arrow("peer")}</th>
+        <th class="clk" onClick=${() => sortBy("user")}>User${arrow("user")}</th>
+        <th class="clk" onClick=${() => sortBy("node")}>Node · iface${arrow("node")}</th>
+        <th>Endpoint</th>
+        <th class="clk" onClick=${() => sortBy("hs")}>Last${arrow("hs")}</th>
+        <th class="clk" onClick=${() => sortBy("rate")}>Rate ↓↑${arrow("rate")}</th>
+        <th>Transfer ↓↑</th>
+      </tr></thead>
+      <tbody>
+        ${rows.length ? rows.map(r => html`<tr key=${r.key}>
+          <td data-label=""><span class=${"condot " + (r.online ? "on" : "off")} title=${r.online ? "online" : "idle"}></span></td>
+          <td data-label="Peer" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(r.pid))}>${r.peer ? html`<b>${r.peer}</b>` : html`<span class="faint">unassigned</span>`}</td>
+          <td data-label="User">${r.uid ? html`<a href=${"#/user/" + encodeURIComponent(r.uid)}>${r.user}</a>` : html`<span class="faint">—</span>`}</td>
+          <td data-label="Node" class="addr clk" onClick=${() => go("#/node/" + encodeURIComponent(r.node) + "/" + encodeURIComponent(r.iface))}>${r.node} · ${r.iface}</td>
+          <td data-label="Endpoint"><span class="addr">${r.endpoint || "—"}</span>${r.via === "turn" ? html`<span class="viatag">turn</span>` : ""}</td>
+          <td data-label="Last"><span class="when">${seen(r.hs)}</span></td>
+          <td data-label="Rate"><span class="rate">↓ ${rate(r.rx)} ↑ ${rate(r.tx)}</span></td>
+          <td data-label="Transfer"><span class="addr">↓ ${fmtBytes(r.rxb)} ↑ ${fmtBytes(r.txb)}</span></td>
+        </tr>`) : html`<tr><td colspan="8" class="empty"><b>No connections${all.length ? " match" : " yet"}</b>${all.length ? "Clear the filters." : "Peers appear here once a node reports them."}</td></tr>`}
+      </tbody></table></div>
   </div>`;
 }
 
@@ -1002,34 +1128,76 @@ function NodesScreen() {
 }
 // load/util tone: green under 70%, amber to 90%, red above.
 function htone(pct) { return pct >= 90 ? "hot" : (pct >= 70 ? "warn" : "ok"); }
-function HealthMeter({ label, pct, text, tone }) {
+// CPU / memory / worst-disk as percentages (CPU is load-per-core), or null if no data.
+function healthPct(health) {
+  if (!health) return null;
+  const cpu = Array.isArray(health.load) ? (health.load[0] || 0) / (health.ncpu || 1) * 100 : null;
+  const mem = (health.mem && health.mem.total) ? health.mem.used / health.mem.total * 100 : null;
+  let disk = null;
+  for (const d of (health.disk || [])) if (d.total) disk = Math.max(disk || 0, d.used / d.total * 100);
+  return { cpu, mem, disk };
+}
+// Threshold alerts for a node: disk/memory > 90%, CPU saturated (load-per-core > 1.5).
+function healthAlerts(health) {
+  const out = [];
+  for (const d of (health && health.disk || [])) if (d.total && d.used / d.total > 0.9) out.push({ sev: "hot", msg: "disk " + d.mount + " " + Math.round(d.used / d.total * 100) + "%" });
+  const m = health && health.mem;
+  if (m && m.total && m.used / m.total > 0.9) out.push({ sev: "hot", msg: "memory " + Math.round(m.used / m.total * 100) + "%" });
+  if (health && Array.isArray(health.load) && (health.load[0] || 0) / (health.ncpu || 1) > 1.5) out.push({ sev: "warn", msg: "CPU load " + health.load[0].toFixed(1) });
+  return out;
+}
+// Tiny inline-SVG sparkline (no charting lib). `points` is an array of numbers 0..100.
+function Sparkline({ points, color, w, h }) {
+  w = w || 90; h = h || 22;
+  const pts = (points || []).filter(v => v != null);
+  if (pts.length < 2) return html`<svg class="spark" width=${w} height=${h}></svg>`;
+  const max = 100, n = pts.length;
+  const d = pts.map((v, i) => (i / (n - 1) * (w - 2) + 1).toFixed(1) + "," + (h - 1 - Math.min(max, Math.max(0, v)) / max * (h - 2)).toFixed(1)).join(" ");
+  const last = pts[pts.length - 1];
+  return html`<svg class="spark" width=${w} height=${h} viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none">
+    <polyline points=${d} fill="none" stroke=${color || "var(--online)"} stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx=${(w - 1).toFixed(1)} cy=${(h - 1 - Math.min(max, Math.max(0, last)) / max * (h - 2)).toFixed(1)} r="1.6" fill=${color || "var(--online)"}/>
+  </svg>`;
+}
+const toneColor = t => t === "hot" ? "var(--dangling)" : t === "warn" ? "var(--pending)" : "var(--online)";
+function HealthMeter({ label, pct, text, tone, spark }) {
   const p = Math.min(100, Math.max(0, pct || 0));
+  const tn = tone || htone(p);
   return html`<div class="hmeter">
     <div class="hm-top"><span class="hm-l">${label}</span><span class="hm-r">${text}</span></div>
-    <div class="hm-bar"><i class=${"hm-fill " + (tone || htone(p))} style=${"width:" + p + "%"}></i></div>
+    <div class="hm-row">
+      <div class="hm-bar"><i class=${"hm-fill " + tn} style=${"width:" + p + "%"}></i></div>
+      ${spark && spark.length > 1 ? html`<${Sparkline} points=${spark} color=${toneColor(tn)}/>` : null}
+    </div>
   </div>`;
 }
 // Per-node health: CPU load (vs cores), memory, disk per mount, uptime. `compact` trims
-// to the essentials for the node card; the detail page shows every mount + uptime.
-function NodeHealth({ health, compact }) {
+// to the essentials for the node card; the detail page shows every mount + uptime + sparklines.
+function NodeHealth({ health, node, compact }) {
   if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
+  const hist = (node && Store.history[node]) || [];
+  const sp = key => (compact || hist.length < 2) ? null : hist.map(s => (s ? s[key] : null));
+  const alerts = healthAlerts(health);
   const meters = [];
   if (Array.isArray(health.load)) {
     const ncpu = health.ncpu || 1, l1 = health.load[0] || 0;
-    meters.push(html`<${HealthMeter} label="CPU load" pct=${l1 / ncpu * 100}
+    meters.push(html`<${HealthMeter} label="CPU load" pct=${l1 / ncpu * 100} spark=${sp("cpu")}
       text=${l1.toFixed(2) + (health.load.length > 1 && !compact ? " · " + health.load.slice(1).map(x => x.toFixed(2)).join(" ") : "") + " / " + ncpu + (ncpu === 1 ? " cpu" : " cpus")}/>`);
   }
   const m = health.mem;
   if (m && m.total) {
-    meters.push(html`<${HealthMeter} label="Memory" pct=${m.used / m.total * 100} text=${fmtBytes(m.used) + " / " + fmtBytes(m.total)}/>`);
+    meters.push(html`<${HealthMeter} label="Memory" pct=${m.used / m.total * 100} spark=${sp("mem")} text=${fmtBytes(m.used) + " / " + fmtBytes(m.total)}/>`);
     if (!compact && m.swap_total) meters.push(html`<${HealthMeter} label="Swap" pct=${m.swap_used / m.swap_total * 100} text=${fmtBytes(m.swap_used || 0) + " / " + fmtBytes(m.swap_total)}/>`);
   }
   const disks = health.disk || [];
-  (compact ? disks.slice(0, 1) : disks).forEach(d => {
+  (compact ? disks.slice(0, 1) : disks).forEach((d, i) => {
     if (!d.total) return;
-    meters.push(html`<${HealthMeter} label=${disks.length > 1 || !compact ? "Disk " + d.mount : "Disk"} pct=${d.used / d.total * 100} text=${fmtBytes(d.used) + " / " + fmtBytes(d.total)}/>`);
+    meters.push(html`<${HealthMeter} label=${disks.length > 1 || !compact ? "Disk " + d.mount : "Disk"} pct=${d.used / d.total * 100} spark=${i === 0 ? sp("disk") : null} text=${fmtBytes(d.used) + " / " + fmtBytes(d.total)}/>`);
   });
-  return html`<div class="health">${meters}</div>`;
+  return html`<div class="health">
+    ${alerts.length ? html`<div class="halerts">${alerts.map(a => html`<span class=${"halert " + a.sev}><${Ic} i="warn"/> ${a.msg}</span>`)}</div>` : null}
+    ${meters}
+  </div>`;
 }
 
 function NodeCard({ n }) {
@@ -1047,7 +1215,7 @@ function NodeCard({ n }) {
         <div class="nrow"><span class="l">Interfaces</span><span class="r">${ifaces}</span></div>
         <div class="nrow"><span class="l">Sync</span><span class="r">${sync}</span></div>
       </div>
-      ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} compact=${true}/>` : null}
+      ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} node=${n.name} compact=${true}/>` : null}
     </div>
     <div class="nacts">
       <button class="btn-mini" onClick=${() => openNodeEdit(n)}>Edit</button>
@@ -1588,6 +1756,7 @@ function NodeRemoveSheet({ node }) {
 // ═════════════════════════ ROUTER + APP ═════════════════════════
 const ROUTES = [
   { re: /^\/$/, fn: Overview, tab: "overview" },
+  { re: /^\/connections$/, fn: ConnectionsScreen, tab: "connections" },
   { re: /^\/node\/([^/]+)\/([^/]+)$/, fn: IfaceDetail, tab: "nodes", keys: ["node", "iface"] },
   { re: /^\/node\/(.+)$/, fn: NodeDetail, tab: "nodes", keys: ["node"] },
   { re: /^\/nodes$/, fn: NodesScreen, tab: "nodes" },

@@ -81,10 +81,12 @@ button{font-family:inherit}
 .section-title .grow{flex:1}
 
 /* ───── hero stats (overview) ───── */
-.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
 @media(max-width:760px){.statgrid{grid-template-columns:repeat(2,1fr)}}
 .stat{background:linear-gradient(180deg,var(--raise),var(--surface));border:1px solid var(--line);border-radius:var(--r);
   padding:15px 16px;position:relative;overflow:hidden}
+a.stat{text-decoration:none;color:inherit;display:block;transition:border-color .15s var(--ease),transform .15s var(--ease)}
+a.stat.clk:hover{border-color:var(--brand);transform:translateY(-1px)}
 .stat .k{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;display:flex;align-items:center;gap:6px}
 .stat .v{font-family:var(--mono);font-size:26px;font-weight:600;color:var(--ink);margin-top:7px;letter-spacing:-.01em;line-height:1.1}
 .stat .v small{font-size:13px;color:var(--dim);font-weight:500}
@@ -442,11 +444,45 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .hm-top{display:flex;justify-content:space-between;align-items:baseline;font-size:11.5px}
 .hm-l{color:var(--dim);letter-spacing:.02em}
 .hm-r{font-family:var(--mono);color:var(--ink-2);font-size:11px}
+.hm-row{display:flex;align-items:center;gap:9px}
+.hm-row .hm-bar{flex:1}
+.spark{flex:none;opacity:.85}
 .hm-bar{height:5px;border-radius:3px;background:#0a130f;overflow:hidden}
 .hm-fill{display:block;height:100%;border-radius:3px;background:var(--online);transition:width .6s var(--ease)}
 .hm-fill.warn{background:var(--pending)}
 .hm-fill.hot{background:var(--dangling)}
 .hm-foot{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:1px}
+.halerts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:2px}
+.halert{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px}
+.halert svg{flex:none;width:12px;height:12px}
+.halert.hot{background:rgba(240,89,107,.14);color:var(--dangling)}
+.halert.warn{background:rgba(232,192,75,.14);color:var(--pending)}
+/* dashboard: fleet-health rollup + recent activity */
+.hrollup{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.hcard{display:block;border:1px solid var(--line);border-radius:var(--r);padding:13px;background:var(--surface-2);text-decoration:none;color:inherit;transition:border-color .15s var(--ease),transform .15s var(--ease)}
+.hcard:hover{border-color:var(--brand);transform:translateY(-1px)}
+.hcard-top{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.hcard-top .nsw{width:9px;height:9px;border-radius:50%;flex:none}
+.hcard-top b{color:var(--ink);font-size:13.5px}
+.hcard-top .rowarrow{color:var(--faint)}
+.hcard .health{border-top:none;margin-top:8px;padding-top:0}
+.actlist{display:flex;flex-direction:column;gap:1px;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.act-row{display:flex;align-items:center;gap:10px;padding:9px 13px;background:var(--surface);text-decoration:none;color:inherit;transition:background .12s}
+.act-row:hover{background:var(--surface-2)}
+.act-row .name{color:var(--ink-2);font-size:13px}
+.act-row .when{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+.actkind{font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:99px}
+.actkind.user{background:rgba(125,211,252,.13);color:#7dd3fc}
+.actkind.peer{background:rgba(52,211,153,.13);color:var(--online)}
+/* live connections monitor */
+.conntable th.clk{cursor:pointer;user-select:none}
+.conntable th.clk:hover{color:var(--ink)}
+.condot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--unknown)}
+.condot.on{background:var(--online);box-shadow:0 0 0 3px rgba(52,211,153,.15)}
+.condot.off{background:var(--faint)}
+.viatag{margin-left:6px;font-size:10px;font-weight:700;text-transform:uppercase;color:var(--orphan);background:rgba(192,132,232,.13);padding:1px 6px;border-radius:99px}
+.chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--dim);white-space:nowrap;cursor:pointer}
+.chk input{width:auto;margin:0}
 /* detail-page health: a responsive grid of meters */
 .healthgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:13px 26px}
 .healthgrid .health{border-top:none;margin-top:0;padding-top:0;display:contents}
