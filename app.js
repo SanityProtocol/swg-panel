@@ -214,22 +214,35 @@ const Store = {
   sessionConfigs: {},        // pubkey -> { "node|iface" -> confText }   (built at creation, in-memory)
   configEpoch: 0,            // bumps when a config is re-issued, so QR cards re-read it
   recentlyCreated: {},       // id -> ts (row flash)
+  pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
+  rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
   async init() {
     await this.poll();
     setInterval(() => this.poll().catch(() => {}), 5000);
   },
   // One round trip: /api/state bundles roster + nodes + per-node interface meta (describe)
   // + raw snapshots. Status is still derived in the browser via reconcile.js.
+  _server: { roster: { version: 1, users: {}, peers: {} }, nodes: [] },   // pristine, last fetched
   async poll() {
     const s = await api.state();
     const d = (s && s.data) || {};
-    this.roster = d.roster || { version: 1, users: {}, peers: {} };
-    this.nodes = d.nodes || [];
+    this._server = { roster: d.roster || { version: 1, users: {}, peers: {} }, nodes: d.nodes || [] };
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
     this.storeConfigs = !!d.store_configs;
     this.versions = d.versions || this.versions;
-    // fleet shape the UI expects (name/color/transport/stats_file) — derived from nodes
+    this.apply();
+  },
+  // Re-derive everything the UI reads from a PRISTINE copy of server data + the optimistic
+  // overlay. Confirmed ops (done) are dropped first — fresh server data already reflects them
+  // — then still-pending patches are layered on a fresh clone, so re-applying is idempotent and
+  // an in-flight change never blinks out between polls.
+  apply() {
+    for (const id of Object.keys(this.pending)) if (this.pending[id].done) delete this.pending[id];
+    const snap = (typeof structuredClone === "function") ? structuredClone(this._server)
+                                                         : JSON.parse(JSON.stringify(this._server));
+    this.roster = snap.roster; this.nodes = snap.nodes;
+    for (const id of Object.keys(this.pending)) { try { this.pending[id].apply(this); } catch (_) {} }
     this.fleet = this.nodes.map(n => ({ name: n.name, color: n.color, transport: "https", stats_file: "stats-" + n.name + ".json" }));
     this.recon = reconcile(this.roster, this.stats, Date.now());
     bus.emit();
@@ -273,6 +286,42 @@ function toast(msg, kind = "info", ms = 3600) {
 }
 function copy(text, what) { navigator.clipboard.writeText(text); toast((what || "Copied") + ".", "ok", 1500); }
 
+// ───────────────────────── mutations (optimistic, status-on-failure) ─────────────────────────
+//
+// Single funnel for every write. The optimistic `patch` (if given) is applied to the store
+// immediately so the UI reacts instantly; the API call runs; on success the patch is kept until
+// the next poll supersedes it (no blink); on failure it's reverted and an *explained* error is
+// pinned to the row (rowErrors[key]) plus a toast. A safety timeout clears a stuck op and resyncs.
+// Verify-only actions (create / rekey / anything revealing a secret) simply pass no `patch`.
+let _mutSeq = 0;
+function mutate({ key, patch, call, onOk, timeout = 8000 }) {
+  const id = "m" + (++_mutSeq);
+  if (key) delete Store.rowErrors[key];
+  if (patch) { Store.pending[id] = { apply: patch, done: false }; }
+  if (patch || key) Store.apply();
+  const timer = setTimeout(() => { if (Store.pending[id]) { delete Store.pending[id]; Store.poll().catch(() => {}); } }, timeout);
+  return (async () => {
+    let r;
+    try { r = await call(); }
+    catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+    clearTimeout(timer);
+    if (!r || !r.ok) {
+      delete Store.pending[id];                                  // revert optimistic change
+      if (key) Store.rowErrors[key] = { msg: (r && (r.error || r.code)) || "request failed", at: Date.now() };
+      Store.apply();
+      toast((r && (r.error || r.code)) || "Action failed.", "err", 4500);
+      return r || { ok: false };
+    }
+    if (key) delete Store.rowErrors[key];
+    if (onOk) { try { onOk(r); } catch (_) {} }
+    if (Store.pending[id]) Store.pending[id].done = true;        // keep applied until the next poll supersedes
+    await Store.poll().catch(() => {});
+    return r;
+  })();
+}
+function rowError(key) { return Store.rowErrors[key] || null; }
+function dismissError(key) { if (Store.rowErrors[key]) { delete Store.rowErrors[key]; Store.apply(); } }
+
 // ───────────────────────── modal ─────────────────────────
 let _setModal = () => {};
 function openModal(node) { _setModal(node); }
@@ -298,58 +347,74 @@ function TargetPips({ peer }) {
 // Assign an unassigned peer to a user with a FRESH credential: mint a new keypair + PSK in
 // the browser, rebuild the client config for every target, push via rekey. The new owner
 // gets a working config; nobody inherits a key a previous holder could still have.
+// Verify-only (mints a fresh key + rebuilds configs, so we reveal only on confirm). Routed
+// through mutate() for the unified error path; no optimistic patch — heavy/crypto action.
 async function assignPeerToUser(peer, userId) {
   if (!userId) return;
+  const key = "peer:" + peer.id;
+  let keys, psk, configs;
   try {
-    const keys = await genKeys();
-    const psk = genPSK();
-    const configs = {};
+    keys = await genKeys(); psk = genPSK(); configs = {};
     for (const t of peer.targets) {
       const m = Store.ifaceMeta(t.node, t.iface);
-      if (!m) { toast("Can't issue config: " + t.node + " hasn't reported interface " + t.iface + ".", "err", 5000); return; }
+      if (!m) { Store.rowErrors[key] = { msg: t.node + " hasn't reported " + t.iface + " yet", at: Date.now() }; Store.apply(); return; }
       configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: t.ip + "/32", dns: m.dns, mtu: 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk, endpoint: m.endpoint, allowed: "0.0.0.0/0, ::/0", keepalive: 25 });
     }
-    const r = await api.peerRekey({ peer_id: peer.id, user_id: userId, pubkey: keys.pub, psk, configs });
-    if (!r.ok) { toast("Assign failed: " + (r.error || r.code || ""), "err"); return; }
-    Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
-    toast("Assigned — fresh config issued.", "ok"); await Store.poll();
-  } catch (e) { toast("Assign error: " + e.message, "err"); }
+  } catch (e) { Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
+  await mutate({
+    key,
+    call: () => api.peerRekey({ peer_id: peer.id, user_id: userId, pubkey: keys.pub, psk, configs }),
+    onOk: () => { Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; },
+  });
 }
 
 // Owner controls: assigned peers can only be Unassigned (revokes the holder); unassigned
 // peers offer Assign-to (fresh key) and Delete. Deletion is gated to unassigned peers.
 function PeerOwnerControls({ peer, showDelete }) {
+  const key = "peer:" + peer.id;
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
   if (!peer.unassigned) {
-    return html`<${DangerButton} label="Unassign" confirm="Unassign — revoke access?" onConfirm=${async () => {
-      const r = await api.peerUnassign({ peer_id: peer.id });
-      if (!r.ok) { toast("Unassign failed: " + (r.error || ""), "err"); return; }
-      delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++;
-      toast("Unassigned — previous access revoked.", "ok"); await Store.poll();
-    }}/>`;
+    return html`<${Fragment}>
+      <${DangerButton} label="Unassign" confirm="Unassign — revoke access?" onConfirm=${() => mutate({
+        key, patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },   // optimistic: greys instantly
+        call: () => api.peerUnassign({ peer_id: peer.id }),
+        onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++; },
+      })}/>
+      <${RowError} k=${key}/>
+    <//>`;
   }
   return html`<span class="ownerctl">
     <select class="selwrap mini" onChange=${e => { const uid = e.target.value; e.target.value = ""; if (uid) assignPeerToUser(peer, uid); }}>
       <option value="">Assign to…</option>
       ${users.map(u => html`<option value=${u.id}>${u.name}${u.tag ? " · " + u.tag : ""}</option>`)}
     </select>
-    ${showDelete ? html`<${DangerButton} label="Delete" confirm="Delete peer?" onConfirm=${async () => {
-      const r = await api.peerDelete({ peer_id: peer.id });
-      if (!r.ok) { toast("Delete failed: " + (r.error || ""), "err"); return; }
-      toast("Peer deleted.", "ok"); await Store.poll();
-    }}/>` : null}
+    ${showDelete ? html`<${DangerButton} label="Delete" confirm="Delete peer?" onConfirm=${() => mutate({
+      key, patch: s => { delete s.roster.peers[peer.id]; },                                  // optimistic: row leaves
+      call: () => api.peerDelete({ peer_id: peer.id }),
+    })}/>` : null}
+    <${RowError} k=${key}/>
   </span>`;
 }
 
-// confirm-on-second-click button
+// pinned, explained failure for a row's last action; dismissable
+function RowError({ k }) {
+  const e = rowError(k);
+  if (!e) return null;
+  return html`<span class="rowerr" title=${e.msg}><${Ic} i="err"/> ${e.msg}<button class="rowerr-x" onClick=${() => dismissError(k)}>×</button></span>`;
+}
+
+// confirm-on-second-click button; shows a working state while its action is in flight
 function DangerButton({ label, confirm, onConfirm, className }) {
   const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
   const tref = useRef(null);
   useEffect(() => () => clearTimeout(tref.current), []);
-  return html`<button class=${"btn btn-mini " + (className || "warn")} onClick=${() => {
+  return html`<button class=${"btn btn-mini " + (className || "warn")} disabled=${busy} onClick=${async () => {
+    if (busy) return;
     if (!armed) { setArmed(true); tref.current = setTimeout(() => setArmed(false), 2800); return; }
-    clearTimeout(tref.current); setArmed(false); onConfirm();
-  }}>${armed ? (confirm || "Confirm?") : label}</button>`;
+    clearTimeout(tref.current); setArmed(false); setBusy(true);
+    try { await onConfirm(); } finally { setBusy(false); }
+  }}>${busy ? "…" : (armed ? (confirm || "Confirm?") : label)}</button>`;
 }
 
 // ═════════════════════════ SCREEN: OVERVIEW ═════════════════════════
@@ -479,7 +544,7 @@ function NodeDetail({ node: rawName }) {
         ${rows.length ? rows.map(p => {
           const t = p.targets.find(d => d.node === name) || {};
           const obs = t.observed;
-          return html`<tr class="clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>
+          return html`<tr key=${p.id} class="clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
             <td data-label="Name" class="c-name">${p.name || html`<span class="faint">unassigned</span>`}</td>
             <td data-label="Iface · address"><span class="addr">${t.iface} · ${t.ip || "—"}</span></td>
@@ -492,7 +557,7 @@ function NodeDetail({ node: rawName }) {
     ${orphans.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged on this server</h2></div>
       <div class="tablewrap"><table><tbody>
-        ${orphans.map(o => html`<${OrphanRow} o=${o}/>`)}
+        ${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}
       </tbody></table></div>
     <//>` : null}
   </div>`;
@@ -503,12 +568,12 @@ function OrphanRow({ o }) {
     <td data-label="Status"><${Badge} s="orphan"/></td>
     <td data-label="Key" class="addr">${o.pubkey.slice(0, 22)}…</td>
     <td data-label="Address"><span class="addr">${o.iface} · ${o.allowed_ips || "—"}</span></td>
-    <td data-label="" style="text-align:right">
-      <button class="btn btn-mini" onClick=${async () => {
-        const r = await api.peerAdopt({ pubkey: o.pubkey, target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } });
-        if (!r.ok) { toast("Adopt failed: " + (r.error || ""), "err"); return; }
-        toast("Adopted (unassigned).", "ok"); await Store.poll();
-      }}>Adopt</button>
+    <td data-label="" style="text-align:right" class="rowacts">
+      <button class="btn btn-mini" onClick=${() => mutate({   // verify-only: server assigns the id
+        key: "orphan:" + o.node + "|" + o.iface + "|" + o.pubkey,
+        call: () => api.peerAdopt({ pubkey: o.pubkey, target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
+      })}>Adopt</button>
+      <${RowError} k=${"orphan:" + o.node + "|" + o.iface + "|" + o.pubkey}/>
     </td></tr>`;
 }
 
@@ -545,30 +610,31 @@ function PeersScreen() {
       <tbody>
         ${onIface.length ? onIface.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]).map(p => {
           const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
-          return html`<tr>
+          return html`<tr key=${p.id}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
             <td data-label="Name" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.name || html`<span class="faint">unassigned</span>`}</td>
             <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
             <td data-label="User"><${PeerOwnerControls} peer=${p} showDelete=${false}/></td>
             <td data-label="Last"><span class="when">${seen(t.observed ? t.observed.handshake_age : null)}</span></td>
             <td data-label="" style="text-align:right" class="rowacts">
-              <${DangerButton} label="Remove" confirm="Remove here?" onConfirm=${async () => {
-                const r = await api.peerRemoveTarget({ peer_id: p.id, node, iface });
-                if (!r.ok) { toast(r.code === "last_target" ? "Only deployment — unassign, then Delete the peer." : "Remove failed: " + (r.error || ""), "err", 4500); return; }
-                toast("Removed from " + node + "/" + iface + ".", "ok"); await Store.poll();
-              }}/>
-              ${p.unassigned ? html`<${DangerButton} label="Delete" confirm="Delete peer?" onConfirm=${async () => {
-                const r = await api.peerDelete({ peer_id: p.id });
-                if (!r.ok) { toast("Delete failed: " + (r.error || ""), "err"); return; }
-                toast("Peer deleted.", "ok"); await Store.poll();
-              }}/>` : null}
+              <${DangerButton} label="Remove" confirm="Remove here?" onConfirm=${() => mutate({
+                key: "peer:" + p.id,
+                // optimistic only when it isn't the sole deployment (the backend 409s on the last one)
+                patch: p.targets.length > 1 ? s => { const pp = s.roster.peers[p.id]; if (pp) pp.targets = pp.targets.filter(x => !(x.node === node && x.iface === iface)); } : null,
+                call: () => api.peerRemoveTarget({ peer_id: p.id, node, iface }),
+              })}/>
+              ${p.unassigned ? html`<${DangerButton} label="Delete" confirm="Delete peer?" onConfirm=${() => mutate({
+                key: "peer:" + p.id, patch: s => { delete s.roster.peers[p.id]; },
+                call: () => api.peerDelete({ peer_id: p.id }),
+              })}/>` : null}
+              <${RowError} k=${"peer:" + p.id}/>
             </td></tr>`;
         }) : html`<tr><td colspan="6" class="empty"><b>No peers here</b>${iface ? "Create one, or copy an existing peer onto this interface." : "This server hasn't reported any interfaces yet."}</td></tr>`}
       </tbody></table></div>
 
     ${orphans.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged here</h2></div>
-      <div class="tablewrap"><table><tbody>${orphans.map(o => html`<${OrphanRow} o=${o}/>`)}</tbody></table></div>
+      <div class="tablewrap"><table><tbody>${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}</tbody></table></div>
     <//>` : null}
   </div>`;
 }
@@ -600,7 +666,7 @@ function UsersScreen() {
           : !shown.length ? html`<tr><td colspan="7" class="empty"><b>Nothing matches</b>Clear the search.</td></tr>`
           : shown.map(u => {
             const flash = Store.recentlyCreated[u.id] && Date.now() - Store.recentlyCreated[u.id] < 3000;
-            return html`<tr class="clk ${flash ? "flash" : ""}" onClick=${() => go("#/user/" + encodeURIComponent(u.id))}>
+            return html`<tr key=${u.id} class="clk ${flash ? "flash" : ""}" onClick=${() => go("#/user/" + encodeURIComponent(u.id))}>
               <td data-label="Status"><${Badge} s=${u.peerCount ? u.status : "empty"}/></td>
               <td data-label="Name" class="c-name">${u.name}</td>
               <td data-label="Tag">${u.tag ? html`<span class="tagchip">${u.tag}</span>` : html`<span class="faint">—</span>`}</td>
@@ -615,7 +681,7 @@ function UsersScreen() {
       <div class="section-title"><h2 style="color:var(--faint)">Unassigned peers</h2><span class="count">${unassigned.length}</span></div>
       <div class="tablewrap"><table>
         <thead><tr><th>Status</th><th>Key</th><th>Targets</th><th style="text-align:right">Assign / delete</th></tr></thead>
-        <tbody>${unassigned.map(p => html`<tr>
+        <tbody>${unassigned.map(p => html`<tr key=${p.id}>
           <td data-label="Status"><${Badge} s=${p.status}/></td>
           <td data-label="Key" class="addr clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.pubkey.slice(0, 20)}…</td>
           <td data-label="Targets">${p.targets.map(t => t.node + "/" + t.iface).join(", ")}</td>
@@ -643,11 +709,17 @@ function UserDetail({ id: rawId }) {
         <button class="editname" title="Edit" onClick=${() => setEdit(true)}><${Ic} i="pencil"/></button></div>
       <div class="grow"></div>
       <button class="btn btn-ghost" onClick=${() => openCreatePeer({ user_id: id })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
-      <${DangerButton} label="Delete user" confirm="Delete — peers go unassigned?" className="warn" onConfirm=${async () => {
-        const r = await api.userDelete({ id }); if (!r.ok) { toast("Delete failed: " + (r.error || ""), "err"); return; }
-        toast("User deleted; peers unassigned.", "ok"); await Store.poll(); go("#/users");
-      }}/>
+      <${DangerButton} label="Delete user" confirm="Delete — peers go unassigned?" className="warn" onConfirm=${() => mutate({
+        key: "user:" + id,
+        patch: s => {                               // optimistic: drop the user, its peers go unassigned (mirrors the cascade)
+          delete s.roster.users[id];
+          for (const p of Object.values(s.roster.peers)) if (p.user_id === id) p.user_id = null;
+        },
+        call: () => api.userDelete({ id }),
+        onOk: () => go("#/users"),
+      })}/>
     </div>
+    <${RowError} k=${"user:" + id}/>
 
     ${edit ? html`<${UserEditCard} user=${u} done=${() => setEdit(false)}/>` : html`<div class="identity">
       <div class="item"><div class="k">Tag</div><div class="v">${u.tag || "—"}</div></div>
@@ -668,9 +740,12 @@ function UserEditCard({ user, done }) {
   const [note, setNote] = useState(user.note || "");
   const save = async () => {
     if (!name.trim()) { toast("Name can't be empty.", "err"); return; }
-    const r = await api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note });
-    if (!r.ok) { toast("Save failed: " + (r.error || ""), "err"); return; }
-    toast("Saved.", "ok"); await Store.poll(); done();
+    done();   // close the editor immediately; the row updates optimistically
+    mutate({
+      key: "user:" + user.id,
+      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; } },
+      call: () => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note }),
+    });
   };
   return html`<div class="card" style="max-width:560px">
     <div class="field"><label>Name</label><input value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
@@ -849,10 +924,52 @@ function AccountScreen() {
 }
 
 // ═════════════════════════ MODALS / SHEETS ═════════════════════════
+// Universal dialog behaviours live here so every sheet gets them for free (no per-sheet code):
+//  • autofocus the first field on open
+//  • Enter submits (clicks the primary button) unless you're in a textarea
+//  • Esc / backdrop closes — but if any field changed, it warns before discarding
+//  • Tab is trapped within the dialog
+// Dirtiness is detected by snapshotting field values on open and comparing live, so it works
+// regardless of which inputs a given sheet renders.
 function Sheet({ title, children, foot }) {
-  return html`<div class="overlay show" onClick=${e => { if (e.target.classList.contains("overlay")) closeModal(); }}>
-    <div class="sheet" role="dialog" aria-modal="true">
-      <div class="sheet-head"><h3>${title}</h3><button class="x" onClick=${closeModal}>×</button></div>
+  const ref = useRef(null);
+  const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
+  const fields = () => Array.from(ref.current ? ref.current.querySelectorAll("input,textarea,select") : []);
+  const tryClose = () => { if (dirty.current && !confirm("Discard unsaved changes?")) return; closeModal(); };
+
+  useEffect(() => {
+    const root = ref.current; if (!root) return;
+    const onEdit = () => { dirty.current = true; };
+    root.addEventListener("input", onEdit, true);
+    root.addEventListener("change", onEdit, true);
+    const first = root.querySelector("[autofocus]") || root.querySelector("input,textarea,select,button.btn-primary");
+    if (first) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
+    const onKey = e => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryClose(); return; }
+      if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
+        const primary = root.querySelector(".sheet-foot .btn-primary:not([disabled])") || root.querySelector(".btn-primary:not([disabled])");
+        if (primary) { e.preventDefault(); primary.click(); }
+        return;
+      }
+      if (e.key === "Tab") {                                   // focus trap
+        const f = fields().concat(Array.from(root.querySelectorAll("button"))).filter(el => !el.disabled && el.offsetParent !== null);
+        if (!f.length) return;
+        const first = f[0], last = f[f.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener("keydown", onKey, true);          // capture so it works regardless of focus
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      root.removeEventListener("input", onEdit, true);
+      root.removeEventListener("change", onEdit, true);
+    };
+  }, []);
+
+  return html`<div class="overlay show" onClick=${e => { if (e.target.classList.contains("overlay")) tryClose(); }}>
+    <div class="sheet" role="dialog" aria-modal="true" ref=${ref}>
+      <div class="sheet-head"><h3>${title}</h3><button class="x" onClick=${tryClose}>×</button></div>
       <div class="sheet-body">${children}</div>
       <div class="sheet-foot">${foot}</div>
     </div></div>`;
@@ -1147,9 +1264,12 @@ function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`);
 function NodeEditSheet({ node }) {
   const [ep, setEp] = useState(node.endpoint_host || ""); const [color, setColor] = useState(node.color || SWATCHES[0]); const [msg, setMsg] = useState(null);
   const save = async () => {
-    const r = await api.nodeUpdate({ name: node.name, endpoint_host: ep.trim(), color });
-    if (!r.ok) return setMsg({ k: "err", t: r.error || "save failed" });
-    toast("Saved.", "ok"); closeModal(); await Store.poll();
+    closeModal();   // optimistic: card reflects the edit immediately
+    mutate({
+      key: "node:" + node.name,
+      patch: s => { const n = s.nodes.find(x => x.name === node.name); if (n) { n.endpoint_host = ep.trim(); n.color = color; } },
+      call: () => api.nodeUpdate({ name: node.name, endpoint_host: ep.trim(), color }),
+    });
   };
   return html`<${Sheet} title=${"Edit " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
@@ -1171,7 +1291,17 @@ function NodeRemoveSheet({ node }) {
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.name));
   const onlyHere = here.filter(p => new Set(p.targets.map(t => t.node)).size === 1).length;
   const note = here.length ? `It's referenced by ${here.length} peer${here.length > 1 ? "s" : ""}${onlyHere ? ` — ${onlyHere} live only here and will be dropped from the roster` : ""}.` : "No peers reference it.";
-  const go2 = async () => { const r = await api.nodeDelete({ name: node.name }); if (!r.ok) { toast(r.error || "remove failed", "err"); return; } toast("Node removed.", "ok"); closeModal(); await Store.poll(); };
+  const go2 = () => { closeModal(); mutate({
+    key: "node:" + node.name,
+    patch: s => {                                  // optimistic: drop the node + purge its targets (mirrors the cascade)
+      s.nodes = s.nodes.filter(x => x.name !== node.name);
+      for (const id of Object.keys(s.roster.peers)) {
+        const p = s.roster.peers[id]; p.targets = p.targets.filter(t => t.node !== node.name);
+        if (!p.targets.length) delete s.roster.peers[id];
+      }
+    },
+    call: () => api.nodeDelete({ name: node.name }),
+  }); };
   return html`<${Sheet} title=${"Remove " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" onClick=${go2}>Remove node</button></>`}>
     <div class="notice warn"><${Ic} i="warn"/><span>Removes the node from the panel and revokes its token. ${note} The node keeps running until you stop <span class="mono">swg-noded</span> on it.</span></div>
@@ -1204,9 +1334,8 @@ function App() {
   useEffect(() => {
     const onHash = () => { setHash(location.hash || "#/"); setModalState(null); window.scrollTo(0, 0); };
     window.addEventListener("hashchange", onHash);
-    const onKey = e => { if (e.key === "Escape") setModalState(null); };
-    document.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("hashchange", onHash); document.removeEventListener("keydown", onKey); };
+    // Esc/Enter inside dialogs are owned by <Sheet> (with its dirty-guard); nothing global here.
+    return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   const { route, params } = matchRoute(hash);

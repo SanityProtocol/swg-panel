@@ -184,6 +184,12 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .ownerctl{display:inline-flex;align-items:center;gap:6px}
 .rowacts{white-space:nowrap}
 .rowacts .btn-mini{margin-left:6px}
+/* pinned, explained failure on a row (optimistic rollback) */
+.rowerr{display:inline-flex;align-items:center;gap:5px;margin-left:8px;padding:2px 8px;border-radius:99px;
+  background:rgba(240,89,107,.13);color:var(--dangling);font-size:11px;font-weight:600;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+.rowerr svg{flex:none}
+.rowerr-x{background:none;border:none;color:var(--dangling);cursor:pointer;font-size:14px;line-height:1;padding:0 0 0 2px;opacity:.7}
+.rowerr-x:hover{opacity:1}
 /* multi-target picker (new peer) */
 .targetpick{display:flex;flex-direction:column;gap:6px}
 .targetopt{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:7px 10px;background:var(--surface-2)}
