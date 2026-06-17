@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 **`docker host` mirrors bare-metal** (`install-host.sh`): Step 1 asks the **role** —
 **master** (panel + this box also runs WG/AWG as a co-located node container) or **host**
-(panel only). `master` is the default and maps to the `host-node` compose profile, and it
+(panel only). `master` is the default and maps to the `master` compose profile, and it
 **auto-enrolls** the local node in a single pass — the installer mints the node's token, writes
 its `nodes.json` entry before `compose up`, and passes the token to the node container, so there
 is no "bring up the panel, add a node, copy the key, re-run" round-trip. **host** deploys nodes
@@ -26,8 +26,8 @@ separately with `docker node` (the panel prints that command under **Nodes → A
 Flags skip the matching prompt (the panel's enroll command uses them): `-role master|host`,
 `-pass`, `-domain`, `-base` (subpath, e.g. `/swg`), `-port`,
 `-tls letsencrypt|cloudflare|cf15|selfsigned|none`, `-email`, `-cf-token`, `-cf-origin`,
-`-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`. `--profile host|node|host-node` also still
-works (`host-node` ⇒ the master role); the bare word `master` is an alias for `host` + master.
+`-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`. `--profile host|node|master` also still
+works (and the bare word `master` is shorthand for it); `host-node` is kept as an alias of `master`.
 
 By default the installer **pulls** prebuilt images and stages
 only `docker-compose.yml` + `.env` (no source/build context on the host); pass **`--build`** to
@@ -60,16 +60,16 @@ by you.
 ## By hand
 
 ```
+docker compose --profile master up -d       # panel + a local node  (installer role: master)
 docker compose --profile host up -d         # panel only            (installer role: host)
-docker compose --profile node up -d          # entry server only
-docker compose --profile host-node up -d    # panel + a local node  (installer role: master)
+docker compose --profile node up -d         # entry server only      (installer role: node)
 ```
 
 Copy `.env.example` to `.env` and set the values (`PANEL_PASSWORD` is required). The flow
 matches bare-metal: bring up the panel, **Nodes → Add node** to mint a key, set
-`NODE_TOKEN`, then start the node profile. For `host-node`, point the node at the panel's
+`NODE_TOKEN`, then start the node profile. For `master`, point the node at the panel's
 service name: `PANEL_URL=https://swg-panel:8443`. (The installer's **master** role does this
-`host-node` bring-up *and* the node enrollment for you in one pass.) Set `PANEL_BASE=/swg` to
+`master` bring-up *and* the node enrollment for you in one pass.) Set `PANEL_BASE=/swg` to
 mount the panel under a subpath.
 
 ## Images

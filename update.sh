@@ -5,7 +5,7 @@
 #
 # bootstrap.sh fetches the latest repo and runs this from it. It AUTO-DETECTS which
 # components are installed — covering every shape (bare-metal host / master / node,
-# docker host / host-node / node) — compares each one's installed version against the
+# docker host / master / node) — compares each one's installed version against the
 # fetched one, and for any with an upgrade available PROMPTS whether to upgrade or skip.
 # Config + state are preserved (fleet.json, users.json, nodes.json, auth, certs, .env).
 #
@@ -82,16 +82,16 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
   fi
 fi
 
-# ───────────────────────── Docker (host / node / host-node) ─────────────────────────
+# ───────────────────────── Docker (host / node / master) ─────────────────────────
 if [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
   found=1
   # which profile is running? prefer the marker install-docker.sh wrote into .env, else sniff containers
   prof="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1)"
   if [ -z "$prof" ] && have docker; then
     names="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
-    case "$names" in *swg-panel*) case "$names" in *swg-node*) prof=host-node;; *) prof=host;; esac;; *swg-node*) prof=node;; esac
+    case "$names" in *swg-panel*) case "$names" in *swg-node*) prof=master;; *) prof=host;; esac;; *swg-node*) prof=node;; esac
   fi
-  prof="${prof:-host}"
+  prof="${prof:-host}"   # older installs may carry a host-node marker — compose keeps it as a master alias
   if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
   if grep -qE '^[[:space:]]*build:' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
     # build-from-source deployment → restage the source and rebuild (don't touch the user's compose/.env)

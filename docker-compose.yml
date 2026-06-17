@@ -1,14 +1,16 @@
 # swg-panel — Docker. Copy .env.example to .env and fill it, then pick a profile:
 #
-#   Panel only (host):      docker compose --profile host up -d        # installer role: host
+#   Panel + local node:     docker compose --profile master up -d
+#   Panel only:             docker compose --profile host up -d
 #   Node only:              docker compose --profile node up -d
-#   Panel + local node:     docker compose --profile host-node up -d   # installer role: master
 #
-# install-docker.sh exposes two entry points (`docker host` / `docker node`) and asks the
-# role in Step 1 — the `master` role brings up this host-node profile AND auto-enrolls the
-# local node (no manual NODE_TOKEN). By hand: create each node in the panel's Nodes screen
-# to get its NODE_TOKEN. Nodes reach the panel over OUTBOUND HTTPS. For host-node, set
-# PANEL_URL=https://swg-panel:8443 (the panel's service name on the compose network).
+# The profiles match the installer's roles (master / host / node). install-docker.sh
+# exposes two entry points (`docker host` / `docker node`) and asks the role in Step 1 —
+# the `master` role brings up the master profile AND auto-enrolls the local node (no manual
+# NODE_TOKEN). By hand: create each node in the panel's Nodes screen to get its NODE_TOKEN.
+# Nodes reach the panel over OUTBOUND HTTPS. For master, set PANEL_URL=https://swg-panel:8443
+# (the panel's service name on the compose network). (`host-node` is kept as an alias of
+# `master` for older installs.)
 services:
   swg-panel:
     # Pulls the prebuilt multi-arch image from GHCR (no local build, no Docker Hub limit).
@@ -18,7 +20,7 @@ services:
     pull_policy: ${PULL_POLICY:-missing}
     container_name: swg-panel
     restart: unless-stopped
-    profiles: ["host", "host-node"]
+    profiles: ["host", "master", "host-node"]
     ports:
       - "${PANEL_PORT:-443}:8443"         # host-published port → container's 8443
       - "80:80"                           # ONLY needed for TLS=letsencrypt (HTTP-01); harmless otherwise
@@ -51,7 +53,7 @@ services:
     pull_policy: ${PULL_POLICY:-missing}
     container_name: swg-node
     restart: unless-stopped
-    profiles: ["node", "host-node"]
+    profiles: ["node", "master", "host-node"]
     cap_add: ["NET_ADMIN"]
     devices: ["/dev/net/tun:/dev/net/tun"]
     sysctls:
@@ -61,7 +63,7 @@ services:
       # Multiple interfaces? Publish each one's ListenPort here too, e.g.:
       # - "51821:51821/udp"
     environment:
-      PANEL_URL: "${PANEL_URL:?set PANEL_URL (host-node: https://swg-panel:8443)}"
+      PANEL_URL: "${PANEL_URL:?set PANEL_URL (master: https://swg-panel:8443)}"
       NODE_TOKEN: "${NODE_TOKEN:?create the node in the Nodes screen, then set NODE_TOKEN}"
       NODE_ENDPOINT: "${NODE_ENDPOINT:?public IP/host clients dial for this node}"
       # Single interface (default), or several via NODE_IFACES (see .env.example):

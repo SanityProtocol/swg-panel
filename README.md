@@ -179,7 +179,13 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
-**Or by hand** — one compose file, three profiles. The installer's `host` / `master` roles map to the `host` / `host-node` profiles:
+**Or by hand** — one compose file, three profiles named after the roles:
+
+**Panel + a local node** (role `master`)
+
+```
+docker compose --profile master up -d
+```
 
 **Panel only** (role `host`)
 
@@ -187,24 +193,18 @@ Flags skip the prompts (the panel's enroll command uses them): `-role master|hos
 docker compose --profile host up -d
 ```
 
-**Entry server only**
+**Entry server only** (role `node`)
 
 ```
 docker compose --profile node up -d
 ```
 
-**Panel + a local node** (role `master`)
-
-```
-docker compose --profile host-node up -d
-```
-
-By hand the `host-node` profile does **not** auto-enroll the local node — add it in **Nodes → Add node**, set `NODE_TOKEN`, and point it at the panel's service name (`PANEL_URL=https://swg-panel:8443`). The `master` installer role does all of that for you.
+By hand the `master` profile does **not** auto-enroll the local node — add it in **Nodes → Add node**, set `NODE_TOKEN`, and point it at the panel's service name (`PANEL_URL=https://swg-panel:8443`). The `master` *installer role* does all of that for you. (`host-node` still works as an alias of `master` for older setups.)
 
 Configure via `.env` (copied from `.env.example`):
 
 - **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `PANEL_PORT`, and `TLS` — `letsencrypt` · `cloudflare` · `cf15` · `selfsigned` · `none`, issued in-container by the bundled `acme.sh` exactly like bare-metal (set `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` as the chosen mode needs; see [TLS](#installing-the-panel)).
-- **Node:** `PANEL_URL` (for `host-node` use `https://swg-panel:8443`), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `TLS_VERIFY`, `DNS`.
+- **Node:** `PANEL_URL` (for `master` use `https://swg-panel:8443`), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `TLS_VERIFY`, `DNS`.
 
 **Two images** (pulled prebuilt from GHCR by default; `--build` builds them locally). `swg-panel` is pure Python + the bundled `acme.sh`. `swg-node` carries the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It manages one interface by default (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), several via `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`), or any confs you mount under `/etc/swg-node/*.conf` — publish each ListenPort in compose. Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module.
 
