@@ -356,6 +356,27 @@ function closeModal() { _setModal(null); }
 // ───────────────────────── shared bits ─────────────────────────
 const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 function Badge({ s }) { return html`<span class="badge b-${s}">${s}</span>`; }
+
+// inline metadata tag (protocol / interface / turn-proxy / generic) — the dense, colored
+// row signature. iface tags take the node's colour via --tgc.
+function Tag({ kind, label, color }) {
+  return html`<span class=${"tg tg-" + (kind || "gen")} style=${color ? "--tgc:" + color : ""}>${label}</span>`;
+}
+// the tags that describe a peer's deployment on a (node,iface): protocol + interface + turn-proxy
+function targetTags(node, iface, type, via) {
+  const tags = [];
+  const proto = (type || "").toLowerCase();
+  if (proto === "awg") tags.push(html`<${Tag} kind="awg" label="awg"/>`);
+  else if (proto === "wg") tags.push(html`<${Tag} kind="wg" label="wg"/>`);
+  tags.push(html`<${Tag} kind="iface" label=${iface} color=${Store.nodeColor(node)}/>`);
+  if (via === "turn" || turnProxiesFor(node, iface).length) tags.push(html`<${Tag} kind="turn" label="turn"/>`);
+  return tags;
+}
+// rate cell, green when traffic is flowing
+function rateCell(rx, tx) {
+  const live = (rx || 0) + (tx || 0) > 0;
+  return html`<span class=${"ratecell" + (live ? " live" : "")}>↓ ${rate(rx)} <span class="up">↑ ${rate(tx)}</span></span>`;
+}
 function peerLabel(p) { return p.unassigned ? "" : (p.name || ""); }
 
 function TargetPips({ peer }) {
@@ -559,7 +580,7 @@ function NodeDetail({ node: rawName }) {
     <div class="bigdots">
       <span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>
       <span class="when">${onl} / ${here.length} online</span>
-      <span class="when">↓ ${rate(nrx)} &nbsp;↑ ${rate(ntx)}</span>
+      <span class="when">↓ ${rate(nrx)} ↑ ${rate(ntx)}</span>
       <span class="when">${syncTxt}</span>
       ${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}
     </div>
@@ -772,7 +793,7 @@ function connRows() {
       out.push({
         key: p.id + "|" + t.node + "|" + t.iface, pid: p.id, uid: u ? u.id : null,
         user: u ? u.name : "", peer: p.title || p.name || "", unassigned: p.unassigned,
-        node: t.node, iface: t.iface, endpoint: obs.endpoint || "", ip: t.ip || "",
+        node: t.node, iface: t.iface, type: t.type || "", endpoint: obs.endpoint || "", ip: t.ip || "",
         hs: (obs.handshake_age == null ? null : obs.handshake_age),
         rxb: obs.rx_bytes || 0, txb: obs.tx_bytes || 0, rx: obs.rx_speed || 0, tx: obs.tx_speed || 0,
         online: !!obs.online, via: t.via,
@@ -838,10 +859,11 @@ function ConnectionsScreen() {
           <td data-label=""><span class=${"condot " + (r.online ? "on" : "off")} title=${r.online ? "online" : "idle"}></span></td>
           <td data-label="Peer" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(r.pid))}>${r.peer ? html`<b>${r.peer}</b>` : html`<span class="faint">unassigned</span>`}</td>
           <td data-label="User">${r.uid ? html`<a href=${"#/user/" + encodeURIComponent(r.uid)}>${r.user}</a>` : html`<span class="faint">—</span>`}</td>
-          <td data-label="Node" class="addr clk" onClick=${() => go("#/node/" + encodeURIComponent(r.node) + "/" + encodeURIComponent(r.iface))}>${r.node} · ${r.iface}</td>
-          <td data-label="Endpoint"><span class="addr">${r.endpoint || "—"}</span>${r.via === "turn" ? html`<span class="viatag">turn</span>` : ""}</td>
+          <td data-label="Node" class="clk" onClick=${() => go("#/node/" + encodeURIComponent(r.node) + "/" + encodeURIComponent(r.iface))}>
+            <span class="addr" style="color:var(--ink-2)">${r.node}</span><span class="tags">${targetTags(r.node, r.iface, r.type, r.via)}</span></td>
+          <td data-label="Endpoint"><span class="addr">${r.endpoint || "—"}</span></td>
           <td data-label="Last"><span class="when">${seen(r.hs)}</span></td>
-          <td data-label="Rate"><span class="rate">↓ ${rate(r.rx)} ↑ ${rate(r.tx)}</span></td>
+          <td data-label="Rate">${rateCell(r.rx, r.tx)}</td>
           <td data-label="Transfer"><span class="addr">↓ ${fmtBytes(r.rxb)} ↑ ${fmtBytes(r.txb)}</span></td>
         </tr>`) : html`<tr><td colspan="8" class="empty"><b>No connections${all.length ? " match" : " yet"}</b>${all.length ? "Clear the filters." : "Peers appear here once a node reports them."}</td></tr>`}
       </tbody></table></div>
