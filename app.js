@@ -523,11 +523,9 @@ function NodeDetail({ node: rawName }) {
   let nrx = 0, ntx = 0; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { nrx += pp.rx_speed || 0; ntx += pp.tx_speed || 0; }
   let syncTxt = "no snapshot yet";
   if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); syncTxt = live ? "synced " + seen(a) + " ago" : "stale for " + seen(a); }
-  const orphans = Store.recon.orphans.filter(o => o.node === name);
-  const rows = here.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
 
   return html`<div class="screen">
-    <div class="crumb"><a href="#/">Overview</a><span class="sep">/</span><b>${name}</b></div>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${name}</b></div>
     <div class="detail-head">
       <div class="title"><span class="dot ${live ? "live" : "stale"}"></span><h1>${name}</h1><span class="tport">${node.transport}</span></div>
       <div class="grow"></div>
@@ -546,42 +544,113 @@ function NodeDetail({ node: rawName }) {
       <div class="healthgrid"><${NodeHealth} health=${nrec.health} compact=${false}/></div>
     <//>` : null}
 
-    <div class="section-title"><h2>Interfaces</h2></div>
-    <div class="metagrid">
-      ${metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>Can't reach this server: ${metaErr}</span></div>`
-        : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
-        : Object.keys(meta).length ? Object.keys(meta).map(ifn => {
-            const m = meta[ifn];
-            const awg = Object.keys(m.awg_params || {}).length ? Object.entries(m.awg_params).slice(0, 4).map(([k, v]) => k + "=" + v).join("  ") : "—";
-            return html`<${Fragment}>
-              <div class="meta"><div class="k">${ifn} · server key</div><div class="v">${m.public_key || "—"}</div></div>
-              <div class="meta"><div class="k">Endpoint</div><div class="v">${m.endpoint || "—"}</div></div>
-              <div class="meta"><div class="k">Subnet</div><div class="v">${m.subnet || "—"} · port ${m.listen_port || "—"}</div></div>
-              <div class="meta"><div class="k">AmneziaWG</div><div class="v">${awg}</div></div>
-            <//>`;
-          })
-        : html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`}
+    <div class="section-title"><h2>Interfaces</h2><span class="count">${meta ? Object.keys(meta).length : 0}</span></div>
+    ${metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${metaErr}</span></div>`
+      : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
+      : !Object.keys(meta).length ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
+      : html`<div class="ifgrid">${Object.keys(meta).map(ifn => {
+          const m = meta[ifn];
+          const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
+          const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
+          const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
+          return html`<a class="ifcard" href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
+            <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
+            <div class="ifcard-rows">
+              <div class="ifrow"><span class="l">Subnet</span><span class="r">${m.subnet || "—"}</span></div>
+              <div class="ifrow"><span class="l">Listen port</span><span class="r">${m.listen_port || "—"}</span></div>
+              <div class="ifrow"><span class="l">Server key</span><span class="r addr">${(m.public_key || "—").slice(0, 16)}…</span></div>
+              <div class="ifrow"><span class="l">Peers</span><span class="r">${onlc} / ${ps.length} online</span></div>
+            </div></a>`;
+        })}</div>`}
+
+    ${snap && (snap.turn_proxies || []).length ? html`<${Fragment}>
+      <div class="section-title"><h2>Turn-proxies</h2><span class="count">${snap.turn_proxies.length}</span></div>
+      <div class="ifgrid">${snap.turn_proxies.map(tp => {
+        const lp = portOf(tp.connect);
+        const fronted = meta ? Object.keys(meta).find(i => String(meta[i].listen_port) === lp) : null;
+        return html`<div class="ifcard tp">
+          <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${(tp.service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn"}</span></div>
+          <div class="ifcard-rows">
+            <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
+            <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)}>${fronted}</a>` : (tp.connect || "—")}</span></div>
+            ${tp.wrap_key ? html`<div class="ifrow"><span class="l">Wrap key</span><span class="r addr">${String(tp.wrap_key).slice(0, 8)}…<button class="copybtn" title="Copy wrap key" onClick=${() => copy(tp.wrap_key, "Wrap key copied")}><${Ic} i="copy"/></button></span></div>` : null}
+          </div></div>`;
+      })}</div>
+    <//>` : null}
+  </div>`;
+}
+
+// ═════════════════════════ SCREEN: INTERFACE DETAIL ═════════════════════════
+function IfaceDetail({ node: rawNode, iface: rawIface }) {
+  useStore();
+  const node = decodeURIComponent(rawNode);
+  const iface = decodeURIComponent(rawIface);
+  const nrec = Store.node(node);
+  if (!nrec) return html`<div class="screen"><div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${node}</b></div>
+    <div class="empty"><b>Unknown server</b>“${node}” isn't in the fleet.</div></div>`;
+  const meta = Store.ifaceMeta(node, iface);
+  const live = Store.recon.nodeStatus[node] === "live";
+  const type = (meta && meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
+  const peers = Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface));
+  const onl = peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface && t.online)).length;
+  const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
+  const tps = turnProxiesFor(node, iface);
+  const awg = meta && Object.keys(meta.awg_params || {}).length ? Object.entries(meta.awg_params).map(([k, v]) => k + "=" + v).join("  ") : "—";
+  const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
+
+  return html`<div class="screen">
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${node}</a><span class="sep">/</span><b>${iface}</b></div>
+    <div class="detail-head">
+      <div class="title"><span class="dot ${live ? "live" : "stale"}"></span><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span></div>
+      <div class="grow"></div>
+      <button class="btn btn-primary" onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> Add peer here</button>
+    </div>
+    <div class="bigdots">
+      <span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>
+      <span class="when">${onl} / ${peers.length} online</span>
     </div>
 
-    <div class="section-title"><h2>Peers on this server</h2><span class="count">${here.length} peers</span></div>
+    ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
+      : html`<div class="metagrid">
+        <div class="meta"><div class="k">Server key</div><div class="v">${meta.public_key || "—"} ${meta.public_key ? html`<button class="copybtn" title="Copy" onClick=${() => copy(meta.public_key, "Server key copied")}><${Ic} i="copy"/></button>` : ""}</div></div>
+        <div class="meta"><div class="k">Endpoint</div><div class="v">${meta.endpoint || "—"}</div></div>
+        <div class="meta"><div class="k">Subnet · port</div><div class="v">${meta.subnet || "—"} · ${meta.listen_port || "—"}</div></div>
+        <div class="meta"><div class="k">Server address</div><div class="v">${meta.address || "—"}</div></div>
+        <div class="meta"><div class="k">DNS</div><div class="v">${(meta.dns || []).join(", ") || "—"}</div></div>
+        <div class="meta"><div class="k">AmneziaWG</div><div class="v">${awg}</div></div>
+      </div>`}
+
+    ${tps.length ? html`<${Fragment}>
+      <div class="section-title"><h2>Reachable via turn-proxy</h2></div>
+      <div class="ifgrid">${tps.map(tp => html`<div class="ifcard tp">
+        <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${(tp.service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn"}</span></div>
+        <div class="ifcard-rows">
+          <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
+          ${tp.wrap_key ? html`<div class="ifrow"><span class="l">Wrap key</span><span class="r addr">${String(tp.wrap_key).slice(0, 8)}…<button class="copybtn" title="Copy wrap key" onClick=${() => copy(tp.wrap_key, "Wrap key copied")}><${Ic} i="copy"/></button></span></div>` : null}
+        </div></div>`)}</div>
+    <//>` : null}
+
+    <div class="section-title"><h2>Peers on this interface</h2><span class="count">${peers.length}</span></div>
     <div class="tablewrap"><table>
-      <thead><tr><th>Status</th><th>Name</th><th>Iface · address</th><th>User</th><th>Last handshake</th><th></th></tr></thead>
+      <thead><tr><th>Status</th><th>Peer</th><th>Address</th><th>User</th><th>Transport</th><th>Last</th><th></th></tr></thead>
       <tbody>
         ${rows.length ? rows.map(p => {
-          const t = p.targets.find(d => d.node === name) || {};
+          const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
           const obs = t.observed;
+          const u = p.user_id ? Store.user(p.user_id) : null;
           return html`<tr key=${p.id} class="clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
-            <td data-label="Name" class="c-name">${p.name || html`<span class="faint">unassigned</span>`}</td>
-            <td data-label="Iface · address"><span class="addr">${t.iface} · ${t.ip || "—"}</span></td>
-            <td data-label="User">${p.unassigned ? html`<span class="faint">—</span>` : (p.tag ? p.tag : p.name)}</td>
-            <td data-label="Last handshake"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
+            <td data-label="Peer" class="c-name">${p.title ? html`<b>${p.title}</b>` : (p.name || html`<span class="faint">unassigned</span>`)}</td>
+            <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
+            <td data-label="User">${u ? html`<a href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}>${u.name}</a>` : html`<span class="faint">—</span>`}</td>
+            <td data-label="Transport"><span class="when">${t.via === "turn" ? "via turn-proxy" : (t.via === "direct" ? "direct" : "—")}</span></td>
+            <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
             <td data-label=""><span class="rowarrow"><${Ic} i="arrow"/></span></td></tr>`;
-        }) : html`<tr><td colspan="6" class="empty"><b>No peers here yet</b>Add one to this server to get started.</td></tr>`}
+        }) : html`<tr><td colspan="7" class="empty"><b>No peers on this interface</b>Add one to get started.</td></tr>`}
       </tbody></table></div>
 
     ${orphans.length ? html`<${Fragment}>
-      <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged on this server</h2></div>
+      <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged on this interface</h2></div>
       <div class="tablewrap"><table><tbody>
         ${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}
       </tbody></table></div>
@@ -771,7 +840,7 @@ function UserPeers({ user }) {
   return html`${Object.keys(groups).sort().map(k => {
     const g = groups[k];
     return html`<div class="ifgroup" key=${k}>
-      <div class="ifgroup-head"><span class="dot" style=${"background:" + Store.nodeColor(g.node)}></span><b>${g.node}</b><span class="sep2">·</span><span class="ifn">${g.iface}</span><span class="count">${g.items.length}</span></div>
+      <a class="ifgroup-head" href=${"#/node/" + encodeURIComponent(g.node) + "/" + encodeURIComponent(g.iface)} title="Open interface"><span class="dot" style=${"background:" + Store.nodeColor(g.node)}></span><b>${g.node}</b><span class="sep2">·</span><span class="ifn">${g.iface}</span><span class="count">${g.items.length}</span><span class="rowarrow"><${Ic} i="arrow"/></span></a>
       <div class="deploys">${g.items.map(it => html`<${UserTargetCard} key=${it.peer.id + "|" + k} peer=${it.peer} t=${it.t}/>`)}</div>
     </div>`;
   })}`;
@@ -969,15 +1038,17 @@ function NodeCard({ n }) {
   const sync = st === "dangling" ? "never connected" : (st === "online" ? "synced " + ago(n.last_seen) : "last seen " + ago(n.last_seen));
   const ifaces = (n.interfaces || []).length ? n.interfaces.join(", ") : "—";
   return html`<div class="ncard">
-    <div class="ntop"><span class="nsw" style=${{ background: n.color || "#5f7569" }}></span><span class="nname">${n.name}</span><span class="grow"></span><span class="nstat ${st}">${stTxt}</span></div>
-    <div class="nrows">
-      <div class="nrow"><span class="l">Endpoint</span><span class="r">${n.endpoint_host || "—"}</span></div>
-      <div class="nrow"><span class="l">Peers</span><span class="r">${n.peer_count || 0}</span></div>
-      <div class="nrow"><span class="l">Throughput</span><span class="r"><span class="down">↓ ${rate(n.rx_speed)}</span> <span class="up">↑ ${rate(n.tx_speed)}</span></span></div>
-      <div class="nrow"><span class="l">Interfaces</span><span class="r">${ifaces}</span></div>
-      <div class="nrow"><span class="l">Sync</span><span class="r">${sync}</span></div>
+    <div class="ncard-body clk" onClick=${() => go("#/node/" + encodeURIComponent(n.name))}>
+      <div class="ntop"><span class="nsw" style=${{ background: n.color || "#5f7569" }}></span><span class="nname">${n.name}</span><span class="grow"></span><span class="nstat ${st}">${stTxt}</span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
+      <div class="nrows">
+        <div class="nrow"><span class="l">Endpoint</span><span class="r">${n.endpoint_host || "—"}</span></div>
+        <div class="nrow"><span class="l">Peers</span><span class="r">${n.peer_count || 0}</span></div>
+        <div class="nrow"><span class="l">Throughput</span><span class="r"><span class="down">↓ ${rate(n.rx_speed)}</span> <span class="up">↑ ${rate(n.tx_speed)}</span></span></div>
+        <div class="nrow"><span class="l">Interfaces</span><span class="r">${ifaces}</span></div>
+        <div class="nrow"><span class="l">Sync</span><span class="r">${sync}</span></div>
+      </div>
+      ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} compact=${true}/>` : null}
     </div>
-    ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} compact=${true}/>` : null}
     <div class="nacts">
       <button class="btn-mini" onClick=${() => openNodeEdit(n)}>Edit</button>
       <button class="btn-mini warn" onClick=${() => openNodeRotate(n.name)}>Rotate token</button>
@@ -1517,7 +1588,8 @@ function NodeRemoveSheet({ node }) {
 // ═════════════════════════ ROUTER + APP ═════════════════════════
 const ROUTES = [
   { re: /^\/$/, fn: Overview, tab: "overview" },
-  { re: /^\/node\/(.+)$/, fn: NodeDetail, tab: "overview", keys: ["node"] },
+  { re: /^\/node\/([^/]+)\/([^/]+)$/, fn: IfaceDetail, tab: "nodes", keys: ["node", "iface"] },
+  { re: /^\/node\/(.+)$/, fn: NodeDetail, tab: "nodes", keys: ["node"] },
   { re: /^\/nodes$/, fn: NodesScreen, tab: "nodes" },
   { re: /^\/peers$/, fn: PeersScreen, tab: "peers" },
   { re: /^\/users$/, fn: UsersScreen, tab: "users" },

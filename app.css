@@ -181,9 +181,31 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .peercard-head .grow{flex:1}
 .row2{display:flex;gap:12px}
 .row2 .field{flex:1;min-width:0}
+/* node detail: interface + turn-proxy cards (drill-in) */
+.ifgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.ifcard{display:block;border:1px solid var(--line-solid);border-radius:var(--r);padding:14px;background:var(--surface-2);text-decoration:none;color:inherit;transition:border-color .15s var(--ease),transform .15s var(--ease)}
+a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
+.ifcard.tp{cursor:default}
+.ifcard-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.ifcard-top .ifname{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:13.5px}
+.ifcard-top .rowarrow{color:var(--faint)}
+.ifcard-rows{display:flex;flex-direction:column;gap:6px}
+.ifrow{display:flex;justify-content:space-between;gap:10px;font-size:12px}
+.ifrow .l{color:var(--dim)} .ifrow .r{font-family:var(--mono);color:var(--ink-2)}
+.ifrow .r.addr{font-size:11px}
+.iftype{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:99px}
+.iftype.wg{background:rgba(52,211,153,.14);color:var(--online)}
+.iftype.awg{background:rgba(34,211,238,.14);color:var(--ready)}
+.iftype.turn{background:rgba(192,132,232,.14);color:var(--orphan)}
+.ncard-body{cursor:pointer}
+.ncard-body .ntop .rowarrow{color:var(--faint)}
+.ncard-body:hover .nname{color:var(--brand)}
+
 /* user detail: peers grouped by interface */
 .ifgroup{margin:0 0 18px}
-.ifgroup-head{display:flex;align-items:center;gap:8px;margin:0 2px 10px;font-size:13px;color:var(--ink-2)}
+.ifgroup-head{display:flex;align-items:center;gap:8px;margin:0 2px 10px;font-size:13px;color:var(--ink-2);text-decoration:none}
+a.ifgroup-head:hover b{color:var(--brand)}
+.ifgroup-head .rowarrow{color:var(--faint)}
 .ifgroup-head .dot{width:9px;height:9px;border-radius:50%;flex:none}
 .ifgroup-head .sep2{color:var(--faint)}
 .ifgroup-head .ifn{font-family:var(--mono);color:var(--dim)}
