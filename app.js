@@ -85,13 +85,34 @@ function buildConf(o) {
   for (const k of AWG_ORDER) if (o.awg_params && o.awg_params[k] != null) L.push(k + " = " + o.awg_params[k]);
   L.push("", "[Peer]", "PublicKey = " + o.server_pubkey);
   if (o.psk) L.push("PresharedKey = " + o.psk);
-  L.push("AllowedIPs = " + (o.allowed || "0.0.0.0/0, ::/0"), "Endpoint = " + o.endpoint, "PersistentKeepalive = 25");
+  L.push("AllowedIPs = " + (o.allowed || "0.0.0.0/0, ::/0"), "Endpoint = " + o.endpoint,
+    "PersistentKeepalive = " + (o.keepalive != null && o.keepalive !== "" ? o.keepalive : 25));
   return L.join("\n") + "\n";
 }
 function parseConf(text) {
   const priv = (text.match(/PrivateKey\s*=\s*(\S+)/) || [])[1] || null;
   const psk = (text.match(/PresharedKey\s*=\s*(\S+)/) || [])[1] || null;
   return { priv, psk };
+}
+// Full parse of a client config back into buildConf()'s shape — so an edit/copy can
+// rebuild the config from the existing one (the only place the private key lives).
+function parseFullConf(text) {
+  const m = re => (text.match(re) || [])[1];
+  const dnsLine = m(/DNS\s*=\s*(.+)/);
+  const awg = {};
+  for (const k of AWG_ORDER) { const v = m(new RegExp("^" + k + "\\s*=\\s*(\\S+)", "m")); if (v != null) awg[k] = v; }
+  return {
+    privkey: m(/PrivateKey\s*=\s*(\S+)/) || "",
+    address: m(/Address\s*=\s*(.+)/) || "",
+    dns: dnsLine ? dnsLine.split(",").map(s => s.trim()).filter(Boolean) : [],
+    mtu: m(/MTU\s*=\s*(\d+)/) || 1280,
+    awg_params: awg,
+    server_pubkey: m(/PublicKey\s*=\s*(\S+)/) || "",
+    psk: m(/PresharedKey\s*=\s*(\S+)/) || "",
+    allowed: m(/AllowedIPs\s*=\s*(.+)/) || "0.0.0.0/0, ::/0",
+    endpoint: m(/Endpoint\s*=\s*(\S+)/) || "",
+    keepalive: m(/PersistentKeepalive\s*=\s*(\d+)/) || 25,
+  };
 }
 // Same config, Endpoint swapped to the turn-proxy's public listen address (import via turn-proxy).
 function turnConf(baseConf, listen) { return baseConf.replace(/Endpoint\s*=\s*\S.*/m, "Endpoint = " + listen); }
@@ -165,6 +186,7 @@ const api = {
   peerDelete(b) { return this.post("/api/peers/delete", b); },
   peerAssign(b) { return this.post("/api/peers/assign", b); },
   peerAdopt(b) { return this.post("/api/peers/adopt", b); },
+  peerSaveConfig(b) { return this.post("/api/peers/save-config", b); },
 };
 
 // ───────────────────────── store + reactive bus ─────────────────────────
@@ -176,6 +198,7 @@ const Store = {
   roster: { version: 1, users: {}, peers: {} }, stats: {}, nodes: [],
   recon: { peers: [], users: [], orphans: [], nodeStatus: {} },
   sessionConfigs: {},        // pubkey -> { "node|iface" -> confText }   (built at creation, in-memory)
+  configEpoch: 0,            // bumps when a config is re-issued, so QR cards re-read it
   recentlyCreated: {},       // id -> ts (row flash)
   async init() {
     const f = await api.fleet();
@@ -615,6 +638,7 @@ function PeerCard({ peer }) {
       <button class="copybtn" title="Copy public key" onClick=${() => copy(peer.pubkey, "Public key copied")}><${Ic} i="copy"/></button>
       <span class="grow"></span>
       <span class="assignwrap"><${AssignSelect} peer=${peer}/></span>
+      <button class="btn btn-mini" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/> Edit</button>
       <${DangerButton} label="Delete peer" confirm="Delete everywhere?" onConfirm=${async () => {
         const r = await api.peerDelete({ peer_id: peer.id }); if (!r.ok) { toast("Delete failed: " + (r.error || ""), "err"); return; }
         toast("Peer deleted.", "ok"); await Store.poll();
@@ -632,7 +656,7 @@ function PeerCard({ peer }) {
 function TargetCard({ peer, t }) {
   const [conf, setConf] = useState(null);
   const [loaded, setLoaded] = useState(false);
-  useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface]);
+  useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface, Store.configEpoch]);
   const col = Store.nodeColor(t.node);
   const obs = t.observed;
   const tps = turnProxiesFor(t.node, t.iface);
@@ -786,6 +810,9 @@ function CreatePeerSheet({ prefill }) {
   const [ip, setIp] = useState(""); const [ipHint, setIpHint] = useState("");
   const [psk, setPsk] = useState(genPSK());
   const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
+  const [dns, setDns] = useState(""); const dnsTouched = useRef(false);
+  const [mtu, setMtu] = useState("1280");
+  const [keepalive, setKeepalive] = useState("25");
   const [adv, setAdv] = useState(false);
   const [userId, setUserId] = useState(prefill.user_id || "");
   const [msg, setMsg] = useState(null);
@@ -813,6 +840,8 @@ function CreatePeerSheet({ prefill }) {
     let n = node;
     if (!n || !nodesWithIface.includes(n)) { n = nodesWithIface[0] || ""; setNode(n); }
     if (!n) { setIp(""); setIpHint("No server offers " + iface + "."); return; }
+    const info = (cache[n].interfaces || {})[iface];
+    if (info && !dnsTouched.current) setDns((info.dns || []).join(", "));   // default DNS from the node's iface
     setIp(""); setIpHint("finding a free address on " + n + "…");
     api.nextIp([n], iface).then(r => { if (r.ok) { setIp(r.data.next_ip); setIpHint("Next free address" + (r.data.subnet ? " · " + r.data.subnet : "") + "."); } else { setIp(""); setIpHint(r.error || "couldn't pick an address"); } });
   }, [ready, iface, node]);
@@ -827,7 +856,8 @@ function CreatePeerSheet({ prefill }) {
       const info = (cache[node].interfaces || {})[iface];
       const keys = await genKeys();
       const ipClean = ip.trim();
-      const conf = buildConf({ privkey: keys.priv, address: ipClean, dns: info.dns, awg_params: info.awg_params, server_pubkey: info.public_key, psk: psk.trim(), endpoint: info.endpoint, allowed: allowed.trim() || "0.0.0.0/0, ::/0" });
+      const dnsArr = dns.split(",").map(s => s.trim()).filter(Boolean);
+      const conf = buildConf({ privkey: keys.priv, address: ipClean, dns: dnsArr, mtu: mtu.trim() || 1280, awg_params: info.awg_params, server_pubkey: info.public_key, psk: psk.trim(), endpoint: info.endpoint, allowed: allowed.trim() || "0.0.0.0/0, ::/0", keepalive: keepalive.trim() });
       setMsg({ k: "work", t: "creating on " + node + "…" });
       const body = { user_id: userId || null, pubkey: keys.pub, psk: psk.trim(), target: { node, iface, ip: ipClean.split("/")[0], type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" } };
       if (Store.storeConfigs) body.config = conf;
@@ -859,8 +889,15 @@ function CreatePeerSheet({ prefill }) {
     <div class="field"><label>Address</label><input value=${ip} onInput=${e => setIp(e.target.value)} placeholder="auto"/><div class="hint">${ipHint}</div></div>
     <div class="field"><label>Preshared key</label><div class="inline"><input value=${psk} onInput=${e => setPsk(e.target.value)}/><button class="btn btn-ghost" title="Regenerate" onClick=${() => { setPsk(genPSK()); toast("New preshared key.", "info", 1500); }}>↻</button></div></div>
     <button class="advtoggle" onClick=${() => setAdv(a => !a)}><span>${adv ? "▾" : "▸"}</span> Advanced</button>
-    ${adv ? html`<div class="adv open"><div class="field" style="margin-top:8px"><label>Client allowed IPs (routing)</label>
-      <input value=${allowed} onInput=${e => setAllowed(e.target.value)}/><div class="hint">Full tunnel by default. Narrow for split tunnel (e.g. a router peer).</div></div></div>` : null}
+    ${adv ? html`<div class="adv open">
+      <div class="field" style="margin-top:8px"><label>Client allowed IPs (routing)</label>
+        <input value=${allowed} onInput=${e => setAllowed(e.target.value)}/><div class="hint">Full tunnel by default. Narrow for split tunnel (e.g. a router peer).</div></div>
+      <div class="field"><label>DNS</label>
+        <input value=${dns} onInput=${e => { dnsTouched.current = true; setDns(e.target.value); }} placeholder="from server, or e.g. 1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated. Blank = no DNS line.</div></div>
+      <div class="row2">
+        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
+        <div class="field"><label>Persistent keepalive (s)</label><input value=${keepalive} onInput=${e => setKeepalive(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25.</div></div>
+      </div></div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -901,7 +938,7 @@ function AddTargetSheet({ peer }) {
     const info = (cache[node].interfaces || {})[iface];
     const ipClean = ip.trim().split("/")[0];
     let conf = null;
-    if (srcConf) { const { priv, psk } = parseConf(srcConf); conf = buildConf({ privkey: priv, address: ipClean + "/32", dns: info.dns, awg_params: info.awg_params, server_pubkey: info.public_key, psk: psk || peer.psk, endpoint: info.endpoint, allowed: "0.0.0.0/0, ::/0" }); }
+    if (srcConf) { const s = parseFullConf(srcConf); conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); }
     const body = { peer_id: peer.id, target: { node, iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" } };
     if (Store.storeConfigs && conf) body.config = conf;
     const r = await api.peerAddTarget(body);
@@ -922,6 +959,67 @@ function AddTargetSheet({ peer }) {
         ${nodesWithIface.length ? nodesWithIface.map(n => html`<option value=${n}>${n}</option>`) : html`<option value="">none available for ${iface}</option>`}
       </select></div>
     <div class="field"><label>Address</label><input value=${ip} onInput=${e => setIp(e.target.value)}/><div class="hint">${ipHint}</div></div>
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
+
+// Edit a peer's client-config settings (DNS / MTU / keepalive / AllowedIPs) and re-issue
+// the config for every target. The private key only lives in the existing config, so this
+// rebuilds from it — available right after creation, or whenever store_configs is on.
+// (Address / interface / server are deployment moves — use copy + remove for those.)
+function openEditPeer(peer) { openModal(html`<${EditPeerSheet} peer=${peer}/>`); }
+function EditPeerSheet({ peer }) {
+  const [loaded, setLoaded] = useState(false);
+  const [confs, setConfs] = useState({});            // "node|iface" -> conf text (those we can rebuild)
+  const [dns, setDns] = useState(""); const [mtu, setMtu] = useState("1280");
+  const [keepalive, setKeepalive] = useState("25"); const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let ok = true;
+    (async () => {
+      const found = {};
+      for (const t of peer.targets) { const c = await getConfig(peer.pubkey, t.node, t.iface); if (c) found[tkey(t.node, t.iface)] = c; }
+      if (!ok) return;
+      setConfs(found); setLoaded(true);
+      const first = Object.values(found)[0];
+      if (first) { const s = parseFullConf(first); setDns((s.dns || []).join(", ")); setMtu(String(s.mtu)); setKeepalive(String(s.keepalive)); setAllowed(s.allowed); }
+    })();
+    return () => { ok = false; };
+  }, [peer.id]);
+
+  const editable = Object.keys(confs).length;
+  const save = async () => {
+    if (!editable) return;
+    setBusy(true); setMsg({ k: "work", t: "rebuilding configs…" });
+    const dnsArr = dns.split(",").map(s => s.trim()).filter(Boolean);
+    let persistFails = 0;
+    for (const t of peer.targets) {
+      const k = tkey(t.node, t.iface); const cur = confs[k]; if (!cur) continue;
+      const s = parseFullConf(cur);
+      const conf = buildConf({ privkey: s.privkey, address: s.address, dns: dnsArr, mtu: mtu.trim() || 1280, awg_params: s.awg_params, server_pubkey: s.server_pubkey, psk: s.psk, endpoint: s.endpoint, allowed: allowed.trim() || "0.0.0.0/0, ::/0", keepalive: keepalive.trim() });
+      (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[k] = conf;
+      if (Store.storeConfigs) { const r = await api.peerSaveConfig({ pubkey: peer.pubkey, node: t.node, iface: t.iface, config: conf }); if (!r.ok) persistFails++; }
+    }
+    setBusy(false);
+    Store.configEpoch++;        // force QR cards to re-read the re-issued config
+    toast(persistFails ? "Updated (some configs couldn't be persisted)." : "Config updated.", persistFails ? "info" : "ok");
+    closeModal(); bus.emit();
+  };
+
+  return html`<${Sheet} title=${"Edit peer config"}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !editable} onClick=${save}>Save & re-issue</button></>`}>
+    ${!loaded ? html`<div class="loading"><span class="spin"></span>loading current config…</div>`
+      : !editable ? html`<div class="notice warn"><${Ic} i="warn"/><span>The client's private key isn't available, so the config can't be rebuilt${Store.storeConfigs ? "" : " (enable store_configs, or edit right after creating the peer)"}. User assignment and add/remove targets still work without it.</span></div>`
+      : html`<${Fragment}>
+        <div class="hint" style="margin-bottom:10px">Applies to all ${Object.keys(confs).length} target(s) with a known config. Address, interface and server aren't changed here — copy + remove a target to move it.</div>
+        <div class="field"><label>Client allowed IPs (routing)</label><input value=${allowed} onInput=${e => setAllowed(e.target.value)}/><div class="hint">Full tunnel by default. Narrow for split tunnel.</div></div>
+        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="e.g. 1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated. Blank = no DNS line.</div></div>
+        <div class="row2">
+          <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
+          <div class="field"><label>Persistent keepalive (s)</label><input value=${keepalive} onInput=${e => setKeepalive(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25.</div></div>
+        </div>
+      <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

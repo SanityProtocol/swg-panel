@@ -179,6 +179,8 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .peercard-head{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .peercard-head .addr{font-size:12.5px}
 .peercard-head .grow{flex:1}
+.row2{display:flex;gap:12px}
+.row2 .field{flex:1;min-width:0}
 
 /* ───── node pips (redundancy signature) ───── */
 .pips{display:inline-flex;gap:5px;align-items:center}

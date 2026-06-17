@@ -695,6 +695,23 @@ def api(method, path, qs, body, deps):
         roster_save(roster_path, roster)
         return 200, {"ok": True, "data": roster["peers"][pid]}
 
+    if method == "POST" and path == "/api/peers/save-config":
+        # Persist a re-issued client config (e.g. after an edit). Only meaningful with
+        # store_configs on; the config carries the private key, so it must match a real target.
+        pubkey = (body.get("pubkey") or "").strip()
+        node = body.get("node") or ""; iface = body.get("iface") or ""
+        conf = body.get("config")
+        if not (pubkey and node and iface and isinstance(conf, str) and conf):
+            return 400, {"ok": False, "error": "need pubkey, node, iface, config", "code": "bad_request"}
+        if not store_configs:
+            return 400, {"ok": False, "error": "store_configs is off — nothing is persisted", "code": "disabled"}
+        roster = roster_load(roster_path)
+        p = find_peer_by_pubkey(roster, pubkey)
+        if not p or not any(t["node"] == node and t["iface"] == iface for t in p["targets"]):
+            return 404, {"ok": False, "error": "no such target for this key", "code": "not_found"}
+        save_config(store_configs, config_dir, pubkey, node, iface, conf)
+        return 200, {"ok": True, "data": {"pubkey": pubkey, "node": node, "iface": iface}}
+
     if method == "POST" and path == "/api/nodes/create":
         name = (body.get("name") or "").strip()
         if not name or len(name) > 40 or not all(c.isalnum() or c in "-_" for c in name):
