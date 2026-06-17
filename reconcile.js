@@ -107,7 +107,7 @@ function reconcile(roster, stats, now, cfg) {
     });
 
     return {
-      id: pid, pubkey: pubkey, psk: p.psk || "",
+      id: pid, pubkey: pubkey, psk: p.psk || "", title: p.title || "",
       user_id: (p.user_id != null) ? p.user_id : null,
       name: user ? (user.name || "") : "", tag: user ? (user.tag || "") : "",
       unassigned: !user,

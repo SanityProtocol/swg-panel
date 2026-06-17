@@ -243,6 +243,23 @@ def find_peer_by_pubkey(roster, pubkey):
     return None
 
 
+def valid_addr(s):
+    """A bare IP (v4 or v6); a trailing /prefix is tolerated and ignored."""
+    try:
+        ipaddress.ip_address((s or "").split("/")[0].strip())
+        return True
+    except ValueError:
+        return False
+
+
+def bad_targets(targets):
+    """First validation error across a target list, or None. Defence-in-depth behind the UI."""
+    for t in targets:
+        if not valid_addr(t.get("ip", "")):
+            return f"invalid address {t.get('ip')!r} for {t.get('node')}/{t.get('iface')}"
+    return None
+
+
 def iface_type(snaps, node, iface):
     """wg vs awg, read from the node's pushed snapshot (awg interfaces carry awg_params)."""
     blk = ((snaps.get(node) or {}).get("interfaces") or {}).get(iface) or {}
@@ -280,6 +297,7 @@ def peer_set(roster, pid, fields, now):
     roster["peers"][pid] = {
         "id": pid,
         "user_id": fields.get("user_id", p.get("user_id")),   # None => unassigned
+        "title": (fields.get("title", p.get("title", "")) or "")[:64],   # operator label to tell devices apart
         "pubkey": fields.get("pubkey", p.get("pubkey", "")),
         "psk": fields.get("psk", p.get("psk", "")),
         "targets": [clean_target(t) for t in targets],
@@ -350,7 +368,9 @@ def desired_for_node(roster, node_id):
     for p in (roster.get("peers") or {}).values():
         if not isinstance(p, dict):
             continue
-        name = (users.get(p.get("user_id")) or {}).get("name", "")
+        uname = (users.get(p.get("user_id")) or {}).get("name", "")
+        # node-side label (a .conf comment): "user · title" so the operator can tell devices apart
+        name = " · ".join(x for x in (uname, p.get("title", "")) if x)
         for t in p.get("targets", []):
             if t.get("node") != node_id:
                 continue
@@ -640,6 +660,9 @@ def api(method, path, qs, body, deps):
             if k in seen:
                 return 400, {"ok": False, "error": f"duplicate target {t['node']}/{t['iface']}", "code": "bad_request"}
             seen.add(k)
+        be = bad_targets(targets)
+        if be:
+            return 400, {"ok": False, "error": be, "code": "bad_request"}
         roster = roster_load(roster_path)
         if find_peer_by_pubkey(roster, pubkey):
             return 409, {"ok": False, "error": "a peer with this key already exists "
@@ -654,8 +677,8 @@ def api(method, path, qs, body, deps):
         pid = gen_id()
         while pid in roster["peers"]:
             pid = gen_id()
-        p = peer_set(roster, pid, {"user_id": uid or None, "pubkey": pubkey,
-                                   "psk": psk, "targets": targets}, now())
+        p = peer_set(roster, pid, {"user_id": uid or None, "title": body.get("title", ""),
+                                   "pubkey": pubkey, "psk": psk, "targets": targets}, now())
         roster_save(roster_path, roster)
         configs = body.get("configs") or {}
         for t in targets:
@@ -674,6 +697,8 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, "error": f"target.{f} is required", "code": "bad_request"}
         if not known(target["node"]):
             return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
+        if not valid_addr(target["ip"]):
+            return 400, {"ok": False, "error": f"invalid address {target['ip']!r}", "code": "bad_request"}
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
@@ -705,6 +730,19 @@ def api(method, path, qs, body, deps):
         p2 = peer_set(roster, pid, {"targets": kept}, now())
         roster_save(roster_path, roster)
         return 200, {"ok": True, "data": p2}
+
+    if method == "POST" and path == "/api/peers/update":
+        # Edit a peer's operator-facing label (title). Metadata only — no connectivity impact.
+        pid = body.get("peer_id") or ""
+        roster = roster_load(roster_path)
+        p = roster["peers"].get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if "title" in body:
+            p2 = peer_set(roster, pid, {"title": body.get("title", "")}, now())
+            roster_save(roster_path, roster)
+            return 200, {"ok": True, "data": p2}
+        return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
 
     if method == "POST" and path == "/api/peers/delete":
         pid = body.get("peer_id") or ""
@@ -780,6 +818,8 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "pubkey is required", "code": "bad_request"}
         if not known(target["node"]):
             return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
+        if not valid_addr(target["ip"]):
+            return 400, {"ok": False, "error": f"invalid address {target['ip']!r}", "code": "bad_request"}
         roster = roster_load(roster_path)
         uid = body.get("user_id")
         if uid and uid not in roster["users"]:

@@ -191,6 +191,14 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .utc{border:1px solid var(--line);border-radius:14px;padding:12px;background:var(--surface-2)}
 .utc .deploy{border:none;background:none;border-radius:0;overflow:visible}
 .utc .deploy .acts{padding:10px 0 0}
+.utc-title{display:flex;align-items:center;margin:0 0 8px}
+.ptitle,.ptitle-h{display:inline-flex;align-items:center;gap:4px}
+.ptitle b{color:var(--ink);font-size:13.5px}
+.ptitle .editname,.ptitle-h .editname{background:none;border:none;color:var(--faint);cursor:pointer;padding:2px;display:inline-flex}
+.ptitle .editname:hover,.ptitle-h .editname:hover{color:var(--ink)}
+.ptitle-edit{display:inline-flex;align-items:center;gap:6px}
+.ptitle-edit input{padding:4px 8px;font-size:13px;width:160px}
+.sub2{color:var(--faint);font-size:11.5px;font-weight:400}
 .utc-acts{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
 .utc-acts .addr{font-size:11.5px;color:var(--faint)}
 .utc-acts .grow{flex:1}
@@ -316,6 +324,10 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .field{margin-bottom:15px}
 .field>label{display:block;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:7px}
 .field .hint{font-size:11.5px;color:var(--faint);margin-top:6px}
+/* validation: invalid field + error hint */
+input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba(240,89,107,.12)}
+.hint.err{color:var(--dangling)}
+.advbad{color:var(--dangling);font-size:11px;font-weight:600;margin-left:6px}
 .inline{display:flex;gap:8px}.inline input{flex:1}
 .nodepick{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 @media(max-width:480px){.nodepick{grid-template-columns:1fr}}

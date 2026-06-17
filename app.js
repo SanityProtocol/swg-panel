@@ -53,6 +53,31 @@ function rate(bps) {
   return (v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i] + "/s";
 }
 function cssid(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, "_"); }
+
+// ── validation for fields that affect connectivity / data-structure ──
+const V = {
+  ipv4: s => { const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(s).trim()); return !!m && m.slice(1).every(o => +o >= 0 && +o <= 255 && (o === "0" || o[0] !== "0")); },
+  ipv6: s => { s = String(s).trim(); if (!/^[0-9a-fA-F:]+$/.test(s) || (s.match(/::/g) || []).length > 1) return false; const parts = s.split("::"); const segs = s.includes("::") ? parts.join(":").split(":").filter(Boolean) : s.split(":"); return s.includes("::") ? segs.length <= 7 : segs.length === 8 && segs.every(x => /^[0-9a-fA-F]{1,4}$/.test(x)); },
+  ip: s => V.ipv4(s) || V.ipv6(s),
+  cidr: s => { s = String(s).trim(); const i = s.indexOf("/"); if (i < 0) return V.ip(s); const a = s.slice(0, i), n = s.slice(i + 1); if (!/^\d+$/.test(n)) return false; if (V.ipv4(a)) return +n >= 0 && +n <= 32; if (V.ipv6(a)) return +n >= 0 && +n <= 128; return false; },
+  host: s => { s = String(s).trim(); return s.length > 0 && s.length <= 253 && /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/.test(s); },
+  hostOrIp: s => V.ipv4(s) || V.ipv6(s) || V.host(s),
+  nodeName: s => /^[A-Za-z0-9_-]{1,40}$/.test(String(s).trim()),
+  mtu: s => /^\d+$/.test(String(s).trim()) && +s >= 1280 && +s <= 9200,
+  keepalive: s => /^\d+$/.test(String(s).trim()) && +s >= 0 && +s <= 65535,
+  psk: s => /^[A-Za-z0-9+/]{43}=$/.test(String(s).trim()),               // 32-byte base64
+  list: (s, f) => String(s).split(",").map(x => x.trim()).filter(Boolean).every(f),
+};
+// connectivity-config field errors (DNS / MTU / keepalive / AllowedIPs) → { field: message }
+function configErrors(cf) {
+  const e = {};
+  if (cf.allowed.trim() && !V.list(cf.allowed, V.cidr)) e.allowed = "Comma-separated CIDRs, e.g. 0.0.0.0/0, ::/0";
+  else if (!cf.allowed.trim()) e.allowed = "Required (use 0.0.0.0/0, ::/0 for full tunnel).";
+  if (cf.dns.trim() && !V.list(cf.dns, V.ip)) e.dns = "Each DNS must be a valid IP.";
+  if (cf.mtu.trim() && !V.mtu(cf.mtu)) e.mtu = "MTU must be a number 1280–9200.";
+  if (cf.keepalive.trim() && !V.keepalive(cf.keepalive)) e.keepalive = "Keepalive must be 0–65535.";
+  return e;
+}
 function fmtBytes(n) {
   n = n || 0;
   const u = ["B", "K", "M", "G", "T"]; let i = 0, v = n;
@@ -194,6 +219,7 @@ const api = {
   userDelete(b) { return this.post("/api/users/delete", b); },
   // peers
   peerCreate(b) { return this.post("/api/peers/create", b); },
+  peerUpdate(b) { return this.post("/api/peers/update", b); },
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },
   peerDelete(b) { return this.post("/api/peers/delete", b); },
@@ -612,7 +638,7 @@ function PeersScreen() {
           const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
           return html`<tr key=${p.id}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
-            <td data-label="Name" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.name || html`<span class="faint">unassigned</span>`}</td>
+            <td data-label="Name" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.title ? html`<b>${p.title}</b>` : (p.name || html`<span class="faint">unassigned</span>`)}${p.title && p.name ? html`<span class="sub2"> · ${p.name}</span>` : ""}</td>
             <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
             <td data-label="User"><${PeerOwnerControls} peer=${p} showDelete=${false}/></td>
             <td data-label="Last"><span class="when">${seen(t.observed ? t.observed.handshake_age : null)}</span></td>
@@ -683,7 +709,7 @@ function UsersScreen() {
         <thead><tr><th>Status</th><th>Key</th><th>Targets</th><th style="text-align:right">Assign / delete</th></tr></thead>
         <tbody>${unassigned.map(p => html`<tr key=${p.id}>
           <td data-label="Status"><${Badge} s=${p.status}/></td>
-          <td data-label="Key" class="addr clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.pubkey.slice(0, 20)}…</td>
+          <td data-label="Key" class="addr clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.title ? html`<b style="color:var(--ink)">${p.title}</b> · ` : ""}${p.pubkey.slice(0, 16)}…</td>
           <td data-label="Targets">${p.targets.map(t => t.node + "/" + t.iface).join(", ")}</td>
           <td data-label="" style="text-align:right" class="rowacts"><${PeerOwnerControls} peer=${p} showDelete=${true}/></td></tr>`)}</tbody></table></div>
     <//>` : null}
@@ -751,10 +777,28 @@ function UserPeers({ user }) {
   })}`;
 }
 
+// Inline-editable peer title (optimistic). The operator's label to tell a user's devices apart.
+function PeerTitle({ peer }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(peer.title || "");
+  const save = () => {
+    setEditing(false);
+    mutate({ key: "peer:" + peer.id,
+      patch: s => { const p = s.roster.peers[peer.id]; if (p) p.title = val.trim(); },
+      call: () => api.peerUpdate({ peer_id: peer.id, title: val.trim() }) });
+  };
+  if (editing) return html`<span class="ptitle-edit"><input autofocus value=${val} maxlength="64" placeholder="title"
+      onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}/>
+    <button class="btn btn-mini" onClick=${save}><${Ic} i="check"/></button></span>`;
+  return html`<span class="ptitle">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">untitled</span>`}
+    <button class="editname" title="Rename peer" onClick=${() => { setVal(peer.title || ""); setEditing(true); }}><${Ic} i="pencil"/></button></span>`;
+}
+
 // One target of a user's peer: its QR/link (TargetCard) + per-target management actions.
 function UserTargetCard({ peer, t }) {
   const key = "peer:" + peer.id;
   return html`<div class="utc">
+    <div class="utc-title"><${PeerTitle} peer=${peer}/></div>
     <${TargetCard} peer=${peer} t=${t}/>
     <div class="utc-acts">
       <span class="addr" title=${peer.pubkey}>${peer.pubkey.slice(0, 14)}…</span>
@@ -810,10 +854,11 @@ function UserEditCard({ user, done }) {
 function PeerCard({ peer }) {
   return html`<div class="peercard">
     <div class="peercard-head">
-      <span class="addr">${peer.pubkey.slice(0, 22)}…</span>
+      <span class="ptitle-h"><${PeerTitle} peer=${peer}/></span>
+      <span class="addr">${peer.pubkey.slice(0, 16)}…</span>
       <button class="copybtn" title="Copy public key" onClick=${() => copy(peer.pubkey, "Public key copied")}><${Ic} i="copy"/></button>
       <span class="grow"></span>
-      ${peer.unassigned ? null : html`<button class="btn btn-mini" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/> Edit</button>`}
+      ${peer.unassigned ? null : html`<button class="btn btn-mini" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/> Config</button>`}
       <span class="assignwrap"><${PeerOwnerControls} peer=${peer} showDelete=${true}/></span>
     </div>
     <div class="deploys">
@@ -866,7 +911,7 @@ function PeerDetail({ id: rawId }) {
   const u = p.user_id ? Store.user(p.user_id) : null;
   return html`<div class="screen">
     <div class="crumb">${u ? html`<${Fragment}><a href="#/users">Users</a><span class="sep">/</span><a href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a><span class="sep">/</span><b>peer</b></>` : html`<${Fragment}><a href="#/users">Users</a><span class="sep">/</span><b>unassigned peer</b></>`}</div>
-    <div class="detail-head"><div class="nameline"><h1>${p.name || "Unassigned peer"}</h1><${Badge} s=${p.unassigned ? "unassigned" : p.status}/></div></div>
+    <div class="detail-head"><div class="nameline"><h1>${p.title || p.name || "Unassigned peer"}</h1>${p.title && p.name ? html`<span class="tagchip">${p.name}</span>` : null}<${Badge} s=${p.unassigned ? "unassigned" : p.status}/></div></div>
     <${PeerCard} peer=${p}/>
   </div>`;
 }
@@ -950,6 +995,7 @@ function AccountScreen() {
   useEffect(() => { api.account().then(r => { if (r.ok) { if (r.data.username) setUser(r.data.username); if (!r.data.auth_enabled) { setEnabled(false); setMsg({ ok: false, t: "This panel has no login configured — changes are disabled." }); } } }); }, []);
   const save = async () => {
     if (!user.trim()) return setMsg({ ok: false, t: "Username can't be empty." });
+    if (user.includes(":")) return setMsg({ ok: false, t: "Username can't contain a colon." });
     if (!cur) return setMsg({ ok: false, t: "Enter your current password to confirm." });
     if (np && np !== np2) return setMsg({ ok: false, t: "New passwords don't match." });
     if (np && np.length < 8) return setMsg({ ok: false, t: "New password must be at least 8 characters." });
@@ -1064,8 +1110,10 @@ function AddPeersSheet({ userId, userName }) {
   const finish = () => { closeModal(); go("#/user/" + encodeURIComponent(userId)); };
   const create = async () => {
     if (!chosen.length) return setMsg({ k: "err", t: "Pick at least one interface." });
-    const missing = chosen.filter(t => !String(t.ip).trim());
-    if (missing.length) return setMsg({ k: "err", t: "No address for " + missing.map(t => t.node + "/" + t.iface).join(", ") + "." });
+    const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
+    if (badIp) return setMsg({ k: "err", t: "Invalid address for " + badIp.node + "/" + badIp.iface + "." });
+    const ce = configErrors(cf); const ck = Object.keys(ce)[0];
+    if (ck) return setMsg({ k: "err", t: ce[ck] });
     setBusy(true); setMsg({ k: "work", t: "minting " + chosen.length + " peer" + (chosen.length > 1 ? "s" : "") + "…" });
     const res = await createPeersForTargets(userId, chosen, cf.opts());
     setBusy(false); await Store.poll();
@@ -1122,25 +1170,27 @@ function TargetPicker({ prefill, exclude, onChange }) {
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
         <span class="swatch" style=${"background:" + Store.nodeColor(t.node)}></span>
         <span class="nm">${t.node}</span><span class="tp">${t.iface}</span></label>
-      ${s ? html`<input class="topt-ip" value=${s.ip} placeholder=${s.ipHint || "address"} onInput=${e => setIp(k, e.target.value)}/>` : null}
+      ${s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>` : null}
     </div>`;
   })}</div>`;
 }
 
 // Advanced client-config fields (DNS / MTU / keepalive / AllowedIPs) — shared by the
 // peer-minting sheets. `v` is a {dns,mtu,keepalive,allowed,dnsTouched} ref-ish object.
-function AdvancedFields({ st }) {
-  const [open, setOpen] = useState(false);
+function AdvancedFields({ st, startOpen }) {
+  const [open, setOpen] = useState(!!startOpen);
+  const errs = configErrors(st);
+  const fld = (k, fallback) => (errs[k] ? html`<div class="hint err">${errs[k]}</div>` : html`<div class="hint">${fallback}</div>`);
   return html`<${Fragment}>
-    <button class="advtoggle" onClick=${() => setOpen(o => !o)}><span>${open ? "▾" : "▸"}</span> Advanced</button>
+    <button class="advtoggle" onClick=${() => setOpen(o => !o)}><span>${open ? "▾" : "▸"}</span> Advanced${Object.keys(errs).length ? html` <span class="advbad">${Object.keys(errs).length} issue${Object.keys(errs).length > 1 ? "s" : ""}</span>` : ""}</button>
     ${open ? html`<div class="adv open">
       <div class="field" style="margin-top:8px"><label>Client allowed IPs (routing)</label>
-        <input value=${st.allowed} onInput=${e => st.set("allowed", e.target.value)}/><div class="hint">Full tunnel by default. Narrow for split tunnel.</div></div>
+        <input class=${errs.allowed ? "bad" : ""} value=${st.allowed} onInput=${e => st.set("allowed", e.target.value)}/>${fld("allowed", "Full tunnel by default. Narrow for split tunnel.")}</div>
       <div class="field"><label>DNS</label>
-        <input value=${st.dns} onInput=${e => { st.dnsTouched.current = true; st.set("dns", e.target.value); }} placeholder="from server, or e.g. 1.1.1.1"/><div class="hint">Comma-separated. Blank = no DNS line.</div></div>
+        <input class=${errs.dns ? "bad" : ""} value=${st.dns} onInput=${e => { st.dnsTouched.current = true; st.set("dns", e.target.value); }} placeholder="from server, or e.g. 1.1.1.1"/>${fld("dns", "Comma-separated IPs. Blank = no DNS line.")}</div>
       <div class="row2">
-        <div class="field"><label>MTU</label><input value=${st.mtu} onInput=${e => st.set("mtu", e.target.value)} placeholder="1280"/></div>
-        <div class="field"><label>Persistent keepalive (s)</label><input value=${st.keepalive} onInput=${e => st.set("keepalive", e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25.</div></div>
+        <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} value=${st.mtu} onInput=${e => st.set("mtu", e.target.value)} placeholder="1280"/>${fld("mtu", "Blank = 1280.")}</div>
+        <div class="field"><label>Persistent keepalive (s)</label><input class=${errs.keepalive ? "bad" : ""} value=${st.keepalive} onInput=${e => st.set("keepalive", e.target.value)} placeholder="25"/>${fld("keepalive", "0 disables · blank = 25.")}</div>
       </div></div>` : null}
   <//>`;
 }
@@ -1188,6 +1238,7 @@ function useConfigFields() {
 function openCreatePeer(prefill) { openModal(html`<${CreatePeerSheet} prefill=${prefill || {}}/>`); }
 function CreatePeerSheet({ prefill }) {
   const [chosen, setChosen] = useState([]);
+  const [title, setTitle] = useState("");
   const [psk, setPsk] = useState(genPSK());
   const cf = useConfigFields();
   const [userId, setUserId] = useState(prefill.user_id || "");
@@ -1199,10 +1250,19 @@ function CreatePeerSheet({ prefill }) {
     if (!cf.dnsTouched.current && chosen.length) { const m = Store.ifaceMeta(chosen[0].node, chosen[0].iface); if (m) cf.setDns((m.dns || []).join(", ")); }
   }, [chosen]);
 
+  const pskBad = psk.trim() && !V.psk(psk);
+  const validate = () => {
+    if (!chosen.length) return "Pick at least one target.";
+    const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
+    if (badIp) return "Invalid address for " + badIp.node + "/" + badIp.iface + ".";
+    if (pskBad) return "Preshared key must be 44-char base64 (or blank to auto-generate).";
+    const ce = configErrors(cf); const k = Object.keys(ce)[0];
+    if (k) return ce[k];
+    return null;
+  };
+
   const create = async () => {
-    if (!chosen.length) return setMsg({ k: "err", t: "Pick at least one target." });
-    const missing = chosen.filter(t => !String(t.ip).trim());
-    if (missing.length) return setMsg({ k: "err", t: "No address for " + missing.map(t => t.node + "/" + t.iface).join(", ") + "." });
+    const err = validate(); if (err) return setMsg({ k: "err", t: err });
     setBusy(true); setMsg({ k: "work", t: "generating key…" });
     try {
       const keys = await genKeys();
@@ -1216,7 +1276,7 @@ function CreatePeerSheet({ prefill }) {
         configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: ipClean + "/32", dns: dnsArr, mtu: cf.mtu.trim() || 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk: pskV, endpoint: m.endpoint, allowed: cf.allowed.trim() || "0.0.0.0/0, ::/0", keepalive: cf.keepalive.trim() });
       }
       setMsg({ k: "work", t: "creating on " + tgts.length + " target" + (tgts.length > 1 ? "s" : "") + "…" });
-      const body = { user_id: userId || null, pubkey: keys.pub, psk: pskV, targets: tgts };
+      const body = { user_id: userId || null, title: title.trim(), pubkey: keys.pub, psk: pskV, targets: tgts };
       if (Store.storeConfigs) body.configs = configs;
       const r = await api.peerCreate(body);
       if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: "Failed: " + (r.error || r.code || "unknown") }); }
@@ -1234,9 +1294,11 @@ function CreatePeerSheet({ prefill }) {
         <option value="">— unassigned —</option>
         ${users.map(u => html`<option value=${u.id}>${u.name}${u.tag ? " · " + u.tag : ""}</option>`)}
       </select></div>
+    <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional, to tell devices apart</span></label>
+      <input value=${title} onInput=${e => setTitle(e.target.value)} maxlength="64" placeholder="iPhone, Router, Laptop…"/></div>
     <div class="field"><label>Targets <span class="faint" style="text-transform:none;letter-spacing:0">— one, or several for redundancy (same key)</span></label>
       <${TargetPicker} prefill=${prefill} onChange=${setChosen}/></div>
-    <div class="field"><label>Preshared key</label><div class="inline"><input value=${psk} onInput=${e => setPsk(e.target.value)}/><button class="btn btn-ghost" title="Regenerate" onClick=${() => { setPsk(genPSK()); toast("New preshared key.", "info", 1500); }}>↻</button></div></div>
+    <div class="field"><label>Preshared key</label><div class="inline"><input class=${pskBad ? "bad" : ""} value=${psk} onInput=${e => setPsk(e.target.value)}/><button class="btn btn-ghost" title="Regenerate" onClick=${() => { setPsk(genPSK()); toast("New preshared key.", "info", 1500); }}>↻</button></div>${pskBad ? html`<div class="hint err">Must be 44-char base64, or blank to auto-generate.</div>` : null}</div>
     <${AdvancedFields} st=${cf}/>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -1265,9 +1327,11 @@ function AddTargetSheet({ peer }) {
     api.nextIp([n], iface).then(r => { if (r.ok) { setIp(r.data.next_ip); setIpHint("Next free address."); } else { setIp(""); setIpHint(r.error || "couldn't pick an address"); } });
   }, [iface, node]);
 
+  const ipBad = ip.trim() && !V.ipv4(ip.trim().split("/")[0]);
   const deploy = async () => {
     if (!node) return setMsg({ k: "err", t: "Pick a server." });
     if (!ip.trim()) return setMsg({ k: "err", t: "No address available." });
+    if (!V.ipv4(ip.trim().split("/")[0])) return setMsg({ k: "err", t: "Address must be a valid IPv4." });
     setBusy(true); setMsg({ k: "work", t: "deploying to " + node + "…" });
     const info = Store.ifaceMeta(node, iface);
     const ipClean = ip.trim().split("/")[0];
@@ -1292,7 +1356,7 @@ function AddTargetSheet({ peer }) {
       <select class="selwrap" value=${node} onChange=${e => setNode(e.target.value)}>
         ${nodesWithIface.length ? nodesWithIface.map(n => html`<option value=${n}>${n}</option>`) : html`<option value="">none available for ${iface}</option>`}
       </select></div>
-    <div class="field"><label>Address</label><input value=${ip} onInput=${e => setIp(e.target.value)}/><div class="hint">${ipHint}</div></div>
+    <div class="field"><label>Address</label><input class=${ipBad ? "bad" : ""} value=${ip} onInput=${e => setIp(e.target.value)}/><div class=${"hint" + (ipBad ? " err" : "")}>${ipBad ? "Must be a valid IPv4 address." : ipHint}</div></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -1323,8 +1387,10 @@ function EditPeerSheet({ peer }) {
   }, [peer.id]);
 
   const editable = Object.keys(confs).length;
+  const errs = configErrors({ dns, mtu, keepalive, allowed });
   const save = async () => {
     if (!editable) return;
+    const ek = Object.keys(errs)[0]; if (ek) return setMsg({ k: "err", t: errs[ek] });
     setBusy(true); setMsg({ k: "work", t: "rebuilding configs…" });
     const dnsArr = dns.split(",").map(s => s.trim()).filter(Boolean);
     let persistFails = 0;
@@ -1347,11 +1413,11 @@ function EditPeerSheet({ peer }) {
       : !editable ? html`<div class="notice warn"><${Ic} i="warn"/><span>The client's private key isn't available, so the config can't be rebuilt${Store.storeConfigs ? "" : " (enable store_configs, or edit right after creating the peer)"}. User assignment and add/remove targets still work without it.</span></div>`
       : html`<${Fragment}>
         <div class="hint" style="margin-bottom:10px">Applies to all ${Object.keys(confs).length} target(s) with a known config. Address, interface and server aren't changed here — copy + remove a target to move it.</div>
-        <div class="field"><label>Client allowed IPs (routing)</label><input value=${allowed} onInput=${e => setAllowed(e.target.value)}/><div class="hint">Full tunnel by default. Narrow for split tunnel.</div></div>
-        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="e.g. 1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated. Blank = no DNS line.</div></div>
+        <div class="field"><label>Client allowed IPs (routing)</label><input class=${errs.allowed ? "bad" : ""} value=${allowed} onInput=${e => setAllowed(e.target.value)}/><div class=${"hint" + (errs.allowed ? " err" : "")}>${errs.allowed || "Full tunnel by default. Narrow for split tunnel."}</div></div>
+        <div class="field"><label>DNS</label><input class=${errs.dns ? "bad" : ""} value=${dns} onInput=${e => setDns(e.target.value)} placeholder="e.g. 1.1.1.1, 1.0.0.1"/><div class=${"hint" + (errs.dns ? " err" : "")}>${errs.dns || "Comma-separated IPs. Blank = no DNS line."}</div></div>
         <div class="row2">
-          <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
-          <div class="field"><label>Persistent keepalive (s)</label><input value=${keepalive} onInput=${e => setKeepalive(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25.</div></div>
+          <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class=${"hint" + (errs.mtu ? " err" : "")}>${errs.mtu || "Blank = 1280."}</div></div>
+          <div class="field"><label>Persistent keepalive (s)</label><input class=${errs.keepalive ? "bad" : ""} value=${keepalive} onInput=${e => setKeepalive(e.target.value)} placeholder="25"/><div class=${"hint" + (errs.keepalive ? " err" : "")}>${errs.keepalive || "0 disables · blank = 25."}</div></div>
         </div>
       <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1365,8 +1431,12 @@ function SwatchPicker({ value, onChange }) {
 function openNodeCreate() { openModal(html`<${NodeCreateSheet}/>`); }
 function NodeCreateSheet() {
   const [name, setName] = useState(""); const [ep, setEp] = useState(""); const [color, setColor] = useState(SWATCHES[0]); const [msg, setMsg] = useState(null);
+  const nameBad = name.trim() && !V.nodeName(name);
+  const epBad = ep.trim() && !V.hostOrIp(ep.trim());
   const create = async () => {
     if (!name.trim()) return setMsg({ k: "err", t: "Give the node a name." });
+    if (!V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
+    if (ep.trim() && !V.hostOrIp(ep.trim())) return setMsg({ k: "err", t: "Endpoint must be a hostname or IP." });
     setMsg({ k: "work", t: "creating…" });
     const r = await api.nodeCreate({ name: name.trim(), endpoint_host: ep.trim(), color });
     if (!r.ok) return setMsg({ k: "err", t: r.error || "couldn't create node" });
@@ -1374,8 +1444,8 @@ function NodeCreateSheet() {
   };
   return html`<${Sheet} title="Add node"
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${create}>Create node</button></>`}>
-    <div class="field"><label>Name</label><input autofocus value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/><div class="hint">Letters, digits, - or _. Used as the node's id across the panel.</div></div>
-    <div class="field"><label>Public endpoint (host or IP)</label><input value=${ep} onInput=${e => setEp(e.target.value)} placeholder="203.0.113.7" autocomplete="off"/><div class="hint">The address clients dial to reach this node. You can change it later.</div></div>
+    <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "Letters, digits, - or _. Used as the node's id across the panel."}</div></div>
+    <div class="field"><label>Public endpoint (host or IP)</label><input class=${epBad ? "bad" : ""} value=${ep} onInput=${e => setEp(e.target.value)} placeholder="203.0.113.7" autocomplete="off"/><div class=${"hint" + (epBad ? " err" : "")}>${epBad ? "Must be a hostname or IP (no scheme/spaces)." : "The address clients dial to reach this node. You can change it later."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -1397,7 +1467,9 @@ function NodeTokenSheet({ name, token, isNew }) {
 function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
 function NodeEditSheet({ node }) {
   const [ep, setEp] = useState(node.endpoint_host || ""); const [color, setColor] = useState(node.color || SWATCHES[0]); const [msg, setMsg] = useState(null);
+  const epBad = ep.trim() && !V.hostOrIp(ep.trim());
   const save = async () => {
+    if (epBad) return setMsg({ k: "err", t: "Endpoint must be a hostname or IP." });
     closeModal();   // optimistic: card reflects the edit immediately
     mutate({
       key: "node:" + node.name,
@@ -1407,7 +1479,7 @@ function NodeEditSheet({ node }) {
   };
   return html`<${Sheet} title=${"Edit " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
-    <div class="field"><label>Public endpoint (host or IP)</label><input value=${ep} onInput=${e => setEp(e.target.value)} autocomplete="off"/></div>
+    <div class="field"><label>Public endpoint (host or IP)</label><input class=${epBad ? "bad" : ""} value=${ep} onInput=${e => setEp(e.target.value)} autocomplete="off"/>${epBad ? html`<div class="hint err">Must be a hostname or IP (no scheme/spaces).</div>` : null}</div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
