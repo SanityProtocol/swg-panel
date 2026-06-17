@@ -575,7 +575,7 @@ for f in swg-panel-server index.html app.css app.js reconcile.js; do
 done
 mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/swg-panel-server" "$PREFIX$PANEL_DIR/"; chmod 755 "$PREFIX$PANEL_DIR/swg-panel-server"
 for f in index.html app.css app.js reconcile.js; do mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/$f" "$PREFIX$PANEL_DIR/"; done
-mkdir -p "$PREFIX$PANEL_DIR/vendor"; cp "$SRC/vendor/qrcode.js" "$PREFIX$PANEL_DIR/vendor/"
+mkdir -p "$PREFIX$PANEL_DIR/vendor"; cp -a "$SRC/vendor/." "$PREFIX$PANEL_DIR/vendor/"   # qrcode + vendored Preact/htm ESM (buildless SPA)
 [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$PANEL_DIR/" || true   # version stamp (update.sh reports it)
 ok "installed panel + SPA to $PANEL_DIR"
 mkdir -p "$PREFIX$STATE_DIR"; [ -f "$PREFIX$STATE_DIR/users.json" ] || { echo '{}' > "$PREFIX$STATE_DIR/users.json"; run chown "$PANEL_USER:swg" "$STATE_DIR/users.json"; ok "seeded empty users.json"; }

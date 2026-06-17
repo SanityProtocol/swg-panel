@@ -64,7 +64,8 @@ if [ -f "$PANEL_DIR/swg-panel-server" ]; then
     for f in swg-panel-server index.html app.css app.js reconcile.js; do
       [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$PANEL_DIR/"
     done
-    [ -f "$SRC/vendor/qrcode.js" ] && { run mkdir -p "$PANEL_DIR/vendor"; run cp "$SRC/vendor/qrcode.js" "$PANEL_DIR/vendor/"; }
+    # whole vendor/ dir — the buildless SPA needs the vendored Preact + htm ESM, not just qrcode
+    [ -d "$SRC/vendor" ] && { run mkdir -p "$PANEL_DIR/vendor"; run cp -a "$SRC/vendor/." "$PANEL_DIR/vendor/"; }
     run chmod 755 "$PANEL_DIR/swg-panel-server"; stamp "$PANEL_DIR"
     run systemctl restart swg-panel-server && ok "panel updated + restarted" || warn "couldn't restart swg-panel-server"
   fi

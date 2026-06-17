@@ -53,6 +53,21 @@ function rate(bps) {
   return (v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i] + "/s";
 }
 function cssid(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, "_"); }
+function fmtBytes(n) {
+  n = n || 0;
+  const u = ["B", "K", "M", "G", "T"]; let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + u[i];
+}
+function dur(sec) {
+  if (sec == null) return "—";
+  sec = Math.floor(sec);
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  if (d) return d + "d " + h + "h";
+  if (h) return h + "h " + m + "m";
+  if (m) return m + "m";
+  return sec + "s";
+}
 
 const ICON = {
   arrow: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>',
@@ -403,6 +418,7 @@ function Overview() {
 function NodeDetail({ node: rawName }) {
   const name = decodeURIComponent(rawName);
   const node = Store.node(name);
+  const nrec = Store.nodes.find(x => x.name === name) || {};   // full record carries health
   const meta = Store.describe[name] || null;       // interface meta from the consolidated state
   const metaErr = (node && !meta) ? "node has not reported yet" : null;
 
@@ -431,7 +447,13 @@ function NodeDetail({ node: rawName }) {
       <span class="when">${onl} / ${here.length} online</span>
       <span class="when">↓ ${rate(nrx)} &nbsp;↑ ${rate(ntx)}</span>
       <span class="when">${syncTxt}</span>
+      ${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}
     </div>
+
+    ${nrec.health ? html`<${Fragment}>
+      <div class="section-title"><h2>Health</h2></div>
+      <div class="healthgrid"><${NodeHealth} health=${nrec.health} compact=${false}/></div>
+    <//>` : null}
 
     <div class="section-title"><h2>Interfaces</h2></div>
     <div class="metagrid">
@@ -738,6 +760,38 @@ function NodesScreen() {
       : html`<div class="nodegrid">${ns.map(n => html`<${NodeCard} key=${n.name} n=${n}/>`)}</div>`}
   </div>`;
 }
+// load/util tone: green under 70%, amber to 90%, red above.
+function htone(pct) { return pct >= 90 ? "hot" : (pct >= 70 ? "warn" : "ok"); }
+function HealthMeter({ label, pct, text, tone }) {
+  const p = Math.min(100, Math.max(0, pct || 0));
+  return html`<div class="hmeter">
+    <div class="hm-top"><span class="hm-l">${label}</span><span class="hm-r">${text}</span></div>
+    <div class="hm-bar"><i class=${"hm-fill " + (tone || htone(p))} style=${"width:" + p + "%"}></i></div>
+  </div>`;
+}
+// Per-node health: CPU load (vs cores), memory, disk per mount, uptime. `compact` trims
+// to the essentials for the node card; the detail page shows every mount + uptime.
+function NodeHealth({ health, compact }) {
+  if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
+  const meters = [];
+  if (Array.isArray(health.load)) {
+    const ncpu = health.ncpu || 1, l1 = health.load[0] || 0;
+    meters.push(html`<${HealthMeter} label="CPU load" pct=${l1 / ncpu * 100}
+      text=${l1.toFixed(2) + (health.load.length > 1 && !compact ? " · " + health.load.slice(1).map(x => x.toFixed(2)).join(" ") : "") + " / " + ncpu + (ncpu === 1 ? " cpu" : " cpus")}/>`);
+  }
+  const m = health.mem;
+  if (m && m.total) {
+    meters.push(html`<${HealthMeter} label="Memory" pct=${m.used / m.total * 100} text=${fmtBytes(m.used) + " / " + fmtBytes(m.total)}/>`);
+    if (!compact && m.swap_total) meters.push(html`<${HealthMeter} label="Swap" pct=${m.swap_used / m.swap_total * 100} text=${fmtBytes(m.swap_used || 0) + " / " + fmtBytes(m.swap_total)}/>`);
+  }
+  const disks = health.disk || [];
+  (compact ? disks.slice(0, 1) : disks).forEach(d => {
+    if (!d.total) return;
+    meters.push(html`<${HealthMeter} label=${disks.length > 1 || !compact ? "Disk " + d.mount : "Disk"} pct=${d.used / d.total * 100} text=${fmtBytes(d.used) + " / " + fmtBytes(d.total)}/>`);
+  });
+  return html`<div class="health">${meters}</div>`;
+}
+
 function NodeCard({ n }) {
   const st = n.status || "dangling";
   const stTxt = st === "online" ? "online" : (st === "offline" ? "offline" : "awaiting enroll");
@@ -752,6 +806,7 @@ function NodeCard({ n }) {
       <div class="nrow"><span class="l">Interfaces</span><span class="r">${ifaces}</span></div>
       <div class="nrow"><span class="l">Sync</span><span class="r">${sync}</span></div>
     </div>
+    ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} compact=${true}/>` : null}
     <div class="nacts">
       <button class="btn-mini" onClick=${() => openNodeEdit(n)}>Edit</button>
       <button class="btn-mini warn" onClick=${() => openNodeRotate(n.name)}>Rotate token</button>

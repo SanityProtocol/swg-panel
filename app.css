@@ -382,3 +382,18 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .swrow{display:flex;gap:9px;flex-wrap:wrap}
 .swopt{width:27px;height:27px;border-radius:8px;cursor:pointer;border:2px solid transparent;box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
 .swopt.sel{border-color:var(--ink)}
+
+/* node health meters */
+.health{display:flex;flex-direction:column;gap:9px;margin-top:13px;padding-top:12px;border-top:1px solid var(--line)}
+.hmeter{display:flex;flex-direction:column;gap:4px}
+.hm-top{display:flex;justify-content:space-between;align-items:baseline;font-size:11.5px}
+.hm-l{color:var(--dim);letter-spacing:.02em}
+.hm-r{font-family:var(--mono);color:var(--ink-2);font-size:11px}
+.hm-bar{height:5px;border-radius:3px;background:#0a130f;overflow:hidden}
+.hm-fill{display:block;height:100%;border-radius:3px;background:var(--online);transition:width .6s var(--ease)}
+.hm-fill.warn{background:var(--pending)}
+.hm-fill.hot{background:var(--dangling)}
+.hm-foot{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:1px}
+/* detail-page health: a responsive grid of meters */
+.healthgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:13px 26px}
+.healthgrid .health{border-top:none;margin-top:0;padding-top:0;display:contents}
