@@ -457,6 +457,7 @@ def api(method, path, qs, body, deps):
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
                         "hostname": snap.get("hostname"),
+                        "health": snap.get("health"),     # per-node load/mem/disk/uptime (additive)
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 

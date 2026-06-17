@@ -126,10 +126,87 @@ def peer_view(peers, last, dt, online_max, now):
         out.append({
             "public_key": p["public_key"], "endpoint": p["endpoint"],
             "allowed_ips": p["allowed_ips"], "rx_bytes": p["rx_bytes"], "tx_bytes": p["tx_bytes"],
-            "rx_speed": rs, "tx_speed": ts, "handshake_age": age,
+            "rx_speed": rs, "tx_speed": ts,
+            "last_handshake": p["last_handshake"] or None, "handshake_age": age,
             "online": age is not None and age <= online_max,
         })
     return out
+
+
+# ───────────────────────── node health (cheap: /proc + statvfs, no subprocess) ─────────────────────────
+#
+# Everything here reads in-kernel pseudo-files (/proc/{loadavg,meminfo,uptime,stat}) and
+# does one statvfs() syscall per mount — microseconds total, no process spawns. Far cheaper
+# than the `awg show dump` we already run per interface, so sampling it every loop is free.
+# proc_root / statvfs are injectable so the parsing is testable against a fixture.
+
+def _read_proc(proc_root, name):
+    with open(os.path.join(proc_root, name)) as f:
+        return f.read()
+
+
+def read_loadavg(proc_root="/proc"):
+    p = _read_proc(proc_root, "loadavg").split()
+    return [float(p[0]), float(p[1]), float(p[2])]
+
+
+def read_meminfo(proc_root="/proc"):
+    vals = {}
+    for line in _read_proc(proc_root, "meminfo").splitlines():
+        k, _, rest = line.partition(":")
+        f = rest.split()
+        if f and f[0].isdigit():
+            vals[k] = int(f[0]) * 1024          # kB -> bytes
+    total = vals.get("MemTotal", 0)
+    avail = vals.get("MemAvailable", vals.get("MemFree", 0))   # MemAvailable fallback for old kernels
+    mem = {"total": total, "available": avail, "used": max(0, total - avail)}
+    if "SwapTotal" in vals:
+        mem["swap_total"] = vals["SwapTotal"]
+        mem["swap_used"] = max(0, vals["SwapTotal"] - vals.get("SwapFree", 0))
+    return mem
+
+
+def read_uptime(proc_root="/proc"):
+    return float(_read_proc(proc_root, "uptime").split()[0])
+
+
+def read_ncpu(proc_root="/proc"):
+    with contextlib.suppress(Exception):
+        n = sum(1 for ln in _read_proc(proc_root, "stat").splitlines()
+                if ln.startswith("cpu") and len(ln) > 3 and ln[3].isdigit())
+        if n:
+            return n
+    return os.cpu_count() or 1
+
+
+def disk_usage(mount, statvfs=os.statvfs):
+    st = statvfs(mount)
+    total = st.f_blocks * st.f_frsize
+    return {"mount": mount, "total": total,
+            "used": max(0, total - st.f_bfree * st.f_frsize),
+            "free": st.f_bavail * st.f_frsize}
+
+
+def collect_health(proc_root="/proc", mounts=None, statvfs=os.statvfs):
+    """A small per-node health block. Each field is collected independently and a failure
+    in one (e.g. a missing /proc file in a stripped container) never sinks the rest."""
+    mounts = mounts if mounts is not None else ["/"]
+    h = {}
+    with contextlib.suppress(Exception):
+        h["load"] = read_loadavg(proc_root)
+    with contextlib.suppress(Exception):
+        h["ncpu"] = read_ncpu(proc_root)
+    with contextlib.suppress(Exception):
+        h["mem"] = read_meminfo(proc_root)
+    with contextlib.suppress(Exception):
+        h["uptime"] = read_uptime(proc_root)
+    disks = []
+    for m in mounts:
+        with contextlib.suppress(Exception):
+            disks.append(disk_usage(m, statvfs))
+    if disks:
+        h["disk"] = disks
+    return h
 
 
 # ───────────────────────── io ─────────────────────────
@@ -215,6 +292,7 @@ def load_turn_proxies():
 
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
+    hcfg = node_cfg.get("health") or {}
     interfaces = {}
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         cmd = ic.get("cmd", ["awg"])
@@ -238,8 +316,11 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                                ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
                                node_cfg.get("dns", []), cmd),
         }
-    return {"hostname": socket.gethostname(), "generated_at": now,
+    snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies()}
+    if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
+        snap["health"] = collect_health(mounts=hcfg.get("mounts"))
+    return snap
 
 
 # ───────────────────────── reconcile ─────────────────────────
