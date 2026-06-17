@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 ### B — Docker
 
-**Панель** — установит Docker при необходимости, спросит домен + имя администратора (пароль сгенерируется)
+**Панель** — установит Docker при необходимости, затем спросит роль (master: панель + этот узел, регистрируется автоматически · host: только панель) и домен + выбор TLS (логин генерируется автоматически, поменяете позже в панели)
 
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
@@ -141,7 +141,7 @@ sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.
    curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
      | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
    ```
-   Он проведёт **Настройку узла** (endpoint · интерфейсы) и запустит `swg-noded`. Для Docker панель показывает и команду `… bash -s docker node -key … -host …`.
+   Он проведёт **Настройку узла** — интерфейсы (у каждого свой endpoint IP) и опциональный turn-proxy — и запустит `swg-noded`. Для Docker панель показывает и команду `… bash -s docker node -key … -host …`.
 3. Через несколько секунд узел станет **online** в разделе Nodes.
 
 С самоподписанным сертификатом панели узел по умолчанию его не проверяет — учётные данные это токен, а канал всё равно зашифрован. Чтобы проверять, используйте настоящий сертификат и ответьте «да» на вопрос о TLS, либо закрепите самоподписанный через `TLS_FINGERPRINT=<sha256-hex>` (проверяется во время рукопожатия, до отправки токена).
@@ -163,37 +163,50 @@ sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.
 
 ## Docker
 
-**Однострочник** — установит Docker при необходимости, разместит проект в `/opt/swg-panel-docker`, запишет `.env`, поднимет профиль и **спросит всё необходимое**:
+**Однострочники** — установят Docker при необходимости, разместят `docker-compose.yml` + `.env` в `/opt/swg-panel-docker`, поднимут профиль и **спросят всё необходимое**. Те же две точки входа, что и на bare-metal:
+
+**Панель** — Шаг 1 спрашивает роль, как на bare-metal: **master** (панель + этот сервер сам поднимает WG/AWG в локальном контейнере-узле, регистрируется за один проход) или **host** (только панель). По умолчанию — `master`.
 
 ```
-# панель
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
-# входной сервер (узел)
+```
+
+**Узел** — отдельный входной сервер; спросит URL панели + ключ из **Nodes → Add node** (так разворачиваются узлы при роли `host`)
+
+```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 ```
 
-`docker host` — точка входа для панели: **Шаг 1 спрашивает роль, как на bare-metal**: **master** (панель + этот сервер сам поднимает WG/AWG в локальном контейнере-узле, автоматически зарегистрированном за один проход) или **host** (только панель; узлы разворачиваются отдельно через `docker node`, команду печатает панель в **Nodes → Add node**). По умолчанию — `master`.
-
 Флаги пропускают вопросы (их использует команда подключения из панели): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — например `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
-**Или вручную** — один compose-файл, три профиля:
+**Или вручную** — один compose-файл, три профиля. Роли установщика `host` / `master` соответствуют профилям `host` / `host-node`:
+
+**Только панель** (роль `host`)
 
 ```
-docker compose --profile host up -d         # только панель        (роль установщика: host)
-docker compose --profile node up -d         # только входной сервер
-docker compose --profile host-node up -d    # панель + локальный узел (роль установщика: master)
+docker compose --profile host up -d
 ```
 
-(Роль **master** в установщике соответствует профилю `host-node` и дополнительно **автоматически регистрирует** локальный узел; вручную узел добавляется в **Nodes → Add node**, а `NODE_TOKEN` задаётся самостоятельно.)
+**Только входной сервер**
+
+```
+docker compose --profile node up -d
+```
+
+**Панель + локальный узел** (роль `master`)
+
+```
+docker compose --profile host-node up -d
+```
+
+Вручную профиль `host-node` **не** регистрирует локальный узел автоматически — добавьте его в **Nodes → Add node**, задайте `NODE_TOKEN` и укажите имя сервиса панели (`PANEL_URL=https://swg-panel:8443`). Роль установщика `master` делает всё это за вас.
 
 Настройка через `.env` (скопируйте из `.env.example`):
 
-- **Панель:** `PANEL_PASSWORD` (обязательно), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (необязательный подпуть, например `/swg`), `TLS` (`selfsigned`|`none`), `PANEL_PORT`.
+- **Панель:** `PANEL_PASSWORD` (обязательно), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (необязательный подпуть, например `/swg`), `PANEL_PORT` и `TLS` — `letsencrypt` · `cloudflare` · `cf15` · `selfsigned` · `none`, выпускается внутри контейнера встроенным `acme.sh` так же, как на bare-metal (задайте `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` под выбранный режим; см. [TLS](#установка-панели)).
 - **Узел:** `PANEL_URL` (для `host-node` используйте `https://swg-panel:8443`), `NODE_TOKEN` (из раздела Nodes), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `TLS_VERIFY`, `DNS`.
 
-Порядок тот же, что и на bare-metal: поднимите панель, **Nodes → Add node** для получения токена, задайте `NODE_TOKEN`, затем запустите профиль узла.
-
-**Два образа.** `swg-panel` — чистый Python. `swg-node` собирает userspace-датаплейн **`amneziawg-go`** и инструменты `awg` (контейнер не может загрузить модуль ядра хоста) и требует `NET_ADMIN` + `/dev/net/tun`. По умолчанию управляет одним интерфейсом (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` для обычного WG), несколькими через `NODE_IFACES` (`name:port:addr[:proto],…`) или любыми конфигами, смонтированными в `/etc/swg-node/*.conf` — публикуйте каждый ListenPort в compose. Masquerade добавляется автоматически. Для максимальной пропускной способности предпочтительнее **bare-metal**-узел с модулем ядра.
+**Два образа** (по умолчанию тянутся готовыми из GHCR; `--build` собирает локально). `swg-panel` — чистый Python + встроенный `acme.sh`. `swg-node` несёт userspace-датаплейн **`amneziawg-go`** и инструменты `awg` (контейнер не может загрузить модуль ядра хоста) и требует `NET_ADMIN` + `/dev/net/tun`. По умолчанию управляет одним интерфейсом (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` для обычного WG), несколькими через `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`) или любыми конфигами, смонтированными в `/etc/swg-node/*.conf` — публикуйте каждый ListenPort в compose. Masquerade добавляется автоматически. Для максимальной пропускной способности предпочтительнее **bare-metal**-узел с модулем ядра.
 
 ## Справочник по конфигурации
 

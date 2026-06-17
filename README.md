@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 ### B — Docker
 
-**Panel** — installs Docker if needed, asks for a domain + TLS choice (login auto-generated, change it later in the panel)
+**Panel** — installs Docker if needed, then asks the role (master: panel + this box is a node, auto-enrolled · host: panel only) and a domain + TLS choice (login auto-generated, change it later in the panel)
 
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
@@ -141,7 +141,7 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
    curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
      | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
    ```
-   It runs **Node setup** (endpoint · interfaces) and starts `swg-noded`. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
+   It runs **Node setup** — interfaces (each with its own endpoint IP) and an optional turn-proxy — and starts `swg-noded`. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
 3. Within a few seconds the node turns **online** in the Nodes screen.
 
 With a self-signed panel cert the node doesn't verify it by default — the token is the credential and the channel is still encrypted. To verify instead, use a real cert and answer yes to the TLS prompt, or pin the self-signed one with `TLS_FINGERPRINT=<sha256-hex>` (checked during the handshake, before the token is sent).
@@ -163,37 +163,50 @@ Live status (online, partial, dangling, …) is computed every refresh from the 
 
 ## Docker
 
-**One-liner** — installs Docker if missing, stages the project under `/opt/swg-panel-docker`, writes `.env`, brings up a profile, and **prompts for what it needs**:
+**One-liners** — install Docker if missing, stage `docker-compose.yml` + `.env` under `/opt/swg-panel-docker`, bring up a profile, and **prompt for what they need**. Same two entry points as bare-metal:
+
+**Panel** — Step 1 asks the role, exactly like bare-metal: **master** (panel + this box also runs WG/AWG as a co-located node container, auto-enrolled in one pass) or **host** (panel only). `master` is the default.
 
 ```
-# panel
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
-# entry server (node)
+```
+
+**Node** — a separate entry server; asks for the panel URL + the key from **Nodes → Add node** (this is how the `host` role's nodes are deployed)
+
+```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 ```
 
-`docker host` is the panel entry point — **Step 1 asks the role, exactly like bare-metal**: **master** (panel + this box also runs WG/AWG as a co-located node container, auto-enrolled in one pass) or **host** (panel only; deploy nodes separately with `docker node`, whose command the panel prints under **Nodes → Add node**). `master` is the default.
-
 Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
-**Or by hand** — one compose file, three profiles:
+**Or by hand** — one compose file, three profiles. The installer's `host` / `master` roles map to the `host` / `host-node` profiles:
+
+**Panel only** (role `host`)
 
 ```
-docker compose --profile host up -d         # panel only          (installer role: host)
-docker compose --profile node up -d         # entry server only
-docker compose --profile host-node up -d    # panel + local node  (installer role: master)
+docker compose --profile host up -d
 ```
 
-(The installer's **master** role maps to the `host-node` profile and additionally **auto-enrolls** the local node; by hand you'd add the node in **Nodes → Add node** and set `NODE_TOKEN` yourself.)
+**Entry server only**
+
+```
+docker compose --profile node up -d
+```
+
+**Panel + a local node** (role `master`)
+
+```
+docker compose --profile host-node up -d
+```
+
+By hand the `host-node` profile does **not** auto-enroll the local node — add it in **Nodes → Add node**, set `NODE_TOKEN`, and point it at the panel's service name (`PANEL_URL=https://swg-panel:8443`). The `master` installer role does all of that for you.
 
 Configure via `.env` (copied from `.env.example`):
 
-- **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `TLS` (`selfsigned`|`none`), `PANEL_PORT`.
+- **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `PANEL_PORT`, and `TLS` — `letsencrypt` · `cloudflare` · `cf15` · `selfsigned` · `none`, issued in-container by the bundled `acme.sh` exactly like bare-metal (set `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` as the chosen mode needs; see [TLS](#installing-the-panel)).
 - **Node:** `PANEL_URL` (for `host-node` use `https://swg-panel:8443`), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `TLS_VERIFY`, `DNS`.
 
-Same flow as bare-metal: bring up the panel, **Nodes → Add node** for a token, set `NODE_TOKEN`, then start the node profile.
-
-**Two images.** `swg-panel` is pure Python. `swg-node` builds the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It manages one interface by default (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), several via `NODE_IFACES` (`name:port:addr[:proto],…`), or any confs you mount under `/etc/swg-node/*.conf` — publish each ListenPort in compose. Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module.
+**Two images** (pulled prebuilt from GHCR by default; `--build` builds them locally). `swg-panel` is pure Python + the bundled `acme.sh`. `swg-node` carries the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It manages one interface by default (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), several via `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`), or any confs you mount under `/etc/swg-node/*.conf` — publish each ListenPort in compose. Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module.
 
 ## Configuration reference
 

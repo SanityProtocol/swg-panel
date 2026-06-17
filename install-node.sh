@@ -489,6 +489,7 @@ detect_turn
 if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
   for n in "${!TP_LISTEN[@]}"; do wk="${TP_WRAP[$n]}"
     printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+wrap-key $(b "$wk")}"
+    printf '        sudo nano /etc/systemd/system/%s.service\n\n' "$n"
   done
 fi
 echo
