@@ -170,19 +170,21 @@ sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
 # входной сервер (узел)
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
-# панель + локальный узел
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host-node
 ```
 
-Флаги пропускают вопросы (их использует команда подключения из панели): `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — например `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
+`docker host` — точка входа для панели: **Шаг 1 спрашивает роль, как на bare-metal**: **master** (панель + этот сервер сам поднимает WG/AWG в локальном контейнере-узле, автоматически зарегистрированном за один проход) или **host** (только панель; узлы разворачиваются отдельно через `docker node`, команду печатает панель в **Nodes → Add node**). По умолчанию — `master`.
+
+Флаги пропускают вопросы (их использует команда подключения из панели): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — например `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
 **Или вручную** — один compose-файл, три профиля:
 
 ```
-docker compose --profile host up -d         # только панель
+docker compose --profile host up -d         # только панель        (роль установщика: host)
 docker compose --profile node up -d         # только входной сервер
-docker compose --profile host-node up -d    # панель + локальный входной сервер
+docker compose --profile host-node up -d    # панель + локальный узел (роль установщика: master)
 ```
+
+(Роль **master** в установщике соответствует профилю `host-node` и дополнительно **автоматически регистрирует** локальный узел; вручную узел добавляется в **Nodes → Add node**, а `NODE_TOKEN` задаётся самостоятельно.)
 
 Настройка через `.env` (скопируйте из `.env.example`):
 

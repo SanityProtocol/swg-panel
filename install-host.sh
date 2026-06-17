@@ -284,25 +284,29 @@ EOF
   ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"
 }
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
-  local sel="$1" owner pub port connect extra; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
+  local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "$(detect_public_ip)" pub v_host "an IP or hostname"
+  echo
   ask_valid "Turn-proxy listen port" "56000" port v_freeport "port 1–65535 and free (not already in use)"
   detect_turn; local _n; for _n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$_n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$_n' — pick another port (enter 'new' again)"; return 0; }; done
-  local ports defport=51820 disp n p proto first; ports="$(turn_wg_ports)"
+  local ports defport=51820 n p proto label clabel pad; ports="$(turn_wg_ports)"
+  echo
   if [ -n "$ports" ]; then
-    defport="$(printf '%s\n' "$ports" | head -1 | cut -d: -f2)"; disp=""; first=1
+    defport="$(printf '%s\n' "$ports" | head -1 | cut -d: -f2)"
+    echo "  Available wg/awg interfaces:"
     while IFS=: read -r n p; do proto="${IF_CMD[$n]:-wg}"
-      [ "$first" = 1 ] && first=0 || disp+=", "
-      disp+="$(col "$C_BLUE" "$p") ($(col "$C_GREEN" "$n") on $(b "$proto"))"
+      label="$n on $proto"; clabel="$(col "$C_GREEN" "$n") on $(b "$proto")"
+      pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
+      printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$p")"
     done <<< "$ports"
-    echo "  Available wg/awg ports: ${disp}"
+    echo
   fi
   ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${defport}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
-  local wrap extra; wrap="$(turn_wrap_flags "$sel")"
+  echo
+  local wrap; wrap="$(turn_wrap_flags "$sel")"
   [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
                  || warn "$sel has no wrap/srtp obfuscation flags — installing plain (-listen/-connect only)."
-  ask "Extra server flags (optional)" "" extra
-  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap${extra:+ $extra}"
+  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap"
 }
 write_turn_record(){   # record detected turn-proxies for the panel (Phase 2: direct-vs-turn + wrap key for client configs)
   detect_turn; local json="" sep="" n

@@ -6,21 +6,30 @@ Two images and one compose file with three profiles.
 
 `install-docker.sh` (via `bootstrap.sh docker`) installs Docker if missing, stages the
 project under `/opt/swg-panel-docker`, writes `.env`, and brings up a profile — passing the
-profile as a bare word (`host` / `node` / `host-node`) and **prompting for what it needs**:
+entry point as a bare word (`host` / `node`) and **prompting for what it needs**:
 
 ```
-# panel        — asks for a domain + TLS choice (login auto-generated; change it later in the panel)
+# panel        — Step 1 asks the role (master/host), then a domain + TLS choice (login auto-generated)
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
 # entry server — asks for the panel URL + key (from Nodes → Add node) + endpoint
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
-# panel + a local node
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host-node
 ```
 
-Flags skip the matching prompt (the panel's enroll command uses them): `-pass`, `-domain`,
-`-base` (subpath, e.g. `/swg`), `-port`, `-tls letsencrypt|cloudflare|cf15|selfsigned|none`,
-`-email`, `-cf-token`, `-cf-origin`, `-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`.
-`--profile <p>` also still works. By default the installer **pulls** prebuilt images and stages
+**`docker host` mirrors bare-metal** (`install-host.sh`): Step 1 asks the **role** —
+**master** (panel + this box also runs WG/AWG as a co-located node container) or **host**
+(panel only). `master` is the default and maps to the `host-node` compose profile, and it
+**auto-enrolls** the local node in a single pass — the installer mints the node's token, writes
+its `nodes.json` entry before `compose up`, and passes the token to the node container, so there
+is no "bring up the panel, add a node, copy the key, re-run" round-trip. **host** deploys nodes
+separately with `docker node` (the panel prints that command under **Nodes → Add node**).
+
+Flags skip the matching prompt (the panel's enroll command uses them): `-role master|host`,
+`-pass`, `-domain`, `-base` (subpath, e.g. `/swg`), `-port`,
+`-tls letsencrypt|cloudflare|cf15|selfsigned|none`, `-email`, `-cf-token`, `-cf-origin`,
+`-key`, `-host`, `-endpoint`, `-iface`, `-ifaces`. `--profile host|node|host-node` also still
+works (`host-node` ⇒ the master role); the bare word `master` is an alias for `host` + master.
+
+By default the installer **pulls** prebuilt images and stages
 only `docker-compose.yml` + `.env` (no source/build context on the host); pass **`--build`** to
 stage the full source and build the images locally instead. Re-run from `/opt/swg-panel-docker`
 after editing `.env`: `docker compose --profile <p> up -d`.
@@ -51,16 +60,17 @@ by you.
 ## By hand
 
 ```
-docker compose --profile host up -d         # panel only
-docker compose --profile node up -d         # entry server only
-docker compose --profile host-node up -d    # panel + a local entry server
+docker compose --profile host up -d         # panel only            (installer role: host)
+docker compose --profile node up -d          # entry server only
+docker compose --profile host-node up -d    # panel + a local node  (installer role: master)
 ```
 
 Copy `.env.example` to `.env` and set the values (`PANEL_PASSWORD` is required). The flow
 matches bare-metal: bring up the panel, **Nodes → Add node** to mint a key, set
 `NODE_TOKEN`, then start the node profile. For `host-node`, point the node at the panel's
-service name: `PANEL_URL=https://swg-panel:8443`. Set `PANEL_BASE=/swg` to mount the panel
-under a subpath.
+service name: `PANEL_URL=https://swg-panel:8443`. (The installer's **master** role does this
+`host-node` bring-up *and* the node enrollment for you in one pass.) Set `PANEL_BASE=/swg` to
+mount the panel under a subpath.
 
 ## Images
 
@@ -101,7 +111,7 @@ it. All managed interfaces sync to the panel and appear in the Nodes screen.
 
 ## Turn-proxy
 
-`docker node` / `docker host-node` run a **TURN-PROXY** step after `compose up` (same as
+`docker node` / `docker host` (master role) run a **TURN-PROXY** step after `compose up` (same as
 bare-metal): it installs [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) as a
 **host** systemd service forwarding to the container's published wg port
 (`-connect 127.0.0.1:<NODE_LISTEN_PORT>`). Press Enter to skip, or `new` to install a fork.

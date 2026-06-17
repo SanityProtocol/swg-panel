@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 # install-docker.sh — one-line Docker installer for swg-panel.
 #
-#   Panel only:        … | sudo bash -s docker -pass SECRET -domain panel.example.net
-#   Panel + a node:    … | sudo bash -s docker --profile host-node -pass SECRET -key KEY -endpoint 203.0.113.7
-#   Node only:         … | sudo bash -s docker --profile node -key KEY -host https://panel.example.net -endpoint 203.0.113.7
+#   Panel (host):      … | sudo bash -s docker host   -pass SECRET -domain panel.example.net
+#   Node only:         … | sudo bash -s docker node   -key KEY -host https://panel.example.net -endpoint 203.0.113.7
+#
+# `docker host` is the panel entry point: Step 1 asks the role — master or host — exactly
+# like bare-metal (install-host.sh):
+#   master  panel + this box also runs WG/AWG (a co-located node container), auto-enrolled
+#           in ONE pass — no "add the node in the panel first". (compose profile: host-node)
+#   host    panel only; WG/AWG nodes are deployed separately with `docker node` (the panel's
+#           Nodes → Add node screen prints the command). (compose profile: host)
+# `docker node` is the entry point for a separate node box. Pass -role master|host to skip
+# the Step 1 prompt; `master` / `host-node` as the bare word also force the master role.
 #
 # Ensures Docker is present, stages the project under /opt/swg-panel-docker, writes a
 # .env, and brings up the chosen compose profile. Run as root. --dry-run renders the
 # .env under ./dryrun and runs no Docker commands.
 #
-#   --profile host|node|host-node   which compose profile (default host)
+#   -role master|host               role for the `host` entry (skips the Step 1 prompt)
+#   --profile host|node|host-node   pick the compose profile directly (host-node ⇒ master)
 #   -pass <pw>      panel admin password     (-> PANEL_PASSWORD)
 #   -domain <host>  panel domain/IP for cert (-> PANEL_DOMAIN)
 #   -port <n>       host port for the panel  (-> PANEL_PORT, default 8443)
@@ -21,6 +30,9 @@ set -euo pipefail
 
 # ───────────────────────── config (env or flags) ─────────────────────────
 PROFILE="${PROFILE:-host}"
+ROLE="${ROLE:-}"                        # master | host — asked in Step 1 when the entry is `host`.
+                                        # master ⇒ host-node compose profile (panel + a co-located,
+                                        # auto-enrolled node container); mirrors bare-metal master.
 BUILD="${BUILD:-false}"                 # true = build images from source (stages full context); default pulls from GHCR
 INSTALL_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 # Panel
@@ -37,6 +49,8 @@ PANEL_PORT="${PANEL_PORT:-}"           # host-published port; blank = derive fro
 # Node
 PANEL_URL="${PANEL_URL:-}"
 NODE_TOKEN="${NODE_TOKEN:-}"
+NODE_NAME="${NODE_NAME:-}"             # local node's name in the panel (master); blank = this host's hostname
+NODE_COLOR="${NODE_COLOR:-#34d399}"   # local node's swatch in the panel (master); bare-metal's first palette colour
 NODE_ENDPOINT="${NODE_ENDPOINT:-${ENDPOINT_IP:-}}"
 NODE_IFACE="${NODE_IFACE:-awg0}"
 NODE_IFACES="${NODE_IFACES:-}"         # several interfaces: "name:port:addr[:proto],…"
@@ -181,16 +195,37 @@ EOF
   run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
   ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"; }
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
-  local sel="$1" owner pub port connect extra; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
+  local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
+  echo
   ask_valid "Turn-proxy listen port" "56000" port v_freeport "port 1–65535 and free (not already in use)"
   detect_turn; local n; for n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$n' — pick another port (enter 'new' again)"; return 0; }; done
-  ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${NODE_LISTEN_PORT:-51820}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
-  local wrap extra; wrap="$(turn_wrap_flags "$sel")"
+  local defport="${NODE_LISTEN_PORT:-51820}" _e _nm _pt _pr label clabel pad _ifs
+  echo
+  echo "  Available wg/awg interfaces:"
+  if [ -n "$NODE_IFACES" ]; then
+    IFS=',' read -ra _ifs <<< "$NODE_IFACES"
+    defport="$(printf '%s' "${_ifs[0]}" | cut -d: -f2)"
+    for _e in "${_ifs[@]}"; do
+      _nm="$(printf '%s' "$_e"|cut -d: -f1)"; _pt="$(printf '%s' "$_e"|cut -d: -f2)"; _pr="$(printf '%s' "$_e"|cut -d: -f4)"
+      [ "$_pr" = wg ] && _pr=wg || _pr=awg
+      label="$_nm on $_pr"; clabel="$(col "$C_GREEN" "$_nm") on $(b "$_pr")"
+      pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
+      printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$_pt")"
+    done
+  else
+    _pr=awg; [ "${NODE_PLAIN_WG:-}" = yes ] && _pr=wg
+    label="$NODE_IFACE on $_pr"; clabel="$(col "$C_GREEN" "$NODE_IFACE") on $(b "$_pr")"
+    pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
+    printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$defport")"
+  fi
+  echo
+  ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${defport}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
+  echo
+  local wrap; wrap="$(turn_wrap_flags "$sel")"
   [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
                  || warn "$sel has no wrap/srtp obfuscation flags — installing plain (-listen/-connect only)."
-  ask "Extra server flags (optional)" "" extra
-  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap${extra:+ $extra}"; }
+  install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap"; }
 write_turn_record(){ detect_turn; local json="" sep="" n
   for n in "${!TP_LISTEN[@]}"; do json+="$sep    { \"service\": \"$n\", \"listen\": \"${TP_LISTEN[$n]}\", \"connect\": \"${TP_CONNECT[$n]}\", \"wrap_key\": \"${TP_WRAP[$n]}\" }"; sep=$',\n'; done
   writef "$TURN_RECORD" 640 <<EOF
@@ -225,7 +260,9 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile)              PROFILE="${2:-host}"; shift 2 || shift;;
+    master)                 PROFILE=host; ROLE=master; shift;;   # bare-metal-style role word → master = host-node
     host|node|host-node)    PROFILE="$1"; shift;;          # bare positional profile (e.g. "docker node")
+    -role|--role)           ROLE="${2:-}"; shift 2 || shift;;    # master|host — skips the Step 1 role prompt
     -pass|--pass|-password) PANEL_PASSWORD="${2:-}"; shift 2 || shift;;
     -user|--user|-username) PANEL_USER="${2:-}"; shift 2 || shift;;
     -domain|--domain)       PANEL_DOMAIN="${2:-}"; shift 2 || shift;;
@@ -247,6 +284,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$PROFILE" in host|node|host-node) ;; *) die "profile must be host|node|host-node";; esac
+[ "$PROFILE" = host-node ] && ROLE=master                       # explicit host-node profile ⇒ master
+case "$ROLE" in ""|master|host) ;; *) die "role must be master|host";; esac
 [ -n "$PANEL_BASE" ] && PANEL_BASE="/$(printf '%s' "$PANEL_BASE" | sed 's#^/*##; s#/*$##')"
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
@@ -345,20 +384,33 @@ ask_node_iface(){    # Step 1 — WG/AWG interface (container-managed) + its end
   NODE_ENDPOINT="";    ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$NODE_IFACE") (this interface's public IP/host)" "$d_ep" NODE_ENDPOINT v_host "enter an IP address or hostname"
   return 0
 }
+ask_role(){          # Step 1 (panel entry) — master (panel + local node) or host (panel only); mirrors bare-metal
+  echo
+  echo "$(b 'Step 1. Server role')"
+  echo
+  menu "$(b "$(col "$C_BLUE" 'master (default)')")" "Panel + this box also runs WG/AWG interfaces — a co-located, auto-enrolled node container"
+  menu "$(col "$C_BLUE" host)"                       "Panel only; WG/AWG nodes are deployed separately (run their command from the panel)"
+  ask_choice "Select role" "master" ROLE "master host"
+}
 case "$PROFILE" in
-  host)
+  host|host-node)
+    [ -n "$ROLE" ] || ask_role
+    [ "$ROLE" = master ] && PROFILE=host-node || PROFILE=host
     echo; info "PANEL SETUP"
     ask_panel_login; ask_panel_tls
-    NODE_TOKEN="${NODE_TOKEN:-set-in-nodes-screen}"; PANEL_URL="${PANEL_URL:-https://swg-panel:8443}"; NODE_ENDPOINT="${NODE_ENDPOINT:-127.0.0.1}"
-    ;;
-  host-node)
-    echo; info "PANEL SETUP"
-    ask_panel_login; ask_panel_tls
-    PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
-    TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
-    echo; info "NODE SETUP"
-    ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "bring up 'docker host' first, add the node, then re-run as host-node with this key"
-    ask_node_iface
+    if [ "$PROFILE" = host-node ]; then
+      PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
+      TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
+      echo; info "NODE SETUP"
+      ask_node_iface
+      # single-pass auto-enroll (mirrors bare-metal master): mint the local node's token NOW so it
+      # flows into .env below; its pbkdf2 hash + nodes.json entry are written just before compose up.
+      [ -n "$NODE_NAME" ]  || NODE_NAME="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)"
+      [ -n "$NODE_TOKEN" ] || NODE_TOKEN="$(head -c18 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
+      AUTOENROLL=yes
+    else
+      NODE_TOKEN="${NODE_TOKEN:-set-in-nodes-screen}"; PANEL_URL="${PANEL_URL:-https://swg-panel:8443}"; NODE_ENDPOINT="${NODE_ENDPOINT:-127.0.0.1}"
+    fi
     ;;
   node)
     echo; info "NODE SETUP"
@@ -442,6 +494,33 @@ if [ "$PROFILE" != node ]; then
   $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth" \
                    "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
   RECREATE="--force-recreate"
+fi
+
+# ── master (host-node): auto-enroll the local node in ONE pass (mirrors bare-metal master) ──
+# Write the node into ./data/lib/nodes.json BEFORE compose up. The panel entrypoint only seeds
+# an empty {} when nodes.json is MISSING, so this pre-written file wins; the node container gets
+# the matching raw token via NODE_TOKEN (.env). No "add the node in the panel first" round-trip.
+# Merge into any existing nodes.json so a reinstall keeps other (remote) nodes intact.
+if [ "${AUTOENROLL:-}" = yes ] && ! $DRYRUN; then
+  ndir="$PREFIX$INSTALL_DIR/data/lib"; mkdir -p "$ndir"
+  if python3 - "$ndir/nodes.json" "$NODE_NAME" "$NODE_TOKEN" "$NODE_COLOR" <<'PY'
+import sys, os, json, hashlib, base64
+path, name, token, color = sys.argv[1:5]
+salt = os.urandom(16)
+h = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, 200000)
+th = "pbkdf2_sha256$200000$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(h).decode()
+try:
+    nodes = json.load(open(path))
+    assert isinstance(nodes, dict)
+except Exception:
+    nodes = {}
+nodes[name] = {"name": name, "color": color, "endpoint_host": "",
+               "stats_file": "stats-%s.json" % name, "token_hash": th, "created": 0}
+json.dump(nodes, open(path, "w"), indent=2)
+PY
+  then chmod 600 "$ndir/nodes.json" 2>/dev/null || true
+       ok "auto-enrolled local node $(col "$C_GREEN" "$NODE_NAME") (single-pass master — no key to paste)"
+  else warn "couldn't pre-write nodes.json — add the node in the panel (Nodes → Add node) and set NODE_TOKEN in .env"; fi
 fi
 
 # ───────────────────────── bring it up ─────────────────────────

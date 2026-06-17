@@ -170,19 +170,21 @@ Live status (online, partial, dangling, …) is computed every refresh from the 
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
 # entry server (node)
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
-# panel + a local node
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host-node
 ```
 
-Flags skip the prompts (the panel's enroll command uses them): `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
+`docker host` is the panel entry point — **Step 1 asks the role, exactly like bare-metal**: **master** (panel + this box also runs WG/AWG as a co-located node container, auto-enrolled in one pass) or **host** (panel only; deploy nodes separately with `docker node`, whose command the panel prints under **Nodes → Add node**). `master` is the default.
+
+Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
 **Or by hand** — one compose file, three profiles:
 
 ```
-docker compose --profile host up -d         # panel only
+docker compose --profile host up -d         # panel only          (installer role: host)
 docker compose --profile node up -d         # entry server only
-docker compose --profile host-node up -d    # panel + local entry server
+docker compose --profile host-node up -d    # panel + local node  (installer role: master)
 ```
+
+(The installer's **master** role maps to the `host-node` profile and additionally **auto-enrolls** the local node; by hand you'd add the node in **Nodes → Add node** and set `NODE_TOKEN` yourself.)
 
 Configure via `.env` (copied from `.env.example`):
 

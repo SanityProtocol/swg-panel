@@ -1,12 +1,14 @@
 # swg-panel — Docker. Copy .env.example to .env and fill it, then pick a profile:
 #
-#   Panel only (host):      docker compose --profile host up -d
+#   Panel only (host):      docker compose --profile host up -d        # installer role: host
 #   Node only:              docker compose --profile node up -d
-#   Panel + local node:     docker compose --profile host-node up -d
+#   Panel + local node:     docker compose --profile host-node up -d   # installer role: master
 #
-# Nodes reach the panel over OUTBOUND HTTPS. Create each node in the panel's Nodes
-# screen to get its NODE_TOKEN. For host-node, set PANEL_URL=https://swg-panel:8443
-# (the panel's service name on the compose network).
+# install-docker.sh exposes two entry points (`docker host` / `docker node`) and asks the
+# role in Step 1 — the `master` role brings up this host-node profile AND auto-enrolls the
+# local node (no manual NODE_TOKEN). By hand: create each node in the panel's Nodes screen
+# to get its NODE_TOKEN. Nodes reach the panel over OUTBOUND HTTPS. For host-node, set
+# PANEL_URL=https://swg-panel:8443 (the panel's service name on the compose network).
 services:
   swg-panel:
     # Pulls the prebuilt multi-arch image from GHCR (no local build, no Docker Hub limit).
