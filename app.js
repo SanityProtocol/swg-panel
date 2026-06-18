@@ -1838,7 +1838,7 @@ function TargetPicker({ prefill, exclude, onChange }) {
     const k = tkey(node, iface);
     setSel(s => ({ ...s, [k]: { node, iface, ip: "", ipHint: "finding a free address…" } }));
     const r = await api.nextIp([node], iface);
-    setSel(s => s[k] ? { ...s, [k]: { node, iface, ip: r.ok ? r.data.next_ip : "", ipHint: r.ok ? "" : (r.error || "no free address") } } : s);
+    setSel(s => s[k] ? { ...s, [k]: { node, iface, ip: r.ok ? String(r.data.next_ip).split("/")[0] : "", ipHint: r.ok ? "" : (r.error || "no free address") } } : s);
   };
   const toggle = (node, iface) => {
     const k = tkey(node, iface);
@@ -2042,7 +2042,7 @@ function AddTargetSheet({ peer }) {
   useEffect(() => {                                  // then pick a free address for server+interface
     if (!node || !iface) { setIp(""); setIpHint(""); return; }
     setIp(""); setIpHint("finding a free address on " + Store.nodeName(node) + "…");
-    api.nextIp([node], iface).then(r => { if (r.ok) { setIp(r.data.next_ip); setIpHint("Next free address."); } else { setIp(""); setIpHint(r.error || "couldn't pick an address"); } });
+    api.nextIp([node], iface).then(r => { if (r.ok) { setIp(String(r.data.next_ip).split("/")[0]); setIpHint("Next free address."); } else { setIp(""); setIpHint(r.error || "couldn't pick an address"); } });
   }, [node, iface]);
 
   const ipBad = ip.trim() && !V.ipv4(ip.trim().split("/")[0]);
