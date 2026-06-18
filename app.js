@@ -697,6 +697,7 @@ function Overview() {
       color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.id) }));
 
   return html`<div class="screen">
+    <${StoreOffBanner}/>
     <div class="statgrid">
       <a class="stat accent clk" href="#/connections"><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${peers.length}</small></div><div class="sub">live connections →</div></div></a>
       <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">Users</div><div class="v">${users.length}</div><div class="sub">${peers.length} peers total</div></div></a>
@@ -921,6 +922,15 @@ function OrphanRow({ o }) {
 
 // ═════════════════════════ SCREEN: PEERS (by node) ═════════════════════════
 const peersView = { node: "", iface: "", q: "" };
+// Prominent warning when the panel keeps no client configs at rest — QRs/downloads then only work
+// in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.
+function StoreOffBanner() {
+  if (Store.storeConfigs) return null;
+  return html`<div class="banner warn"><${Ic} i="warn"/><div class="banner-body">
+    <b>Config storage is off.</b> Client configs (with their private keys) aren't kept on the panel, so QR codes and
+    downloads only work right after a peer is created — existing peers can't be re-shared. To keep them, set
+    <code>"store_configs": true</code> in <code>fleet.json</code> on the panel host and restart the panel.</div></div>`;
+}
 function PeersScreen() {
   useStore();
   const [, force] = useState(0);
@@ -941,6 +951,7 @@ function PeersScreen() {
   const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
 
   return html`<div class="screen">
+    <${StoreOffBanner}/>
     <div class="toolbar">
       <div class="search"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${peersView.q}
         onInput=${e => { peersView.q = e.target.value.trim(); force(x => x + 1); }}/></div>
@@ -2103,14 +2114,21 @@ function PeerViewSheet({ pid, node, iface }) {
     <div class="lbl" style="margin:4px 2px">Deployments · ${p.targets.length}</div>
     <div class="pv-deps">${p.targets.map(t => {
       const obs = t.observed;
+      const proto = (t.type || "").toLowerCase();
+      const hasTurn = t.via === "turn" || turnProxiesFor(t.node, t.iface).length;
       return html`<div class=${"pv-dep" + (node === t.node && iface === t.iface ? " hl" : "")} key=${tkey(t.node, t.iface)}>
-        <div class="pv-dep-top"><span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online)}</span><span class="grow"></span><${Badge} s=${t.status}/></div>
-        <div class="pv-dep-rows">
-          <span><span class="k">Server</span> ${Store.nodeName(t.node)} · ${t.iface}</span>
+        <div class="pv-dep-top"><${Badge} s=${t.status}/>
+          <span class="tags">
+            <${Tag} kind=${proto === "awg" ? "awg" : "wg"} label=${proto === "awg" ? "awg" : "wg"} muted=${!t.online}/>
+            ${hasTurn ? html`<${Tag} kind="turn" label="turn" muted=${!t.online}/>` : null}
+          </span></div>
+        <div class="pv-dep-grid">
+          <span><span class="k">Server</span> ${Store.nodeName(t.node)}</span>
+          <span><span class="k">Interface</span> ${t.iface}</span>
           <span><span class="k">Address</span> <span class="addr">${t.ip || "—"}</span></span>
-          <span><span class="k">Last</span> ${seen(obs ? obs.handshake_age : null)}</span>
           <span><span class="k">Rate</span> ${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</span>
           <span><span class="k">Total</span> <span class="addr">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} ↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span>
+          <span><span class="k">Last</span> ${seen(obs ? obs.handshake_age : null)}</span>
         </div></div>`;
     })}</div>
   <//>`;
