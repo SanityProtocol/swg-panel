@@ -1957,7 +1957,20 @@ function AddTargetSheet({ peer }) {
   const [iface, setIface] = useState(""); const [node, setNode] = useState("");
   const [ip, setIp] = useState(""); const [ipHint, setIpHint] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  const srcConf = anySessionConf(peer.pubkey);
+  // source config (holds the client's private key) to rebuild the copy's QR: session first, then
+  // the panel's stored copy when store_configs is on — so copy works across sessions, not just the
+  // one the peer was created in. Any target's config carries the same key.
+  const [srcConf, setSrcConf] = useState(() => anySessionConf(peer.pubkey));
+  const [confLoaded, setConfLoaded] = useState(() => !!anySessionConf(peer.pubkey) || !Store.storeConfigs);
+  useEffect(() => {
+    if (srcConf || !Store.storeConfigs) { setConfLoaded(true); return; }
+    let ok = true;
+    (async () => {
+      for (const t of peer.targets) { const c = await getConfig(peer.pubkey, t.node, t.iface); if (c) { if (ok) setSrcConf(c); break; } }
+      if (ok) setConfLoaded(true);
+    })();
+    return () => { ok = false; };
+  }, [peer.id]);
 
   const have = new Set(peer.targets.map(t => tkey(t.node, t.iface)));
   const ifaceList = useMemo(() => { const s = new Set(); Object.values(Store.describe).forEach(ifs => Object.keys(ifs || {}).forEach(i => s.add(i))); return Array.from(s); }, [Store.describe]);
@@ -1992,8 +2005,11 @@ function AddTargetSheet({ peer }) {
   };
 
   return html`<${Sheet} title=${"Copy peer to another interface"}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${deploy}>Deploy</button></>`}>
-    ${!srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>The client's private key isn't in this session, so a fresh QR can't be shown for the copy${Store.storeConfigs ? "" : " (enable store_configs, or copy right after creating)"}. The target is still added with the same key + PSK.</span></div>` : null}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !confLoaded} onClick=${deploy}>Deploy</button></>`}>
+    ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
+      : !srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
+          ? "This peer was created before configs were stored, so its private key is gone here — the copy is added with the same key + PSK, but a fresh QR / config can't be generated. Re-issue (rotate keys) to get a downloadable config."
+          : "store_configs is off, so the client's private key isn't kept — a fresh QR can't be shown unless you copy right after creating. The target is still added with the same key + PSK."}</span></div>` : null}
     <div class="field"><label>Interface</label>
       <select class="selwrap" value=${iface} onChange=${e => setIface(e.target.value)}>
         ${ifaceList.length ? ifaceList.map(i => html`<option value=${i}>${i}</option>`) : html`<option>…</option>`}
