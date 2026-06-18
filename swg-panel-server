@@ -99,10 +99,11 @@ STATIC = {
     "/vendor/hooks.module.js": "vendor/hooks.module.js",
     "/vendor/htm.module.js": "vendor/htm.module.js",
     # self-hosted fonts (offline-safe; no third-party fetch)
-    "/vendor/fonts/martian-mono-400.woff2": "vendor/fonts/martian-mono-400.woff2",
-    "/vendor/fonts/martian-mono-600.woff2": "vendor/fonts/martian-mono-600.woff2",
+    "/vendor/fonts/jetbrains-mono-400.woff2": "vendor/fonts/jetbrains-mono-400.woff2",
+    "/vendor/fonts/jetbrains-mono-500.woff2": "vendor/fonts/jetbrains-mono-500.woff2",
     "/vendor/fonts/hanken-400.woff2": "vendor/fonts/hanken-400.woff2",
     "/vendor/fonts/hanken-500.woff2": "vendor/fonts/hanken-500.woff2",
+    "/vendor/fonts/hanken-600.woff2": "vendor/fonts/hanken-600.woff2",
     "/vendor/fonts/hanken-700.woff2": "vendor/fonts/hanken-700.woff2",
 }
 CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css",

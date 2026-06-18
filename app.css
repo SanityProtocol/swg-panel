@@ -1,20 +1,21 @@
 /* swg-panel — "Relay": a covert network-operations instrument.
    Self-hosted fonts (offline-safe, no third-party fetch). Cool blue-slate field,
    one warm-amber signal, a cool jewel-tone status spectrum. */
-@font-face{font-family:"Martian Mono";src:url(vendor/fonts/martian-mono-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:"Martian Mono";src:url(vendor/fonts/martian-mono-600.woff2) format("woff2");font-weight:600;font-style:normal;font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url(vendor/fonts/jetbrains-mono-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"JetBrains Mono";src:url(vendor/fonts/jetbrains-mono-500.woff2) format("woff2");font-weight:500;font-style:normal;font-display:swap}
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-500.woff2) format("woff2");font-weight:500;font-style:normal;font-display:swap}
+@font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-600.woff2) format("woff2");font-weight:600;font-style:normal;font-display:swap}
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-700.woff2) format("woff2");font-weight:700;font-style:normal;font-display:swap}
 :root{
-  --bg:#0A0E14; --bg2:#070A0F; --surface:#0F141C; --surface-2:#0C111A; --raise:#161E2A;
-  --line:#1C2735; --line-bright:#29374955; --line-solid:#2A3A4E;
-  --ink:#E6EDF5; --ink-2:#C4D2E2; --dim:#92A5BC; --faint:#566A80;
-  --online:#46D8A8; --ready:#5BC8F0; --pending:#97A6F2; --partial:#EE9F4A;
-  --dangling:#F26D7D; --orphan:#B79BD6; --unknown:#62748B; --removing:#EE9F4A;
-  --brand:#F0B23E; --brand-2:#F6C766; --brand-ink:#1A1205;
+  --bg:#0A0E15; --bg2:#070A10; --surface:#10151E; --surface-2:#0C1019; --raise:#161D29;
+  --line:#1D2734; --line-bright:#2A3A4E55; --line-solid:#2A3A4E;
+  --ink:#E7EEF6; --ink-2:#C2D0E0; --dim:#8EA0B7; --faint:#536679;
+  --online:#3FD89A; --ready:#4FA8F0; --pending:#9A8BF0; --partial:#E2C84A;
+  --dangling:#F26B82; --orphan:#B79BD6; --unknown:#62748B; --removing:#E2C84A;
+  --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A;
   --sans:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
-  --mono:"Martian Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
   --r:11px; --r-sm:8px; --shadow:0 24px 60px -14px rgba(0,0,0,.62);
   --ease:cubic-bezier(.2,.7,.2,1);
 }
@@ -32,7 +33,7 @@ body{
 .mono{font-family:var(--mono)}
 .dim{color:var(--dim)} .faint{color:var(--faint)}
 a{color:inherit;text-decoration:none}
-::selection{background:rgba(240,178,62,.26);color:#fff}
+::selection{background:rgba(31,200,214,.26);color:#fff}
 :focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:5px}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 button{font-family:inherit}
@@ -44,10 +45,10 @@ h1,h2,h3{font-family:var(--sans)}
 .brand{display:flex;align-items:center;gap:10px}
 /* indicator-LED mark: an amber status light */
 .brand-mark{width:15px;height:15px;border-radius:5px;background:radial-gradient(circle at 50% 38%,var(--brand-2),var(--brand));
-  box-shadow:0 0 0 1px rgba(240,178,62,.35),0 0 13px rgba(240,178,62,.5);position:relative}
+  box-shadow:0 0 0 1px rgba(31,200,214,.35),0 0 13px rgba(31,200,214,.5);position:relative}
 .brand-mark::after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--bg)}
-.brand-name{font-family:var(--mono);font-weight:600;letter-spacing:-.02em;font-size:13px;color:var(--brand)}
-.brand-name span{color:var(--ink-2)}
+.brand-name{font-weight:700;letter-spacing:.01em;font-size:14.5px;color:var(--brand)}
+.brand-name span{color:var(--ink-2);font-weight:600}
 .appver{font-family:var(--mono);font-size:10.5px;color:var(--faint);white-space:nowrap;letter-spacing:-.02em}
 .appver b{color:var(--dim);font-weight:600}
 .tabs{display:flex;gap:2px}
@@ -56,7 +57,7 @@ h1,h2,h3{font-family:var(--sans)}
 .tabs a:hover{color:var(--ink-2)}
 .tabs a.active{color:var(--ink)}
 .tabs a.active::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;border-radius:2px;
-  background:var(--brand);box-shadow:0 0 9px rgba(240,178,62,.55)}
+  background:var(--brand);box-shadow:0 0 9px rgba(31,200,214,.55)}
 .appbar-right{margin-left:auto;display:flex;align-items:center;gap:14px}
 .livepill{display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   color:var(--dim);font-family:var(--mono);padding:5px 11px;border:1px solid var(--line-solid);border-radius:99px;background:var(--surface-2)}
@@ -99,7 +100,7 @@ h1,h2,h3{font-family:var(--sans)}
 a.stat{text-decoration:none;color:inherit;display:block;transition:border-color .15s var(--ease),background .15s var(--ease)}
 a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 .stat .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:500;display:flex;align-items:center;gap:6px}
-.stat.accent{border-color:rgba(240,178,62,.28)}
+.stat.accent{border-color:rgba(31,200,214,.28)}
 .stat .v{font-family:var(--mono);font-size:23px;font-weight:600;color:var(--ink);margin-top:6px;letter-spacing:-.02em;line-height:1.1}
 .stat .v small{font-size:13px;color:var(--dim);font-weight:500}
 .stat .sub{font-size:11.5px;color:var(--faint);margin-top:3px;font-family:var(--mono)}
