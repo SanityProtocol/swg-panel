@@ -462,7 +462,7 @@ function DepBadge({ others }) {
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>
       ${others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
         <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
-        <${Tag} kind=${(d.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${d.iface}/>
+        <${Tag} kind=${(d.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${d.iface} muted=${!d.online}/>
         <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
     </div>` : null}
   </span>`;
@@ -1012,7 +1012,7 @@ function PeersScreen() {
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
             ${agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
               ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-              ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface}/>` : null}
+              ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
             </div></td>` : null}
             <td data-label="User" onClick=${e => e.stopPropagation()}>
               ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
