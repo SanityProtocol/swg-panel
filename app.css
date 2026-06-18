@@ -746,6 +746,7 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .pv-id{flex:1;min-width:0}
 .pv-title{font-size:16px;font-weight:600;color:var(--ink)}
 .pv-sub{font-size:13px;color:var(--dim)}
+.pv-sub .pv-user{color:var(--ready)} .pv-sub .pv-user:hover{text-decoration:underline}
 .pv-deps{display:flex;flex-direction:column;gap:8px}
 .pv-dep{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;background:var(--surface-2)}
 .pv-dep.hl{border-color:var(--brand)}
