@@ -1496,28 +1496,34 @@ function NodeHealth({ health, node, compact, history }) {
 
 function NodeCard({ n }) {
   const st = n.status || "dangling";
-  const stTxt = st === "online" ? "online" : (st === "offline" ? "offline" : "awaiting enroll");
+  const stTxt = st === "online" ? "reporting" : (st === "offline" ? "offline" : "awaiting enroll");
   const sync = st === "dangling" ? "never connected" : (st === "online" ? "synced " + ago(n.last_seen) : "last seen " + ago(n.last_seen));
   const ifTags = ifaceTags(n.id);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
-  return html`<div class="ncard">
+  const removing = n.removing;
+  return html`<div class=${"ncard" + (removing ? " removing" : "")}>
     <div class="ncard-body clk" onClick=${() => go("#/node/" + encodeURIComponent(n.id))}>
-      <div class="ntop"><span class="nsw" style=${{ background: n.color || "#5f7569" }}></span><span class="nname">${n.name}</span><span class="grow"></span><span class="nstat ${st}">${stTxt}</span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
-      <div class="nrows">
-        <div class="nrow"><span class="l">Endpoint</span><span class="r">${n.endpoint_host || "—"}</span></div>
-        <div class="nrow"><span class="l">Peers</span><span class="r">${here.length ? html`<${UsageBar} value=${onl} total=${here.length}/>` : html`<span class="faint">none</span>`}</span></div>
-        <div class="nrow"><span class="l">Throughput</span><span class="r"><span class="down">↓ ${rate(n.rx_speed)}</span> <span class="up">↑ ${rate(n.tx_speed)}</span></span></div>
-        <div class="nrow"><span class="l">Interfaces</span><span class="r">${ifTags.length ? html`<span class="tags">${ifTags}</span>` : "—"}</span></div>
-        <div class="nrow"><span class="l">Sync</span><span class="r">${sync}</span></div>
+      <div class="ntop">
+        <span class="nname">${n.name}</span>
+        <span class=${"tport" + (n.transport === "https" ? " https" : "")}>${n.transport}</span>
+        <span class=${"nstat " + st}>${stTxt}</span>
+        ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span>` : null}
+        <span class="grow"></span>
+        <span class="when nsync">${sync}</span>
+        <span class="rowarrow"><${Ic} i="arrow"/></span>
       </div>
-      ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} node=${n.id} compact=${true}/>` : null}
+      <div class="nmeta">
+        <span class="nm-item"><span class="nm-l">Endpoint</span><span class="nm-v">${n.endpoint_host || "—"}</span></span>
+        <span class="nm-item"><span class="nm-l">Interfaces</span>${ifTags.length ? html`<span class="tags">${ifTags}</span>` : html`<span class="nm-v faint">—</span>`}</span>
+        <span class="nm-item"><span class="nm-l">Peers</span>${here.length ? html`<${UsageBar} value=${onl} total=${here.length}/>` : html`<span class="nm-v faint">none</span>`}</span>
+        <span class="nm-item"><span class="nm-l">Throughput</span><span class="nm-v"><span class="down">↓ ${rate(n.rx_speed)}</span> <span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
+      </div>
     </div>
     <div class="nacts">
-      <button class="btn-mini" onClick=${() => openNodeEdit(n)}>Edit</button>
-      <button class="btn-mini warn" onClick=${() => openNodeRotate(n)}>Rotate token</button>
-      <span style="flex:1"></span>
-      <button class="btn-danger" onClick=${() => openNodeRemove(n)}>Remove</button>
+      <button class="iconbtn" title="Edit node" onClick=${() => openNodeEdit(n)}><${Ic} i="pencil"/></button>
+      <button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(n)}><${Ic} i="key"/></button>
+      <button class="iconbtn danger" title=${removing ? "Force remove" : "Remove node"} onClick=${() => openNodeRemove(n)}><${Ic} i="trash"/></button>
     </div>
   </div>`;
 }
@@ -1990,7 +1996,13 @@ function EditPeerSheet({ peer }) {
 
 // ── node sheets ──
 function SwatchPicker({ value, onChange }) {
-  return html`<div class="swrow">${SWATCHES.map(c => html`<div class=${"swopt " + (c === value ? "sel" : "")} style=${{ background: c }} onClick=${() => onChange(c)}></div>`)}</div>`;
+  return html`<div class="swrow">
+    ${SWATCHES.map(c => html`<button type="button" class=${"swopt " + (c.toLowerCase() === (value || "").toLowerCase() ? "sel" : "")} style=${{ background: c }} title=${c} onClick=${() => onChange(c)}></button>`)}
+    <label class="swopt custom" style=${{ background: value }} title="Custom colour — full palette">
+      <span class="swdrop"><${Ic} i="plus"/></span>
+      <input type="color" value=${value} onInput=${e => onChange(e.target.value)}/>
+    </label>
+  </div>`;
 }
 function openNodeCreate() { openModal(html`<${NodeCreateSheet}/>`); }
 function NodeCreateSheet() {
@@ -2030,20 +2042,20 @@ function NodeTokenSheet({ name, token, isNew }) {
 }
 function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
 function NodeEditSheet({ node }) {
-  const [ep, setEp] = useState(node.endpoint_host || ""); const [color, setColor] = useState(node.color || SWATCHES[0]); const [msg, setMsg] = useState(null);
-  const epBad = ep.trim() && !V.hostOrIp(ep.trim());
+  const [name, setName] = useState(node.name || ""); const [color, setColor] = useState(node.color || SWATCHES[0]); const [msg, setMsg] = useState(null);
+  const nameBad = name.trim() && !V.nodeName(name);
   const save = async () => {
-    if (epBad) return setMsg({ k: "err", t: "Endpoint must be a hostname or IP." });
-    closeModal();   // optimistic: card reflects the edit immediately
+    if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
+    closeModal();   // optimistic: card reflects the rename immediately (name is just a label — no refs to migrate)
     mutate({
       key: "node:" + node.id,
-      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.endpoint_host = ep.trim(); n.color = color; } },
-      call: () => api.nodeUpdate({ id: node.id, endpoint_host: ep.trim(), color }),
+      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; } },
+      call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color }),
     });
   };
   return html`<${Sheet} title=${"Edit " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
-    <div class="field"><label>Public endpoint (host or IP)</label><input class=${epBad ? "bad" : ""} value=${ep} onInput=${e => setEp(e.target.value)} autocomplete="off"/>${epBad ? html`<div class="hint err">Must be a hostname or IP (no scheme/spaces).</div>` : null}</div>
+    <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
