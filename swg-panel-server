@@ -224,6 +224,60 @@ def roster_save(path, roster):
     os.replace(tmp, path)
 
 
+# ─────────────── audit / activity log (panel host only) ───────────────
+# An append-only event log of operator actions, kept ONLY on the panel host next to the
+# roster. Nothing here touches the nodes or the sync wire format — events are recorded
+# in the panel's own API handlers when the admin mutates the roster. Stored as JSON-lines
+# and capped, so it never grows unbounded. Read back newest-first by the Overview.
+
+EVENTS_CAP = 1000          # keep at most this many events
+EVENTS_TRIM_BYTES = 300_000
+
+def events_path(roster_path):
+    return os.path.join(os.path.dirname(roster_path) or ".", "events.jsonl")
+
+
+def ev_append(roster_path, kind, ident, verb, name, detail=""):
+    """Record one operator action. kind=user|peer, verb is the human action
+    ("Created peer"), name is the display label, detail is optional context."""
+    rec = {"ts": int(time.time()), "kind": kind, "id": ident or "",
+           "verb": verb, "name": name or "", "detail": detail or ""}
+    p = events_path(roster_path)
+    try:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        if os.path.getsize(p) > EVENTS_TRIM_BYTES:        # trim to the last EVENTS_CAP lines
+            with open(p) as f:
+                lines = f.readlines()
+            if len(lines) > EVENTS_CAP:
+                tmp = p + ".tmp." + uuid.uuid4().hex[:8]
+                with open(tmp, "w") as f:
+                    f.writelines(lines[-EVENTS_CAP:])
+                os.replace(tmp, p)
+    except OSError:
+        pass          # the log is best-effort; never fail a mutation because it couldn't be recorded
+
+
+def ev_read(roster_path, limit=12):
+    """Return the newest `limit` events, newest first."""
+    p = events_path(roster_path)
+    out = []
+    try:
+        with open(p) as f:
+            lines = f.readlines()
+        for ln in lines[-limit:]:
+            ln = ln.strip()
+            if ln:
+                with contextlib.suppress(Exception):
+                    out.append(json.loads(ln))
+    except OSError:
+        pass
+    out.reverse()
+    return out
+
+
 def gen_id():
     """Short opaque id for users and peers — decoupled from the pubkey so a peer's
     key can rotate in place without losing its identity or history."""
@@ -233,6 +287,16 @@ def gen_id():
 def gen_psk():
     """A WireGuard/AmneziaWG preshared key: 32 random bytes, base64 (stdlib only)."""
     return base64.b64encode(os.urandom(32)).decode()
+
+
+def peer_label(roster, p):
+    """Best display label for a peer in the activity log: title → owner name → unassigned."""
+    if p.get("title"):
+        return p["title"]
+    uid = p.get("user_id")
+    if uid and uid in (roster.get("users") or {}):
+        return (roster["users"][uid] or {}).get("name", "") or "unassigned peer"
+    return "unassigned peer"
 
 
 def clean_target(t):
@@ -680,6 +744,13 @@ def api(method, path, qs, body, deps):
                 ifc["endpoint"] = f"{ep}:{port}" if port else ifc.get("endpoint")
         return 200, d
 
+    if method == "GET" and path == "/api/events":
+        try:
+            limit = max(1, min(50, int((qs.get("limit") or ["12"])[0])))
+        except ValueError:
+            limit = 12
+        return 200, {"ok": True, "data": ev_read(roster_path, limit)}
+
     if method == "GET" and path == "/api/next-ip":
         sel = [n for n in (qs.get("nodes") or [""])[0].split(",") if n]
         iface = (qs.get("iface") or [""])[0]
@@ -704,6 +775,7 @@ def api(method, path, qs, body, deps):
         u = user_set(roster, uid, {"name": name, "tag": (body.get("tag") or "").strip(),
                                    "note": body.get("note", "")}, now())
         roster_save(roster_path, roster)
+        ev_append(roster_path, "user", uid, "Created user", name)
         return 200, {"ok": True, "data": u}
 
     if method == "POST" and path == "/api/users/update":
@@ -718,8 +790,11 @@ def api(method, path, qs, body, deps):
                 fields[k] = v.strip() if (isinstance(v, str) and k != "note") else v
         if "name" in fields and not fields["name"]:
             return 400, {"ok": False, "error": "name cannot be empty", "code": "bad_request"}
+        renamed = "name" in fields
         u = user_set(roster, uid, fields, now())
         roster_save(roster_path, roster)
+        ev_append(roster_path, "user", uid, "Renamed user" if renamed else "Updated user",
+                  u.get("name", ""), "" if renamed else ", ".join(sorted(fields)) or "")
         return 200, {"ok": True, "data": u}
 
     if method == "POST" and path == "/api/users/delete":
@@ -729,12 +804,15 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
         # Deleting a user never silently wipes their peers — they go unassigned. But each
         # is PSK-rotated so the (now ex-)user's saved configs stop working immediately.
+        uname = (roster["users"][uid] or {}).get("name", "")
         freed = 0
         for p in roster["peers"].values():
             if p.get("user_id") == uid:
                 unassign_peer(p, store_configs, config_dir, now()); freed += 1
         del roster["users"][uid]
         roster_save(roster_path, roster)
+        ev_append(roster_path, "user", uid, "Deleted user", uname,
+                  f"{freed} peer{'' if freed == 1 else 's'} unassigned" if freed else "")
         return 200, {"ok": True, "data": {"id": uid, "unassigned_peers": freed}}
 
     # ─────────────── peers (credential + targets) ───────────────
@@ -784,6 +862,8 @@ def api(method, path, qs, body, deps):
         p = peer_set(roster, pid, {"user_id": uid or None, "title": body.get("title", ""),
                                    "pubkey": pubkey, "psk": psk, "targets": targets}, now())
         roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Created peer", peer_label(roster, p),
+                  f"{len(targets)} target{'' if len(targets) == 1 else 's'} · {targets[0]['node']}/{targets[0]['iface']}")
         configs = body.get("configs") or {}
         for t in targets:
             conf = configs.get(t["node"] + "|" + t["iface"])
@@ -814,6 +894,8 @@ def api(method, path, qs, body, deps):
             target["type"] = iface_type(snaps, target["node"], target["iface"])
         p2 = peer_set(roster, pid, {"targets": p["targets"] + [target]}, now())
         roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Added deployment", peer_label(roster, p2),
+                  f"{target['node']}/{target['iface']}")
         save_config(store_configs, config_dir, p["pubkey"], target["node"], target["iface"], body.get("config"))
         return 200, {"ok": True, "data": p2}
 
@@ -833,6 +915,8 @@ def api(method, path, qs, body, deps):
         del_config(store_configs, config_dir, p["pubkey"], node, iface)
         p2 = peer_set(roster, pid, {"targets": kept}, now())
         roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Removed deployment", peer_label(roster, p2),
+                  f"{node}/{iface}")
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/update":
@@ -845,6 +929,7 @@ def api(method, path, qs, body, deps):
         if "title" in body:
             p2 = peer_set(roster, pid, {"title": body.get("title", "")}, now())
             roster_save(roster_path, roster)
+            ev_append(roster_path, "peer", pid, "Renamed peer", peer_label(roster, p2))
             return 200, {"ok": True, "data": p2}
         return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
 
@@ -859,10 +944,12 @@ def api(method, path, qs, body, deps):
             # holder by rotating the PSK). Keeps an assigned peer from vanishing in one click.
             return 409, {"ok": False, "error": "peer is assigned to a user — unassign it first",
                          "code": "assigned"}
+        label = peer_label(roster, p)
         for t in p["targets"]:
             del_config(store_configs, config_dir, p["pubkey"], t["node"], t["iface"])
         del roster["peers"][pid]
         roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Deleted peer", label)
         return 200, {"ok": True, "data": {"id": pid, "deleted": True}}
 
     if method == "POST" and path == "/api/peers/unassign":
@@ -873,8 +960,10 @@ def api(method, path, qs, body, deps):
         p = roster["peers"].get(pid)
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        label = peer_label(roster, p)
         unassign_peer(p, store_configs, config_dir, now())
         roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Unassigned peer", p.get("title") or label)
         return 200, {"ok": True, "data": p}
 
     if method == "POST" and path == "/api/peers/rekey":
@@ -904,6 +993,8 @@ def api(method, path, qs, body, deps):
         psk = body.get("psk") or gen_psk()
         p2 = peer_set(roster, pid, {"user_id": uid, "pubkey": pubkey, "psk": psk}, now())
         roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Assigned peer", peer_label(roster, p2),
+                  "fresh key issued")
         configs = body.get("configs") or {}
         for t in p2["targets"]:
             save_config(store_configs, config_dir, pubkey, t["node"], t["iface"],
@@ -943,6 +1034,8 @@ def api(method, path, qs, body, deps):
             peer_set(roster, pid, {"user_id": uid or None, "pubkey": pubkey,
                                    "psk": body.get("psk") or "", "targets": [target]}, now())
         roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Adopted peer", peer_label(roster, roster["peers"][pid]),
+                  f"{target['node']}/{target['iface']}")
         return 200, {"ok": True, "data": roster["peers"][pid]}
 
     if method == "POST" and path == "/api/peers/save-config":
@@ -975,6 +1068,7 @@ def api(method, path, qs, body, deps):
                        "stats_file": f"stats-{name}.json",
                        "token_hash": make_token_hash(token), "created": now()}
         nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", name, "Enrolled node", name)
         return 200, {"ok": True, "data": {"name": name, "token": token}}
 
     if method == "POST" and path == "/api/nodes/update":
@@ -986,6 +1080,7 @@ def api(method, path, qs, body, deps):
         if "endpoint_host" in body:
             nodes[name]["endpoint_host"] = (body.get("endpoint_host") or "").strip()
         nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", name, "Updated node", name)
         return 200, {"ok": True, "data": {"name": name}}
 
     if method == "POST" and path == "/api/nodes/rotate":
@@ -995,6 +1090,7 @@ def api(method, path, qs, body, deps):
         token = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
         nodes[name]["token_hash"] = make_token_hash(token)
         nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", name, "Rotated node token", name)
         return 200, {"ok": True, "data": {"name": name, "token": token}}
 
     if method == "POST" and path == "/api/nodes/delete":
@@ -1023,6 +1119,7 @@ def api(method, path, qs, body, deps):
                 os.unlink(os.path.join(sd, f"stats-{name}.json"))
             with contextlib.suppress(OSError):
                 os.unlink(os.path.join(sd, f"health-{name}.rrd"))
+        ev_append(roster_path, "node", name, "Removed node", name)
         return 200, {"ok": True, "data": {"name": name}}
 
     return 404, {"ok": False, "error": "not found", "code": "bad_request"}

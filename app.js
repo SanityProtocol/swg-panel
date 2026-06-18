@@ -235,6 +235,7 @@ const api = {
   async get(p) { const r = await fetch(url(p)); return r.json(); },
   async post(p, b) { const r = await fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }); return r.json(); },
   state() { return this.get("/api/state"); },
+  events(limit) { return this.get("/api/events?limit=" + (limit || 12)); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -266,7 +267,7 @@ function useStore() { const [, set] = useState(0); useEffect(() => bus.sub(() =>
 
 const Store = {
   fleet: [], storeConfigs: false, versions: {},
-  roster: { version: 1, users: {}, peers: {} }, stats: {}, nodes: [], describe: {},
+  roster: { version: 1, users: {}, peers: {} }, stats: {}, nodes: [], describe: {}, events: [],
   recon: { peers: [], users: [], orphans: [], nodeStatus: {} },
   sessionConfigs: {},        // pubkey -> { "node|iface" -> confText }   (built at creation, in-memory)
   configEpoch: 0,            // bumps when a config is re-issued, so QR cards re-read it
@@ -281,13 +282,14 @@ const Store = {
   // interface meta + raw snapshots. Status is still derived in the browser via reconcile.js.
   _server: { roster: { version: 1, users: {}, peers: {} }, nodes: [] },   // pristine, last fetched
   async poll() {
-    const s = await api.state();
+    const [s, ev] = await Promise.all([api.state(), api.events().catch(() => null)]);
     const d = (s && s.data) || {};
     this._server = { roster: d.roster || { version: 1, users: {}, peers: {} }, nodes: d.nodes || [] };
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
     this.storeConfigs = !!d.store_configs;
     this.versions = d.versions || this.versions;
+    if (ev && Array.isArray(ev.data)) this.events = ev.data;
     this.apply();
   },
   // Re-derive everything the UI reads from a PRISTINE copy of server data + the optimistic
@@ -500,11 +502,13 @@ function DangerButton({ label, confirm, onConfirm, className }) {
 function FleetNodeCard({ n }) {
   const live = Store.recon.nodeStatus[n.name] === "live";
   const snap = Store.stats[n.name];
+  const nrec = (Store.nodes || []).find(x => x.name === n.name) || {};   // health lives on the node-store record
+  const health = nrec.health || null;
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.name));
   const onl = here.filter(p => p.targets.some(t => t.node === n.name && t.online)).length;
   let nrx = 0, ntx = 0; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { nrx += pp.rx_speed || 0; ntx += pp.tx_speed || 0; }
   let sync = "no data"; if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? "synced " + seen(a) + " ago" : "stale · " + seen(a); }
-  const al = healthAlerts(n.health);
+  const al = healthAlerts(health);
   return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.name)}>
     <div class="fnode-main">
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span><span class="tport">${n.transport}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
@@ -515,22 +519,32 @@ function FleetNodeCard({ n }) {
       </div>
     </div>
     <div class="fnode-health">
-      ${n.health ? html`<${NodeHealth} health=${n.health} node=${n.name} compact=${true}/>` : html`<div class="fnode-nohealth">${live ? "no health data reported" : "node offline"}</div>`}
+      ${health ? html`<${NodeHealth} health=${health} node=${n.name} compact=${true}/>` : html`<div class="fnode-nohealth">${live ? "no health data reported" : "node offline"}</div>`}
     </div>
   </a>`;
 }
 
-// Recent activity from /api/state: created vs updated (modified_at > created_at) per entity.
-// There's no event log, so this is the truthful best — created/updated, not "renamed/assigned".
+// Recent activity comes from the panel's server-side event log (/api/events): real per-action
+// history ("Assigned peer", "Removed deployment", …). Until the log has entries we fall back to
+// the created/updated heuristic derived from created_at vs modified_at, so the feed is never blank.
+const ACT_ICON = { user: "user", peer: "device", node: "server" };
+const ACT_HREF = { user: id => "#/user/" + encodeURIComponent(id), peer: id => "#/peer/" + encodeURIComponent(id), node: id => "#/node/" + encodeURIComponent(id) };
 function recentActivity() {
+  if (Store.events && Store.events.length) {
+    return Store.events.slice(0, 7).map((e, i) => ({
+      ts: e.ts, action: e.verb, name: e.name, detail: e.detail || "",
+      icon: ACT_ICON[e.kind] || "info", kind: e.kind, key: "e" + e.ts + i,
+      href: (ACT_HREF[e.kind] || (() => "#/"))(e.id),
+    }));
+  }
   const ev = [];
   for (const u of Store.recon.users) {
     const c = u.created_at || 0, m = u.modified_at || c;
-    ev.push({ ts: m, action: m > c + 5 ? "Updated user" : "Created user", name: u.name, icon: "user", kind: "user", key: "u" + u.id, href: "#/user/" + encodeURIComponent(u.id) });
+    ev.push({ ts: m, action: m > c + 5 ? "Updated user" : "Created user", name: u.name, detail: "", icon: "user", kind: "user", key: "u" + u.id, href: "#/user/" + encodeURIComponent(u.id) });
   }
   for (const p of Store.recon.peers) {
     const c = p.created_at || 0, m = p.modified_at || c;
-    ev.push({ ts: m, action: m > c + 5 ? "Updated peer" : "Created peer", name: p.title || p.name || "unassigned peer", icon: "device", kind: "peer", key: "p" + p.id, href: "#/peer/" + encodeURIComponent(p.id) });
+    ev.push({ ts: m, action: m > c + 5 ? "Updated peer" : "Created peer", name: p.title || p.name || "unassigned peer", detail: "", icon: "device", kind: "peer", key: "p" + p.id, href: "#/peer/" + encodeURIComponent(p.id) });
   }
   return ev.filter(e => e.ts).sort((a, b) => b.ts - a.ts).slice(0, 7);
 }
@@ -573,6 +587,7 @@ function Overview() {
       <div class="actlist">${recent.map(e => html`<a class="act-row" href=${e.href} key=${e.key}>
         <span class=${"act-ic t-" + e.kind}><${Ic} i=${e.icon}/></span>
         <span class="act-what">${e.action}</span><span class="act-name">${e.name}</span>
+        ${e.detail ? html`<span class="act-detail">${e.detail}</span>` : null}
         <span class="grow"></span><span class="when">${ago(e.ts)}</span></a>`)}</div>
     <//>` : null}
 
