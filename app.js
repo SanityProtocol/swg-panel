@@ -1012,7 +1012,7 @@ function PeersScreen() {
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
             ${agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
               ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-              ${iface === "*" ? html`<${Tag} kind="iface" label=${t.iface} color=${Store.nodeColor(t.node)}/>` : null}
+              ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface}/>` : null}
             </div></td>` : null}
             <td data-label="User" onClick=${e => e.stopPropagation()}>
               ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
