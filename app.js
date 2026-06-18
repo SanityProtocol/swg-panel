@@ -927,13 +927,15 @@ function PeersScreen() {
           const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
           const obs = t.observed;
           const u = p.user_id ? Store.user(p.user_id) : null;
+          const others = p.targets.filter(d => !(d.node === node && d.iface === iface));   // this peer's other deployments
           return html`<tr key=${p.id} class="clk" onClick=${() => openPeerView(p.id, node, iface)}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
             <td data-label="User" onClick=${e => e.stopPropagation()}>
               ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
                   : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeerToUser(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
             <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
-            <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
+            <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${others.length
+              ? html`<span class="depmore" title=${others.map(d => Store.nodeName(d.node) + "/" + d.iface + "  " + (d.ip || "—")).join("\n")}>+${others.length}</span>` : null}</td>
             <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
             <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
             <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} <span class="up">↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span></td>

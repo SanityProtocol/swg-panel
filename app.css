@@ -718,6 +718,10 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 /* ───── peers grid ───── */
 .peergrid .xfer{font-size:11.5px;color:var(--dim)} .peergrid .xfer .up{color:var(--ready)}
 .peergrid td.rowacts{text-align:right;white-space:nowrap}
+/* user cell is a link to the user screen — blue (matches the upload total) so admins know it navigates away */
+.peergrid .namecell{color:var(--ready)} .peergrid .namecell:hover{text-decoration:underline}
+/* extra-deployment count next to the address; native title lists the other node/iface + ip, one per line */
+.depmore{margin-left:7px;color:var(--ready);font-family:var(--mono);font-size:11px;cursor:help}
 .assigncell{display:flex;align-items:center;gap:6px}
 /* searchable user picker */
 .usercombo{position:relative;min-width:150px}
