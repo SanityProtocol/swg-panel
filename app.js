@@ -660,8 +660,25 @@ function NodeDetail({ node: rawName }) {
       ${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}
     </div>
 
+    ${(() => {
+      const ifs = meta ? Object.keys(meta) : [];
+      const tps = (snap && snap.turn_proxies) || [];
+      if (!ifs.length && !tps.length) return null;
+      return html`<div class="nodesummary">
+        ${ifs.length ? html`<div class="nsrow"><span class="nsl">Interfaces</span><span class="tags">${ifs.map(ifn => {
+          const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
+          return html`<a class=${"tg tg-" + type} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
+        })}</span></div>` : null}
+        ${tps.length ? html`<div class="nsrow"><span class="nsl">Turn proxies</span><span class="tags">${tps.map(tp => {
+          const svc = (tp.service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn";
+          const port = portOf(tp.listen) || portOf(tp.connect);
+          return html`<span class="tg tg-turn">${svc}${port ? ":" + port : ""}</span>`;
+        })}</span></div>` : null}
+      </div>`;
+    })()}
+
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online">
-      <div class="healthgrid"><${NodeHealth} health=${nrec.health} node=${name} compact=${false}/></div>
+      <${NodeHealth} health=${nrec.health} node=${name} compact=${false}/>
     <//>` : null}
 
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}>
@@ -1248,33 +1265,55 @@ function HealthMeter({ label, pct, text, tone, spark }) {
     </div>
   </div>`;
 }
-// Per-node health: CPU load (vs cores), memory, disk per mount, uptime. `compact` trims
-// to the essentials for the node card; the detail page shows every mount + uptime + sparklines.
+// Gradient area chart for a history series (0–100). Stretches to its container width;
+// the stroke stays crisp via non-scaling-stroke. Used for the CPU-load history.
+function MiniArea({ points, color, h }) {
+  const pts = (points || []).filter(v => v != null);
+  h = h || 42; const w = 100, max = 100;
+  if (pts.length < 2) return html`<div class="harea-empty">collecting history…</div>`;
+  const n = pts.length, pad = 2;
+  const xy = pts.map((v, i) => [i / (n - 1) * w, h - pad - Math.min(max, Math.max(0, v)) / max * (h - pad * 2)]);
+  const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  const area = "0," + h + " " + line + " " + w + "," + h;
+  const gid = "ha" + (MiniArea._n = (MiniArea._n || 0) + 1);
+  return html`<svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
+    <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color=${color} stop-opacity="0.32"/><stop offset="1" stop-color=${color} stop-opacity="0"/>
+    </linearGradient></defs>
+    <polygon points=${area} fill=${"url(#" + gid + ")"}/>
+    <polyline points=${line} fill="none" stroke=${color} stroke-width="1.4" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+  </svg>`;
+}
+
+// Per-node health: CPU / Memory / Disk on one row (each a third), with the CPU-load history
+// charted below. Same layout compact (node card) or full (detail page); detail just runs taller.
 function NodeHealth({ health, node, compact }) {
   if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
-  // server-side RRD history (survives refresh/restart): {cpu:[],mem:[],disk:[]} per node
-  const hh = (node && (Store.nodes || []).find(n => n.name === node) || {}).health_history || null;
-  const sp = key => (compact || !hh || !hh[key] || hh[key].length < 2) ? null : hh[key];
+  const hh = (node && (Store.nodes || []).find(n => n.name === node) || {}).health_history || null;  // server-side RRD
+  const cpuHist = (hh && Array.isArray(hh.cpu) && hh.cpu.length > 1) ? hh.cpu : null;
   const alerts = healthAlerts(health);
-  const meters = [];
+  const cols = [];
   if (Array.isArray(health.load)) {
     const ncpu = health.ncpu || 1, l1 = health.load[0] || 0;
-    meters.push(html`<${HealthMeter} label="CPU load" pct=${l1 / ncpu * 100} spark=${sp("cpu")}
-      text=${l1.toFixed(2) + (health.load.length > 1 && !compact ? " · " + health.load.slice(1).map(x => x.toFixed(2)).join(" ") : "") + " / " + ncpu + (ncpu === 1 ? " cpu" : " cpus")}/>`);
+    cols.push({ label: "CPU load", pct: l1 / ncpu * 100, text: l1.toFixed(2) + " / " + ncpu + (ncpu === 1 ? " cpu" : " cpus") });
   }
   const m = health.mem;
-  if (m && m.total) {
-    meters.push(html`<${HealthMeter} label="Memory" pct=${m.used / m.total * 100} spark=${sp("mem")} text=${fmtBytes(m.used) + " / " + fmtBytes(m.total)}/>`);
-    if (!compact && m.swap_total) meters.push(html`<${HealthMeter} label="Swap" pct=${m.swap_used / m.swap_total * 100} text=${fmtBytes(m.swap_used || 0) + " / " + fmtBytes(m.swap_total)}/>`);
-  }
-  const disks = health.disk || [];
-  (compact ? disks.slice(0, 1) : disks).forEach((d, i) => {
-    if (!d.total) return;
-    meters.push(html`<${HealthMeter} label=${disks.length > 1 || !compact ? "Disk " + d.mount : "Disk"} pct=${d.used / d.total * 100} spark=${i === 0 ? sp("disk") : null} text=${fmtBytes(d.used) + " / " + fmtBytes(d.total)}/>`);
-  });
+  if (m && m.total) cols.push({ label: "Memory", pct: m.used / m.total * 100, text: fmtBytes(m.used) + " / " + fmtBytes(m.total) });
+  const d0 = (health.disk || [])[0];
+  if (d0 && d0.total) cols.push({ label: "Disk", pct: d0.used / d0.total * 100, text: fmtBytes(d0.used) + " / " + fmtBytes(d0.total) });
   return html`<div class="health">
     ${alerts.length ? html`<div class="halerts">${alerts.map(a => html`<span class=${"halert " + a.sev}><${Ic} i="warn"/> ${a.msg}</span>`)}</div>` : null}
-    ${meters}
+    <div class="health-cols">${cols.map(c => {
+      const p = Math.min(100, Math.max(0, c.pct || 0)), tn = htone(p);
+      return html`<div class="hcol">
+        <div class="hcol-top"><span class="hcol-l">${c.label}</span><span class="hcol-v">${c.text}</span></div>
+        <div class="hm-bar"><i class=${"hm-fill " + tn} style=${"width:" + p + "%"}></i></div>
+      </div>`;
+    })}</div>
+    ${cpuHist ? html`<div class="health-hist">
+      <span class="hist-cap">CPU history</span>
+      <${MiniArea} points=${cpuHist} color="var(--online)" h=${compact ? 36 : 52}/>
+    </div>` : null}
   </div>`;
 }
 
