@@ -105,8 +105,39 @@ const ICON = {
   err: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>',
   download: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>',
   plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
+  server: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="7" rx="1.6"/><rect x="3" y="13" width="18" height="7" rx="1.6"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>',
+  network: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="19" r="2.2"/><circle cx="19" cy="19" r="2.2"/><path d="M12 7.2v3.3M12 10.5 6.2 17M12 10.5 17.8 17"/></svg>',
+  key: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="8" cy="15" r="4"/><path d="M10.9 12.1 21 2m-4 1 2.4 2.4M14 5l2.4 2.4"/></svg>',
+  shield: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l7.5 3.2v5C19.5 16 16.4 19 12 21 7.6 19 4.5 16 4.5 11.2v-5z"/></svg>',
+  activity: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>',
+  users: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1"/><circle cx="9" cy="7" r="3.4"/><path d="M22 19v-1a4 4 0 0 0-3-3.85M16 3.2a4 4 0 0 1 0 7.6"/></svg>',
+  user: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M19 20v-1a5 5 0 0 0-5-5h-4a5 5 0 0 0-5 5v1"/><circle cx="12" cy="7" r="4"/></svg>',
+  device: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="7" y="3" width="10" height="18" rx="2.4"/><path d="M11 18h2"/></svg>',
+  cpu: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="7" y="7" width="10" height="10" rx="1.6"/><path d="M9 1.5v3M15 1.5v3M9 19.5v3M15 19.5v3M1.5 9h3M1.5 15h3M19.5 9h3M19.5 15h3"/></svg>',
+  disk: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5.2 13 7.5 5h9l2.3 8M7 16.5h.01"/></svg>',
+  clock: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5l3.2 2"/></svg>',
+  relay: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="2"/><path d="M8.2 8.2a5.4 5.4 0 0 0 0 7.6M15.8 15.8a5.4 5.4 0 0 0 0-7.6M5.4 5.4a9.4 9.4 0 0 0 0 13.2M18.6 18.6a9.4 9.4 0 0 0 0-13.2"/></svg>',
+  globe: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>',
+  bolt: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>',
+  gauge: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 13.5 16 9"/><path d="M4 18a9 9 0 1 1 16 0"/></svg>',
+  gear: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V20a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 4.6 13H4.5a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V2a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-1.1 2.7v.1a2 2 0 1 1 0 4z"/></svg>',
+  trash: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/></svg>',
+  link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M10 13a4 4 0 0 0 6 .5l2-2a4 4 0 0 0-5.7-5.7l-1.2 1.1M14 11a4 4 0 0 0-6-.5l-2 2A4 4 0 0 0 11.7 18l1.2-1.1"/></svg>',
 };
 const Ic = ({ i }) => html`<span class="ic" dangerouslySetInnerHTML=${{ __html: ICON[i] || "" }}></span>`;
+
+// A titled, icon-headed group panel — the primary way related info is clustered
+// (server details / health / vitals / config). tone tints the icon square.
+function Panel({ icon, title, count, actions, tone, children, pad }) {
+  return html`<section class="panel">
+    <div class="panel-head">
+      ${icon ? html`<span class=${"panel-ic" + (tone ? " t-" + tone : "")}><${Ic} i=${icon}/></span>` : null}
+      <h3>${title}</h3>${count != null ? html`<span class="panel-count">${count}</span>` : null}
+      <span class="grow"></span>${actions || null}
+    </div>
+    <div class=${"panel-body" + (pad === false ? " flush" : "")}>${children}</div>
+  </section>`;
+}
 
 // ───────────────────────── crypto + config (in-browser; private key never leaves) ─────────────────────────
 async function genKeys() {
@@ -586,32 +617,31 @@ function NodeDetail({ node: rawName }) {
       ${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}
     </div>
 
-    ${nrec.health ? html`<${Fragment}>
-      <div class="section-title"><h2>Health</h2></div>
+    ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online">
       <div class="healthgrid"><${NodeHealth} health=${nrec.health} node=${name} compact=${false}/></div>
     <//>` : null}
 
-    <div class="section-title"><h2>Interfaces</h2><span class="count">${meta ? Object.keys(meta).length : 0}</span></div>
-    ${metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${metaErr}</span></div>`
-      : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
-      : !Object.keys(meta).length ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
-      : html`<div class="ifgrid">${Object.keys(meta).map(ifn => {
-          const m = meta[ifn];
-          const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
-          const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
-          const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
-          return html`<a class="ifcard" href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-            <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
-            <div class="ifcard-rows">
-              <div class="ifrow"><span class="l">Subnet</span><span class="r">${m.subnet || "—"}</span></div>
-              <div class="ifrow"><span class="l">Listen port</span><span class="r">${m.listen_port || "—"}</span></div>
-              <div class="ifrow"><span class="l">Server key</span><span class="r addr">${(m.public_key || "—").slice(0, 16)}…</span></div>
-              <div class="ifrow"><span class="l">Peers</span><span class="r">${onlc} / ${ps.length} online</span></div>
-            </div></a>`;
-        })}</div>`}
+    <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}>
+      ${metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${metaErr}</span></div>`
+        : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
+        : !Object.keys(meta).length ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
+        : html`<div class="ifgrid">${Object.keys(meta).map(ifn => {
+            const m = meta[ifn];
+            const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
+            const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
+            const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
+            return html`<a class="ifcard" href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
+              <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
+              <div class="ifcard-rows">
+                <div class="ifrow"><span class="l">Subnet</span><span class="r">${m.subnet || "—"}</span></div>
+                <div class="ifrow"><span class="l">Listen port</span><span class="r">${m.listen_port || "—"}</span></div>
+                <div class="ifrow"><span class="l">Server key</span><span class="r addr">${(m.public_key || "—").slice(0, 16)}…</span></div>
+                <div class="ifrow"><span class="l">Peers</span><span class="r">${onlc} / ${ps.length} online</span></div>
+              </div></a>`;
+          })}</div>`}
+    <//>
 
-    ${snap && (snap.turn_proxies || []).length ? html`<${Fragment}>
-      <div class="section-title"><h2>Turn-proxies</h2><span class="count">${snap.turn_proxies.length}</span></div>
+    ${snap && (snap.turn_proxies || []).length ? html`<${Panel} icon="relay" title="Turn-proxies" tone="warn" count=${snap.turn_proxies.length}>
       <div class="ifgrid">${snap.turn_proxies.map(tp => {
         const lp = portOf(tp.connect);
         const fronted = meta ? Object.keys(meta).find(i => String(meta[i].listen_port) === lp) : null;
@@ -658,17 +688,19 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     </div>
 
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
-      : html`<div class="metagrid">
-        <div class="meta"><div class="k">Server key</div><div class="v">${meta.public_key || "—"} ${meta.public_key ? html`<button class="copybtn" title="Copy" onClick=${() => copy(meta.public_key, "Server key copied")}><${Ic} i="copy"/></button>` : ""}</div></div>
-        <div class="meta"><div class="k">Endpoint</div><div class="v">${meta.endpoint || "—"}</div></div>
-        <div class="meta"><div class="k">Subnet · port</div><div class="v">${meta.subnet || "—"} · ${meta.listen_port || "—"}</div></div>
-        <div class="meta"><div class="k">Server address</div><div class="v">${meta.address || "—"}</div></div>
-        <div class="meta"><div class="k">DNS</div><div class="v">${(meta.dns || []).join(", ") || "—"}</div></div>
-        <div class="meta"><div class="k">AmneziaWG</div><div class="v">${awg}</div></div>
-      </div>`}
+      : html`<${Panel} icon="key" title="Interface" tone=${type === "awg" ? "" : "online"}
+          actions=${html`<span class=${"iftype " + type}>${type}</span>`}>
+        <dl class="dl">
+          <dt>Server key</dt><dd>${(meta.public_key || "—")} ${meta.public_key ? html`<button class="copybtn" title="Copy" onClick=${() => copy(meta.public_key, "Server key copied")}><${Ic} i="copy"/></button>` : ""}</dd>
+          <dt>Endpoint</dt><dd>${meta.endpoint || "—"}</dd>
+          <dt>Subnet · port</dt><dd>${meta.subnet || "—"} · ${meta.listen_port || "—"}</dd>
+          <dt>Server address</dt><dd>${meta.address || "—"}</dd>
+          <dt>DNS</dt><dd>${(meta.dns || []).join(", ") || "—"}</dd>
+          <dt>AmneziaWG</dt><dd>${awg}</dd>
+        </dl>
+      <//>`}
 
-    ${tps.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Reachable via turn-proxy</h2></div>
+    ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="warn" count=${tps.length}>
       <div class="ifgrid">${tps.map(tp => html`<div class="ifcard tp">
         <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${(tp.service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn"}</span></div>
         <div class="ifcard-rows">
@@ -677,30 +709,30 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         </div></div>`)}</div>
     <//>` : null}
 
-    <div class="section-title"><h2>Peers on this interface</h2><span class="count">${peers.length}</span></div>
-    <div class="tablewrap"><table>
-      <thead><tr><th>Status</th><th>Peer</th><th>Address</th><th>User</th><th>Transport</th><th>Last</th><th></th></tr></thead>
-      <tbody>
-        ${rows.length ? rows.map(p => {
-          const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
-          const obs = t.observed;
-          const u = p.user_id ? Store.user(p.user_id) : null;
-          return html`<tr key=${p.id} class="clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>
-            <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
-            <td data-label="Peer" class="c-name">${p.title ? html`<b>${p.title}</b>` : (p.name || html`<span class="faint">unassigned</span>`)}</td>
-            <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
-            <td data-label="User">${u ? html`<a href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}>${u.name}</a>` : html`<span class="faint">—</span>`}</td>
-            <td data-label="Transport"><span class="when">${t.via === "turn" ? "via turn-proxy" : (t.via === "direct" ? "direct" : "—")}</span></td>
-            <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
-            <td data-label=""><span class="rowarrow"><${Ic} i="arrow"/></span></td></tr>`;
-        }) : html`<tr><td colspan="7" class="empty"><b>No peers on this interface</b>Add one to get started.</td></tr>`}
-      </tbody></table></div>
+    <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}>
+      <table>
+        <thead><tr><th>Status</th><th>Peer</th><th>Address</th><th>User</th><th>Transport</th><th>Last</th><th></th></tr></thead>
+        <tbody>
+          ${rows.length ? rows.map(p => {
+            const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
+            const obs = t.observed;
+            const u = p.user_id ? Store.user(p.user_id) : null;
+            return html`<tr key=${p.id} class="clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>
+              <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
+              <td data-label="Peer" class="c-name">${p.title ? html`<b>${p.title}</b>` : (p.name || html`<span class="faint">unassigned</span>`)}</td>
+              <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
+              <td data-label="User">${u ? html`<a href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}>${u.name}</a>` : html`<span class="faint">—</span>`}</td>
+              <td data-label="Transport"><span class="when">${t.via === "turn" ? "via turn-proxy" : (t.via === "direct" ? "direct" : "—")}</span></td>
+              <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
+              <td data-label=""><span class="rowarrow"><${Ic} i="arrow"/></span></td></tr>`;
+          }) : html`<tr><td colspan="7" class="empty"><b>No peers on this interface</b>Add one to get started.</td></tr>`}
+        </tbody></table>
+    <//>
 
-    ${orphans.length ? html`<${Fragment}>
-      <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged on this interface</h2></div>
-      <div class="tablewrap"><table><tbody>
+    ${orphans.length ? html`<${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}>
+      <table><tbody>
         ${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}
-      </tbody></table></div>
+      </tbody></table>
     <//>` : null}
   </div>`;
 }
