@@ -998,7 +998,7 @@ function PeersScreen() {
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
     </span><span class="count">${rows.length}</span></div>
     <div class="tablewrap"><table class="peergrid">
-      <thead><tr><th>Status</th>${agg ? html`<th>Server</th>` : null}<th>User</th><th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
+      <thead><tr><th>Status</th>${agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null}<th>User</th><th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
       <tbody>
         ${rows.length ? rows.map(({ p, t }) => {
           const obs = t.observed;
@@ -1006,7 +1006,10 @@ function PeersScreen() {
           const others = p.targets.filter(d => !(d.node === t.node && d.iface === t.iface));   // this peer's other deployments
           return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class="clk" onClick=${() => openPeerView(p.id, t.node, t.iface)}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
-            ${agg ? html`<td data-label="Server"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online)}</span></div></td>` : null}
+            ${agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
+              ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
+              ${iface === "*" ? html`<${Tag} kind="iface" label=${t.iface} color=${Store.nodeColor(t.node)}/>` : null}
+            </div></td>` : null}
             <td data-label="User" onClick=${e => e.stopPropagation()}>
               ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
                   : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeerToUser(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
