@@ -2161,12 +2161,11 @@ function PeerViewSheet({ pid, node, iface }) {
     <div class="pv-deps">${p.targets.map(t => {
       const obs = t.observed;
       const proto = (t.type || "").toLowerCase();
-      const hasTurn = t.via === "turn" || turnProxiesFor(t.node, t.iface).length;
       return html`<div class=${"pv-dep" + (node === t.node && iface === t.iface ? " hl" : "")} key=${tkey(t.node, t.iface)}>
         <div class="pv-dep-top"><${Badge} s=${t.status}/>
           <span class="tags">
             <${Tag} kind=${proto === "awg" ? "awg" : "wg"} label=${proto === "awg" ? "awg" : "wg"} muted=${!t.online}/>
-            ${hasTurn ? html`<${Tag} kind="turn" label="turn" muted=${!t.online}/>` : null}
+            ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}
           </span></div>
         <div class="pv-dep-grid">
           <span><span class="k">Server</span> ${Store.nodeName(t.node)}</span>
