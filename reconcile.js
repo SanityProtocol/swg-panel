@@ -111,7 +111,7 @@ function reconcile(roster, stats, now, cfg) {
       user_id: (p.user_id != null) ? p.user_id : null,
       name: user ? (user.name || "") : "", tag: user ? (user.tag || "") : "",
       unassigned: !user,
-      targets: targets, created_at: p.created_at || null,
+      targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, online: onlineAny, lastHandshakeAge: lastAge,
       presentCount: present.length, liveCount: live.length,
     };

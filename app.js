@@ -496,6 +496,45 @@ function DangerButton({ label, confirm, onConfirm, className }) {
   }}>${busy ? "…" : (armed ? (confirm || "Confirm?") : label)}</button>`;
 }
 
+// One fleet entry: main block (identity/traffic/sync) on the left, health block on the right.
+function FleetNodeCard({ n }) {
+  const live = Store.recon.nodeStatus[n.name] === "live";
+  const snap = Store.stats[n.name];
+  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.name));
+  const onl = here.filter(p => p.targets.some(t => t.node === n.name && t.online)).length;
+  let nrx = 0, ntx = 0; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { nrx += pp.rx_speed || 0; ntx += pp.tx_speed || 0; }
+  let sync = "no data"; if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? "synced " + seen(a) + " ago" : "stale · " + seen(a); }
+  const al = healthAlerts(n.health);
+  return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.name)}>
+    <div class="fnode-main">
+      <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span><span class="tport">${n.transport}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
+      <div class="fnode-stats">
+        <div><span class="fl">Traffic</span><span class=${"ratecell" + (nrx + ntx > 0 ? " live" : "")}>↓ ${rate(nrx)} <span class="up">↑ ${rate(ntx)}</span></span></div>
+        <div><span class="fl">Online</span><span class="fv">${onl} / ${here.length}</span></div>
+        <div><span class="fl">Sync</span><span class="fv">${sync}</span></div>
+      </div>
+    </div>
+    <div class="fnode-health">
+      ${n.health ? html`<${NodeHealth} health=${n.health} node=${n.name} compact=${true}/>` : html`<div class="fnode-nohealth">${live ? "no health data reported" : "node offline"}</div>`}
+    </div>
+  </a>`;
+}
+
+// Recent activity from /api/state: created vs updated (modified_at > created_at) per entity.
+// There's no event log, so this is the truthful best — created/updated, not "renamed/assigned".
+function recentActivity() {
+  const ev = [];
+  for (const u of Store.recon.users) {
+    const c = u.created_at || 0, m = u.modified_at || c;
+    ev.push({ ts: m, action: m > c + 5 ? "Updated user" : "Created user", name: u.name, icon: "user", kind: "user", key: "u" + u.id, href: "#/user/" + encodeURIComponent(u.id) });
+  }
+  for (const p of Store.recon.peers) {
+    const c = p.created_at || 0, m = p.modified_at || c;
+    ev.push({ ts: m, action: m > c + 5 ? "Updated peer" : "Created peer", name: p.title || p.name || "unassigned peer", icon: "device", kind: "peer", key: "p" + p.id, href: "#/peer/" + encodeURIComponent(p.id) });
+  }
+  return ev.filter(e => e.ts).sort((a, b) => b.ts - a.ts).slice(0, 7);
+}
+
 // ═════════════════════════ SCREEN: OVERVIEW ═════════════════════════
 function Overview() {
   const peers = Store.recon.peers, users = Store.recon.users, fleet = Store.fleet, ns = Store.recon.nodeStatus;
@@ -514,56 +553,27 @@ function Overview() {
   const orphans = Store.recon.orphans;
   const why = { dangling: "missing on every server", partial: "missing on some servers", pending: "just created, not seen yet", unknown: "server stale — can't confirm" };
 
-  const recent = users.map(u => ({ ts: u.created_at, kind: "user", label: u.name, href: "#/user/" + encodeURIComponent(u.id) }))
-    .concat(peers.map(p => ({ ts: p.created_at, kind: "peer", label: p.title || p.name || "unassigned peer", href: "#/peer/" + encodeURIComponent(p.id) })))
-    .filter(e => e.ts).sort((a, b) => b.ts - a.ts).slice(0, 6);
+  const recent = recentActivity();
 
   return html`<div class="screen">
     <div class="statgrid">
-      <a class="stat accent clk" href="#/connections"><div class="k"><${Ic} i="check"/> Online now</div><div class="v">${online}<small> / ${peers.length}</small></div><div class="sub">live connections →</div></a>
-      <a class="stat clk" href="#/users"><div class="k">Users</div><div class="v">${users.length}</div><div class="sub">${peers.length} peers total</div></a>
-      <a class="stat clk" href="#/users"><div class="k">Peer status</div><div class="v" style="font-size:17px"><span style="color:var(--online)">${online}</span> · <span style="color:var(--partial)">${partial}</span> · <span style="color:var(--dangling)">${offline}</span></div><div class="sub">online · partial · offline</div></a>
-      <a class="stat clk" href="#/nodes"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleet.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></a>
-      <div class="stat"><div class="k">Throughput</div><div class="v" style="font-size:19px">↓ ${rate(rx)}</div><div class="sub">↑ ${rate(tx)} aggregate</div></div>
+      <a class="stat accent clk" href="#/connections"><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${peers.length}</small></div><div class="sub">live connections →</div></div></a>
+      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">Users</div><div class="v">${users.length}</div><div class="sub">${peers.length} peers total</div></div></a>
+      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peer status</div><div class="v" style="font-size:17px"><span style="color:var(--online)">${online}</span> · <span style="color:var(--partial)">${partial}</span> · <span style="color:var(--dangling)">${offline}</span></div><div class="sub">online · partial · offline</div></div></a>
+      <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleet.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></div></a>
+      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">Throughput</div><div class="v" style="font-size:19px">↓ ${rate(rx)}</div><div class="sub">↑ ${rate(tx)} aggregate</div></div></div>
     </div>
 
-    <div class="section-title"><h2>Fleet</h2><span class="count">${fleet.length} servers</span><span class="grow"></span></div>
-    <div class="fleet">
-      ${fleet.length ? fleet.map(n => {
-        const live = ns[n.name] === "live";
-        const snap = Store.stats[n.name];
-        const here = peers.filter(p => p.targets.some(t => t.node === n.name));
-        const onl = here.filter(p => p.targets.some(t => t.node === n.name && t.online)).length;
-        const pct = here.length ? Math.round(onl / here.length * 100) : 0;
-        let nrx = 0, ntx = 0; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { nrx += pp.rx_speed || 0; ntx += pp.tx_speed || 0; }
-        let sync = "no data", sc = "warn";
-        if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? "synced " + seen(a) + " ago" : "stale · " + seen(a); sc = live ? "" : "warn"; }
-        return html`<a class="tile ${live ? "" : "stale"}" href=${"#/node/" + encodeURIComponent(n.name)}>
-          <span class="arrow"><${Ic} i="arrow"/></span>
-          <div class="tile-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="tile-name">${n.name}</span><span class="tport">${n.transport}</span></div>
-          <div class="tile-rate"><span class="down">↓ ${rate(nrx)}</span><span class="up">↑ ${rate(ntx)}</span></div>
-          <div class="tile-peers">${onl}<i> / ${here.length} online</i></div>
-          <div class="meter"><i style=${"width:" + pct + "%;--m:" + (n.color || "var(--online)")}></i></div>
-          <div class="tile-sync ${sc}">${sync}</div>
-        </a>`;
-      }) : html`<div class="allclear">No servers configured in fleet.json.</div>`}
-    </div>
-
-    ${(Store.nodes || []).some(n => n.health) ? html`<${Fragment}>
-      <div class="section-title"><h2>Fleet health</h2><span class="grow"></span></div>
-      <div class="hrollup">${(Store.nodes || []).filter(n => n.health).map(n => {
-        const al = healthAlerts(n.health);
-        return html`<a class="hcard" href=${"#/node/" + encodeURIComponent(n.name)} key=${n.name}>
-          <div class="hcard-top"><span class="nsw" style=${"background:" + (n.color || "#5f7569")}></span><b>${n.name}</b>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
-          <${NodeHealth} health=${n.health} node=${n.name} compact=${true}/>
-        </a>`;
-      })}</div>
-    <//>` : null}
+    <div class="section-title"><h2>Fleet</h2><span class="count">${fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
+    ${fleet.length ? html`<div class="fleet2">${fleet.map(n => html`<${FleetNodeCard} key=${n.name} n=${n}/>`)}</div>`
+      : html`<div class="allclear">No servers configured in fleet.json.</div>`}
 
     ${recent.length ? html`<${Fragment}>
       <div class="section-title"><h2>Recent activity</h2></div>
-      <div class="actlist">${recent.map(e => html`<a class="act-row" href=${e.href} key=${e.kind + e.href}>
-        <span class=${"actkind " + e.kind}>${e.kind}</span><span class="name">${e.label}</span><span class="grow"></span><span class="when">${ago(e.ts)}</span></a>`)}</div>
+      <div class="actlist">${recent.map(e => html`<a class="act-row" href=${e.href} key=${e.key}>
+        <span class=${"act-ic t-" + e.kind}><${Ic} i=${e.icon}/></span>
+        <span class="act-what">${e.action}</span><span class="act-name">${e.name}</span>
+        <span class="grow"></span><span class="when">${ago(e.ts)}</span></a>`)}</div>
     <//>` : null}
 
     <div class="section-title"><h2>Needs attention</h2><span class="grow"></span></div>
