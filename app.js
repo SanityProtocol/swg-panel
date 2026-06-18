@@ -359,17 +359,18 @@ function Badge({ s }) { return html`<span class="badge b-${s}">${s}</span>`; }
 
 // inline metadata tag (protocol / interface / turn-proxy / generic) — the dense, colored
 // row signature. iface tags take the node's colour via --tgc.
-function Tag({ kind, label, color }) {
-  return html`<span class=${"tg tg-" + (kind || "gen")} style=${color ? "--tgc:" + color : ""}>${label}</span>`;
+function Tag({ kind, label, color, muted }) {
+  return html`<span class=${"tg tg-" + (kind || "gen") + (muted ? " muted" : "")} style=${color && !muted ? "--tgc:" + color : ""}>${label}</span>`;
 }
-// the tags that describe a peer's deployment on a (node,iface): protocol + interface + turn-proxy
-function targetTags(node, iface, type, via) {
+// the tags that describe a peer's deployment on a (node,iface): protocol + interface + turn-proxy.
+// `muted` greys them out for inactive (offline / dangling / disconnected) rows.
+function targetTags(node, iface, type, via, muted) {
   const tags = [];
   const proto = (type || "").toLowerCase();
-  if (proto === "awg") tags.push(html`<${Tag} kind="awg" label="awg"/>`);
-  else if (proto === "wg") tags.push(html`<${Tag} kind="wg" label="wg"/>`);
-  tags.push(html`<${Tag} kind="iface" label=${iface} color=${Store.nodeColor(node)}/>`);
-  if (via === "turn" || turnProxiesFor(node, iface).length) tags.push(html`<${Tag} kind="turn" label="turn"/>`);
+  if (proto === "awg") tags.push(html`<${Tag} kind="awg" label="awg" muted=${muted}/>`);
+  else if (proto === "wg") tags.push(html`<${Tag} kind="wg" label="wg" muted=${muted}/>`);
+  tags.push(html`<${Tag} kind="iface" label=${iface} color=${Store.nodeColor(node)} muted=${muted}/>`);
+  if (via === "turn" || turnProxiesFor(node, iface).length) tags.push(html`<${Tag} kind="turn" label="turn" muted=${muted}/>`);
   return tags;
 }
 // rate cell, green when traffic is flowing
@@ -860,7 +861,7 @@ function ConnectionsScreen() {
           <td data-label="Peer" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(r.pid))}>${r.peer ? html`<b>${r.peer}</b>` : html`<span class="faint">unassigned</span>`}</td>
           <td data-label="User">${r.uid ? html`<a href=${"#/user/" + encodeURIComponent(r.uid)}>${r.user}</a>` : html`<span class="faint">—</span>`}</td>
           <td data-label="Node" class="clk" onClick=${() => go("#/node/" + encodeURIComponent(r.node) + "/" + encodeURIComponent(r.iface))}>
-            <span class="addr" style="color:var(--ink-2)">${r.node}</span><span class="tags">${targetTags(r.node, r.iface, r.type, r.via)}</span></td>
+            <span class="addr" style="color:var(--ink-2)">${r.node}</span><span class="tags">${targetTags(r.node, r.iface, r.type, r.via, !r.online)}</span></td>
           <td data-label="Endpoint"><span class="addr">${r.endpoint || "—"}</span></td>
           <td data-label="Last"><span class="when">${seen(r.hs)}</span></td>
           <td data-label="Rate">${rateCell(r.rx, r.tx)}</td>
