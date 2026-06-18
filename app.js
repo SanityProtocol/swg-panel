@@ -388,7 +388,25 @@ function closeModal() { _setModal(null); }
 
 // ───────────────────────── shared bits ─────────────────────────
 const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
-function Badge({ s }) { return html`<span class="badge b-${s}">${s}</span>`; }
+const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock",
+  dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
+function Badge({ s }) {
+  const ic = STATUS_ICON[s];
+  return html`<span class=${"badge b-" + s + (ic ? " ic" : "")}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
+}
+
+// Coloured initial square for a user/peer, hue derived from a stable seed.
+function avatarSeed(seed) {
+  let h = 0; const str = String(seed || "");
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+function Avatar({ name, id, kind }) {
+  const label = (name || "").trim();
+  const init = (!label || label === "unassigned" || label === "unassigned peer") ? "?"
+    : label.split(/[\s_-]+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase();
+  return html`<span class=${"avatar" + (kind ? " av-" + kind : "")} style=${"--ah:" + avatarSeed(id || name)}>${init}</span>`;
+}
 
 // inline metadata tag (protocol / interface / turn-proxy / generic) — the dense, colored
 // row signature. iface tags take the node's colour via --tgc.
@@ -811,7 +829,7 @@ function PeersScreen() {
           const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
           return html`<tr key=${p.id}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
-            <td data-label="Name" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.title ? html`<b>${p.title}</b>` : (p.name || html`<span class="faint">unassigned</span>`)}${p.title && p.name ? html`<span class="sub2"> · ${p.name}</span>` : ""}</td>
+            <td data-label="Name" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}><div class="namecell"><${Avatar} name=${p.title || p.name || "unassigned"} id=${p.id} kind="peer"/><span>${p.title ? html`<b>${p.title}</b>` : (p.name || html`<span class="faint">unassigned</span>`)}${p.title && p.name ? html`<span class="sub2"> · ${p.name}</span>` : ""}</span></div></td>
             <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
             <td data-label="User"><${PeerOwnerControls} peer=${p} showDelete=${false}/></td>
             <td data-label="Last"><span class="when">${seen(t.observed ? t.observed.handshake_age : null)}</span></td>
@@ -957,7 +975,7 @@ function UsersScreen() {
             const flash = Store.recentlyCreated[u.id] && Date.now() - Store.recentlyCreated[u.id] < 3000;
             return html`<tr key=${u.id} class="clk ${flash ? "flash" : ""}" onClick=${() => go("#/user/" + encodeURIComponent(u.id))}>
               <td data-label="Status"><${Badge} s=${u.peerCount ? u.status : "empty"}/></td>
-              <td data-label="Name" class="c-name">${u.name}</td>
+              <td data-label="Name" class="c-name"><div class="namecell"><${Avatar} name=${u.name} id=${u.id} kind="user"/><span>${u.name}</span></div></td>
               <td data-label="Tag">${u.tag ? html`<span class="tagchip">${u.tag}</span>` : html`<span class="faint">—</span>`}</td>
               <td data-label="Peers"><span class="when">${u.onlineCount}/${u.peerCount} online</span></td>
               <td data-label="Note" class="c-note">${u.note || html`<span class="faint">—</span>`}</td>

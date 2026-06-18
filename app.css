@@ -174,9 +174,12 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .empty b{display:block;color:var(--dim);margin-bottom:4px;font-weight:600;font-size:14px}
 
 /* ───── status badges ───── */
-.badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 9px;border-radius:99px;font-size:11px;
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px 3px 8px;border-radius:99px;font-size:11px;
   font-weight:700;letter-spacing:.01em}
 .badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge.ic{padding-left:7px}
+.badge.ic::before{display:none}
+.badge.ic svg{width:11px;height:11px}
 .b-online{background:rgba(70,216,168,.13);color:var(--online)} .b-online::before{animation:blink 2.6s infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
 .b-ready{background:rgba(34,211,238,.12);color:var(--ready)}
@@ -575,3 +578,13 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .act-name{font-family:var(--mono);font-size:12.5px;color:var(--ink);font-weight:500}
 .act-ic.t-node{background:color-mix(in srgb,var(--pending) 14%,transparent);color:var(--pending)}
 .act-detail{font-family:var(--mono);font-size:11px;color:var(--faint);padding:2px 7px;border-radius:5px;background:var(--surface-2)}
+
+/* ───── avatars (coloured initials) + name cells ───── */
+.namecell{display:flex;align-items:center;gap:9px;min-width:0}
+.namecell>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.avatar{width:27px;height:27px;border-radius:7px;flex:none;display:inline-flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-size:10.5px;font-weight:600;line-height:1;letter-spacing:-.01em;
+  color:hsl(var(--ah) 70% 72%);
+  background:hsl(var(--ah) 45% 22%);
+  box-shadow:inset 0 0 0 1px hsl(var(--ah) 50% 45% / .5)}
+.av-peer{border-radius:50%}
