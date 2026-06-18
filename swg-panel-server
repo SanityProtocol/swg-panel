@@ -515,6 +515,41 @@ def find_node_by_token(nodes, token):
     return None, None
 
 
+def node_remove(deps, nid):
+    """Drop a node from the store and cascade: purge its peer targets (deleting peers whose only
+    deployment was here), forget its live snapshot, and delete its stats + health files. Returns
+    the removed node's display name, or None if it wasn't there. Shared by force-remove + goodbye."""
+    nodes = nodes_load(deps["nodes_path"])
+    if nid not in nodes:
+        return None
+    nm = nodes[nid].get("name", nid)
+    sf = nodes[nid].get("stats_file", f"stats-{nid}.json")
+    del nodes[nid]
+    nodes_save(deps["nodes_path"], nodes)
+    roster = roster_load(deps["roster_path"]); changed = False
+    for pid in list(roster["peers"].keys()):
+        p = roster["peers"][pid]
+        kept = [t for t in p.get("targets", []) if t.get("node") != nid]
+        if len(kept) != len(p.get("targets", [])):
+            changed = True
+            if kept:
+                p["targets"] = kept; p["modified_at"] = int(time.time())
+            else:
+                del roster["peers"][pid]
+    if changed:
+        roster_save(deps["roster_path"], roster)
+    (deps.get("node_snaps") or {}).pop(nid, None)
+    (deps.get("node_seen") or {}).pop(nid, None)
+    sd = deps.get("stats_dir")
+    if sd:
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(sd, sf))
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(sd, f"health-{nid}.rrd"))
+    ev_append(deps["roster_path"], "node", nid, "Removed node", nm)
+    return nm
+
+
 def desired_for_node(roster, node_id):
     """The peer set the roster assigns to one node, grouped by interface.
 
@@ -760,6 +795,7 @@ def api(method, path, qs, body, deps):
             hh = hrrd_read(os.path.join(stats_dir, f"health-{nid}.rrd")) if stats_dir else None
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
+                        "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
@@ -1233,34 +1269,23 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Rotated node token", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name"), "token": token}}
 
-    if method == "POST" and path == "/api/nodes/delete":
+    if method == "POST" and path == "/api/nodes/flag-remove":
+        # Soft removal: mark the node "removing" but keep it (and its peers) working until it
+        # signs off (uninstall -> /api/node/goodbye). Force-remove cuts it off without waiting.
         nid = body.get("id") or ""
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
-        nm = nodes[nid].get("name", nid)
-        del nodes[nid]
+        nodes[nid]["removing"] = True
+        nodes[nid]["removing_at"] = now()
         nodes_save(deps["nodes_path"], nodes)
-        roster = roster_load(roster_path); changed = False
-        for pid in list(roster["peers"].keys()):
-            p = roster["peers"][pid]
-            kept = [t for t in p.get("targets", []) if t.get("node") != nid]
-            if len(kept) != len(p.get("targets", [])):
-                changed = True
-                if kept:
-                    p["targets"] = kept; p["modified_at"] = now()
-                else:
-                    del roster["peers"][pid]      # its only target was on the deleted node
-        if changed:
-            roster_save(roster_path, roster)
-        (deps.get("node_snaps") or {}).pop(nid, None)
-        (deps.get("node_seen") or {}).pop(nid, None)
-        sd = deps.get("stats_dir")
-        if sd:
-            with contextlib.suppress(OSError):
-                os.unlink(os.path.join(sd, nodes.get(nid, {}).get("stats_file", f"stats-{nid}.json")))
-            with contextlib.suppress(OSError):
-                os.unlink(os.path.join(sd, f"health-{nid}.rrd"))
-        ev_append(roster_path, "node", nid, "Removed node", nm)
+        ev_append(roster_path, "node", nid, "Flagged node for removal", nodes[nid].get("name", nid))
+        return 200, {"ok": True, "data": {"id": nid}}
+
+    if method == "POST" and path == "/api/nodes/delete":     # force-remove (no waiting for goodbye)
+        nid = body.get("id") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        nm = node_remove(deps, nid)
         return 200, {"ok": True, "data": {"id": nid, "name": nm}}
 
     return 404, {"ok": False, "error": "not found", "code": "bad_request"}
@@ -1417,6 +1442,19 @@ class Handler(BaseHTTPRequestHandler):
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
         return self._send(200, {"desired": desired, "interval": interval})
 
+    def _node_goodbye(self):
+        # The node's uninstaller signs off here (its bearer token) so the panel can cleanly drop
+        # it — the "astalavista" signal that completes a soft removal without operator action.
+        nodes = nodes_load(Handler.deps["nodes_path"])
+        hdr = self.headers.get("Authorization", "")
+        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
+        nid, _ = find_node_by_token(nodes, token)
+        if not nid:
+            return self._send(401, {"error": "invalid node token"})
+        with _api_lock:
+            nm = node_remove(Handler.deps, nid)
+        return self._send(200, {"ok": True, "removed": nm or nid})
+
     def do_GET(self):
         u = urlparse(self.path)
         path = strip_base(u.path)
@@ -1441,6 +1479,8 @@ class Handler(BaseHTTPRequestHandler):
         path = strip_base(u.path)
         if path == "/api/node/sync":
             return self._node_sync()
+        if path == "/api/node/goodbye":
+            return self._node_goodbye()
         if path == "/api/login":
             return self._login()
         if path == "/api/logout":

@@ -66,8 +66,43 @@ rm_panel(){
   REMOVED_PANEL=true; ok "swg-panel removed"
 }
 
+# Tell the panel this node is going away (the "goodbye" signal) so it removes itself cleanly —
+# using the node's own bearer token + panel URL from its config. Best-effort: if the panel is
+# unreachable, the operator can Force-remove it from the Nodes screen instead.
+node_goodbye(){
+  local cfg=/etc/swg-agent/config.json
+  [ -f "$cfg" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  info "Signing off from the panel…"
+  if python3 - "$cfg" <<'PY'
+import json, ssl, sys, urllib.request
+try:
+    cfg = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+p = cfg.get("panel") or {}
+url = (p.get("url") or "").rstrip("/") + "/api/node/goodbye"
+tok = p.get("token") or ""
+if not (p.get("url") and tok):
+    sys.exit(0)
+ctx = ssl.create_default_context()
+if not p.get("verify", True):                 # self-signed / pinned panel: don't verify for the goodbye
+    ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+req = urllib.request.Request(url, data=b"{}", method="POST",
+                             headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+try:
+    urllib.request.urlopen(req, timeout=10, context=ctx).read()
+except Exception as e:
+    sys.stderr.write(str(e) + "\n"); sys.exit(1)
+PY
+  then ok "Panel notified — the node will drop itself."
+  else warn "Couldn't reach the panel; Force-remove the node from the Nodes screen instead."
+  fi
+}
+
 rm_node(){
   info "Removing swg-node (bare-metal entry server)"
+  node_goodbye   # signal the panel before we tear down the config it needs
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
   rmrf $SD/swg-noded.service; run systemctl daemon-reload
   rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent

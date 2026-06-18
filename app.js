@@ -255,6 +255,7 @@ const api = {
   nodeCreate(b) { return this.post("/api/nodes/create", b); },
   nodeUpdate(b) { return this.post("/api/nodes/update", b); },
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
+  nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
   nodeDelete(b) { return this.post("/api/nodes/delete", b); },
   // users
   userCreate(b) { return this.post("/api/users/create", b); },
@@ -2070,10 +2071,17 @@ function NodeRotateSheet({ node }) {
 }
 function openNodeRemove(node) { openModal(html`<${NodeRemoveSheet} node=${node}/>`); }
 function NodeRemoveSheet({ node }) {
+  const [flagged, setFlagged] = useState(!!node.removing);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.id));
   const onlyHere = here.filter(p => new Set(p.targets.map(t => t.node)).size === 1).length;
-  const note = here.length ? `It's referenced by ${here.length} peer${here.length > 1 ? "s" : ""}${onlyHere ? ` — ${onlyHere} live only here and will be dropped from the roster` : ""}.` : "No peers reference it.";
-  const go2 = () => { closeModal(); mutate({
+  const note = here.length ? `${here.length} peer${here.length > 1 ? "s" : ""} reference it${onlyHere ? `; ${onlyHere} live only here and will be dropped` : ""}.` : "No peers reference it.";
+  const uninstall = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s uninstall`;
+  const flag = () => { setFlagged(true); mutate({
+    key: "node:" + node.id,
+    patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) n.removing = true; },
+    call: () => api.nodeFlagRemove({ id: node.id }),
+  }); };
+  const force = () => { if (!confirm("Force-remove " + node.name + " now? This cuts it off immediately without waiting for the node to confirm.")) return; closeModal(); mutate({
     key: "node:" + node.id,
     patch: s => {                                  // optimistic: drop the node + purge its targets (mirrors the cascade)
       s.nodes = s.nodes.filter(x => x.id !== node.id);
@@ -2085,8 +2093,15 @@ function NodeRemoveSheet({ node }) {
     call: () => api.nodeDelete({ id: node.id }),
   }); };
   return html`<${Sheet} title=${"Remove " + node.name}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" onClick=${go2}>Remove node</button></>`}>
-    <div class="notice warn"><${Ic} i="warn"/><span>Removes the node from the panel and revokes its token. ${note} The node keeps running until you stop <span class="mono">swg-noded</span> on it.</span></div>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Close</button>
+      ${flagged ? null : html`<button class="btn btn-primary" onClick=${flag}>Flag for removal</button>`}
+      <button class="btn btn-danger" onClick=${force}>Force remove now</button></>`}>
+    ${flagged
+      ? html`<div class="notice"><${Ic} i="info"/><span><b>Flagged for removal.</b> Run the command below on the node — it'll sign off and disappear here automatically. If you've lost access to the server, use <b>Force remove now</b> to cut it off.</span></div>`
+      : html`<div class="notice"><${Ic} i="info"/><span>Clean removal: flag the node, then run the uninstall command on the server. The node keeps serving its ${here.length} peer${here.length === 1 ? "" : "s"} until it confirms, then drops itself from the panel. ${note}</span></div>`}
+    <div class="field" style="margin-top:14px"><label>Run on the node to uninstall + sign off</label>
+      <div class="cmdrow"><div class="tokenbox">${uninstall}</div><button class="copyaction" onClick=${() => copy(uninstall, "Copied")}><${Ic} i="copy"/> Copy</button></div>
+      <div class="hint">Removes swg-noded / swg-agent and tells the panel it's gone. Force remove is for when the server is unreachable.</div></div>
   <//>`;
 }
 

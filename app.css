@@ -715,3 +715,6 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .noderibbon .nr-sync{margin-left:auto}
 .chart-head{justify-content:flex-end}
 .tp-legend .grow{flex:1}
+/* plain (info) notice — used by the node-removal sheet */
+.notice{background:var(--surface-2);color:var(--ink-2)}
+.notice .ic{color:var(--ready);flex:none}
