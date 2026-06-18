@@ -719,7 +719,7 @@ function NodeDetail({ node: rawName }) {
                 <div class="ifrow"><span class="l">Subnet</span><span class="r">${m.subnet || "—"}</span></div>
                 <div class="ifrow"><span class="l">Listen port</span><span class="r">${m.listen_port || "—"}</span></div>
                 <div class="ifrow"><span class="l">Server key</span><span class="r addr">${(m.public_key || "—").slice(0, 16)}…</span></div>
-                <div class="ifrow"><span class="l">Peers</span><span class="r">${onlc} / ${ps.length} online</span></div>
+                <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length ? html`<${UsageBar} value=${onlc} total=${ps.length}/>` : html`<span class="faint">none</span>`}</span></div>
               </div></a>`;
           })}</div>`}
     <//>
@@ -1017,7 +1017,7 @@ function UsersScreen() {
               <td data-label="Status"><${Badge} s=${u.peerCount ? u.status : "empty"}/></td>
               <td data-label="Name" class="c-name"><div class="namecell"><${Avatar} name=${u.name} id=${u.id} kind="user"/><span>${u.name}</span></div></td>
               <td data-label="Tag">${u.tag ? html`<span class="tagchip">${u.tag}</span>` : html`<span class="faint">—</span>`}</td>
-              <td data-label="Peers"><span class="when">${u.onlineCount}/${u.peerCount} online</span></td>
+              <td data-label="Peers">${u.peerCount ? html`<${UsageBar} value=${u.onlineCount} total=${u.peerCount}/>` : html`<span class="faint">none</span>`}</td>
               <td data-label="Note" class="c-note">${u.note || html`<span class="faint">—</span>`}</td>
               <td data-label="Added"><span class="when">${ago(u.created_at)}</span></td>
               <td data-label=""><span class="rowarrow"><${Ic} i="arrow"/></span></td></tr>`;
@@ -1092,7 +1092,14 @@ function UserPeers({ user }) {
   return html`${Object.keys(groups).sort().map(k => {
     const g = groups[k];
     return html`<div class="ifgroup" key=${k}>
-      <a class="ifgroup-head" href=${"#/node/" + encodeURIComponent(g.node) + "/" + encodeURIComponent(g.iface)} title="Open interface"><span class="dot" style=${"background:" + Store.nodeColor(g.node)}></span><b>${g.node}</b><span class="sep2">·</span><span class="ifn">${g.iface}</span><span class="count">${g.items.length}</span><span class="rowarrow"><${Ic} i="arrow"/></span></a>
+      <a class="ifgroup-head" href=${"#/node/" + encodeURIComponent(g.node) + "/" + encodeURIComponent(g.iface)} title="Open interface"><span class="dot" style=${"background:" + Store.nodeColor(g.node)}></span><b>${g.node}</b><span class="sep2">·</span><span class="ifn">${g.iface}</span><span class="tags">${(() => {
+        const ty = ((g.items[0].t || {}).type || "").toLowerCase();
+        const tags = [];
+        if (ty === "awg") tags.push(html`<${Tag} kind="awg" label="awg"/>`);
+        else if (ty === "wg") tags.push(html`<${Tag} kind="wg" label="wg"/>`);
+        if (g.items.some(it => it.t.via === "turn")) tags.push(html`<${Tag} kind="turn" label="turn"/>`);
+        return tags;
+      })()}</span><span class="count">${g.items.length}</span><span class="rowarrow"><${Ic} i="arrow"/></span></a>
       <div class="deploys">${g.items.map(it => html`<${UserTargetCard} key=${it.peer.id + "|" + k} peer=${it.peer} t=${it.t}/>`)}</div>
     </div>`;
   })}`;
@@ -1332,6 +1339,23 @@ function ThroughputChart({ rx, tx, h }) {
   </div>`;
 }
 
+// Inline "x of y" usage bar for table rows — a compact track + count.
+function UsageBar({ value, total, color }) {
+  const v = value || 0, tt = total || 0, pct = tt ? Math.min(100, v / tt * 100) : 0;
+  return html`<span class="usebar" title=${v + " / " + tt}>
+    <span class="usebar-t"><i style=${"width:" + pct + "%;background:" + (color || "var(--online)")}></i></span>
+    <span class="usebar-n">${v}<small>/${tt}</small></span>
+  </span>`;
+}
+// interface tags for a node: each iface coloured by protocol, linking to its detail.
+function ifaceTags(node) {
+  const meta = Store.describe[node] || {};
+  return Object.keys(meta).map(ifn => {
+    const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
+    return html`<a class=${"tg tg-" + type} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}>${ifn}</a>`;
+  });
+}
+
 // A ranked horizontal-bar list. rows: [{label, value, sub, color, href}].
 function RankBars({ rows }) {
   const mx = Math.max(1, ...rows.map(r => r.value || 0));
@@ -1379,15 +1403,17 @@ function NodeCard({ n }) {
   const st = n.status || "dangling";
   const stTxt = st === "online" ? "online" : (st === "offline" ? "offline" : "awaiting enroll");
   const sync = st === "dangling" ? "never connected" : (st === "online" ? "synced " + ago(n.last_seen) : "last seen " + ago(n.last_seen));
-  const ifaces = (n.interfaces || []).length ? n.interfaces.join(", ") : "—";
+  const ifTags = ifaceTags(n.name);
+  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.name));
+  const onl = here.filter(p => p.targets.some(t => t.node === n.name && t.online)).length;
   return html`<div class="ncard">
     <div class="ncard-body clk" onClick=${() => go("#/node/" + encodeURIComponent(n.name))}>
       <div class="ntop"><span class="nsw" style=${{ background: n.color || "#5f7569" }}></span><span class="nname">${n.name}</span><span class="grow"></span><span class="nstat ${st}">${stTxt}</span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="nrows">
         <div class="nrow"><span class="l">Endpoint</span><span class="r">${n.endpoint_host || "—"}</span></div>
-        <div class="nrow"><span class="l">Peers</span><span class="r">${n.peer_count || 0}</span></div>
+        <div class="nrow"><span class="l">Peers</span><span class="r">${here.length ? html`<${UsageBar} value=${onl} total=${here.length}/>` : html`<span class="faint">none</span>`}</span></div>
         <div class="nrow"><span class="l">Throughput</span><span class="r"><span class="down">↓ ${rate(n.rx_speed)}</span> <span class="up">↑ ${rate(n.tx_speed)}</span></span></div>
-        <div class="nrow"><span class="l">Interfaces</span><span class="r">${ifaces}</span></div>
+        <div class="nrow"><span class="l">Interfaces</span><span class="r">${ifTags.length ? html`<span class="tags">${ifTags}</span>` : "—"}</span></div>
         <div class="nrow"><span class="l">Sync</span><span class="r">${sync}</span></div>
       </div>
       ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} node=${n.name} compact=${true}/>` : null}
