@@ -532,17 +532,18 @@ async function rotatePeerKeys(peer) {
 }
 
 // Confirmed unassign — revokes the holder (PSK rotates) and is irreversible (keys change).
-function confirmUnassign(peer) {
-  openConfirm({ title: "Unassign peer" + (peer.name ? " · " + peer.name : ""), confirmLabel: "Unassign", danger: true,
+// `back` = where Cancel returns to (e.g. the peer view it was launched from).
+function confirmUnassign(peer, back) {
+  openConfirm({ title: "Unassign peer" + (peer.name ? " · " + peer.name : ""), confirmLabel: "Unassign", danger: true, back,
     body: "This revokes access immediately and is irreversible — the keys change, so re-assigning later means sending the user a brand-new QR / config to import.",
     onConfirm: () => mutate({ key: "peer:" + peer.id,
       patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },
       call: () => api.peerUnassign({ peer_id: peer.id }),
       onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++; } }) });
 }
-// Confirmed delete (unassigned peers only).
-function confirmDeletePeer(peer) {
-  openConfirm({ title: "Delete peer", confirmLabel: "Delete", danger: true,
+// Confirmed delete (unassigned peers only). `back` = Cancel target.
+function confirmDeletePeer(peer, back) {
+  openConfirm({ title: "Delete peer", confirmLabel: "Delete", danger: true, back,
     body: "This is irreversible — the peer's key is removed from every interface it's deployed on.",
     onConfirm: () => mutate({ key: "peer:" + peer.id, patch: s => { delete s.roster.peers[peer.id]; },
       call: () => api.peerDelete({ peer_id: peer.id }) }) });
@@ -1727,7 +1728,11 @@ function AccountSheet() {
 //  • Tab is trapped within the dialog
 // Dirtiness is detected by snapshotting field values on open and comparing live, so it works
 // regardless of which inputs a given sheet renders.
-function Sheet({ title, children, foot }) {
+// `onClose` is the single dismiss target for EVERY exit path — ✕, Esc, overlay-click, the discard
+// confirm. Openers pass the place to return to (e.g. reopen the peer view); default just closes.
+// Cancel/Save buttons in a sheet's foot should call the same target so all paths land identically.
+function Sheet({ title, children, foot, onClose }) {
+  onClose = onClose || closeModal;
   const ref = useRef(null);
   const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
   const discardRef = useRef(false);             // armed once; read live so the captured onKey closure stays correct
@@ -1735,7 +1740,7 @@ function Sheet({ title, children, foot }) {
   const setDiscarding = v => { discardRef.current = v; setDiscardState(v); };
   const fields = () => Array.from(ref.current ? ref.current.querySelectorAll("input,textarea,select") : []);
   // closing a dirty sheet swaps the footer into an inline "discard?" confirm instead of a native dialog.
-  const tryClose = () => { if (dirty.current && !discardRef.current) { setDiscarding(true); return; } closeModal(); };
+  const tryClose = () => { if (dirty.current && !discardRef.current) { setDiscarding(true); return; } onClose(); };
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
@@ -1774,20 +1779,23 @@ function Sheet({ title, children, foot }) {
       <div class="sheet-foot">${discard
         ? html`<${Fragment}><span class="discard-msg"><${Ic} i="warn"/> Discard unsaved changes?</span><span class="grow"></span>
             <button class="btn btn-ghost" onClick=${() => setDiscarding(false)}>Keep editing</button>
-            <button class="btn btn-danger" onClick=${closeModal}>Discard</button></>`
+            <button class="btn btn-danger" onClick=${onClose}>Discard</button></>`
         : foot}</div>
     </div></div>`;
 }
 
 // Designed confirmation modal — the in-app replacement for native confirm(). `danger` paints the
 // action button red; `danger`/`warn` give the notice a warn tint + icon (else a neutral info note).
+// `back` (optional) = where Cancel / Esc returns to (e.g. reopen the peer view it was launched from);
+// default just closes. After a confirmed action we always close, since the action changed the state.
 function openConfirm(opts) { openModal(html`<${ConfirmSheet} ...${opts}/>`); }
-function ConfirmSheet({ title, body, confirmLabel, danger, warn, onConfirm }) {
+function ConfirmSheet({ title, body, confirmLabel, danger, warn, onConfirm, back }) {
+  back = back || closeModal;
   const [busy, setBusy] = useState(false);
   const go = async () => { if (busy) return; setBusy(true); try { await onConfirm(); } finally { closeModal(); } };
   const tone = danger || warn;
-  return html`<${Sheet} title=${title}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
+  return html`<${Sheet} title=${title} onClose=${back}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button>
       <button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy} onClick=${go}>${confirmLabel || "Confirm"}</button></>`}>
     <div class=${"notice" + (tone ? " warn" : "")}><${Ic} i=${tone ? "warn" : "info"}/><span>${body}</span></div>
   <//>`;
@@ -2027,8 +2035,10 @@ function CreatePeerSheet({ prefill }) {
 
 // Copy peer interface→interface (same key + PSK, new target). Needs the client's
 // private key (session config, or stored) to build the new client config / QR.
-function openAddTarget(peer) { openModal(html`<${AddTargetSheet} peer=${peer}/>`); }
-function AddTargetSheet({ peer }) {
+// `back` = where Cancel / Deploy / Esc returns to (e.g. reopen the peer view); default just closes.
+function openAddTarget(peer, back) { openModal(html`<${AddTargetSheet} peer=${peer} back=${back || closeModal}/>`); }
+function AddTargetSheet({ peer, back }) {
+  back = back || closeModal;
   const [iface, setIface] = useState(""); const [node, setNode] = useState("");
   const [ip, setIp] = useState(""); const [ipHint, setIpHint] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
@@ -2090,11 +2100,11 @@ function AddTargetSheet({ peer }) {
     const r = await api.peerAddTarget(body);
     if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: "Failed: " + (r.error || r.code || "") }); }
     if (conf) (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(node, iface)] = conf;
-    toast("Copied to " + Store.nodeName(node) + "/" + iface + ".", "ok"); closeModal(); await Store.poll();
+    toast("Copied to " + Store.nodeName(node) + "/" + iface + ".", "ok"); back(); await Store.poll();
   };
 
-  return html`<${Sheet} title=${"Copy peer to another interface"}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || none || !confLoaded} onClick=${deploy}>Deploy</button></>`}>
+  return html`<${Sheet} title=${"Copy peer to another interface"} onClose=${back}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button><button class="btn btn-primary" disabled=${busy || none || !confLoaded} onClick=${deploy}>Deploy</button></>`}>
     ${none ? html`<div class="notice"><${Ic} i="info"/><span>This peer already exists on all the available interfaces across the servers.</span></div>`
       : html`<${Fragment}>
         ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
@@ -2129,10 +2139,10 @@ function PeerViewSheet({ pid, node, iface }) {
   return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => { closeModal(); openAddTarget(p); }}><${Ic} i="copy"/> Copy to interface</button>
+      <button class="btn btn-ghost" onClick=${() => openAddTarget(p, () => openPeerView(p.id, node, iface))}><${Ic} i="copy"/> Copy to interface</button>
       <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null, () => openPeerView(p.id, node, iface))}><${Ic} i="pencil"/> Edit</button>
-      ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => { closeModal(); confirmDeletePeer(p); }}>Delete</button>`
-        : html`<button class="btn btn-danger" onClick=${() => { closeModal(); confirmUnassign(p); }}>Unassign</button>`}<//>`}>
+      ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
+        : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p, () => openPeerView(p.id, node, iface))}>Unassign</button>`}<//>`}>
     <div class="pv-head">
       <div class="pv-id"><div class="pv-title">${p.title || html`<span class="faint">untitled</span>`}</div>
         <div class="pv-sub">${u ? html`<a class="pv-user" href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a>`
@@ -2231,13 +2241,12 @@ function EditPeerSheet({ peer, focus, done }) {
 
   const rotate = () => {
     if (peer.unassigned) return toast("Assign the peer to a user first.", "err");
-    closeModal();
-    openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true,
+    openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true, back: done,
       body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send the user the fresh QR / config to re-import.",
       onConfirm: () => rotatePeerKeys(peer) });
   };
 
-  return html`<${Sheet} title=${"Edit peer"}
+  return html`<${Sheet} title=${"Edit peer"} onClose=${done}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     ${ft ? html`<div class="field"><label>Address on ${Store.nodeName(ft.node)} · ${ft.iface}</label><input class=${ipBad ? "bad" : ""} value=${ip} onInput=${e => setIp(e.target.value)}/><div class=${"hint" + (ipBad ? " err" : "")}>${ipBad ? "Must be a valid IPv4 address." : "Changing this moves the peer's address on this interface."}</div></div>` : null}
@@ -2253,7 +2262,7 @@ function EditPeerSheet({ peer, focus, done }) {
         </div>
       <//>`}
     <div class="editrow">
-      <button class="btn btn-ghost" onClick=${() => { closeModal(); openAddTarget(peer); }}><${Ic} i="copy"/> Copy to interface</button>
+      <button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Copy to interface</button>
       <button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>
     </div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -2346,7 +2355,7 @@ function NodeRemoveSheet({ node }) {
     patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) n.removing = true; },
     call: () => api.nodeFlagRemove({ id: node.id }),
   }); };
-  const force = () => { closeModal(); openConfirm({ title: "Force remove · " + node.name, confirmLabel: "Force remove", danger: true,
+  const force = () => { openConfirm({ title: "Force remove · " + node.name, confirmLabel: "Force remove", danger: true, back: () => openNodeRemove(node),
     body: "This cuts the node off immediately without waiting for it to confirm. Peers that live only here are dropped. Use this only when the server is unreachable.",
     onConfirm: () => mutate({
       key: "node:" + node.id,
