@@ -700,7 +700,7 @@ function NodeDetail({ node: rawName }) {
 
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online">
       <${NodeHealth} health=${nrec.health} node=${name} compact=${false} history=${false}/>
-      ${nrec.health_history ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} h=${52} label="CPU history"/>` : null}
+      ${nrec.health_history ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} h=${52}/>` : null}
     <//>` : null}
 
     ${nrec.health_history ? html`<${Panel} icon="gauge" title="Throughput">
@@ -1365,8 +1365,8 @@ function MiniArea({ points, color, h }) {
   const pts = (points || []).filter(v => v != null);
   h = h || 42; const w = 100;
   if (pts.length < 2) return html`<div class="harea-empty">collecting history…</div>`;
-  const n = pts.length, lo = Math.min(...pts), hi = Math.max(...pts), range = (hi - lo) || 1, vpad = h * 0.16;
-  // autoscale to the series' own min/max so small variations read clearly (spiky, not flat)
+  // tight autoscale to the series' own min/max (small vpad) so CPU reads as a jagged "heartbeat"
+  const n = pts.length, lo = Math.min(...pts), hi = Math.max(...pts), range = (hi - lo) || 1, vpad = h * 0.06;
   const xy = pts.map((v, i) => [i / (n - 1) * w, h - vpad - ((v - lo) / range) * (h - 2 * vpad)]);
   const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
   const area = "0," + h + " " + line + " " + w + "," + h;
@@ -1381,10 +1381,10 @@ function MiniArea({ points, color, h }) {
 }
 
 // Throughput history: rx as a filled area + tx as a line, scaled to the series max.
-function ThroughputChart({ rx, tx, h }) {
+function ThroughputChart({ rx, tx, h, head }) {
   const R = (rx || []).map(v => v || 0), T = (tx || []).map(v => v || 0);
   const n = Math.max(R.length, T.length);
-  if (n < 2) return html`<div class="harea-empty">collecting throughput history…</div>`;
+  if (n < 2) return html`<div class="tp-wrap"><div class="tp-legend"><span class="grow"></span>${head || null}</div><div class="harea-empty">collecting throughput history…</div></div>`;
   h = h || 60; const w = 100;
   // autoscale to the combined min/max so the curve is spiky/expressive, not a flat baseline
   const lo = Math.min(...R, ...T), hi = Math.max(...R, ...T), range = (hi - lo) || 1, vpad = h * 0.12;
@@ -1394,7 +1394,7 @@ function ThroughputChart({ rx, tx, h }) {
   const gid = "tp" + (ThroughputChart._n = (ThroughputChart._n || 0) + 1);
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   return html`<div class="tp-wrap">
-    <div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="grow"></span><span class="tp-peak">peak ${rate(hi)}</span></div>
+    <div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="grow"></span>${head || null}</div>
     <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
       <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
         <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
@@ -1436,24 +1436,29 @@ function RankBars({ rows }) {
 
 // A history chart (CPU or throughput) with live/day/week/month range tabs. "live" uses the
 // series already in /api/state; day/week/month are fetched on demand from /api/node-history.
-const HIST_RANGES = ["live", "day", "week", "month"];
-function RangedHistory({ node, kind, live, h, label }) {
+const HIST_RANGES = ["live", "hour", "day", "week", "month"];
+const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem", "disk", "rx", "tx"]) if (Array.isArray((s || {})[k])) o[k] = s[k].slice(-n); return o; };
+function RangedHistory({ node, kind, live, h }) {
   const [range, setRange] = useState("live");
   const [fetched, setFetched] = useState(null);
   const [loading, setLoading] = useState(false);
+  const fetchRange = range === "day" || range === "week" || range === "month";   // live/hour come from /api/state
   useEffect(() => {
-    if (range === "live") { setFetched(null); setLoading(false); return; }
+    if (!fetchRange) { setFetched(null); setLoading(false); return; }
     let ok = true; setLoading(true);
     api.nodeHistory(node, range).then(r => { if (ok) { setFetched(r && r.ok ? r.data : {}); setLoading(false); } }).catch(() => { if (ok) setLoading(false); });
     return () => { ok = false; };
   }, [node, range]);
-  const s = range === "live" ? (live || {}) : (fetched || {});
+  // live = last 10 minute-buckets, hour = the full ~60-pt /api/state series, longer ranges fetched
+  const s = range === "live" ? tailSeries(live, 10) : range === "hour" ? (live || {}) : (fetched || {});
+  const tabs = html`<div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div>`;
+  if (kind === "throughput") {
+    return loading ? html`<div class="tp-wrap"><div class="tp-legend"><span class="grow"></span>${tabs}</div><div class="harea-empty">loading ${range}…</div></div>`
+      : html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs}/>`;
+  }
   return html`<div class="chartwrap">
-    <div class="chart-head">${label ? html`<span class="hist-cap">${label}</span>` : null}<span class="grow"></span>
-      <div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div></div>
-    ${loading ? html`<div class="harea-empty">loading ${range}…</div>`
-      : kind === "throughput" ? html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h}/>`
-      : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h}/>`}
+    <div class="chart-head"><span class="grow"></span>${tabs}</div>
+    ${loading ? html`<div class="harea-empty">loading ${range}…</div>` : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h}/>`}
   </div>`;
 }
 

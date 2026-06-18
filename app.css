@@ -698,3 +698,8 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
   letter-spacing:.06em;padding:4px 9px;border-radius:6px;transition:all .14s}
 .rtab:hover{color:var(--ink-2)}
 .rtab.on{background:var(--brand);color:var(--brand-ink);font-weight:600}
+
+/* node-detail: push sync/uptime + chart range tabs to the right */
+.noderibbon .nr-sync{margin-left:auto}
+.chart-head{justify-content:flex-end}
+.tp-legend .grow{flex:1}

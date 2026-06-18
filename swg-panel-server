@@ -877,10 +877,11 @@ def api(method, path, qs, body, deps):
         if not known(node):
             return 400, {"ok": False, "error": f"unknown node {node!r}", "code": "bad_request"}
         rrd = os.path.join(stats_dir, f"health-{node}.rrd") if stats_dir else None
-        spec = {"live": (HRRD_VIEW, False), "day": (HRRD_SLOTS, False),
+        # (points, hourly): live=10m, hour=60m, day=24h from the minute ring; week/month from the hour ring
+        spec = {"live": (10, False), "hour": (60, False), "day": (HRRD_SLOTS, False),
                 "week": (168, True), "month": (HRRD_HSLOTS, True)}.get(rng)
         if not spec:
-            return 400, {"ok": False, "error": "range must be live|day|week|month", "code": "bad_request"}
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
         data = hrrd_read(rrd, spec[0], hourly=spec[1]) if rrd else None
         return 200, {"ok": True, "data": data or {"t": [], "cpu": [], "mem": [], "disk": [], "rx": [], "tx": []}}
 
