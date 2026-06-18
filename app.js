@@ -587,6 +587,20 @@ function Overview() {
 
   const recent = recentActivity();
 
+  // ranked nodes — by live traffic, or by peer count when the fleet is idle
+  const nodeTraffic = fleet.map(n => {
+    const snap = Store.stats[n.name]; let r = 0, t = 0;
+    if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; }
+    return { name: n.name, color: n.color, rx: r, tx: t, peers: peers.filter(p => p.targets.some(d => d.node === n.name)).length };
+  });
+  const anyTraffic = nodeTraffic.some(x => x.rx + x.tx > 0);
+  const rankRows = nodeTraffic.slice()
+    .sort((a, b) => anyTraffic ? (b.rx + b.tx) - (a.rx + a.tx) : b.peers - a.peers)
+    .slice(0, 6)
+    .map(x => ({ label: x.name, value: anyTraffic ? x.rx + x.tx : x.peers,
+      sub: anyTraffic ? "↓ " + rate(x.rx) + " ↑ " + rate(x.tx) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
+      color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.name) }));
+
   return html`<div class="screen">
     <div class="statgrid">
       <a class="stat accent clk" href="#/connections"><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${peers.length}</small></div><div class="sub">live connections →</div></div></a>
@@ -599,6 +613,11 @@ function Overview() {
     <div class="section-title"><h2>Fleet</h2><span class="count">${fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
     ${fleet.length ? html`<div class="fleet2">${fleet.map(n => html`<${FleetNodeCard} key=${n.name} n=${n}/>`)}</div>`
       : html`<div class="allclear">No servers configured in fleet.json.</div>`}
+
+    ${fleet.length > 1 ? html`<${Fragment}>
+      <div class="section-title"><h2>${anyTraffic ? "Top nodes by traffic" : "Top nodes by peers"}</h2><span class="grow"></span></div>
+      <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
+    <//>` : null}
 
     ${recent.length ? html`<${Fragment}>
       <div class="section-title"><h2>Recent activity</h2></div>
@@ -679,6 +698,10 @@ function NodeDetail({ node: rawName }) {
 
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online">
       <${NodeHealth} health=${nrec.health} node=${name} compact=${false}/>
+    <//>` : null}
+
+    ${nrec.health_history && (nrec.health_history.rx || []).length > 1 ? html`<${Panel} icon="gauge" title="Throughput" count="24h">
+      <${ThroughputChart} rx=${nrec.health_history.rx} tx=${nrec.health_history.tx} h=${72}/>
     <//>` : null}
 
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}>
@@ -1283,6 +1306,41 @@ function MiniArea({ points, color, h }) {
     <polygon points=${area} fill=${"url(#" + gid + ")"}/>
     <polyline points=${line} fill="none" stroke=${color} stroke-width="1.4" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
   </svg>`;
+}
+
+// Throughput history: rx as a filled area + tx as a line, scaled to the series max.
+function ThroughputChart({ rx, tx, h }) {
+  const R = (rx || []).map(v => v || 0), T = (tx || []).map(v => v || 0);
+  const n = Math.max(R.length, T.length);
+  if (n < 2) return html`<div class="harea-empty">collecting throughput history…</div>`;
+  h = h || 60; const w = 100, mx = Math.max(1, ...R, ...T);
+  const X = i => i / (n - 1) * w, Y = v => h - 1.5 - (v / mx) * (h - 3);
+  const line = arr => arr.map((v, i) => X(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
+  const rxLine = line(R), rxArea = "0," + h + " " + rxLine + " " + w + "," + h;
+  const gid = "tp" + (ThroughputChart._n = (ThroughputChart._n || 0) + 1);
+  const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
+  return html`<div class="tp-wrap">
+    <div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="grow"></span><span class="tp-peak">peak ${rate(mx)}</span></div>
+    <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
+      <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
+      </linearGradient></defs>
+      <polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
+      <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.4" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+      <polyline points=${line(T)} fill="none" stroke="var(--ready)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-dasharray="3 2"/>
+    </svg>
+  </div>`;
+}
+
+// A ranked horizontal-bar list. rows: [{label, value, sub, color, href}].
+function RankBars({ rows }) {
+  const mx = Math.max(1, ...rows.map(r => r.value || 0));
+  if (!rows.length) return html`<div class="harea-empty">no data</div>`;
+  return html`<div class="rankbars">${rows.map(r => html`<a class="rb" href=${r.href || "#"} key=${r.label}>
+    <span class="rb-label">${r.label}</span>
+    <span class="rb-track"><i style=${"width:" + Math.max(2, (r.value || 0) / mx * 100) + "%;background:" + (r.color || "var(--brand)")}></i></span>
+    <span class="rb-val">${r.sub}</span>
+  </a>`)}</div>`;
 }
 
 // Per-node health: CPU / Memory / Disk on one row (each a third), with the CPU-load history

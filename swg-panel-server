@@ -524,13 +524,25 @@ def panel_next_ip(snaps, roster, nodes, iface):
 # return the most recent points for the sparklines. Lock guards concurrent node syncs.
 
 HRRD_MAGIC = b"SWGH"
+HRRD_VER = 2            # bumped when the slot layout changes (v1 had no rx/tx — recreated on upgrade)
 HRRD_STEP = 60          # seconds per bucket (1-minute resolution)
 HRRD_SLOTS = 1440       # 24h of buckets
 HRRD_VIEW = 60          # points returned for the UI sparkline
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, step, slots
-HRRD_SLOT = struct.Struct("<IBBBx")           # bucket, cpu, mem, disk, pad  (8 bytes)
+HRRD_SLOT = struct.Struct("<IBBBxII")         # bucket, cpu, mem, disk, pad, rx, tx  (16 bytes)
 HRRD_NA = 255
+HRRD_U32 = 0xFFFFFFFF
 _hrrd_lock = threading.Lock()
+
+
+def snap_traffic(snap):
+    """Aggregate (rx, tx) bytes/sec across all interfaces' peers in a node snapshot."""
+    rx = tx = 0
+    for blk in ((snap or {}).get("interfaces") or {}).values():
+        for p in (blk.get("peers") or []):
+            rx += p.get("rx_speed", 0) or 0
+            tx += p.get("tx_speed", 0) or 0
+    return int(rx), int(tx)
 
 
 def health_pcts(health):
@@ -556,29 +568,30 @@ def health_pcts(health):
 def _hrrd_ok(path):
     try:
         with open(path, "rb") as f:
-            magic, _ver, step, slots = HRRD_HEAD.unpack(f.read(HRRD_HEAD.size))
-        return magic == HRRD_MAGIC and step == HRRD_STEP and slots == HRRD_SLOTS
+            magic, ver, step, slots = HRRD_HEAD.unpack(f.read(HRRD_HEAD.size))
+        return magic == HRRD_MAGIC and ver == HRRD_VER and step == HRRD_STEP and slots == HRRD_SLOTS
     except (OSError, struct.error):
         return False
 
 
-def hrrd_update(path, ts, cpu, mem, disk):
+def hrrd_update(path, ts, cpu, mem, disk, rx=0, tx=0):
     bucket = int(ts) // HRRD_STEP
     idx = bucket % HRRD_SLOTS
     with _hrrd_lock:
-        if not _hrrd_ok(path):                    # (re)create: header + zeroed slots
+        if not _hrrd_ok(path):                    # (re)create: header + zeroed slots (also upgrades v1)
             with contextlib.suppress(OSError):
                 with open(path, "wb") as f:
-                    f.write(HRRD_HEAD.pack(HRRD_MAGIC, 1, HRRD_STEP, HRRD_SLOTS))
+                    f.write(HRRD_HEAD.pack(HRRD_MAGIC, HRRD_VER, HRRD_STEP, HRRD_SLOTS))
                     f.write(b"\x00" * (HRRD_SLOT.size * HRRD_SLOTS))
         with contextlib.suppress(OSError):
             with open(path, "r+b") as f:
                 f.seek(HRRD_HEAD.size + idx * HRRD_SLOT.size)
-                f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF))
+                f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF,
+                                       min(max(int(rx), 0), HRRD_U32), min(max(int(tx), 0), HRRD_U32)))
 
 
 def hrrd_read(path, want=HRRD_VIEW):
-    """Most recent `want` recorded buckets as {t, cpu, mem, disk} (NA -> None)."""
+    """Most recent `want` recorded buckets as {t, cpu, mem, disk, rx, tx} (NA -> None)."""
     with _hrrd_lock:
         try:
             with open(path, "rb") as f:
@@ -587,22 +600,26 @@ def hrrd_read(path, want=HRRD_VIEW):
             return None
     if len(data) < HRRD_HEAD.size or data[:4] != HRRD_MAGIC:
         return None
+    magic, ver, step, slots = HRRD_HEAD.unpack_from(data, 0)
+    if ver != HRRD_VER or step != HRRD_STEP or slots != HRRD_SLOTS:   # old layout — show nothing till it refills
+        return None
     rows = []
     base = HRRD_HEAD.size
     for i in range(HRRD_SLOTS):
         off = base + i * HRRD_SLOT.size
         if off + HRRD_SLOT.size > len(data):
             break
-        b, c, m, d = HRRD_SLOT.unpack_from(data, off)
+        b, c, m, d, rx, tx = HRRD_SLOT.unpack_from(data, off)
         if b:
-            rows.append((b, c, m, d))
+            rows.append((b, c, m, d, rx, tx))
     if not rows:
         return None
     rows.sort()
     rows = rows[-want:]
     na = lambda v: None if v == HRRD_NA else v
     return {"t": [r[0] * HRRD_STEP for r in rows],
-            "cpu": [na(r[1]) for r in rows], "mem": [na(r[2]) for r in rows], "disk": [na(r[3]) for r in rows]}
+            "cpu": [na(r[1]) for r in rows], "mem": [na(r[2]) for r in rows], "disk": [na(r[3]) for r in rows],
+            "rx": [r[4] for r in rows], "tx": [r[5] for r in rows]}
 
 
 # ───────────────────────── API ─────────────────────────
@@ -1214,10 +1231,10 @@ class Handler(BaseHTTPRequestHandler):
             sf = node.get("stats_file", f"stats-{nid}.json")
             with contextlib.suppress(Exception):
                 atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)
-            hp = health_pcts(snap.get("health"))     # append one point to the per-node RRD ring
-            if hp:
-                with contextlib.suppress(Exception):
-                    hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), *hp)
+            cpu, mem, disk = health_pcts(snap.get("health")) or (HRRD_NA, HRRD_NA, HRRD_NA)
+            rx, tx = snap_traffic(snap)              # append one point to the per-node RRD ring
+            with contextlib.suppress(Exception):
+                hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), cpu, mem, disk, rx, tx)
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
