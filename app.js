@@ -1049,7 +1049,6 @@ function UserDetail({ id: rawId }) {
 
   return html`<div class="screen">
     <div class="crumb"><a href="#/users">Users</a><span class="sep">/</span><b>${u.name}</b></div>
-    ${Store.storeConfigs ? html`<div class="notice warn posture"><${Ic} i="warn"/><span><b>store_configs is on.</b> Client private keys are kept on the panel host so these QR codes stay viewable. Turn it off in fleet.json to keep no secrets at rest.</span></div>` : null}
 
     <div class="detail-head">
       <div class="nameline"><h1>${u.name}</h1>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}<${Badge} s=${u.peerCount ? u.status : "empty"}/>
@@ -1211,7 +1210,9 @@ function TargetCard({ peer, t }) {
     <div class="deploy-head"><span class="dot" style=${{ background: col }}></span><span class="nm">${t.node} · ${t.iface}</span><span class="grow"></span><${Badge} s=${t.status}/></div>
     <div class="deploy-body">
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
-        : html`<div class="qr-none">${loaded ? "config shown right after creation" + (Store.storeConfigs ? "" : ", or enable store_configs to keep it") : "loading…"}</div>`}
+        : html`<div class="qr-none">${!loaded ? "loading…"
+            : Store.storeConfigs ? "No stored config — re-issue this peer to enable its QR & download."
+            : "Config shown right after creation, or enable store_configs to keep it."}</div>`}
       <div class="dmeta">
         <div class="row"><span class="k">address</span><span class="vv">${t.ip || "—"}</span></div>
         <div class="row"><span class="k">handshake</span><span class="vv">${obs ? seen(obs.handshake_age) : "—"}</span></div>

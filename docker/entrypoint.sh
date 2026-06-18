@@ -122,7 +122,7 @@ if [ -n "${SWG_PANEL_FLEET:-}" ] && [ ! -f "$SWG_PANEL_FLEET" ]; then
   "roster_path":   "/var/lib/swg-panel/users.json",
   "nodes_path":    "/var/lib/swg-panel/nodes.json",
   "stats_dir":     "$STATS_DIR",
-  "store_configs": false,
+  "store_configs": true,
   "config_dir":    "/var/lib/swg-panel/configs",
   "node_interval": 5
 }

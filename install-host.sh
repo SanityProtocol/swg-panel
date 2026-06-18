@@ -18,7 +18,7 @@ MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detect
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 
 PANEL_DOMAIN="${PANEL_DOMAIN:-}"       # panel URL: IP, host, or host/subpath (e.g. vpn.example.com/swg). Blank = this host's IP.
-STORE_CONFIGS="${STORE_CONFIGS:-false}"
+STORE_CONFIGS="${STORE_CONFIGS:-true}"   # keep client configs on the panel so QR/download stay available (set false for no secrets at rest)
 
 SERVE_MODE="${SERVE_MODE:-}"           # internal (self-contained) | nginx | caddy | skip  (blank = ask)
 # TLS — how to obtain the certificate:

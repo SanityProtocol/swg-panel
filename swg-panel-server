@@ -629,7 +629,11 @@ def api(method, path, qs, body, deps):
     nodes = nodes_load(deps["nodes_path"])
     snaps = deps.get("node_snaps") or {}; seen = deps.get("node_seen") or {}
     now = deps.get("now", lambda: int(time.time()))
-    store_configs = bool(fleet.get("store_configs")); config_dir = fleet.get("config_dir")
+    # store_configs defaults ON: client configs (with the private key) are kept on the panel host
+    # so QR codes / config downloads stay available any time, not just at creation. Set it to
+    # false in fleet.json to keep no client secrets at rest. config_dir defaults next to the roster.
+    store_configs = fleet.get("store_configs", True) is not False
+    config_dir = fleet.get("config_dir") or os.path.join(os.path.dirname(roster_path) or ".", "configs")
 
     def known(node):
         return node in nodes
