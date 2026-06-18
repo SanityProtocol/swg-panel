@@ -313,13 +313,15 @@ const Store = {
                                                          : JSON.parse(JSON.stringify(this._server));
     this.roster = snap.roster; this.nodes = snap.nodes;
     for (const id of Object.keys(this.pending)) { try { this.pending[id].apply(this); } catch (_) {} }
-    this.fleet = this.nodes.map(n => ({ name: n.name, color: n.color, transport: "https", stats_file: "stats-" + n.name + ".json" }));
+    // fleet entries carry the stable id (the connector everywhere) + the mutable name (display)
+    this.fleet = this.nodes.map(n => ({ id: n.id, name: n.name, color: n.color, transport: "https" }));
     this.recon = reconcile(this.roster, this.stats, Date.now());
     bus.emit();
   },
-  node(name) { return this.fleet.find(n => n.name === name); },
-  nodeColor(name) { const n = this.node(name); return (n && n.color) || "#5f7569"; },
-  ifacesOf(node) { return Object.keys(this.describe[node] || {}); },
+  node(id) { return this.fleet.find(n => n.id === id); },              // lookup by stable id
+  nodeName(id) { const n = this.node(id); return (n && n.name) || id; }, // display title (falls back to id)
+  nodeColor(id) { const n = this.node(id); return (n && n.color) || "#5f7569"; },
+  ifacesOf(node) { return Object.keys(this.describe[node] || {}); },   // node = id (describe keyed by id)
   ifaceMeta(node, iface) { return (this.describe[node] || {})[iface] || null; },
   peer(id) { return this.recon.peers.find(p => p.id === id); },
   user(id) { return this.recon.users.find(u => u.id === id); },
@@ -449,7 +451,7 @@ function TargetPips({ peer }) {
     if (d.status === "online") cls = "on";
     else if (d.status === "ready") cls = "present";
     else if (d.status === "dangling" || d.status === "pending") cls = "miss";
-    return html`<span class="pip ${cls}" style=${"--pc:" + col} title=${d.node + " · " + d.iface + " · " + d.status}></span>`;
+    return html`<span class="pip ${cls}" style=${"--pc:" + col} title=${Store.nodeName(d.node) + " · " + d.iface + " · " + d.status}></span>`;
   })}</span>`;
 }
 
@@ -467,7 +469,7 @@ async function assignPeerToUser(peer, userId) {
     keys = await genKeys(); psk = genPSK(); configs = {};
     for (const t of peer.targets) {
       const m = Store.ifaceMeta(t.node, t.iface);
-      if (!m) { Store.rowErrors[key] = { msg: t.node + " hasn't reported " + t.iface + " yet", at: Date.now() }; Store.apply(); return; }
+      if (!m) { Store.rowErrors[key] = { msg: Store.nodeName(t.node) + " hasn't reported " + t.iface + " yet", at: Date.now() }; Store.apply(); return; }
       configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: t.ip + "/32", dns: m.dns, mtu: 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk, endpoint: m.endpoint, allowed: "0.0.0.0/0, ::/0", keepalive: 25 });
     }
   } catch (e) { Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
@@ -529,16 +531,16 @@ function DangerButton({ label, confirm, onConfirm, className }) {
 
 // One fleet entry: main block (identity/traffic/sync) on the left, health block on the right.
 function FleetNodeCard({ n }) {
-  const live = Store.recon.nodeStatus[n.name] === "live";
-  const snap = Store.stats[n.name];
-  const nrec = (Store.nodes || []).find(x => x.name === n.name) || {};   // health lives on the node-store record
+  const live = Store.recon.nodeStatus[n.id] === "live";
+  const snap = Store.stats[n.id];
+  const nrec = (Store.nodes || []).find(x => x.id === n.id) || {};   // health lives on the node-store record
   const health = nrec.health || null;
-  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.name));
-  const onl = here.filter(p => p.targets.some(t => t.node === n.name && t.online)).length;
+  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
+  const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
   let nrx = 0, ntx = 0; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { nrx += pp.rx_speed || 0; ntx += pp.tx_speed || 0; }
   let sync = "no data"; if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? "synced " + seen(a) + " ago" : "stale · " + seen(a); }
   const al = healthAlerts(health);
-  return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.name)}>
+  return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.id)}>
     <div class="fnode-main">
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span><span class="tport">${n.transport}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
@@ -548,7 +550,7 @@ function FleetNodeCard({ n }) {
       </div>
     </div>
     <div class="fnode-health">
-      ${health ? html`<${NodeHealth} health=${health} node=${n.name} compact=${true}/>` : html`<div class="fnode-nohealth">${live ? "no health data reported" : "node offline"}</div>`}
+      ${health ? html`<${NodeHealth} health=${health} node=${n.id} compact=${true}/>` : html`<div class="fnode-nohealth">${live ? "no health data reported" : "node offline"}</div>`}
     </div>
   </a>`;
 }
@@ -584,11 +586,11 @@ function Overview() {
   const online = peers.filter(p => p.online).length;
   const partial = peers.filter(p => p.status === "partial").length;
   const offline = peers.filter(p => ["dangling", "unknown"].includes(p.status)).length;
-  const liveNodes = fleet.filter(n => ns[n.name] === "live").length;
+  const liveNodes = fleet.filter(n => ns[n.id] === "live").length;
   const ifaceCount = Object.values(Store.describe).reduce((a, d) => a + Object.keys(d || {}).length, 0);
   const nodesAlerting = (Store.nodes || []).filter(n => healthAlerts(n.health).length).length;
   let rx = 0, tx = 0;
-  fleet.forEach(n => { const snap = Store.stats[n.name]; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { rx += pp.rx_speed || 0; tx += pp.tx_speed || 0; } });
+  fleet.forEach(n => { const snap = Store.stats[n.id]; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { rx += pp.rx_speed || 0; tx += pp.tx_speed || 0; } });
 
   const probs = peers.filter(p => ["dangling", "partial", "pending", "unknown"].includes(p.status))
     .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
@@ -600,9 +602,9 @@ function Overview() {
 
   // ranked nodes — by live traffic, or by peer count when the fleet is idle
   const nodeTraffic = fleet.map(n => {
-    const snap = Store.stats[n.name]; let r = 0, t = 0;
+    const snap = Store.stats[n.id]; let r = 0, t = 0;
     if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; }
-    return { name: n.name, color: n.color, rx: r, tx: t, peers: peers.filter(p => p.targets.some(d => d.node === n.name)).length };
+    return { id: n.id, name: n.name, color: n.color, rx: r, tx: t, peers: peers.filter(p => p.targets.some(d => d.node === n.id)).length };
   });
   const anyTraffic = nodeTraffic.some(x => x.rx + x.tx > 0);
   const rankRows = nodeTraffic.slice()
@@ -610,7 +612,7 @@ function Overview() {
     .slice(0, 6)
     .map(x => ({ label: x.name, value: anyTraffic ? x.rx + x.tx : x.peers,
       sub: anyTraffic ? "↓ " + rate(x.rx) + " ↑ " + rate(x.tx) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
-      color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.name) }));
+      color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.id) }));
 
   return html`<div class="screen">
     <div class="statgrid">
@@ -622,7 +624,7 @@ function Overview() {
     </div>
 
     <div class="section-title"><h2>Fleet</h2><span class="count">${fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
-    ${fleet.length ? html`<div class="fleet2">${fleet.map(n => html`<${FleetNodeCard} key=${n.name} n=${n}/>`)}</div>`
+    ${fleet.length ? html`<div class="fleet2">${fleet.map(n => html`<${FleetNodeCard} key=${n.id} n=${n}/>`)}</div>`
       : html`<div class="allclear">No servers configured in fleet.json.</div>`}
 
     ${fleet.length > 1 ? html`<${Fragment}>
@@ -658,14 +660,15 @@ function Overview() {
 
 // ═════════════════════════ SCREEN: NODE DETAIL ═════════════════════════
 function NodeDetail({ node: rawName }) {
-  const name = decodeURIComponent(rawName);
+  const name = decodeURIComponent(rawName);   // `name` is the node id (the connector); display uses dname
   const node = Store.node(name);
-  const nrec = Store.nodes.find(x => x.name === name) || {};   // full record carries health
+  const nrec = Store.nodes.find(x => x.id === name) || {};   // full record carries health
   const meta = Store.describe[name] || null;       // interface meta from the consolidated state
   const metaErr = (node && !meta) ? "node has not reported yet" : null;
 
   if (!node) return html`<div class="screen"><div class="crumb"><a href="#/">Overview</a><span class="sep">/</span><b>${name}</b></div>
-    <div class="empty"><b>Unknown server</b>“${name}” isn't in the fleet.</div></div>`;
+    <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
+  const dname = node.name || name;
 
   const live = Store.recon.nodeStatus[name] === "live";
   const snap = Store.stats[name];
@@ -676,9 +679,9 @@ function NodeDetail({ node: rawName }) {
   if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); syncTxt = live ? "synced " + seen(a) + " ago" : "stale for " + seen(a); }
 
   return html`<div class="screen">
-    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${name}</b></div>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${name}</h1><span class=${"tport" + (node.transport === "https" ? " https" : "")}>${node.transport}</span>${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}</div>
+      <div class="title"><h1>${dname}</h1><span class=${"tport" + (node.transport === "https" ? " https" : "")}>${node.transport}</span>${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}</div>
       <div class="grow"></div>
       <button class="btn btn-primary" onClick=${() => openCreatePeer({ node: name })}><span class="plus"><${Ic} i="plus"/></span> Add peer</button>
     </div>
@@ -744,9 +747,10 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   useStore();
   const node = decodeURIComponent(rawNode);
   const iface = decodeURIComponent(rawIface);
-  const nrec = Store.node(node);
-  if (!nrec) return html`<div class="screen"><div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${node}</b></div>
-    <div class="empty"><b>Unknown server</b>“${node}” isn't in the fleet.</div></div>`;
+  const nrec = Store.node(node);   // node = id (the connector)
+  if (!nrec) return html`<div class="screen"><div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>server</b></div>
+    <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
+  const dname = nrec.name || node;
   const meta = Store.ifaceMeta(node, iface);
   const live = Store.recon.nodeStatus[node] === "live";
   const type = (meta && meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
@@ -758,7 +762,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
 
   return html`<div class="screen">
-    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${node}</a><span class="sep">/</span><b>${iface}</b></div>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
       <div class="title"><span class="dot ${live ? "live" : "stale"}"></span><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span></div>
       <div class="grow"></div>
@@ -838,8 +842,9 @@ const peersView = { node: "", iface: "" };
 function PeersScreen() {
   useStore();
   const fleet = Store.fleet;
-  if (!peersView.node && fleet.length) peersView.node = fleet[0].name;
-  const node = peersView.node;
+  if (!peersView.node && fleet.length) peersView.node = fleet[0].id;
+  if (peersView.node && !fleet.some(n => n.id === peersView.node) && fleet.length) peersView.node = fleet[0].id;
+  const node = peersView.node;   // node = id
   const snap = Store.stats[node];
   const ifaces = snap ? Object.keys(snap.interfaces || {}) : [];
   if (ifaces.length && !ifaces.includes(peersView.iface)) peersView.iface = ifaces[0];
@@ -851,7 +856,7 @@ function PeersScreen() {
   return html`<div class="screen">
     <div class="toolbar">
       <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; bus.emit(); }}>
-        ${fleet.map(n => html`<option value=${n.name}>${n.name}</option>`)}
+        ${fleet.map(n => html`<option value=${n.id}>${n.name}</option>`)}
       </select>
       <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; bus.emit(); }}>
         ${ifaces.length ? ifaces.map(i => html`<option value=${i}>${i}</option>`) : html`<option value="">no interfaces reported</option>`}
@@ -860,7 +865,7 @@ function PeersScreen() {
       <button class="btn btn-primary" disabled=${!iface} onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
     </div>
 
-    <div class="section-title"><h2>Peers on ${node || "—"} · ${iface || "—"}</h2><span class="count">${onIface.length}</span></div>
+    <div class="section-title"><h2>Peers on ${node ? Store.nodeName(node) : "—"} · ${iface || "—"}</h2><span class="count">${onIface.length}</span></div>
     <div class="tablewrap"><table>
       <thead><tr><th>Status</th><th>Name</th><th>Address</th><th>User</th><th>Last</th><th></th></tr></thead>
       <tbody>
@@ -934,7 +939,7 @@ function ConnectionsScreen() {
     if (connView.iface && r.iface !== connView.iface) return false;
     if (connView.user && r.uid !== connView.user) return false;
     if (connView.online && !r.online) return false;
-    if (q && !((r.user + " " + r.peer + " " + r.node + " " + r.iface + " " + r.endpoint + " " + r.ip).toLowerCase().includes(q))) return false;
+    if (q && !((r.user + " " + r.peer + " " + Store.nodeName(r.node) + " " + r.iface + " " + r.endpoint + " " + r.ip).toLowerCase().includes(q))) return false;
     return true;
   });
   const keyf = { rate: r => r.rx + r.tx, hs: r => (r.hs == null ? Infinity : r.hs), peer: r => r.peer.toLowerCase(), user: r => r.user.toLowerCase(), node: r => r.node + "|" + r.iface }[connView.sort] || (r => r.rx + r.tx);
@@ -946,7 +951,7 @@ function ConnectionsScreen() {
     <div class="toolbar">
       <div class="search"><${Ic} i="search"/><input placeholder="Search peer, user, endpoint, IP…" value=${connView.q} onInput=${e => { connView.q = e.target.value.trim(); bump(); }}/></div>
       <select class="selwrap" value=${connView.node} onChange=${e => { connView.node = e.target.value; bump(); }}>
-        <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.name}>${n.name}</option>`)}
+        <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
       </select>
       <select class="selwrap" value=${connView.iface} onChange=${e => { connView.iface = e.target.value; bump(); }}>
         <option value="">All interfaces</option>${ifaceList.map(i => html`<option value=${i}>${i}</option>`)}
@@ -975,7 +980,7 @@ function ConnectionsScreen() {
           <td data-label="Peer" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(r.pid))}>${r.peer ? html`<b>${r.peer}</b>` : html`<span class="faint">unassigned</span>`}</td>
           <td data-label="User">${r.uid ? html`<a href=${"#/user/" + encodeURIComponent(r.uid)}>${r.user}</a>` : html`<span class="faint">—</span>`}</td>
           <td data-label="Node" class="clk" onClick=${() => go("#/node/" + encodeURIComponent(r.node) + "/" + encodeURIComponent(r.iface))}>
-            <span class="addr" style="color:var(--ink-2)">${r.node}</span><span class="tags">${targetTags(r.node, r.iface, r.type, r.via, !r.online)}</span></td>
+            <span class="addr" style="color:var(--ink-2)">${Store.nodeName(r.node)}</span><span class="tags">${targetTags(r.node, r.iface, r.type, r.via, !r.online)}</span></td>
           <td data-label="Endpoint"><span class="addr">${r.endpoint || "—"}</span></td>
           <td data-label="Last"><span class="when">${seen(r.hs)}</span></td>
           <td data-label="Rate">${rateCell(r.rx, r.tx)}</td>
@@ -1005,7 +1010,7 @@ function PeerLine({ peer }) {
     if (!single) return openPeerConfigs(peer);
     const t = peer.targets[0];
     const c = await getConfig(peer.pubkey, t.node, t.iface);
-    if (c) downloadConf(c, (peer.title || peer.name || "peer") + "-" + t.node);
+    if (c) downloadConf(c, (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node));
     else toast(Store.storeConfigs ? "No stored config — re-issue this peer to enable download." : "Config is only available right after creation.", "err");
   };
   return html`<div class=${"pline" + (flash ? " flash" : "")}>
@@ -1148,7 +1153,7 @@ function UserPeers({ user }) {
   return html`${Object.keys(groups).sort().map(k => {
     const g = groups[k];
     return html`<div class="ifgroup" key=${k}>
-      <a class="ifgroup-head" href=${"#/node/" + encodeURIComponent(g.node) + "/" + encodeURIComponent(g.iface)} title="Open interface"><span class="dot" style=${"background:" + Store.nodeColor(g.node)}></span><b>${g.node}</b><span class="sep2">·</span><span class="ifn">${g.iface}</span><span class="tags">${(() => {
+      <a class="ifgroup-head" href=${"#/node/" + encodeURIComponent(g.node) + "/" + encodeURIComponent(g.iface)} title="Open interface"><span class="dot" style=${"background:" + Store.nodeColor(g.node)}></span><b>${Store.nodeName(g.node)}</b><span class="sep2">·</span><span class="ifn">${g.iface}</span><span class="tags">${(() => {
         const ty = ((g.items[0].t || {}).type || "").toLowerCase();
         const tags = [];
         if (ty === "awg") tags.push(html`<${Tag} kind="awg" label="awg"/>`);
@@ -1261,10 +1266,11 @@ function TargetCard({ peer, t }) {
   const col = Store.nodeColor(t.node);
   const obs = t.observed;
   const tps = turnProxiesFor(t.node, t.iface);
-  const label = (peer.name || "peer") + " · " + t.node + "/" + t.iface;
+  const dnode = Store.nodeName(t.node);
+  const label = (peer.name || "peer") + " · " + dnode + "/" + t.iface;
 
   return html`<div class="deploy">
-    <div class="deploy-head"><span class="dot" style=${{ background: col }}></span><span class="nm">${t.node} · ${t.iface}</span><span class="grow"></span><${Badge} s=${t.status}/></div>
+    <div class="deploy-head"><span class="dot" style=${{ background: col }}></span><span class="nm">${dnode} · ${t.iface}</span><span class="grow"></span><${Badge} s=${t.status}/></div>
     <div class="deploy-body">
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? "loading…"
@@ -1280,7 +1286,7 @@ function TargetCard({ peer, t }) {
       </div>
     </div>
     ${conf ? html`<div class="acts">
-      <button class="btn btn-mini" onClick=${() => downloadConf(conf, (peer.name || "peer") + "-" + t.node)}><${Ic} i="download"/> Config</button>
+      <button class="btn btn-mini" onClick=${() => downloadConf(conf, (peer.name || "peer") + "-" + dnode)}><${Ic} i="download"/> Config</button>
       <button class="btn btn-mini" onClick=${() => copy(conf, "Config copied")}><${Ic} i="copy"/> Copy</button>
       ${tps.length ? html`<button class="btn btn-mini" title="Import via turn-proxy" onClick=${() => qrZoom(turnConf(conf, tps[0].listen), label + " · turn-proxy")}>turn-proxy QR</button>` : null}
     </div>` : null}
@@ -1314,7 +1320,7 @@ function NodesScreen() {
       Entry servers run <span class="mono">swg-noded</span>, which syncs to this panel over HTTPS — the node needs no inbound access. Add one here to get a one-time enrollment command.
     </div>
     ${!ns.length ? html`<div class="empty"><b>No nodes yet</b>Add your first entry server — you'll get a one-time command to run on it.</div>`
-      : html`<div class="nodegrid">${ns.map(n => html`<${NodeCard} key=${n.name} n=${n}/>`)}</div>`}
+      : html`<div class="nodegrid">${ns.map(n => html`<${NodeCard} key=${n.id} n=${n}/>`)}</div>`}
   </div>`;
 }
 // load/util tone: green under 70%, amber to 90%, red above.
@@ -1455,7 +1461,7 @@ function RangedHistory({ node, kind, live, h, label }) {
 // charted below. `history=false` omits the inline chart (node detail uses RangedHistory instead).
 function NodeHealth({ health, node, compact, history }) {
   if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
-  const hh = (node && (Store.nodes || []).find(n => n.name === node) || {}).health_history || null;  // server-side RRD
+  const hh = (node && (Store.nodes || []).find(n => n.id === node) || {}).health_history || null;  // server-side RRD (node = id)
   const cpuHist = (hh && Array.isArray(hh.cpu) && hh.cpu.length > 1) ? hh.cpu : null;
   const alerts = healthAlerts(health);
   const cols = [];
@@ -1487,11 +1493,11 @@ function NodeCard({ n }) {
   const st = n.status || "dangling";
   const stTxt = st === "online" ? "online" : (st === "offline" ? "offline" : "awaiting enroll");
   const sync = st === "dangling" ? "never connected" : (st === "online" ? "synced " + ago(n.last_seen) : "last seen " + ago(n.last_seen));
-  const ifTags = ifaceTags(n.name);
-  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.name));
-  const onl = here.filter(p => p.targets.some(t => t.node === n.name && t.online)).length;
+  const ifTags = ifaceTags(n.id);
+  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
+  const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
   return html`<div class="ncard">
-    <div class="ncard-body clk" onClick=${() => go("#/node/" + encodeURIComponent(n.name))}>
+    <div class="ncard-body clk" onClick=${() => go("#/node/" + encodeURIComponent(n.id))}>
       <div class="ntop"><span class="nsw" style=${{ background: n.color || "#5f7569" }}></span><span class="nname">${n.name}</span><span class="grow"></span><span class="nstat ${st}">${stTxt}</span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="nrows">
         <div class="nrow"><span class="l">Endpoint</span><span class="r">${n.endpoint_host || "—"}</span></div>
@@ -1500,11 +1506,11 @@ function NodeCard({ n }) {
         <div class="nrow"><span class="l">Interfaces</span><span class="r">${ifTags.length ? html`<span class="tags">${ifTags}</span>` : "—"}</span></div>
         <div class="nrow"><span class="l">Sync</span><span class="r">${sync}</span></div>
       </div>
-      ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} node=${n.name} compact=${true}/>` : null}
+      ${st !== "dangling" && n.health ? html`<${NodeHealth} health=${n.health} node=${n.id} compact=${true}/>` : null}
     </div>
     <div class="nacts">
       <button class="btn-mini" onClick=${() => openNodeEdit(n)}>Edit</button>
-      <button class="btn-mini warn" onClick=${() => openNodeRotate(n.name)}>Rotate token</button>
+      <button class="btn-mini warn" onClick=${() => openNodeRotate(n)}>Rotate token</button>
       <span style="flex:1"></span>
       <button class="btn-danger" onClick=${() => openNodeRemove(n)}>Remove</button>
     </div>
@@ -1664,7 +1670,7 @@ function AddPeersSheet({ userId, userName }) {
   const create = async () => {
     if (!chosen.length) return setMsg({ k: "err", t: "Pick at least one interface." });
     const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
-    if (badIp) return setMsg({ k: "err", t: "Invalid address for " + badIp.node + "/" + badIp.iface + "." });
+    if (badIp) return setMsg({ k: "err", t: "Invalid address for " + Store.nodeName(badIp.node) + "/" + badIp.iface + "." });
     const ce = configErrors(cf); const ck = Object.keys(ce)[0];
     if (ck) return setMsg({ k: "err", t: ce[ck] });
     setBusy(true); setMsg({ k: "work", t: "minting " + chosen.length + " peer" + (chosen.length > 1 ? "s" : "") + "…" });
@@ -1722,7 +1728,7 @@ function TargetPicker({ prefill, exclude, onChange }) {
       <label class="topt-main" onClick=${() => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
         <span class="swatch" style=${"background:" + Store.nodeColor(t.node)}></span>
-        <span class="nm">${t.node}</span><span class="tp">${t.iface}</span></label>
+        <span class="nm">${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></label>
       ${s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>` : null}
     </div>`;
   })}</div>`;
@@ -1756,7 +1762,7 @@ async function createPeersForTargets(userId, chosen, opts) {
   let made = 0; const fails = [];
   for (const t of chosen) {
     const m = Store.ifaceMeta(t.node, t.iface);
-    if (!m) { fails.push(t.node + "/" + t.iface + " (no interface meta)"); continue; }
+    if (!m) { fails.push(Store.nodeName(t.node) + "/" + t.iface + " (no interface meta)"); continue; }
     try {
       const keys = await genKeys();
       const psk = genPSK();
@@ -1767,11 +1773,11 @@ async function createPeersForTargets(userId, chosen, opts) {
       const body = { user_id: userId, pubkey: keys.pub, psk, targets: [{ node: t.node, iface: t.iface, ip: ipClean, type: (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg" }] };
       if (Store.storeConfigs) body.configs = { [tkey(t.node, t.iface)]: conf };
       const r = await api.peerCreate(body);
-      if (!r.ok) { fails.push(t.node + "/" + t.iface + ": " + (r.error || r.code || "failed")); continue; }
+      if (!r.ok) { fails.push(Store.nodeName(t.node) + "/" + t.iface + ": " + (r.error || r.code || "failed")); continue; }
       Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, { [tkey(t.node, t.iface)]: conf });
       if (r.data && r.data.id) Store.recentlyCreated[r.data.id] = Date.now();
       made++;
-    } catch (e) { fails.push(t.node + "/" + t.iface + ": " + (e.message || e)); }
+    } catch (e) { fails.push(Store.nodeName(t.node) + "/" + t.iface + ": " + (e.message || e)); }
   }
   return { ok: made > 0 || chosen.length === 0, made, fails };
 }
@@ -1807,7 +1813,7 @@ function CreatePeerSheet({ prefill }) {
   const validate = () => {
     if (!chosen.length) return "Pick at least one target.";
     const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
-    if (badIp) return "Invalid address for " + badIp.node + "/" + badIp.iface + ".";
+    if (badIp) return "Invalid address for " + Store.nodeName(badIp.node) + "/" + badIp.iface + ".";
     if (pskBad) return "Preshared key must be 44-char base64 (or blank to auto-generate).";
     const ce = configErrors(cf); const k = Object.keys(ce)[0];
     if (k) return ce[k];
@@ -1885,7 +1891,7 @@ function AddTargetSheet({ peer }) {
     if (!node) return setMsg({ k: "err", t: "Pick a server." });
     if (!ip.trim()) return setMsg({ k: "err", t: "No address available." });
     if (!V.ipv4(ip.trim().split("/")[0])) return setMsg({ k: "err", t: "Address must be a valid IPv4." });
-    setBusy(true); setMsg({ k: "work", t: "deploying to " + node + "…" });
+    setBusy(true); setMsg({ k: "work", t: "deploying to " + Store.nodeName(node) + "…" });
     const info = Store.ifaceMeta(node, iface);
     const ipClean = ip.trim().split("/")[0];
     let conf = null;
@@ -1895,7 +1901,7 @@ function AddTargetSheet({ peer }) {
     const r = await api.peerAddTarget(body);
     if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: "Failed: " + (r.error || r.code || "") }); }
     if (conf) (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(node, iface)] = conf;
-    toast("Copied to " + node + "/" + iface + ".", "ok"); closeModal(); await Store.poll();
+    toast("Copied to " + Store.nodeName(node) + "/" + iface + ".", "ok"); closeModal(); await Store.poll();
   };
 
   return html`<${Sheet} title=${"Copy peer to another interface"}
@@ -1907,7 +1913,7 @@ function AddTargetSheet({ peer }) {
       </select></div>
     <div class="field"><label>Server</label>
       <select class="selwrap" value=${node} onChange=${e => setNode(e.target.value)}>
-        ${nodesWithIface.length ? nodesWithIface.map(n => html`<option value=${n}>${n}</option>`) : html`<option value="">none available for ${iface}</option>`}
+        ${nodesWithIface.length ? nodesWithIface.map(n => html`<option value=${n}>${Store.nodeName(n)}</option>`) : html`<option value="">none available for ${iface}</option>`}
       </select></div>
     <div class="field"><label>Address</label><input class=${ipBad ? "bad" : ""} value=${ip} onInput=${e => setIp(e.target.value)}/><div class=${"hint" + (ipBad ? " err" : "")}>${ipBad ? "Must be a valid IPv4 address." : ipHint}</div></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1997,7 +2003,7 @@ function NodeCreateSheet() {
   };
   return html`<${Sheet} title="Add node"
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${create}>Create node</button></>`}>
-    <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "Letters, digits, - or _. Used as the node's id across the panel."}</div></div>
+    <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — you can rename it anytime."}</div></div>
     <div class="field"><label>Public endpoint (host or IP)</label><input class=${epBad ? "bad" : ""} value=${ep} onInput=${e => setEp(e.target.value)} placeholder="203.0.113.7" autocomplete="off"/><div class=${"hint" + (epBad ? " err" : "")}>${epBad ? "Must be a hostname or IP (no scheme/spaces)." : "The address clients dial to reach this node. You can change it later."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -2025,9 +2031,9 @@ function NodeEditSheet({ node }) {
     if (epBad) return setMsg({ k: "err", t: "Endpoint must be a hostname or IP." });
     closeModal();   // optimistic: card reflects the edit immediately
     mutate({
-      key: "node:" + node.name,
-      patch: s => { const n = s.nodes.find(x => x.name === node.name); if (n) { n.endpoint_host = ep.trim(); n.color = color; } },
-      call: () => api.nodeUpdate({ name: node.name, endpoint_host: ep.trim(), color }),
+      key: "node:" + node.id,
+      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.endpoint_host = ep.trim(); n.color = color; } },
+      call: () => api.nodeUpdate({ id: node.id, endpoint_host: ep.trim(), color }),
     });
   };
   return html`<${Sheet} title=${"Edit " + node.name}
@@ -2037,29 +2043,29 @@ function NodeEditSheet({ node }) {
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
-function openNodeRotate(name) { openModal(html`<${NodeRotateSheet} name=${name}/>`); }
-function NodeRotateSheet({ name }) {
-  const go2 = async () => { const r = await api.nodeRotate({ name }); if (!r.ok) { toast(r.error || "rotate failed", "err"); return; } openModal(html`<${NodeTokenSheet} name=${name} token=${r.data.token} isNew=${false}/>`); };
-  return html`<${Sheet} title=${"Rotate token · " + name}
+function openNodeRotate(node) { openModal(html`<${NodeRotateSheet} node=${node}/>`); }
+function NodeRotateSheet({ node }) {
+  const go2 = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(r.error || "rotate failed", "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false}/>`); };
+  return html`<${Sheet} title=${"Rotate token · " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${go2}>Rotate</button></>`}>
     <div class="notice warn"><${Ic} i="warn"/><span>The current token stops working immediately. Re-enroll the node with the new token or it will go offline.</span></div>
   <//>`;
 }
 function openNodeRemove(node) { openModal(html`<${NodeRemoveSheet} node=${node}/>`); }
 function NodeRemoveSheet({ node }) {
-  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.name));
+  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.id));
   const onlyHere = here.filter(p => new Set(p.targets.map(t => t.node)).size === 1).length;
   const note = here.length ? `It's referenced by ${here.length} peer${here.length > 1 ? "s" : ""}${onlyHere ? ` — ${onlyHere} live only here and will be dropped from the roster` : ""}.` : "No peers reference it.";
   const go2 = () => { closeModal(); mutate({
-    key: "node:" + node.name,
+    key: "node:" + node.id,
     patch: s => {                                  // optimistic: drop the node + purge its targets (mirrors the cascade)
-      s.nodes = s.nodes.filter(x => x.name !== node.name);
+      s.nodes = s.nodes.filter(x => x.id !== node.id);
       for (const id of Object.keys(s.roster.peers)) {
-        const p = s.roster.peers[id]; p.targets = p.targets.filter(t => t.node !== node.name);
+        const p = s.roster.peers[id]; p.targets = p.targets.filter(t => t.node !== node.id);
         if (!p.targets.length) delete s.roster.peers[id];
       }
     },
-    call: () => api.nodeDelete({ name: node.name }),
+    call: () => api.nodeDelete({ id: node.id }),
   }); };
   return html`<${Sheet} title=${"Remove " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" onClick=${go2}>Remove node</button></>`}>

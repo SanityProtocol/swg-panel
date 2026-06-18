@@ -464,6 +464,48 @@ def nodes_save(path, nodes):
     atomic_write(path, json.dumps(nodes, indent=2) + "\n", mode=0o600)
 
 
+def migrate_node_ids(nodes_path, roster_path, store_configs, config_dir):
+    """One-time: nodes keyed by their (mutable) name -> keyed by a stable opaque id, with the
+    name kept as a free-to-change display title. Rewrites roster peer targets (node name -> id)
+    and renames any stored config files. Idempotent: a no-op once every node is id-keyed."""
+    nodes = load_json(nodes_path, {})
+    if not isinstance(nodes, dict) or not nodes:
+        return
+    if all(isinstance(v, dict) and v.get("id") == k for k, v in nodes.items()):
+        return                                      # already migrated
+    name_to_id, new_nodes = {}, {}
+    for key, v in nodes.items():
+        if not isinstance(v, dict):
+            continue
+        nid = v.get("id") or gen_id()
+        while nid in new_nodes:
+            nid = gen_id()
+        v["id"] = nid
+        v["name"] = v.get("name", key)              # the old dict key was the (display) name
+        new_nodes[nid] = v
+        for nm in {key, v["name"]}:
+            if nm and nm != nid:
+                name_to_id[nm] = nid
+    nodes_save(nodes_path, new_nodes)
+    roster = roster_load(roster_path)
+    changed = False
+    for p in (roster.get("peers") or {}).values():
+        if not isinstance(p, dict):
+            continue
+        for t in p.get("targets", []):
+            old, new = t.get("node"), name_to_id.get(t.get("node"))
+            if new and new != old:
+                if store_configs and config_dir and p.get("pubkey") and t.get("iface"):
+                    with contextlib.suppress(OSError):
+                        os.replace(os.path.join(config_dir, cfg_hash(p["pubkey"], old, t["iface"])),
+                                   os.path.join(config_dir, cfg_hash(p["pubkey"], new, t["iface"])))
+                t["node"] = new
+                changed = True
+    if changed:
+        roster_save(roster_path, roster)
+    print(f"migrated {len(new_nodes)} node(s) to stable ids", flush=True)
+
+
 def find_node_by_token(nodes, token):
     if not token:
         return None, None
@@ -696,18 +738,18 @@ def api(method, path, qs, body, deps):
         return node in nodes
 
     if method == "GET" and path == "/api/fleet":
-        out = [{"name": name, "color": c.get("color"), "transport": "https",
-                "stats_file": c.get("stats_file", f"stats-{name}.json")}
-               for name, c in nodes.items()]
+        out = [{"id": nid, "name": c.get("name", nid), "color": c.get("color"), "transport": "https",
+                "stats_file": c.get("stats_file", f"stats-{nid}.json")}
+               for nid, c in nodes.items()]
         return 200, {"ok": True, "data": {"nodes": out, "store_configs": store_configs, "versions": VERSIONS}}
 
     stats_dir = deps.get("stats_dir")
 
     def nodes_view():
         out = []
-        for name, c in nodes.items():
-            snap = snaps.get(name) or {}
-            ls = seen.get(name)
+        for nid, c in nodes.items():
+            snap = snaps.get(nid) or {}
+            ls = seen.get(nid)
             online = ls is not None and (now() - ls) <= NODE_OFFLINE
             pc = rx = tx = 0
             for blk in (snap.get("interfaces") or {}).values():
@@ -715,8 +757,8 @@ def api(method, path, qs, body, deps):
                 pc += len(ps)
                 rx += sum(p.get("rx_speed", 0) or 0 for p in ps)
                 tx += sum(p.get("tx_speed", 0) or 0 for p in ps)
-            hh = hrrd_read(os.path.join(stats_dir, f"health-{name}.rrd")) if stats_dir else None
-            out.append({"name": name, "color": c.get("color"),
+            hh = hrrd_read(os.path.join(stats_dir, f"health-{nid}.rrd")) if stats_dir else None
+            out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
@@ -730,19 +772,19 @@ def api(method, path, qs, body, deps):
     def describe_view():
         """Per-node interface metadata (server key / endpoint / subnet / awg / dns) the
         create + copy flows need, with the panel's endpoint_host override applied — so the
-        UI builds client configs without a describe round-trip per node."""
+        UI builds client configs without a describe round-trip per node. Keyed by node id."""
         out = {}
-        for name in nodes:
-            snap = snaps.get(name)
+        for nid in nodes:
+            snap = snaps.get(nid)
             if not snap:
                 continue
             d = node_describe(snap)["data"]["interfaces"]
-            ep = (nodes.get(name) or {}).get("endpoint_host")
+            ep = (nodes.get(nid) or {}).get("endpoint_host")
             if ep:
                 for ifc in d.values():
                     port = ifc.get("listen_port")
                     ifc["endpoint"] = f"{ep}:{port}" if port else ifc.get("endpoint")
-            out[name] = d
+            out[nid] = d
         return out
 
     if method == "GET" and path == "/api/nodes":
@@ -1151,49 +1193,56 @@ def api(method, path, qs, body, deps):
         if not name or len(name) > 40 or not all(c.isalnum() or c in "-_" for c in name):
             return 400, {"ok": False, "error": "name must be 1–40 chars: letters, digits, - or _",
                          "code": "bad_request"}
-        if name in nodes:
-            return 409, {"ok": False, "error": f"node {name!r} already exists", "code": "exists"}
+        nid = gen_id()
+        while nid in nodes:
+            nid = gen_id()
         token = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
-        nodes[name] = {"name": name, "color": body.get("color") or "#34d399",
-                       "endpoint_host": (body.get("endpoint_host") or "").strip(),
-                       "stats_file": f"stats-{name}.json",
-                       "token_hash": make_token_hash(token), "created": now()}
+        nodes[nid] = {"id": nid, "name": name, "color": body.get("color") or "#34d399",
+                      "endpoint_host": (body.get("endpoint_host") or "").strip(),
+                      "stats_file": f"stats-{nid}.json",
+                      "token_hash": make_token_hash(token), "created": now()}
         nodes_save(deps["nodes_path"], nodes)
-        ev_append(roster_path, "node", name, "Enrolled node", name)
-        return 200, {"ok": True, "data": {"name": name, "token": token}}
+        ev_append(roster_path, "node", nid, "Enrolled node", name)
+        return 200, {"ok": True, "data": {"id": nid, "name": name, "token": token}}
 
     if method == "POST" and path == "/api/nodes/update":
-        name = (body.get("name") or "").strip()
-        if name not in nodes:
+        nid = body.get("id") or ""
+        if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if "name" in body:                      # name is a free-to-change display title (no refs to migrate)
+            nm = (body.get("name") or "").strip()
+            if not nm or len(nm) > 40 or not all(c.isalnum() or c in "-_" for c in nm):
+                return 400, {"ok": False, "error": "name must be 1–40 chars: letters, digits, - or _", "code": "bad_request"}
+            nodes[nid]["name"] = nm
         if "color" in body:
-            nodes[name]["color"] = body.get("color") or nodes[name].get("color")
+            nodes[nid]["color"] = body.get("color") or nodes[nid].get("color")
         if "endpoint_host" in body:
-            nodes[name]["endpoint_host"] = (body.get("endpoint_host") or "").strip()
+            nodes[nid]["endpoint_host"] = (body.get("endpoint_host") or "").strip()
         nodes_save(deps["nodes_path"], nodes)
-        ev_append(roster_path, "node", name, "Updated node", name)
-        return 200, {"ok": True, "data": {"name": name}}
+        ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
+        return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
 
     if method == "POST" and path == "/api/nodes/rotate":
-        name = (body.get("name") or "").strip()
-        if name not in nodes:
+        nid = body.get("id") or ""
+        if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         token = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
-        nodes[name]["token_hash"] = make_token_hash(token)
+        nodes[nid]["token_hash"] = make_token_hash(token)
         nodes_save(deps["nodes_path"], nodes)
-        ev_append(roster_path, "node", name, "Rotated node token", name)
-        return 200, {"ok": True, "data": {"name": name, "token": token}}
+        ev_append(roster_path, "node", nid, "Rotated node token", nodes[nid].get("name", nid))
+        return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name"), "token": token}}
 
     if method == "POST" and path == "/api/nodes/delete":
-        name = (body.get("name") or "").strip()
-        if name not in nodes:
+        nid = body.get("id") or ""
+        if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
-        del nodes[name]
+        nm = nodes[nid].get("name", nid)
+        del nodes[nid]
         nodes_save(deps["nodes_path"], nodes)
         roster = roster_load(roster_path); changed = False
         for pid in list(roster["peers"].keys()):
             p = roster["peers"][pid]
-            kept = [t for t in p.get("targets", []) if t.get("node") != name]
+            kept = [t for t in p.get("targets", []) if t.get("node") != nid]
             if len(kept) != len(p.get("targets", [])):
                 changed = True
                 if kept:
@@ -1202,16 +1251,16 @@ def api(method, path, qs, body, deps):
                     del roster["peers"][pid]      # its only target was on the deleted node
         if changed:
             roster_save(roster_path, roster)
-        (deps.get("node_snaps") or {}).pop(name, None)
-        (deps.get("node_seen") or {}).pop(name, None)
+        (deps.get("node_snaps") or {}).pop(nid, None)
+        (deps.get("node_seen") or {}).pop(nid, None)
         sd = deps.get("stats_dir")
         if sd:
             with contextlib.suppress(OSError):
-                os.unlink(os.path.join(sd, f"stats-{name}.json"))
+                os.unlink(os.path.join(sd, nodes.get(nid, {}).get("stats_file", f"stats-{nid}.json")))
             with contextlib.suppress(OSError):
-                os.unlink(os.path.join(sd, f"health-{name}.rrd"))
-        ev_append(roster_path, "node", name, "Removed node", name)
-        return 200, {"ok": True, "data": {"name": name}}
+                os.unlink(os.path.join(sd, f"health-{nid}.rrd"))
+        ev_append(roster_path, "node", nid, "Removed node", nm)
+        return 200, {"ok": True, "data": {"id": nid, "name": nm}}
 
     return 404, {"ok": False, "error": "not found", "code": "bad_request"}
 
@@ -1426,6 +1475,10 @@ def main():
     if fleet is None:
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
     nodes_path = fleet.get("nodes_path", "/var/lib/swg-panel/nodes.json")
+    _rp = fleet.get("roster_path", "/var/lib/swg-panel/users.json")
+    _sc = fleet.get("store_configs", True) is not False
+    _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")
+    migrate_node_ids(nodes_path, _rp, _sc, _cd)        # legacy name-keyed -> stable id-keyed (one-time)
     Handler.deps = {"fleet": fleet,
                     "roster_path": fleet.get("roster_path", "/var/lib/swg-panel/users.json"),
                     "stats_dir": fleet.get("stats_dir", "/var/www/wgstats"),
