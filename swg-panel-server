@@ -571,14 +571,17 @@ def panel_next_ip(snaps, roster, nodes, iface):
 # return the most recent points for the sparklines. Lock guards concurrent node syncs.
 
 HRRD_MAGIC = b"SWGH"
-HRRD_VER = 2            # bumped when the slot layout changes (v1 had no rx/tx — recreated on upgrade)
-HRRD_STEP = 60          # seconds per bucket (1-minute resolution)
-HRRD_SLOTS = 1440       # 24h of buckets
-HRRD_VIEW = 60          # points returned for the UI sparkline
-HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, step, slots
+HRRD_VER = 3            # v3: a coarse hourly ring added after the minute ring (week/month views)
+HRRD_STEP = 60          # minute ring: seconds per bucket (1-minute resolution)
+HRRD_SLOTS = 1440       # minute ring: 24h of buckets  → live + day views
+HRRD_HSTEP = 3600       # hour ring: seconds per bucket (1-hour resolution)
+HRRD_HSLOTS = 744       # hour ring: 31 days of buckets → week + month views
+HRRD_VIEW = 60          # points returned for the default (live) sparkline
+HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, min_step, min_slots
 HRRD_SLOT = struct.Struct("<IBBBxII")         # bucket, cpu, mem, disk, pad, rx, tx  (16 bytes)
 HRRD_NA = 255
 HRRD_U32 = 0xFFFFFFFF
+HRRD_HBASE = HRRD_HEAD.size + HRRD_SLOTS * HRRD_SLOT.size   # byte offset of the hour ring
 _hrrd_lock = threading.Lock()
 
 
@@ -621,24 +624,29 @@ def _hrrd_ok(path):
         return False
 
 
+def _hrrd_put(f, base, slots, bucket, cpu, mem, disk, rx, tx):
+    f.seek(base + (bucket % slots) * HRRD_SLOT.size)
+    f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF,
+                           min(max(int(rx), 0), HRRD_U32), min(max(int(tx), 0), HRRD_U32)))
+
+
 def hrrd_update(path, ts, cpu, mem, disk, rx=0, tx=0):
-    bucket = int(ts) // HRRD_STEP
-    idx = bucket % HRRD_SLOTS
+    ts = int(ts)
     with _hrrd_lock:
-        if not _hrrd_ok(path):                    # (re)create: header + zeroed slots (also upgrades v1)
+        if not _hrrd_ok(path):                    # (re)create: header + both zeroed rings (also upgrades v1/v2)
             with contextlib.suppress(OSError):
                 with open(path, "wb") as f:
                     f.write(HRRD_HEAD.pack(HRRD_MAGIC, HRRD_VER, HRRD_STEP, HRRD_SLOTS))
-                    f.write(b"\x00" * (HRRD_SLOT.size * HRRD_SLOTS))
+                    f.write(b"\x00" * (HRRD_SLOT.size * (HRRD_SLOTS + HRRD_HSLOTS)))
         with contextlib.suppress(OSError):
             with open(path, "r+b") as f:
-                f.seek(HRRD_HEAD.size + idx * HRRD_SLOT.size)
-                f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF,
-                                       min(max(int(rx), 0), HRRD_U32), min(max(int(tx), 0), HRRD_U32)))
+                _hrrd_put(f, HRRD_HEAD.size, HRRD_SLOTS, ts // HRRD_STEP, cpu, mem, disk, rx, tx)   # minute ring
+                _hrrd_put(f, HRRD_HBASE, HRRD_HSLOTS, ts // HRRD_HSTEP, cpu, mem, disk, rx, tx)     # hour ring
 
 
-def hrrd_read(path, want=HRRD_VIEW):
-    """Most recent `want` recorded buckets as {t, cpu, mem, disk, rx, tx} (NA -> None)."""
+def hrrd_read(path, want=HRRD_VIEW, hourly=False):
+    """Most recent `want` buckets from the minute (or hourly) ring as
+    {t, cpu, mem, disk, rx, tx} (NA -> None)."""
     with _hrrd_lock:
         try:
             with open(path, "rb") as f:
@@ -647,12 +655,14 @@ def hrrd_read(path, want=HRRD_VIEW):
             return None
     if len(data) < HRRD_HEAD.size or data[:4] != HRRD_MAGIC:
         return None
-    magic, ver, step, slots = HRRD_HEAD.unpack_from(data, 0)
+    _, ver, step, slots = HRRD_HEAD.unpack_from(data, 0)
     if ver != HRRD_VER or step != HRRD_STEP or slots != HRRD_SLOTS:   # old layout — show nothing till it refills
         return None
+    base = HRRD_HBASE if hourly else HRRD_HEAD.size
+    nslots = HRRD_HSLOTS if hourly else HRRD_SLOTS
+    rstep = HRRD_HSTEP if hourly else HRRD_STEP
     rows = []
-    base = HRRD_HEAD.size
-    for i in range(HRRD_SLOTS):
+    for i in range(nslots):
         off = base + i * HRRD_SLOT.size
         if off + HRRD_SLOT.size > len(data):
             break
@@ -664,7 +674,7 @@ def hrrd_read(path, want=HRRD_VIEW):
     rows.sort()
     rows = rows[-want:]
     na = lambda v: None if v == HRRD_NA else v
-    return {"t": [r[0] * HRRD_STEP for r in rows],
+    return {"t": [r[0] * rstep for r in rows],
             "cpu": [na(r[1]) for r in rows], "mem": [na(r[2]) for r in rows], "disk": [na(r[3]) for r in rows],
             "rx": [r[4] for r in rows], "tx": [r[5] for r in rows]}
 
@@ -818,6 +828,19 @@ def api(method, path, qs, body, deps):
         except ValueError:
             limit = 12
         return 200, {"ok": True, "data": ev_read(roster_path, limit)}
+
+    if method == "GET" and path == "/api/node-history":
+        node = (qs.get("node") or [""])[0]
+        rng = (qs.get("range") or ["live"])[0]
+        if not known(node):
+            return 400, {"ok": False, "error": f"unknown node {node!r}", "code": "bad_request"}
+        rrd = os.path.join(stats_dir, f"health-{node}.rrd") if stats_dir else None
+        spec = {"live": (HRRD_VIEW, False), "day": (HRRD_SLOTS, False),
+                "week": (168, True), "month": (HRRD_HSLOTS, True)}.get(rng)
+        if not spec:
+            return 400, {"ok": False, "error": "range must be live|day|week|month", "code": "bad_request"}
+        data = hrrd_read(rrd, spec[0], hourly=spec[1]) if rrd else None
+        return 200, {"ok": True, "data": data or {"t": [], "cpu": [], "mem": [], "disk": [], "rx": [], "tx": []}}
 
     if method == "GET" and path == "/api/next-ip":
         sel = [n for n in (qs.get("nodes") or [""])[0].split(",") if n]

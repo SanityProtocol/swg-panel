@@ -688,3 +688,13 @@ a.tg:hover{filter:brightness(1.25)}
 .appbar-right .iconbtn{color:var(--dim)}
 /* logged-out: keep only the wordmark in the bar */
 body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display:none}
+
+/* ───── history range tabs (live/day/week/month) ───── */
+.chartwrap{display:flex;flex-direction:column;gap:8px}
+.chart-head{display:flex;align-items:center;gap:10px;min-height:22px}
+.chart-head .hist-cap{margin:0}
+.rangetabs{display:inline-flex;gap:2px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:2px}
+.rtab{cursor:pointer;border:0;background:transparent;color:var(--dim);font-family:var(--mono);font-size:10px;text-transform:uppercase;
+  letter-spacing:.06em;padding:4px 9px;border-radius:6px;transition:all .14s}
+.rtab:hover{color:var(--ink-2)}
+.rtab.on{background:var(--brand);color:var(--brand-ink);font-weight:600}

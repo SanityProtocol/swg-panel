@@ -246,6 +246,7 @@ const api = {
   logout() { return this.post("/api/logout", {}); },
   state() { return this.get("/api/state"); },
   events(limit) { return this.get("/api/events?limit=" + (limit || 12)); },
+  nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&range=" + encodeURIComponent(range)); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -695,11 +696,12 @@ function NodeDetail({ node: rawName }) {
     </div>
 
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online">
-      <${NodeHealth} health=${nrec.health} node=${name} compact=${false}/>
+      <${NodeHealth} health=${nrec.health} node=${name} compact=${false} history=${false}/>
+      ${nrec.health_history ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} h=${52} label="CPU history"/>` : null}
     <//>` : null}
 
-    ${nrec.health_history && (nrec.health_history.rx || []).length > 1 ? html`<${Panel} icon="gauge" title="Throughput" count="24h">
-      <${ThroughputChart} rx=${nrec.health_history.rx} tx=${nrec.health_history.tx} h=${72}/>
+    ${nrec.health_history ? html`<${Panel} icon="gauge" title="Throughput">
+      <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} h=${72}/>
     <//>` : null}
 
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}>
@@ -1426,9 +1428,32 @@ function RankBars({ rows }) {
   </a>`)}</div>`;
 }
 
+// A history chart (CPU or throughput) with live/day/week/month range tabs. "live" uses the
+// series already in /api/state; day/week/month are fetched on demand from /api/node-history.
+const HIST_RANGES = ["live", "day", "week", "month"];
+function RangedHistory({ node, kind, live, h, label }) {
+  const [range, setRange] = useState("live");
+  const [fetched, setFetched] = useState(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (range === "live") { setFetched(null); setLoading(false); return; }
+    let ok = true; setLoading(true);
+    api.nodeHistory(node, range).then(r => { if (ok) { setFetched(r && r.ok ? r.data : {}); setLoading(false); } }).catch(() => { if (ok) setLoading(false); });
+    return () => { ok = false; };
+  }, [node, range]);
+  const s = range === "live" ? (live || {}) : (fetched || {});
+  return html`<div class="chartwrap">
+    <div class="chart-head">${label ? html`<span class="hist-cap">${label}</span>` : null}<span class="grow"></span>
+      <div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div></div>
+    ${loading ? html`<div class="harea-empty">loading ${range}…</div>`
+      : kind === "throughput" ? html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h}/>`
+      : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h}/>`}
+  </div>`;
+}
+
 // Per-node health: CPU / Memory / Disk on one row (each a third), with the CPU-load history
-// charted below. Same layout compact (node card) or full (detail page); detail just runs taller.
-function NodeHealth({ health, node, compact }) {
+// charted below. `history=false` omits the inline chart (node detail uses RangedHistory instead).
+function NodeHealth({ health, node, compact, history }) {
   if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
   const hh = (node && (Store.nodes || []).find(n => n.name === node) || {}).health_history || null;  // server-side RRD
   const cpuHist = (hh && Array.isArray(hh.cpu) && hh.cpu.length > 1) ? hh.cpu : null;
@@ -1451,7 +1476,7 @@ function NodeHealth({ health, node, compact }) {
         <div class="hm-bar"><i class=${"hm-fill " + tn} style=${"width:" + p + "%"}></i></div>
       </div>`;
     })}</div>
-    ${cpuHist ? html`<div class="health-hist">
+    ${(history !== false && cpuHist) ? html`<div class="health-hist">
       <span class="hist-cap">CPU history</span>
       <${MiniArea} points=${cpuHist} color="var(--online)" h=${compact ? 36 : 52}/>
     </div>` : null}
