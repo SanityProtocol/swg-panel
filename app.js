@@ -974,6 +974,10 @@ function PeersScreen() {
   rows.sort((a, b) => STATUS_RANK[a.t.status || a.p.status] - STATUS_RANK[b.t.status || b.p.status]
     || String(a.p.title || a.p.name).localeCompare(String(b.p.title || b.p.name))
     || Store.nodeName(a.t.node).localeCompare(Store.nodeName(b.t.node)));
+  // which of each peer's deployments are actually visible as rows here — so a row can flag the rest
+  // (filtered out by server/interface or search) with a "+N" the operator can hover/tap.
+  const shownByPeer = {};
+  for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
   const orphans = !agg ? Store.recon.orphans.filter(o => o.node === node && o.iface === iface) : [];
 
   return html`<div class="screen">
@@ -1003,7 +1007,7 @@ function PeersScreen() {
         ${rows.length ? rows.map(({ p, t }) => {
           const obs = t.observed;
           const u = p.user_id ? Store.user(p.user_id) : null;
-          const others = p.targets.filter(d => !(d.node === t.node && d.iface === t.iface));   // this peer's other deployments
+          const hidden = p.targets.filter(d => !shownByPeer[p.id].has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
           return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class="clk" onClick=${() => openPeerView(p.id, t.node, t.iface)}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
             ${agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
@@ -1014,7 +1018,7 @@ function PeersScreen() {
               ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
                   : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeerToUser(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
             <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
-            <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${!agg && others.length ? html`<${DepBadge} others=${others}/>` : null}</td>
+            <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
             <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
             <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
             <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} <span class="up">↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span></td>
@@ -2147,8 +2151,7 @@ function PeerViewSheet({ pid, node, iface }) {
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p, () => openPeerView(p.id, node, iface))}>Unassign</button>`}<//>`}>
     <div class="pv-head">
-      <div class="pv-id"><div class="pv-title">${p.title || html`<span class="faint">untitled</span>`}</div>
-        <div class="pv-sub">${u ? html`<a class="pv-user" href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a>`
+      <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a>`
           : html`<${UserCombo} onPick=${uid => assignPeerToUser(p, uid)} placeholder="Assign to a user…"/>`}</div></div>
       <${Badge} s=${p.unassigned ? "unassigned" : p.status}/></div>
     <dl class="dl" style="margin:14px 0">
