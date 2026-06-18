@@ -1103,6 +1103,35 @@ def api(method, path, qs, body, deps):
             return 200, {"ok": True, "data": p2}
         return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
 
+    if method == "POST" and path == "/api/peers/update-target":
+        # Change a target's assigned address — a real connectivity change (its allowed_ips moves),
+        # reconciled to the node on the next sync. Validates the IP and guards against a collision
+        # with another peer on the same interface.
+        pid = body.get("peer_id") or ""
+        node = body.get("node") or ""; iface = body.get("iface") or ""
+        ip = (body.get("ip") or "").split("/")[0].strip()
+        if not valid_addr(ip):
+            return 400, {"ok": False, "error": f"invalid address {body.get('ip')!r}", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        p = roster["peers"].get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if not any(t["node"] == node and t["iface"] == iface for t in p["targets"]):
+            return 404, {"ok": False, "error": "peer has no target on that node/interface", "code": "not_found"}
+        for op in roster["peers"].values():     # uniqueness within the (node, iface) subnet
+            if op.get("id") == pid:
+                continue
+            for t in op.get("targets", []):
+                if t.get("node") == node and t.get("iface") == iface and (t.get("ip") or "").split("/")[0] == ip:
+                    return 409, {"ok": False, "error": f"{ip} is already used on {node}/{iface}", "code": "exists"}
+        targets = [dict(t, ip=ip) if (t["node"] == node and t["iface"] == iface) else t for t in p["targets"]]
+        p2 = peer_set(roster, pid, {"targets": targets}, now())
+        roster_save(roster_path, roster)
+        if isinstance(body.get("config"), str) and body["config"]:
+            save_config(store_configs, config_dir, p["pubkey"], node, iface, body["config"])
+        ev_append(roster_path, "peer", pid, "Changed address", peer_label(roster, p2), f"{node}/{iface} → {ip}")
+        return 200, {"ok": True, "data": p2}
+
     if method == "POST" and path == "/api/peers/delete":
         pid = body.get("peer_id") or ""
         roster = roster_load(roster_path)

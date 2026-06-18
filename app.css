@@ -718,3 +718,30 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 /* plain (info) notice — used by the node-removal sheet */
 .notice{background:var(--surface-2);color:var(--ink-2)}
 .notice .ic{color:var(--ready);flex:none}
+
+/* ───── peers grid ───── */
+.peergrid .xfer{font-size:11.5px;color:var(--dim)} .peergrid .xfer .up{color:var(--ready)}
+.peergrid td.rowacts{text-align:right;white-space:nowrap}
+.assigncell{display:flex;align-items:center;gap:6px}
+/* searchable user picker */
+.usercombo{position:relative;min-width:150px}
+.uc-input{width:100%;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:7px;color:var(--ink);font:inherit;font-size:12.5px;padding:5px 9px}
+.uc-input:focus{outline:none;border-color:var(--brand)}
+.uc-list{position:absolute;z-index:40;top:calc(100% + 4px);left:0;min-width:200px;max-height:260px;overflow:auto;
+  background:var(--raise);border:1px solid var(--line-solid);border-radius:9px;box-shadow:var(--shadow);padding:4px}
+.uc-opt{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;color:var(--ink);cursor:pointer;
+  padding:6px 8px;border-radius:6px;font:inherit;font-size:13px;text-align:left}
+.uc-opt:hover{background:var(--surface-2)}
+.uc-empty{padding:8px;color:var(--faint);font-size:12px}
+/* peer view sheet */
+.pv-head{display:flex;align-items:center;gap:12px}
+.pv-id{flex:1;min-width:0}
+.pv-title{font-size:16px;font-weight:600;color:var(--ink)}
+.pv-sub{font-size:13px;color:var(--dim)}
+.pv-deps{display:flex;flex-direction:column;gap:8px}
+.pv-dep{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;background:var(--surface-2)}
+.pv-dep.hl{border-color:var(--brand)}
+.pv-dep-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.pv-dep-rows{display:flex;flex-wrap:wrap;gap:5px 20px;font-family:var(--mono);font-size:12px;color:var(--ink-2)}
+.pv-dep-rows .k{color:var(--faint);font-size:9px;text-transform:uppercase;letter-spacing:.06em;margin-right:5px}
+.editrow{display:flex;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
