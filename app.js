@@ -431,6 +431,41 @@ function rateCell(rx, tx) {
   const live = (rx || 0) + (tx || 0) > 0;
   return html`<span class=${"ratecell" + (live ? " live" : "")}>↓ ${rate(rx)} <span class="up">↑ ${rate(tx)}</span></span>`;
 }
+
+// "+N" pill listing a peer's other deployments. Hover OR click opens a bubble (click pins it for
+// touch); each row is server name · interface tag · right-aligned IP. The bubble is position:fixed
+// (anchored to the pill's rect) so the table's overflow:hidden can't clip it.
+function DepBadge({ others }) {
+  const [open, setOpen] = useState(false);     // hover preview
+  const [pinned, setPinned] = useState(false); // click-pinned (mobile / sticky)
+  const [pos, setPos] = useState(null);
+  const ref = useRef(null);
+  const closeT = useRef(null);
+  const show = open || pinned;
+  const cancelClose = () => clearTimeout(closeT.current);
+  const scheduleClose = () => { cancelClose(); closeT.current = setTimeout(() => setOpen(false), 140); };
+  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect(); setPos({ left: Math.round(r.left), top: Math.round(r.bottom + 6) }); };
+  useEffect(() => {
+    if (!show) return; place();
+    const onMove = () => place();
+    const onDoc = e => { if (!(ref.current && ref.current.contains(e.target))) { setPinned(false); setOpen(false); } };
+    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
+    if (pinned) document.addEventListener("mousedown", onDoc, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
+  }, [show, pinned]);
+  useEffect(() => () => clearTimeout(closeT.current), []);
+  return html`<span class=${"depmore" + (show ? " on" : "")} ref=${ref}
+    onClick=${e => { e.stopPropagation(); setPinned(p => !p); }}
+    onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>+${others.length}
+    ${show && pos ? html`<div class="deppop" style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
+      onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>
+      ${others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
+        <span class="dep-name">${Store.nodeName(d.node)}</span>
+        <${Tag} kind="iface" label=${d.iface} color=${Store.nodeColor(d.node)}/>
+        <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
+    </div>` : null}
+  </span>`;
+}
 function peerLabel(p) { return p.unassigned ? "" : (p.name || ""); }
 
 function TargetPips({ peer }) {
@@ -934,8 +969,7 @@ function PeersScreen() {
               ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
                   : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeerToUser(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
             <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
-            <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${others.length
-              ? html`<span class="depmore" title=${others.map(d => Store.nodeName(d.node) + "/" + d.iface + "  " + (d.ip || "—")).join("\n")}>+${others.length}</span>` : null}</td>
+            <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${others.length ? html`<${DepBadge} others=${others}/>` : null}</td>
             <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
             <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
             <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} <span class="up">↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span></td>

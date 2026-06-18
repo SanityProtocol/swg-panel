@@ -720,8 +720,16 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .peergrid td.rowacts{text-align:right;white-space:nowrap}
 /* user cell is a link to the user screen — blue (matches the upload total) so admins know it navigates away */
 .peergrid .namecell{color:var(--ready)} .peergrid .namecell:hover{text-decoration:underline}
-/* extra-deployment count next to the address; native title lists the other node/iface + ip, one per line */
-.depmore{margin-left:7px;color:var(--ready);font-family:var(--mono);font-size:11px;cursor:help}
+/* extra-deployment count next to the address; hover or tap opens a bubble (.deppop) of the others */
+.depmore{position:relative;margin-left:7px;padding:1px 5px;border-radius:5px;color:var(--ready);font-family:var(--mono);font-size:11px;cursor:pointer;
+  background:rgba(79,168,240,.1);border:1px solid rgba(79,168,240,.28);transition:background .12s,border-color .12s;user-select:none}
+.depmore:hover,.depmore.on{background:rgba(79,168,240,.2);border-color:rgba(79,168,240,.55)}
+.deppop{position:fixed;z-index:80;min-width:210px;padding:5px;background:var(--surface-2);border:1px solid var(--line-solid);
+  border-radius:var(--r-sm);box-shadow:0 12px 34px rgba(0,0,0,.5);cursor:default}
+.deppop .deprow{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;white-space:nowrap}
+.deppop .deprow:hover{background:var(--surface)}
+.deppop .dep-name{font-size:12px;color:var(--ink)}
+.deppop .dep-ip{margin-left:auto;font-size:11.5px;color:var(--ink-2)}
 .assigncell{display:flex;align-items:center;gap:6px}
 /* searchable user picker */
 .usercombo{position:relative;min-width:150px}
