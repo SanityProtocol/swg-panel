@@ -369,6 +369,8 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .banner.warn svg{color:var(--partial)}
 .banner b{color:var(--ink)}
 .banner code{font-family:var(--mono);font-size:11.5px;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.07);color:var(--ink)}
+.banner .cmdrow{margin-top:10px}
+.banner .tokenbox{font-size:11.5px;padding:9px 11px}
 .posture{margin-bottom:18px}
 
 /* ───── modal / create sheet ───── */

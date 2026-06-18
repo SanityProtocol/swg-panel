@@ -279,7 +279,7 @@ const bus = { subs: new Set(), emit() { this.subs.forEach(f => { try { f(); } ca
 function useStore() { const [, set] = useState(0); useEffect(() => bus.sub(() => set(x => x + 1)), []); }
 
 const Store = {
-  fleet: [], storeConfigs: false, versions: {},
+  fleet: [], storeConfigs: false, env: {}, versions: {},
   roster: { version: 1, users: {}, peers: {} }, stats: {}, nodes: [], describe: {}, events: [],
   recon: { peers: [], users: [], orphans: [], nodeStatus: {} },
   sessionConfigs: {},        // pubkey -> { "node|iface" -> confText }   (built at creation, in-memory)
@@ -301,6 +301,7 @@ const Store = {
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
     this.storeConfigs = !!d.store_configs;
+    this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     if (ev && Array.isArray(ev.data)) this.events = ev.data;
     this.apply();
@@ -926,10 +927,18 @@ const peersView = { node: "", iface: "", q: "" };
 // in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.
 function StoreOffBanner() {
   if (Store.storeConfigs) return null;
+  const docker = !!(Store.env && Store.env.docker);
+  const fp = (Store.env && Store.env.fleet_path) || "/etc/swg-panel/fleet.json";
+  const sed = `sed -i -E 's/("store_configs":[[:space:]]*)false/\\1true/' ${fp}`;
+  const cmd = docker
+    ? `docker exec swg-panel ${sed} && docker restart swg-panel`
+    : `sudo ${sed} && sudo systemctl restart swg-panel-server`;
   return html`<div class="banner warn"><${Ic} i="warn"/><div class="banner-body">
     <b>Config storage is off.</b> Client configs (with their private keys) aren't kept on the panel, so QR codes and
-    downloads only work right after a peer is created — existing peers can't be re-shared. To keep them, set
-    <code>"store_configs": true</code> in <code>fleet.json</code> on the panel host and restart the panel.</div></div>`;
+    downloads only work right after a peer is created — existing peers can't be re-shared. Run this on the
+    ${docker ? "Docker host" : "panel host"} to enable it (existing peers then need a one-time Rotate-keys to capture a config):
+    <div class="cmdrow"><div class="tokenbox">${cmd}</div><button class="copyaction" onClick=${() => copy(cmd, "Command copied")}><${Ic} i="copy"/> Copy</button></div>
+  </div></div>`;
 }
 function PeersScreen() {
   useStore();

@@ -37,6 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 FLEET_PATH = os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
+IN_DOCKER  = os.path.exists("/.dockerenv")   # so the UI can show the right "enable store_configs" command
 WEB_DIR    = os.environ.get("SWG_PANEL_WEB", os.path.dirname(os.path.abspath(__file__)))
 BIND_HOST  = os.environ.get("SWG_PANEL_HOST", "127.0.0.1")
 BIND_PORT  = int(os.environ.get("SWG_PANEL_PORT", "8088"))
@@ -836,6 +837,7 @@ def api(method, path, qs, body, deps):
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
+            "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
         }}
 
     if method == "GET" and path == "/api/roster":
