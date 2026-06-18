@@ -30,6 +30,13 @@ const url = p => BASE + p;
 const tkey = (node, iface) => node + "|" + iface;          // session-config key for one target
 function ipOf(hostport) { if (!hostport) return ""; const s = String(hostport); return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0]; }
 function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
+// turn-proxy display label: strip the vk-turn-proxy- prefix and render as name:port (a "-NNNN"
+// suffix in the service name becomes ":NNNN"; otherwise the listen port is appended).
+function turnLabel(service, port) {
+  let s = (service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn";
+  if (/-\d+$/.test(s)) return s.replace(/-(\d+)$/, ":$1");
+  return port ? s + ":" + port : s;
+}
 
 function ago(sec) {
   if (sec == null) return "—";
@@ -668,34 +675,22 @@ function NodeDetail({ node: rawName }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${name}</b></div>
     <div class="detail-head">
-      <div class="title"><span class="dot ${live ? "live" : "stale"}"></span><h1>${name}</h1><span class="tport">${node.transport}</span></div>
+      <div class="title"><h1>${name}</h1><span class=${"tport" + (node.transport === "https" ? " https" : "")}>${node.transport}</span>${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}</div>
       <div class="grow"></div>
-      <button class="btn btn-primary" onClick=${() => openCreatePeer({ node: name })}><span class="plus"><${Ic} i="plus"/></span> Add peer here</button>
-    </div>
-    <div class="bigdots">
-      <span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>
-      <span class="when">${onl} / ${here.length} online</span>
-      <span class="when">↓ ${rate(nrx)} ↑ ${rate(ntx)}</span>
-      <span class="when">${syncTxt}</span>
-      ${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}
+      <button class="btn btn-primary" onClick=${() => openCreatePeer({ node: name })}><span class="plus"><${Ic} i="plus"/></span> Add peer</button>
     </div>
 
-    ${(() => {
-      const ifs = meta ? Object.keys(meta) : [];
-      const tps = (snap && snap.turn_proxies) || [];
-      if (!ifs.length && !tps.length) return null;
-      return html`<div class="nodesummary">
-        ${ifs.length ? html`<div class="nsrow"><span class="nsl">Interfaces</span><span class="tags">${ifs.map(ifn => {
+    <div class="noderibbon">
+      <div class="nr-tags">
+        ${(meta ? Object.keys(meta) : []).map(ifn => {
           const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
           return html`<a class=${"tg tg-" + type} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
-        })}</span></div>` : null}
-        ${tps.length ? html`<div class="nsrow"><span class="nsl">Turn proxies</span><span class="tags">${tps.map(tp => {
-          const svc = (tp.service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn";
-          const port = portOf(tp.listen) || portOf(tp.connect);
-          return html`<span class="tg tg-turn">${svc}${port ? ":" + port : ""}</span>`;
-        })}</span></div>` : null}
-      </div>`;
-    })()}
+        })}
+        ${((snap && snap.turn_proxies) || []).map(tp => html`<span class="tg tg-turn">${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}
+      </div>
+      <span class="grow"></span>
+      <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}</div>
+    </div>
 
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online">
       <${NodeHealth} health=${nrec.health} node=${name} compact=${false}/>
@@ -717,9 +712,8 @@ function NodeDetail({ node: rawName }) {
             return html`<a class="ifcard" href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
               <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
               <div class="ifcard-rows">
-                <div class="ifrow"><span class="l">Subnet</span><span class="r">${m.subnet || "—"}</span></div>
-                <div class="ifrow"><span class="l">Listen port</span><span class="r">${m.listen_port || "—"}</span></div>
-                <div class="ifrow"><span class="l">Server key</span><span class="r addr">${(m.public_key || "—").slice(0, 16)}…</span></div>
+                <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
+                <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
                 <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length ? html`<${UsageBar} value=${onlc} total=${ps.length}/>` : html`<span class="faint">none</span>`}</span></div>
               </div></a>`;
           })}</div>`}
@@ -730,7 +724,7 @@ function NodeDetail({ node: rawName }) {
         const lp = portOf(tp.connect);
         const fronted = meta ? Object.keys(meta).find(i => String(meta[i].listen_port) === lp) : null;
         return html`<div class="ifcard tp">
-          <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${(tp.service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn"}</span></div>
+          <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span></div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)}>${fronted}</a>` : (tp.connect || "—")}</span></div>
@@ -764,7 +758,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <div class="detail-head">
       <div class="title"><span class="dot ${live ? "live" : "stale"}"></span><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span></div>
       <div class="grow"></div>
-      <button class="btn btn-primary" onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> Add peer here</button>
+      <button class="btn btn-primary" onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> Add peer</button>
     </div>
     <div class="bigdots">
       <span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>
@@ -786,7 +780,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
     ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="warn" count=${tps.length}>
       <div class="ifgrid">${tps.map(tp => html`<div class="ifcard tp">
-        <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${(tp.service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn"}</span></div>
+        <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span></div>
         <div class="ifcard-rows">
           <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
           ${tp.wrap_key ? html`<div class="ifrow"><span class="l">Wrap key</span><span class="r addr">${String(tp.wrap_key).slice(0, 8)}…<button class="copybtn" title="Copy wrap key" onClick=${() => copy(tp.wrap_key, "Wrap key copied")}><${Ic} i="copy"/></button></span></div>` : null}
@@ -859,7 +853,7 @@ function PeersScreen() {
         ${ifaces.length ? ifaces.map(i => html`<option value=${i}>${i}</option>`) : html`<option value="">no interfaces reported</option>`}
       </select>
       <span class="grow"></span>
-      <button class="btn btn-primary" disabled=${!iface} onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer here</button>
+      <button class="btn btn-primary" disabled=${!iface} onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
     </div>
 
     <div class="section-title"><h2>Peers on ${node || "—"} · ${iface || "—"}</h2><span class="count">${onIface.length}</span></div>
@@ -1359,10 +1353,11 @@ function HealthMeter({ label, pct, text, tone, spark }) {
 // the stroke stays crisp via non-scaling-stroke. Used for the CPU-load history.
 function MiniArea({ points, color, h }) {
   const pts = (points || []).filter(v => v != null);
-  h = h || 42; const w = 100, max = 100;
+  h = h || 42; const w = 100;
   if (pts.length < 2) return html`<div class="harea-empty">collecting history…</div>`;
-  const n = pts.length, pad = 2;
-  const xy = pts.map((v, i) => [i / (n - 1) * w, h - pad - Math.min(max, Math.max(0, v)) / max * (h - pad * 2)]);
+  const n = pts.length, lo = Math.min(...pts), hi = Math.max(...pts), range = (hi - lo) || 1, vpad = h * 0.16;
+  // autoscale to the series' own min/max so small variations read clearly (spiky, not flat)
+  const xy = pts.map((v, i) => [i / (n - 1) * w, h - vpad - ((v - lo) / range) * (h - 2 * vpad)]);
   const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
   const area = "0," + h + " " + line + " " + w + "," + h;
   const gid = "ha" + (MiniArea._n = (MiniArea._n || 0) + 1);
@@ -1371,7 +1366,7 @@ function MiniArea({ points, color, h }) {
       <stop offset="0" stop-color=${color} stop-opacity="0.32"/><stop offset="1" stop-color=${color} stop-opacity="0"/>
     </linearGradient></defs>
     <polygon points=${area} fill=${"url(#" + gid + ")"}/>
-    <polyline points=${line} fill="none" stroke=${color} stroke-width="1.4" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+    <polyline points=${line} fill="none" stroke=${color} stroke-width="1.4" vector-effect="non-scaling-stroke"/>
   </svg>`;
 }
 
@@ -1380,21 +1375,23 @@ function ThroughputChart({ rx, tx, h }) {
   const R = (rx || []).map(v => v || 0), T = (tx || []).map(v => v || 0);
   const n = Math.max(R.length, T.length);
   if (n < 2) return html`<div class="harea-empty">collecting throughput history…</div>`;
-  h = h || 60; const w = 100, mx = Math.max(1, ...R, ...T);
-  const X = i => i / (n - 1) * w, Y = v => h - 1.5 - (v / mx) * (h - 3);
+  h = h || 60; const w = 100;
+  // autoscale to the combined min/max so the curve is spiky/expressive, not a flat baseline
+  const lo = Math.min(...R, ...T), hi = Math.max(...R, ...T), range = (hi - lo) || 1, vpad = h * 0.12;
+  const X = i => i / (n - 1) * w, Y = v => h - vpad - ((v - lo) / range) * (h - 2 * vpad);
   const line = arr => arr.map((v, i) => X(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
   const rxLine = line(R), rxArea = "0," + h + " " + rxLine + " " + w + "," + h;
   const gid = "tp" + (ThroughputChart._n = (ThroughputChart._n || 0) + 1);
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   return html`<div class="tp-wrap">
-    <div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="grow"></span><span class="tp-peak">peak ${rate(mx)}</span></div>
+    <div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="grow"></span><span class="tp-peak">peak ${rate(hi)}</span></div>
     <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
       <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
         <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
       </linearGradient></defs>
       <polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
-      <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.4" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
-      <polyline points=${line(T)} fill="none" stroke="var(--ready)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-dasharray="3 2"/>
+      <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+      <polyline points=${line(T)} fill="none" stroke="var(--ready)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>
     </svg>
   </div>`;
 }

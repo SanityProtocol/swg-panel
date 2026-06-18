@@ -44,12 +44,12 @@ h1,h2,h3{font-family:var(--sans)}
   background:rgba(10,14,20,.72);backdrop-filter:blur(16px) saturate(1.3);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px}
 /* indicator-LED mark: an amber status light */
-.brand-mark{width:15px;height:15px;border-radius:5px;background:radial-gradient(circle at 50% 38%,var(--brand-2),var(--brand));
-  box-shadow:0 0 0 1px rgba(31,200,214,.35),0 0 13px rgba(31,200,214,.5);position:relative}
-.brand-mark::after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--bg)}
-.brand-name{font-weight:700;letter-spacing:.01em;font-size:14.5px;color:var(--brand)}
+.brand-mark{width:18px;height:18px;border-radius:6px;background:radial-gradient(circle at 50% 38%,var(--brand-2),var(--brand));
+  box-shadow:0 0 0 1px rgba(31,200,214,.35),0 0 14px rgba(31,200,214,.5);position:relative}
+.brand-mark::after{content:"";position:absolute;inset:6px;border-radius:50%;background:var(--bg)}
+.brand-name{font-weight:700;letter-spacing:.01em;font-size:16px;color:var(--brand)}
 .brand-name span{color:var(--ink-2);font-weight:600}
-.appver{font-family:var(--mono);font-size:10.5px;color:var(--faint);white-space:nowrap;letter-spacing:-.02em}
+.appver{font-family:var(--mono);font-size:10.5px;color:var(--faint);white-space:nowrap;letter-spacing:-.02em;margin-right:16px}
 .appver b{color:var(--dim);font-weight:600}
 .tabs{display:flex;gap:2px}
 .tabs a{padding:8px 11px;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;
@@ -126,8 +126,18 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 .dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown)}
 .dot.live{background:var(--online);animation:pulse 2.6s infinite}
 .dot.stale{background:var(--unknown)}
-.tport{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line-solid);
+.tport{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line-solid);
   border-radius:5px;padding:2px 6px;margin-left:2px}
+/* https transport gets a thin light-blue accent */
+.tport.https{color:#7DC4F0;border-color:rgba(125,196,240,.4);background:rgba(125,196,240,.08)}
+/* glowing "reporting" pill (after the transport tag) */
+.reporting{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;
+  font-weight:600;color:var(--online);background:rgba(63,216,154,.12);padding:3px 9px 3px 8px;border-radius:99px}
+.reporting::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(63,216,154,.7);animation:blink 2.6s infinite}
+/* one-line node ribbon: interface/turn tags left, sync/uptime right */
+.noderibbon{display:flex;align-items:center;gap:12px;margin:10px 0 16px;flex-wrap:wrap}
+.nr-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.nr-sync{display:flex;align-items:center;gap:14px;font-family:var(--mono);font-size:11.5px;color:var(--dim);white-space:nowrap}
 .tile-rate{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:13px;display:flex;gap:14px}
 .tile-rate .up{color:var(--ready)} .tile-rate .down{color:var(--online)}
 .tile-peers{font-family:var(--mono);font-size:13px;color:var(--ink-2);margin-top:9px}
@@ -219,7 +229,7 @@ a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
 .iftype{font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:6px}
 .iftype.wg{background:rgba(63,216,154,.14);color:var(--online)}
 .iftype.awg{background:rgba(31,200,214,.15);color:var(--brand)}
-.iftype.turn{background:rgba(232,146,74,.16);color:#E8924A}
+.iftype.turn{background:rgba(167,139,245,.17);color:#B49BF7}
 .iftype.muted{background:rgba(98,116,139,.13);color:var(--unknown)}
 .ncard-body{cursor:pointer}
 .ncard-body .ntop .rowarrow{color:var(--faint)}
@@ -525,7 +535,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
   letter-spacing:.04em;padding:2px 5px;border-radius:4px;line-height:1.45;white-space:nowrap}
 .tg-wg{background:rgba(63,216,154,.13);color:var(--online)}
 .tg-awg{background:rgba(31,200,214,.14);color:var(--brand)}
-.tg-turn{background:rgba(232,146,74,.16);color:#E8924A}
+.tg-turn{background:rgba(167,139,245,.17);color:#B49BF7}
 .tg-iface{background:color-mix(in srgb,var(--tgc,var(--dim)) 14%,transparent);color:var(--tgc,var(--dim))}
 .tg-gen{background:var(--surface-2);color:var(--dim);box-shadow:inset 0 0 0 1px var(--line-solid)}
 /* inactive items (offline/dangling/disconnected): grey the tags out */
