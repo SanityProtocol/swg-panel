@@ -410,19 +410,6 @@ function Badge({ s }) {
   return html`<span class=${"badge b-" + s + (ic ? " ic" : "")}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
 }
 
-// Coloured initial square for a user/peer, hue derived from a stable seed.
-function avatarSeed(seed) {
-  let h = 0; const str = String(seed || "");
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
-  return h % 360;
-}
-function Avatar({ name, id, kind }) {
-  const label = (name || "").trim();
-  const init = (!label || label === "unassigned" || label === "unassigned peer") ? "?"
-    : label.split(/[\s_-]+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("").toUpperCase();
-  return html`<span class=${"avatar" + (kind ? " av-" + kind : "")} style=${"--ah:" + avatarSeed(id || name)}>${init}</span>`;
-}
-
 // inline metadata tag (protocol / interface / turn-proxy / generic) — the dense, colored
 // row signature. iface tags take the node's colour via --tgc.
 function Tag({ kind, label, color, muted }) {
@@ -510,18 +497,19 @@ async function rotatePeerKeys(peer) {
 
 // Confirmed unassign — revokes the holder (PSK rotates) and is irreversible (keys change).
 function confirmUnassign(peer) {
-  const who = peer.name ? ` from ${peer.name}` : "";
-  if (!confirm(`Unassign this peer${who}?\n\nThis revokes access immediately and is irreversible — the keys change, so re-assigning later means sending the user a brand-new QR / config to import.`)) return;
-  mutate({ key: "peer:" + peer.id,
-    patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },
-    call: () => api.peerUnassign({ peer_id: peer.id }),
-    onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++; } });
+  openConfirm({ title: "Unassign peer" + (peer.name ? " · " + peer.name : ""), confirmLabel: "Unassign", danger: true,
+    body: "This revokes access immediately and is irreversible — the keys change, so re-assigning later means sending the user a brand-new QR / config to import.",
+    onConfirm: () => mutate({ key: "peer:" + peer.id,
+      patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },
+      call: () => api.peerUnassign({ peer_id: peer.id }),
+      onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++; } }) });
 }
 // Confirmed delete (unassigned peers only).
 function confirmDeletePeer(peer) {
-  if (!confirm("Delete this peer permanently?\n\nThis is irreversible — its key is removed from every interface it's deployed on.")) return;
-  mutate({ key: "peer:" + peer.id, patch: s => { delete s.roster.peers[peer.id]; },
-    call: () => api.peerDelete({ peer_id: peer.id }) });
+  openConfirm({ title: "Delete peer", confirmLabel: "Delete", danger: true,
+    body: "This is irreversible — the peer's key is removed from every interface it's deployed on.",
+    onConfirm: () => mutate({ key: "peer:" + peer.id, patch: s => { delete s.roster.peers[peer.id]; },
+      call: () => api.peerDelete({ peer_id: peer.id }) }) });
 }
 
 // A type-to-filter user picker (the "assign to" control for unassigned peers).
@@ -534,7 +522,7 @@ function UserCombo({ onPick, placeholder }) {
     <input class="uc-input" value=${q} placeholder=${placeholder || "Assign to…"} onFocus=${() => setOpen(true)}
       onInput=${e => { setQ(e.target.value); setOpen(true); }}/>
     ${open ? html`<div class="uc-list">${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id}
-      onClick=${() => { setOpen(false); setQ(""); onPick(u.id); }}><${Avatar} name=${u.name} id=${u.id} kind="user"/><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
+      onClick=${() => { setOpen(false); setQ(""); onPick(u.id); }}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
       : html`<div class="uc-empty">${users.length ? "no match" : "no users yet"}</div>`}</div>` : null}
   </div>`;
 }
@@ -942,7 +930,7 @@ function PeersScreen() {
           return html`<tr key=${p.id} class="clk" onClick=${() => openPeerView(p.id, node, iface)}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
             <td data-label="User" onClick=${e => e.stopPropagation()}>
-              ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><${Avatar} name=${u.name} id=${u.id} kind="user"/><span>${u.name}</span></a>`
+              ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
                   : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeerToUser(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
             <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
             <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
@@ -1080,7 +1068,6 @@ function PeerLine({ peer }) {
     else toast(Store.storeConfigs ? "No stored config — re-issue this peer to enable download." : "Config is only available right after creation.", "err");
   };
   return html`<div class=${"pline" + (flash ? " flash" : "")}>
-    <${Avatar} name=${peer.title || peer.name || "peer"} id=${peer.id} kind="peer"/>
     <div class="pl-main">
       <div class="pl-title">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr" title=${peer.pubkey}>${peer.pubkey.slice(0, 10)}…</span></div>
       <div class="pl-targets">${peer.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}>
@@ -1092,7 +1079,7 @@ function PeerLine({ peer }) {
       <button class="iconbtn" title="Download config" onClick=${download}><${Ic} i="download"/></button>
       <button class="iconbtn" title="Edit config" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/></button>
       <button class="iconbtn" title="Copy to another interface" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/></button>
-      <button class="iconbtn danger" title="Delete peer (revoke + remove)" onClick=${() => { if (confirm("Delete this peer — revoke access and remove it?")) deleteAssignedPeer(peer); }}><${Ic} i="trash"/></button>
+      <button class="iconbtn danger" title="Delete peer (revoke + remove)" onClick=${() => openConfirm({ title: "Delete peer", confirmLabel: "Delete", danger: true, body: "This revokes access immediately and removes the peer from every interface it's deployed on. This can't be undone.", onConfirm: () => deleteAssignedPeer(peer) })}><${Ic} i="trash"/></button>
     </div>
     <${RowError} k=${"peer:" + peer.id}/>
   </div>`;
@@ -1101,13 +1088,13 @@ function PeerLine({ peer }) {
 // One user with all their peers underneath.
 function UserGroup({ user }) {
   const peers = Store.peersOfUser(user.id).slice().sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status]);
-  const delUser = () => { if (!confirm("Delete user — their peers go unassigned (and are revoked)?")) return;
-    mutate({ key: "user:" + user.id,
+  const delUser = () => openConfirm({ title: "Delete user · " + user.name, confirmLabel: "Delete user", danger: true,
+    body: "Their peers are revoked and become unassigned. This can't be undone.",
+    onConfirm: () => mutate({ key: "user:" + user.id,
       patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
-      call: () => api.userDelete({ id: user.id }) }); };
+      call: () => api.userDelete({ id: user.id }) }) });
   return html`<div class="ugroup">
     <div class="ug-head">
-      <${Avatar} name=${user.name} id=${user.id} kind="user"/>
       <div class="ug-id">
         <div class="ug-name"><a href=${"#/user/" + encodeURIComponent(user.id)}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}</div>
         ${user.note ? html`<div class="ug-note">${user.note}</div>` : null}
@@ -1150,7 +1137,6 @@ function UsersScreen() {
     ${unassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">Unassigned peers</h2><span class="count">${unassigned.length}</span></div>
       <div class="ugroup unassigned"><div class="ug-peers">${unassigned.map(p => html`<div class="pline" key=${p.id}>
-        <${Avatar} name=${p.title || "peer"} id=${p.id} kind="peer"/>
         <div class="pl-main">
           <div class="pl-title">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr">${p.pubkey.slice(0, 10)}…</span></div>
           <div class="pl-targets">${p.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}><span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
@@ -1667,8 +1653,12 @@ function AccountSheet() {
 function Sheet({ title, children, foot }) {
   const ref = useRef(null);
   const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
+  const discardRef = useRef(false);             // armed once; read live so the captured onKey closure stays correct
+  const [discard, setDiscardState] = useState(false);
+  const setDiscarding = v => { discardRef.current = v; setDiscardState(v); };
   const fields = () => Array.from(ref.current ? ref.current.querySelectorAll("input,textarea,select") : []);
-  const tryClose = () => { if (dirty.current && !confirm("Discard unsaved changes?")) return; closeModal(); };
+  // closing a dirty sheet swaps the footer into an inline "discard?" confirm instead of a native dialog.
+  const tryClose = () => { if (dirty.current && !discardRef.current) { setDiscarding(true); return; } closeModal(); };
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
@@ -1704,8 +1694,26 @@ function Sheet({ title, children, foot }) {
     <div class="sheet" role="dialog" aria-modal="true" ref=${ref}>
       <div class="sheet-head"><h3>${title}</h3><button class="x" onClick=${tryClose}>×</button></div>
       <div class="sheet-body">${children}</div>
-      <div class="sheet-foot">${foot}</div>
+      <div class="sheet-foot">${discard
+        ? html`<${Fragment}><span class="discard-msg"><${Ic} i="warn"/> Discard unsaved changes?</span><span class="grow"></span>
+            <button class="btn btn-ghost" onClick=${() => setDiscarding(false)}>Keep editing</button>
+            <button class="btn btn-danger" onClick=${closeModal}>Discard</button></>`
+        : foot}</div>
     </div></div>`;
+}
+
+// Designed confirmation modal — the in-app replacement for native confirm(). `danger` paints the
+// action button red; `danger`/`warn` give the notice a warn tint + icon (else a neutral info note).
+function openConfirm(opts) { openModal(html`<${ConfirmSheet} ...${opts}/>`); }
+function ConfirmSheet({ title, body, confirmLabel, danger, warn, onConfirm }) {
+  const [busy, setBusy] = useState(false);
+  const go = async () => { if (busy) return; setBusy(true); try { await onConfirm(); } finally { closeModal(); } };
+  const tone = danger || warn;
+  return html`<${Sheet} title=${title}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
+      <button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy} onClick=${go}>${confirmLabel || "Confirm"}</button></>`}>
+    <div class=${"notice" + (tone ? " warn" : "")}><${Ic} i=${tone ? "warn" : "info"}/><span>${body}</span></div>
+  <//>`;
 }
 
 // New user — identity, then optionally straight into adding peers (one per interface).
@@ -2014,7 +2022,7 @@ function PeerViewSheet({ pid, node, iface }) {
       <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null)}><${Ic} i="pencil"/> Edit</button>
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => { closeModal(); confirmDeletePeer(p); }}>Delete</button>`
         : html`<button class="btn btn-danger" onClick=${() => { closeModal(); confirmUnassign(p); }}>Unassign</button>`}<//>`}>
-    <div class="pv-head"><${Avatar} name=${p.title || p.name || "peer"} id=${p.id} kind="peer"/>
+    <div class="pv-head">
       <div class="pv-id"><div class="pv-title">${p.title || html`<span class="faint">untitled</span>`}</div>
         <div class="pv-sub">${u ? html`<a href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a>` : html`<span class="faint">unassigned</span>`}</div></div>
       <${Badge} s=${p.unassigned ? "unassigned" : p.status}/></div>
@@ -2103,8 +2111,10 @@ function EditPeerSheet({ peer, focus }) {
 
   const rotate = () => {
     if (peer.unassigned) return toast("Assign the peer to a user first.", "err");
-    if (!confirm("Rotate this peer's keys?\n\nA new keypair is generated (the PSK is kept). The current config stops working — you'll need to send the user the fresh QR / config to re-import.")) return;
-    closeModal(); rotatePeerKeys(peer);
+    closeModal();
+    openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true,
+      body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send the user the fresh QR / config to re-import.",
+      onConfirm: () => rotatePeerKeys(peer) });
   };
 
   return html`<${Sheet} title=${"Edit peer"}
@@ -2216,17 +2226,19 @@ function NodeRemoveSheet({ node }) {
     patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) n.removing = true; },
     call: () => api.nodeFlagRemove({ id: node.id }),
   }); };
-  const force = () => { if (!confirm("Force-remove " + node.name + " now? This cuts it off immediately without waiting for the node to confirm.")) return; closeModal(); mutate({
-    key: "node:" + node.id,
-    patch: s => {                                  // optimistic: drop the node + purge its targets (mirrors the cascade)
-      s.nodes = s.nodes.filter(x => x.id !== node.id);
-      for (const id of Object.keys(s.roster.peers)) {
-        const p = s.roster.peers[id]; p.targets = p.targets.filter(t => t.node !== node.id);
-        if (!p.targets.length) delete s.roster.peers[id];
-      }
-    },
-    call: () => api.nodeDelete({ id: node.id }),
-  }); };
+  const force = () => { closeModal(); openConfirm({ title: "Force remove · " + node.name, confirmLabel: "Force remove", danger: true,
+    body: "This cuts the node off immediately without waiting for it to confirm. Peers that live only here are dropped. Use this only when the server is unreachable.",
+    onConfirm: () => mutate({
+      key: "node:" + node.id,
+      patch: s => {                                  // optimistic: drop the node + purge its targets (mirrors the cascade)
+        s.nodes = s.nodes.filter(x => x.id !== node.id);
+        for (const id of Object.keys(s.roster.peers)) {
+          const p = s.roster.peers[id]; p.targets = p.targets.filter(t => t.node !== node.id);
+          if (!p.targets.length) delete s.roster.peers[id];
+        }
+      },
+      call: () => api.nodeDelete({ id: node.id }),
+    }) }); };
   return html`<${Sheet} title=${"Remove " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Close</button>
       ${flagged ? null : html`<button class="btn btn-primary" onClick=${flag}>Flag for removal</button>`}
@@ -2319,10 +2331,10 @@ function LoginScreen() {
     <button class="btn btn-primary" type="submit" disabled=${busy} style="width:100%;justify-content:center;margin-top:4px">${busy ? "Signing in…" : "Sign in"}</button>
   </form></div>`;
 }
-async function doLogout() {
-  if (!confirm("Are you sure you want to log out?")) return;
-  try { await api.logout(); } catch (_) {}
-  location.reload();
+function doLogout() {
+  openConfirm({ title: "Log out", confirmLabel: "Log out",
+    body: "You'll need to sign in again to manage the fleet.",
+    onConfirm: async () => { try { await api.logout(); } catch (_) {} location.reload(); } });
 }
 // Account form as a modal (same chrome as the node sheets).
 function openAccount() { openModal(html`<${AccountSheet}/>`); }
