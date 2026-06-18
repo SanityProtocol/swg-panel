@@ -123,6 +123,7 @@ const ICON = {
   gear: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V20a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 4.6 13H4.5a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V2a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-1.1 2.7v.1a2 2 0 1 1 0 4z"/></svg>',
   trash: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/></svg>',
   link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M10 13a4 4 0 0 0 6 .5l2-2a4 4 0 0 0-5.7-5.7l-1.2 1.1M14 11a4 4 0 0 0-6-.5l-2 2A4 4 0 0 0 11.7 18l1.2-1.1"/></svg>',
+  qr: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><path d="M14 14h3v3M21 14v3M17 21h4M14 21h.01M21 21v.01M17 17h.01"/></svg>',
 };
 const Ic = ({ i }) => html`<span class="ic" dangerouslySetInnerHTML=${{ __html: ICON[i] || "" }}></span>`;
 
@@ -988,6 +989,73 @@ function ConnectionsScreen() {
 
 // ═════════════════════════ SCREEN: USERS ═════════════════════════
 const usersFilter = { text: "" };
+// A peer's configs as a modal: one QR/download card per target (reuses TargetCard).
+function openPeerConfigs(peer) {
+  openModal(html`<${Sheet} title=${"Configs · " + (peer.title || peer.name || "peer")}>
+    <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t}/>`)}</div>
+  <//>`);
+}
+function openUserEdit(user) {
+  openModal(html`<${Sheet} title=${"Edit · " + user.name}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
+}
+
+// One peer as a compact line inside a user group: identity + per-target tags + action icons.
+function PeerLine({ peer }) {
+  const single = peer.targets.length === 1;
+  const flash = Store.recentlyCreated[peer.id] && Date.now() - Store.recentlyCreated[peer.id] < 3000;
+  const download = async () => {
+    if (!single) return openPeerConfigs(peer);
+    const t = peer.targets[0];
+    const c = await getConfig(peer.pubkey, t.node, t.iface);
+    if (c) downloadConf(c, (peer.title || peer.name || "peer") + "-" + t.node);
+    else toast(Store.storeConfigs ? "No stored config — re-issue this peer to enable download." : "Config is only available right after creation.", "err");
+  };
+  return html`<div class=${"pline" + (flash ? " flash" : "")}>
+    <${Avatar} name=${peer.title || peer.name || "peer"} id=${peer.id} kind="peer"/>
+    <div class="pl-main">
+      <div class="pl-title">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr" title=${peer.pubkey}>${peer.pubkey.slice(0, 10)}…</span></div>
+      <div class="pl-targets">${peer.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}>
+        <span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
+    </div>
+    <${Badge} s=${peer.status}/>
+    <div class="pl-acts">
+      <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(peer)}><${Ic} i="qr"/></button>
+      <button class="iconbtn" title="Download config" onClick=${download}><${Ic} i="download"/></button>
+      <button class="iconbtn" title="Edit config" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/></button>
+      <button class="iconbtn" title="Copy to another interface" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/></button>
+      <button class="iconbtn danger" title="Delete peer (revoke + remove)" onClick=${() => { if (confirm("Delete this peer — revoke access and remove it?")) deleteAssignedPeer(peer); }}><${Ic} i="trash"/></button>
+    </div>
+    <${RowError} k=${"peer:" + peer.id}/>
+  </div>`;
+}
+
+// One user with all their peers underneath.
+function UserGroup({ user }) {
+  const peers = Store.peersOfUser(user.id).slice().sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status]);
+  const delUser = () => { if (!confirm("Delete user — their peers go unassigned (and are revoked)?")) return;
+    mutate({ key: "user:" + user.id,
+      patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
+      call: () => api.userDelete({ id: user.id }) }); };
+  return html`<div class="ugroup">
+    <div class="ug-head">
+      <${Avatar} name=${user.name} id=${user.id} kind="user"/>
+      <div class="ug-id">
+        <div class="ug-name"><a href=${"#/user/" + encodeURIComponent(user.id)}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}</div>
+        ${user.note ? html`<div class="ug-note">${user.note}</div>` : null}
+      </div>
+      <${Badge} s=${user.peerCount ? user.status : "empty"}/>
+      ${user.peerCount ? html`<${UsageBar} value=${user.onlineCount} total=${user.peerCount}/>` : html`<span class="faint pl-none">no peers</span>`}
+      <span class="grow"></span>
+      <button class="btn btn-mini" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/> Add peer</button>
+      <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
+      <button class="iconbtn danger" title="Delete user" onClick=${delUser}><${Ic} i="trash"/></button>
+    </div>
+    ${peers.length ? html`<div class="ug-peers">${peers.map(p => html`<${PeerLine} key=${p.id} peer=${p}/>`)}</div>`
+      : html`<div class="ug-empty">No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.</div>`}
+    <${RowError} k=${"user:" + user.id}/>
+  </div>`;
+}
+
 function UsersScreen() {
   useStore();
   const [, force] = useState(0);
@@ -1006,33 +1074,24 @@ function UsersScreen() {
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> New user</button>
     </div>
 
-    <div class="tablewrap"><table>
-      <thead><tr><th>Status</th><th>Name</th><th>Tag</th><th>Peers</th><th>Note</th><th>Added</th><th></th></tr></thead>
-      <tbody>
-        ${!users.length ? html`<tr><td colspan="7" class="empty"><b>No users yet</b>Create a user, then mint peers for them — or create a peer and assign it later.</td></tr>`
-          : !shown.length ? html`<tr><td colspan="7" class="empty"><b>Nothing matches</b>Clear the search.</td></tr>`
-          : shown.map(u => {
-            const flash = Store.recentlyCreated[u.id] && Date.now() - Store.recentlyCreated[u.id] < 3000;
-            return html`<tr key=${u.id} class="clk ${flash ? "flash" : ""}" onClick=${() => go("#/user/" + encodeURIComponent(u.id))}>
-              <td data-label="Status"><${Badge} s=${u.peerCount ? u.status : "empty"}/></td>
-              <td data-label="Name" class="c-name"><div class="namecell"><${Avatar} name=${u.name} id=${u.id} kind="user"/><span>${u.name}</span></div></td>
-              <td data-label="Tag">${u.tag ? html`<span class="tagchip">${u.tag}</span>` : html`<span class="faint">—</span>`}</td>
-              <td data-label="Peers">${u.peerCount ? html`<${UsageBar} value=${u.onlineCount} total=${u.peerCount}/>` : html`<span class="faint">none</span>`}</td>
-              <td data-label="Note" class="c-note">${u.note || html`<span class="faint">—</span>`}</td>
-              <td data-label="Added"><span class="when">${ago(u.created_at)}</span></td>
-              <td data-label=""><span class="rowarrow"><${Ic} i="arrow"/></span></td></tr>`;
-          })}
-      </tbody></table></div>
+    ${!users.length ? html`<div class="empty"><b>No users yet</b>Create a user, then mint peers for them — or create a peer and assign it later.</div>`
+      : !shown.length ? html`<div class="empty"><b>Nothing matches</b>Clear the search.</div>`
+      : html`<div class="ugroups">${shown.map(u => html`<${UserGroup} key=${u.id} user=${u}/>`)}</div>`}
 
     ${unassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">Unassigned peers</h2><span class="count">${unassigned.length}</span></div>
-      <div class="tablewrap"><table>
-        <thead><tr><th>Status</th><th>Key</th><th>Targets</th><th style="text-align:right">Assign / delete</th></tr></thead>
-        <tbody>${unassigned.map(p => html`<tr key=${p.id}>
-          <td data-label="Status"><${Badge} s=${p.status}/></td>
-          <td data-label="Key" class="addr clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>${p.title ? html`<b style="color:var(--ink)">${p.title}</b> · ` : ""}${p.pubkey.slice(0, 16)}…</td>
-          <td data-label="Targets">${p.targets.map(t => t.node + "/" + t.iface).join(", ")}</td>
-          <td data-label="" style="text-align:right" class="rowacts"><${PeerOwnerControls} peer=${p} showDelete=${true}/></td></tr>`)}</tbody></table></div>
+      <div class="ugroup unassigned"><div class="ug-peers">${unassigned.map(p => html`<div class="pline" key=${p.id}>
+        <${Avatar} name=${p.title || "peer"} id=${p.id} kind="peer"/>
+        <div class="pl-main">
+          <div class="pl-title">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr">${p.pubkey.slice(0, 10)}…</span></div>
+          <div class="pl-targets">${p.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}><span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
+        </div>
+        <${Badge} s=${p.status}/>
+        <div class="pl-acts">
+          <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>
+          <${PeerOwnerControls} peer=${p} showDelete=${true}/>
+        </div>
+      </div>`)}</div></div>
     <//>` : null}
   </div>`;
 }
