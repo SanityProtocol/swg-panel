@@ -944,20 +944,36 @@ function PeersScreen() {
   useStore();
   const [, force] = useState(0);
   const fleet = Store.fleet;
-  if (!peersView.node && fleet.length) peersView.node = fleet[0].id;
-  if (peersView.node && !fleet.some(n => n.id === peersView.node) && fleet.length) peersView.node = fleet[0].id;
-  const node = peersView.node;   // node = id
-  const snap = Store.stats[node];
-  const ifaces = snap ? Object.keys(snap.interfaces || {}) : [];
-  if (ifaces.length && !ifaces.includes(peersView.iface)) peersView.iface = ifaces[0];
+  const multiServer = fleet.length > 1;
+  // "*" = aggregate (all). With more than one server, default to fleet-wide so search spans it.
+  if (!peersView.node) peersView.node = multiServer ? "*" : (fleet[0] ? fleet[0].id : "");
+  if (peersView.node !== "*" && !fleet.some(n => n.id === peersView.node)) peersView.node = multiServer ? "*" : (fleet[0] ? fleet[0].id : "");
+  const node = peersView.node;   // node = id, or "*" for all servers
+
+  const allIfaces = Array.from(new Set(Object.values(Store.describe).flatMap(d => Object.keys(d || {})))).sort();
+  const snap = node !== "*" ? Store.stats[node] : null;
+  const ifaceOpts = node === "*" ? allIfaces : (snap ? Object.keys(snap.interfaces || {}) : []);
+  // default interface: aggregate when several exist (or all-servers); else the only one.
+  const ifaceDefault = () => (node === "*" || ifaceOpts.length > 1) ? "*" : (ifaceOpts[0] || "");
+  if (!peersView.iface) peersView.iface = ifaceDefault();
+  if (peersView.iface !== "*" && !ifaceOpts.includes(peersView.iface)) peersView.iface = ifaceDefault();
   const iface = peersView.iface;
-  const itype = (Store.ifaceMeta(node, iface) && Object.keys(Store.ifaceMeta(node, iface).awg_params || {}).length) ? "awg" : "wg";
+  const agg = node === "*" || iface === "*";
+  const itype = (!agg && Store.ifaceMeta(node, iface) && Object.keys(Store.ifaceMeta(node, iface).awg_params || {}).length) ? "awg" : "wg";
 
   const q = peersView.q.toLowerCase();
-  let onIface = Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface));
-  if (q) onIface = onIface.filter(p => ((p.title || "") + " " + (p.name || "") + " " + p.targets.map(t => t.ip).join(" ")).toLowerCase().includes(q));
-  onIface = onIface.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.title || a.name).localeCompare(String(b.title || b.name)));
-  const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
+  // one row per matching (peer, target) deployment, so a fleet-wide view shows where each peer lives.
+  let rows = [];
+  for (const p of Store.recon.peers) for (const t of p.targets) {
+    if (node !== "*" && t.node !== node) continue;
+    if (iface !== "*" && t.iface !== iface) continue;
+    rows.push({ p, t });
+  }
+  if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
+  rows.sort((a, b) => STATUS_RANK[a.t.status || a.p.status] - STATUS_RANK[b.t.status || b.p.status]
+    || String(a.p.title || a.p.name).localeCompare(String(b.p.title || b.p.name))
+    || Store.nodeName(a.t.node).localeCompare(Store.nodeName(b.t.node)));
+  const orphans = !agg ? Store.recon.orphans.filter(o => o.node === node && o.iface === iface) : [];
 
   return html`<div class="screen">
     <${StoreOffBanner}/>
@@ -965,42 +981,47 @@ function PeersScreen() {
       <div class="search"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${peersView.q}
         onInput=${e => { peersView.q = e.target.value.trim(); force(x => x + 1); }}/></div>
       <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; force(x => x + 1); }}>
+        ${multiServer ? html`<option value="*">All servers</option>` : null}
         ${fleet.map(n => html`<option value=${n.id}>${n.name}</option>`)}
       </select>
       <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; force(x => x + 1); }}>
-        ${ifaces.length ? ifaces.map(i => html`<option value=${i}>${i}</option>`) : html`<option value="">no interfaces reported</option>`}
+        ${(node === "*" || ifaceOpts.length > 1) ? html`<option value="*">All interfaces</option>` : null}
+        ${ifaceOpts.length ? ifaceOpts.map(i => html`<option value=${i}>${i}</option>`) : (node === "*" ? null : html`<option value="">no interfaces reported</option>`)}
       </select>
       <span class="grow"></span>
-      <button class="btn btn-primary" disabled=${!iface} onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
+      <button class="btn btn-primary" disabled=${agg} title=${agg ? "Pick a server and interface to create a peer" : ""} onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
     </div>
 
-    <div class="section-title"><h2>Peers on</h2><span class="tags"><${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/><${Tag} kind=${itype} label=${iface || "—"}/></span><span class="count">${onIface.length}</span></div>
+    <div class="section-title"><h2>${agg ? "Peers" : "Peers on"}</h2><span class="tags">
+      ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
+      ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
+    </span><span class="count">${rows.length}</span></div>
     <div class="tablewrap"><table class="peergrid">
-      <thead><tr><th>Status</th><th>User</th><th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
+      <thead><tr><th>Status</th>${agg ? html`<th>Server</th>` : null}<th>User</th><th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
       <tbody>
-        ${onIface.length ? onIface.map(p => {
-          const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
+        ${rows.length ? rows.map(({ p, t }) => {
           const obs = t.observed;
           const u = p.user_id ? Store.user(p.user_id) : null;
-          const others = p.targets.filter(d => !(d.node === node && d.iface === iface));   // this peer's other deployments
-          return html`<tr key=${p.id} class="clk" onClick=${() => openPeerView(p.id, node, iface)}>
+          const others = p.targets.filter(d => !(d.node === t.node && d.iface === t.iface));   // this peer's other deployments
+          return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class="clk" onClick=${() => openPeerView(p.id, t.node, t.iface)}>
             <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
+            ${agg ? html`<td data-label="Server"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online)}</span></div></td>` : null}
             <td data-label="User" onClick=${e => e.stopPropagation()}>
               ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
                   : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeerToUser(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
             <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
-            <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${others.length ? html`<${DepBadge} others=${others}/>` : null}</td>
+            <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${!agg && others.length ? html`<${DepBadge} others=${others}/>` : null}</td>
             <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
             <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
             <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} <span class="up">↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span></td>
             <td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
-              <button class="iconbtn" title="Edit peer" onClick=${() => openEditPeer(p, { node, iface })}><${Ic} i="pencil"/></button>
+              <button class="iconbtn" title="Edit peer" onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
               ${p.unassigned
                 ? html`<button class="iconbtn danger" title="Delete peer" onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
                 : html`<button class="iconbtn danger" title="Unassign peer" onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
               <${RowError} k=${"peer:" + p.id}/>
             </td></tr>`;
-        }) : html`<tr><td colspan="8" class="empty"><b>No peers here</b>${iface ? "Create one, or copy an existing peer onto this interface." : "This server hasn't reported any interfaces yet."}</td></tr>`}
+        }) : html`<tr><td colspan=${agg ? 9 : 8} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
       </tbody></table></div>
 
     ${orphans.length ? html`<${Fragment}>

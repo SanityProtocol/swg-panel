@@ -727,6 +727,10 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 /* ───── peers grid ───── */
 .peergrid .xfer{font-size:11.5px;color:var(--dim)} .peergrid .xfer .up{color:var(--ready)}
 .peergrid td.rowacts{text-align:right;white-space:nowrap}
+/* fleet-wide "Server" column (all-servers / all-interfaces view): server name + protocol/iface tags */
+.peergrid .srvcell{display:flex;flex-direction:column;gap:4px;min-width:0}
+.peergrid .srv-name{font-family:var(--mono);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.peergrid .srvcell .tags{flex-wrap:wrap}
 /* user cell is a link to the user screen — blue (matches the upload total) so admins know it navigates away */
 .peergrid .namecell{color:var(--ready)} .peergrid .namecell:hover{text-decoration:underline}
 /* extra-deployment count next to the address; hover or tap opens a bubble (.deppop) of the others */
