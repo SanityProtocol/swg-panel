@@ -240,8 +240,10 @@ function qrZoom(conf, label) {
 
 // ───────────────────────── api ─────────────────────────
 const api = {
-  async get(p) { const r = await fetch(url(p)); return r.json(); },
-  async post(p, b) { const r = await fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) }); return r.json(); },
+  async get(p) { const r = await fetch(url(p)); if (r.status === 401) return require401(); return r.json(); },
+  async post(p, b) { const r = await fetch(url(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); if (r.status === 401 && !/\/api\/login$/.test(p)) return require401(); return r.json(); },
+  login(b) { return this.post("/api/login", b); },
+  logout() { return this.post("/api/logout", {}); },
   state() { return this.get("/api/state"); },
   events(limit) { return this.get("/api/events?limit=" + (limit || 12)); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
@@ -1517,6 +1519,35 @@ function AccountScreen() {
   </div>`;
 }
 
+// Account form as a modal (opened from the header user icon).
+function AccountSheet() {
+  const [user, setUser] = useState("");
+  const [cur, setCur] = useState(""); const [np, setNp] = useState(""); const [np2, setNp2] = useState("");
+  const [msg, setMsg] = useState(null); const [enabled, setEnabled] = useState(true);
+  useEffect(() => { api.account().then(r => { if (r && r.ok) { if (r.data.username) setUser(r.data.username); if (!r.data.auth_enabled) { setEnabled(false); setMsg({ ok: false, t: "This panel has no login configured — changes are disabled." }); } } }); }, []);
+  const save = async () => {
+    if (!user.trim()) return setMsg({ ok: false, t: "Username can't be empty." });
+    if (user.includes(":")) return setMsg({ ok: false, t: "Username can't contain a colon." });
+    if (!cur) return setMsg({ ok: false, t: "Enter your current password to confirm." });
+    if (np && np !== np2) return setMsg({ ok: false, t: "New passwords don't match." });
+    if (np && np.length < 8) return setMsg({ ok: false, t: "New password must be at least 8 characters." });
+    setMsg({ ok: true, t: "Saving…" });
+    const r = await api.accountSave({ username: user.trim(), current_password: cur, new_password: np });
+    if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to update." });
+    setMsg({ ok: true, t: "Updated. Reloading — sign in with your new credentials…" });
+    setTimeout(() => location.reload(), 1400);
+  };
+  return html`<${Sheet} title="Account"
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Close</button><button class="btn btn-primary" disabled=${!enabled} onClick=${save}>Save changes</button></>`}>
+    <p class="hint" style="margin:0 0 16px">Change the panel username and password. Takes effect immediately — you'll be asked to sign in again.</p>
+    ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
+    <div class="field"><label>Username</label><input autofocus value=${user} onInput=${e => setUser(e.target.value)} autocomplete="username"/></div>
+    <div class="field"><label>Current password</label><input type="password" value=${cur} onInput=${e => setCur(e.target.value)} autocomplete="current-password" placeholder="required to confirm changes"/></div>
+    <div class="field"><label>New password</label><input type="password" value=${np} onInput=${e => setNp(e.target.value)} autocomplete="new-password" placeholder="leave blank to keep current"/></div>
+    <div class="field"><label>Confirm new password</label><input type="password" value=${np2} onInput=${e => setNp2(e.target.value)} autocomplete="new-password"/></div>
+  <//>`;
+}
+
 // ═════════════════════════ MODALS / SHEETS ═════════════════════════
 // Universal dialog behaviours live here so every sheet gets them for free (no per-sheet code):
 //  • autofocus the first field on open
@@ -2055,7 +2086,8 @@ function App() {
       el.innerHTML = `<b>${esc(v.panel)}</b>` + (tools.length ? `<span class="tools"> · ${esc(tools.join(" · "))}</span>` : "");
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
-    const add = $("#add-peer-btn"); if (add) add.onclick = () => openCreatePeer({});
+    const acct = $("#acct-btn"); if (acct) acct.onclick = openAccount;
+    const out = $("#logout-btn"); if (out) out.onclick = doLogout;
   });
 
   return html`<${Fragment}>
@@ -2064,12 +2096,45 @@ function App() {
   <//>`;
 }
 
+// ───────────────────────── auth: login page + logout ─────────────────────────
+let _loginShown = false;
+function require401() { showLogin(); throw new Error("unauthorized"); }
+function showLogin() { if (_loginShown) return; _loginShown = true; document.body.classList.add("loggedout"); try { render(h(LoginScreen), viewEl); } catch (_) {} }
+function LoginScreen() {
+  const [u, setU] = useState(""); const [p, setP] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const submit = async e => {
+    if (e) e.preventDefault();
+    if (busy) return;
+    setBusy(true); setErr("");
+    try {
+      const r = await api.login({ username: u, password: p });
+      if (r && r.ok) { location.reload(); return; }
+      setErr((r && r.error) || "Login failed."); setBusy(false);
+    } catch (_) { setErr("Couldn't reach the panel."); setBusy(false); }
+  };
+  return html`<div class="login-wrap"><form class="login-card" onSubmit=${submit}>
+    <div class="login-brand"><span class="brand-mark"></span><span class="brand-name">swg<span>Panel</span></span></div>
+    <h2>Sign in</h2>
+    <div class="field"><label>Username</label><input autofocus value=${u} onInput=${e => setU(e.target.value)} autocomplete="username"/></div>
+    <div class="field"><label>Password</label><input type="password" value=${p} onInput=${e => setP(e.target.value)} autocomplete="current-password"/></div>
+    ${err ? html`<div class="formmsg err">${err}</div>` : null}
+    <button class="btn btn-primary" type="submit" disabled=${busy} style="width:100%;justify-content:center;margin-top:4px">${busy ? "Signing in…" : "Sign in"}</button>
+  </form></div>`;
+}
+async function doLogout() {
+  if (!confirm("Are you sure you want to log out?")) return;
+  try { await api.logout(); } catch (_) {}
+  location.reload();
+}
+// Account form as a modal (same chrome as the node sheets).
+function openAccount() { openModal(html`<${AccountSheet}/>`); }
+
 // ───────────────────────── boot ─────────────────────────
 const viewEl = $("#view");
 viewEl.innerHTML = `<div class="loading"><span class="spin"></span>connecting…</div>`;
 (async () => {
   try { await Store.init(); }
-  catch (e) { viewEl.innerHTML = `<div class="empty"><b>Can't reach the panel</b>${esc(e.message)}</div>`; return; }
+  catch (e) { if (!_loginShown) viewEl.innerHTML = `<div class="empty"><b>Can't reach the panel</b>${esc(e.message)}</div>`; return; }
   if (!location.hash) location.hash = "#/";
   render(h(App), viewEl);
 })();

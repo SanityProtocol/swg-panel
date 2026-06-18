@@ -676,3 +676,15 @@ a.tg:hover{filter:brightness(1.25)}
 .linkbtn{background:none;border:0;color:var(--brand);cursor:pointer;padding:0;font:inherit}
 .cfgsheet{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
 @media(max-width:640px){.ug-head{flex-wrap:wrap}.pline{flex-wrap:wrap}.pl-acts{width:100%;justify-content:flex-end}}
+
+/* ───── login page ───── */
+.login-wrap{min-height:calc(100vh - 56px);display:flex;align-items:center;justify-content:center;padding:24px}
+.login-card{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:26px 24px;box-shadow:var(--shadow)}
+.login-brand{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.login-card h2{margin:0 0 18px;font-size:18px;font-weight:600;color:var(--ink)}
+.login-card .field{margin-bottom:12px}
+/* header icon buttons (account / logout) */
+.iconbtn.lg{width:36px;height:36px;border-radius:9px}
+.appbar-right .iconbtn{color:var(--dim)}
+/* logged-out: keep only the wordmark in the bar */
+body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display:none}

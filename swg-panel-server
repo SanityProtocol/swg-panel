@@ -157,6 +157,53 @@ def load_auth():
     return None
 
 
+# ─────────────── browser sessions (signed cookie; no Basic-auth popup) ───────────────
+# A small hmac-signed token in an HttpOnly cookie replaces the browser's Basic-auth prompt,
+# giving a real login page + a working logout. Same pbkdf2 credentials; the node-sync path
+# keeps its Bearer token, untouched. The signing secret is persisted next to the roster so
+# sessions survive a panel restart.
+SESSION_TTL = 7 * 24 * 3600
+_B64PAD = lambda s: s + "=" * (-len(s) % 4)
+
+
+def load_session_secret(roster_path):
+    p = os.path.join(os.path.dirname(roster_path) or ".", "session.key")
+    try:
+        with open(p, "rb") as f:
+            s = f.read().strip()
+        if len(s) >= 32:
+            return s
+    except OSError:
+        pass
+    s = base64.b64encode(os.urandom(48))
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(s)
+    return s
+
+
+def make_session(user, secret, ttl=SESSION_TTL):
+    payload = (user + "|" + str(int(time.time()) + ttl)).encode()
+    sig = hmac.new(secret, payload, hashlib.sha256).digest()
+    return (base64.urlsafe_b64encode(payload).rstrip(b"=").decode() + "."
+            + base64.urlsafe_b64encode(sig).rstrip(b"=").decode())
+
+
+def verify_session(token, secret):
+    try:
+        p_s, sig_s = token.split(".", 1)
+        payload = base64.urlsafe_b64decode(_B64PAD(p_s))
+        sig = base64.urlsafe_b64decode(_B64PAD(sig_s))
+        if not hmac.compare_digest(sig, hmac.new(secret, payload, hashlib.sha256).digest()):
+            return None
+        user, exp = payload.decode().rsplit("|", 1)
+        return user if int(exp) >= int(time.time()) else None
+    except Exception:
+        return None
+
+
 def cfg_hash(pubkey, node, iface=""):
     return hashlib.sha256((pubkey + "|" + node + "|" + iface).encode()).hexdigest() + ".conf"
 
@@ -1179,10 +1226,23 @@ class Handler(BaseHTTPRequestHandler):
         with contextlib.suppress(BrokenPipeError):
             self.wfile.write(data)
 
-    def _authed(self):
+    def _cookie(self, name):
+        for part in self.headers.get("Cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == name:
+                return v
+        return ""
+
+    def _authed_user(self):
+        """Authenticated username, True if auth is disabled, or None if unauthenticated.
+        Accepts a session cookie (browser) or HTTP Basic (API clients / curl)."""
         creds = Handler.deps.get("auth")
         if not creds:
             return True
+        secret = Handler.deps.get("session_secret")
+        tok = self._cookie("swgsess")
+        if tok and secret and verify_session(tok, secret) == creds[0]:
+            return creds[0]
         hdr = self.headers.get("Authorization", "")
         if hdr.startswith("Basic "):
             try:
@@ -1190,12 +1250,52 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 user, pw = "", ""
             if hmac.compare_digest(user, creds[0]) and verify_password(creds[1], pw):
-                return True
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="swg-panel"')
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+                return creds[0]
+        return None
+
+    def _require_auth(self):
+        if self._authed_user() is not None:
+            return True
+        # 401 JSON, deliberately WITHOUT WWW-Authenticate so the browser shows our login
+        # page instead of its native Basic-auth popup.
+        self._send(401, {"ok": False, "error": "authentication required", "code": "unauthorized"})
         return False
+
+    def _session_cookie(self, value, max_age):
+        base = (PANEL_BASE or "") + "/"
+        secure = "; Secure" if (TLS_CERT and TLS_KEY) else ""
+        return f"swgsess={value}; Path={base}; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure}"
+
+    def _send_with_cookie(self, code, obj, cookie):
+        payload = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        with contextlib.suppress(BrokenPipeError):
+            self.wfile.write(payload)
+
+    def _login(self):
+        creds = Handler.deps.get("auth")
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            body = {}
+        if not creds:
+            return self._send(200, {"ok": True, "data": {"auth": False}})
+        user = (body.get("username") or "").strip()
+        pw = body.get("password") or ""
+        if not (hmac.compare_digest(user, creds[0]) and verify_password(creds[1], pw)):
+            return self._send(401, {"ok": False, "error": "invalid username or password", "code": "bad_login"})
+        tok = make_session(creds[0], Handler.deps.get("session_secret"))
+        return self._send_with_cookie(200, {"ok": True, "data": {"username": creds[0]}},
+                                      self._session_cookie(tok, SESSION_TTL))
+
+    def _logout(self):
+        return self._send_with_cookie(200, {"ok": True}, self._session_cookie("", 0))
 
     def _wgstats(self, path):
         name = os.path.basename(path)          # basename strips any traversal
@@ -1245,16 +1345,16 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"desired": desired, "interval": interval})
 
     def do_GET(self):
-        if not self._authed():
-            return
         u = urlparse(self.path)
         path = strip_base(u.path)
         if path is None:
             return self.send_error(404)
+        if path in STATIC:                 # SPA assets are public so the login page can load
+            return self._static(path)
+        if not self._require_auth():       # everything else (data) needs a session
+            return
         if path.startswith("/wgstats/"):
             return self._wgstats(path)
-        if path in STATIC:
-            return self._static(path)
         if path.startswith("/api/"):
             try:
                 code, obj = api("GET", path, parse_qs(u.query), {}, self.deps)
@@ -1268,7 +1368,11 @@ class Handler(BaseHTTPRequestHandler):
         path = strip_base(u.path)
         if path == "/api/node/sync":
             return self._node_sync()
-        if not self._authed():
+        if path == "/api/login":
+            return self._login()
+        if path == "/api/logout":
+            return self._logout()
+        if not self._require_auth():
             return
         if path is None or not path.startswith("/api/"):
             return self.send_error(404)
@@ -1305,6 +1409,7 @@ def main():
                     "nodes_path": nodes_path, "nodes": nodes_load(nodes_path),
                     "node_snaps": {}, "node_seen": {},
                     "auth": load_auth(),
+                    "session_secret": load_session_secret(fleet.get("roster_path", "/var/lib/swg-panel/users.json")),
                     "now": lambda: int(time.time())}
     # TLS is wrapped PER CONNECTION in the worker thread (not on the listening socket): wrapping
     # the listener does the handshake inside accept(), so one stalled/half-open client (a scanner,
