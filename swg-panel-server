@@ -1502,6 +1502,13 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Update requested", "")
         return 200, {"ok": True, "data": {"node": nid}}
 
+    if method == "POST" and path == "/api/update/check":
+        _check_latest_remote()                       # synchronous one-off poll (for the header "check" icon)
+        return 200, {"ok": True, "data": {
+            "latest_remote": LATEST_REMOTE.get("version"),
+            "panel_outdated": bool(LATEST_REMOTE.get("version") and VERSIONS.get("panel")
+                                   and LATEST_REMOTE["version"] != VERSIONS.get("panel"))}}
+
     if method == "POST" and path == "/api/host/update":
         # Update THIS host (panel + a co-located node) in place. For Docker we can't recreate our own
         # container from inside it, so hand back the command to run on the host instead.

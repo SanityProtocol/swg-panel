@@ -65,6 +65,12 @@ h1,h2,h3{font-family:var(--sans)}
 .livepill b{color:var(--online);font-weight:600;font-size:13px;letter-spacing:-.02em}
 .livepill .dot{width:7px;height:7px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(70,216,168,.55);animation:pulse 2.6s infinite}
 @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(70,216,168,.45)}50%{opacity:.55}70%{box-shadow:0 0 0 6px rgba(70,216,168,0)}}
+.livepill.off b{color:var(--dim)}                /* no peers online → grey count … */
+.livepill.off .dot{display:none}                 /* … and no glowing dot */
+.updslot{display:inline-flex;align-items:center}
+.updpill{cursor:pointer;border-color:color-mix(in srgb,var(--ready) 42%,var(--line-solid))}
+.updpill b{color:var(--ready)}                   /* same as the online count, blue instead of green */
+.updpill:hover{border-color:var(--ready);background:color-mix(in srgb,var(--ready) 12%,transparent)}
 
 .btn{cursor:pointer;border-radius:var(--r-sm);font-size:13px;border:1px solid transparent;transition:all .15s var(--ease);
   display:inline-flex;align-items:center;gap:7px;white-space:nowrap}

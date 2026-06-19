@@ -283,6 +283,7 @@ const api = {
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
   nodeUpdate(b) { return this.post("/api/node/update", b); },
   hostUpdate() { return this.post("/api/host/update", {}); },
+  checkUpdate() { return this.post("/api/update/check", {}); },
 };
 
 // ───────────────────────── store + reactive bus ─────────────────────────
@@ -1872,6 +1873,13 @@ function updateHost() {
     },
   });
 }
+async function checkForUpdate() {
+  const r = await api.checkUpdate();
+  await Store.poll();
+  if (r.ok && r.data && r.data.panel_outdated) toast("Update available — v" + r.data.latest_remote, "ok");
+  else if (r.ok) toast("You're on the latest version.", "ok");
+  else toast(r.error || "Couldn't check for updates.", "err");
+}
 function NodeCard({ n }) {
   const st = n.status || "dangling";
   const stTxt = st === "online" ? "reporting" : (st === "offline" ? "offline" : "awaiting enroll");
@@ -2702,15 +2710,23 @@ function App() {
 
   // static chrome lives in index.html — keep it in sync imperatively
   useEffect(() => {
-    const online = Store.recon.peers.filter(p => p.online).length;
+    const online = Store.recon.peers.filter(p => p.online).length;   // PEERS online (not users)
     const kpi = $("#kpi-online"); if (kpi) kpi.textContent = online;
+    const lp = $("#livepill"); if (lp) lp.classList.toggle("off", online === 0);   // 0 = grey, no dot
     const v = Store.versions || {}, el = $("#appver");
     if (el && v.panel) {
       const tools = ["awg", "wg", "docker"].filter(k => v[k]).map(k => k + " " + v[k]);
-      const upd = Store.panelOutdated
-        ? `<button class="btn btn-mini ver-upd" id="host-upd" title="Latest is ${esc(Store.latestRemote || "?")}">↑ Update</button>` : "";
-      el.innerHTML = `<b>${esc(v.panel)}</b>` + (tools.length ? `<span class="tools"> · ${esc(tools.join(" · "))}</span>` : "") + upd;
-      const ub = $("#host-upd"); if (ub) ub.onclick = updateHost;
+      el.innerHTML = `<b>${esc(v.panel)}</b>` + (tools.length ? `<span class="tools"> · ${esc(tools.join(" · "))}</span>` : "");
+    }
+    const slot = $("#updslot");
+    if (slot) {
+      if (Store.panelOutdated) {                       // newer release found → blue "Update to x" pill
+        slot.innerHTML = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
+        const b = $("#host-upd"); if (b) b.onclick = updateHost;
+      } else {                                         // up to date → a "check for updates" icon
+        slot.innerHTML = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
+        const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
+      }
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = openAccount;
