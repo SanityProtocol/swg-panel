@@ -463,8 +463,13 @@ def op_create_iface(cfg, req):
     out the WAN, AWG obfuscation for awg), bring it up via <tool>-quick. Rolls back the conf if
     bring-up fails. The caller (swg-noded) then records {cmd, conf} so the panel manages it."""
     iface = (req.get("iface") or "").strip()
-    cmd = req.get("cmd") or ["awg"]
-    tool = cmd[0]
+    req_tool = (req.get("cmd") or ["awg"])[0]
+    add_obf = (req_tool == "awg")               # genuine AmneziaWG → obfuscation; plain WireGuard → none
+    # use the requested tool if it's here; otherwise fall back to awg (amneziawg-go does plain WG too,
+    # e.g. a node container ships only awg/awg-quick). A plain awg conf is WireGuard-compatible.
+    have = lambda t: bool(shutil.which(t) and shutil.which(t + "-quick"))
+    tool = req_tool if have(req_tool) else ("awg" if have("awg") else req_tool)
+    cmd = [tool]
     if not iface or "/" in iface or " " in iface:
         raise AgentError("bad_request", "invalid interface name")
     try:
@@ -500,7 +505,7 @@ def op_create_iface(cfg, req):
             f"iptables -D FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT || true")
     body = (f"[Interface]\nPrivateKey = {priv}\nAddress = {addr}\nListenPort = {port}\nMTU = {mtu}\n"
             f"PostUp = {up}\nPostDown = {down}\n")
-    if tool == "awg":
+    if tool == "awg" and add_obf:               # only genuine AmneziaWG gets obfuscation params
         body += _awg_obfuscation()
     write_conf_atomic(conf, body)
     try:
