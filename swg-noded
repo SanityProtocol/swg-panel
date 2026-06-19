@@ -472,6 +472,29 @@ def onboard_ifaces(node_cfg, onboard):
     return res
 
 
+DEFAULT_UPDATE_CMD = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
+                      "bootstrap.sh | bash -s update -y --no-components")
+
+
+def run_self_update(node_cfg, want):
+    """Run the swg-only in-place updater, detached so it survives swg-noded's own restart. Only ever
+    called on a valid sync reply that carries an 'update'. Updates swg-noded/swg-agent (and a co-located
+    panel) — NOT wg/awg/turn-proxies. The panel clears the request once we report the new version."""
+    cmd = (node_cfg.get("node") or {}).get("update_cmd") or DEFAULT_UPDATE_CMD
+    try:
+        if isinstance(cmd, list):
+            argv = cmd
+        else:
+            argv = ["bash", "-lc", (cmd if os.geteuid() == 0 else "sudo -n " + cmd)]
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        print(f"self-update started → {want.get('to')}", flush=True)
+        return True
+    except Exception as e:
+        print("self-update failed to start:", e, flush=True)
+        return False
+
+
 # ───────────────────────── main loop ─────────────────────────
 
 def main():
@@ -488,6 +511,7 @@ def main():
     sudo = bool(nd.get("sudo"))
     os.makedirs(STATE_DIR, exist_ok=True)
     last_samples = {}
+    update_started = False                          # spawn the self-updater at most once per process
     print(f"swg-noded: panel={panel['url']} interval={interval}s "
           f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
     while True:
@@ -496,6 +520,8 @@ def main():
             snap = build_snapshot(node_cfg, online_max, last_samples)
             status, reply = post_json(url, token, {"snapshot": snap}, panel)
             if status == 200 and isinstance(reply.get("desired"), dict):
+                if reply.get("update") and not update_started:        # panel asked us to self-update
+                    update_started = run_self_update(node_cfg, reply["update"])
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 r = reconcile(node_cfg, reply["desired"], agent, sudo)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)

@@ -31,6 +31,7 @@ import ssl
 import struct
 import subprocess
 import threading
+import urllib.request
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -90,6 +91,35 @@ def _detect_versions():
 
 
 VERSIONS = _detect_versions()
+
+# Latest published version — fetched from the public repo so the panel can tell when IT is behind
+# (works for any bare-metal/docker install; just an outbound HTTPS GET). Refreshed in a daemon thread.
+REMOTE_VERSION_URL = os.environ.get(
+    "SWG_LATEST_URL", "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/VERSION")
+LATEST_REMOTE = {"version": None, "checked": 0}
+# In-place updater — swg programs only (--no-components leaves wg/awg/turn-proxies alone), unattended.
+UPDATE_CMD = os.environ.get(
+    "SWG_UPDATE_CMD",
+    "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh"
+    " | bash -s update -y --no-components")
+
+
+def _check_latest_remote():
+    try:
+        req = urllib.request.Request(REMOTE_VERSION_URL, headers={"User-Agent": "swg-panel"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            v = _short_ver(r.read(64).decode("utf-8", "replace").strip())
+            if v:
+                LATEST_REMOTE["version"] = v
+    except Exception:
+        pass
+    LATEST_REMOTE["checked"] = int(time.time())
+
+
+def _remote_version_loop():
+    while True:
+        _check_latest_remote()
+        time.sleep(6 * 3600)
 
 STATIC = {
     "/": "index.html", "/index.html": "index.html",
@@ -870,6 +900,7 @@ def api(method, path, qs, body, deps):
                         "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
                         "outdated": bool(snap.get("noded_version") and VERSIONS.get("panel")
                                          and snap.get("noded_version") != VERSIONS.get("panel")),
+                        "updating": bool(c.get("update")),                       # self-update in flight
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
@@ -901,6 +932,9 @@ def api(method, path, qs, body, deps):
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
+            "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
+            "panel_outdated": bool(LATEST_REMOTE.get("version") and VERSIONS.get("panel")
+                                   and LATEST_REMOTE["version"] != VERSIONS.get("panel")),
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
         }}
 
@@ -1457,6 +1491,33 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Onboarding interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
+    if method == "POST" and path == "/api/node/update":
+        # Flag a (remote) node to self-update on its next sync. The node pulls this, runs the swg-only
+        # updater (detached, restarts swg-noded), and the flag clears once it reports the new version.
+        nid = body.get("node") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        nodes[nid]["update"] = {"to": VERSIONS.get("panel") or ""}
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Update requested", "")
+        return 200, {"ok": True, "data": {"node": nid}}
+
+    if method == "POST" and path == "/api/host/update":
+        # Update THIS host (panel + a co-located node) in place. For Docker we can't recreate our own
+        # container from inside it, so hand back the command to run on the host instead.
+        manual_cmd = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
+                      "bootstrap.sh | sudo bash -s update -y --no-components")
+        if IN_DOCKER:
+            return 200, {"ok": True, "data": {"manual": True, "cmd": manual_cmd}}
+        cmd = UPDATE_CMD if os.geteuid() == 0 else ("sudo -n " + UPDATE_CMD)
+        try:
+            subprocess.Popen(["bash", "-lc", cmd], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except Exception as e:
+            return 500, {"ok": False, "error": f"couldn't start updater: {e}", "code": "exec_failed"}
+        ev_append(roster_path, "node", "host", "Host update started", "")
+        return 200, {"ok": True, "data": {"started": True}}
+
     if method == "POST" and path == "/api/nodes/rotate":
         nid = body.get("id") or ""
         if nid not in nodes:
@@ -1675,6 +1736,13 @@ class Handler(BaseHTTPRequestHandler):
                 d["awg_params"] = ov["awg_params"]
             if d:
                 desired_ifaces[ifn] = d
+        # clear a pending self-update once the node reports the target version
+        upd = node.get("update")
+        if upd and snap.get("noded_version") and upd.get("to") and snap["noded_version"] == upd["to"]:
+            node.pop("update", None)
+            with contextlib.suppress(Exception):
+                nodes_save(Handler.deps["nodes_path"], nodes)
+            upd = None
         # close onboard requests for interfaces the node now reports (it added them on its side)
         ob = node.get("onboard") or {}
         if ob:
@@ -1688,7 +1756,8 @@ class Handler(BaseHTTPRequestHandler):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
-                                "onboard": node.get("onboard") or {}, "interval": interval})
+                                "onboard": node.get("onboard") or {},
+                                "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):
         # The node's uninstaller signs off here (its bearer token) so the panel can cleanly drop
@@ -1810,6 +1879,7 @@ def main():
             signal.signal(signal.SIGHUP, _reload_tls)
     else:
         srv = ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler)
+    threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
     print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     with contextlib.suppress(KeyboardInterrupt):

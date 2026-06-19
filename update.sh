@@ -9,14 +9,16 @@
 # fetched one, and for any with an upgrade available PROMPTS whether to upgrade or skip.
 # Config + state are preserved (fleet.json, users.json, nodes.json, auth, certs, .env).
 #
-# Flags:  --dry-run  show what it would do, change nothing
-#         -y|--yes   upgrade everything available without prompting
-#         -f|--force re-apply even components already on the latest version
+# Flags:  --dry-run       show what it would do, change nothing
+#         -y|--yes        upgrade everything available without prompting
+#         -f|--force      re-apply even components already on the latest version
+#         --no-components  swg only (panel/noded/agent) — skip third-party turn-proxy servers
 set -euo pipefail
 
-DRYRUN=false; ASSUME_YES=false; FORCE=false
+DRYRUN=false; ASSUME_YES=false; FORCE=false; NO_COMPONENTS=false
 for a in "$@"; do case "$a" in
   --dry-run) DRYRUN=true;; -y|--yes) ASSUME_YES=true;; -f|--force) FORCE=true;;
+  --no-components) NO_COMPONENTS=true;;
 esac; done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -119,7 +121,9 @@ fi
 
 # ───────────────────────── turn-proxy servers (vk-turn-proxy, ones we installed) ─────────────────────────
 TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
-if [ -d "$TURN_DIR" ]; then
+if $NO_COMPONENTS && [ -d "$TURN_DIR" ]; then
+  info "skipping third-party components (turn-proxy servers) — --no-components"
+elif [ -d "$TURN_DIR" ]; then
   for d in "$TURN_DIR"/*/; do
     [ -f "${d}server" ] && [ -f "${d}version.txt" ] || continue
     found=1

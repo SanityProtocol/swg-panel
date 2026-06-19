@@ -281,6 +281,8 @@ const api = {
   peerSaveConfig(b) { return this.post("/api/peers/save-config", b); },
   ifaceUpdate(b) { return this.post("/api/iface/update", b); },
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
+  nodeUpdate(b) { return this.post("/api/node/update", b); },
+  hostUpdate() { return this.post("/api/host/update", {}); },
 };
 
 // ───────────────────────── store + reactive bus ─────────────────────────
@@ -312,6 +314,7 @@ const Store = {
     this.storeConfigs = !!d.store_configs;
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
+    this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
     if (ev && Array.isArray(ev.data)) this.events = ev.data;
     this.apply();
   },
@@ -1846,6 +1849,29 @@ function NodeHealth({ health, node, compact, history }) {
   </div>`;
 }
 
+function updateNode(n) {
+  openConfirm({
+    title: "Update node", confirmLabel: "Update " + n.name, warn: true,
+    body: "The node pulls the swg-only updater on its next sync and self-updates (swg-noded restarts; "
+      + "wg/awg/turn-proxies and your peers are left running). It'll report the new version when done. "
+      + "Currently v" + (n.version || "?") + " → v" + (n.latest || "?") + ".",
+    onConfirm: async () => { const r = await api.nodeUpdate({ node: n.id }); if (r.ok) { await Store.poll(); toast("Update requested — applies on the node's next sync.", "ok"); } else toast(r.error || "Failed to request update.", "err"); },
+  });
+}
+function updateHost() {
+  openConfirm({
+    title: "Update this server", confirmLabel: "Update now", warn: true,
+    body: "Updates the panel (and a co-located node) in place to the latest release — swg programs only, "
+      + "leaving wg/awg/turn-proxies untouched. The panel restarts, so the UI will briefly drop. Needs root "
+      + "(or passwordless sudo) on the host.",
+    onConfirm: async () => {
+      const r = await api.hostUpdate();
+      if (!r.ok) return toast(r.error || "Failed to start update.", "err");
+      if (r.data && r.data.manual) openModal(html`<${Sheet} title="Update this server"><div class="iface-intro"><div>This panel runs in Docker — it can't recreate its own container from inside. Run this on the host:</div></div><div class="field"><label>Command</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${r.data.cmd}</span><button class="copybtn" onClick=${() => copy(r.data.cmd, "Command copied")}><${Ic} i="copy"/></button></div></div><//>`);
+      else toast("Update started — the panel will restart shortly.", "ok");
+    },
+  });
+}
 function NodeCard({ n }) {
   const st = n.status || "dangling";
   const stTxt = st === "online" ? "reporting" : (st === "offline" ? "offline" : "awaiting enroll");
@@ -1864,7 +1890,9 @@ function NodeCard({ n }) {
       <span class=${"tport" + (n.transport === "https" ? " https" : "")}>${n.transport}</span>
       <span class=${"nstat " + st}>${stTxt}</span>
       ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span>` : null}
-      ${n.version ? html`<span class=${"nm-ver" + (n.outdated ? " out" : "")} title=${n.outdated ? "Update available — latest is " + (n.latest || "?") : "Up to date"}>v${n.version}${n.outdated ? html`<span class="nm-ver-tag">update available</span>` : null}</span>` : null}
+      ${n.version ? html`<span class=${"nm-ver" + (n.outdated ? " out" : "")} title=${n.outdated ? "Update available — latest is " + (n.latest || "?") : "Up to date"}>v${n.version}${
+        n.updating ? html`<span class="nm-ver-tag"><span class="spin sm"></span>updating</span>`
+        : n.outdated ? html`<button class="btn btn-mini ver-upd" onClick=${e => { e.stopPropagation(); updateNode(n); }}><${Ic} i="download"/> Update</button>` : null}</span>` : null}
       <span class="grow"></span>
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
@@ -2679,7 +2707,10 @@ function App() {
     const v = Store.versions || {}, el = $("#appver");
     if (el && v.panel) {
       const tools = ["awg", "wg", "docker"].filter(k => v[k]).map(k => k + " " + v[k]);
-      el.innerHTML = `<b>${esc(v.panel)}</b>` + (tools.length ? `<span class="tools"> · ${esc(tools.join(" · "))}</span>` : "");
+      const upd = Store.panelOutdated
+        ? `<button class="btn btn-mini ver-upd" id="host-upd" title="Latest is ${esc(Store.latestRemote || "?")}">↑ Update</button>` : "";
+      el.innerHTML = `<b>${esc(v.panel)}</b>` + (tools.length ? `<span class="tools"> · ${esc(tools.join(" · "))}</span>` : "") + upd;
+      const ub = $("#host-upd"); if (ub) ub.onclick = updateHost;
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = openAccount;
