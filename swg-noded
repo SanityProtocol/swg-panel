@@ -37,6 +37,22 @@ AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
             "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
 
 
+def _noded_version():
+    for p in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+              "/opt/swg-noded/VERSION"):
+        try:
+            with open(p) as f:
+                v = f.read().strip()
+                if v:
+                    return v
+        except OSError:
+            pass
+    return None
+
+
+NODED_VERSION = _noded_version()
+
+
 # ───────────────────────── parsing (pure) ─────────────────────────
 
 def parse_dump(out):
@@ -320,7 +336,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                                node_cfg.get("dns", []), cmd),
         }
     snap = {"hostname": socket.gethostname(), "generated_at": now,
-            "interfaces": interfaces, "turn_proxies": load_turn_proxies()}
+            "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
+            "noded_version": NODED_VERSION}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap

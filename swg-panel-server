@@ -866,6 +866,10 @@ def api(method, path, qs, body, deps):
                         "health": snap.get("health"),     # per-node load/mem/disk/uptime (additive)
                         "health_history": hh,             # recent cpu/mem/disk % series (RRD-style ring)
                         "health_live": hl,                # raw per-sync samples for the LIVE view (5s)
+                        "version": snap.get("noded_version"),   # swg-noded version this node reports
+                        "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
+                        "outdated": bool(snap.get("noded_version") and VERSIONS.get("panel")
+                                         and snap.get("noded_version") != VERSIONS.get("panel")),
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out

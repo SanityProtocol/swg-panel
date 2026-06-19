@@ -1864,6 +1864,7 @@ function NodeCard({ n }) {
       <span class=${"tport" + (n.transport === "https" ? " https" : "")}>${n.transport}</span>
       <span class=${"nstat " + st}>${stTxt}</span>
       ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span>` : null}
+      ${n.version ? html`<span class=${"nm-ver" + (n.outdated ? " out" : "")} title=${n.outdated ? "Update available — latest is " + (n.latest || "?") : "Up to date"}>v${n.version}${n.outdated ? html`<span class="nm-ver-tag">update available</span>` : null}</span>` : null}
       <span class="grow"></span>
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
