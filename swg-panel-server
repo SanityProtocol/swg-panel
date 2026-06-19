@@ -910,6 +910,7 @@ def api(method, path, qs, body, deps):
                                          and snap.get("noded_version") != VERSIONS.get("panel")),
                         "updating": bool(c.get("update")),                       # self-update in flight
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
+                        "creating": sorted((c.get("create") or {}).keys()),      # ifaces pending create
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 
@@ -1500,6 +1501,38 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Onboarding interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
+    if method == "POST" and path == "/api/iface/create":
+        # Ask a node to create a BRAND-NEW wg/awg interface (the node genkeys + writes the conf +
+        # auto-NATs + brings it up on its next sync, then manages it). Native datapath per node type.
+        nid = body.get("node") or ""
+        iface = (body.get("iface") or "").strip()
+        subnet = (body.get("subnet") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not iface or " " in iface or "/" in iface:
+            return 400, {"ok": False, "error": "interface name is required (no spaces or /)", "code": "bad_request"}
+        try:
+            ipaddress.ip_network(subnet, strict=False)
+        except Exception:
+            return 400, {"ok": False, "error": "subnet must be a CIDR like 10.8.0.0/24", "code": "bad_request"}
+        cmd = ["wg"] if (body.get("protocol") or "awg").lower() == "wg" else ["awg"]
+        req = {"cmd": cmd, "subnet": subnet}
+        if str(body.get("listen_port") or "").isdigit():
+            req["listen_port"] = int(body["listen_port"])
+        if str(body.get("mtu") or "").strip():
+            req["mtu"] = str(body["mtu"]).strip()
+        nodes[nid].setdefault("create", {})[iface] = req
+        ov = nodes[nid].setdefault("ifaces", {}).setdefault(iface, {})   # config-render overrides
+        if (body.get("endpoint_host") or "").strip():
+            ov["endpoint_host"] = body["endpoint_host"].strip()
+        if (body.get("dns") or "").strip():
+            ov["dns"] = body["dns"].strip()
+        if str(body.get("keepalive") or "").strip().isdigit():
+            ov["keepalive"] = int(body["keepalive"])
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Creating interface", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
     if method == "POST" and path == "/api/node/update":
         # Flag a (remote) node to self-update on its next sync. The node pulls this, runs the swg-only
         # updater (detached, restarts swg-noded), and the flag clears once it reports the new version.
@@ -1764,20 +1797,22 @@ class Handler(BaseHTTPRequestHandler):
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
             upd = None
-        # close onboard requests for interfaces the node now reports (it added them on its side)
-        ob = node.get("onboard") or {}
-        if ob:
+        # close onboard/create requests for interfaces the node now reports (it added them on its side)
+        for key in ("onboard", "create"):
+            reqs = node.get(key) or {}
+            if not reqs:
+                continue
             present = set((snap.get("interfaces") or {}).keys())
-            remaining = {k: v for k, v in ob.items() if k not in present}
-            if remaining != ob:
-                node["onboard"] = remaining
+            remaining = {k: v for k, v in reqs.items() if k not in present}
+            if remaining != reqs:
+                node[key] = remaining
                 if not remaining:
-                    node.pop("onboard", None)
+                    node.pop(key, None)
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
-                                "onboard": node.get("onboard") or {},
+                                "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):

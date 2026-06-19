@@ -471,10 +471,46 @@ def onboard_ifaces(node_cfg, onboard):
         res["added"].append(iface)
     if changed:
         try:
-            tmp = CONFIG_PATH + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(node_cfg, f, indent=2)
-            os.replace(tmp, CONFIG_PATH)
+            _persist_config(node_cfg)
+        except Exception as e:
+            res["errors"].append(f"persist config.json: {e}")
+    return res
+
+
+def _persist_config(node_cfg):
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(node_cfg, f, indent=2)
+    os.replace(tmp, CONFIG_PATH)
+
+
+def create_ifaces(node_cfg, create, agent, sudo):
+    """Create panel-requested BRAND-NEW interfaces via swg-agent (genkey + conf + auto-NAT + bring-up),
+    then start managing them (config.json). Only on a valid sync. Bring-up runs live — verify on one
+    node. Native datapath: kernel on a bare-metal node, container-userspace on a docker node."""
+    res = {"created": [], "errors": []}
+    if not create:
+        return res
+    ifaces = node_cfg.setdefault("interfaces", {})
+    changed = False
+    for iface, want in create.items():
+        if iface in ifaces:                 # already created — nothing to do (panel clears it)
+            continue
+        cmd = want.get("cmd") or ["awg"]
+        r = run_agent(agent, sudo, {"op": "create-iface", "iface": iface, "cmd": cmd,
+                                    "subnet": want.get("subnet"), "listen_port": want.get("listen_port"),
+                                    "mtu": want.get("mtu")})
+        if not r.get("ok"):
+            res["errors"].append(f"{iface}: {r.get('error')}"); continue
+        conf = (r.get("data") or {}).get("conf") or ""
+        if not conf:
+            res["errors"].append(f"{iface}: agent returned no conf path"); continue
+        ifaces[iface] = {"cmd": cmd, "conf": conf}
+        changed = True
+        res["created"].append(iface)
+    if changed:
+        try:
+            _persist_config(node_cfg)
         except Exception as e:
             res["errors"].append(f"persist config.json: {e}")
     return res
@@ -533,12 +569,14 @@ def main():
             if status == 200 and isinstance(reply.get("desired"), dict):
                 if reply.get("update") and not update_started:        # panel asked us to self-update
                     update_started = run_self_update(node_cfg, reply["update"])
+                cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 r = reconcile(node_cfg, reply["desired"], agent, sudo)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)
-                if r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"] or ob["added"] or ob["errors"]:
+                if r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"] or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]:
                     print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} "
-                          f"onboard+{ob['added']} errors={(r['errors'] + ri['errors'] + ob['errors'])[:3]}", flush=True)
+                          f"onboard+{ob['added']} create+{cr['created']} "
+                          f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'])[:3]}", flush=True)
                 interval = reply.get("interval", interval)
             elif status == 0:
                 print("sync error:", reply.get("error"), flush=True)

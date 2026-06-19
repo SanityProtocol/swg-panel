@@ -281,6 +281,7 @@ const api = {
   peerSaveConfig(b) { return this.post("/api/peers/save-config", b); },
   ifaceUpdate(b) { return this.post("/api/iface/update", b); },
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
+  ifaceCreate(b) { return this.post("/api/iface/create", b); },
   nodeUpdate(b) { return this.post("/api/node/update", b); },
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
@@ -877,10 +878,14 @@ function NodeDetail({ node: rawName }) {
 
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}
         actions=${html`<button class="btn btn-mini" onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load new interface</button>`}>
-      ${(() => { const pending = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
-        const pcards = pending.map(ifn => html`<div class="ifcard pending" key=${"ob:" + ifn}>
-          <div class="ifcard-top"><span class="iftype turn">load</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>onboarding</span></div>
-          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to add it on its next sync…</span></div></div></div>`);
+      ${(() => {
+        const pcard = (ifn, label) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
+          <div class="ifcard-top"><span class="iftype turn">${label === "creating" ? "new" : "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>${label}</span></div>
+          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it on its next sync…</span></div></div></div>`;
+        const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
+        const pendCr = (nrec.creating || []).filter(ifn => !(meta && meta[ifn]));
+        const pending = pendOn.concat(pendCr);
+        const pcards = pendOn.map(ifn => pcard(ifn, "onboarding")).concat(pendCr.map(ifn => pcard(ifn, "creating")));
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
           : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
@@ -1044,7 +1049,6 @@ function LoadIfaceSheet({ node }) {
       if (!nm || /[\s/]/.test(nm)) return fail("Interface name is required (no spaces or /).");
       if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.");
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
-      if (!api.ifaceCreate) { setBusy(false); return setMsg({ k: "work", t: "Creating a brand-new interface is being wired up — for now use “Existing unbound interface” to adopt one the node already runs." }); }
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: host.trim(),
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim() });
     }

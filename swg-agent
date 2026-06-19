@@ -22,6 +22,7 @@ import fcntl
 import ipaddress
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -422,6 +423,79 @@ def op_set_iface(cfg, req):
     return out
 
 
+def _wan_iface():
+    out = run(["ip", "-4", "route", "get", "1.1.1.1"], check=False)
+    m = re.search(r" dev (\S+)", out or "")
+    return m.group(1) if m else "eth0"
+
+
+def _awg_obfuscation():
+    """Mirror install-host.sh's awg_obfuscation: random S1–S4, four disjoint H1–H4 bands, conservative I1."""
+    s1 = 15 + random.randint(0, 135); s2 = 15 + random.randint(0, 135)
+    while s2 == s1 or s2 == s1 + 56:
+        s2 = 15 + random.randint(0, 135)
+    s3 = 15 + random.randint(0, 85); s4 = 15 + random.randint(0, 85)
+    b = [base + random.randint(0, 899999999) for base in (5, 1000000000, 2000000000, 3000000000)]
+    w = 15
+    return ("Jc = 4\nJmin = 40\nJmax = 70\n"
+            f"S1 = {s1}\nS2 = {s2}\nS3 = {s3}\nS4 = {s4}\n"
+            f"H1 = {b[0]}-{b[0] + w}\nH2 = {b[1]}-{b[1] + w}\nH3 = {b[2]}-{b[2] + w}\nH4 = {b[3]}-{b[3] + w}\n"
+            "I1 = <b 0xc300000001><r 1200>\n")
+
+
+def op_create_iface(cfg, req):
+    """Create a BRAND-NEW wg/awg interface natively (kernel on bare-metal, userspace in a node
+    container): genkey, write the .conf (Address from the given subnet, ListenPort, MTU, auto-NAT
+    out the WAN, AWG obfuscation for awg), bring it up via <tool>-quick. Rolls back the conf if
+    bring-up fails. The caller (swg-noded) then records {cmd, conf} so the panel manages it."""
+    iface = (req.get("iface") or "").strip()
+    cmd = req.get("cmd") or ["awg"]
+    tool = cmd[0]
+    if not iface or "/" in iface or " " in iface:
+        raise AgentError("bad_request", "invalid interface name")
+    try:
+        net = ipaddress.ip_network(req.get("subnet") or "", strict=False)
+    except Exception:
+        raise AgentError("bad_request", "subnet must be a CIDR like 10.8.0.0/24")
+    try:
+        port = int(req.get("listen_port") or 51820)
+    except (TypeError, ValueError):
+        raise AgentError("bad_request", "listen_port must be a number")
+    mtu = str(req.get("mtu") or "1280")
+    conf_dir = "/etc/amnezia/amneziawg" if tool == "awg" else "/etc/wireguard"
+    conf = os.path.join(conf_dir, iface + ".conf")
+    if os.path.exists(conf):
+        raise AgentError("exists", f"{conf} already exists")
+    os.makedirs(conf_dir, exist_ok=True)
+    priv = run(cmd + ["genkey"]).strip()
+    if not priv:
+        raise AgentError("internal", f"{tool} genkey produced no key")
+    pub = run(cmd + ["pubkey"], input_text=priv + "\n").strip()
+    addr = f"{net.network_address + 1}/{net.prefixlen}"
+    wan = _wan_iface()
+    up = (f"sysctl -q -w net.ipv4.ip_forward=1; "
+          f"iptables -t nat -A POSTROUTING -s {net} -o {wan} -j MASQUERADE; "
+          f"iptables -A FORWARD -i %i -o {wan} -j ACCEPT; "
+          f"iptables -A FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")
+    down = (f"iptables -t nat -D POSTROUTING -s {net} -o {wan} -j MASQUERADE; "
+            f"iptables -D FORWARD -i %i -o {wan} -j ACCEPT; "
+            f"iptables -D FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")
+    body = (f"[Interface]\nPrivateKey = {priv}\nAddress = {addr}\nListenPort = {port}\nMTU = {mtu}\n"
+            f"PostUp = {up}\nPostDown = {down}\n")
+    if tool == "awg":
+        body += _awg_obfuscation()
+    write_conf_atomic(conf, body)
+    try:
+        run([tool + "-quick", "up", iface])
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            os.unlink(conf)
+        raise AgentError("up_failed", f"{tool}-quick up {iface} failed (port/subnet may be in use): {e}")
+    with contextlib.suppress(Exception):
+        run(["systemctl", "enable", f"{tool}-quick@{iface}"], check=False)
+    return {"iface": iface, "public_key": pub, "address": addr, "conf": conf, "cmd": cmd, "listen_port": port}
+
+
 # ───────────────────────── dispatch ─────────────────────────
 
 def respond(ok, op, data=None, error=None, code=None):
@@ -436,7 +510,8 @@ def respond(ok, op, data=None, error=None, code=None):
 
 
 READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
-WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface}
+WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface,
+             "create-iface": op_create_iface}
 
 
 def main():
