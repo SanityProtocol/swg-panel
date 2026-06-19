@@ -947,9 +947,8 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <//>` : null}
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
-        actions=${html`<${Fragment}>
-          <div class="search sm"><${Ic} i="search"/><input placeholder="Search peers…" value=${q} onInput=${e => setQ(e.target.value)}/></div>
-          <button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface })}><${Ic} i="plus"/> Add peer</button></>`}>
+        actions=${html`<button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface })}><${Ic} i="plus"/> Add peer</button>`}>
+      <div class="ifsearch"><div class="search"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div></div>
       <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q}/>
     <//>
 

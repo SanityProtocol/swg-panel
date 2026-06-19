@@ -294,8 +294,10 @@ a.ifgroup-head:hover b{color:var(--brand)}
 /* ───── toolbar (users) ───── */
 .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .search{flex:1;min-width:180px;position:relative}
-.search.sm{flex:0 0 auto;min-width:0;width:200px}
-.search.sm input{height:30px;font-size:12.5px}
+/* full-width search bar above an in-panel grid (interface peers) */
+.ifsearch{padding:12px 14px;border-bottom:1px solid var(--line)}
+.ifsearch .search{width:100%;min-width:0}
+.ifsearch .search input{width:100%}
 .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:.5;pointer-events:none}
 input,select{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);
   padding:9px 12px;font-family:var(--mono);font-size:13px;transition:border-color .15s,box-shadow .15s;width:100%}
