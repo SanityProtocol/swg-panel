@@ -908,7 +908,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   // AmneziaWG params split into the four header columns: J* under Endpoint, S* under Server
   // address, H* under DNS, and I* (+ anything else) under MTU.
   const ap = (meta && meta.awg_params) || {};
-  const awgGrp = pred => Object.entries(ap).filter(([k]) => pred(k)).map(([k, v]) => k + "=" + v).join("  ");
+  const awgGrp = pred => Object.entries(ap).filter(([k]) => pred(k)).map(([k, v]) => k + "=" + v);
   const awgCols = [awgGrp(k => k[0] === "J"), awgGrp(k => k[0] === "S"), awgGrp(k => k[0] === "H"), awgGrp(k => !"JSH".includes(k[0]))];
   const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
   // one {peer,target} row per peer on this interface, fed to the shared PeerGrid
@@ -940,7 +940,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         ${type === "awg" ? html`<div class="iface-amnezia">
           <span class="ig-l">AmneziaWG</span>
           <div class="iface-grid" style="margin-top:8px">
-            ${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g || "—"}</span></div>`)}
+            ${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}
           </div>
         </div>` : null}
       <//>`}
