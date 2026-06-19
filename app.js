@@ -1016,7 +1016,11 @@ function EditIfaceSheet({ node, iface }) {
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
-    <p class="hint" style="margin:0 0 16px">Endpoint IP only changes what configs/QRs tell clients to dial. Changing the Listen port reconfigures the interface on the node (peers are kept; clients reconnect on the new port). DNS / MTU seed new peers — existing per-peer values aren't touched.</p>
+    <div class="iface-intro">
+      <div>Endpoint IP only changes what configs/QRs tell clients to dial.</div>
+      <div>Changing the Listen port reconfigures the interface on the node (peers are kept; clients reconnect on the new port).</div>
+      <div>DNS / MTU seed new peers — existing per-peer values aren't touched.</div>
+    </div>
     <div class="row2">
       <div class="field"><label>Endpoint IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Config-facing only.</div></div>
       <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"}).</div></div>
@@ -1027,8 +1031,8 @@ function EditIfaceSheet({ node, iface }) {
     </div>
     ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
       <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
-      <div class="awg-grid">${AWG_ORDER.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div></div>` : null}
-    <div class="field"><label>Interface public key <span class="faint" style="text-transform:none;letter-spacing:0">— read-only</span></label><div class="cmdrow"><div class="tokenbox">${meta.public_key || "—"}</div>${meta.public_key ? html`<button class="copyaction" onClick=${() => copy(meta.public_key, "Public key copied")}><${Ic} i="copy"/> Copy</button>` : null}</div></div>
+      <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div></div>` : null}
+    <div class="field ipk-field"><label>Interface public key</label><span class="ipk-val">${meta.public_key || "—"}</span>${meta.public_key ? html`<button class="copybtn" title="Copy public key" onClick=${() => copy(meta.public_key, "Public key copied")}><${Ic} i="copy"/></button>` : null}</div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
