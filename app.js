@@ -1864,6 +1864,17 @@ function setHostUpdating() {
   const slot = $("#updslot");
   if (slot) slot.innerHTML = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
 }
+let seenPanelVer = null;   // detect the panel coming back on a new version (after an update), to prompt a hard reload
+function openUpdateDone(from, to) {
+  openModal(html`<${Sheet} title="Panel updated"
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-primary" onClick=${() => location.reload()}>Reload now</button></>`}>
+    <div class="updone">
+      <p>The panel was updated from <b>v${from}</b> to <b>v${to}</b>.</p>
+      <p>To be sure every change takes effect, give the panel a hard reload — it drops the cached app so the new version loads cleanly.</p>
+      <p class="updone-hint">Press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>R</kbd></p>
+    </div>
+  <//>`);
+}
 function updateNode(n) {
   openConfirm({
     title: "Update node", confirmLabel: "Update " + n.name, warn: true,
@@ -2735,6 +2746,10 @@ function App() {
     const kpi = $("#kpi-online"); if (kpi) kpi.textContent = online;
     const lp = $("#livepill"); if (lp) lp.classList.toggle("off", online === 0);   // 0 = grey, no dot
     const v = Store.versions || {}, el = $("#appver");
+    if (v.panel) {            // panel came back on a different version → it was updated; prompt a hard reload
+      if (seenPanelVer && seenPanelVer !== v.panel) { hostUpdating = false; openUpdateDone(seenPanelVer, v.panel); }
+      seenPanelVer = v.panel;
+    }
     if (el && v.panel) {
       const tools = ["awg", "wg", "docker"].filter(k => v[k]).map(k => k + " " + v[k]);
       el.innerHTML = `<b>${esc(v.panel)}</b>` + (tools.length ? `<span class="tools"> · ${esc(tools.join(" · "))}</span>` : "");
