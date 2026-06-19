@@ -356,7 +356,8 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .qr-overlay-inner{display:flex;flex-direction:column;align-items:center;gap:16px}
 .qr-overlay-card{background:#fff;padding:18px;border-radius:12px;line-height:0}
 .qr-overlay-card .qrimg{display:block;width:min(92vw,92vh,920px);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
-.qr-overlay-cap{color:#fff;font-size:15px;font-weight:600;letter-spacing:.2px;text-align:center}
+.qr-overlay-cap{color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+.qr-overlay-cap .qrc-srv{font-family:var(--mono)}
 .deploy .qr-fail,.deploy .qr-none{width:240px;height:240px;max-width:60vw;display:flex;align-items:center;justify-content:center;text-align:center;
   font-size:11px;color:var(--faint);background:var(--surface-2);border-radius:var(--r-sm);padding:10px;line-height:1.4}
 .deploy .dmeta{flex:1;min-width:0;display:flex;flex-direction:column;gap:9px}

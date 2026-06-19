@@ -236,7 +236,7 @@ function qrZoom(conf, label) {
   const ov = document.createElement("div");
   ov.className = "qr-overlay";
   ov.innerHTML = `<div class="qr-overlay-inner"><div class="qr-overlay-card">${img}</div>` +
-    `<div class="qr-overlay-cap">${label ? esc(label) : "Scan in WireGuard / AmneziaWG"}</div></div>`;
+    `<div class="qr-overlay-cap">${label || "Scan in WireGuard / AmneziaWG"}</div></div>`;
   const onKey = e => { if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); close(); } };
   function close() { try { ov.remove(); } catch (_) {} if (qrZoomEl === ov) qrZoomEl = null; document.removeEventListener("keydown", onKey, true); }
   ov.onclick = close;
@@ -1540,7 +1540,11 @@ function TargetCard({ peer, t, bare }) {
   const obs = lt.observed;
   const tps = turnProxiesFor(t.node, t.iface);
   const dnode = Store.nodeName(t.node);
-  const label = (peer.name || "peer") + " · " + dnode + "/" + t.iface;
+  // zoom caption: username + title (or "Unassigned"), then the server name (in its colour) + iface tag
+  const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
+  const ltype = (t.type || "").toLowerCase() === "awg" ? "awg" : "wg";
+  const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
+    + `<span class="qrc-srv" style="color:${col}">${esc(dnode)}</span><span class="tg tg-${ltype}">${esc(t.iface)}</span>`;
 
   return html`<div class="deploy">
     <div class="deploy-head"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a><${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>
