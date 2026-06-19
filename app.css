@@ -295,10 +295,9 @@ a.ifgroup-head:hover b{color:var(--brand)}
 /* ───── toolbar (users) ───── */
 .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .search{flex:1;min-width:180px;position:relative}
-/* full-width search bar above an in-panel grid (interface peers) */
-.ifsearch{padding:12px 14px;border-bottom:1px solid var(--line)}
-.ifsearch .search{width:100%;min-width:0}
-.ifsearch .search input{width:100%}
+/* compact search living in a panel header (interface peers), next to the title */
+.panel-head .search.hdr{flex:1;min-width:160px;max-width:380px;margin-left:6px}
+.panel-head .search.hdr input{height:32px}
 .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:.5;pointer-events:none}
 input,select{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);
   padding:9px 12px;font-family:var(--mono);font-size:13px;transition:border-color .15s,box-shadow .15s;width:100%}
@@ -639,9 +638,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .awg-f input{font-size:12px;padding:6px 8px}
 @media(max-width:560px){.awg-cols{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* interface public key inline next to its label with a small copy icon */
-.ipk-field{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ipk-field{display:flex;align-items:center;gap:10px}
 .ipk-field>label{margin:0;white-space:nowrap}
-.ipk-val{font-family:var(--mono);font-size:12px;color:var(--ink-2);word-break:break-all;min-width:0;flex:1}
+.ipk-field .grow{flex:1}
+.ipk-val{font-family:var(--mono);font-size:12px;color:var(--ink-2);word-break:break-all;min-width:0;text-align:right}
 .ipk-field .copybtn:hover{color:var(--ready)}
 @media(max-width:760px){.iface-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
@@ -750,7 +750,11 @@ a.tg:hover{filter:brightness(1.25)}
 .iconbtn:hover{color:var(--ink);background:var(--raise);border-color:var(--line-solid)}
 .iconbtn.danger:hover{color:var(--dangling);border-color:var(--dangling)}
 .linkbtn{background:none;border:0;color:var(--brand);cursor:pointer;padding:0;font:inherit}
-.cfgsheet{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:center}
+.cfgsheet .deploy{width:256px;flex:none}
+.cfgsheet .deploy .qr{flex:1;min-width:0}
+.cfgsheet .deploy .qr .qrimg{width:100%}
+.cfgsheet .deploy .acts{justify-content:center}
 @media(max-width:640px){.ug-head{flex-wrap:wrap}.pline{flex-wrap:wrap}.pl-acts{width:100%;justify-content:flex-end}}
 
 /* ───── login page ───── */

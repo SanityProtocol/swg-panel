@@ -136,12 +136,12 @@ const Ic = ({ i }) => html`<span class="ic" dangerouslySetInnerHTML=${{ __html: 
 
 // A titled, icon-headed group panel — the primary way related info is clustered
 // (server details / health / vitals / config). tone tints the icon square.
-function Panel({ icon, title, count, actions, tone, children, pad }) {
+function Panel({ icon, title, count, actions, tone, children, pad, lead }) {
   return html`<section class="panel">
     <div class="panel-head">
       ${icon ? html`<span class=${"panel-ic" + (tone ? " t-" + tone : "")}><${Ic} i=${icon}/></span>` : null}
       <h3>${title}</h3>${count != null ? html`<span class="panel-count">${count}</span>` : null}
-      <span class="grow"></span>${actions || null}
+      ${lead || null}<span class="grow"></span>${actions || null}
     </div>
     <div class=${"panel-body" + (pad === false ? " flush" : "")}>${children}</div>
   </section>`;
@@ -227,7 +227,9 @@ function QR({ conf, label, px }) {
   return html`<div class="qr" title="Tap to enlarge for scanning" onClick=${() => qrZoom(conf, label)}>
     <img class="qrimg" alt="config QR" src=${src}/></div>`;
 }
+let qrZoomEl = null;   // the open QR enlargement, if any — Esc collapses it (instead of closing the modal)
 function qrZoom(conf, label) {
+  if (qrZoomEl) { try { qrZoomEl.remove(); } catch (_) {} qrZoomEl = null; }
   let img;
   try { img = `<img class="qrimg" alt="config QR" src="${qrDataURL(conf, 920)}">`; }
   catch (e) { img = '<div class="qr-fail">config too large to encode</div>'; }
@@ -235,7 +237,11 @@ function qrZoom(conf, label) {
   ov.className = "qr-overlay";
   ov.innerHTML = `<div class="qr-overlay-inner"><div class="qr-overlay-card">${img}</div>` +
     `<div class="qr-overlay-cap">${label ? esc(label) : "Scan in WireGuard / AmneziaWG"}</div></div>`;
-  ov.onclick = () => ov.remove();
+  const onKey = e => { if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); close(); } };
+  function close() { try { ov.remove(); } catch (_) {} if (qrZoomEl === ov) qrZoomEl = null; document.removeEventListener("keydown", onKey, true); }
+  ov.onclick = close;
+  document.addEventListener("keydown", onKey, true);
+  qrZoomEl = ov;
   document.body.appendChild(ov);
 }
 
@@ -963,8 +969,8 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <//>` : null}
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
+        lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
         actions=${html`<button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> Add peer</button>`}>
-      <div class="ifsearch"><div class="search"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div></div>
       <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q}/>
     <//>
 
@@ -1032,7 +1038,7 @@ function EditIfaceSheet({ node, iface }) {
     ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
       <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
       <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div></div>` : null}
-    <div class="field ipk-field"><label>Interface public key</label><span class="ipk-val">${meta.public_key || "—"}</span>${meta.public_key ? html`<button class="copybtn" title="Copy public key" onClick=${() => copy(meta.public_key, "Public key copied")}><${Ic} i="copy"/></button>` : null}</div>
+    <div class="field ipk-field"><label>Public key</label><span class="grow"></span><span class="ipk-val">${meta.public_key || "—"}</span>${meta.public_key ? html`<button class="copybtn" title="Copy public key" onClick=${() => copy(meta.public_key, "Public key copied")}><${Ic} i="copy"/></button>` : null}</div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -1255,7 +1261,9 @@ function ConnectionsScreen() {
 const usersFilter = { text: "" };
 // A peer's configs as a modal: one QR/download card per target (reuses TargetCard).
 function openPeerConfigs(peer) {
-  openModal(html`<${Sheet} title=${"Configs · " + (peer.title || peer.name || "peer")}>
+  const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per row; the modal sizes to fit
+  const width = cols * 256 + (cols - 1) * 14 + 40;
+  openModal(html`<${Sheet} title=${"Configs · " + (peer.title || peer.name || "peer")} width=${width}>
     <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}</div>
   <//>`);
 }
@@ -1889,7 +1897,7 @@ function AccountSheet() {
 // `onClose` is the single dismiss target for EVERY exit path — ✕, Esc, overlay-click, the discard
 // confirm. Openers pass the place to return to (e.g. reopen the peer view); default just closes.
 // Cancel/Save buttons in a sheet's foot should call the same target so all paths land identically.
-function Sheet({ title, children, foot, onClose }) {
+function Sheet({ title, children, foot, onClose, width }) {
   onClose = onClose || closeModal;
   const ref = useRef(null);
   const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
@@ -1908,6 +1916,7 @@ function Sheet({ title, children, foot, onClose }) {
     const first = root.querySelector("[autofocus]") || root.querySelector("input,textarea,select,button.btn-primary");
     if (first) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
     const onKey = e => {
+      if (qrZoomEl) return;   // a QR enlargement is open — let it handle Esc (collapse it, keep the modal)
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryClose(); return; }
       if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
         const primary = root.querySelector(".sheet-foot .btn-primary:not([disabled])") || root.querySelector(".btn-primary:not([disabled])");
@@ -1931,7 +1940,7 @@ function Sheet({ title, children, foot, onClose }) {
   }, []);
 
   return html`<div class="overlay show" onClick=${e => { if (e.target.classList.contains("overlay")) tryClose(); }}>
-    <div class="sheet" role="dialog" aria-modal="true" ref=${ref}>
+    <div class="sheet" role="dialog" aria-modal="true" ref=${ref} style=${width ? "width:" + width + "px;max-width:calc(100vw - 32px)" : ""}>
       <div class="sheet-head"><h3>${title}</h3><button class="x" onClick=${tryClose}>×</button></div>
       <div class="sheet-body">${children}</div>
       <div class="sheet-foot">${discard
@@ -2422,7 +2431,7 @@ function EditPeerSheet({ peer, focus, done }) {
   };
 
   return html`<${Sheet} title=${"Edit peer"} onClose=${done}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Copy to interface</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
@@ -2452,10 +2461,6 @@ function EditPeerSheet({ peer, focus, done }) {
           <div class="field"><label>Persistent keepalive (s)</label><input class=${errs.keepalive ? "bad" : ""} value=${keepalive} onInput=${e => setKeepalive(e.target.value)} placeholder="25"/><div class=${"hint" + (errs.keepalive ? " err" : "")}>${errs.keepalive || "0 disables · blank = 25."}</div></div>
         </div>
       <//>`}
-    <div class="editrow">
-      <button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Copy to interface</button>
-      <button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>
-    </div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
