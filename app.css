@@ -455,13 +455,11 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nodegrid{display:flex;flex-direction:column;gap:10px}
 .ncard{display:flex;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .ncard.removing{opacity:.82;border-style:dashed}
-.ncard-body{flex:1;min-width:0;padding:16px 16px 17px;transition:background .15s}
+.ncard-body{flex:1;min-width:0;padding:15px 16px;display:flex;align-items:center;gap:22px;transition:background .15s}
 .ncard-body:hover{background:var(--surface-2)}
-.ncard .ntop{display:flex;align-items:center;gap:9px;margin-bottom:11px}
-.ncard .nname{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink)}
+.ncard .nident{display:flex;align-items:center;gap:9px;flex:0 0 250px;min-width:0}
+.ncard .nname{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ncard-body:hover .nname{color:var(--brand)}
-.ncard .nsync{font-size:11.5px;white-space:nowrap}
-.ncard .ntop .rowarrow{color:var(--faint)}
 .ncard .grow{flex:1}
 .nstat{display:inline-flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;font-family:var(--mono)}
 .nstat::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
@@ -469,15 +467,18 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nstat.offline{color:var(--unknown)}
 .nstat.dangling{color:var(--pending)}
 .b-removing{background:rgba(226,200,74,.13);color:var(--removing)}
-.nmeta{display:grid;grid-template-columns:15fr 20fr 15fr 20fr 30fr;gap:11px 16px;align-items:start}
+.nmeta{flex:1;min-width:0;display:grid;grid-template-columns:15fr 20fr 15fr 20fr 30fr;gap:6px 18px;align-items:start}
 .nm-item{display:flex;flex-direction:column;gap:6px;min-width:0}
 .nm-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}
 .nm-v{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
+.nm-v small{color:var(--faint)}
 .nm-v .down{color:var(--online)} .nm-v .up{color:var(--ready)}
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
 .nm-cpu .hm-bar{flex:1;min-width:24px}
 .nm-cpu .nm-v{flex:none}
 .nacts{display:flex;align-items:center;gap:4px;padding:0 12px;background:transparent}
+/* one-line band only has room on wide cards — stack identity over metrics when narrow */
+@media(max-width:1000px){.ncard-body{flex-direction:column;align-items:stretch;gap:13px}.ncard .nident{flex:none}}
 @media(max-width:680px){.ncard{flex-direction:column}.nacts{border-left:none;border-top:1px solid var(--line);justify-content:flex-end;padding:8px 12px}}
 .btn-danger{background:rgba(240,89,107,.1);color:var(--dangling);border:1px solid rgba(240,89,107,.32);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
 .btn-danger:hover{background:rgba(240,89,107,.2)}
