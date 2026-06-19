@@ -898,8 +898,9 @@ function NodeDetail({ node: rawName }) {
               const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
               const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
               const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
-              return html`<a class="ifcard" href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span></div>
+              const deleting = (nrec.deleting || []).includes(ifn);
+              return html`<a class=${"ifcard" + (deleting ? " pending" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>deleting</span>` : null}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
