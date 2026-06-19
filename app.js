@@ -229,7 +229,7 @@ function QR({ conf, label, px }) {
 }
 function qrZoom(conf, label) {
   let img;
-  try { img = `<img class="qrimg" alt="config QR" src="${qrDataURL(conf, 700)}">`; }
+  try { img = `<img class="qrimg" alt="config QR" src="${qrDataURL(conf, 920)}">`; }
   catch (e) { img = '<div class="qr-fail">config too large to encode</div>'; }
   const ov = document.createElement("div");
   ov.className = "qr-overlay";

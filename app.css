@@ -355,7 +355,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .qr-overlay{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:24px}
 .qr-overlay-inner{display:flex;flex-direction:column;align-items:center;gap:16px}
 .qr-overlay-card{background:#fff;padding:18px;border-radius:12px;line-height:0}
-.qr-overlay-card .qrimg{display:block;width:min(82vw,82vh,640px);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
+.qr-overlay-card .qrimg{display:block;width:min(92vw,92vh,920px);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
 .qr-overlay-cap{color:#fff;font-size:15px;font-weight:600;letter-spacing:.2px;text-align:center}
 .deploy .qr-fail,.deploy .qr-none{width:240px;height:240px;max-width:60vw;display:flex;align-items:center;justify-content:center;text-align:center;
   font-size:11px;color:var(--faint);background:var(--surface-2);border-radius:var(--r-sm);padding:10px;line-height:1.4}
@@ -700,7 +700,7 @@ a.tg:hover{filter:brightness(1.25)}
 
 /* ───── inline usage bar (rows) ───── */
 .usebar{display:inline-flex;align-items:center;gap:9px}
-.usebar-t{width:56px;height:6px;border-radius:4px;background:#0A0F18;overflow:hidden;flex:none}
+.usebar-t{width:56px;height:6px;border-radius:4px;background:#0A0F18;overflow:hidden;flex:none;display:flex;justify-content:flex-end}
 .usebar-t i{display:block;height:100%;border-radius:4px;transition:width .6s var(--ease)}
 .usebar-n{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
 .usebar-n small{color:var(--faint);font-size:10.5px}
