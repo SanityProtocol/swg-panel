@@ -702,8 +702,25 @@ def _hrrd_ok(path):
         return False
 
 
-def _hrrd_put(f, base, slots, bucket, cpu, mem, disk, rx, tx):
-    f.seek(base + (bucket % slots) * HRRD_SLOT.size)
+def _hrrd_mx(new, old):           # peak of two pct bytes, ignoring the NA sentinel
+    if new == HRRD_NA: return old
+    if old == HRRD_NA: return new
+    return max(new, old)
+
+
+def _hrrd_put(f, base, slots, bucket, cpu, mem, disk, rx, tx, merge=False):
+    off = base + (bucket % slots) * HRRD_SLOT.size
+    if merge:
+        # same bucket still in this slot → keep the peak so sub-bucket spikes survive the
+        # coarser downsample (the hour ring is 1 sample/hour; last-write-wins would hide them).
+        f.seek(off)
+        cur = f.read(HRRD_SLOT.size)
+        if len(cur) == HRRD_SLOT.size:
+            b0, c0, m0, d0, rx0, tx0 = HRRD_SLOT.unpack(cur)
+            if b0 == (bucket & 0xFFFFFFFF):
+                cpu, mem, disk = _hrrd_mx(cpu, c0), _hrrd_mx(mem, m0), _hrrd_mx(disk, d0)
+                rx, tx = max(int(rx), rx0), max(int(tx), tx0)
+    f.seek(off)
     f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF,
                            min(max(int(rx), 0), HRRD_U32), min(max(int(tx), 0), HRRD_U32)))
 
@@ -719,7 +736,7 @@ def hrrd_update(path, ts, cpu, mem, disk, rx=0, tx=0):
         with contextlib.suppress(OSError):
             with open(path, "r+b") as f:
                 _hrrd_put(f, HRRD_HEAD.size, HRRD_SLOTS, ts // HRRD_STEP, cpu, mem, disk, rx, tx)   # minute ring
-                _hrrd_put(f, HRRD_HBASE, HRRD_HSLOTS, ts // HRRD_HSTEP, cpu, mem, disk, rx, tx)     # hour ring
+                _hrrd_put(f, HRRD_HBASE, HRRD_HSLOTS, ts // HRRD_HSTEP, cpu, mem, disk, rx, tx, merge=True)  # hour ring (peak-consolidated)
 
 
 def hrrd_read(path, want=HRRD_VIEW, hourly=False):
