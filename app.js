@@ -852,6 +852,10 @@ function NodeDetail({ node: rawName }) {
         ${nrec.updating ? html`<span class="livepill upd-busy">updating… <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
           : nrec.outdated ? html`<button class="livepill updpill" onClick=${() => updateNode(nrec)} title="Update this node">update node to <b>${nrec.latest || "?"}</b></button>`
           : html`<button class="iconbtn" title="Check for updates" onClick=${checkForUpdate}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
+        <span class="dh-sep"></span>
+        <button class="iconbtn" title="Edit node" onClick=${() => openNodeEdit(nrec)}><${Ic} i="pencil"/></button>
+        <button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>
+        <button class="iconbtn danger" title=${nrec.removing ? "Force remove node" : "Remove node"} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
       </div>
     </div>
 

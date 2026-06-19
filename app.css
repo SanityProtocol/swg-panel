@@ -346,7 +346,8 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .detail-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:22px}
 .detail-head:has(+ .noderibbon){margin-bottom:14px}   /* node detail: space between the title and the tags/sync ribbon */
 .detail-head .title{display:flex;align-items:center;gap:12px}
-.dh-ver{display:flex;align-items:center;gap:10px;align-self:center;margin-right:-4px}   /* version + check/update, level with the title (nudged right to align) */
+.dh-ver{display:flex;align-items:center;gap:8px;align-self:center;margin-right:-4px}   /* version + check/update + node controls, level with the title */
+.dh-sep{width:1px;height:18px;background:var(--line-solid);margin:0 3px}
 .dh-ver .nm-ver{margin-left:0}
 .upd-busy{pointer-events:none;cursor:default;color:var(--partial);border-color:color-mix(in srgb,var(--partial) 45%,var(--line-solid))}
 .upd-busy .updspin{animation:spin .8s linear infinite;transform-origin:center;margin-left:1px}
