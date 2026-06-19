@@ -413,6 +413,40 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo):
     return res
 
 
+def onboard_ifaces(node_cfg, onboard):
+    """Add panel-requested interfaces to this node's managed set (config.json) when they exist
+    locally — for a wg/awg interface the panel didn't auto-detect. Once added, build_snapshot
+    reports it and the panel closes the request (no separate ack needed). Only ever on a 200."""
+    res = {"added": [], "errors": []}
+    if not onboard:
+        return res
+    ifaces = node_cfg.setdefault("interfaces", {})
+    changed = False
+    for iface, want in onboard.items():
+        if iface in ifaces:                 # already managed — nothing to do (panel will clear it)
+            continue
+        cmd = want.get("cmd") or ["awg"]
+        conf = want.get("conf") or ""
+        try:
+            if not conf or not os.path.exists(conf):
+                res["errors"].append(f"{iface}: conf not found ({conf})"); continue
+            run(cmd + ["show", iface, "dump"])      # raises if the interface isn't actually up
+        except Exception as e:
+            res["errors"].append(f"{iface}: {e}"); continue
+        ifaces[iface] = {"cmd": cmd, "conf": conf}
+        changed = True
+        res["added"].append(iface)
+    if changed:
+        try:
+            tmp = CONFIG_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(node_cfg, f, indent=2)
+            os.replace(tmp, CONFIG_PATH)
+        except Exception as e:
+            res["errors"].append(f"persist config.json: {e}")
+    return res
+
+
 # ───────────────────────── main loop ─────────────────────────
 
 def main():
@@ -437,11 +471,12 @@ def main():
             snap = build_snapshot(node_cfg, online_max, last_samples)
             status, reply = post_json(url, token, {"snapshot": snap}, panel)
             if status == 200 and isinstance(reply.get("desired"), dict):
+                ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 r = reconcile(node_cfg, reply["desired"], agent, sudo)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)
-                if r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]:
+                if r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"] or ob["added"] or ob["errors"]:
                     print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} "
-                          f"errors={(r['errors'] + ri['errors'])[:3]}", flush=True)
+                          f"onboard+{ob['added']} errors={(r['errors'] + ri['errors'] + ob['errors'])[:3]}", flush=True)
                 interval = reply.get("interval", interval)
             elif status == 0:
                 print("sync error:", reply.get("error"), flush=True)

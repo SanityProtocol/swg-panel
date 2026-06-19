@@ -222,6 +222,9 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 @media(max-width:1000px){.ifgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.ifgrid{grid-template-columns:1fr}}
 .ifcard{display:block;border:1px solid var(--line-solid);border-radius:var(--r);padding:14px;background:var(--surface-2);text-decoration:none;color:inherit;transition:border-color .15s var(--ease),transform .15s var(--ease)}
+.ifcard.pending{border-style:dashed;opacity:.85}
+.ifcard.pending .tg-warn svg{width:11px;height:11px;margin-right:3px}
+.chiprow{display:flex;gap:8px}
 a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
 .ifcard.tp{cursor:default}
 .ifcard-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}

@@ -866,6 +866,7 @@ def api(method, path, qs, body, deps):
                         "health": snap.get("health"),     # per-node load/mem/disk/uptime (additive)
                         "health_history": hh,             # recent cpu/mem/disk % series (RRD-style ring)
                         "health_live": hl,                # raw per-sync samples for the LIVE view (5s)
+                        "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 
@@ -1429,6 +1430,29 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Updated interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "override": ov}}
 
+    if method == "POST" and path == "/api/iface/onboard":
+        # Ask a node to start managing an existing wg/awg interface the panel didn't auto-detect.
+        # The node pulls this on its next sync, adds it to its config if the interface really exists,
+        # and then reports it in its snapshot (which closes the request). Endpoint host is a panel-
+        # side config-render override (the node only needs the tool + .conf path).
+        nid = body.get("node") or ""
+        iface = (body.get("iface") or "").strip()
+        conf = (body.get("conf") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not iface or " " in iface or "/" in iface:
+            return 400, {"ok": False, "error": "interface name is required (no spaces or /)", "code": "bad_request"}
+        if not conf or " " in conf or not conf.startswith("/"):
+            return 400, {"ok": False, "error": "an absolute config path is required", "code": "bad_request"}
+        cmd = ["wg"] if (body.get("protocol") or "awg").lower() == "wg" else ["awg"]
+        nodes[nid].setdefault("onboard", {})[iface] = {"cmd": cmd, "conf": conf}
+        eh = (body.get("endpoint_host") or "").strip()
+        if eh:
+            nodes[nid].setdefault("ifaces", {}).setdefault(iface, {})["endpoint_host"] = eh
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Onboarding interface", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
     if method == "POST" and path == "/api/nodes/rotate":
         nid = body.get("id") or ""
         if nid not in nodes:
@@ -1647,8 +1671,20 @@ class Handler(BaseHTTPRequestHandler):
                 d["awg_params"] = ov["awg_params"]
             if d:
                 desired_ifaces[ifn] = d
+        # close onboard requests for interfaces the node now reports (it added them on its side)
+        ob = node.get("onboard") or {}
+        if ob:
+            present = set((snap.get("interfaces") or {}).keys())
+            remaining = {k: v for k, v in ob.items() if k not in present}
+            if remaining != ob:
+                node["onboard"] = remaining
+                if not remaining:
+                    node.pop("onboard", None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
-        return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces, "interval": interval})
+        return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
+                                "onboard": node.get("onboard") or {}, "interval": interval})
 
     def _node_goodbye(self):
         # The node's uninstaller signs off here (its bearer token) so the panel can cleanly drop

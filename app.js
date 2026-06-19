@@ -280,6 +280,7 @@ const api = {
   peerAdopt(b) { return this.post("/api/peers/adopt", b); },
   peerSaveConfig(b) { return this.post("/api/peers/save-config", b); },
   ifaceUpdate(b) { return this.post("/api/iface/update", b); },
+  ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
 };
 
 // ───────────────────────── store + reactive bus ─────────────────────────
@@ -864,23 +865,28 @@ function NodeDetail({ node: rawName }) {
       <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
     <//>` : null}
 
-    <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}>
-      ${metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
-        : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
-        : !Object.keys(meta).length ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
-        : html`<div class="ifgrid">${Object.keys(meta).map(ifn => {
-            const m = meta[ifn];
-            const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
-            const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
-            const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
-            return html`<a class="ifcard" href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-              <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span></div>
-              <div class="ifcard-rows">
-                <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
-                <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
-                <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length ? html`<${UsageBar} value=${onlc} total=${ps.length}/>` : html`<span class="faint">none</span>`}</span></div>
-              </div></a>`;
-          })}</div>`}
+    <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}
+        actions=${html`<button class="btn btn-mini" onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load interface</button>`}>
+      ${(() => { const pending = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
+        const pcards = pending.map(ifn => html`<div class="ifcard pending" key=${"ob:" + ifn}>
+          <div class="ifcard-top"><span class="iftype turn">load</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>onboarding</span></div>
+          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to add it on its next sync…</span></div></div></div>`);
+        return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
+          : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
+          : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
+          : html`<div class="ifgrid">${Object.keys(meta).map(ifn => {
+              const m = meta[ifn];
+              const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
+              const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
+              const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
+              return html`<a class="ifcard" href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span></div>
+                <div class="ifcard-rows">
+                  <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
+                  <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
+                  <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length ? html`<${UsageBar} value=${onlc} total=${ps.length}/>` : html`<span class="faint">none</span>`}</span></div>
+                </div></a>`;
+            })}${pcards}</div>`; })()}
     <//>
 
     ${snap && (snap.turn_proxies || []).length ? html`<${Panel} icon="relay" title="Turn proxies" tone="turn" count=${snap.turn_proxies.length}>
@@ -999,6 +1005,40 @@ function OrphanRow({ o }) {
 // Edit an interface: the Endpoint IP (what clients dial — config-facing only) and the Listen
 // port (pushed to the node's wgXX.conf — the interface rebinds to it; peers are untouched and
 // reconnect via the new port). Default DNS / MTU seed new peers. Interface key shown read-only.
+// Ask the node to manage an existing wg/awg interface the panel didn't auto-detect. The node only
+// needs the tool (wg/awg) + the .conf path; the public endpoint is a panel-side render override.
+function openOnboardIface(node) { openModal(html`<${OnboardIfaceSheet} node=${node}/>`); }
+function OnboardIfaceSheet({ node }) {
+  const [iface, setIface] = useState(""); const [proto, setProto] = useState("awg");
+  const [conf, setConf] = useState(""); const [host, setHost] = useState("");
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const confPh = proto === "wg" ? "/etc/wireguard/wg0.conf" : "/etc/amnezia/amneziawg/awg0.conf";
+  const save = async () => {
+    if (!iface.trim() || /[\s/]/.test(iface.trim())) return setMsg({ k: "err", t: "Interface name is required (no spaces or /)." });
+    if (!conf.trim().startsWith("/")) return setMsg({ k: "err", t: "Enter the absolute path to the interface's .conf." });
+    setBusy(true); setMsg({ k: "work", t: "requesting…" });
+    const r = await api.ifaceOnboard({ node, iface: iface.trim(), protocol: proto, conf: conf.trim(), endpoint_host: host.trim() });
+    if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to request onboarding." }); }
+    closeModal(); await Store.poll(); toast("Onboarding requested — the node adds it on its next sync.", "ok");
+  };
+  return html`<${Sheet} title="Load interface"
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Request</button></>`}>
+    <div class="iface-intro">
+      <div>Have the node start managing an existing wg/awg interface the panel didn't pick up.</div>
+      <div>The node only needs the tool and the interface's .conf path — it reads the rest (keys, subnet, AWG params) and its existing peers show up as adoptable.</div>
+      <div>It's applied on the node's next sync, then the interface appears here.</div>
+    </div>
+    <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
+    <div class="field"><label>Protocol</label>
+      <div class="chiprow">
+        <button class=${"chip" + (proto === "awg" ? " on" : "")} onClick=${() => setProto("awg")}>AmneziaWG</button>
+        <button class=${"chip" + (proto === "wg" ? " on" : "")} onClick=${() => setProto("wg")}>WireGuard</button>
+      </div></div>
+    <div class="field"><label>Config path</label><input value=${conf} onInput=${e => setConf(e.target.value)} placeholder=${confPh} autocomplete="off"/></div>
+    <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
 function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
 function EditIfaceSheet({ node, iface }) {
   const meta = Store.ifaceMeta(node, iface) || {};
