@@ -2294,30 +2294,26 @@ function EditPeerSheet({ peer, focus, done }) {
 function SwatchPicker({ value, onChange }) {
   return html`<div class="swrow">
     ${SWATCHES.map(c => html`<button type="button" class=${"swopt " + (c.toLowerCase() === (value || "").toLowerCase() ? "sel" : "")} style=${{ background: c }} title=${c} onClick=${() => onChange(c)}></button>`)}
-    <label class="swopt custom" style=${{ background: value }} title="Custom colour — full palette">
-      <span class="swdrop"><${Ic} i="plus"/></span>
+    <label class="swopt custom" title="Custom colour — full palette">
       <input type="color" value=${value} onInput=${e => onChange(e.target.value)}/>
     </label>
   </div>`;
 }
 function openNodeCreate() { openModal(html`<${NodeCreateSheet}/>`); }
 function NodeCreateSheet() {
-  const [name, setName] = useState(""); const [ep, setEp] = useState(""); const [color, setColor] = useState(SWATCHES[0]); const [msg, setMsg] = useState(null);
+  const [name, setName] = useState(""); const [color, setColor] = useState(SWATCHES[0]); const [msg, setMsg] = useState(null);
   const nameBad = name.trim() && !V.nodeName(name);
-  const epBad = ep.trim() && !V.hostOrIp(ep.trim());
   const create = async () => {
     if (!name.trim()) return setMsg({ k: "err", t: "Give the node a name." });
     if (!V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
-    if (ep.trim() && !V.hostOrIp(ep.trim())) return setMsg({ k: "err", t: "Endpoint must be a hostname or IP." });
     setMsg({ k: "work", t: "creating…" });
-    const r = await api.nodeCreate({ name: name.trim(), endpoint_host: ep.trim(), color });
+    const r = await api.nodeCreate({ name: name.trim(), endpoint_host: "", color });
     if (!r.ok) return setMsg({ k: "err", t: r.error || "couldn't create node" });
     await Store.poll(); openModal(html`<${NodeTokenSheet} name=${r.data.name} token=${r.data.token} isNew=${true}/>`);
   };
   return html`<${Sheet} title="Add node"
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${create}>Create node</button></>`}>
     <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — you can rename it anytime."}</div></div>
-    <div class="field"><label>Public endpoint (host or IP)</label><input class=${epBad ? "bad" : ""} value=${ep} onInput=${e => setEp(e.target.value)} placeholder="203.0.113.7" autocomplete="off"/><div class=${"hint" + (epBad ? " err" : "")}>${epBad ? "Must be a hostname or IP (no scheme/spaces)." : "The address clients dial to reach this node. You can change it later."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -2333,7 +2329,7 @@ function NodeTokenSheet({ name, token, isNew }) {
     <div class="field" style="margin-top:15px"><label>Enrollment token</label><div class="cmdrow"><div class="tokenbox">${token}</div><button class="copyaction" onClick=${() => copy(token, "Copied")}><${Ic} i="copy"/> Copy</button></div></div>
     <div class="field"><label>Run on the node — <span style="color:#60a5fa;font-weight:700">bare-metal</span></label><div class="cmdrow"><div class="tokenbox">${bare}</div><button class="copyaction" onClick=${() => copy(bare, "Copied")}><${Ic} i="copy"/> Copy</button></div></div>
     <div class="field"><label>Run on the node — <span style="color:#c084e8;font-weight:700">docker</span></label><div class="cmdrow"><div class="tokenbox">${docker}</div><button class="copyaction" onClick=${() => copy(docker, "Copied")}><${Ic} i="copy"/> Copy</button></div>
-      <div class="hint">Pick one. Both fetch the installer and prompt for the node's endpoint. The node appears once it syncs.</div></div>
+      <div class="hint">Pick one. Both fetch the installer and prompt for the node's endpoint.<br/>The node appears once it syncs.</div></div>
   <//>`;
 }
 function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }

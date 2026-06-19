@@ -499,9 +499,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .swrow{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
 .swopt{width:28px;height:28px;border-radius:8px;cursor:pointer;border:2px solid transparent;box-shadow:inset 0 0 0 1px rgba(0,0,0,.25);padding:0;display:inline-flex;align-items:center;justify-content:center}
 .swopt.sel{border-color:var(--ink)}
-.swopt.custom{position:relative;color:rgba(255,255,255,.85);box-shadow:inset 0 0 0 1px rgba(0,0,0,.25),inset 0 0 0 2px rgba(255,255,255,.18)}
-.swopt.custom .swdrop{display:inline-flex;mix-blend-mode:difference;pointer-events:none}
-.swopt.custom .swdrop svg{width:14px;height:14px}
+/* the "full palette" swatch: a larger round colour-wheel that opens the native picker */
+.swopt.custom{position:relative;width:34px;height:34px;border-radius:50%;
+  background:conic-gradient(from 90deg,#f0596b,#f0913c,#e8c04b,#a3e635,#34d399,#22d3ee,#7dd3fc,#c084e8,#f0596b);
+  box-shadow:inset 0 0 0 2px var(--surface),inset 0 0 0 3px rgba(0,0,0,.25)}
 .swopt.custom input[type=color]{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;border:0;padding:0}
 
 /* node health meters */
