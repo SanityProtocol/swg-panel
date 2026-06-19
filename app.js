@@ -197,9 +197,10 @@ function parseFullConf(text) {
 function turnConf(baseConf, listen) { return baseConf.replace(/Endpoint\s*=\s*\S.*/m, "Endpoint = " + listen); }
 
 function downloadConf(text, base) {
-  const blob = new Blob([text], { type: "text/plain" });
+  // octet-stream (not text/plain) so the browser keeps the .conf name instead of appending .txt
+  const blob = new Blob([text], { type: "application/octet-stream" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-  a.download = base.replace(/[^\w.-]+/g, "_") + ".conf"; a.click();
+  a.download = base.replace(/[^\w.-]+/g, "_").replace(/\.(conf|txt)$/i, "") + ".conf"; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
@@ -348,12 +349,10 @@ function turnProxiesFor(node, iface) {
 function rerenderConf(text, node, iface) {
   if (!text) return text;
   const meta = Store.ifaceMeta(node, iface);
-  if (!meta || !meta.public_key) return text;
-  const c = parseFullConf(text);
-  if (!c.privkey) return text;
-  return buildConf({ privkey: c.privkey, address: c.address, dns: c.dns, mtu: c.mtu,
-    awg_params: meta.awg_params, server_pubkey: meta.public_key, psk: c.psk,
-    endpoint: meta.endpoint, allowed: c.allowed, keepalive: c.keepalive });
+  if (!meta || !meta.endpoint) return text;
+  // swap ONLY the Endpoint line to the interface's current endpoint — never rebuild the rest of
+  // the config (keys / AmneziaWG H,I params / DNS), so re-rendering can't malform it.
+  return text.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 " + meta.endpoint);
 }
 function getConfig(pubkey, node, iface) {
   const s = Store.sessionConfigs[pubkey];
