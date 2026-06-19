@@ -806,7 +806,6 @@ function NodeDetail({ node: rawName }) {
     <div class="detail-head">
       <div class="title"><h1>${dname}</h1><span class=${"tport" + (node.transport === "https" ? " https" : "")}>${node.transport}</span>${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}</div>
       <div class="grow"></div>
-      <button class="btn btn-primary" onClick=${() => openCreatePeer({ node: name })}><span class="plus"><${Ic} i="plus"/></span> Add peer</button>
     </div>
 
     <div class="noderibbon">
@@ -1562,9 +1561,10 @@ function ThroughputChart({ rx, tx, h, head }) {
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   const hi = n ? Math.max(0, ...R, ...T) : 0;
   const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="grow"></span>${head || null}</div>`;
-  // No points yet, or a flat-zero window — collapse the tall empty chart to a slim idle strip.
-  if (n < 2 || hi <= 0)
-    return html`<div class="tp-wrap">${legend}<div class="tp-idle">${n < 2 ? "collecting throughput history…" : "no traffic in this window"}</div></div>`;
+  // Only collapse to a slim strip when there genuinely aren't enough points yet. A flat-zero
+  // window still draws the chart (baseline line) so LIVE/HOUR/DAY stay visually consistent.
+  if (n < 2)
+    return html`<div class="tp-wrap">${legend}<div class="tp-idle">collecting throughput history…</div></div>`;
   h = h || 60; const w = 100;
   // autoscale to the combined min/max so the curve is spiky/expressive, not a flat baseline
   const lo = Math.min(...R, ...T), range = (hi - lo) || 1, vpad = h * 0.12;
