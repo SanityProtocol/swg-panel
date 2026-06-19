@@ -1891,9 +1891,10 @@ async function checkForUpdate(e) {
   try {
     const r = await api.checkUpdate();
     await Store.poll();
-    if (r.ok && r.data && r.data.panel_outdated) toast("Update available — v" + r.data.latest_remote, "ok");
-    else if (r.ok) toast("You're on the latest version.", "ok");
-    else toast(r.error || "Couldn't check for updates.", "err");
+    if (!r.ok) toast(r.error || "Couldn't check for updates.", "err");
+    else if (r.data && !r.data.checked) toast("Couldn't reach the repo to check for updates.", "err");
+    else if (r.data && r.data.panel_outdated) toast("Update available — v" + r.data.latest_remote, "ok");
+    else toast("You're on the latest version (v" + ((r.data && r.data.latest_remote) || "?") + ").", "ok");
   } finally { if (btn) btn.classList.remove("checking"); }
 }
 function NodeCard({ n }) {
