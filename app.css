@@ -458,7 +458,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ncard-body{flex:1;min-width:0;padding:16px 16px 17px;transition:background .15s}
 .ncard-body:hover{background:var(--surface-2)}
 .ncard .ntop{display:flex;align-items:center;gap:9px;margin-bottom:19px}
-.ncard .nname{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink)}
+.ncard .nname{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink);min-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ncard-body:hover .nname{color:var(--brand)}
 .ncard .nsync{font-size:11.5px;white-space:nowrap}
 .ncard .ntop .rowarrow{color:var(--faint)}
@@ -471,7 +471,9 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .b-removing{background:rgba(226,200,74,.13);color:var(--removing)}
 /* metric row: label inline with its value; fixed-proportion columns so they line up
    across cards, with Throughput pinned to the right edge by the controls */
-.nmeta{display:grid;grid-template-columns:8fr 18fr 26fr 18fr 30fr;gap:10px 18px;align-items:baseline}
+/* peers/cpu/throughput size to their content (cpu = just the bar+value, no slack);
+   interfaces + turn split the rest, turn weighted so it has room for extra tags */
+.nmeta{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,1.9fr) auto auto;gap:10px 18px;align-items:baseline}
 .nm-item{display:flex;align-items:baseline;gap:8px;min-width:0}
 .nm-item:last-child{justify-self:end}
 .nm-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}
@@ -482,8 +484,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
 .nm-cpu .hm-bar{width:84px;flex:none}
 .nm-cpu .nm-v{flex:none}
-/* controls stacked vertically; grouped at the bottom (delete stays put, edit/rotate ride just above) */
-.nacts{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;padding:16px 12px;background:transparent}
+/* controls in a horizontal row, centred beside the card body */
+.nacts{display:flex;align-items:center;gap:4px;padding:0 12px;background:transparent}
 @media(max-width:680px){.ncard{flex-direction:column}.nacts{flex-direction:row;border-left:none;border-top:1px solid var(--line);justify-content:flex-end;padding:8px 12px}}
 .btn-danger{background:rgba(240,89,107,.1);color:var(--dangling);border:1px solid rgba(240,89,107,.32);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
 .btn-danger:hover{background:rgba(240,89,107,.2)}
