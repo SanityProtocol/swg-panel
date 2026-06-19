@@ -641,6 +641,9 @@ a.tg:hover{filter:brightness(1.25)}
 .tp-legend .sw{width:10px;height:3px;border-radius:2px;display:inline-block}
 .tp-legend .sw.rx{background:var(--brand)} .tp-legend .sw.tx{background:var(--ready)}
 .tp-legend .tp-peak{color:var(--faint)}
+/* idle/empty throughput: a slim strip instead of a tall empty chart */
+.tp-idle{height:34px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.04em;color:var(--faint);border:1px dashed var(--line);border-radius:8px;background:rgba(255,255,255,.012)}
 
 /* ───── ranked horizontal bars ───── */
 .rankcard{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);padding:6px 4px}
@@ -708,8 +711,10 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 
 /* ───── history range tabs (live/day/week/month) ───── */
 .chartwrap{display:flex;flex-direction:column;gap:8px}
-.chart-head{display:flex;align-items:center;gap:10px;min-height:22px}
+.chart-head{display:flex;align-items:center;gap:10px 18px;min-height:22px;flex-wrap:wrap}
 .chart-head .hist-cap{margin:0}
+/* node-detail Health: meters occupy ~60% (each ~20%), range tabs ride the same row, right */
+.chart-head .health-cols{flex:1 1 58%;min-width:300px;gap:14px 22px}
 .rangetabs{display:inline-flex;gap:2px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:2px}
 .rtab{cursor:pointer;border:0;background:transparent;color:var(--dim);font-family:var(--mono);font-size:10px;text-transform:uppercase;
   letter-spacing:.06em;padding:4px 9px;border-radius:6px;transition:all .14s}
@@ -718,7 +723,7 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 
 /* node-detail: push sync/uptime + chart range tabs to the right */
 .noderibbon .nr-sync{margin-left:auto}
-.chart-head{justify-content:flex-end}
+.chart-head .grow{flex:1}
 .tp-legend .grow{flex:1}
 /* plain (info) notice — used by the node-removal sheet */
 .notice{background:var(--surface-2);color:var(--ink-2)}

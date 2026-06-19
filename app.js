@@ -784,8 +784,10 @@ function NodeDetail({ node: rawName }) {
     </div>
 
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online">
-      <${NodeHealth} health=${nrec.health} node=${name} compact=${false} history=${false}/>
-      ${nrec.health_history ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} h=${52}/>` : null}
+      <${HealthAlerts} health=${nrec.health}/>
+      ${nrec.health_history
+        ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} h=${52} head=${html`<${HealthMeters} health=${nrec.health}/>`}/>`
+        : html`<${HealthMeters} health=${nrec.health}/>`}
     <//>` : null}
 
     ${nrec.health_history ? html`<${Panel} icon="gauge" title="Throughput">
@@ -1521,17 +1523,21 @@ function MiniArea({ points, color, h }) {
 function ThroughputChart({ rx, tx, h, head }) {
   const R = (rx || []).map(v => v || 0), T = (tx || []).map(v => v || 0);
   const n = Math.max(R.length, T.length);
-  if (n < 2) return html`<div class="tp-wrap"><div class="tp-legend"><span class="grow"></span>${head || null}</div><div class="harea-empty">collecting throughput history…</div></div>`;
+  const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
+  const hi = n ? Math.max(0, ...R, ...T) : 0;
+  const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="grow"></span>${head || null}</div>`;
+  // No points yet, or a flat-zero window — collapse the tall empty chart to a slim idle strip.
+  if (n < 2 || hi <= 0)
+    return html`<div class="tp-wrap">${legend}<div class="tp-idle">${n < 2 ? "collecting throughput history…" : "no traffic in this window"}</div></div>`;
   h = h || 60; const w = 100;
   // autoscale to the combined min/max so the curve is spiky/expressive, not a flat baseline
-  const lo = Math.min(...R, ...T), hi = Math.max(...R, ...T), range = (hi - lo) || 1, vpad = h * 0.12;
+  const lo = Math.min(...R, ...T), range = (hi - lo) || 1, vpad = h * 0.12;
   const X = i => i / (n - 1) * w, Y = v => h - vpad - ((v - lo) / range) * (h - 2 * vpad);
   const line = arr => arr.map((v, i) => X(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
   const rxLine = line(R), rxArea = "0," + h + " " + rxLine + " " + w + "," + h;
   const gid = "tp" + (ThroughputChart._n = (ThroughputChart._n || 0) + 1);
-  const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   return html`<div class="tp-wrap">
-    <div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="grow"></span>${head || null}</div>
+    ${legend}
     <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
       <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
         <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
@@ -1575,7 +1581,7 @@ function RankBars({ rows }) {
 // series already in /api/state; day/week/month are fetched on demand from /api/node-history.
 const HIST_RANGES = ["live", "hour", "day", "week", "month"];
 const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem", "disk", "rx", "tx"]) if (Array.isArray((s || {})[k])) o[k] = s[k].slice(-n); return o; };
-function RangedHistory({ node, kind, live, h }) {
+function RangedHistory({ node, kind, live, h, head }) {
   const [range, setRange] = useState("live");
   const [fetched, setFetched] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1594,18 +1600,16 @@ function RangedHistory({ node, kind, live, h }) {
       : html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs}/>`;
   }
   return html`<div class="chartwrap">
-    <div class="chart-head"><span class="grow"></span>${tabs}</div>
+    <div class="chart-head">${head || null}<span class="grow"></span>${tabs}</div>
     ${loading ? html`<div class="harea-empty">loading ${range}…</div>` : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h}/>`}
   </div>`;
 }
 
 // Per-node health: CPU / Memory / Disk on one row (each a third), with the CPU-load history
 // charted below. `history=false` omits the inline chart (node detail uses RangedHistory instead).
-function NodeHealth({ health, node, compact, history }) {
-  if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
-  const hh = (node && (Store.nodes || []).find(n => n.id === node) || {}).health_history || null;  // server-side RRD (node = id)
-  const cpuHist = (hh && Array.isArray(hh.cpu) && hh.cpu.length > 1) ? hh.cpu : null;
-  const alerts = healthAlerts(health);
+// The CPU/Memory/Disk meter row — reused standalone (as the head of the node-detail Health
+// chart row) and inside NodeHealth (overview cards).
+function healthCols(health) {
   const cols = [];
   if (Array.isArray(health.load)) {
     const ncpu = health.ncpu || 1, l1 = health.load[0] || 0;
@@ -1615,15 +1619,28 @@ function NodeHealth({ health, node, compact, history }) {
   if (m && m.total) cols.push({ label: "Memory", pct: m.used / m.total * 100, text: fmtBytes(m.used) + " / " + fmtBytes(m.total) });
   const d0 = (health.disk || [])[0];
   if (d0 && d0.total) cols.push({ label: "Disk", pct: d0.used / d0.total * 100, text: fmtBytes(d0.used) + " / " + fmtBytes(d0.total) });
+  return cols;
+}
+function HealthMeters({ health }) {
+  return html`<div class="health-cols">${healthCols(health).map(c => {
+    const p = Math.min(100, Math.max(0, c.pct || 0)), tn = htone(p);
+    return html`<div class="hcol">
+      <div class="hcol-top"><span class="hcol-l">${c.label}</span><span class="hcol-v">${c.text}</span></div>
+      <div class="hm-bar"><i class=${"hm-fill " + tn} style=${"width:" + p + "%"}></i></div>
+    </div>`;
+  })}</div>`;
+}
+function HealthAlerts({ health }) {
+  const alerts = healthAlerts(health);
+  return alerts.length ? html`<div class="halerts">${alerts.map(a => html`<span class=${"halert " + a.sev}><${Ic} i="warn"/> ${a.msg}</span>`)}</div>` : null;
+}
+function NodeHealth({ health, node, compact, history }) {
+  if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
+  const hh = (node && (Store.nodes || []).find(n => n.id === node) || {}).health_history || null;  // server-side RRD (node = id)
+  const cpuHist = (hh && Array.isArray(hh.cpu) && hh.cpu.length > 1) ? hh.cpu : null;
   return html`<div class="health">
-    ${alerts.length ? html`<div class="halerts">${alerts.map(a => html`<span class=${"halert " + a.sev}><${Ic} i="warn"/> ${a.msg}</span>`)}</div>` : null}
-    <div class="health-cols">${cols.map(c => {
-      const p = Math.min(100, Math.max(0, c.pct || 0)), tn = htone(p);
-      return html`<div class="hcol">
-        <div class="hcol-top"><span class="hcol-l">${c.label}</span><span class="hcol-v">${c.text}</span></div>
-        <div class="hm-bar"><i class=${"hm-fill " + tn} style=${"width:" + p + "%"}></i></div>
-      </div>`;
-    })}</div>
+    <${HealthAlerts} health=${health}/>
+    <${HealthMeters} health=${health}/>
     ${(history !== false && cpuHist) ? html`<div class="health-hist">
       <span class="hist-cap">CPU history</span>
       <${MiniArea} points=${cpuHist} color="var(--online)" h=${compact ? 36 : 52}/>
