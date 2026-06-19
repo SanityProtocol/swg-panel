@@ -1529,17 +1529,21 @@ function PeerCard({ peer }) {
 }
 
 function TargetCard({ peer, t, bare }) {
+  useStore();   // re-render on each poll so the status badge stays live (t is a snapshot from open)
   const [conf, setConf] = useState(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface, Store.configEpoch]);
+  // live target (status / observed) from the store, falling back to the passed-in snapshot
+  const ft = (Store.recon.peers.find(p => p.id === peer.id) || {}).targets;
+  const lt = (ft && ft.find(d => d.node === t.node && d.iface === t.iface)) || t;
   const col = Store.nodeColor(t.node);
-  const obs = t.observed;
+  const obs = lt.observed;
   const tps = turnProxiesFor(t.node, t.iface);
   const dnode = Store.nodeName(t.node);
   const label = (peer.name || "peer") + " · " + dnode + "/" + t.iface;
 
   return html`<div class="deploy">
-    <div class="deploy-head"><span class="nm" style=${"color:" + col}>${dnode}</span><${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface}/><span class="grow"></span><${Badge} s=${t.status}/></div>
+    <div class="deploy-head"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a><${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>
     <div class="deploy-body">
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? "loading…"
