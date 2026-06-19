@@ -57,6 +57,10 @@ NEW_VER="$(cat "$SRC/VERSION" 2>/dev/null || echo unknown)"
 $DRYRUN && info "DRY RUN — nothing will change."
 info "swg-panel update — latest is version $(col_v "$NEW_VER")"
 found=0
+# per-component outcome, printed as a summary at the end — so a multi-component box (e.g. a docker
+# master AND a bare-metal node on the same host) clearly shows EVERY component was considered.
+RESULTS=(); note(){ RESULTS+=("$*"); }
+pan_seen=no; nod_seen=no; doc_seen=no
 
 install_update_unit(){   # idempotent: wire one-click host self-update for an existing bare-metal panel
   local st="${STATE_DIR:-/var/lib/swg-panel}" usr="${PANEL_USER:-swgpanel}" trig
@@ -100,7 +104,7 @@ EOF
 
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if [ -f "$PANEL_DIR/swg-panel-server" ]; then
-  found=1
+  found=1; pan_seen=yes; pold="$(oldver "$PANEL_DIR")"
   if should_update "bare-metal panel" "$PANEL_DIR"; then
     info "updating bare-metal panel ($PANEL_DIR)"
     for f in swg-panel-server index.html app.css app.js reconcile.js; do
@@ -110,25 +114,27 @@ if [ -f "$PANEL_DIR/swg-panel-server" ]; then
     [ -d "$SRC/vendor" ] && { run mkdir -p "$PANEL_DIR/vendor"; run cp -a "$SRC/vendor/." "$PANEL_DIR/vendor/"; }
     run chmod 755 "$PANEL_DIR/swg-panel-server"; stamp "$PANEL_DIR"
     install_update_unit                              # ensure one-click host self-update is wired
-    run systemctl restart swg-panel-server && ok "panel updated + restarted" || warn "couldn't restart swg-panel-server"
-  fi
+    if run systemctl restart swg-panel-server; then ok "panel updated + restarted"; note "bare-metal panel: ${pold} → ${NEW_VER}"
+    else warn "couldn't restart swg-panel-server"; note "bare-metal panel: updated but RESTART FAILED"; fi
+  else note "bare-metal panel: unchanged (${pold})"; fi
 fi
 
 # ───────────────────────── bare-metal node daemon (node or master) ─────────────────────────
 if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
-  found=1
+  found=1; nod_seen=yes; nold="$(oldver "$NODED_DIR")"
   if should_update "bare-metal node" "$NODED_DIR"; then
     info "updating bare-metal node ($AGENT_DIR + $NODED_DIR)"
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-noded" ] && { run cp "$SRC/swg-noded" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-noded"; }
     stamp "$NODED_DIR"
-    run systemctl restart swg-noded && ok "node daemon updated + restarted" || warn "couldn't restart swg-noded"
-  fi
+    if run systemctl restart swg-noded; then ok "node daemon updated + restarted"; note "bare-metal node: ${nold} → ${NEW_VER}"
+    else warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal node: updated but RESTART FAILED"; fi
+  else note "bare-metal node: unchanged (${nold})"; fi
 fi
 
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
 if [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
-  found=1
+  found=1; doc_seen=yes
   # which profile is running? prefer the marker install-docker.sh wrote into .env, else sniff containers
   prof="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1)"
   if [ -z "$prof" ] && have docker; then
@@ -147,16 +153,16 @@ if [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
       done
       [ -d "$SRC/vendor" ] && run cp -a "$SRC/vendor" "$DOCKER_DIR/"
       [ -d "$SRC/docker" ] && run cp -a "$SRC/docker" "$DOCKER_DIR/"; stamp "$DOCKER_DIR"
-      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof up -d --build)"
-      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" up -d --build ) && ok "docker ($prof) rebuilt + restarted" || warn "compose rebuild failed — check $DOCKER_DIR"; fi
-    fi
+      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof up -d --build)"; note "docker ($prof): would rebuild"
+      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" up -d --build ) && { ok "docker ($prof) rebuilt + restarted"; note "docker ($prof): rebuilt"; } || { warn "compose rebuild failed — check $DOCKER_DIR"; note "docker ($prof): rebuild FAILED"; }; fi
+    else note "docker ($prof): unchanged"; fi
   else
     # prebuilt-image deployment (default) → just pull the newest image + recreate (no restaging)
     if confirm "Pull the latest image for $(col_l "docker ($prof)")?"; then
       info "pulling latest image + recreating ($DOCKER_DIR)"
-      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d)"
-      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" pull && $COMPOSE --profile "$prof" up -d ) && ok "docker ($prof) image pulled + recreated" || warn "compose pull/up failed — check $DOCKER_DIR"; fi
-    else warn "docker ($prof): skipped"; fi
+      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d)"; note "docker ($prof): would pull + recreate"
+      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" pull && $COMPOSE --profile "$prof" up -d ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
+    else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi
   fi
 fi
 
@@ -186,5 +192,10 @@ elif [ -d "$TURN_DIR" ]; then
 fi
 
 [ "$found" = 1 ] || die "no swg-panel install found (looked in $PANEL_DIR, $NODED_DIR, $DOCKER_DIR, $TURN_DIR)"
+# call out swg components that weren't present, so a partial-looking run is never a mystery
+[ "$pan_seen" = yes ] || note "bare-metal panel: not installed ($PANEL_DIR)"
+[ "$nod_seen" = yes ] || note "bare-metal node: not installed ($NODED_DIR)"
+[ "$doc_seen" = yes ] || note "docker: not installed ($DOCKER_DIR)"
 echo; ok "Update complete."
+if [ "${#RESULTS[@]}" -gt 0 ]; then echo; info "Summary (every component on this host):"; for r in "${RESULTS[@]}"; do echo "    • $r"; done; fi
 $DRYRUN && ok "DRY RUN done — nothing changed."
