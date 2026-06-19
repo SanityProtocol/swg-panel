@@ -1024,7 +1024,7 @@ function OrphanRow({ o }) {
 function openOnboardIface(node) { openModal(html`<${LoadIfaceSheet} node=${node}/>`); }
 function LoadIfaceSheet({ node }) {
   const [proto, setProto] = useState("awg");   // awg | wg | existing
-  const [iface, setIface] = useState("");
+  const [iface, setIface] = useState(""); const [subnet, setSubnet] = useState("");
   const [host, setHost] = useState(""); const [port, setPort] = useState("");
   const [dns, setDns] = useState("1.1.1.1"); const [mtu, setMtu] = useState("1280"); const [ka, setKa] = useState("25");
   const [conf, setConf] = useState("");
@@ -1042,9 +1042,10 @@ function LoadIfaceSheet({ node }) {
     } else {
       const nm = iface.trim();
       if (!nm || /[\s/]/.test(nm)) return fail("Interface name is required (no spaces or /).");
+      if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.");
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
       if (!api.ifaceCreate) { setBusy(false); return setMsg({ k: "work", t: "Creating a brand-new interface is being wired up — for now use “Existing unbound interface” to adopt one the node already runs." }); }
-      r = await api.ifaceCreate({ node, iface: nm, protocol: proto, endpoint_host: host.trim(),
+      r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: host.trim(),
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim() });
     }
     if (!r.ok) return fail(r.error || "Request failed.");
@@ -1069,6 +1070,7 @@ function LoadIfaceSheet({ node }) {
       <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
     <//>` : html`<${Fragment}>
       <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
+      <div class="field"><label>Tunnel subnet (CIDR)</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/><div class="hint">The server takes the first host (e.g. 10.8.0.1); peers get the rest.</div></div>
       <div class="row2">
         <div class="field"><label>Endpoint host / IP</label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/></div>
         <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
