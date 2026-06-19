@@ -2262,6 +2262,7 @@ function EditPeerSheet({ peer, focus, done }) {
   const [confs, setConfs] = useState({});            // "node|iface" -> conf text (those we can rebuild)
   const [dns, setDns] = useState(""); const [mtu, setMtu] = useState("1280");
   const [keepalive, setKeepalive] = useState("25"); const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
+  const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -2292,6 +2293,10 @@ function EditPeerSheet({ peer, focus, done }) {
       if (title.trim() !== (peer.title || "")) {
         const r = await api.peerUpdate({ peer_id: peer.id, title: title.trim() }); if (!r.ok) fails++;
       }
+      // staged assignment of a previously-unassigned peer — keep the key, just set the owner
+      if (peer.unassigned && userId && userId !== (peer.user_id || "")) {
+        const r = await api.peerUpdate({ peer_id: peer.id, user_id: userId }); if (!r.ok) fails++;
+      }
       // rebuild + persist each target's config (focus target gets the new address)
       for (const t of peer.targets) {
         const k = tkey(t.node, t.iface); const cur = confs[k];
@@ -2309,6 +2314,15 @@ function EditPeerSheet({ peer, focus, done }) {
       }
     } catch (e) { setBusy(false); return setMsg({ k: "err", t: String(e.message || e) }); }
     setBusy(false); Store.configEpoch++;
+    // an already-assigned peer changing owner is destructive (keys rotate) — confirm it now, on
+    // Save (so cancelling keeps the previous owner). Title/config above are already persisted.
+    const oldUid = peer.user_id || "", newUid = userId || "";
+    if (oldUid && newUid !== oldUid) {
+      await Store.poll();
+      const fresh = (Store.recon.peers.find(x => x.id === peer.id)) || peer;
+      const back = () => openEditPeer(fresh, focus, done);
+      return newUid ? confirmReassign(fresh, newUid, back) : confirmUnassign(fresh, back);
+    }
     toast(fails ? "Saved (some changes couldn't be persisted)." : "Peer updated.", fails ? "info" : "ok");
     done(); await Store.poll();
   };
@@ -2324,15 +2338,13 @@ function EditPeerSheet({ peer, focus, done }) {
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
-      <${UserPicker} value=${peer.user_id || ""} allowUnassigned=${!peer.unassigned}
-        onChange=${uid => {
-          if ((uid || "") === (peer.user_id || "")) return;
-          const back = () => openEditPeer(peer, focus, done);
-          if (!uid) return confirmUnassign(peer, back);                       // assigned → unassign (revokes)
-          if (peer.unassigned) { assignPeer(peer, uid); done(); return; }     // first assign — keep the key, no warning
-          confirmReassign(peer, uid, back);                                   // user → different user (rotates keys)
-        }}/>
-      <div class=${"hint"}>${peer.unassigned ? "Assigns this peer to a user — the existing key and config are kept." : "Reassigning rotates the keys: the current user loses access for good and the new user needs a freshly issued config."}</div></div>
+      <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
+      <div class=${"hint"}>${
+        peer.unassigned ? "Pick a user to assign this peer to — the existing key and config are kept, applied when you Save."
+        : (userId || "") === (peer.user_id || "") ? "Reassigning rotates the keys; you'll confirm on Save and the new user needs a fresh config."
+        : !userId ? "On Save you'll confirm unassigning — access is revoked and the keys rotate."
+        : "On Save you'll confirm reassigning — the current user loses access for good and the new user needs a fresh config."
+      }</div></div>
     ${ft ? html`<div class="field"><label>Address on ${Store.nodeName(ft.node)} · ${ft.iface}</label><input class=${ipBad ? "bad" : ""} value=${ip} onInput=${e => setIp(e.target.value)}/><div class=${"hint" + (ipBad ? " err" : "")}>${ipBad ? "Must be a valid IPv4 address." : "Changing this moves the peer's address on this interface."}</div></div>` : null}
     ${!loaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : !editable ? html`<div class="notice warn"><${Ic} i="warn"/><span>The client's private key isn't available, so DNS / MTU / routing can't be rebuilt${Store.storeConfigs ? "" : " (enable store_configs, or edit right after creating)"}. Title and address can still change.</span></div>`
