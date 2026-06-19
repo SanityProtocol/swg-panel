@@ -859,11 +859,12 @@ function NodeDetail({ node: rawName }) {
       <div class="ifgrid">${snap.turn_proxies.map(tp => {
         const lp = portOf(tp.connect);
         const fronted = meta ? Object.keys(meta).find(i => String(meta[i].listen_port) === lp) : null;
+        const ftype = (fronted && meta[fronted].awg_params && Object.keys(meta[fronted].awg_params).length) ? "awg" : "wg";
         return html`<div class="ifcard tp">
           <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span></div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
-            <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)}>${fronted}</a>` : (tp.connect || "—")}</span></div>
+            <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)}>${fronted}</a>` : (tp.connect || "—")}</span></div>
             ${tp.wrap_key ? html`<div class="ifrow"><span class="l">Wrap key</span><span class="r addr">${String(tp.wrap_key).slice(0, 8)}…<button class="copybtn" title="Copy wrap key" onClick=${() => copy(tp.wrap_key, "Wrap key copied")}><${Ic} i="copy"/></button></span></div>` : null}
           </div></div>`;
       })}</div>
@@ -889,33 +890,30 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const tps = turnProxiesFor(node, iface);
   const awg = meta && Object.keys(meta.awg_params || {}).length ? Object.entries(meta.awg_params).map(([k, v]) => k + "=" + v).join("  ") : "—";
   const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
+  // one {peer,target} row per peer on this interface, fed to the shared PeerGrid
+  const ifaceRows = rows.map(p => ({ p, t: p.targets.find(d => d.node === node && d.iface === iface) || {} }));
+  const ifaceShown = {};
+  for (const { p, t } of ifaceRows) (ifaceShown[p.id] = ifaceShown[p.id] || new Set()).add(tkey(t.node, t.iface));
 
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><span class="dot ${live ? "live" : "stale"}"></span><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span><span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span><span class="when">${onl} / ${peers.length} online</span></div>
       <div class="grow"></div>
       <button class="btn btn-primary" onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> Add peer</button>
     </div>
-    <div class="bigdots">
-      <span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>
-      <span class="when">${onl} / ${peers.length} online</span>
-    </div>
 
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
-      : html`<${Panel} icon="key" title="Interface" tone=${type === "awg" ? "" : "online"}
-          actions=${html`<span class=${"iftype " + type}>${type}</span>`}>
+      : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}>
         <dl class="dl">
-          <dt>Server key</dt><dd>${(meta.public_key || "—")} ${meta.public_key ? html`<button class="copybtn" title="Copy" onClick=${() => copy(meta.public_key, "Server key copied")}><${Ic} i="copy"/></button>` : ""}</dd>
           <dt>Endpoint</dt><dd>${meta.endpoint || "—"}</dd>
-          <dt>Subnet · port</dt><dd>${meta.subnet || "—"} · ${meta.listen_port || "—"}</dd>
           <dt>Server address</dt><dd>${meta.address || "—"}</dd>
           <dt>DNS</dt><dd>${(meta.dns || []).join(", ") || "—"}</dd>
-          <dt>AmneziaWG</dt><dd>${awg}</dd>
+          ${type === "awg" ? html`<dt>AmneziaWG</dt><dd>${awg}</dd>` : null}
         </dl>
       <//>`}
 
-    ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="warn" count=${tps.length}>
+    ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="turn" count=${tps.length}>
       <div class="ifgrid">${tps.map(tp => html`<div class="ifcard tp">
         <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span></div>
         <div class="ifcard-rows">
@@ -925,23 +923,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <//>` : null}
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}>
-      <table>
-        <thead><tr><th>Status</th><th>Peer</th><th>Address</th><th>User</th><th>Transport</th><th>Last</th><th></th></tr></thead>
-        <tbody>
-          ${rows.length ? rows.map(p => {
-            const t = p.targets.find(d => d.node === node && d.iface === iface) || {};
-            const obs = t.observed;
-            const u = p.user_id ? Store.user(p.user_id) : null;
-            return html`<tr key=${p.id} class="clk" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>
-              <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
-              <td data-label="Peer" class="c-name">${p.title ? html`<b>${p.title}</b>` : (p.name || html`<span class="faint">unassigned</span>`)}</td>
-              <td data-label="Address"><span class="addr">${t.ip || "—"}</span></td>
-              <td data-label="User">${u ? html`<a href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}>${u.name}</a>` : html`<span class="faint">—</span>`}</td>
-              <td data-label="Transport"><span class="when">${t.via === "turn" ? "via turn-proxy" : (t.via === "direct" ? "direct" : "—")}</span></td>
-              <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
-              <td data-label=""><span class="rowarrow"><${Ic} i="arrow"/></span></td></tr>`;
-          }) : html`<tr><td colspan="7" class="empty"><b>No peers on this interface</b>Add one to get started.</td></tr>`}
-        </tbody></table>
+      <${PeerGrid} rows=${ifaceRows} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=""/>
     <//>
 
     ${orphans.length ? html`<${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}>
@@ -984,6 +966,41 @@ function StoreOffBanner() {
     ${docker ? "Docker host" : "panel host"} to enable it (existing peers then need a one-time Rotate-keys to capture a config):
     <div class="cmdrow"><div class="tokenbox">${cmd}</div><button class="copyaction" onClick=${() => copy(cmd, "Command copied")}><${Ic} i="copy"/> Copy</button></div>
   </div></div>`;
+}
+// The shared peers grid — one row per (peer, target) deployment. Reused by the Peers screen and
+// the interface-detail screen so they're identical. `agg` adds the Server/IF column; `shownByPeer`
+// drives the "+N other deployments" badge; row click opens the peer-view popup.
+function PeerGrid({ rows, agg, node, iface, shownByPeer, q }) {
+  return html`<div class="tablewrap"><table class="peergrid">
+    <thead><tr><th>Status</th>${agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null}<th>User</th><th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
+    <tbody>
+      ${rows.length ? rows.map(({ p, t }) => {
+        const obs = t.observed;
+        const u = p.user_id ? Store.user(p.user_id) : null;
+        const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
+        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class="clk" onClick=${() => openPeerView(p.id, t.node, t.iface)}>
+          <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
+          ${agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
+            ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
+            ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
+          </div></td>` : null}
+          <td data-label="User" onClick=${e => e.stopPropagation()}>
+            ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
+                : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
+          <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
+          <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
+          <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
+          <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
+          <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} <span class="up">↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span></td>
+          <td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
+            <button class="iconbtn" title="Edit peer" onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
+            ${p.unassigned
+              ? html`<button class="iconbtn danger" title="Delete peer" onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
+              : html`<button class="iconbtn danger" title="Unassign peer" onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
+            <${RowError} k=${"peer:" + p.id}/>
+          </td></tr>`;
+      }) : html`<tr><td colspan=${agg ? 9 : 8} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
+    </tbody></table></div>`;
 }
 function PeersScreen() {
   useStore();
@@ -1045,36 +1062,7 @@ function PeersScreen() {
       ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
     </span><span class="count">${rows.length}</span></div>
-    <div class="tablewrap"><table class="peergrid">
-      <thead><tr><th>Status</th>${agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null}<th>User</th><th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
-      <tbody>
-        ${rows.length ? rows.map(({ p, t }) => {
-          const obs = t.observed;
-          const u = p.user_id ? Store.user(p.user_id) : null;
-          const hidden = p.targets.filter(d => !shownByPeer[p.id].has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
-          return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class="clk" onClick=${() => openPeerView(p.id, t.node, t.iface)}>
-            <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
-            ${agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
-              ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-              ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
-            </div></td>` : null}
-            <td data-label="User" onClick=${e => e.stopPropagation()}>
-              ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
-                  : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
-            <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
-            <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
-            <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
-            <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
-            <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} <span class="up">↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span></td>
-            <td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
-              <button class="iconbtn" title="Edit peer" onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
-              ${p.unassigned
-                ? html`<button class="iconbtn danger" title="Delete peer" onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
-                : html`<button class="iconbtn danger" title="Unassign peer" onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
-              <${RowError} k=${"peer:" + p.id}/>
-            </td></tr>`;
-        }) : html`<tr><td colspan=${agg ? 9 : 8} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
-      </tbody></table></div>
+    <${PeerGrid} rows=${rows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q}/>
 
     ${orphans.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged here</h2></div>
