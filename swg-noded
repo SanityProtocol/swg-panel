@@ -52,6 +52,8 @@ def _noded_version():
 
 
 NODED_VERSION = _noded_version()
+# bare-metal vs docker — reported so the panel can tag the node (containers carry /.dockerenv)
+NODE_KIND = "docker" if (os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")) else "baremetal"
 
 
 # ───────────────────────── parsing (pure) ─────────────────────────
@@ -339,7 +341,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             continue
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
-            "noded_version": NODED_VERSION}
+            "noded_version": NODED_VERSION, "kind": NODE_KIND}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap

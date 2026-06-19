@@ -142,6 +142,8 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
   border-radius:5px;padding:2px 6px;margin-left:2px}
 /* https transport gets a thin light-blue accent */
 .tport.https{color:#7DC4F0;border-color:rgba(125,196,240,.4);background:rgba(125,196,240,.08)}
+.tport.baremetal{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 42%,transparent);background:color-mix(in srgb,var(--brand) 9%,transparent)}
+.tport.docker{color:#B49BF7;border-color:rgba(180,155,247,.42);background:rgba(180,155,247,.09)}
 /* glowing "reporting" pill (after the transport tag) */
 .reporting{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;
   font-weight:600;color:var(--online);background:rgba(63,216,154,.12);padding:3px 9px 3px 8px;border-radius:99px}

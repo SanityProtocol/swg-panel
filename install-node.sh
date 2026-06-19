@@ -417,6 +417,12 @@ chmod 755 "$PREFIX$AGENT_DIR/swg-agent" "$PREFIX$NODED_DIR/swg-noded"; ok "insta
 [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$NODED_DIR/" || true   # version stamp (update.sh reports it)
 mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent" "$PREFIX/etc/swg-agent"
 
+# Pre-install wg + awg tools regardless of what interfaces (if any) are configured now — so creating
+# an interface later from the panel "just works" (the sandboxed agent can't apt-install at runtime).
+info "Installing WireGuard + AmneziaWG tools (for future interface creation)"
+ensure_wg_tools wg  || warn "wireguard tools not installed — wg interface creation will need them"
+ensure_wg_tools awg || warn "amneziawg tools not installed (the amnezia ppa is Ubuntu-only) — awg interface creation will need them"
+
 # ───────────────────────── config.json (pull-only HTTPS) ─────────────────────────
 IFJSON=""; sep=""
 for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
