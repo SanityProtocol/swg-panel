@@ -911,7 +911,8 @@ def api(method, path, qs, body, deps):
                                          and snap.get("noded_version") != VERSIONS.get("panel")),
                         "updating": bool(c.get("update")),                       # self-update in flight
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
-                        "creating": sorted((c.get("create") or {}).keys()),      # ifaces pending create
+                        "creating": {k: ((v.get("cmd") or ["awg"])[0])               # iface → wg/awg (we know it)
+                                     for k, v in (c.get("create") or {}).items()},
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 

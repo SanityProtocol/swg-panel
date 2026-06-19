@@ -880,13 +880,15 @@ function NodeDetail({ node: rawName }) {
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}
         actions=${html`<button class="btn btn-mini" onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load new interface</button>`}>
       ${(() => {
-        const pcard = (ifn, label) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
-          <div class="ifcard-top"><span class="iftype turn">${label === "creating" ? "new" : "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>${label}</span></div>
+        // creating ifaces know their protocol → real wg/awg tag; onboarding doesn't yet → "load"
+        const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
+          <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>${label}</span></div>
           <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it…</span><button class="btn btn-mini warn" title="Drop this pending request" onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>Cancel</button></div><${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
         const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
-        const pendCr = (nrec.creating || []).filter(ifn => !(meta && meta[ifn]));
+        const cr = nrec.creating || {};   // { iface: "wg" | "awg" }
+        const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]));
         const pending = pendOn.concat(pendCr);
-        const pcards = pendOn.map(ifn => pcard(ifn, "onboarding")).concat(pendCr.map(ifn => pcard(ifn, "creating")));
+        const pcards = pendOn.map(ifn => pcard(ifn, "onboarding", null)).concat(pendCr.map(ifn => pcard(ifn, "creating", cr[ifn])));
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
           : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
