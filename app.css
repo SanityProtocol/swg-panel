@@ -14,6 +14,7 @@
   --online:#3FD89A; --ready:#4FA8F0; --pending:#9A8BF0; --partial:#E2C84A;
   --dangling:#F26B82; --orphan:#B79BD6; --unknown:#62748B; --removing:#E2C84A;
   --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A;
+  --tp-rx:#1FC8D6; --tp-tx:#818CF8;   /* throughput chart: rx (down) cyan, tx (up) indigo — kept distinct */
   --sans:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
   --r:11px; --r-sm:8px; --shadow:0 24px 60px -14px rgba(0,0,0,.62);
@@ -217,7 +218,9 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .row2{display:flex;gap:12px}
 .row2 .field{flex:1;min-width:0}
 /* node detail: interface + turn-proxy cards (drill-in) */
-.ifgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.ifgrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+@media(max-width:1000px){.ifgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.ifgrid{grid-template-columns:1fr}}
 .ifcard{display:block;border:1px solid var(--line-solid);border-radius:var(--r);padding:14px;background:var(--surface-2);text-decoration:none;color:inherit;transition:border-color .15s var(--ease),transform .15s var(--ease)}
 a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
 .ifcard.tp{cursor:default}
@@ -522,6 +525,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .health-hist .hist-cap{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);display:block;margin-bottom:3px}
 .harea{display:block;width:100%}
 .harea-empty{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:6px 0}
+/* shown in place of a chart when there isn't enough history for the chosen range */
+.harea-msg{display:flex;align-items:center;gap:9px;min-height:62px;padding:12px 4px;color:var(--faint);font-family:var(--mono);font-size:11.5px;line-height:1.55}
+.harea-msg svg{width:15px;height:15px;flex:none;color:var(--ready)}
+.harea-msg b{color:var(--ink-2);font-weight:600}
 .hmeter{display:flex;flex-direction:column;gap:4px}
 .hm-top{display:flex;justify-content:space-between;align-items:baseline;font-size:11.5px}
 .hm-l{color:var(--dim);letter-spacing:.02em}
@@ -596,6 +603,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .panel-ic.t-pending{background:color-mix(in srgb,var(--pending) 16%,transparent);color:var(--pending)}
 .panel-ic.t-orphan{background:color-mix(in srgb,var(--orphan) 16%,transparent);color:var(--orphan)}
 .panel-ic.t-warn{background:color-mix(in srgb,var(--partial) 16%,transparent);color:var(--partial)}
+.panel-ic.t-turn{background:color-mix(in srgb,#B49BF7 16%,transparent);color:#B49BF7}
 .panel-head h3{margin:0;font-size:14px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
 .panel-count{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
 .panel-head .grow{flex:1}
@@ -656,7 +664,7 @@ a.tg:hover{filter:brightness(1.25)}
 .tp-legend{display:flex;align-items:center;gap:14px;font-family:var(--mono);font-size:11px;color:var(--ink-2)}
 .tp-legend .tp-k{display:inline-flex;align-items:center;gap:6px}
 .tp-legend .sw{width:10px;height:3px;border-radius:2px;display:inline-block}
-.tp-legend .sw.rx{background:var(--brand)} .tp-legend .sw.tx{background:var(--ready)}
+.tp-legend .sw.rx{background:var(--tp-rx)} .tp-legend .sw.tx{background:var(--tp-tx)}
 .tp-legend .tp-peak{color:var(--faint)}
 /* idle/empty throughput: a slim strip instead of a tall empty chart */
 .tp-idle{height:34px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10.5px;

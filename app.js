@@ -813,7 +813,7 @@ function NodeDetail({ node: rawName }) {
           })}</div>`}
     <//>
 
-    ${snap && (snap.turn_proxies || []).length ? html`<${Panel} icon="relay" title="Turn-proxies" tone="warn" count=${snap.turn_proxies.length}>
+    ${snap && (snap.turn_proxies || []).length ? html`<${Panel} icon="relay" title="Turn proxies" tone="turn" count=${snap.turn_proxies.length}>
       <div class="ifgrid">${snap.turn_proxies.map(tp => {
         const lp = portOf(tp.connect);
         const fronted = meta ? Object.keys(meta).find(i => String(meta[i].listen_port) === lp) : null;
@@ -1542,7 +1542,7 @@ function ThroughputChart({ rx, tx, h, head }) {
       </linearGradient></defs>
       <polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
       <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
-      <polyline points=${line(T)} fill="none" stroke="var(--ready)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>
+      <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>
     </svg>
   </div>`;
 }
@@ -1578,7 +1578,12 @@ function RankBars({ rows }) {
 // A history chart (CPU or throughput) with live/day/week/month range tabs. "live" uses the
 // series already in /api/state; day/week/month are fetched on demand from /api/node-history.
 const HIST_RANGES = ["live", "hour", "day", "week", "month"];
+const HIST_WIN = { live: 600, hour: 3600, day: 86400, week: 604800, month: 2592000 };  // seconds each range spans
 const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem", "disk", "rx", "tx"]) if (Array.isArray((s || {})[k])) o[k] = s[k].slice(-n); return o; };
+// shown instead of a misleading chart when the node hasn't collected enough history for the range
+function HistMsg({ span, need, range }) {
+  return html`<div class="harea-msg"><${Ic} i="info"/><span>This node has only <b>${dur(span)}</b> of history so far — the <b>${range}</b> view needs about <b>${dur(need)}</b>. It'll fill in as the node keeps running.</span></div>`;
+}
 function RangedHistory({ node, kind, live, h, head }) {
   const [range, setRange] = useState("live");
   const [fetched, setFetched] = useState(null);
@@ -1592,14 +1597,23 @@ function RangedHistory({ node, kind, live, h, head }) {
   }, [node, range]);
   // live = last 10 minute-buckets, hour = the full ~60-pt /api/state series, longer ranges fetched
   const s = range === "live" ? tailSeries(live, 10) : range === "hour" ? (live || {}) : (fetched || {});
+  // the node may not have run long enough to fill this range — detect from the data's own time span
+  const tt = (s.t || []).filter(x => x != null);
+  const span = tt.length > 1 ? (tt[tt.length - 1] - tt[0]) : 0;
+  const need = HIST_WIN[range] || 0;
+  const sparse = !loading && tt.length > 1 && need && span < need * 0.7;
   const tabs = html`<div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div>`;
   if (kind === "throughput") {
-    return loading ? html`<div class="tp-wrap"><div class="tp-legend"><span class="grow"></span>${tabs}</div><div class="harea-empty">loading ${range}…</div></div>`
-      : html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs}/>`;
+    const tpinner = loading ? html`<div class="harea-empty">loading ${range}…</div>`
+      : sparse ? html`<${HistMsg} span=${span} need=${need} range=${range}/>` : null;
+    if (tpinner) return html`<div class="tp-wrap"><div class="tp-legend"><span class="grow"></span>${tabs}</div>${tpinner}</div>`;
+    return html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs}/>`;
   }
   return html`<div class="chartwrap">
     <div class="chart-head">${head || null}<span class="grow"></span>${tabs}</div>
-    ${loading ? html`<div class="harea-empty">loading ${range}…</div>` : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h}/>`}
+    ${loading ? html`<div class="harea-empty">loading ${range}…</div>`
+      : sparse ? html`<${HistMsg} span=${span} need=${need} range=${range}/>`
+      : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h}/>`}
   </div>`;
 }
 
