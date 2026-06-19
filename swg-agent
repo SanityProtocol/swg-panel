@@ -366,21 +366,60 @@ def op_remove_peer(cfg, req):
     return {"removed": pub, "freed_ip": match["allowed_ips"]}
 
 
+def set_awg_in_conf(path, awg):
+    """Replace the AmneziaWG param lines in the first [Interface] section with `awg` (dict)."""
+    keyset = set(AWG_KEYS)
+    lines = read_conf(path).splitlines()
+    out, in_iface = [], False
+    for line in lines:
+        s = line.strip()
+        if s.startswith("["):
+            in_iface = (s.lower() == "[interface]")
+            out.append(line)
+            if in_iface:
+                for k in AWG_KEYS:
+                    if k in awg:
+                        out.append(f"{k} = {awg[k]}")
+            continue
+        if in_iface and "=" in s and s.split("=", 1)[0].strip() in keyset:
+            continue   # drop the old awg param line
+        out.append(line)
+    write_conf_atomic(path, "\n".join(out).rstrip("\n") + "\n")
+
+
 def op_set_iface(cfg, req):
-    """Change the interface's UDP listen port on the live interface + its .conf. Peers are
-    untouched (their AllowedIPs/keys don't change); existing client tunnels reconnect to the
-    new port via the panel-rendered Endpoint."""
+    """Change the interface's UDP listen port and/or AmneziaWG obfuscation params on the live
+    interface + its .conf. Peers (keys / AllowedIPs) are untouched; existing client tunnels
+    reconnect via the panel-rendered Endpoint / new params."""
     iface = req["iface"]
     ic = iface_cfg(cfg, iface)
-    try:
-        port = int(req.get("listen_port"))
-    except (TypeError, ValueError):
-        raise AgentError("bad_request", "listen_port must be a number")
-    if not (1 <= port <= 65535):
-        raise AgentError("bad_request", "listen_port out of range (1-65535)")
-    run(ic["cmd"] + ["set", iface, "listen-port", str(port)])   # live
-    set_listen_port_in_conf(ic["conf"], port)                    # persist
-    return {"iface": iface, "listen_port": port}
+    out = {"iface": iface}
+    if req.get("listen_port") is not None:
+        try:
+            port = int(req.get("listen_port"))
+        except (TypeError, ValueError):
+            raise AgentError("bad_request", "listen_port must be a number")
+        if not (1 <= port <= 65535):
+            raise AgentError("bad_request", "listen_port out of range (1-65535)")
+        run(ic["cmd"] + ["set", iface, "listen-port", str(port)])   # live
+        set_listen_port_in_conf(ic["conf"], port)                    # persist
+        out["listen_port"] = port
+    awg = req.get("awg_params")
+    if isinstance(awg, dict) and awg:
+        awg = {k: str(awg[k]) for k in AWG_KEYS if k in awg and str(awg.get(k, "")) != ""}
+        if awg:
+            # apply live where the awg tool supports it (best-effort), then persist to the conf
+            args = ic["cmd"] + ["set", iface]
+            for k in AWG_KEYS:
+                if k in awg:
+                    args += [k.lower(), awg[k]]
+            with contextlib.suppress(Exception):
+                run(args)
+            set_awg_in_conf(ic["conf"], awg)
+            out["awg_params"] = awg
+    if len(out) == 1:
+        raise AgentError("bad_request", "nothing to set")
+    return out
 
 
 # ───────────────────────── dispatch ─────────────────────────

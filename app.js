@@ -349,10 +349,18 @@ function turnProxiesFor(node, iface) {
 function rerenderConf(text, node, iface) {
   if (!text) return text;
   const meta = Store.ifaceMeta(node, iface);
-  if (!meta || !meta.endpoint) return text;
-  // swap ONLY the Endpoint line to the interface's current endpoint — never rebuild the rest of
-  // the config (keys / AmneziaWG H,I params / DNS), so re-rendering can't malform it.
-  return text.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 " + meta.endpoint);
+  if (!meta) return text;
+  // surgical in-place updates: swap the Endpoint line and refresh any existing AmneziaWG param
+  // lines to the interface's current values — never rebuild the rest, so it can't be malformed.
+  let out = text;
+  if (meta.endpoint) out = out.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, (m, p1) => p1 + " " + meta.endpoint);
+  const awg = meta.awg_params || {};
+  for (const k of AWG_ORDER) {
+    if (awg[k] == null) continue;
+    const re = new RegExp("^([ \\t]*" + k + "[ \\t]*=).*$", "m");
+    if (re.test(out)) out = out.replace(re, (m, p1) => p1 + " " + awg[k]);
+  }
+  return out;
 }
 function getConfig(pubkey, node, iface) {
   const s = Store.sessionConfigs[pubkey];
@@ -994,10 +1002,15 @@ function EditIfaceSheet({ node, iface }) {
   const [port, setPort] = useState(String(meta.desired_port || meta.listen_port || ""));
   const [dns, setDns] = useState((meta.dns || []).join(", "));
   const [mtu, setMtu] = useState(String(meta.mtu || 1280));
+  const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
+  const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
+  const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true); setMsg({ k: "work", t: "saving…" });
-    const r = await api.ifaceUpdate({ node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim() });
+    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim() };
+    if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
+    const r = await api.ifaceUpdate(body);
     if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to update interface." }); }
     closeModal(); await Store.poll(); toast("Interface saved — the node applies the port on its next sync.", "ok");
   };
@@ -1012,6 +1025,9 @@ function EditIfaceSheet({ node, iface }) {
       <div class="field"><label>Default DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated. Default for new peers (per-peer DNS isn't overwritten).</div></div>
       <div class="field"><label>Default MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers.</div></div>
     </div>
+    ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
+      <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
+      <div class="awg-grid">${AWG_ORDER.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div></div>` : null}
     <div class="field"><label>Interface public key <span class="faint" style="text-transform:none;letter-spacing:0">— read-only</span></label><div class="cmdrow"><div class="tokenbox">${meta.public_key || "—"}</div>${meta.public_key ? html`<button class="copyaction" onClick=${() => copy(meta.public_key, "Public key copied")}><${Ic} i="copy"/> Copy</button>` : null}</div></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -1062,6 +1078,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q }) {
           <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
           <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} <span class="up">↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span></td>
           <td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
+            <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>
             <button class="iconbtn" title="Edit peer" onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
             ${p.unassigned
               ? html`<button class="iconbtn danger" title="Delete peer" onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
@@ -1235,7 +1252,7 @@ const usersFilter = { text: "" };
 // A peer's configs as a modal: one QR/download card per target (reuses TargetCard).
 function openPeerConfigs(peer) {
   openModal(html`<${Sheet} title=${"Configs · " + (peer.title || peer.name || "peer")}>
-    <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t}/>`)}</div>
+    <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}</div>
   <//>`);
 }
 function openUserEdit(user) {
@@ -1497,7 +1514,7 @@ function PeerCard({ peer }) {
   </div>`;
 }
 
-function TargetCard({ peer, t }) {
+function TargetCard({ peer, t, bare }) {
   const [conf, setConf] = useState(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface, Store.configEpoch]);
@@ -1514,14 +1531,14 @@ function TargetCard({ peer, t }) {
         : html`<div class="qr-none">${!loaded ? "loading…"
             : Store.storeConfigs ? "No stored config — re-issue this peer to enable its QR & download."
             : "Config shown right after creation, or enable store_configs to keep it."}</div>`}
-      <div class="dmeta">
+      ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">address</span><span class="vv">${t.ip || "—"}</span></div>
         <div class="row"><span class="k">handshake</span><span class="vv">${obs ? seen(obs.handshake_age) : "—"}</span></div>
         <div class="row"><span class="k">transfer</span><span class="vv">${obs ? "↓ " + rate(obs.rx_speed) + "  ↑ " + rate(obs.tx_speed) : "—"}</span></div>
         <div class="row"><span class="k">transport</span><span class="vv">${t.via === "turn" ? "via turn-proxy" : (t.via === "direct" ? "direct" : "—")}</span></div>
         ${tps.map(tp => html`<div class="row"><span class="k">turn-proxy</span><span class="vv">${tp.listen || "—"}
           ${tp.wrap_key ? html`<${Fragment}> · key <span class="addr">${String(tp.wrap_key).slice(0, 8)}…</span><button class="copybtn" title="Copy wrap key" onClick=${() => copy(tp.wrap_key, "Wrap key copied")}><${Ic} i="copy"/></button></>` : null}</span></div>`)}
-      </div>
+      </div>`}
     </div>
     ${conf ? html`<div class="acts">
       <button class="btn btn-mini" onClick=${() => downloadConf(conf, (peer.name || "peer") + "-" + dnode)}><${Ic} i="download"/> Config</button>
@@ -2280,6 +2297,7 @@ function PeerViewSheet({ pid, node, iface }) {
   return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
+      <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/> QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p, () => openPeerView(p.id, node, iface))}><${Ic} i="copy"/> Copy to interface</button>
       <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null, () => openPeerView(p.id, node, iface))}><${Ic} i="pencil"/> Edit</button>
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
@@ -2393,9 +2411,8 @@ function EditPeerSheet({ peer, focus, done }) {
   };
 
   const rotate = () => {
-    if (peer.unassigned) return toast("Assign the peer to a user first.", "err");
     openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true, back: done,
-      body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send the user the fresh QR / config to re-import.",
+      body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
       onConfirm: () => rotatePeerKeys(peer) });
   };
 

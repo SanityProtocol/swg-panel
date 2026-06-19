@@ -605,6 +605,10 @@ def node_describe(snapshot):
             "data": {"hostname": snapshot.get("hostname"), "interfaces": interfaces}}
 
 
+AWG_PARAM_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
+                  "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
+
+
 def apply_iface_meta(node_cfg, interfaces):
     """Overlay panel-side per-interface overrides onto node-reported metadata, in place:
     a public endpoint host/port (what clients dial — may differ from the node's listen port
@@ -628,6 +632,14 @@ def apply_iface_meta(node_cfg, interfaces):
         if ov.get("dns") is not None:
             ifc["dns"] = ov["dns"]
         ifc["mtu"] = ov.get("mtu") or 1280
+        # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
+        # the node converges its interface to it. awg_pending flags desired != reported in the UI.
+        ovawg = ov.get("awg_params")
+        if isinstance(ovawg, dict) and ovawg:
+            rep_awg = dict(ifc.get("awg_params") or {})
+            ifc["awg_reported"] = rep_awg
+            ifc["awg_params"] = {**rep_awg, **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
+            ifc["awg_pending"] = ifc["awg_params"] != rep_awg
     return interfaces
 
 
@@ -1233,7 +1245,7 @@ def api(method, path, qs, body, deps):
         p = roster["peers"].get(pid)
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
-        if uid not in roster["users"]:
+        if uid and uid not in roster["users"]:   # empty uid is allowed — rotate keeps it unassigned
             return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
         clash = find_peer_by_pubkey(roster, pubkey)
         if clash and clash["id"] != pid:
@@ -1243,7 +1255,7 @@ def api(method, path, qs, body, deps):
             for t in p.get("targets", []):
                 del_config(store_configs, config_dir, old_pubkey, t["node"], t["iface"])
         psk = body.get("psk") or gen_psk()
-        p2 = peer_set(roster, pid, {"user_id": uid, "pubkey": pubkey, "psk": psk}, now())
+        p2 = peer_set(roster, pid, {"user_id": uid or None, "pubkey": pubkey, "psk": psk}, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Assigned peer", peer_label(roster, p2),
                   "fresh key issued")
@@ -1388,6 +1400,19 @@ def api(method, path, qs, body, deps):
                 if not (576 <= m <= 9200):
                     return 400, {"ok": False, "error": "mtu must be 576–9200", "code": "bad_request"}
                 ov["mtu"] = m
+        if "awg_params" in body:
+            awg = body.get("awg_params")
+            if not awg:
+                ov.pop("awg_params", None)
+            elif isinstance(awg, dict):
+                clean = {k: str(awg[k]).strip() for k in AWG_PARAM_KEYS
+                         if k in awg and str(awg.get(k, "")).strip() != ""}
+                if clean:
+                    ov["awg_params"] = clean
+                else:
+                    ov.pop("awg_params", None)
+            else:
+                return 400, {"ok": False, "error": "awg_params must be an object", "code": "bad_request"}
         ifaces = nodes[nid].setdefault("ifaces", {})
         if ov:
             ifaces[iface] = ov
@@ -1601,8 +1626,15 @@ class Handler(BaseHTTPRequestHandler):
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
         # panel-managed interface config (currently the listen port) the node converges to
-        desired_ifaces = {ifn: {"listen_port": ov["listen_port"]}
-                          for ifn, ov in (node.get("ifaces") or {}).items() if ov.get("listen_port")}
+        desired_ifaces = {}
+        for ifn, ov in (node.get("ifaces") or {}).items():
+            d = {}
+            if ov.get("listen_port"):
+                d["listen_port"] = ov["listen_port"]
+            if isinstance(ov.get("awg_params"), dict) and ov["awg_params"]:
+                d["awg_params"] = ov["awg_params"]
+            if d:
+                desired_ifaces[ifn] = d
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces, "interval": interval})
 

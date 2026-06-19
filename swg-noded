@@ -345,20 +345,37 @@ def current_listen_port(node_cfg, iface):
         return None
 
 
+def current_awg(node_cfg, iface):
+    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
+    try:
+        with open(ic["conf"]) as f:
+            return awg_params(parse_interface_section(f.read()))
+    except Exception:
+        return None
+
+
 def reconcile_ifaces(node_cfg, desired_ifaces, agent, sudo):
-    """Apply the panel's desired interface config (currently just the listen port). Only ever
-    called on a valid sync reply; converges the live ListenPort to the panel's target."""
+    """Apply the panel's desired interface config (listen port and/or AmneziaWG params). Only
+    ever called on a valid sync reply; converges the live interface to the panel's target."""
     res = {"changed": 0, "errors": []}
     for iface, want in (desired_ifaces or {}).items():
         if iface not in (node_cfg.get("interfaces") or {}):
             continue
+        payload = {"op": "set-iface", "iface": iface}
         port = want.get("listen_port")
-        if not port:
+        if port:
+            cur = current_listen_port(node_cfg, iface)
+            if cur is not None and int(cur) != int(port):
+                payload["listen_port"] = int(port)
+        awg = want.get("awg_params")
+        if isinstance(awg, dict) and awg:
+            cur_awg = current_awg(node_cfg, iface) or {}
+            want_s = {k: str(v) for k, v in awg.items()}
+            if any(str(cur_awg.get(k)) != v for k, v in want_s.items()):
+                payload["awg_params"] = awg
+        if len(payload) <= 2:                 # only op + iface — nothing differs
             continue
-        cur = current_listen_port(node_cfg, iface)
-        if cur is None or int(cur) == int(port):
-            continue
-        r = run_agent(agent, sudo, {"op": "set-iface", "iface": iface, "listen_port": int(port)})
+        r = run_agent(agent, sudo, payload)
         if r.get("ok"):
             res["changed"] += 1
         else:

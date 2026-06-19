@@ -629,6 +629,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ig-v{font-family:var(--mono);font-size:12.5px;color:var(--ink-2);word-break:break-all}
 .iface-amnezia{display:flex;flex-direction:column;gap:6px;margin-top:16px}
 .iface-amnezia .ig-v{display:flex;flex-direction:column;gap:3px}
+/* AmneziaWG param editor: a compact grid of labelled inputs */
+.awg-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px 10px}
+.awg-f{display:flex;flex-direction:column;gap:3px;min-width:0}
+.awg-f>span{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
+.awg-f input{font-size:12px;padding:6px 8px}
+@media(max-width:560px){.awg-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:760px){.iface-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 /* ───── fleet: merged node card (main block + health block) ───── */
