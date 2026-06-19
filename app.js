@@ -564,6 +564,44 @@ function UserCombo({ onPick, placeholder }) {
   </div>`;
 }
 
+// A type-to-filter user *select* that holds a value (current owner) — used by the create/edit
+// peer forms. Like UserCombo but reflects a selection and can offer "— unassigned —".
+function UserPicker({ value, onChange, allowUnassigned, placeholder }) {
+  const [q, setQ] = useState(""); const [open, setOpen] = useState(false);
+  const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const sel = users.find(u => u.id === value);
+  const selText = sel ? sel.name + (sel.tag ? " · " + sel.tag : "") : "";
+  const ql = q.toLowerCase();
+  const shown = users.filter(u => !ql || (u.name + " " + (u.tag || "")).toLowerCase().includes(ql)).slice(0, 8);
+  const pick = uid => { setOpen(false); setQ(""); onChange(uid); };
+  return html`<div class="usercombo" onfocusout=${e => { if (!e.currentTarget.contains(e.relatedTarget)) { setOpen(false); setQ(""); } }}>
+    <input class="uc-input" value=${open ? q : selText}
+      placeholder=${placeholder || (allowUnassigned ? "— unassigned —" : "Assign to a user…")}
+      onFocus=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}/>
+    ${open ? html`<div class="uc-list">
+      ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">— unassigned —</span></button>` : null}
+      ${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
+        : html`<div class="uc-empty">${users.length ? "no match" : "no users yet"}</div>`}
+    </div>` : null}
+  </div>`;
+}
+
+// Assign / reassign a peer to a user from the edit flow — always a FRESH credential, so it's
+// confirmed: the previous holder is revoked for good, the new owner needs a re-issued config.
+function confirmReassign(peer, userId, back) {
+  const to = Store.recon.users.find(u => u.id === userId);
+  const toName = to ? to.name : "the selected user";
+  const assigning = peer.unassigned;
+  openConfirm({
+    title: assigning ? "Assign peer" : "Reassign peer", confirmLabel: assigning ? "Assign" : "Reassign",
+    danger: !assigning, warn: assigning, back,
+    body: assigning
+      ? "A fresh keypair and preshared key are generated for " + toName + ". Send them the new QR / config to import."
+      : "Reassigning to " + toName + " rotates the peer's keys. The current user loses access immediately and permanently — assigning them back later would still be a brand-new credential. " + toName + " gets a fresh QR / config that must be re-distributed.",
+    onConfirm: () => assignPeerToUser(peer, userId),
+  });
+}
+
 // Owner controls: assigned peers can only be Unassigned (revokes the holder); unassigned
 // peers offer Assign-to (fresh key) and Delete. Deletion is gated to unassigned peers.
 function PeerOwnerControls({ peer, showDelete }) {
@@ -996,7 +1034,7 @@ function PeersScreen() {
         ${ifaceOpts.length ? ifaceOpts.map(i => html`<option value=${i}>${i}</option>`) : (node === "*" ? null : html`<option value="">no interfaces reported</option>`)}
       </select>
       <span class="grow"></span>
-      <button class="btn btn-primary" disabled=${agg} title=${agg ? "Pick a server and interface to create a peer" : ""} onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
+      <button class="btn btn-primary" onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
     </div>
 
     <div class="section-title"><h2>${agg ? "Peers" : "Peers on"}</h2><span class="tags">
@@ -2010,7 +2048,6 @@ function CreatePeerSheet({ prefill }) {
   const [userId, setUserId] = useState(prefill.user_id || "");
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
-  const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
   useEffect(() => {   // default DNS from the first chosen interface until the operator edits it
     if (!cf.dnsTouched.current && chosen.length) { const m = Store.ifaceMeta(chosen[0].node, chosen[0].iface); if (m) cf.setDns((m.dns || []).join(", ")); }
@@ -2056,10 +2093,7 @@ function CreatePeerSheet({ prefill }) {
   return html`<${Sheet} title="New peer"
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${create}>Create peer</button></>`}>
     <div class="field"><label>User</label>
-      <select class="selwrap" value=${userId} onChange=${e => setUserId(e.target.value)}>
-        <option value="">— unassigned —</option>
-        ${users.map(u => html`<option value=${u.id}>${u.name}${u.tag ? " · " + u.tag : ""}</option>`)}
-      </select></div>
+      <${UserPicker} value=${userId} allowUnassigned=${true} onChange=${setUserId}/></div>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional, to tell devices apart</span></label>
       <input value=${title} onInput=${e => setTitle(e.target.value)} maxlength="64" placeholder="iPhone, Router, Laptop…"/></div>
     <div class="field"><label>Targets <span class="faint" style="text-transform:none;letter-spacing:0">— one, or several for redundancy (same key)</span></label>
@@ -2284,6 +2318,15 @@ function EditPeerSheet({ peer, focus, done }) {
   return html`<${Sheet} title=${"Edit peer"} onClose=${done}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
+    <div class="field"><label>User</label>
+      <${UserPicker} value=${peer.user_id || ""} allowUnassigned=${!peer.unassigned}
+        onChange=${uid => {
+          if ((uid || "") === (peer.user_id || "")) return;
+          const back = () => openEditPeer(peer, focus, done);
+          if (!uid) return confirmUnassign(peer, back);
+          confirmReassign(peer, uid, back);
+        }}/>
+      <div class=${"hint"}>${peer.unassigned ? "Assigning generates a fresh key for the chosen user — send them the new config." : "Reassigning rotates the keys: the current user loses access for good and the new user needs a freshly issued config."}</div></div>
     ${ft ? html`<div class="field"><label>Address on ${Store.nodeName(ft.node)} · ${ft.iface}</label><input class=${ipBad ? "bad" : ""} value=${ip} onInput=${e => setIp(e.target.value)}/><div class=${"hint" + (ipBad ? " err" : "")}>${ipBad ? "Must be a valid IPv4 address." : "Changing this moves the peer's address on this interface."}</div></div>` : null}
     ${!loaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : !editable ? html`<div class="notice warn"><${Ic} i="warn"/><span>The client's private key isn't available, so DNS / MTU / routing can't be rebuilt${Store.storeConfigs ? "" : " (enable store_configs, or edit right after creating)"}. Title and address can still change.</span></div>`
