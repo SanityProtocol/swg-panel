@@ -1037,6 +1037,7 @@ function OrphanRow({ o }) {
 // needs the tool (wg/awg) + the .conf path; the public endpoint is a panel-side render override.
 function openOnboardIface(node) { openModal(html`<${LoadIfaceSheet} node=${node}/>`); }
 function LoadIfaceSheet({ node }) {
+  const isDocker = ((Store.nodes || []).find(n => n.id === node) || {}).kind === "docker";
   const [proto, setProto] = useState("awg");   // awg | wg | existing
   const [iface, setIface] = useState(""); const [subnet, setSubnet] = useState("");
   const [host, setHost] = useState(""); const [port, setPort] = useState("");
@@ -1088,6 +1089,7 @@ function LoadIfaceSheet({ node }) {
         <div class="field"><label>Endpoint host / IP</label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/></div>
         <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
       </div>
+      ${isDocker ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>Docker node — publish this listen port in the node's <span class="mono">docker-compose.yml</span> (<span class="mono">ports: "${port || "PORT"}:${port || "PORT"}/udp"</span>) and recreate the container, or clients can't reach it. (Or run the node with <span class="mono">network_mode: host</span> so any port works.)</span></div>` : null}
       <div class="row2">
         <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/></div>
         <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
