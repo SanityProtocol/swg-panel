@@ -749,7 +749,7 @@ function NodeDetail({ node: rawName }) {
   const node = Store.node(name);
   const nrec = Store.nodes.find(x => x.id === name) || {};   // full record carries health
   const meta = Store.describe[name] || null;       // interface meta from the consolidated state
-  const metaErr = (node && !meta) ? "node has not reported yet" : null;
+  const metaErr = node && !meta;
 
   if (!node) return html`<div class="screen"><div class="crumb"><a href="#/">Overview</a><span class="sep">/</span><b>${name}</b></div>
     <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
@@ -795,7 +795,7 @@ function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}>
-      ${metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>${metaErr}</span></div>`
+      ${metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
         : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
         : !Object.keys(meta).length ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
         : html`<div class="ifgrid">${Object.keys(meta).map(ifn => {
