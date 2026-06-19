@@ -335,8 +335,11 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .meta .v{font-family:var(--mono);font-size:13px;color:var(--ink-2);margin-top:6px;word-break:break-all}
 /* universal gap between a screen's header line(s) and its content */
 .detail-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:22px}
-.detail-head:has(+ .noderibbon){margin-bottom:6px}   /* node detail: keep tags/sync ribbon close to the title */
+.detail-head:has(+ .noderibbon){margin-bottom:14px}   /* node detail: space between the title and the tags/sync ribbon */
 .detail-head .title{display:flex;align-items:center;gap:12px}
+.dh-ver{display:flex;align-items:center;gap:10px;align-self:center}   /* version + check/update, level with the title */
+.dh-ver .nm-ver{margin-left:0}
+.upd-busy{pointer-events:none;opacity:.75;cursor:default}
 .detail-head .title h1{margin:0;font-family:var(--mono);font-size:22px;font-weight:600;color:var(--ink)}
 .detail-head .grow{flex:1}
 .bigdots{display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap}

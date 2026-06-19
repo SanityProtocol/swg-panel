@@ -844,6 +844,12 @@ function NodeDetail({ node: rawName }) {
     <div class="detail-head">
       <div class="title"><h1>${dname}</h1><span class=${"tport" + (node.transport === "https" ? " https" : "")}>${node.transport}</span>${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}</div>
       <div class="grow"></div>
+      <div class="dh-ver">
+        ${nrec.version ? html`<span class=${"nm-ver" + (nrec.outdated ? " out" : "")}>v${nrec.version}</span>` : null}
+        ${nrec.updating ? html`<span class="nm-ver-tag"><span class="spin sm"></span>updating</span>`
+          : nrec.outdated ? html`<button class="btn btn-mini ver-upd" onClick=${() => updateNode(nrec)}><${Ic} i="download"/> Update</button>`
+          : html`<button class="iconbtn" title="Check for updates" onClick=${checkForUpdate}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
+      </div>
     </div>
 
     <div class="noderibbon">
@@ -1850,6 +1856,12 @@ function NodeHealth({ health, node, compact, history }) {
   </div>`;
 }
 
+let hostUpdating = false;                 // once Update is clicked, lock the header pill into "updating"
+function setHostUpdating() {
+  hostUpdating = true;
+  const slot = $("#updslot");
+  if (slot) slot.innerHTML = `<span class="livepill updpill upd-busy">updating <span class="spin sm"></span></span>`;
+}
 function updateNode(n) {
   openConfirm({
     title: "Update node", confirmLabel: "Update " + n.name, warn: true,
@@ -1869,7 +1881,7 @@ function updateHost() {
       const r = await api.hostUpdate();
       if (!r.ok) return toast(r.error || "Failed to start update.", "err");
       if (r.data && r.data.manual) openModal(html`<${Sheet} title="Update this server"><div class="iface-intro"><div>This panel runs in Docker — it can't recreate its own container from inside. Run this on the host:</div></div><div class="field"><label>Command</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${r.data.cmd}</span><button class="copybtn" onClick=${() => copy(r.data.cmd, "Command copied")}><${Ic} i="copy"/></button></div></div><//>`);
-      else toast("Update started — the panel will restart shortly.", "ok");
+      else { setHostUpdating(); toast("Update started — the panel will restart shortly.", "ok"); }
     },
   });
 }
@@ -2720,7 +2732,9 @@ function App() {
     }
     const slot = $("#updslot");
     if (slot) {
-      if (Store.panelOutdated) {                       // newer release found → blue "Update to x" pill
+      if (hostUpdating) {                              // clicked → locked into "updating" (not clickable)
+        slot.innerHTML = `<span class="livepill updpill upd-busy">updating <span class="spin sm"></span></span>`;
+      } else if (Store.panelOutdated) {                // newer release found → blue "Update to x" pill
         slot.innerHTML = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
         const b = $("#host-upd"); if (b) b.onclick = updateHost;
       } else {                                         // up to date → a "check for updates" icon
