@@ -339,7 +339,8 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .detail-head .title{display:flex;align-items:center;gap:12px}
 .dh-ver{display:flex;align-items:center;gap:10px;align-self:center}   /* version + check/update, level with the title */
 .dh-ver .nm-ver{margin-left:0}
-.upd-busy{pointer-events:none;opacity:.75;cursor:default}
+.upd-busy{pointer-events:none;cursor:default;color:var(--partial);border-color:color-mix(in srgb,var(--partial) 45%,var(--line-solid))}
+.upd-busy .updspin{animation:spin .8s linear infinite;transform-origin:center;margin-left:1px}
 /* "check for updates": cyan + spinning while polling, back to grey when done. The extra
    .appbar-right selector beats `.appbar-right .iconbtn{color:--dim}` (same specificity, later). */
 .iconbtn.checking, .appbar-right .iconbtn.checking{color:var(--brand);pointer-events:none}

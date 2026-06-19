@@ -846,7 +846,7 @@ function NodeDetail({ node: rawName }) {
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version ? html`<span class="nm-ver">v${nrec.version}</span>` : null}
-        ${nrec.updating ? html`<span class="livepill updpill upd-busy">updating <span class="spin sm"></span></span>`
+        ${nrec.updating ? html`<span class="livepill upd-busy">updating… <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
           : nrec.outdated ? html`<button class="livepill updpill" onClick=${() => updateNode(nrec)} title="Update this node">update node to <b>${nrec.latest || "?"}</b></button>`
           : html`<button class="iconbtn" title="Check for updates" onClick=${checkForUpdate}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
       </div>
@@ -1857,10 +1857,12 @@ function NodeHealth({ health, node, compact, history }) {
 }
 
 let hostUpdating = false;                 // once Update is clicked, lock the header pill into "updating"
+// the circular-arrow glyph (same as the check icon), spun in yellow while an update runs
+const UPD_SPIN_SVG = `<svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg>`;
 function setHostUpdating() {
   hostUpdating = true;
   const slot = $("#updslot");
-  if (slot) slot.innerHTML = `<span class="livepill updpill upd-busy">updating <span class="spin sm"></span></span>`;
+  if (slot) slot.innerHTML = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
 }
 function updateNode(n) {
   openConfirm({
@@ -1880,8 +1882,12 @@ function updateHost() {
     onConfirm: async () => {
       const r = await api.hostUpdate();
       if (!r.ok) return toast(r.error || "Failed to start update.", "err");
-      if (r.data && r.data.manual) openModal(html`<${Sheet} title="Update this server"><div class="iface-intro"><div>Can't self-update — ${r.data.reason || "run it on the host"}. Run this on the host (as root):</div></div><div class="field"><label>Command</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${r.data.cmd}</span><button class="copybtn" onClick=${() => copy(r.data.cmd, "Command copied")}><${Ic} i="copy"/></button></div></div><//>`);
-      else { setHostUpdating(); toast("Update started — the panel will restart shortly.", "ok"); }
+      if (r.data && r.data.manual) {
+        const d = r.data;   // defer past the confirm's own closeModal(), or it'd close this one too
+        setTimeout(() => openModal(html`<${Sheet} title="Update this server"><div class="iface-intro"><div>Can't self-update — ${d.reason || "run it on the host"}. Run this on the host:</div></div><div class="field"><label>Command</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${d.cmd}</span><button class="copybtn" onClick=${() => copy(d.cmd, "Command copied")}><${Ic} i="copy"/></button></div></div><//>`), 0);
+        return;
+      }
+      setHostUpdating(); toast("Update started — the panel will restart shortly.", "ok");
     },
   });
 }
@@ -2736,7 +2742,7 @@ function App() {
     const slot = $("#updslot");
     if (slot) {
       if (hostUpdating) {                              // clicked → locked into "updating" (not clickable)
-        slot.innerHTML = `<span class="livepill updpill upd-busy">updating <span class="spin sm"></span></span>`;
+        slot.innerHTML = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
       } else if (Store.panelOutdated) {                // newer release found → blue "Update to x" pill
         slot.innerHTML = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
         const b = $("#host-upd"); if (b) b.onclick = updateHost;
