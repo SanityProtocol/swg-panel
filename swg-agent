@@ -24,6 +24,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -429,6 +430,30 @@ def _wan_iface():
     return m.group(1) if m else "eth0"
 
 
+def _ensure_tool(tool):
+    """Install the wg/awg tools if missing (Debian/Ubuntu apt, mirroring install-host.sh's
+    ensure_wg_tools). Best effort; raises a clear error if the tool still isn't there afterwards."""
+    if shutil.which(tool) and shutil.which(tool + "-quick"):
+        return
+    if not shutil.which("apt-get"):             # non-Debian: don't spin on apt every sync — clear error
+        raise AgentError("no_tool", f"'{tool}' tools aren't installed and this node isn't Debian/Ubuntu "
+                         f"for auto-install — install them manually, then retry")
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    def sh(*args):
+        with contextlib.suppress(Exception):
+            subprocess.run(list(args), env=env, capture_output=True, timeout=300)
+    if tool == "wg":
+        sh("apt-get", "update", "-qq"); sh("apt-get", "install", "-y", "wireguard")
+    else:
+        sh("apt-get", "update", "-qq"); sh("apt-get", "install", "-y", "software-properties-common")
+        sh("add-apt-repository", "-y", "ppa:amnezia/ppa")
+        sh("apt-get", "update", "-qq"); sh("apt-get", "install", "-y", "amneziawg")
+    if not (shutil.which(tool) and shutil.which(tool + "-quick")):
+        pkg = "wireguard" if tool == "wg" else "amneziawg (ppa:amnezia/ppa)"
+        raise AgentError("no_tool", f"'{tool}' tools aren't installed and couldn't be auto-installed "
+                         f"— install {pkg} on the node, then retry")
+
+
 def _awg_obfuscation():
     """Mirror install-host.sh's awg_obfuscation: random S1–S4, four disjoint H1–H4 bands, conservative I1."""
     s1 = 15 + random.randint(0, 135); s2 = 15 + random.randint(0, 135)
@@ -462,6 +487,7 @@ def op_create_iface(cfg, req):
     except (TypeError, ValueError):
         raise AgentError("bad_request", "listen_port must be a number")
     mtu = str(req.get("mtu") or "1280")
+    _ensure_tool(tool)                          # install wg/awg tools if this node doesn't have them yet
     conf_dir = "/etc/amnezia/amneziawg" if tool == "awg" else "/etc/wireguard"
     conf = os.path.join(conf_dir, iface + ".conf")
     if os.path.exists(conf):
