@@ -484,7 +484,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-thru .thru{display:flex;gap:16px}
 .nm-thru .down,.nm-thru .up{min-width:80px;white-space:nowrap}
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
-.nm-cpu .hm-bar{width:240px;flex:none}
+.nm-cpu .hm-bar{width:290px;flex:none}
 /* reserve room for up to 333.33 and right-align, so the bar->value gap shrinks as the number grows */
 .nm-cpu .nm-v{flex:none;min-width:50px;text-align:right}
 /* controls: horizontal row in the second grid row, so they line up with the data row */
