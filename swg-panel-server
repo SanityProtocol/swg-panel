@@ -667,8 +667,9 @@ def apply_iface_meta(node_cfg, interfaces):
             ifc["endpoint"] = f"{host}:{port}"
         if want_port:
             ifc["desired_port"] = want_port   # != reported listen_port => "updating" in the UI
-        if ov.get("dns") is not None:
-            ifc["dns"] = ov["dns"]
+        if ov.get("dns") is not None:                # always serve dns as a list (the UI expects one)
+            d = ov["dns"]
+            ifc["dns"] = d if isinstance(d, list) else [s.strip() for s in str(d).split(",") if s.strip()]
         ifc["mtu"] = ov.get("mtu") or 1280
         # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
         # the node converges its interface to it. awg_pending flags desired != reported in the UI.
@@ -1526,7 +1527,7 @@ def api(method, path, qs, body, deps):
         if (body.get("endpoint_host") or "").strip():
             ov["endpoint_host"] = body["endpoint_host"].strip()
         if (body.get("dns") or "").strip():
-            ov["dns"] = body["dns"].strip()
+            ov["dns"] = [s.strip() for s in body["dns"].split(",") if s.strip()]   # list, like /iface/update
         if str(body.get("keepalive") or "").strip().isdigit():
             ov["keepalive"] = int(body["keepalive"])
         nodes_save(deps["nodes_path"], nodes)

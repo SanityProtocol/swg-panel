@@ -969,7 +969,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${meta.address || "—"}</span></div>
-          <div class="ig-item"><span class="ig-l">DNS</span><span class="ig-v">${(meta.dns || []).join(", ") || "—"}</span></div>
+          <div class="ig-item"><span class="ig-l">DNS</span><span class="ig-v">${(Array.isArray(meta.dns) ? meta.dns.join(", ") : (meta.dns || "")) || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">MTU</span><span class="ig-v">${meta.mtu || 1280}</span></div>
         </div>
         ${type === "awg" ? html`<div class="iface-amnezia">
