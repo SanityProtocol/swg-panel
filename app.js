@@ -900,7 +900,7 @@ function NodeDetail({ node: rawName }) {
               const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
               const deleting = (nrec.deleting || []).includes(ifn);
               return html`<a class=${"ifcard" + (deleting ? " pending" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>deleting</span>` : null}</div>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : null}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1936,6 +1936,13 @@ function openUpdateDone(from, to) {
   <//>`);
 }
 function updateNode(n) {
+  if (n.kind === "docker") {   // a container can't recreate its own image — update via the host
+    const cmd = "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update -y --no-components";
+    return openModal(html`<${Sheet} title=${"Update " + n.name}>
+      <div class="iface-intro big"><div>This is a <b>Docker</b> node — it can't self-update (a container can't recreate its own image). Update it by pulling the new image on <b>its host</b>:</div></div>
+      <div class="field"><label>Run on the node's host</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${cmd}</span><button class="copybtn" onClick=${() => copy(cmd, "Command copied")}><${Ic} i="copy"/></button></div><div class="hint">It detects the compose install and runs <span class="mono">docker compose pull && up -d</span>.</div></div>
+    <//>`);
+  }
   openConfirm({
     title: "Update node", confirmLabel: "Update " + n.name, warn: true,
     body: "The node pulls the swg-only updater on its next sync and self-updates (swg-noded restarts; "

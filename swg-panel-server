@@ -1851,10 +1851,11 @@ class Handler(BaseHTTPRequestHandler):
             if d:
                 desired_ifaces[ifn] = d
         # clear a pending self-update once the node reports a version different from when it was
-        # requested — robust to the node landing past a lagging docker-panel image version
+        # requested — robust to the node landing past a lagging docker-panel image version. Docker
+        # nodes can't self-update (a container can't recreate its image), so never let one hang.
         upd = node.get("update")
         rv = snap.get("noded_version")
-        if upd and rv and rv != upd.get("from"):
+        if upd and ((rv and rv != upd.get("from")) or snap.get("kind") == "docker"):
             node.pop("update", None)
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
