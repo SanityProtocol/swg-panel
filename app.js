@@ -1885,12 +1885,16 @@ function updateHost() {
     },
   });
 }
-async function checkForUpdate() {
-  const r = await api.checkUpdate();
-  await Store.poll();
-  if (r.ok && r.data && r.data.panel_outdated) toast("Update available — v" + r.data.latest_remote, "ok");
-  else if (r.ok) toast("You're on the latest version.", "ok");
-  else toast(r.error || "Couldn't check for updates.", "err");
+async function checkForUpdate(e) {
+  const btn = e && e.currentTarget;                  // spin + cyan it while we poll, so it reads as "searching"
+  if (btn) btn.classList.add("checking");
+  try {
+    const r = await api.checkUpdate();
+    await Store.poll();
+    if (r.ok && r.data && r.data.panel_outdated) toast("Update available — v" + r.data.latest_remote, "ok");
+    else if (r.ok) toast("You're on the latest version.", "ok");
+    else toast(r.error || "Couldn't check for updates.", "err");
+  } finally { if (btn) btn.classList.remove("checking"); }
 }
 function NodeCard({ n }) {
   const st = n.status || "dangling";
