@@ -1812,9 +1812,11 @@ class Handler(BaseHTTPRequestHandler):
                 d["awg_params"] = ov["awg_params"]
             if d:
                 desired_ifaces[ifn] = d
-        # clear a pending self-update once the node reports the target version
+        # clear a pending self-update once the node reports the requested target OR the current latest
+        # (the node updates to latest, which may have moved past the target captured at request time)
         upd = node.get("update")
-        if upd and snap.get("noded_version") and upd.get("to") and snap["noded_version"] == upd["to"]:
+        rv = snap.get("noded_version")
+        if upd and rv and rv in (upd.get("to"), VERSIONS.get("panel")):
             node.pop("update", None)
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)

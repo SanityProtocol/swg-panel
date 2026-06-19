@@ -316,26 +316,27 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     interfaces = {}
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         cmd = ic.get("cmd", ["awg"])
-        try:
+        try:                                        # one bad interface must never kill the whole snapshot
             dump = run(cmd + ["show", iface, "dump"]).stdout
-        except Exception:
+            iface_line, raw = parse_dump(dump)
+            try:
+                conf_text = open(ic["conf"]).read()
+            except OSError:
+                conf_text = ""
+            st = last_samples.setdefault(iface, {"peers": {}, "t": now})
+            dt = max(1e-6, now - st["t"])
+            peers = peer_view(raw, st["peers"], dt, online_max, now)
+            st["peers"] = {p["public_key"]: (p["rx_bytes"], p["tx_bytes"]) for p in raw}
+            st["t"] = now
+            interfaces[iface] = {
+                "peers": peers,
+                "meta": build_meta(iface_line, conf_text,
+                                   ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
+                                   node_cfg.get("dns", []), cmd),
+            }
+        except Exception as e:
+            print(f"snapshot: skipping {iface}: {e}", flush=True)
             continue
-        iface_line, raw = parse_dump(dump)
-        try:
-            conf_text = open(ic["conf"]).read()
-        except OSError:
-            conf_text = ""
-        st = last_samples.setdefault(iface, {"peers": {}, "t": now})
-        dt = max(1e-6, now - st["t"])
-        peers = peer_view(raw, st["peers"], dt, online_max, now)
-        st["peers"] = {p["public_key"]: (p["rx_bytes"], p["tx_bytes"]) for p in raw}
-        st["t"] = now
-        interfaces[iface] = {
-            "peers": peers,
-            "meta": build_meta(iface_line, conf_text,
-                               ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
-                               node_cfg.get("dns", []), cmd),
-        }
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
             "noded_version": NODED_VERSION}
@@ -516,8 +517,10 @@ def create_ifaces(node_cfg, create, agent, sudo):
     return res
 
 
+# node self-update is NODE-ONLY: on a master box (panel + node together) it must NOT restart the
+# co-located panel, or the panel restart breaks the very sync that would clear the update request.
 DEFAULT_UPDATE_CMD = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
-                      "bootstrap.sh | bash -s update -y --no-components")
+                      "bootstrap.sh | bash -s update -y --no-components --node-only")
 
 
 def run_self_update(node_cfg, want):

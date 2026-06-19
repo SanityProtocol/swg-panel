@@ -15,10 +15,11 @@
 #         --no-components  swg only (panel/noded/agent) — skip third-party turn-proxy servers
 set -euo pipefail
 
-DRYRUN=false; ASSUME_YES=false; FORCE=false; NO_COMPONENTS=false
+DRYRUN=false; ASSUME_YES=false; FORCE=false; NO_COMPONENTS=false; NODE_ONLY=false
 for a in "$@"; do case "$a" in
   --dry-run) DRYRUN=true;; -y|--yes) ASSUME_YES=true;; -f|--force) FORCE=true;;
   --no-components) NO_COMPONENTS=true;;
+  --node-only) NODE_ONLY=true;;     # update ONLY the bare-metal node/agent — never the co-located panel/docker
 esac; done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -103,7 +104,7 @@ EOF
 }
 
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
-if [ -f "$PANEL_DIR/swg-panel-server" ]; then
+if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   found=1; pan_seen=yes; pold="$(oldver "$PANEL_DIR")"
   if should_update "bare-metal panel" "$PANEL_DIR"; then
     info "updating bare-metal panel ($PANEL_DIR)"
@@ -133,7 +134,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
 fi
 
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
-if [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
+if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
   found=1; doc_seen=yes
   # which profile is running? prefer the marker install-docker.sh wrote into .env, else sniff containers
   prof="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1)"
