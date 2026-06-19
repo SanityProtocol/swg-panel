@@ -346,7 +346,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .deploy{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
   display:flex;flex-direction:column}
 .deploy-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line)}
-.deploy-head .nm{font-family:var(--mono);font-size:14px;font-weight:600;color:var(--ink)}
+.deploy-head .nm{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink)}
 .deploy-head .grow{flex:1}
 .deploy-body{padding:15px;display:flex;gap:15px}
 .deploy .qr{background:#fff;border-radius:var(--r-sm);padding:8px;line-height:0;flex:none;cursor:zoom-in}

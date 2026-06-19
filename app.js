@@ -1537,7 +1537,7 @@ function TargetCard({ peer, t, bare }) {
   const label = (peer.name || "peer") + " · " + dnode + "/" + t.iface;
 
   return html`<div class="deploy">
-    <div class="deploy-head"><span class="dot" style=${{ background: col }}></span><span class="nm">${dnode} · ${t.iface}</span><span class="grow"></span><${Badge} s=${t.status}/></div>
+    <div class="deploy-head"><span class="nm" style=${"color:" + col}>${dnode}</span><${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface}/><span class="grow"></span><${Badge} s=${t.status}/></div>
     <div class="deploy-body">
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? "loading…"
