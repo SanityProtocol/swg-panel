@@ -1562,7 +1562,10 @@ def api(method, path, qs, body, deps):
         nid = body.get("node") or ""
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
-        nodes[nid]["update"] = {"to": VERSIONS.get("panel") or ""}
+        # capture the node's current version — we clear the request once it reports ANYTHING different
+        # (it updates to latest, which can move past a docker panel's lagging-CI image version)
+        frm = ((deps.get("node_snaps") or {}).get(nid) or {}).get("noded_version")
+        nodes[nid]["update"] = {"to": VERSIONS.get("panel") or "", "from": frm}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Update requested", "")
         return 200, {"ok": True, "data": {"node": nid}}
@@ -1813,11 +1816,11 @@ class Handler(BaseHTTPRequestHandler):
                 d["awg_params"] = ov["awg_params"]
             if d:
                 desired_ifaces[ifn] = d
-        # clear a pending self-update once the node reports the requested target OR the current latest
-        # (the node updates to latest, which may have moved past the target captured at request time)
+        # clear a pending self-update once the node reports a version different from when it was
+        # requested — robust to the node landing past a lagging docker-panel image version
         upd = node.get("update")
         rv = snap.get("noded_version")
-        if upd and rv and rv in (upd.get("to"), VERSIONS.get("panel")):
+        if upd and rv and rv != upd.get("from"):
             node.pop("update", None)
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
