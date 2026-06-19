@@ -73,8 +73,8 @@ h1,h2,h3{font-family:var(--sans)}
 .btn-primary .plus{font-size:16px;line-height:0;margin-top:-1px}
 .btn-ghost{background:var(--surface-2);color:var(--dim);border-color:var(--line-solid);padding:8px 13px}
 .btn-ghost:hover{color:var(--ink);border-color:var(--brand)}
-.btn-mini{background:transparent;color:var(--dim);border-color:var(--line-solid);padding:5px 11px;font-size:12px;border-radius:7px}
-.btn-mini:hover{color:var(--ready);border-color:var(--ready)}
+.btn-mini{background:transparent;color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,var(--line-solid));padding:5px 11px;font-size:12px;border-radius:7px}
+.btn-mini:hover{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
 .btn-mini.warn:hover{color:var(--dangling);border-color:var(--dangling)}
 .btn:disabled{opacity:.45;cursor:not-allowed;transform:none;filter:none}
 

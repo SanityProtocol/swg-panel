@@ -866,7 +866,7 @@ function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}
-        actions=${html`<button class="btn btn-mini" onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load interface</button>`}>
+        actions=${html`<button class="btn btn-mini" onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load new interface</button>`}>
       ${(() => { const pending = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
         const pcards = pending.map(ifn => html`<div class="ifcard pending" key=${"ob:" + ifn}>
           <div class="ifcard-top"><span class="iftype turn">load</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>onboarding</span></div>
