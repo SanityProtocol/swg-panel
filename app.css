@@ -73,8 +73,11 @@ h1,h2,h3{font-family:var(--sans)}
 .btn-primary .plus{font-size:16px;line-height:0;margin-top:-1px}
 .btn-ghost{background:var(--surface-2);color:var(--dim);border-color:var(--line-solid);padding:8px 13px}
 .btn-ghost:hover{color:var(--ink);border-color:var(--brand)}
-.btn-mini{background:transparent;color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,var(--line-solid));padding:5px 11px;font-size:12px;border-radius:7px}
-.btn-mini:hover{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
+.btn-mini{background:transparent;color:var(--dim);border-color:var(--line-solid);padding:5px 11px;font-size:12px;border-radius:7px}
+.btn-mini:hover{color:var(--ready);border-color:var(--ready)}
+/* cyan accent for panel-header actions only (Add peer, Load new interface, Edit interface, Adopt all…) */
+.panel-head .btn-mini{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,var(--line-solid))}
+.panel-head .btn-mini:hover{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
 .btn-mini.warn:hover{color:var(--dangling);border-color:var(--dangling)}
 .btn:disabled{opacity:.45;cursor:not-allowed;transform:none;filter:none}
 
@@ -480,7 +483,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-ver{font-family:var(--mono);font-size:11px;color:var(--dim);display:inline-flex;align-items:center;gap:8px;margin-left:12px}
 .nm-ver.out{color:#F0913C}
 .nm-ver-tag{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#F0913C;background:rgba(240,145,60,.16);padding:1px 6px;border-radius:99px;display:inline-flex;align-items:center;gap:5px}
-.ver-upd{padding:2px 9px;font-size:10.5px}
+.ver-upd{padding:2px 9px;font-size:10.5px;color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,var(--line-solid))}
+.ver-upd:hover{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
 #appver .ver-upd{margin-left:10px;vertical-align:middle}
 .spin.sm{width:10px;height:10px;border-width:1.5px}
 .ncard .nsync{font-size:11.5px;white-space:nowrap}
