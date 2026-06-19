@@ -1028,12 +1028,12 @@ function OnboardIfaceSheet({ node }) {
       <div>The node only needs the tool and the interface's .conf path — it reads the rest (keys, subnet, AWG params) and its existing peers show up as adoptable.</div>
       <div>It's applied on the node's next sync, then the interface appears here.</div>
     </div>
-    <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
     <div class="field"><label>Protocol</label>
       <div class="chiprow">
         <button class=${"chip" + (proto === "awg" ? " on" : "")} onClick=${() => setProto("awg")}>AmneziaWG</button>
         <button class=${"chip" + (proto === "wg" ? " on" : "")} onClick=${() => setProto("wg")}>WireGuard</button>
       </div></div>
+    <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
     <div class="field"><label>Config path</label><input value=${conf} onInput=${e => setConf(e.target.value)} placeholder=${confPh} autocomplete="off"/></div>
     <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}

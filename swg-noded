@@ -49,6 +49,7 @@ def parse_dump(out):
             continue
         peers.append({
             "public_key": f[0],
+            "preshared_key": None if f[1] in ("(none)", "") else f[1],   # keep PSK so adoption can reuse it
             "endpoint": None if f[2] in ("(none)", "") else f[2],
             "allowed_ips": f[3],
             "last_handshake": int(f[4]) if f[4].isdigit() else 0,
@@ -102,6 +103,8 @@ def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None):
         except Exception:
             subnet = addr.rsplit("/", 1)[0]
     port = int(iface_line[2]) if len(iface_line) > 2 and iface_line[2].isdigit() else None
+    if not port and str(info.get("ListenPort", "")).strip().isdigit():   # fall back to the .conf
+        port = int(str(info["ListenPort"]).strip())
     pub = iface_line[1] if len(iface_line) > 1 and iface_line[1] else derive_pubkey(cmd, info.get("PrivateKey"))
     return {
         "public_key": pub,
@@ -386,7 +389,7 @@ def reconcile_ifaces(node_cfg, desired_ifaces, agent, sudo):
 def reconcile(node_cfg, desired_by_iface, agent, sudo):
     """Apply the panel's desired peer set. Only ever called on a valid sync reply."""
     res = {"added": 0, "removed": 0, "errors": []}
-    for iface in (node_cfg.get("interfaces") or {}):
+    for iface, ic in (node_cfg.get("interfaces") or {}).items():
         desired = {p["public_key"]: p for p in (desired_by_iface.get(iface) or [])}
         current = current_pubkeys(node_cfg, iface)
         if current is None:
@@ -404,6 +407,11 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo):
                 res["added"] += 1
             else:
                 res["errors"].append(f"add {pk[:8]}: {r.get('error')}")
+        # An onboarded interface is ADD-ONLY: the panel never removes peers it didn't create, so an
+        # interface adopted from another tool (e.g. wg-easy) keeps its existing peers. They surface
+        # as adoptable orphans instead of being wiped.
+        if ic.get("onboarded"):
+            continue
         for pk in current - set(desired):
             r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
             if r.get("ok"):
@@ -433,7 +441,7 @@ def onboard_ifaces(node_cfg, onboard):
             run(cmd + ["show", iface, "dump"])      # raises if the interface isn't actually up
         except Exception as e:
             res["errors"].append(f"{iface}: {e}"); continue
-        ifaces[iface] = {"cmd": cmd, "conf": conf}
+        ifaces[iface] = {"cmd": cmd, "conf": conf, "onboarded": True}   # add-only: never wipe its peers
         changed = True
         res["added"].append(iface)
     if changed:
