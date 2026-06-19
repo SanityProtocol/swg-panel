@@ -452,7 +452,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nodegrid{display:flex;flex-direction:column;gap:15px}
 /* grid: title row spans the full width (so CPU load can reach over the controls);
    data row (col 1) and controls (col 2) share the second row, so they line up. */
-.ncard{display:grid;grid-template-columns:1fr auto;align-items:center;column-gap:12px;
+.ncard{display:grid;grid-template-columns:1fr auto;align-items:center;column-gap:12px;cursor:pointer;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:background .15s;padding:16px}
 .ncard.removing{opacity:.82;border-style:dashed}
 .ncard:hover{background:var(--surface-2)}
