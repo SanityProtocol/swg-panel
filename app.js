@@ -2329,7 +2329,7 @@ function NodeTokenSheet({ name, token, isNew }) {
     <div class="field" style="margin-top:15px"><label>Enrollment token</label><div class="cmdrow"><div class="tokenbox">${token}</div><button class="copyaction" onClick=${() => copy(token, "Copied")}><${Ic} i="copy"/> Copy</button></div></div>
     <div class="field"><label>Run on the node — <span style="color:#60a5fa;font-weight:700">bare-metal</span></label><div class="cmdrow"><div class="tokenbox">${bare}</div><button class="copyaction" onClick=${() => copy(bare, "Copied")}><${Ic} i="copy"/> Copy</button></div></div>
     <div class="field"><label>Run on the node — <span style="color:#c084e8;font-weight:700">docker</span></label><div class="cmdrow"><div class="tokenbox">${docker}</div><button class="copyaction" onClick=${() => copy(docker, "Copied")}><${Ic} i="copy"/> Copy</button></div>
-      <div class="hint">Pick one. Both fetch the installer and prompt for the node's endpoint.<br/>The node appears once it syncs.</div></div>
+      <div class="hint">Pick one. Both fetch the installer and prompt for the node's endpoint.</div></div>
   <//>`;
 }
 function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
