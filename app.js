@@ -956,7 +956,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <//>` : null}
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
-        actions=${html`<button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface })}><${Ic} i="plus"/> Add peer</button>`}>
+        actions=${html`<button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> Add peer</button>`}>
       <div class="ifsearch"><div class="search"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div></div>
       <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q}/>
     <//>
@@ -2008,7 +2008,10 @@ function allTargets() {
 // [{node,iface,ip,ipHint}]. Used by the create-peer, create-user and add-peers flows.
 function TargetPicker({ prefill, exclude, onChange }) {
   const all = useMemo(allTargets, [Store.describe]);
-  const targets = exclude ? all.filter(t => !exclude.has(tkey(t.node, t.iface))) : all;
+  // locked: launched from one interface — show only that target, no toggling, just the IP.
+  const locked = !!(prefill && prefill.lock && prefill.node && prefill.iface);
+  const targets = locked ? all.filter(t => t.node === prefill.node && t.iface === prefill.iface)
+    : (exclude ? all.filter(t => !exclude.has(tkey(t.node, t.iface))) : all);
   const [sel, setSel] = useState({});
   const allocIp = async (node, iface) => {
     const k = tkey(node, iface);
@@ -2032,8 +2035,8 @@ function TargetPicker({ prefill, exclude, onChange }) {
   if (!targets.length) return html`<div class="hint">No interfaces available — is a node online?</div>`;
   return html`<div class="targetpick">${targets.map(t => {
     const k = tkey(t.node, t.iface); const s = sel[k];
-    return html`<div class=${"targetopt " + (s ? "sel" : "")}>
-      <label class="topt-main" onClick=${() => toggle(t.node, t.iface)}>
+    return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "")}>
+      <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
         <span class="swatch" style=${"background:" + Store.nodeColor(t.node)}></span>
         <span class="nm">${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></label>
@@ -2152,7 +2155,9 @@ function CreatePeerSheet({ prefill }) {
       Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
       Store.recentlyCreated[r.data.id] = Date.now();
       closeModal(); await Store.poll();
-      go(userId ? "#/user/" + encodeURIComponent(userId) : "#/peer/" + encodeURIComponent(r.data.id));
+      // launched from an interface screen → stay there; otherwise go to the user/peer just made
+      if (prefill.lock && prefill.node && prefill.iface) go("#/node/" + encodeURIComponent(prefill.node) + "/" + encodeURIComponent(prefill.iface));
+      else go(userId ? "#/user/" + encodeURIComponent(userId) : "#/peer/" + encodeURIComponent(r.data.id));
     } catch (e) { setBusy(false); setMsg({ k: "err", t: "Error: " + e.message }); }
   };
 

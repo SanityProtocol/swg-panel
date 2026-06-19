@@ -275,6 +275,7 @@ a.ifgroup-head:hover b{color:var(--brand)}
 .targetopt{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:7px 10px;background:var(--surface-2)}
 .targetopt.sel{border-color:var(--line-solid)}
 .targetopt .topt-main{display:flex;align-items:center;gap:9px;flex:1;cursor:pointer;min-width:0}
+.targetopt.locked .topt-main{cursor:default}
 .targetopt .box{width:17px;height:17px;border:1.5px solid var(--line-solid);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;flex:none;color:var(--online)}
 .targetopt.sel .box{border-color:var(--online)}
 .targetopt .swatch{width:10px;height:10px;border-radius:50%;flex:none}
