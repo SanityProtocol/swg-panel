@@ -488,13 +488,16 @@ def op_create_iface(cfg, req):
     pub = run(cmd + ["pubkey"], input_text=priv + "\n").strip()
     addr = f"{net.network_address + 1}/{net.prefixlen}"
     wan = _wan_iface()
-    up = (f"sysctl -q -w net.ipv4.ip_forward=1; "
-          f"iptables -t nat -A POSTROUTING -s {net} -o {wan} -j MASQUERADE; "
-          f"iptables -A FORWARD -i %i -o {wan} -j ACCEPT; "
-          f"iptables -A FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")
-    down = (f"iptables -t nat -D POSTROUTING -s {net} -o {wan} -j MASQUERADE; "
-            f"iptables -D FORWARD -i %i -o {wan} -j ACCEPT; "
-            f"iptables -D FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT")
+    # NAT is BEST-EFFORT (each step `|| true`) so the interface still comes up where iptables/nat
+    # isn't available (e.g. some containers) — matching node-entrypoint.sh's non-fatal NAT. A failed
+    # rule just means clients won't egress until NAT is sorted; it never blocks bring-up.
+    up = (f"sysctl -q -w net.ipv4.ip_forward=1 || true; "
+          f"iptables -t nat -A POSTROUTING -s {net} -o {wan} -j MASQUERADE || true; "
+          f"iptables -A FORWARD -i %i -o {wan} -j ACCEPT || true; "
+          f"iptables -A FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT || true")
+    down = (f"iptables -t nat -D POSTROUTING -s {net} -o {wan} -j MASQUERADE || true; "
+            f"iptables -D FORWARD -i %i -o {wan} -j ACCEPT || true; "
+            f"iptables -D FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT || true")
     body = (f"[Interface]\nPrivateKey = {priv}\nAddress = {addr}\nListenPort = {port}\nMTU = {mtu}\n"
             f"PostUp = {up}\nPostDown = {down}\n")
     if tool == "awg":
