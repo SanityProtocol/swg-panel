@@ -233,9 +233,6 @@ a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
 .iftype.awg{background:rgba(31,200,214,.15);color:var(--brand)}
 .iftype.turn{background:rgba(167,139,245,.17);color:#B49BF7}
 .iftype.muted{background:rgba(98,116,139,.13);color:var(--unknown)}
-.ncard-body{cursor:pointer}
-.ncard-body .ntop .rowarrow{color:var(--faint)}
-.ncard-body:hover .nname{color:var(--brand)}
 
 /* user detail: peers grouped by interface */
 .ifgroup{margin:0 0 18px}
@@ -453,14 +450,17 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* ───────── nodes management screen ───────── */
 /* nodes list: one full-width block per line, actions on the right */
 .nodegrid{display:flex;flex-direction:column;gap:15px}
-.ncard{display:flex;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:background .15s}
+/* grid: title row spans the full width (so CPU load can reach over the controls);
+   data row (col 1) and controls (col 2) share the second row, so they line up. */
+.ncard{display:grid;grid-template-columns:1fr auto;align-items:center;column-gap:12px;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:background .15s;padding:16px}
 .ncard.removing{opacity:.82;border-style:dashed}
 .ncard:hover{background:var(--surface-2)}
-.ncard-body{flex:1;min-width:0;padding:16px}
-.ncard .ntop{display:flex;align-items:center;gap:9px;margin-bottom:18px}
+.ncard .ntop{grid-column:1 / -1;display:flex;align-items:center;gap:9px;margin-bottom:18px;cursor:pointer}
+.ncard .nmeta{grid-column:1}
 .ncard .nname{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
-/* CPU load lives at the right of the title row */
+/* CPU load lives at the right of the title row, reaching over the controls */
 .ncard .nm-cpuitem{flex:none}
 .ncard .nsync{font-size:11.5px;white-space:nowrap}
 .ncard .ntop .rowarrow{color:var(--faint)}
@@ -484,11 +484,11 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-thru .thru{display:flex;gap:16px}
 .nm-thru .down,.nm-thru .up{min-width:80px;white-space:nowrap}
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
-.nm-cpu .hm-bar{width:168px;flex:none}
+.nm-cpu .hm-bar{width:240px;flex:none}
 .nm-cpu .nm-v{flex:none}
-/* controls: horizontal row, aligned down with the data row (not the title row) */
-.nacts{display:flex;align-items:flex-end;gap:4px;padding:0 12px 13px;background:transparent}
-@media(max-width:680px){.ncard{flex-direction:column}.nacts{flex-direction:row;border-left:none;border-top:1px solid var(--line);justify-content:flex-end;padding:8px 12px}}
+/* controls: horizontal row in the second grid row, so they line up with the data row */
+.nacts{grid-column:2;display:flex;align-items:center;gap:4px;padding-left:6px;background:transparent}
+@media(max-width:680px){.ncard .nmeta{grid-column:1 / -1}.nacts{grid-column:1 / -1;justify-content:flex-end;border-top:1px solid var(--line);margin-top:10px;padding-top:10px}}
 .btn-danger{background:rgba(240,89,107,.1);color:var(--dangling);border:1px solid rgba(240,89,107,.32);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
 .btn-danger:hover{background:rgba(240,89,107,.2)}
 .btn-danger:disabled{opacity:.5;cursor:not-allowed}
