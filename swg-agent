@@ -455,7 +455,7 @@ def _ensure_tool(tool):
         sh("add-apt-repository", "-y", "ppa:amnezia/ppa")
         sh("apt-get", "update", "-qq"); sh("apt-get", "install", "-y", "amneziawg")
     if not (shutil.which(tool) and shutil.which(tool + "-quick")):
-        detail = (" — last error: " + log[-1]) if log else ""
+        detail = (" — failed steps: " + " ;; ".join(log)) if log else ""
         raise AgentError("no_tool", f"'{tool}' tools aren't installed and auto-install failed{detail}. "
                          f"Install {'wireguard' if tool == 'wg' else 'amneziawg'} on the node manually, then retry")
 
