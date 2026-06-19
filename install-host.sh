@@ -704,6 +704,7 @@ Environment=SWG_PANEL_FLEET=${ETC_DIR}/fleet.json
 Environment=SWG_PANEL_WEB=${PANEL_DIR}
 Environment=SWG_PANEL_HOST=${bind}
 Environment=SWG_PANEL_PORT=${PORT}
+Environment=SWG_UPDATE_TRIGGER=${STATE_DIR}/.update-request
 ${extra}
 Restart=on-failure
 RestartSec=2
@@ -716,6 +717,44 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+  mk_update_unit                                   # wire one-click host self-update (root, own cgroup)
+}
+
+# One-click self-update: a root systemd updater the (unprivileged) panel triggers by touching a
+# file. swg-update.path watches the trigger and starts swg-update.service, which runs in its OWN
+# cgroup so 'systemctl restart swg-panel-server' mid-update can't kill it. swg programs only.
+mk_update_unit(){
+  writef /usr/local/bin/swg-update 755 <<'WRAP'
+#!/usr/bin/env bash
+# swg-update — fixed root entrypoint for one-click in-place update (panel + co-located node).
+# swg programs only (panel/noded/agent); never wg/awg/turn-proxies. Logs to the journal.
+set -euo pipefail
+URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
+curl -fsSL "$URL" | bash -s update -y --no-components
+WRAP
+  writef /etc/systemd/system/swg-update.service 644 <<EOF
+[Unit]
+Description=swg-panel one-click self-update (swg programs only)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/swg-update
+EOF
+  writef /etc/systemd/system/swg-update.path 644 <<EOF
+[Unit]
+Description=watch for a swg-panel update request
+
+[Path]
+PathModified=${STATE_DIR}/.update-request
+Unit=swg-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  printf '' | writef "$STATE_DIR/.update-request" 660            # pre-create so PathModified arms cleanly
+  run chown "$PANEL_USER:swg" "$STATE_DIR/.update-request" 2>/dev/null || true
+  run systemctl daemon-reload
+  run systemctl enable --now swg-update.path || warn "couldn't enable swg-update.path (one-click host update)"
 }
 
 # (no push receiver — nodes connect outbound over HTTPS; enroll them in the Nodes screen)

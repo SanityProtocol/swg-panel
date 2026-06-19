@@ -340,8 +340,10 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .dh-ver{display:flex;align-items:center;gap:10px;align-self:center}   /* version + check/update, level with the title */
 .dh-ver .nm-ver{margin-left:0}
 .upd-busy{pointer-events:none;opacity:.75;cursor:default}
-.iconbtn.checking{color:var(--brand);pointer-events:none}     /* "check for updates" while polling */
-.iconbtn.checking svg{animation:spin .8s linear infinite}
+/* "check for updates": cyan + spinning while polling, back to grey when done. The extra
+   .appbar-right selector beats `.appbar-right .iconbtn{color:--dim}` (same specificity, later). */
+.iconbtn.checking, .appbar-right .iconbtn.checking{color:var(--brand);pointer-events:none}
+.iconbtn.checking svg{animation:spin .8s linear infinite;transform-origin:center}
 .detail-head .title h1{margin:0;font-family:var(--mono);font-size:22px;font-weight:600;color:var(--ink)}
 .detail-head .grow{flex:1}
 .bigdots{display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap}
@@ -491,6 +493,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ncard:hover .nname{color:var(--brand)}
 /* CPU load lives at the right of the title row, reaching over the controls */
 .ncard .nm-cpuitem{flex:none}
+.upd-dot{display:inline-flex;align-items:center;color:#F0913C;flex:none}   /* orange "update available" marker before the node name */
+.ntop .upd-dot{margin-right:1px}
 .nm-ver{font-family:var(--mono);font-size:11px;color:var(--dim);display:inline-flex;align-items:center;gap:8px;margin-left:12px}
 .nm-ver.out{color:#F0913C}
 .nm-ver-tag{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#F0913C;background:rgba(240,145,60,.16);padding:1px 6px;border-radius:99px;display:inline-flex;align-items:center;gap:5px}

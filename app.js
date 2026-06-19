@@ -842,12 +842,12 @@ function NodeDetail({ node: rawName }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${dname}</h1><span class=${"tport" + (node.transport === "https" ? " https" : "")}>${node.transport}</span>${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}</div>
+      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1><span class=${"tport" + (node.transport === "https" ? " https" : "")}>${node.transport}</span>${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}</div>
       <div class="grow"></div>
       <div class="dh-ver">
-        ${nrec.version ? html`<span class=${"nm-ver" + (nrec.outdated ? " out" : "")}>v${nrec.version}</span>` : null}
-        ${nrec.updating ? html`<span class="nm-ver-tag"><span class="spin sm"></span>updating</span>`
-          : nrec.outdated ? html`<button class="btn btn-mini ver-upd" onClick=${() => updateNode(nrec)}><${Ic} i="download"/> Update</button>`
+        ${nrec.version ? html`<span class="nm-ver">v${nrec.version}</span>` : null}
+        ${nrec.updating ? html`<span class="livepill updpill upd-busy">updating <span class="spin sm"></span></span>`
+          : nrec.outdated ? html`<button class="livepill updpill" onClick=${() => updateNode(nrec)} title="Update this node">update node to <b>${nrec.latest || "?"}</b></button>`
           : html`<button class="iconbtn" title="Check for updates" onClick=${checkForUpdate}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
       </div>
     </div>
@@ -1910,13 +1910,11 @@ function NodeCard({ n }) {
   const nav = () => go("#/node/" + encodeURIComponent(n.id));
   return html`<div class=${"ncard clk" + (removing ? " removing" : "")} onClick=${nav}>
     <div class="ntop">
+      ${n.outdated && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
       <span class=${"tport" + (n.transport === "https" ? " https" : "")}>${n.transport}</span>
       <span class=${"nstat " + st}>${stTxt}</span>
       ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span>` : null}
-      ${n.version ? html`<span class=${"nm-ver" + (n.outdated ? " out" : "")} title=${n.outdated ? "Update available — latest is " + (n.latest || "?") : "Up to date"}>v${n.version}${
-        n.updating ? html`<span class="nm-ver-tag"><span class="spin sm"></span>updating</span>`
-        : n.outdated ? html`<button class="btn btn-mini ver-upd" onClick=${e => { e.stopPropagation(); updateNode(n); }}><${Ic} i="download"/> Update</button>` : null}</span>` : null}
       <span class="grow"></span>
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>

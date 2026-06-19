@@ -102,6 +102,9 @@ UPDATE_CMD = os.environ.get(
     "SWG_UPDATE_CMD",
     "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh"
     " | bash -s update -y --no-components")
+# Touching this file path-activates a root systemd updater (swg-update.path → swg-update.service),
+# which runs in its OWN cgroup so restarting the panel mid-update doesn't kill it. Set by the installer.
+UPDATE_TRIGGER = os.environ.get("SWG_UPDATE_TRIGGER")
 
 
 def _check_latest_remote():
@@ -1510,27 +1513,24 @@ def api(method, path, qs, body, deps):
                                    and LATEST_REMOTE["version"] != VERSIONS.get("panel"))}}
 
     if method == "POST" and path == "/api/host/update":
-        # Update THIS host (panel + a co-located node) in place. We can only self-update when we can
-        # run the privileged updater: as root, or via passwordless sudo, and not inside our own
-        # container. Otherwise hand back the exact command to run on the host (don't fail silently).
+        # Update THIS host (panel + a co-located node) in place. The panel runs unprivileged, so it
+        # can't (and shouldn't) run the privileged updater itself. The installer wires a root systemd
+        # updater that watches a trigger file; we just touch it. If that's not present (older install
+        # or Docker), hand back the exact command to run on the host instead of failing silently.
         manual_cmd = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
                       "bootstrap.sh | sudo bash -s update -y --no-components")
-        is_root = (os.geteuid() == 0)
-        can_sudo = is_root or subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0
-        if IN_DOCKER or not can_sudo:
-            reason = "this panel runs in Docker (a container can't recreate itself)" if IN_DOCKER \
-                else "the panel isn't running as root and passwordless sudo isn't available"
-            return 200, {"ok": True, "data": {"manual": True, "cmd": manual_cmd, "reason": reason}}
-        cmd = UPDATE_CMD if is_root else ("sudo -n " + UPDATE_CMD)
-        logf = os.path.join(deps.get("stats_dir") or "/tmp", "swg-update.log")
-        try:
-            lf = open(logf, "ab", buffering=0)
-            subprocess.Popen(["bash", "-lc", cmd], stdin=subprocess.DEVNULL,
-                             stdout=lf, stderr=lf, start_new_session=True)
-        except Exception as e:
-            return 500, {"ok": False, "error": f"couldn't start updater: {e}", "code": "exec_failed"}
-        ev_append(roster_path, "node", "host", "Host update started", "")
-        return 200, {"ok": True, "data": {"started": True, "log": logf}}
+        if not IN_DOCKER and UPDATE_TRIGGER:
+            try:
+                os.makedirs(os.path.dirname(UPDATE_TRIGGER) or ".", exist_ok=True)
+                with open(UPDATE_TRIGGER, "w") as f:
+                    f.write(str(int(time.time())) + "\n")    # swg-update.path fires swg-update.service
+                ev_append(roster_path, "node", "host", "Host update started", "")
+                return 200, {"ok": True, "data": {"started": True}}
+            except Exception as e:
+                return 500, {"ok": False, "error": f"couldn't signal the updater: {e}", "code": "exec_failed"}
+        reason = ("this panel runs in Docker — a container can't recreate itself" if IN_DOCKER
+                  else "automatic host update isn't set up on this install (update once on the host to enable it)")
+        return 200, {"ok": True, "data": {"manual": True, "cmd": manual_cmd, "reason": reason}}
 
     if method == "POST" and path == "/api/nodes/rotate":
         nid = body.get("id") or ""

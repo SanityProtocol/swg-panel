@@ -23,6 +23,7 @@ import hashlib
 import http.client
 import json
 import os
+import shutil
 import socket
 import ssl
 import subprocess
@@ -481,11 +482,14 @@ def run_self_update(node_cfg, want):
     called on a valid sync reply that carries an 'update'. Updates swg-noded/swg-agent (and a co-located
     panel) — NOT wg/awg/turn-proxies. The panel clears the request once we report the new version."""
     cmd = (node_cfg.get("node") or {}).get("update_cmd") or DEFAULT_UPDATE_CMD
+    base = cmd if isinstance(cmd, list) else ["bash", "-lc", (cmd if os.geteuid() == 0 else "sudo -n " + cmd)]
     try:
-        if isinstance(cmd, list):
-            argv = cmd
+        # run OUTSIDE swg-noded's own cgroup, so the updater's 'systemctl restart swg-noded' doesn't
+        # kill the updater itself. systemd-run --scope gives it a fresh transient scope.
+        if os.path.exists("/run/systemd/system") and shutil.which("systemd-run"):
+            argv = ["systemd-run", "--scope", "--collect", "--quiet", "--unit", "swg-self-update"] + base
         else:
-            argv = ["bash", "-lc", (cmd if os.geteuid() == 0 else "sudo -n " + cmd)]
+            argv = base
         subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
         print(f"self-update started → {want.get('to')}", flush=True)

@@ -58,6 +58,46 @@ $DRYRUN && info "DRY RUN — nothing will change."
 info "swg-panel update — latest is version $(col_v "$NEW_VER")"
 found=0
 
+install_update_unit(){   # idempotent: wire one-click host self-update for an existing bare-metal panel
+  local st="${STATE_DIR:-/var/lib/swg-panel}" usr="${PANEL_USER:-swgpanel}" trig
+  trig="${st}/.update-request"
+  if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-update + swg-update.{service,path} + trigger drop-in"; return 0; fi
+  cat > /usr/local/bin/swg-update <<'WRAP'
+#!/usr/bin/env bash
+# swg-update — fixed root entrypoint for one-click in-place update (swg programs only).
+set -euo pipefail
+URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
+curl -fsSL "$URL" | bash -s update -y --no-components
+WRAP
+  chmod 755 /usr/local/bin/swg-update
+  cat > /etc/systemd/system/swg-update.service <<EOF
+[Unit]
+Description=swg-panel one-click self-update (swg programs only)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/swg-update
+EOF
+  cat > /etc/systemd/system/swg-update.path <<EOF
+[Unit]
+Description=watch for a swg-panel update request
+
+[Path]
+PathModified=${trig}
+Unit=swg-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  [ -e "$trig" ] || { : > "$trig"; chown "$usr:swg" "$trig" 2>/dev/null || true; chmod 660 "$trig"; }
+  # point the (already-installed) panel at the trigger via a drop-in — don't edit the main unit
+  install -d /etc/systemd/system/swg-panel-server.service.d
+  printf '[Service]\nEnvironment=SWG_UPDATE_TRIGGER=%s\n' "$trig" \
+    > /etc/systemd/system/swg-panel-server.service.d/zz-swg-update.conf
+  systemctl daemon-reload
+  systemctl enable --now swg-update.path >/dev/null 2>&1 || warn "couldn't enable swg-update.path"
+}
+
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if [ -f "$PANEL_DIR/swg-panel-server" ]; then
   found=1
@@ -69,6 +109,7 @@ if [ -f "$PANEL_DIR/swg-panel-server" ]; then
     # whole vendor/ dir — the buildless SPA needs the vendored Preact + htm ESM, not just qrcode
     [ -d "$SRC/vendor" ] && { run mkdir -p "$PANEL_DIR/vendor"; run cp -a "$SRC/vendor/." "$PANEL_DIR/vendor/"; }
     run chmod 755 "$PANEL_DIR/swg-panel-server"; stamp "$PANEL_DIR"
+    install_update_unit                              # ensure one-click host self-update is wired
     run systemctl restart swg-panel-server && ok "panel updated + restarted" || warn "couldn't restart swg-panel-server"
   fi
 fi
