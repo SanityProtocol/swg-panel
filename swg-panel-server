@@ -1510,20 +1510,27 @@ def api(method, path, qs, body, deps):
                                    and LATEST_REMOTE["version"] != VERSIONS.get("panel"))}}
 
     if method == "POST" and path == "/api/host/update":
-        # Update THIS host (panel + a co-located node) in place. For Docker we can't recreate our own
-        # container from inside it, so hand back the command to run on the host instead.
+        # Update THIS host (panel + a co-located node) in place. We can only self-update when we can
+        # run the privileged updater: as root, or via passwordless sudo, and not inside our own
+        # container. Otherwise hand back the exact command to run on the host (don't fail silently).
         manual_cmd = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
                       "bootstrap.sh | sudo bash -s update -y --no-components")
-        if IN_DOCKER:
-            return 200, {"ok": True, "data": {"manual": True, "cmd": manual_cmd}}
-        cmd = UPDATE_CMD if os.geteuid() == 0 else ("sudo -n " + UPDATE_CMD)
+        is_root = (os.geteuid() == 0)
+        can_sudo = is_root or subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0
+        if IN_DOCKER or not can_sudo:
+            reason = "this panel runs in Docker (a container can't recreate itself)" if IN_DOCKER \
+                else "the panel isn't running as root and passwordless sudo isn't available"
+            return 200, {"ok": True, "data": {"manual": True, "cmd": manual_cmd, "reason": reason}}
+        cmd = UPDATE_CMD if is_root else ("sudo -n " + UPDATE_CMD)
+        logf = os.path.join(deps.get("stats_dir") or "/tmp", "swg-update.log")
         try:
+            lf = open(logf, "ab", buffering=0)
             subprocess.Popen(["bash", "-lc", cmd], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                             stdout=lf, stderr=lf, start_new_session=True)
         except Exception as e:
             return 500, {"ok": False, "error": f"couldn't start updater: {e}", "code": "exec_failed"}
         ev_append(roster_path, "node", "host", "Host update started", "")
-        return 200, {"ok": True, "data": {"started": True}}
+        return 200, {"ok": True, "data": {"started": True, "log": logf}}
 
     if method == "POST" and path == "/api/nodes/rotate":
         nid = body.get("id") or ""

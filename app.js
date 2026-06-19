@@ -1880,7 +1880,7 @@ function updateHost() {
     onConfirm: async () => {
       const r = await api.hostUpdate();
       if (!r.ok) return toast(r.error || "Failed to start update.", "err");
-      if (r.data && r.data.manual) openModal(html`<${Sheet} title="Update this server"><div class="iface-intro"><div>This panel runs in Docker — it can't recreate its own container from inside. Run this on the host:</div></div><div class="field"><label>Command</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${r.data.cmd}</span><button class="copybtn" onClick=${() => copy(r.data.cmd, "Command copied")}><${Ic} i="copy"/></button></div></div><//>`);
+      if (r.data && r.data.manual) openModal(html`<${Sheet} title="Update this server"><div class="iface-intro"><div>Can't self-update — ${r.data.reason || "run it on the host"}. Run this on the host (as root):</div></div><div class="field"><label>Command</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${r.data.cmd}</span><button class="copybtn" onClick=${() => copy(r.data.cmd, "Command copied")}><${Ic} i="copy"/></button></div></div><//>`);
       else { setHostUpdating(); toast("Update started — the panel will restart shortly.", "ok"); }
     },
   });

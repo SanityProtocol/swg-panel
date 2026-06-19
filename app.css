@@ -69,7 +69,7 @@ h1,h2,h3{font-family:var(--sans)}
 .livepill.off .dot{display:none}                 /* … and no glowing dot */
 .updslot{display:inline-flex;align-items:center}
 .updpill{cursor:pointer;border-color:color-mix(in srgb,var(--ready) 42%,var(--line-solid))}
-.updpill b{color:var(--ready)}                   /* same as the online count, blue instead of green */
+.updpill b{color:var(--ready);font-size:11.5px}  /* online-count style, blue + a touch smaller */
 .updpill:hover{border-color:var(--ready);background:color-mix(in srgb,var(--ready) 12%,transparent)}
 
 .btn{cursor:pointer;border-radius:var(--r-sm);font-size:13px;border:1px solid transparent;transition:all .15s var(--ease);
