@@ -583,6 +583,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-wg{background:rgba(63,216,154,.13);color:var(--online)}
 .tg-awg{background:rgba(31,200,214,.14);color:var(--brand)}
 .tg-turn{background:rgba(167,139,245,.17);color:#B49BF7}
+.tg-warn{background:rgba(232,192,75,.16);color:var(--partial)}
 .tg-iface{background:color-mix(in srgb,var(--tgc,var(--dim)) 14%,transparent);color:var(--tgc,var(--dim))}
 .tg-gen{background:var(--surface-2);color:var(--dim);box-shadow:inset 0 0 0 1px var(--line-solid)}
 /* inactive items (offline/dangling/disconnected): grey the tags out */
