@@ -914,6 +914,7 @@ def api(method, path, qs, body, deps):
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
                         "creating": {k: ((v.get("cmd") or ["awg"])[0])               # iface → wg/awg (we know it)
                                      for k, v in (c.get("create") or {}).items()},
+                        "deleting": sorted((c.get("delete") or {}).keys()),         # ifaces being torn down
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 
@@ -1556,6 +1557,39 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "node", nid, "Cancelled interface request", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "removed": removed}}
 
+    if method == "POST" and path == "/api/iface/delete":
+        # Tear an interface down on the node (down + remove conf) and purge it from the panel: its
+        # peers' targets here go away (peers with no other deployment are deleted), and its overrides
+        # + any pending create/onboard are dropped. Destructive — the UI gates it behind typed confirm.
+        nid = body.get("node") or ""
+        iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not iface:
+            return 400, {"ok": False, "error": "interface name is required", "code": "bad_request"}
+        nodes[nid].setdefault("delete", {})[iface] = int(time.time())   # queue the node teardown
+        for key in ("create", "onboard", "ifaces"):
+            d = nodes[nid].get(key)
+            if isinstance(d, dict):
+                d.pop(iface, None)
+                if not d:
+                    nodes[nid].pop(key, None)
+        nodes_save(deps["nodes_path"], nodes)
+        roster = roster_load(roster_path); changed = False         # purge peer targets on this iface
+        for pid in list(roster["peers"].keys()):
+            p = roster["peers"][pid]
+            kept = [t for t in p.get("targets", []) if not (t.get("node") == nid and t.get("iface") == iface)]
+            if len(kept) != len(p.get("targets", [])):
+                changed = True
+                if kept:
+                    p["targets"] = kept; p["modified_at"] = int(time.time())
+                else:
+                    del roster["peers"][pid]
+        if changed:
+            roster_save(roster_path, roster)
+        ev_append(roster_path, "node", nid, "Deleting interface", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
     if method == "POST" and path == "/api/node/update":
         # Flag a (remote) node to self-update on its next sync. The node pulls this, runs the swg-only
         # updater (detached, restarts swg-noded), and the flag clears once it reports the new version.
@@ -1838,8 +1872,20 @@ class Handler(BaseHTTPRequestHandler):
                     node.pop(key, None)
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
+        # close DELETE requests once the iface is GONE from the snapshot (the node tore it down)
+        dele = node.get("delete") or {}
+        if dele:
+            present = set((snap.get("interfaces") or {}).keys())
+            remaining = {k: v for k, v in dele.items() if k in present}
+            if remaining != dele:
+                node["delete"] = remaining
+                if not remaining:
+                    node.pop("delete", None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
+                                "delete": list((node.get("delete") or {}).keys()),
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "update": upd or None, "interval": interval})
 

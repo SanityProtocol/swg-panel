@@ -283,6 +283,7 @@ const api = {
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
   ifaceCancel(b) { return this.post("/api/iface/cancel", b); },
+  ifaceDelete(b) { return this.post("/api/iface/delete", b); },
   nodeUpdate(b) { return this.post("/api/node/update", b); },
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
@@ -1091,6 +1092,26 @@ function LoadIfaceSheet({ node }) {
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
+// Delete an interface — destructive, so gated behind typing "DELETE <iface>" (case-sensitive).
+function DeleteIfaceSheet({ node, iface }) {
+  const [txt, setTxt] = useState(""); const [busy, setBusy] = useState(false);
+  const phrase = "DELETE " + iface;
+  const ok = txt === phrase;
+  const del = async () => {
+    if (!ok || busy) return;
+    setBusy(true);
+    const r = await api.ifaceDelete({ node, iface });
+    if (!r.ok) { setBusy(false); return toast(r.error || "Failed to delete interface.", "err"); }
+    closeModal(); await Store.poll();
+    toast("Interface deletion requested — the node tears it down on its next sync.", "ok");
+    go("#/node/" + encodeURIComponent(node));   // this interface's page is going away
+  };
+  return html`<${Sheet} title=${"Delete interface · " + iface}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" disabled=${!ok || busy} onClick=${del}>Delete interface</button></>`}>
+    <div class="notice warn"><${Ic} i="warn"/><span>This permanently tears down <b>${iface}</b> on the node: the interface goes <b>down</b>, its <b>.conf and server key are removed</b>, and <b>every peer on this interface is destroyed</b>. Peers deployed only here are deleted from the panel and their configs/QRs stop working. This can't be undone.</span></div>
+    <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
+  <//>`;
+}
 function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
 function EditIfaceSheet({ node, iface }) {
   const meta = Store.ifaceMeta(node, iface) || {};
@@ -1113,7 +1134,7 @@ function EditIfaceSheet({ node, iface }) {
     closeModal(); await Store.poll(); toast("Interface saved — the node applies the port on its next sync.", "ok");
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
       <div>Endpoint IP only changes what configs/QRs tell clients to dial.</div>
       <div>Changing the Listen port reconfigures the interface on the node (peers are kept; clients reconnect on the new port).</div>

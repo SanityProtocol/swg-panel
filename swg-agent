@@ -511,6 +511,22 @@ def op_create_iface(cfg, req):
     return {"iface": iface, "public_key": pub, "address": addr, "conf": conf, "cmd": cmd, "listen_port": port}
 
 
+def op_delete_iface(cfg, req):
+    """Tear a managed interface down and forget it: <tool>-quick down, remove its .conf, disable its
+    unit. Destroys the interface, its server keypair, and all its peers on this node. Best-effort on
+    each step so a partially-up interface still gets cleaned up."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)            # raises if it isn't managed here
+    tool = (ic.get("cmd") or ["awg"])[0]
+    with contextlib.suppress(Exception):
+        run([tool + "-quick", "down", iface])
+    with contextlib.suppress(Exception):
+        run(["systemctl", "disable", f"{tool}-quick@{iface}"], check=False)
+    with contextlib.suppress(Exception):
+        os.remove(ic["conf"])
+    return {"iface": iface, "deleted": True}
+
+
 # ───────────────────────── dispatch ─────────────────────────
 
 def respond(ok, op, data=None, error=None, code=None):
@@ -526,7 +542,7 @@ def respond(ok, op, data=None, error=None, code=None):
 
 READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
 WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface,
-             "create-iface": op_create_iface}
+             "create-iface": op_create_iface, "delete-iface": op_delete_iface}
 
 
 def main():

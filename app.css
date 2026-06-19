@@ -79,6 +79,8 @@ h1,h2,h3{font-family:var(--sans)}
 .btn-primary .plus{font-size:16px;line-height:0;margin-top:-1px}
 .btn-ghost{background:var(--surface-2);color:var(--dim);border-color:var(--line-solid);padding:8px 13px}
 .btn-ghost:hover{color:var(--ink);border-color:var(--brand)}
+.btn-ghost.danger{color:var(--dangling)}
+.btn-ghost.danger:hover{color:var(--dangling);border-color:var(--dangling)}
 .btn-mini{background:transparent;color:var(--dim);border-color:var(--line-solid);padding:5px 11px;font-size:12px;border-radius:7px}
 .btn-mini:hover{color:var(--ready);border-color:var(--ready)}
 /* cyan accent for panel-header actions only (Add peer, Load new interface, Edit interface, Adopt all…) */

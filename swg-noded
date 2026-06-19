@@ -519,6 +519,31 @@ def create_ifaces(node_cfg, create, agent, sudo):
     return res
 
 
+def delete_ifaces(node_cfg, delete, agent, sudo):
+    """Tear down panel-requested interfaces (down + remove conf via swg-agent) and stop managing them.
+    Only on a valid sync. The panel clears the request once the iface stops appearing in snapshots."""
+    res = {"deleted": [], "errors": []}
+    if not delete:
+        return res
+    ifaces = node_cfg.get("interfaces") or {}
+    changed = False
+    for iface in list(delete):
+        if iface not in ifaces:             # already gone — panel clears it when the snapshot lacks it
+            continue
+        r = run_agent(agent, sudo, {"op": "delete-iface", "iface": iface})
+        if not r.get("ok"):
+            res["errors"].append(f"{iface}: {r.get('error')}"); continue
+        ifaces.pop(iface, None)
+        changed = True
+        res["deleted"].append(iface)
+    if changed:
+        try:
+            _persist_config(node_cfg)
+        except Exception as e:
+            res["errors"].append(f"persist config.json: {e}")
+    return res
+
+
 # node self-update is NODE-ONLY: on a master box (panel + node together) it must NOT restart the
 # co-located panel, or the panel restart breaks the very sync that would clear the update request.
 DEFAULT_UPDATE_CMD = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
@@ -575,13 +600,16 @@ def main():
                 if reply.get("update") and not update_started:        # panel asked us to self-update
                     update_started = run_self_update(node_cfg, reply["update"])
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
+                dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 r = reconcile(node_cfg, reply["desired"], agent, sudo)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)
-                if r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"] or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]:
+                if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
+                        or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]
+                        or dl["deleted"] or dl["errors"]):
                     print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} "
-                          f"onboard+{ob['added']} create+{cr['created']} "
-                          f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'])[:3]}", flush=True)
+                          f"onboard+{ob['added']} create+{cr['created']} delete-{dl['deleted']} "
+                          f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'])[:3]}", flush=True)
                 interval = reply.get("interval", interval)
             elif status == 0:
                 print("sync error:", reply.get("error"), flush=True)
