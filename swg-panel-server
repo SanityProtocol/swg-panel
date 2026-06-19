@@ -795,6 +795,7 @@ def api(method, path, qs, body, deps):
                 tx += sum(p.get("tx_speed", 0) or 0 for p in ps)
             hh = hrrd_read(os.path.join(stats_dir, f"health-{nid}.rrd")) if stats_dir else None
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
+                        "transport": "https",
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
                         "last_seen": ls,
