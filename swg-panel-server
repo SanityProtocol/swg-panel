@@ -605,6 +605,27 @@ def node_describe(snapshot):
             "data": {"hostname": snapshot.get("hostname"), "interfaces": interfaces}}
 
 
+def apply_iface_meta(node_cfg, interfaces):
+    """Overlay panel-side per-interface overrides onto node-reported metadata, in place:
+    a public endpoint host/port (what clients dial — may differ from the node's listen port
+    behind NAT), and a default DNS / MTU used when rendering configs & creating new peers.
+    Does not change the node — only what the panel emits in client configs. Returns interfaces."""
+    node_ep = (node_cfg or {}).get("endpoint_host")
+    ifov = (node_cfg or {}).get("ifaces") or {}
+    for ifn, ifc in interfaces.items():
+        ov = ifov.get(ifn) or {}
+        rep = ifc.get("endpoint") or ""
+        rep_host = rep.rsplit(":", 1)[0] if ":" in rep else rep
+        host = ov.get("endpoint_host") or node_ep or rep_host
+        port = ov.get("endpoint_port") or ifc.get("listen_port")
+        if host and port:
+            ifc["endpoint"] = f"{host}:{port}"
+        if ov.get("dns") is not None:
+            ifc["dns"] = ov["dns"]
+        ifc["mtu"] = ov.get("mtu") or 1280
+    return interfaces
+
+
 def panel_next_ip(snaps, roster, nodes, iface):
     """Lowest address free on every selected node's iface AND unclaimed in the roster."""
     used, subnet = set(), None
@@ -834,11 +855,7 @@ def api(method, path, qs, body, deps):
             if not snap:
                 continue
             d = node_describe(snap)["data"]["interfaces"]
-            ep = (nodes.get(nid) or {}).get("endpoint_host")
-            if ep:
-                for ifc in d.values():
-                    port = ifc.get("listen_port")
-                    ifc["endpoint"] = f"{ep}:{port}" if port else ifc.get("endpoint")
+            apply_iface_meta(nodes.get(nid), d)
             out[nid] = d
         return out
 
@@ -913,11 +930,7 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "node has not reported yet (is swg-noded running?)",
                          "code": "offline"}
         d = node_describe(snap)
-        ep = (nodes.get(node) or {}).get("endpoint_host")   # value set in the Nodes screen wins
-        if ep:
-            for ifc in d["data"]["interfaces"].values():
-                port = ifc.get("listen_port")
-                ifc["endpoint"] = f"{ep}:{port}" if port else ifc.get("endpoint")
+        apply_iface_meta(nodes.get(node), d["data"]["interfaces"])
         return 200, d
 
     if method == "GET" and path == "/api/events":
@@ -1322,6 +1335,62 @@ def api(method, path, qs, body, deps):
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
+
+    if method == "POST" and path == "/api/iface/update":
+        # Panel-side per-interface overrides: public endpoint host/port (what clients dial) and the
+        # default DNS / MTU. Affects only the configs the panel emits (existing peers keep their
+        # stored configs; new peers pick up the defaults). The node itself is untouched.
+        nid = body.get("node") or ""
+        iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not iface:
+            return 400, {"ok": False, "error": "iface is required", "code": "bad_request"}
+        ov = dict((nodes[nid].get("ifaces") or {}).get(iface) or {})
+        if "endpoint_host" in body:
+            h = (body.get("endpoint_host") or "").strip()
+            if h and (" " in h or "/" in h):
+                return 400, {"ok": False, "error": "endpoint host must be a bare hostname or IP", "code": "bad_request"}
+            ov["endpoint_host"] = h if h else None
+            if not h:
+                ov.pop("endpoint_host", None)
+        if "endpoint_port" in body:
+            raw = body.get("endpoint_port")
+            if raw in (None, "", 0, "0"):
+                ov.pop("endpoint_port", None)
+            else:
+                try:
+                    p = int(raw)
+                except (TypeError, ValueError):
+                    return 400, {"ok": False, "error": "port must be a number", "code": "bad_request"}
+                if not (1 <= p <= 65535):
+                    return 400, {"ok": False, "error": "port must be 1–65535", "code": "bad_request"}
+                ov["endpoint_port"] = p
+        if "dns" in body:
+            dns = body.get("dns")
+            if isinstance(dns, str):
+                dns = [s.strip() for s in dns.split(",") if s.strip()]
+            ov["dns"] = dns or []
+        if "mtu" in body:
+            raw = body.get("mtu")
+            if raw in (None, "", 0, "0"):
+                ov.pop("mtu", None)
+            else:
+                try:
+                    m = int(raw)
+                except (TypeError, ValueError):
+                    return 400, {"ok": False, "error": "mtu must be a number", "code": "bad_request"}
+                if not (576 <= m <= 9200):
+                    return 400, {"ok": False, "error": "mtu must be 576–9200", "code": "bad_request"}
+                ov["mtu"] = m
+        ifaces = nodes[nid].setdefault("ifaces", {})
+        if ov:
+            ifaces[iface] = ov
+        else:
+            ifaces.pop(iface, None)
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Updated interface", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "override": ov}}
 
     if method == "POST" and path == "/api/nodes/rotate":
         nid = body.get("id") or ""

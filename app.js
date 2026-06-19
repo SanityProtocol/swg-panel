@@ -272,6 +272,7 @@ const api = {
   peerRekey(b) { return this.post("/api/peers/rekey", b); },
   peerAdopt(b) { return this.post("/api/peers/adopt", b); },
   peerSaveConfig(b) { return this.post("/api/peers/save-config", b); },
+  ifaceUpdate(b) { return this.post("/api/iface/update", b); },
 };
 
 // ───────────────────────── store + reactive bus ─────────────────────────
@@ -900,17 +901,18 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <div class="detail-head">
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span><span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span><span class="when">${onl} / ${peers.length} online</span></div>
       <div class="grow"></div>
-      <button class="btn btn-primary" onClick=${() => openCreatePeer({ node, iface })}><span class="plus"><${Ic} i="plus"/></span> Add peer</button>
     </div>
 
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
-      : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}>
-        <dl class="dl">
-          <dt>Endpoint</dt><dd>${meta.endpoint || "—"}</dd>
-          <dt>Server address</dt><dd>${meta.address || "—"}</dd>
-          <dt>DNS</dt><dd>${(meta.dns || []).join(", ") || "—"}</dd>
-          ${type === "awg" ? html`<dt>AmneziaWG</dt><dd>${awg}</dd>` : null}
-        </dl>
+      : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
+          actions=${html`<button class="btn btn-mini" onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button>`}>
+        <div class="iface-grid">
+          <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
+          <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${meta.address || "—"}</span></div>
+          <div class="ig-item"><span class="ig-l">DNS</span><span class="ig-v">${(meta.dns || []).join(", ") || "—"}</span></div>
+          <div class="ig-item"><span class="ig-l">MTU</span><span class="ig-v">${meta.mtu || 1280}</span></div>
+        </div>
+        ${type === "awg" ? html`<div class="iface-amnezia"><span class="ig-l">AmneziaWG</span><span class="ig-v">${awg}</span></div>` : null}
       <//>`}
 
     ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="turn" count=${tps.length}>
@@ -922,7 +924,8 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         </div></div>`)}</div>
     <//>` : null}
 
-    <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}>
+    <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
+        actions=${html`<button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface })}><${Ic} i="plus"/> Add peer</button>`}>
       <${PeerGrid} rows=${ifaceRows} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=""/>
     <//>
 
@@ -946,6 +949,42 @@ function OrphanRow({ o }) {
       })}>Adopt</button>
       <${RowError} k=${"orphan:" + o.node + "|" + o.iface + "|" + o.pubkey}/>
     </td></tr>`;
+}
+
+// Edit an interface's panel-side, config-facing settings: the public endpoint (host/port clients
+// dial — may differ from the node's listen port behind NAT) and the default DNS / MTU for new
+// peers. Does NOT touch the node or existing peers — only what the panel renders into configs.
+function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
+function EditIfaceSheet({ node, iface }) {
+  const meta = Store.ifaceMeta(node, iface) || {};
+  const ep = meta.endpoint || "";
+  const epHost = ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep;
+  const epPort = ep.includes(":") ? ep.slice(ep.lastIndexOf(":") + 1) : "";
+  const [host, setHost] = useState(epHost);
+  const [port, setPort] = useState(String(epPort || meta.listen_port || ""));
+  const [dns, setDns] = useState((meta.dns || []).join(", "));
+  const [mtu, setMtu] = useState(String(meta.mtu || 1280));
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true); setMsg({ k: "work", t: "saving…" });
+    const r = await api.ifaceUpdate({ node, iface, endpoint_host: host.trim(), endpoint_port: port.trim(), dns: dns.trim(), mtu: mtu.trim() });
+    if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to update interface." }); }
+    closeModal(); await Store.poll(); toast("Interface updated.", "ok");
+  };
+  return html`<${Sheet} title=${"Edit interface · " + iface}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    <p class="hint" style="margin:0 0 16px">These apply only to the configs the panel hands out. Existing peers keep their current configs; new peers and re-rendered QRs use these. The node and its interface aren't changed.</p>
+    <div class="row2">
+      <div class="field"><label>Public endpoint host / IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/></div>
+      <div class="field"><label>Public port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Blank = the node's listen port (${meta.listen_port || "—"}).</div></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Default DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated. Default for new peers (per-peer DNS isn't overwritten).</div></div>
+      <div class="field"><label>Default MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers.</div></div>
+    </div>
+    <div class="field"><label>Interface public key <span class="faint" style="text-transform:none;letter-spacing:0">— read-only</span></label><div class="cmdrow"><div class="tokenbox">${meta.public_key || "—"}</div>${meta.public_key ? html`<button class="copyaction" onClick=${() => copy(meta.public_key, "Public key copied")}><${Ic} i="copy"/> Copy</button>` : null}</div></div>
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
 }
 
 // ═════════════════════════ SCREEN: PEERS (by node) ═════════════════════════
@@ -1986,7 +2025,7 @@ function AdvancedFields({ st, startOpen }) {
       <div class="field"><label>DNS</label>
         <input class=${errs.dns ? "bad" : ""} value=${st.dns} onInput=${e => { st.dnsTouched.current = true; st.set("dns", e.target.value); }} placeholder="from server, or e.g. 1.1.1.1"/>${fld("dns", "Comma-separated IPs. Blank = no DNS line.")}</div>
       <div class="row2">
-        <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} value=${st.mtu} onInput=${e => st.set("mtu", e.target.value)} placeholder="1280"/>${fld("mtu", "Blank = 1280.")}</div>
+        <div class="field"><label>MTU</label><input class=${errs.mtu ? "bad" : ""} value=${st.mtu} onInput=${e => { if (st.mtuTouched) st.mtuTouched.current = true; st.set("mtu", e.target.value); }} placeholder="1280"/>${fld("mtu", "Blank = 1280.")}</div>
         <div class="field"><label>Persistent keepalive (s)</label><input class=${errs.keepalive ? "bad" : ""} value=${st.keepalive} onInput=${e => st.set("keepalive", e.target.value)} placeholder="25"/>${fld("keepalive", "0 disables · blank = 25.")}</div>
       </div></div>` : null}
   <//>`;
@@ -2024,9 +2063,9 @@ async function createPeersForTargets(userId, chosen, opts) {
 function useConfigFields() {
   const [dns, setDns] = useState(""); const [mtu, setMtu] = useState("1280");
   const [keepalive, setKeepalive] = useState("25"); const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
-  const dnsTouched = useRef(false);
+  const dnsTouched = useRef(false); const mtuTouched = useRef(false);
   const setters = { dns: setDns, mtu: setMtu, keepalive: setKeepalive, allowed: setAllowed };
-  return { dns, mtu, keepalive, allowed, dnsTouched, setDns, set: (k, v) => setters[k](v),
+  return { dns, mtu, keepalive, allowed, dnsTouched, mtuTouched, setDns, setMtu, set: (k, v) => setters[k](v),
            opts: () => ({ dns, mtu, keepalive, allowed }) };
 }
 
@@ -2042,8 +2081,11 @@ function CreatePeerSheet({ prefill }) {
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {   // default DNS from the first chosen interface until the operator edits it
-    if (!cf.dnsTouched.current && chosen.length) { const m = Store.ifaceMeta(chosen[0].node, chosen[0].iface); if (m) cf.setDns((m.dns || []).join(", ")); }
+  useEffect(() => {   // default DNS + MTU from the first chosen interface until the operator edits them
+    if (!chosen.length) return;
+    const m = Store.ifaceMeta(chosen[0].node, chosen[0].iface); if (!m) return;
+    if (!cf.dnsTouched.current) cf.setDns((m.dns || []).join(", "));
+    if (!cf.mtuTouched.current && m.mtu) cf.setMtu(String(m.mtu));
   }, [chosen]);
 
   const pskBad = psk.trim() && !V.psk(psk);
