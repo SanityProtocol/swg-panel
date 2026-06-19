@@ -1664,13 +1664,14 @@ function NodeCard({ n }) {
         <span class=${"tport" + (n.transport === "https" ? " https" : "")}>${n.transport}</span>
         <span class=${"nstat " + st}>${stTxt}</span>
         ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span>` : null}
+        <span class="grow"></span>
+        <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
       </div>
       <div class="nmeta">
         <span class="nm-item"><span class="nm-l">Peers</span>${here.length ? html`<span class="nm-v nm-peers">${onl}<small>/${here.length}</small></span>` : html`<span class="nm-v nm-peers faint">none</span>`}</span>
         <span class="nm-item"><span class="nm-l">Interfaces</span>${ifTags.length ? html`<span class="tags">${ifTags}</span>` : html`<span class="nm-v faint">—</span>`}</span>
         <span class="nm-item"><span class="nm-l">Turn-proxies</span>${tps.length ? html`<span class="tags">${tps.map(tp => html`<span class="tg tg-turn">${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}</span>` : html`<span class="nm-v faint">—</span>`}</span>
-        <span class="nm-item"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
-        <span class="nm-item"><span class="nm-l">Throughput</span><span class="nm-v"><span class="down">↓ ${rate(n.rx_speed)}</span> <span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
+        <span class="nm-item nm-thru"><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
       </div>
     </div>
     <div class="nacts">
