@@ -453,6 +453,34 @@ else
   ok "staged compose file (images pulled prebuilt from GHCR — no build context needed)"
 fi
 
+# Standalone node → host networking: every interface port (incl. ones created from the panel) is on
+# the host with no publishing, like bare-metal. Not for master (the node needs the swg-panel docker
+# DNS). host net disallows per-container `ports:`/`sysctls:`, so disable them + set ip_forward on the host.
+if [ "$PROFILE" = node ]; then
+  if $DRYRUN; then echo "    [skip] enable host networking for the node service + host ip_forward"
+  else
+    python3 - "$PREFIX$INSTALL_DIR/docker-compose.yml" <<'PYHOST'
+import sys, re
+p = sys.argv[1]; lines = open(p).read().splitlines(); out = []; in_node = False
+for ln in lines:
+    if re.match(r'^  swg-node:\s*$', ln): in_node = True
+    elif in_node and re.match(r'^  \S', ln): in_node = False
+    if in_node:
+        if re.match(r'^    container_name: swg-node\s*$', ln):
+            out += [ln, '    network_mode: host        # standalone node: every interface port is on the host']; continue
+        if re.match(r'^    (ports|sysctls):\s*$', ln):
+            out.append('    # ' + ln.strip() + '   (disabled — host networking)'); continue
+        if re.match(r'^      - ("?\$\{NODE_LISTEN_PORT|net\.ipv4\.ip_forward)', ln):
+            out.append('    #   ' + ln.strip()); continue
+    out.append(ln)
+open(p, 'w').write('\n'.join(out) + '\n')
+PYHOST
+    printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    ok "node: host networking enabled (every interface port reachable, no per-port publishing)"
+  fi
+fi
+
 # ───────────────────────── write .env ─────────────────────────
 mkdir -p "$PREFIX$INSTALL_DIR"
 cat > "$PREFIX$INSTALL_DIR/.env" <<EOF
