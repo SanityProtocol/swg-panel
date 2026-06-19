@@ -1262,8 +1262,9 @@ const usersFilter = { text: "" };
 // A peer's configs as a modal: one QR/download card per target (reuses TargetCard).
 function openPeerConfigs(peer) {
   const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per row; the modal sizes to fit
-  // border-box width: 256·cols + 14·gaps + 40 body padding + 2 border + a little slack
-  const width = cols * 256 + (cols - 1) * 14 + 48;
+  // border-box width: 256·cols + 14·gaps + 40 body padding + 2 border + slack (so a row never
+  // wraps early from rounding). cols caps at 3, so 4→row 2, 7→row 3, etc.
+  const width = cols * 256 + (cols - 1) * 14 + 56;
   openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width}>
     <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}</div>
   <//>`);
