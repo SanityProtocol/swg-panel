@@ -856,12 +856,12 @@ function NodeDetail({ node: rawName }) {
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online">
       <${HealthAlerts} health=${nrec.health}/>
       ${nrec.health_history
-        ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} h=${52} head=${html`<${HealthMeters} health=${nrec.health}/>`}/>`
+        ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} liveFine=${nrec.health_live} h=${52} head=${html`<${HealthMeters} health=${nrec.health}/>`}/>`
         : html`<${HealthMeters} health=${nrec.health}/>`}
     <//>` : null}
 
     ${nrec.health_history ? html`<${Panel} icon="gauge" title="Throughput">
-      <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} h=${72}/>
+      <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
     <//>` : null}
 
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}>
@@ -1724,7 +1724,7 @@ const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem",
 function HistMsg({ span, need, range }) {
   return html`<div class="harea-msg"><${Ic} i="info"/><span>This node has only <b>${dur(span)}</b> of history so far — the <b>${range}</b> view needs about <b>${dur(need)}</b>. It'll fill in as the node keeps running.</span></div>`;
 }
-function RangedHistory({ node, kind, live, h, head }) {
+function RangedHistory({ node, kind, live, h, head, liveFine }) {
   const [range, setRange] = useState("live");
   const [fetched, setFetched] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1736,7 +1736,9 @@ function RangedHistory({ node, kind, live, h, head }) {
     return () => { ok = false; };
   }, [node, range]);
   // live = last 10 minute-buckets, hour = the full ~60-pt /api/state series, longer ranges fetched
-  const s = range === "live" ? tailSeries(live, 10) : range === "hour" ? (live || {}) : (fetched || {});
+  // LIVE = the raw per-sync buffer (~5s points) when present, else the coarse last-10-minute series
+  const s = range === "live" ? ((liveFine && (liveFine.t || []).length > 1) ? liveFine : tailSeries(live, 10))
+    : range === "hour" ? (live || {}) : (fetched || {});
   // the node may not have run long enough to fill this range — detect from the data's own time span
   const tt = (s.t || []).filter(x => x != null);
   const span = tt.length > 1 ? (tt[tt.length - 1] - tt[0]) : 0;

@@ -693,6 +693,7 @@ HRRD_SLOTS = 1440       # minute ring: 24h of buckets  → live + day views
 HRRD_HSTEP = 3600       # hour ring: seconds per bucket (1-hour resolution)
 HRRD_HSLOTS = 744       # hour ring: 31 days of buckets → week + month views
 HRRD_VIEW = 60          # points returned for the default (live) sparkline
+LIVE_MAX = 120          # in-memory raw samples kept per node for the LIVE view (one per sync; ~10min@5s)
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, min_step, min_slots
 HRRD_SLOT = struct.Struct("<IBBBxII")         # bucket, cpu, mem, disk, pad, rx, tx  (16 bytes)
 HRRD_NA = 255
@@ -849,6 +850,11 @@ def api(method, path, qs, body, deps):
                 rx += sum(p.get("rx_speed", 0) or 0 for p in ps)
                 tx += sum(p.get("tx_speed", 0) or 0 for p in ps)
             hh = hrrd_read(os.path.join(stats_dir, f"health-{nid}.rrd")) if stats_dir else None
+            lb = (deps.get("live_samples") or {}).get(nid) or []   # raw 5s-granular buffer (one point/sync)
+            na = lambda v: None if v == HRRD_NA else v
+            hl = ({"t": [s[0] for s in lb], "cpu": [na(s[1]) for s in lb], "mem": [na(s[2]) for s in lb],
+                   "disk": [na(s[3]) for s in lb], "rx": [s[4] for s in lb], "tx": [s[5] for s in lb]}
+                  if len(lb) > 1 else None)
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https",
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
@@ -859,6 +865,7 @@ def api(method, path, qs, body, deps):
                         "hostname": snap.get("hostname"),
                         "health": snap.get("health"),     # per-node load/mem/disk/uptime (additive)
                         "health_history": hh,             # recent cpu/mem/disk % series (RRD-style ring)
+                        "health_live": hl,                # raw per-sync samples for the LIVE view (5s)
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 
@@ -1623,6 +1630,11 @@ class Handler(BaseHTTPRequestHandler):
             rx, tx = snap_traffic(snap)              # append one point to the per-node RRD ring
             with contextlib.suppress(Exception):
                 hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), cpu, mem, disk, rx, tx)
+            # also keep a short in-memory raw buffer (one sample per sync) for a 5s-granular LIVE view
+            buf = Handler.deps.setdefault("live_samples", {}).setdefault(nid, [])
+            buf.append((int(time.time()), cpu, mem, disk, rx, tx))
+            if len(buf) > LIVE_MAX:
+                del buf[:len(buf) - LIVE_MAX]
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
         # panel-managed interface config (currently the listen port) the node converges to
