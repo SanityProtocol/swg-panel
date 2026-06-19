@@ -570,7 +570,7 @@ function UserCombo({ onPick, placeholder }) {
   const ql = q.toLowerCase();
   const shown = users.filter(u => !ql || (u.name + " " + (u.tag || "")).toLowerCase().includes(ql)).slice(0, 8);
   return html`<div class="usercombo" onfocusout=${e => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false); }}>
-    <input class="uc-input" value=${q} placeholder=${placeholder || "Assign to…"} onFocus=${() => setOpen(true)}
+    <input class="uc-input" value=${q} placeholder=${placeholder || "Assign to…"} onClick=${() => setOpen(true)}
       onInput=${e => { setQ(e.target.value); setOpen(true); }}/>
     ${open ? html`<div class="uc-list">${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id}
       onClick=${() => { setOpen(false); setQ(""); onPick(u.id); }}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
@@ -591,7 +591,7 @@ function UserPicker({ value, onChange, allowUnassigned, placeholder }) {
   return html`<div class="usercombo" onfocusout=${e => { if (!e.currentTarget.contains(e.relatedTarget)) { setOpen(false); setQ(""); } }}>
     <input class="uc-input" value=${open ? q : selText}
       placeholder=${placeholder || (allowUnassigned ? "— unassigned —" : "Assign to a user…")}
-      onFocus=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}/>
+      onClick=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}/>
     ${open ? html`<div class="uc-list">
       ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">— unassigned —</span></button>` : null}
       ${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
