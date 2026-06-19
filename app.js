@@ -1453,11 +1453,9 @@ function NodesScreen() {
   useStore();
   const ns = Store.nodes || [];
   return html`<div class="screen">
-    <div class="section-title" style="margin-top:6px"><h2>Nodes</h2><span class="count">${ns.length + (ns.length === 1 ? " server" : " servers")}</span><span class="grow"></span>
+    <div class="section-title" style="margin:6px 2px 16px"><h2>Nodes</h2><span class="count">${ns.length + (ns.length === 1 ? " server" : " servers")}</span>
+      <span class="nodehint">Entry servers run <span class="mono">swg-noded</span>, which syncs to this panel over HTTPS — the node needs no inbound access.</span><span class="grow"></span>
       <button class="btn btn-primary" onClick=${openNodeCreate}><span class="plus"><${Ic} i="plus"/></span> Add node</button></div>
-    <div class="hint" style="margin:0 2px 16px;color:var(--faint);font-size:12px">
-      Entry servers run <span class="mono">swg-noded</span>, which syncs to this panel over HTTPS — the node needs no inbound access. Add one here to get a one-time enrollment command.
-    </div>
     ${!ns.length ? html`<div class="empty"><b>No nodes yet</b>Add your first entry server — you'll get a one-time command to run on it.</div>`
       : html`<div class="nodegrid">${ns.map(n => html`<${NodeCard} key=${n.id} n=${n}/>`)}</div>`}
   </div>`;
@@ -1651,10 +1649,13 @@ function NodeHealth({ health, node, compact, history }) {
 function NodeCard({ n }) {
   const st = n.status || "dangling";
   const stTxt = st === "online" ? "reporting" : (st === "offline" ? "offline" : "awaiting enroll");
-  const sync = st === "dangling" ? "never connected" : (st === "online" ? "synced " + ago(n.last_seen) : "last seen " + ago(n.last_seen));
   const ifTags = ifaceTags(n.id);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
+  const snap = Store.stats[n.id];
+  const tps = (snap && snap.turn_proxies) || [];
+  const h = n.health, hasCpu = h && Array.isArray(h.load);
+  const l1 = hasCpu ? (h.load[0] || 0) : 0, cpct = Math.min(100, l1 / ((h && h.ncpu) || 1) * 100);
   const removing = n.removing;
   return html`<div class=${"ncard" + (removing ? " removing" : "")}>
     <div class="ncard-body clk" onClick=${() => go("#/node/" + encodeURIComponent(n.id))}>
@@ -1663,14 +1664,12 @@ function NodeCard({ n }) {
         <span class=${"tport" + (n.transport === "https" ? " https" : "")}>${n.transport}</span>
         <span class=${"nstat " + st}>${stTxt}</span>
         ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span>` : null}
-        <span class="grow"></span>
-        <span class="when nsync">${sync}</span>
-        <span class="rowarrow"><${Ic} i="arrow"/></span>
       </div>
       <div class="nmeta">
-        <span class="nm-item"><span class="nm-l">Endpoint</span><span class="nm-v">${n.endpoint_host || "—"}</span></span>
-        <span class="nm-item"><span class="nm-l">Interfaces</span>${ifTags.length ? html`<span class="tags">${ifTags}</span>` : html`<span class="nm-v faint">—</span>`}</span>
         <span class="nm-item"><span class="nm-l">Peers</span>${here.length ? html`<${UsageBar} value=${onl} total=${here.length}/>` : html`<span class="nm-v faint">none</span>`}</span>
+        <span class="nm-item"><span class="nm-l">Interfaces</span>${ifTags.length ? html`<span class="tags">${ifTags}</span>` : html`<span class="nm-v faint">—</span>`}</span>
+        <span class="nm-item"><span class="nm-l">Turn-proxies</span>${tps.length ? html`<span class="tags">${tps.map(tp => html`<span class="tg tg-turn">${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}</span>` : html`<span class="nm-v faint">—</span>`}</span>
+        <span class="nm-item"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
         <span class="nm-item"><span class="nm-l">Throughput</span><span class="nm-v"><span class="down">↓ ${rate(n.rx_speed)}</span> <span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
       </div>
     </div>
