@@ -325,6 +325,11 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
   border:1px solid var(--line);color:var(--dim);display:flex;align-items:center;gap:6px;transition:all .15s}
 .chip:hover{color:var(--ink)}
 .chip.on{color:var(--ink);border-color:var(--brand);background:rgba(70,216,168,.1)}
+/* protocol picker (Load new interface): AmneziaWG=purple, WireGuard=green, Existing=orange when selected */
+.proto3{flex-wrap:wrap}
+.chip.c-awg.on{color:#C9B6FF;border-color:#B49BF7;background:color-mix(in srgb,#B49BF7 16%,transparent)}
+.chip.c-wg.on{color:#8DEFC4;border-color:var(--online);background:color-mix(in srgb,var(--online) 14%,transparent)}
+.chip.c-ex.on{color:#F6B873;border-color:#F0913C;background:color-mix(in srgb,#F0913C 16%,transparent)}
 .chip .swatch{width:7px;height:7px;border-radius:50%;background:var(--cc,var(--dim))}
 .chip b{font-family:var(--mono);font-weight:600;color:var(--ink-2)}
 
@@ -669,6 +674,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .iface-amnezia .ig-v{display:flex;flex-direction:column;gap:3px}
 /* edit-interface intro: one sentence per line, label colour, small */
 .iface-intro{display:flex;flex-direction:column;gap:4px;margin:0 0 16px;font-size:11px;line-height:1.4;color:var(--dim)}
+.iface-intro.big{gap:9px;margin:4px 0 18px;font-size:13px;line-height:1.55;color:var(--ink-2)}
 /* AmneziaWG param editor: four columns grouped by prefix (J / S / H / I) */
 .awg-cols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px 10px;align-items:start}
 .awg-col{display:flex;flex-direction:column;gap:9px;min-width:0}

@@ -1021,35 +1021,64 @@ function OrphanRow({ o }) {
 // reconnect via the new port). Default DNS / MTU seed new peers. Interface key shown read-only.
 // Ask the node to manage an existing wg/awg interface the panel didn't auto-detect. The node only
 // needs the tool (wg/awg) + the .conf path; the public endpoint is a panel-side render override.
-function openOnboardIface(node) { openModal(html`<${OnboardIfaceSheet} node=${node}/>`); }
-function OnboardIfaceSheet({ node }) {
-  const [iface, setIface] = useState(""); const [proto, setProto] = useState("awg");
-  const [conf, setConf] = useState(""); const [host, setHost] = useState("");
+function openOnboardIface(node) { openModal(html`<${LoadIfaceSheet} node=${node}/>`); }
+function LoadIfaceSheet({ node }) {
+  const [proto, setProto] = useState("awg");   // awg | wg | existing
+  const [iface, setIface] = useState("");
+  const [host, setHost] = useState(""); const [port, setPort] = useState("");
+  const [dns, setDns] = useState("1.1.1.1"); const [mtu, setMtu] = useState("1280"); const [ka, setKa] = useState("25");
+  const [conf, setConf] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  const confPh = proto === "wg" ? "/etc/wireguard/wg0.conf" : "/etc/amnezia/amneziawg/awg0.conf";
+  const existing = proto === "existing";
+  const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const save = async () => {
-    if (!iface.trim() || /[\s/]/.test(iface.trim())) return setMsg({ k: "err", t: "Interface name is required (no spaces or /)." });
-    if (!conf.trim().startsWith("/")) return setMsg({ k: "err", t: "Enter the absolute path to the interface's .conf." });
     setBusy(true); setMsg({ k: "work", t: "requesting…" });
-    const r = await api.ifaceOnboard({ node, iface: iface.trim(), protocol: proto, conf: conf.trim(), endpoint_host: host.trim() });
-    if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to request onboarding." }); }
-    closeModal(); await Store.poll(); toast("Onboarding requested — the node adds it on its next sync.", "ok");
+    let r;
+    if (existing) {
+      const c = conf.trim();
+      if (!c.startsWith("/")) return fail("Enter the absolute path to the interface's .conf.");
+      const base = (c.split("/").pop() || "").replace(/\.conf$/i, "");   // seed the name from the filename
+      r = await api.ifaceOnboard({ node, iface: base, protocol: "auto", conf: c, endpoint_host: host.trim() });
+    } else {
+      const nm = iface.trim();
+      if (!nm || /[\s/]/.test(nm)) return fail("Interface name is required (no spaces or /).");
+      if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
+      if (!api.ifaceCreate) { setBusy(false); return setMsg({ k: "work", t: "Creating a brand-new interface is being wired up — for now use “Existing unbound interface” to adopt one the node already runs." }); }
+      r = await api.ifaceCreate({ node, iface: nm, protocol: proto, endpoint_host: host.trim(),
+        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim() });
+    }
+    if (!r.ok) return fail(r.error || "Request failed.");
+    closeModal(); await Store.poll();
+    toast(existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync.", "ok");
   };
-  return html`<${Sheet} title="Load interface"
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Request</button></>`}>
-    <div class="iface-intro">
-      <div>Have the node start managing an existing wg/awg interface the panel didn't pick up.</div>
-      <div>The node only needs the tool and the interface's .conf path — it reads the rest (keys, subnet, AWG params) and its existing peers show up as adoptable.</div>
-      <div>It's applied on the node's next sync, then the interface appears here.</div>
-    </div>
+  return html`<${Sheet} title="Load new interface"
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>${existing ? "Adopt" : "Create"}</button></>`}>
     <div class="field"><label>Protocol</label>
-      <div class="chiprow">
-        <button class=${"chip" + (proto === "awg" ? " on" : "")} onClick=${() => setProto("awg")}>AmneziaWG</button>
-        <button class=${"chip" + (proto === "wg" ? " on" : "")} onClick=${() => setProto("wg")}>WireGuard</button>
+      <div class="chiprow proto3">
+        <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => setProto("awg")}>AmneziaWG</button>
+        <button class=${"chip c-wg" + (proto === "wg" ? " on" : "")} onClick=${() => setProto("wg")}>WireGuard</button>
+        <button class=${"chip c-ex" + (proto === "existing" ? " on" : "")} onClick=${() => setProto("existing")}>Existing unbound interface</button>
       </div></div>
-    <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
-    <div class="field"><label>Config path</label><input value=${conf} onInput=${e => setConf(e.target.value)} placeholder=${confPh} autocomplete="off"/></div>
-    <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
+    ${existing ? html`<${Fragment}>
+      <div class="iface-intro big">
+        <div>Have the node start managing an existing wg/awg interface the panel didn't pick up.</div>
+        <div>The node only needs the tool and the interface's .conf path — it reads the rest (keys, subnet, AWG params) and its existing peers show up as adoptable.</div>
+        <div>It's applied on the node's next sync, then the interface appears here.</div>
+      </div>
+      <div class="field"><label>Config path</label><input autofocus value=${conf} onInput=${e => setConf(e.target.value)} placeholder="/etc/wireguard/wg0.conf" autocomplete="off"/></div>
+      <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
+    <//>` : html`<${Fragment}>
+      <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
+      <div class="row2">
+        <div class="field"><label>Endpoint host / IP</label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/></div>
+        <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/></div>
+        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
+      </div>
+      <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div>
+    <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

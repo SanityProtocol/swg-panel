@@ -1490,7 +1490,8 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "interface name is required (no spaces or /)", "code": "bad_request"}
         if not conf or " " in conf or not conf.startswith("/"):
             return 400, {"ok": False, "error": "an absolute config path is required", "code": "bad_request"}
-        cmd = ["wg"] if (body.get("protocol") or "awg").lower() == "wg" else ["awg"]
+        proto = (body.get("protocol") or "awg").lower()
+        cmd = ["wg"] if proto == "wg" else (["auto"] if proto == "auto" else ["awg"])
         nodes[nid].setdefault("onboard", {})[iface] = {"cmd": cmd, "conf": conf}
         eh = (body.get("endpoint_host") or "").strip()
         if eh:

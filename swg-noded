@@ -456,6 +456,13 @@ def onboard_ifaces(node_cfg, onboard):
         try:
             if not conf or not os.path.exists(conf):
                 res["errors"].append(f"{iface}: conf not found ({conf})"); continue
+            if cmd == ["auto"]:                     # "Existing" gave no protocol — detect it from the conf
+                info = parse_interface_section(open(conf).read())
+                cmd = ["awg"] if any(k in info for k in AWG_KEYS) else ["wg"]
+                try:
+                    run(cmd + ["show", iface, "dump"])
+                except Exception:
+                    cmd = ["wg"] if cmd == ["awg"] else ["awg"]   # fall back to the other tool
             run(cmd + ["show", iface, "dump"])      # raises if the interface isn't actually up
         except Exception as e:
             res["errors"].append(f"{iface}: {e}"); continue
