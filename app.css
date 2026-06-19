@@ -750,7 +750,7 @@ a.tg:hover{filter:brightness(1.25)}
 .iconbtn:hover{color:var(--ink);background:var(--raise);border-color:var(--line-solid)}
 .iconbtn.danger:hover{color:var(--dangling);border-color:var(--dangling)}
 .linkbtn{background:none;border:0;color:var(--brand);cursor:pointer;padding:0;font:inherit}
-.cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:center}
+.cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:flex-start}
 .cfgsheet .deploy{width:256px;flex:none}
 .cfgsheet .deploy .qr{flex:1;min-width:0}
 .cfgsheet .deploy .qr .qrimg{width:100%}

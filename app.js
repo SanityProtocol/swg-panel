@@ -1263,7 +1263,7 @@ const usersFilter = { text: "" };
 function openPeerConfigs(peer) {
   const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per row; the modal sizes to fit
   const width = cols * 256 + (cols - 1) * 14 + 40;
-  openModal(html`<${Sheet} title=${"Configs · " + (peer.title || peer.name || "peer")} width=${width}>
+  openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width}>
     <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}</div>
   <//>`);
 }
@@ -1943,11 +1943,11 @@ function Sheet({ title, children, foot, onClose, width }) {
     <div class="sheet" role="dialog" aria-modal="true" ref=${ref} style=${width ? "width:" + width + "px;max-width:calc(100vw - 32px)" : ""}>
       <div class="sheet-head"><h3>${title}</h3><button class="x" onClick=${tryClose}>×</button></div>
       <div class="sheet-body">${children}</div>
-      <div class="sheet-foot">${discard
+      ${(foot || discard) ? html`<div class="sheet-foot">${discard
         ? html`<${Fragment}><span class="discard-msg"><${Ic} i="warn"/> Discard unsaved changes?</span><span class="grow"></span>
             <button class="btn btn-ghost" onClick=${() => setDiscarding(false)}>Keep editing</button>
             <button class="btn btn-danger" onClick=${onClose}>Discard</button></>`
-        : foot}</div>
+        : foot}</div>` : null}
     </div></div>`;
 }
 
