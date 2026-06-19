@@ -1260,12 +1260,13 @@ function ConnectionsScreen() {
 // ═════════════════════════ SCREEN: USERS ═════════════════════════
 const usersFilter = { text: "" };
 // A peer's configs as a modal: one QR/download card per target (reuses TargetCard).
-function openPeerConfigs(peer) {
+function openPeerConfigs(peer, back) {
   const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per row; the modal sizes to fit
   // border-box width: 256·cols + 14·gaps + 40 body padding + 2 border + slack (so a row never
   // wraps early from rounding). cols caps at 3, so 4→row 2, 7→row 3, etc.
   const width = cols * 256 + (cols - 1) * 14 + 56;
-  openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width}>
+  // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
+  openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width} onClose=${back || closeModal}>
     <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}</div>
   <//>`);
 }
@@ -2320,7 +2321,7 @@ function PeerViewSheet({ pid, node, iface }) {
   return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/> QR</button>
+      <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, () => openPeerView(p.id, node, iface))}><${Ic} i="qr"/> QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p, () => openPeerView(p.id, node, iface))}><${Ic} i="copy"/> Copy to interface</button>
       <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null, () => openPeerView(p.id, node, iface))}><${Ic} i="pencil"/> Edit</button>
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
