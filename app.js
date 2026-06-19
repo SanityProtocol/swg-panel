@@ -2348,8 +2348,8 @@ function PeerViewSheet({ pid, node, iface }) {
 // (DNS/MTU/keepalive/AllowedIPs, applied to every target with a known config). Also offers copy
 // → another interface and key rotation (keeps the PSK). `focus` = the {node,iface} to edit IP for.
 // `done` = where Cancel / Save returns to (reopen the peer view when edit came from it, else close).
-function openEditPeer(peer, focus, done) { openModal(html`<${EditPeerSheet} peer=${peer} focus=${focus} done=${done || closeModal}/>`); }
-function EditPeerSheet({ peer, focus, done }) {
+function openEditPeer(peer, focus, done, flash) { openModal(html`<${EditPeerSheet} peer=${peer} focus=${focus} done=${done || closeModal} flash=${flash}/>`); }
+function EditPeerSheet({ peer, focus, done, flash }) {
   done = done || closeModal;
   const [title, setTitle] = useState(peer.title || "");
   const [ips, setIps] = useState(() => Object.fromEntries(peer.targets.map(t => [tkey(t.node, t.iface), (t.ip || "").split("/")[0]])));
@@ -2359,7 +2359,7 @@ function EditPeerSheet({ peer, focus, done }) {
   const [dns, setDns] = useState(""); const [mtu, setMtu] = useState("1280");
   const [keepalive, setKeepalive] = useState("25"); const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
   const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
-  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let ok = true;
@@ -2425,9 +2425,16 @@ function EditPeerSheet({ peer, focus, done }) {
   };
 
   const rotate = () => {
-    openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true, back: done,
+    openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true,
+      back: () => openEditPeer(peer, focus, done),   // cancel/esc returns to the edit modal
       body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
-      onConfirm: () => rotatePeerKeys(peer) });
+      onConfirm: async () => {
+        await rotatePeerKeys(peer);
+        await Store.poll();
+        const fresh = Store.recon.peers.find(x => x.id === peer.id) || peer;
+        // the confirm closes itself after this; reopen the edit modal (next tick) with a green flash
+        setTimeout(() => openEditPeer(fresh, focus, done, { k: "ok", t: "Keys rotated — send the user the new QR / config; the old one no longer works." }), 0);
+      } });
   };
 
   return html`<${Sheet} title=${"Edit peer"} onClose=${done}

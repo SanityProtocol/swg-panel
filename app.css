@@ -638,7 +638,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .awg-f input{font-size:12px;padding:6px 8px}
 @media(max-width:560px){.awg-cols{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* interface public key inline next to its label with a small copy icon */
-.ipk-field{display:flex;align-items:center;gap:10px}
+.ipk-field{display:flex;align-items:center;gap:10px;margin-top:4px;margin-bottom:-6px}
 .ipk-field>label{margin:0;white-space:nowrap}
 .ipk-field .grow{flex:1}
 .ipk-val{font-family:var(--mono);font-size:12px;color:var(--ink-2);word-break:break-all;min-width:0;text-align:right}
