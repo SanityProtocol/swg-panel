@@ -1534,6 +1534,26 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Creating interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
+    if method == "POST" and path == "/api/iface/cancel":
+        # Drop a pending create/onboard request (clears a stuck "creating"/"onboarding" card). Does
+        # NOT touch anything the node already brought up — it only removes the panel-side request.
+        nid = body.get("node") or ""
+        iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        removed = False
+        for key in ("create", "onboard"):
+            d = nodes[nid].get(key)
+            if isinstance(d, dict) and iface in d:
+                d.pop(iface, None)
+                if not d:
+                    nodes[nid].pop(key, None)
+                removed = True
+        if removed:
+            nodes_save(deps["nodes_path"], nodes)
+            ev_append(roster_path, "node", nid, "Cancelled interface request", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "removed": removed}}
+
     if method == "POST" and path == "/api/node/update":
         # Flag a (remote) node to self-update on its next sync. The node pulls this, runs the swg-only
         # updater (detached, restarts swg-noded), and the flag clears once it reports the new version.

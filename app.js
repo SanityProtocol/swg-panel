@@ -282,6 +282,7 @@ const api = {
   ifaceUpdate(b) { return this.post("/api/iface/update", b); },
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
+  ifaceCancel(b) { return this.post("/api/iface/cancel", b); },
   nodeUpdate(b) { return this.post("/api/node/update", b); },
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
@@ -881,7 +882,7 @@ function NodeDetail({ node: rawName }) {
       ${(() => {
         const pcard = (ifn, label) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
           <div class="ifcard-top"><span class="iftype turn">${label === "creating" ? "new" : "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>${label}</span></div>
-          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it on its next sync…</span></div></div></div>`;
+          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it…</span><button class="btn btn-mini warn" title="Drop this pending request" onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>Cancel</button></div><${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
         const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
         const pendCr = (nrec.creating || []).filter(ifn => !(meta && meta[ifn]));
         const pending = pendOn.concat(pendCr);
