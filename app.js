@@ -341,10 +341,24 @@ function turnProxiesFor(node, iface) {
 }
 
 // resolve a per-target client config: session (built at creation) → stored → none
+// Resolve a peer's config and RE-RENDER it on the fly: client-side fields (private key, address,
+// DNS, MTU, AllowedIPs, keepalive, PSK) come from the stored/session source, but the server-facing
+// fields (Endpoint, server PublicKey, AmneziaWG params) are rebuilt from the CURRENT interface
+// metadata — so an interface endpoint change shows up in every config/QR without a re-issue.
+function rerenderConf(text, node, iface) {
+  if (!text) return text;
+  const meta = Store.ifaceMeta(node, iface);
+  if (!meta || !meta.public_key) return text;
+  const c = parseFullConf(text);
+  if (!c.privkey) return text;
+  return buildConf({ privkey: c.privkey, address: c.address, dns: c.dns, mtu: c.mtu,
+    awg_params: meta.awg_params, server_pubkey: meta.public_key, psk: c.psk,
+    endpoint: meta.endpoint, allowed: c.allowed, keepalive: c.keepalive });
+}
 function getConfig(pubkey, node, iface) {
   const s = Store.sessionConfigs[pubkey];
-  if (s && s[tkey(node, iface)]) return Promise.resolve(s[tkey(node, iface)]);
-  if (Store.storeConfigs) return api.config(pubkey, node, iface).then(r => r.ok ? r.data.config : null).catch(() => null);
+  if (s && s[tkey(node, iface)]) return Promise.resolve(rerenderConf(s[tkey(node, iface)], node, iface));
+  if (Store.storeConfigs) return api.config(pubkey, node, iface).then(r => rerenderConf(r.ok ? r.data.config : null, node, iface)).catch(() => null);
   return Promise.resolve(null);
 }
 function anySessionConf(pubkey) {
@@ -1023,8 +1037,8 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q }) {
             ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
             ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
           </div></td>` : null}
-          <td data-label="User" onClick=${e => e.stopPropagation()}>
-            ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
+          <td data-label="User" onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
+            ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span></a>`
                 : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
           <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
           <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
