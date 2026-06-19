@@ -906,7 +906,11 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const onl = peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface && t.online)).length;
   const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
   const tps = turnProxiesFor(node, iface);
-  const awg = meta && Object.keys(meta.awg_params || {}).length ? Object.entries(meta.awg_params).map(([k, v]) => k + "=" + v).join("  ") : "—";
+  // AmneziaWG params split into the four header columns: J* under Endpoint, S* under Server
+  // address, H* under DNS, and I* (+ anything else) under MTU.
+  const ap = (meta && meta.awg_params) || {};
+  const awgGrp = pred => Object.entries(ap).filter(([k]) => pred(k)).map(([k, v]) => k + "=" + v).join("  ");
+  const awgCols = [awgGrp(k => k[0] === "J"), awgGrp(k => k[0] === "S"), awgGrp(k => k[0] === "H"), awgGrp(k => !"JSH".includes(k[0]))];
   const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
   // one {peer,target} row per peer on this interface, fed to the shared PeerGrid
   const ifaceRows = rows.map(p => ({ p, t: p.targets.find(d => d.node === node && d.iface === iface) || {} }));
@@ -934,7 +938,12 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
           <div class="ig-item"><span class="ig-l">DNS</span><span class="ig-v">${(meta.dns || []).join(", ") || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">MTU</span><span class="ig-v">${meta.mtu || 1280}</span></div>
         </div>
-        ${type === "awg" ? html`<div class="iface-amnezia"><span class="ig-l">AmneziaWG</span><span class="ig-v">${awg}</span></div>` : null}
+        ${type === "awg" ? html`<div class="iface-amnezia">
+          <span class="ig-l">AmneziaWG</span>
+          <div class="iface-grid" style="margin-top:8px">
+            ${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g || "—"}</span></div>`)}
+          </div>
+        </div>` : null}
       <//>`}
 
     ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="turn" count=${tps.length}>
