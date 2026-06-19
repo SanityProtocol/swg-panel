@@ -586,18 +586,23 @@ function UserPicker({ value, onChange, allowUnassigned, placeholder }) {
   </div>`;
 }
 
-// Assign / reassign a peer to a user from the edit flow — always a FRESH credential, so it's
-// confirmed: the previous holder is revoked for good, the new owner needs a re-issued config.
+// Simple assign for an UNASSIGNED peer: just record the owner (roster metadata). The key / PSK /
+// config are kept, so a config already handed out keeps working — no fresh credential, no warning.
+function assignPeer(peer, userId) {
+  if (!userId) return;
+  return mutate({ key: "peer:" + peer.id,
+    patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = userId; },
+    call: () => api.peerUpdate({ peer_id: peer.id, user_id: userId }) });
+}
+
+// Reassign an ALREADY-assigned peer to a different user — this DOES rotate keys (the previous
+// holder must be revoked), so it's confirmed and the new owner needs a re-issued config.
 function confirmReassign(peer, userId, back) {
   const to = Store.recon.users.find(u => u.id === userId);
   const toName = to ? to.name : "the selected user";
-  const assigning = peer.unassigned;
   openConfirm({
-    title: assigning ? "Assign peer" : "Reassign peer", confirmLabel: assigning ? "Assign" : "Reassign",
-    danger: !assigning, warn: assigning, back,
-    body: assigning
-      ? "A fresh keypair and preshared key are generated for " + toName + ". Send them the new QR / config to import."
-      : "Reassigning to " + toName + " rotates the peer's keys. The current user loses access immediately and permanently — assigning them back later would still be a brand-new credential. " + toName + " gets a fresh QR / config that must be re-distributed.",
+    title: "Reassign peer", confirmLabel: "Reassign", danger: true, back,
+    body: "Reassigning to " + toName + " rotates the peer's keys. The current user loses access immediately and permanently — assigning them back later would still be a brand-new credential. " + toName + " gets a fresh QR / config that must be re-distributed.",
     onConfirm: () => assignPeerToUser(peer, userId),
   });
 }
@@ -618,7 +623,7 @@ function PeerOwnerControls({ peer, showDelete }) {
     <//>`;
   }
   return html`<span class="ownerctl">
-    <select class="selwrap mini" onChange=${e => { const uid = e.target.value; e.target.value = ""; if (uid) assignPeerToUser(peer, uid); }}>
+    <select class="selwrap mini" onChange=${e => { const uid = e.target.value; e.target.value = ""; if (uid) assignPeer(peer, uid); }}>
       <option value="">Assign to…</option>
       ${users.map(u => html`<option value=${u.id}>${u.name}${u.tag ? " · " + u.tag : ""}</option>`)}
     </select>
@@ -1055,7 +1060,7 @@ function PeersScreen() {
             </div></td>` : null}
             <td data-label="User" onClick=${e => e.stopPropagation()}>
               ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)}><span>${u.name}</span></a>`
-                  : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeerToUser(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
+                  : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
             <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
             <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
             <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
@@ -2216,7 +2221,7 @@ function PeerViewSheet({ pid, node, iface }) {
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p, () => openPeerView(p.id, node, iface))}>Unassign</button>`}<//>`}>
     <div class="pv-head">
       <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a>`
-          : html`<${UserCombo} onPick=${uid => assignPeerToUser(p, uid)} placeholder="Assign to a user…"/>`}</div></div>
+          : html`<${UserCombo} onPick=${uid => assignPeer(p, uid)} placeholder="Assign to a user…"/>`}</div></div>
       <${Badge} s=${p.unassigned ? "unassigned" : p.status}/></div>
     <dl class="dl" style="margin:14px 0">
       <dt>Public key</dt><dd>${p.pubkey.slice(0, 22)}… <button class="copybtn" onClick=${() => copy(p.pubkey, "Public key copied")}><${Ic} i="copy"/></button></dd>
@@ -2323,10 +2328,11 @@ function EditPeerSheet({ peer, focus, done }) {
         onChange=${uid => {
           if ((uid || "") === (peer.user_id || "")) return;
           const back = () => openEditPeer(peer, focus, done);
-          if (!uid) return confirmUnassign(peer, back);
-          confirmReassign(peer, uid, back);
+          if (!uid) return confirmUnassign(peer, back);                       // assigned → unassign (revokes)
+          if (peer.unassigned) { assignPeer(peer, uid); done(); return; }     // first assign — keep the key, no warning
+          confirmReassign(peer, uid, back);                                   // user → different user (rotates keys)
         }}/>
-      <div class=${"hint"}>${peer.unassigned ? "Assigning generates a fresh key for the chosen user — send them the new config." : "Reassigning rotates the keys: the current user loses access for good and the new user needs a freshly issued config."}</div></div>
+      <div class=${"hint"}>${peer.unassigned ? "Assigns this peer to a user — the existing key and config are kept." : "Reassigning rotates the keys: the current user loses access for good and the new user needs a freshly issued config."}</div></div>
     ${ft ? html`<div class="field"><label>Address on ${Store.nodeName(ft.node)} · ${ft.iface}</label><input class=${ipBad ? "bad" : ""} value=${ip} onInput=${e => setIp(e.target.value)}/><div class=${"hint" + (ipBad ? " err" : "")}>${ipBad ? "Must be a valid IPv4 address." : "Changing this moves the peer's address on this interface."}</div></div>` : null}
     ${!loaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : !editable ? html`<div class="notice warn"><${Ic} i="warn"/><span>The client's private key isn't available, so DNS / MTU / routing can't be rebuilt${Store.storeConfigs ? "" : " (enable store_configs, or edit right after creating)"}. Title and address can still change.</span></div>`

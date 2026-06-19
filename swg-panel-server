@@ -1110,18 +1110,33 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/update":
-        # Edit a peer's operator-facing label (title). Metadata only — no connectivity impact.
+        # Edit a peer's operator-facing label (title) and/or owner (user_id). Metadata only —
+        # the key/PSK/config are untouched, so assigning an unassigned peer keeps the credential
+        # it already has (a config that's been handed out keeps working). Reassigning a peer
+        # between users (which must rotate keys) goes through /api/peers/rekey instead.
         pid = body.get("peer_id") or ""
         roster = roster_load(roster_path)
         p = roster["peers"].get(pid)
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        changed = {}
         if "title" in body:
-            p2 = peer_set(roster, pid, {"title": body.get("title", "")}, now())
-            roster_save(roster_path, roster)
+            changed["title"] = body.get("title", "")
+        if "user_id" in body:
+            uid = body.get("user_id")
+            if uid and uid not in roster["users"]:
+                return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
+            changed["user_id"] = uid or None
+        if not changed:
+            return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
+        p2 = peer_set(roster, pid, changed, now())
+        roster_save(roster_path, roster)
+        if "title" in changed:
             ev_append(roster_path, "peer", pid, "Renamed peer", peer_label(roster, p2))
-            return 200, {"ok": True, "data": p2}
-        return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
+        if "user_id" in changed:
+            ev_append(roster_path, "peer", pid,
+                      "Assigned peer" if changed["user_id"] else "Unassigned peer", peer_label(roster, p2))
+        return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/update-target":
         # Change a target's assigned address — a real connectivity change (its allowed_ips moves),
