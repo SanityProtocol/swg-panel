@@ -980,7 +980,11 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q}/>
     <//>
 
-    ${orphans.length ? html`<${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}>
+    ${orphans.length ? html`<${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}
+        actions=${html`<button class="btn btn-mini" onClick=${() => orphans.forEach(o => mutate({
+          key: "orphan:" + o.node + "|" + o.iface + "|" + o.pubkey,
+          call: () => api.peerAdopt({ pubkey: o.pubkey, target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
+        }))}><${Ic} i="link"/> Adopt all</button>`}>
       <table><tbody>
         ${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}
       </tbody></table>

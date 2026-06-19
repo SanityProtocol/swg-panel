@@ -200,7 +200,7 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .b-pending{background:rgba(232,192,75,.14);color:var(--pending)}
 .b-removing{background:rgba(240,145,60,.14);color:var(--removing)}
 .b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
-.b-orphan{background:rgba(192,132,232,.14);color:var(--orphan)}
+.b-orphan{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — matches the unmanaged/warn theme */
 .b-unknown{background:rgba(95,117,105,.16);color:var(--unknown)}
 .b-unassigned{background:rgba(95,117,105,.16);color:var(--unknown)}
 .b-empty{background:rgba(95,117,105,.12);color:var(--faint)}
