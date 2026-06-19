@@ -2338,9 +2338,9 @@ function PeerViewSheet({ pid, node, iface }) {
 function openEditPeer(peer, focus, done) { openModal(html`<${EditPeerSheet} peer=${peer} focus=${focus} done=${done || closeModal}/>`); }
 function EditPeerSheet({ peer, focus, done }) {
   done = done || closeModal;
-  const ft = focus ? peer.targets.find(t => t.node === focus.node && t.iface === focus.iface) : null;
   const [title, setTitle] = useState(peer.title || "");
-  const [ip, setIp] = useState(ft ? (ft.ip || "").split("/")[0] : "");
+  const [ips, setIps] = useState(() => Object.fromEntries(peer.targets.map(t => [tkey(t.node, t.iface), (t.ip || "").split("/")[0]])));
+  const setIpFor = (k, v) => setIps(m => ({ ...m, [k]: v }));
   const [loaded, setLoaded] = useState(false);
   const [confs, setConfs] = useState({});            // "node|iface" -> conf text (those we can rebuild)
   const [dns, setDns] = useState(""); const [mtu, setMtu] = useState("1280");
@@ -2362,15 +2362,15 @@ function EditPeerSheet({ peer, focus, done }) {
   }, [peer.id]);
 
   const editable = Object.keys(confs).length;
-  const ipChanged = ft && ip.trim() && ip.trim() !== (ft.ip || "").split("/")[0];
-  const ipBad = ft && ip.trim() && !V.ipv4(ip.trim().split("/")[0]);
+  const ipChangedFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && v !== (t.ip || "").split("/")[0]; };
+  const ipBadFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && !V.ipv4(v.split("/")[0]); };
+  const anyIpBad = peer.targets.some(ipBadFor);
   const errs = editable ? configErrors({ dns, mtu, keepalive, allowed }) : {};
   const save = async () => {
-    if (ipBad) return setMsg({ k: "err", t: "Address must be a valid IPv4." });
+    if (anyIpBad) return setMsg({ k: "err", t: "Each address must be a valid IPv4." });
     const ek = Object.keys(errs)[0]; if (ek) return setMsg({ k: "err", t: errs[ek] });
     setBusy(true); setMsg({ k: "work", t: "saving…" });
     const dnsArr = dns.split(",").map(s => s.trim()).filter(Boolean);
-    const newIP = ip.trim().split("/")[0];
     let fails = 0;
     try {
       if (title.trim() !== (peer.title || "")) {
@@ -2380,19 +2380,20 @@ function EditPeerSheet({ peer, focus, done }) {
       if (peer.unassigned && userId && userId !== (peer.user_id || "")) {
         const r = await api.peerUpdate({ peer_id: peer.id, user_id: userId }); if (!r.ok) fails++;
       }
-      // rebuild + persist each target's config (focus target gets the new address)
+      // rebuild + persist each target's config; any target whose address changed moves on its iface
       for (const t of peer.targets) {
         const k = tkey(t.node, t.iface); const cur = confs[k];
-        const isFocus = ft && t.node === ft.node && t.iface === ft.iface;
+        const changed = ipChangedFor(t);
+        const newIP = (ips[k] || "").trim().split("/")[0];
         if (!cur) {                                  // no config to rebuild — IP can still move
-          if (isFocus && ipChanged) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP }); if (!r.ok) fails++; }
+          if (changed) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP }); if (!r.ok) fails++; }
           continue;
         }
         const s = parseFullConf(cur);
-        const addr = (isFocus && ipChanged ? newIP : (s.address || "").split("/")[0]) + "/32";
+        const addr = (changed ? newIP : (s.address || "").split("/")[0]) + "/32";
         const conf = buildConf({ privkey: s.privkey, address: addr, dns: editable ? dnsArr : s.dns, mtu: (mtu.trim() || 1280), awg_params: s.awg_params, server_pubkey: s.server_pubkey, psk: s.psk, endpoint: s.endpoint, allowed: (allowed.trim() || "0.0.0.0/0, ::/0"), keepalive: keepalive.trim() });
         (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[k] = conf;
-        if (isFocus && ipChanged) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP, config: conf }); if (!r.ok) fails++; }
+        if (changed) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP, config: conf }); if (!r.ok) fails++; }
         else if (Store.storeConfigs) { const r = await api.peerSaveConfig({ pubkey: peer.pubkey, node: t.node, iface: t.iface, config: conf }); if (!r.ok) fails++; }
       }
     } catch (e) { setBusy(false); return setMsg({ k: "err", t: String(e.message || e) }); }
@@ -2427,11 +2428,19 @@ function EditPeerSheet({ peer, focus, done }) {
         : !userId ? "On Save you'll confirm unassigning — access is revoked and the keys rotate."
         : "On Save you'll confirm reassigning — the current user loses access for good and the new user needs a fresh config."
       }</div></div>
-    ${ft ? html`<div class="field"><label>Address on ${Store.nodeName(ft.node)} · ${ft.iface}</label><input class=${ipBad ? "bad" : ""} value=${ip} onInput=${e => setIp(e.target.value)}/><div class=${"hint" + (ipBad ? " err" : "")}>${ipBad ? "Must be a valid IPv4 address." : "Changing this moves the peer's address on this interface."}</div></div>` : null}
+    <div class="field"><label>Addresses</label>
+      <div class="targetpick">${peer.targets.map(t => {
+        const k = tkey(t.node, t.iface);
+        return html`<div class="targetopt sel locked" key=${k}>
+          <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="swatch" style=${"background:" + Store.nodeColor(t.node)}></span><span class="nm">${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
+          <input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>
+        </div>`;
+      })}</div>
+      <div class="hint">Changing an address moves the peer on that interface.</div>
+    </div>
     ${!loaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : !editable ? html`<div class="notice warn"><${Ic} i="warn"/><span>The client's private key isn't available, so DNS / MTU / routing can't be rebuilt${Store.storeConfigs ? "" : " (enable store_configs, or edit right after creating)"}. Title and address can still change.</span></div>`
       : html`<${Fragment}>
-        <div class="hint" style="margin:4px 0 6px">DNS / MTU / routing apply to all ${Object.keys(confs).length} target(s) with a known config.</div>
         <div class="field"><label>Client allowed IPs (routing)</label><input class=${errs.allowed ? "bad" : ""} value=${allowed} onInput=${e => setAllowed(e.target.value)}/><div class=${"hint" + (errs.allowed ? " err" : "")}>${errs.allowed || "Full tunnel by default. Narrow for split tunnel."}</div></div>
         <div class="field"><label>DNS</label><input class=${errs.dns ? "bad" : ""} value=${dns} onInput=${e => setDns(e.target.value)} placeholder="e.g. 1.1.1.1, 1.0.0.1"/><div class=${"hint" + (errs.dns ? " err" : "")}>${errs.dns || "Comma-separated IPs. Blank = no DNS line."}</div></div>
         <div class="row2">
