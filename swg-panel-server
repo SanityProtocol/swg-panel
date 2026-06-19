@@ -617,9 +617,14 @@ def apply_iface_meta(node_cfg, interfaces):
         rep = ifc.get("endpoint") or ""
         rep_host = rep.rsplit(":", 1)[0] if ":" in rep else rep
         host = ov.get("endpoint_host") or node_ep or rep_host
-        port = ov.get("endpoint_port") or ifc.get("listen_port")
+        # listen_port is the desired UDP port — the node converges its ListenPort to it, and the
+        # client Endpoint uses it (listen IP == connection IP for our purposes).
+        want_port = ov.get("listen_port")
+        port = want_port or ifc.get("listen_port")
         if host and port:
             ifc["endpoint"] = f"{host}:{port}"
+        if want_port:
+            ifc["desired_port"] = want_port   # != reported listen_port => "updating" in the UI
         if ov.get("dns") is not None:
             ifc["dns"] = ov["dns"]
         ifc["mtu"] = ov.get("mtu") or 1280
@@ -1354,10 +1359,10 @@ def api(method, path, qs, body, deps):
             ov["endpoint_host"] = h if h else None
             if not h:
                 ov.pop("endpoint_host", None)
-        if "endpoint_port" in body:
-            raw = body.get("endpoint_port")
+        if "listen_port" in body:
+            raw = body.get("listen_port")
             if raw in (None, "", 0, "0"):
-                ov.pop("endpoint_port", None)
+                ov.pop("listen_port", None)
             else:
                 try:
                     p = int(raw)
@@ -1365,7 +1370,7 @@ def api(method, path, qs, body, deps):
                     return 400, {"ok": False, "error": "port must be a number", "code": "bad_request"}
                 if not (1 <= p <= 65535):
                     return 400, {"ok": False, "error": "port must be 1–65535", "code": "bad_request"}
-                ov["endpoint_port"] = p
+                ov["listen_port"] = p
         if "dns" in body:
             dns = body.get("dns")
             if isinstance(dns, str):
@@ -1595,8 +1600,11 @@ class Handler(BaseHTTPRequestHandler):
                 hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), cpu, mem, disk, rx, tx)
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
+        # panel-managed interface config (currently the listen port) the node converges to
+        desired_ifaces = {ifn: {"listen_port": ov["listen_port"]}
+                          for ifn, ov in (node.get("ifaces") or {}).items() if ov.get("listen_port")}
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
-        return self._send(200, {"desired": desired, "interval": interval})
+        return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces, "interval": interval})
 
     def _node_goodbye(self):
         # The node's uninstaller signs off here (its bearer token) so the panel can cleanly drop

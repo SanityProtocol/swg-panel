@@ -198,6 +198,32 @@ def remove_peer_from_conf(path, pub):
     write_conf_atomic(path, ("\n".join(new_lines).rstrip("\n") + "\n") if new_lines else "")
 
 
+def set_listen_port_in_conf(path, port):
+    """Rewrite (or insert) ListenPort in the first [Interface] section. Atomic, 0600."""
+    lines = read_conf(path).splitlines()
+    out, in_iface, done = [], False, False
+    for line in lines:
+        s = line.strip()
+        if s.startswith("["):
+            in_iface = (s.lower() == "[interface]")
+            out.append(line)
+            continue
+        if in_iface and not done and re.match(r"(?i)\s*ListenPort\s*=", line):
+            out.append(f"ListenPort = {port}")
+            done = True
+            continue
+        out.append(line)
+    if not done:
+        res, added = [], False
+        for line in out:
+            res.append(line)
+            if not added and line.strip().lower() == "[interface]":
+                res.append(f"ListenPort = {port}")
+                added = True
+        out = res
+    write_conf_atomic(path, "\n".join(out).rstrip("\n") + "\n")
+
+
 @contextlib.contextmanager
 def locked():
     os.makedirs(os.path.dirname(LOCK_PATH) or "/run", exist_ok=True)
@@ -340,6 +366,23 @@ def op_remove_peer(cfg, req):
     return {"removed": pub, "freed_ip": match["allowed_ips"]}
 
 
+def op_set_iface(cfg, req):
+    """Change the interface's UDP listen port on the live interface + its .conf. Peers are
+    untouched (their AllowedIPs/keys don't change); existing client tunnels reconnect to the
+    new port via the panel-rendered Endpoint."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)
+    try:
+        port = int(req.get("listen_port"))
+    except (TypeError, ValueError):
+        raise AgentError("bad_request", "listen_port must be a number")
+    if not (1 <= port <= 65535):
+        raise AgentError("bad_request", "listen_port out of range (1-65535)")
+    run(ic["cmd"] + ["set", iface, "listen-port", str(port)])   # live
+    set_listen_port_in_conf(ic["conf"], port)                    # persist
+    return {"iface": iface, "listen_port": port}
+
+
 # ───────────────────────── dispatch ─────────────────────────
 
 def respond(ok, op, data=None, error=None, code=None):
@@ -354,7 +397,7 @@ def respond(ok, op, data=None, error=None, code=None):
 
 
 READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
-WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer}
+WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface}
 
 
 def main():

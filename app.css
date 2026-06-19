@@ -294,6 +294,8 @@ a.ifgroup-head:hover b{color:var(--brand)}
 /* ───── toolbar (users) ───── */
 .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .search{flex:1;min-width:180px;position:relative}
+.search.sm{flex:0 0 auto;min-width:0;width:200px}
+.search.sm input{height:30px;font-size:12.5px}
 .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:.5;pointer-events:none}
 input,select{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);
   padding:9px 12px;font-family:var(--mono);font-size:13px;transition:border-color .15s,box-shadow .15s;width:100%}
@@ -772,7 +774,11 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .peergrid .srvcell{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
 .peergrid .srv-name{font-family:var(--mono);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* user cell is a link to the user screen — blue (matches the upload total) so admins know it navigates away */
-.peergrid .namecell{color:var(--ready)} .peergrid .namecell:hover{text-decoration:underline}
+.peergrid .namecell{color:var(--ready);justify-content:space-between;width:100%} .peergrid .namecell:hover{text-decoration:underline}
+.peergrid .namecell svg{width:14px;height:14px;color:var(--dim);flex:none}
+/* hovering an assigned user's cell tints the whole row blue (vs the default grey hover) */
+.peergrid tbody tr.clk:has(td.usercell.linked:hover){background:rgba(79,168,240,.09)}
+.peergrid td.usercell.linked:hover .namecell svg{color:var(--ready)}
 /* extra-deployment count next to the address; hover or tap opens a bubble (.deppop) of the others */
 .depmore{position:relative;margin-left:7px;padding:1px 5px;border-radius:5px;color:var(--ready);font-family:var(--mono);font-size:11px;cursor:pointer;
   background:rgba(79,168,240,.1);border:1px solid rgba(79,168,240,.28);transition:background .12s,border-color .12s;user-select:none}

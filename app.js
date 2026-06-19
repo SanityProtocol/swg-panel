@@ -890,6 +890,7 @@ function NodeDetail({ node: rawName }) {
 // ═════════════════════════ SCREEN: INTERFACE DETAIL ═════════════════════════
 function IfaceDetail({ node: rawNode, iface: rawIface }) {
   useStore();
+  const [q, setQ] = useState("");
   const node = decodeURIComponent(rawNode);
   const iface = decodeURIComponent(rawIface);
   const nrec = Store.node(node);   // node = id (the connector)
@@ -898,6 +899,8 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const dname = nrec.name || node;
   const meta = Store.ifaceMeta(node, iface);
   const live = Store.recon.nodeStatus[node] === "live";
+  // a pending listen-port change: desired (panel) != reported (node) until the node converges
+  const updating = !!(meta && meta.desired_port && meta.listen_port && Number(meta.desired_port) !== Number(meta.listen_port));
   const type = (meta && meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
   const peers = Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface));
   const onl = peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface && t.online)).length;
@@ -909,11 +912,16 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const ifaceRows = rows.map(p => ({ p, t: p.targets.find(d => d.node === node && d.iface === iface) || {} }));
   const ifaceShown = {};
   for (const { p, t } of ifaceRows) (ifaceShown[p.id] = ifaceShown[p.id] || new Set()).add(tkey(t.node, t.iface));
+  const ql = q.trim().toLowerCase();
+  const ifaceFiltered = !ql ? ifaceRows : ifaceRows.filter(({ p, t }) => {
+    const u = p.user_id ? Store.user(p.user_id) : null;
+    return ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + (u ? u.name : "")).toLowerCase().includes(ql);
+  });
 
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span><span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span><span class="when">${onl} / ${peers.length} online</span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when">${onl} / ${peers.length} online</span></div>
       <div class="grow"></div>
     </div>
 
@@ -939,8 +947,10 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <//>` : null}
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
-        actions=${html`<button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface })}><${Ic} i="plus"/> Add peer</button>`}>
-      <${PeerGrid} rows=${ifaceRows} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=""/>
+        actions=${html`<${Fragment}>
+          <div class="search sm"><${Ic} i="search"/><input placeholder="Search peers…" value=${q} onInput=${e => setQ(e.target.value)}/></div>
+          <button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface })}><${Ic} i="plus"/> Add peer</button></>`}>
+      <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q}/>
     <//>
 
     ${orphans.length ? html`<${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}>
@@ -965,32 +975,31 @@ function OrphanRow({ o }) {
     </td></tr>`;
 }
 
-// Edit an interface's panel-side, config-facing settings: the public endpoint (host/port clients
-// dial — may differ from the node's listen port behind NAT) and the default DNS / MTU for new
-// peers. Does NOT touch the node or existing peers — only what the panel renders into configs.
+// Edit an interface: the Endpoint IP (what clients dial — config-facing only) and the Listen
+// port (pushed to the node's wgXX.conf — the interface rebinds to it; peers are untouched and
+// reconnect via the new port). Default DNS / MTU seed new peers. Interface key shown read-only.
 function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
 function EditIfaceSheet({ node, iface }) {
   const meta = Store.ifaceMeta(node, iface) || {};
   const ep = meta.endpoint || "";
   const epHost = ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep;
-  const epPort = ep.includes(":") ? ep.slice(ep.lastIndexOf(":") + 1) : "";
   const [host, setHost] = useState(epHost);
-  const [port, setPort] = useState(String(epPort || meta.listen_port || ""));
+  const [port, setPort] = useState(String(meta.desired_port || meta.listen_port || ""));
   const [dns, setDns] = useState((meta.dns || []).join(", "));
   const [mtu, setMtu] = useState(String(meta.mtu || 1280));
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true); setMsg({ k: "work", t: "saving…" });
-    const r = await api.ifaceUpdate({ node, iface, endpoint_host: host.trim(), endpoint_port: port.trim(), dns: dns.trim(), mtu: mtu.trim() });
+    const r = await api.ifaceUpdate({ node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim() });
     if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to update interface." }); }
-    closeModal(); await Store.poll(); toast("Interface updated.", "ok");
+    closeModal(); await Store.poll(); toast("Interface saved — the node applies the port on its next sync.", "ok");
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
-    <p class="hint" style="margin:0 0 16px">These apply only to the configs the panel hands out. Existing peers keep their current configs; new peers and re-rendered QRs use these. The node and its interface aren't changed.</p>
+    <p class="hint" style="margin:0 0 16px">Endpoint IP only changes what configs/QRs tell clients to dial. Changing the Listen port reconfigures the interface on the node (peers are kept; clients reconnect on the new port). DNS / MTU seed new peers — existing per-peer values aren't touched.</p>
     <div class="row2">
-      <div class="field"><label>Public endpoint host / IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/></div>
-      <div class="field"><label>Public port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Blank = the node's listen port (${meta.listen_port || "—"}).</div></div>
+      <div class="field"><label>Endpoint IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Config-facing only.</div></div>
+      <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"}).</div></div>
     </div>
     <div class="row2">
       <div class="field"><label>Default DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated. Default for new peers (per-peer DNS isn't overwritten).</div></div>
@@ -1037,8 +1046,8 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q }) {
             ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
             ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
           </div></td>` : null}
-          <td data-label="User" onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
-            ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span></a>`
+          <td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
+            ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span><${Ic} i="user"/></a>`
                 : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
           <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
           <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
