@@ -76,7 +76,7 @@ _goodbye_post(){
   command -v python3 >/dev/null 2>&1 || return 0
   info "Signing off from the panel…"
   if python3 - "$url" "$tok" "$verify" <<'PY'
-import ssl, sys, urllib.request
+import ssl, sys, http.client, urllib.request
 url = sys.argv[1].rstrip("/") + "/api/node/goodbye"; tok = sys.argv[2]; verify = sys.argv[3] == "yes"
 ctx = ssl.create_default_context()
 if not verify:                                 # self-signed / pinned panel: don't verify for the goodbye
@@ -85,7 +85,12 @@ req = urllib.request.Request(url, data=b"{}", method="POST",
                              headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json",
                                       "User-Agent": "swg-noded"})   # urllib's default Python-urllib UA gets 403'd by some WAFs
 try:
-    urllib.request.urlopen(req, timeout=10, context=ctx).read()
+    r = urllib.request.urlopen(req, timeout=10, context=ctx)        # 2xx here = the panel accepted + dropped the node
+    try: r.read()
+    except http.client.IncompleteRead: pass                        # body truncated by a proxy, but the node was already removed
+except urllib.error.HTTPError as e:
+    if e.code in (200, 401, 404): sys.exit(0)                      # already gone / accepted — fine
+    sys.stderr.write("HTTP %s\n" % e.code); sys.exit(1)
 except Exception as e:
     sys.stderr.write(str(e) + "\n"); sys.exit(1)
 PY

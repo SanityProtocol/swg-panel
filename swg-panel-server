@@ -1702,8 +1702,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")   # API replies may carry secrets — never cache
         self.end_headers()
-        with contextlib.suppress(BrokenPipeError):
-            self.wfile.write(payload)
+        with contextlib.suppress(BrokenPipeError, ConnectionError):
+            self.wfile.write(payload); self.wfile.flush()   # flush so the body reaches the client before the socket closes
 
     def _static(self, key):
         full = os.path.normpath(os.path.join(WEB_DIR, STATIC[key]))
