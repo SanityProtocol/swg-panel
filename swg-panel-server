@@ -933,6 +933,9 @@ def api(method, path, qs, body, deps):
                         "creating": {k: ((v.get("cmd") or ["awg"])[0])               # iface → wg/awg (we know it)
                                      for k, v in (c.get("create") or {}).items()},
                         "deleting": sorted((c.get("delete") or {}).keys()),         # ifaces being torn down
+                        "turn_pending": {k: (v.get("action") or "manage")           # turn service → pending action
+                                         for k, v in (c.get("turn") or {}).items()},
+                        "turn_onboarding": list(c.get("turn_onboard") or []),       # .service paths pending onboard
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 
@@ -1575,6 +1578,64 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "node", nid, "Cancelled interface request", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "removed": removed}}
 
+    # ── turn-proxy management (only on nodes that report turn_manage=true) ──
+    if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete"):
+        # The node pulls these on its next sync, rewrites the unit's ExecStart / regenerates the wrap
+        # key / removes it, restarts, and reports the new state (which clears the request).
+        nid = body.get("node") or ""; svc = (body.get("service") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not svc:
+            return 400, {"ok": False, "error": "service is required", "code": "bad_request"}
+        if path.endswith("/manage"):
+            req = {"action": "manage", "at": now()}
+            for k in ("listen", "connect"):
+                if (body.get(k) or "").strip():
+                    req[k] = body[k].strip()
+            if "wrap_key" in body:                      # "" = strip the wrap key; a 64-hex string = set it
+                req["wrap_key"] = (body.get("wrap_key") or "").strip()
+            verb = "Editing turn-proxy"
+        elif path.endswith("/rotate"):
+            req = {"action": "rotate", "at": now()}; verb = "Rotating turn-proxy key"
+        else:
+            req = {"action": "delete", "at": now()}; verb = "Deleting turn-proxy"
+        nodes[nid].setdefault("turn", {})[svc] = req
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, verb, svc)
+        return 200, {"ok": True, "data": {"node": nid, "service": svc}}
+
+    if method == "POST" and path == "/api/turn/onboard":
+        # Adopt an existing turn-proxy systemd unit by its .service path; the node reads it + reports it.
+        nid = body.get("node") or ""; sp = (body.get("path") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not sp or " " in sp or not sp.startswith("/"):
+            return 400, {"ok": False, "error": "an absolute .service path is required", "code": "bad_request"}
+        lst = nodes[nid].setdefault("turn_onboard", [])
+        if sp not in lst:
+            lst.append(sp)
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Onboarding turn-proxy", sp)
+        return 200, {"ok": True, "data": {"node": nid, "path": sp}}
+
+    if method == "POST" and path == "/api/turn/cancel":
+        nid = body.get("node") or ""; svc = (body.get("service") or "").strip(); sp = (body.get("path") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        removed = False
+        d = nodes[nid].get("turn")
+        if isinstance(d, dict) and svc and svc in d:
+            d.pop(svc, None); removed = True
+            if not d: nodes[nid].pop("turn", None)
+        lst = nodes[nid].get("turn_onboard")
+        if isinstance(lst, list) and sp and sp in lst:
+            lst.remove(sp); removed = True
+            if not lst: nodes[nid].pop("turn_onboard", None)
+        if removed:
+            nodes_save(deps["nodes_path"], nodes)
+            ev_append(roster_path, "node", nid, "Cancelled turn-proxy request", svc or sp)
+        return 200, {"ok": True, "data": {"node": nid, "removed": removed}}
+
     if method == "POST" and path == "/api/iface/delete":
         # Tear an interface down on the node (down + remove conf) and purge it from the panel: its
         # peers' targets here go away (peers with no other deployment are deleted), and its overrides
@@ -1911,10 +1972,40 @@ class Handler(BaseHTTPRequestHandler):
                     node.pop("delete", None)
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
+        # close turn-proxy requests once the node reflects them (delete: service gone; onboard: it
+        # appears; manage/rotate: the node applied + restarted — verified by listen match, else a grace)
+        turn = node.get("turn") or {}; turn_onb = node.get("turn_onboard") or []
+        if turn or turn_onb:
+            tps = {tp.get("service"): tp for tp in (snap.get("turn_proxies") or []) if tp.get("service")}
+            t_changed = False
+            for svc, req in list(turn.items()):
+                act, age = req.get("action"), now() - (req.get("at") or 0)
+                tp = tps.get(svc)
+                if act == "delete":
+                    done = svc not in tps
+                elif act == "manage":
+                    done = (tp and ("listen" not in req or tp.get("listen") == req["listen"])
+                            and ("connect" not in req or tp.get("connect") == req["connect"]) and age > 5) or age > 60
+                else:   # rotate — panel can't see the new key; give the node time to regen + restart
+                    done = age > 12
+                if done:
+                    turn.pop(svc, None); t_changed = True
+            def _svc(sp): b = sp.rsplit("/", 1)[-1]; return b[:-8] if b.endswith(".service") else b
+            new_onb = [sp for sp in turn_onb if _svc(sp) not in tps]
+            if new_onb != turn_onb:
+                t_changed = True
+            if t_changed:
+                if turn: node["turn"] = turn
+                else: node.pop("turn", None)
+                if new_onb: node["turn_onboard"] = new_onb
+                else: node.pop("turn_onboard", None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "delete": list((node.get("delete") or {}).keys()),
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
+                                "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):
