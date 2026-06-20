@@ -1,0 +1,38 @@
+name: ghcr-cleanup
+
+# Trim old GHCR image versions: keep the 3 most-recent TAGGED releases of each package
+# (multi-arch — their per-platform child manifests are kept with them) and drop everything
+# older, plus untagged / orphaned manifests. Run it on demand from the Actions tab:
+#   Actions → ghcr-cleanup → Run workflow  (leave "Preview only" checked the first time to
+#   see what WOULD be deleted, then run again with it unchecked to actually delete).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only (log what would be deleted, delete nothing)'
+        type: boolean
+        default: true
+  # To prune automatically as well, uncomment:
+  # schedule:
+  #   - cron: '0 4 * * 1'   # weekly, Mondays 04:00 UTC
+
+permissions:
+  packages: write          # GITHUB_TOKEN can delete versions of packages this repo's org owns;
+                           # for a PERSONAL (user) account, set a PAT secret with delete:packages
+                           # and pass it as `token:` below instead.
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune swg-panel + swg-node (keep 3 latest tagged)
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          owner: ${{ github.repository_owner }}
+          packages: swg-panel,swg-node
+          keep-n-tagged: 3
+          delete-untagged: true
+          delete-partial-images: true
+          dry-run: ${{ inputs.dry_run }}
+          token: ${{ secrets.GITHUB_TOKEN }}
