@@ -255,8 +255,9 @@ TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
 TURN_RECORD="${TURN_RECORD:-/etc/swg-agent/turn-proxy.json}"
 declare -A TP_LISTEN TP_CONNECT TP_WRAP
 turn_repo_owner(){ case "$1" in
-  wings) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
+  WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
   kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
+  Moroka8) echo "Moroka8/vk-turn-proxy";;
   main) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
 gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }   # 32-byte key as 64 hex chars
   openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -265,7 +266,8 @@ gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }   # 32-by
 turn_wrap_flags(){ local k; case "$1" in
   anton48)      k="$(gen_wrap_key)"; printf -- '-wrap-srtp -wrap-key %s' "$k";;
   samosvalishe) k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;
-  wings)        k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;
+  WINGS-N)      k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;
+  Moroka8)      k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;   # TODO: verify Moroka8's wrap flags
   *) printf '';; esac; }
 turn_wg_ports(){   # echo "<iface>:<ListenPort>" for every interface managed in the wg/awg step
   local n p
@@ -377,17 +379,22 @@ choose_turn_proxy(){   # one looped step: list installed (if any) + available br
     echo
     echo "  Here is a list of turn-proxy branches available for installation:"
     echo
-    menu "$(col "$C_BLUE" wings)"        "For Android — https://github.com/WINGS-N/vk-turn-proxy"
-    menu "$(col "$C_BLUE" samosvalishe)" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
-    menu "$(col "$C_BLUE" kiper292)"     "For Android — https://github.com/kiper292/vk-turn-proxy"
-    menu "$(col "$C_BLUE" anton48)"      "For iOS — https://github.com/anton48/vk-turn-proxy"
-    printf '  Select a turn-proxy repository to install or just press %s to skip and proceed with the setup: ' "$(b Enter)"
+    menu "$(col "$C_BLUE" '[1] WINGS-N')"      "For Android — https://github.com/WINGS-N/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[2] samosvalishe')" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[3] kiper292')"     "For Android — https://github.com/kiper292/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[4] Moroka8')"      "For Android — https://github.com/Moroka8/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[5] anton48')"      "For iOS — https://github.com/anton48/vk-turn-proxy"
+    printf '  Enter a number to install, or just press %s to skip and proceed with the setup: ' "$(b Enter)"
     if ! read -r sel 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
     sel="${sel//[[:space:]]/}"
     [ -z "$sel" ] && break
     case "$sel" in
-      wings|samosvalishe|kiper292|anton48) install_turn_proxy "$sel"; continue;;
-      *) warn "‘$sel’ isn't one of: wings samosvalishe kiper292 anton48 (or press Enter to skip)";;
+      1|WINGS-N|wings)  install_turn_proxy WINGS-N; continue;;
+      2|samosvalishe)   install_turn_proxy samosvalishe; continue;;
+      3|kiper292)       install_turn_proxy kiper292; continue;;
+      4|Moroka8)        install_turn_proxy Moroka8; continue;;
+      5|anton48)        install_turn_proxy anton48; continue;;
+      *) warn "enter a number 1–5 (or press Enter to skip)";;
     esac
   done
   write_turn_record
