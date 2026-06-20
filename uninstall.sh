@@ -27,7 +27,7 @@ ask_yn(){ local v p="$1" d="${2:-n}"; if [ -n "${!3:-}" ]; then return; fi
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
 ask_comp(){ local v; $ASSUME_YES && return 0
   if [ ! -t 0 ] && [ ! -e /dev/tty ]; then return 1; fi   # no tty, not --yes => keep
-  read -rp "  Uninstall $(b "$1")? (y/N): " v </dev/tty || true
+  read -rp "  Uninstall $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
   case "$v" in [Yy]*) return 0;; *) return 1;; esac; }
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
@@ -82,7 +82,8 @@ ctx = ssl.create_default_context()
 if not verify:                                 # self-signed / pinned panel: don't verify for the goodbye
     ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 req = urllib.request.Request(url, data=b"{}", method="POST",
-                             headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
+                             headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json",
+                                      "User-Agent": "swg-noded"})   # urllib's default Python-urllib UA gets 403'd by some WAFs
 try:
     urllib.request.urlopen(req, timeout=10, context=ctx).read()
 except Exception as e:
@@ -275,7 +276,7 @@ echo
 
 DID_REMOVE=(); DID_KEEP=()
 for i in $(seq 0 $((N-1))); do
-  if ask_comp "${CLABEL[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
+  if ask_comp "${CLABEL[$i]}" "${CDETAIL[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
   else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}"); fi
   echo
 done
