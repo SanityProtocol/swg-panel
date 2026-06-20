@@ -76,6 +76,7 @@ run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
 detect_public_ip(){ local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
   [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"; printf '%s' "$ip"; }
 ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps a tty); else use default
+  printf '\n' >/dev/tty 2>/dev/null || true
   if printf '%s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then printf '%s' "${v:-$d}"
   else printf '%s' "$d"; fi; }
 ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (default when blank / no tty)
@@ -91,7 +92,7 @@ bb(){ printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (hand
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
-ask(){ local v p="$1" d="${2:-}"; read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
+ask(){ local v p="$1" d="${2:-}"; echo; read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
 v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1; local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; }
 v_host(){ v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
 v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
@@ -129,6 +130,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
   done; }
 ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return; fi
+  echo
   while :; do
     if read -rp "$p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
@@ -200,7 +202,6 @@ EOF
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
   local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
-  echo
   ask_valid "Turn-proxy listen port" "56000" port v_freeport "port 1–65535 and free (not already in use)"
   detect_turn; local n; for n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$n' — pick another port (enter 'new' again)"; return 0; }; done
   local defport="${NODE_LISTEN_PORT:-51820}" _e _nm _pt _pr label clabel pad _ifs
@@ -222,7 +223,6 @@ install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in
     pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
     printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$defport")"
   fi
-  echo
   ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${defport}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
   echo
   local wrap; wrap="$(turn_wrap_flags "$sel")"
