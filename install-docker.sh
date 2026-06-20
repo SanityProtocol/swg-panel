@@ -542,12 +542,9 @@ fi
 # leaves the compose network, so it reaches the panel over loopback instead of the swg-panel name.
 if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
   if [ -z "$NODE_NET" ]; then
-    echo; echo "$(b 'Networking mode')"; echo
-    echo "  $(col "$C_BLUE" host)   — every interface port (incl. ones created from the panel) is reachable"
-    echo "           automatically, no publishing, best throughput. Recommended for a dedicated VPN box."
-    echo "  $(col "$C_BLUE" bridge) — isolated; you must publish each created interface's UDP port in"
-    echo "           $INSTALL_DIR/docker-compose.yml. Use only if host networking isn't an option."
-    echo
+    echo; echo "$(b 'Step 2. Networking mode')"; echo
+    menu "$(b "$(col "$C_BLUE" 'host (default)')")" "Every interface port (incl. ones created from the panel) is reachable automatically, no publishing, best throughput. Recommended for a dedicated VPN box."
+    menu "$(col "$C_BLUE" bridge)"                  "Isolated; you must publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml. Use only if host networking isn't an option."
     ask_choice "Select networking" "host" NODE_NET "host bridge"
   fi
   case "$NODE_NET" in host|bridge) ;; *) NODE_NET=host;; esac
@@ -691,7 +688,7 @@ fi
 # ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
 # Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
 if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
-  echo; echo "$(b 'Step 2. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"; echo
+  echo; echo "$(b 'Step 3. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"; echo
   choose_turn_proxy
 fi
 
