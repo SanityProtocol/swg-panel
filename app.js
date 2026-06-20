@@ -2058,7 +2058,7 @@ function NodeCard({ n }) {
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
       <span class=${"nstat " + st}>${stTxt}</span>
-      ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span><button class="btn btn-mini" style="margin-left:9px;padding-top:3px;padding-bottom:3px" title="Cancel removal — keep this node" onClick=${e => { e.stopPropagation(); unflagNode(n); }}>Cancel</button>` : null}
+      ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
       <span class="grow"></span>
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
