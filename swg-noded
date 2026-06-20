@@ -577,9 +577,20 @@ def host_sh(cmd, timeout=90):
     --pid=host helper through the mounted docker socket — nsenter into PID 1 so the command runs in
     the host's namespaces (its filesystem + systemd)."""
     if NODE_KIND != "docker":
-        return run(["sh", "-c", cmd], timeout=timeout)
-    return run(["docker", "run", "--rm", "--privileged", "--pid=host", "--network=host", HELPER_IMAGE,
-                "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", cmd], timeout=timeout)
+        args = ["sh", "-c", cmd] if os.geteuid() == 0 else ["sudo", "-n", "sh", "-c", cmd]
+    else:
+        args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--network=host", HELPER_IMAGE,
+                "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", cmd]
+    try:
+        r = run(args, timeout=timeout)
+    except Exception as e:                              # e.g. 'docker' not found, or a timeout
+        print("host_sh EXC: " + str(e) + " :: " + cmd[:160], flush=True)
+        class _R:                                       # synthesize a failed result so callers see it
+            returncode = 127; stdout = ""; stderr = str(e)
+        return _R()
+    if r.returncode != 0:
+        print("host_sh rc=" + str(r.returncode) + " :: " + cmd[:160] + " :: " + (r.stderr or r.stdout or "")[:300], flush=True)
+    return r
 
 def _turn_unit_path(svc):
     return TURN_UNIT_DIR + "/" + svc + ".service"
@@ -658,12 +669,17 @@ def apply_turn(turn, turn_onboard):
     res = {"done": [], "errors": []}
     if not turn and not turn_onboard:
         return res
+    keys = set(turn or {}) | set(turn_onboard or [])
+    print("turn: applying " + str(sorted(keys)) + " manage_on=" + str(TURN_MANAGE_ON)
+          + " kind=" + NODE_KIND, flush=True)
     def fail(k, m):
         res["errors"].append(k + ": " + m); NODE_ERRORS[k] = m
+        print("turn: FAIL " + k + " -> " + m, flush=True)
     def good(k, tag):
         res["done"].append(tag); NODE_ERRORS.pop(k, None)
+        print("turn: ok " + tag, flush=True)
     if not TURN_MANAGE_ON:
-        for k in active:
+        for k in keys:
             fail(k, "turn management off — re-install the docker node with the 'panel' option")
         return res
     rec = {tp.get("service"): tp for tp in load_turn_proxies() if tp.get("service")}
