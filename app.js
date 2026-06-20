@@ -830,7 +830,13 @@ function NodeDetail({ node: rawName }) {
   const meta = Store.describe[name] || null;       // interface meta from the consolidated state
   const metaErr = node && !meta;
 
-  if (!node) return html`<div class="screen"><div class="crumb"><a href="#/">Overview</a><span class="sep">/</span><b>${name}</b></div>
+  // if a node we were viewing gets removed (force-remove, or a flagged node that signed off), bounce
+  // to the Nodes list instead of stranding the operator on a dead detail page. A node that was never
+  // here (stale link) just shows the message below.
+  const seenRef = useRef(false);
+  useEffect(() => { if (node) seenRef.current = true; else if (seenRef.current) go("#/nodes"); }, [node]);
+
+  if (!node) return html`<div class="screen"><div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${name}</b></div>
     <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
   const dname = node.name || name;
 
