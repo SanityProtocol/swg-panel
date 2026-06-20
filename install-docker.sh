@@ -59,6 +59,7 @@ NODE_ADDRESS="${NODE_ADDRESS:-10.8.0.1/24}"
 NODE_MTU="${NODE_MTU:-1280}"           # interface MTU; 1280 leaves headroom for turn-proxy obfuscation
 NODE_PLAIN_WG="${NODE_PLAIN_WG:-}"     # yes = plain WireGuard; blank/no = AmneziaWG v2 (Step 2 sets it)
 NODE_NET="${NODE_NET:-}"               # host (default) | bridge — docker networking for the node (-net)
+TURN_MANAGE="${TURN_MANAGE:-}"         # panel (default) | manual — manage turn-proxies from the panel (mounts docker.sock) (-turn-manage)
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes/no; blank = ask (node profile) / default no
 DNS="${DNS:-1.1.1.1}"
 
@@ -288,6 +289,7 @@ while [ $# -gt 0 ]; do
     -host|--host|-url)      PANEL_URL="${2:-}"; shift 2 || shift;;
     -endpoint|--endpoint)   NODE_ENDPOINT="${2:-}"; shift 2 || shift;;
     -net|--net|--network)   NODE_NET="${2:-}"; shift 2 || shift;;
+    -turn-manage|--turn-manage) TURN_MANAGE="${2:-}"; shift 2 || shift;;
     -verify|--verify)       TLS_VERIFY="${2:-}"; shift 2 || shift;;
     -iface|--iface)         NODE_IFACE="${2:-}"; shift 2 || shift;;
     -ifaces|--ifaces)       NODE_IFACES="${2:-}"; shift 2 || shift;;
@@ -312,7 +314,7 @@ EXISTING_DOCKER=no; EXIST_TLS=""
 if [ -f "$INSTALL_DIR/.env" ]; then
   EXISTING_DOCKER=yes
   for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT PANEL_BASE \
-            NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET DNS TLS_VERIFY \
+            NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET TURN_MANAGE DNS TLS_VERIFY \
             ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
     [ -n "${!_k:-}" ] && continue                       # an explicit flag/env wins over the stored value
     _v="$(sed -n "s/^${_k}=//p" "$INSTALL_DIR/.env" 2>/dev/null | head -1)"
@@ -585,8 +587,33 @@ PYHOST
   else
     ok "bridge networking — publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml, then '$COMPOSE --profile $PROFILE up -d'"
   fi
+
+  # ── turn-proxy management — how this node's host turn-proxy services are managed ──
+  if [ -z "$TURN_MANAGE" ]; then
+    step "Turn-proxy management"; echo
+    menu "$(b "$(col "$C_BLUE" 'panel (default)')")" "Manage turn-proxies (edit listen/connect/keys, restart, onboard) from the panel. Mounts the Docker socket into the node container, which gives that container ROOT-EQUIVALENT access to the host — only enable if you trust the panel and this box."
+    menu "$(col "$C_BLUE" manual)"                   "Turn-proxies are managed on this server by hand — no socket is mounted."
+    ask_choice "Select turn-proxy management" "panel" TURN_MANAGE "panel manual"
+  fi
+  case "$TURN_MANAGE" in panel|manual) ;; *) TURN_MANAGE=panel;; esac
+  if [ "$TURN_MANAGE" = panel ] && ! $DRYRUN; then     # mount the Docker socket so swg-noded can drive host turn-proxy units (B1)
+    python3 - "$PREFIX$INSTALL_DIR/docker-compose.yml" <<'PYSOCK'
+import sys, re
+p = sys.argv[1]; lines = open(p).read().splitlines(); out = []; in_node = False
+for ln in lines:
+    if re.match(r'^  swg-node:\s*$', ln): in_node = True
+    elif in_node and re.match(r'^  \S', ln): in_node = False
+    out.append(ln)
+    if in_node and re.match(r'^      - \./data/node-confs:', ln):   # add the socket right after the conf volume
+        out.append('      - /var/run/docker.sock:/var/run/docker.sock   # turn-proxy management (root-on-host)')
+open(p, 'w').write('\n'.join(out) + '\n')
+PYSOCK
+    ok "turn-proxy management: panel (Docker socket mounted — root-equivalent host access)"
+  else
+    [ "$TURN_MANAGE" = manual ] && ok "turn-proxy management: manual (managed on this server)"
+  fi
 fi
-NODE_NET="${NODE_NET:-host}"   # ensure a concrete value lands in .env (compose default is host)
+NODE_NET="${NODE_NET:-host}"; TURN_MANAGE="${TURN_MANAGE:-manual}"   # concrete values for .env
 
 # ───────────────────────── write .env ─────────────────────────
 mkdir -p "$PREFIX$INSTALL_DIR"
@@ -614,6 +641,7 @@ NODE_ADDRESS=$NODE_ADDRESS
 NODE_MTU=$NODE_MTU
 NODE_PLAIN_WG=$NODE_PLAIN_WG
 NODE_NET=$NODE_NET
+TURN_MANAGE=$TURN_MANAGE
 TLS_VERIFY=$TLS_VERIFY
 DNS=$DNS
 EOF

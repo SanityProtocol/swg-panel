@@ -60,6 +60,11 @@ NODE_KIND = "docker" if (os.path.exists("/.dockerenv") or os.path.exists("/run/.
 NODE_NET = (os.environ.get("NODE_NET") or "host").strip().lower()
 if NODE_NET not in ("host", "bridge"):
     NODE_NET = "host"
+# can the panel manage this node's host turn-proxy services? bare-metal: always (swg-noded is on the
+# host). docker: only when the installer mounted docker.sock (TURN_MANAGE=panel) so we can drive host
+# units via a privileged --pid=host helper. Reported so the panel only shows manage/onboard controls
+# when they'd actually work.
+TURN_MANAGE = (NODE_KIND != "docker") or ((os.environ.get("TURN_MANAGE") or "manual").strip().lower() == "panel")
 
 
 # ───────────────────────── parsing (pure) ─────────────────────────
@@ -347,7 +352,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             continue
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
-            "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET}
+            "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
+            "turn_manage": TURN_MANAGE}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap
