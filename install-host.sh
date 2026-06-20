@@ -1036,7 +1036,7 @@ esac
 # ───────────────────────── enable ─────────────────────────
 info "Enable services"
 run systemctl daemon-reload
-[ "$HOST_HAS_WG" = yes ] && run systemctl enable --now swg-noded
+[ "$HOST_HAS_WG" = yes ] && { run systemctl enable swg-noded; run systemctl restart swg-noded || warn "couldn't start swg-noded"; }   # restart so a re-run picks up newly-added interfaces (config.json is read only at startup)
 run systemctl enable --now swg-panel-server
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
 

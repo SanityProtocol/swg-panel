@@ -505,7 +505,10 @@ EOF
 # ───────────────────────── enable ─────────────────────────
 info "Enable daemon"
 run systemctl daemon-reload
-run systemctl enable --now swg-noded
+run systemctl enable swg-noded
+# restart (not just enable --now): on a RE-RUN that added interfaces, swg-noded is already running and
+# reads config.json only at startup — so without a restart the new interfaces never reach the panel.
+run systemctl restart swg-noded || warn "couldn't start swg-noded"
 
 echo; ok "Node '$(bb "$NODE_NAME")' install complete."
 # ───────────────────────── SUMMARY ─────────────────────────
