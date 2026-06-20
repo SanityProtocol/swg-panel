@@ -530,10 +530,18 @@ else
   [ -z "$PORT" ] && PORT="${URL_PORT:-8088}"
 fi
 
+# Idempotent re-install: an existing auth file means keep the current login (don't reset the
+# password) + all state (users/nodes/certs). To start fresh, run the uninstaller first.
+KEEP_AUTH=no; EXISTING_HOST=no
+if [ -f "$ETC_DIR/auth" ]; then
+  EXISTING_HOST=yes; KEEP_AUTH=yes
+  [ "${BASIC_USER:-admin}" = admin ] && BASIC_USER="$(cut -d: -f1 "$ETC_DIR/auth" 2>/dev/null || echo admin)"
+  info "Existing panel install detected — keeping your login, users, nodes + certs. To start fresh, run the uninstaller first."
+fi
 # Admin login — auto-generated (username admin + 3 random digits, password random); both are
 # printed at the end and can be changed later in the panel (Account). Override via BASIC_USER=/BASIC_PASS= env.
-[ -z "$BASIC_PASS" ] && BASIC_PASS="$(head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16)"
-if [ "${BASIC_USER}" = admin ]; then BASIC_USER="admin$(( RANDOM % 900 + 100 ))"; fi
+[ "$KEEP_AUTH" != yes ] && [ -z "$BASIC_PASS" ] && BASIC_PASS="$(head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16)"
+if [ "$KEEP_AUTH" != yes ] && [ "${BASIC_USER}" = admin ]; then BASIC_USER="admin$(( RANDOM % 900 + 100 ))"; fi
 
 # ═══════════════ II. NODE SETUP (master only) ═══════════════
 declare -a SELECTED
@@ -1014,7 +1022,7 @@ serve_skip(){
 }
 
 info "Login + TLS ($SERVE_MODE)"
-mk_auth_file
+if [ "$KEEP_AUTH" = yes ]; then ok "keeping existing login ($BASIC_USER) — ${ETC_DIR}/auth untouched"; else mk_auth_file; fi
 case "$SERVE_MODE" in
   internal) serve_internal;;
   nginx)    serve_nginx;;
@@ -1039,7 +1047,8 @@ case "$SERVE_MODE" in
 esac
 echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
 echo "  Panel     $(bb "$UI")"
-echo "  Login     $(bb "$BASIC_USER") / $(bb "$BASIC_PASS")   (change later in the panel → Account)"
+if [ "$KEEP_AUTH" = yes ]; then echo "  Login     $(bb "$BASIC_USER") / $(bb "(unchanged — your existing password)")"
+else echo "  Login     $(bb "$BASIC_USER") / $(bb "$BASIC_PASS")   (change later in the panel → Account)"; fi
 echo "  TLS       $(b "$TLS_MODE")  ·  Web server $(b "$SERVE_MODE") (port $(b "$PORT"))"
 if [ "$HOST_HAS_WG" = yes ] && [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (this box, node '$(b "$HOST_NODE_NAME")'):"
   for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"

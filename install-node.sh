@@ -107,6 +107,21 @@ detect_public_ip(){ # best public IPv4: default-route source, then first hostnam
   local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
   [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
   printf '%s' "$ip"; }
+
+# ── idempotent re-install: read the current install's panel URL/token + per-interface endpoints, to
+#    offer as defaults (so re-running keeps everything). Fresh install = run the uninstaller first.
+EXIST_URL=""; EXIST_TOKEN=""; EXISTING=no
+read_existing(){
+  { [ -f /etc/swg-agent/config.json ] && have python3; } || return 0
+  EXISTING=yes
+  EXIST_URL="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("url",""))' 2>/dev/null || true)"
+  EXIST_TOKEN="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("token",""))' 2>/dev/null || true)"
+  while IFS='|' read -r n ep; do [ -n "$n" ] && [ -z "${IF_ENDPOINT[$n]:-}" ] && IF_ENDPOINT[$n]="$ep"; done < <(python3 -c '
+import json
+for n,ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).items():
+    e=ic.get("endpoint_host","")
+    if e: print("%s|%s"%(n,e))' 2>/dev/null || true)
+}
 detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
 
 declare -A IF_CMD IF_CONF IF_ENDPOINT; declare -a SELECTED   # IF_ENDPOINT: per-interface public IP clients dial
@@ -383,12 +398,15 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 
 # ═══════════════ NODE SETUP ═══════════════
 echo; info "NODE SETUP"
+read_existing
+[ "$EXISTING" = yes ] && info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
 
-# Panel connection — normally supplied by the install command's -host / -key flags.
-if $DRYRUN; then ask "Panel URL (https://host[/subpath])" "" PANEL_URL
-else ask_valid "Panel URL (https://host[/subpath])" "" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"; fi
-if $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "" NODE_TOKEN
-else ask_valid "Node enrollment key (from the Nodes screen)" "" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
+# Panel connection — normally supplied by the install command's -host / -key flags; on a re-install
+# the current values are offered as defaults so you can just press Enter.
+if $DRYRUN; then ask "Panel URL (https://host[/subpath])" "$EXIST_URL" PANEL_URL
+else ask_valid "Panel URL (https://host[/subpath])" "$EXIST_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"; fi
+if $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
+else ask_valid "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
 case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   ask_yn "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n TLS_VERIFY

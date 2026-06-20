@@ -293,6 +293,21 @@ case "$ROLE" in ""|master|host) ;; *) die "role must be master|host";; esac
 $DRYRUN && { info "DRY RUN — .env renders under ./dryrun, no Docker commands run."; rm -rf "$PREFIX"; }
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Idempotent re-install: re-use the current .env's values (token, URL, login, interface defaults) so
+# re-running keeps everything and the ./data state is untouched. To start fresh, run the uninstaller.
+EXISTING_DOCKER=no
+if [ -f "$INSTALL_DIR/.env" ]; then
+  EXISTING_DOCKER=yes
+  for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT \
+            PANEL_BASE NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG DNS TLS_VERIFY; do
+    [ -n "${!_k:-}" ] && continue                       # an explicit flag/env wins over the stored value
+    _v="$(sed -n "s/^${_k}=//p" "$INSTALL_DIR/.env" 2>/dev/null | head -1)"
+    _v="${_v%\"}"; _v="${_v#\"}"                        # strip surrounding quotes
+    [ -n "$_v" ] && printf -v "$_k" '%s' "$_v"
+  done
+  info "Existing docker install detected in $INSTALL_DIR — keeping your .env + ./data (token, login, interfaces). To start fresh, uninstall first."
+fi
+
 # ───────────────────────── per-profile requirements ─────────────────────────
 # Compose interpolates the whole file (both services), so every referenced var must be
 # non-empty even when its service isn't in the active profile — fill sane placeholders.
