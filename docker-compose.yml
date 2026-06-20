@@ -60,12 +60,14 @@ services:
       - net.ipv4.ip_forward=1
     ports:
       - "${NODE_LISTEN_PORT:-51820}:${NODE_LISTEN_PORT:-51820}/udp"   # the bootstrap interface's listen port
-      # IMPORTANT: every ADDITIONAL interface — including ones you create from the panel — listens on
-      # its own port, which must be published here too (then `docker compose up -d`), or clients can't
-      # reach it (rx stays 0). e.g.:
+      # NOTE: the installer puts the node on `network_mode: host` for both the `node` and `master`
+      # profiles (so every interface port — incl. panel-created ones — is reachable with no
+      # publishing). These `ports:` only apply if you run the node on bridge networking instead;
+      # then every ADDITIONAL interface's port must be published here too, e.g.:
       # - "51821:51821/udp"
-      # Alternatively, for a STANDALONE node (not the master profile, which needs the swg-panel docker
-      # DNS), drop this `ports:` list and add `network_mode: host` so every interface port just works.
+      # To use host networking manually: drop this `ports:` list + the `sysctls:` above and add
+      # `network_mode: host`. On a MASTER also point the node at the panel over loopback
+      # (PANEL_URL=https://127.0.0.1:<published-port>, TLS_VERIFY=no), since `swg-panel` won't resolve.
     environment:
       PANEL_URL: "${PANEL_URL:?set PANEL_URL (master: https://swg-panel:8443)}"
       NODE_TOKEN: "${NODE_TOKEN:?create the node in the Nodes screen, then set NODE_TOKEN}"

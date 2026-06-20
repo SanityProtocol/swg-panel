@@ -476,10 +476,16 @@ else
   ok "staged compose file (images pulled prebuilt from GHCR — no build context needed)"
 fi
 
-# Standalone node → host networking: every interface port (incl. ones created from the panel) is on
-# the host with no publishing, like bare-metal. Not for master (the node needs the swg-panel docker
-# DNS). host net disallows per-container `ports:`/`sysctls:`, so disable them + set ip_forward on the host.
-if [ "$PROFILE" = node ]; then
+# Host networking for the node datapath (standalone node AND the master's local node): every
+# interface port — including ones created from the panel — binds directly on the host, no per-port
+# publishing, better UDP throughput. host net disallows per-container `ports:`/`sysctls:`, so disable
+# them + set ip_forward on the host. The master's node leaves the compose network, so it reaches the
+# (bridge) panel over loopback at the host-published port instead of the `swg-panel` docker name.
+if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
+  if [ "$PROFILE" = master ]; then
+    PANEL_URL="https://127.0.0.1:${PANEL_PORT:-443}"   # node → local panel over the host's published port
+    TLS_VERIFY="${TLS_VERIFY:-no}"                      # cert won't match 127.0.0.1; loopback hop, so don't verify
+  fi
   if $DRYRUN; then echo "    [skip] enable host networking for the node service + host ip_forward"
   else
     python3 - "$PREFIX$INSTALL_DIR/docker-compose.yml" <<'PYHOST'
@@ -490,7 +496,7 @@ for ln in lines:
     elif in_node and re.match(r'^  \S', ln): in_node = False
     if in_node:
         if re.match(r'^    container_name: swg-node\s*$', ln):
-            out += [ln, '    network_mode: host        # standalone node: every interface port is on the host']; continue
+            out += [ln, '    network_mode: host        # node datapath: every interface port is on the host']; continue
         if re.match(r'^    (ports|sysctls):\s*$', ln):
             out.append('    # ' + ln.strip() + '   (disabled — host networking)'); continue
         if re.match(r'^      - ("?\$\{NODE_LISTEN_PORT|net\.ipv4\.ip_forward)', ln):
@@ -500,7 +506,8 @@ open(p, 'w').write('\n'.join(out) + '\n')
 PYHOST
     printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
     sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
-    ok "node: host networking enabled (every interface port reachable, no per-port publishing)"
+    [ "$PROFILE" = master ] && ok "host networking enabled for the node (every port reachable); node → panel via 127.0.0.1:${PANEL_PORT:-443}" \
+                           || ok "host networking enabled for the node (every interface port reachable, no per-port publishing)"
   fi
 fi
 
