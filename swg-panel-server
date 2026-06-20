@@ -1579,6 +1579,33 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "removed": removed}}
 
     # ── turn-proxy management (only on nodes that report turn_manage=true) ──
+    if method == "POST" and path == "/api/turn/install":
+        # Install a NEW turn-proxy: the node downloads the fork's prebuilt binary, writes the systemd
+        # unit (listen → connect, + the fork's wrap flags & a fresh key), and enables it. Keyed by the
+        # service name the node will create (vk-turn-proxy-<fork>-<port>) so it self-clears on appear.
+        nid = body.get("node") or ""
+        fork = (body.get("fork") or "").strip()
+        owner = (body.get("owner") or "").strip()
+        listen = (body.get("listen") or "").strip()
+        connect = (body.get("connect") or "").strip()
+        wrap_flags = (body.get("wrap_flags") or "").strip()
+        def _ipport(s):
+            return ":" in s and s.rsplit(":", 1)[1].isdigit() and bool(s.rsplit(":", 1)[0])
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not fork or "/" in fork or " " in fork or "/" not in owner:
+            return 400, {"ok": False, "error": "a fork + owner repo are required", "code": "bad_request"}
+        if not _ipport(listen) or not _ipport(connect):
+            return 400, {"ok": False, "error": "listen and connect must be ip:port", "code": "bad_request"}
+        svc = "vk-turn-proxy-" + fork + "-" + listen.rsplit(":", 1)[1]
+        if svc in (nodes[nid].get("turn") or {}):
+            return 409, {"ok": False, "error": "an install for this fork+port is already pending", "code": "conflict"}
+        nodes[nid].setdefault("turn", {})[svc] = {"action": "install", "owner": owner, "listen": listen,
+                                                  "connect": connect, "wrap_flags": wrap_flags, "at": now()}
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Installing turn-proxy", svc)
+        return 200, {"ok": True, "data": {"node": nid, "service": svc}}
+
     if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete"):
         # The node pulls these on its next sync, rewrites the unit's ExecStart / regenerates the wrap
         # key / removes it, restarts, and reports the new state (which clears the request).
@@ -1983,6 +2010,8 @@ class Handler(BaseHTTPRequestHandler):
                 tp = tps.get(svc)
                 if act == "delete":
                     done = svc not in tps
+                elif act == "install":              # clears once the new service shows up
+                    done = svc in tps or age > 240   # generous: download can take a couple minutes
                 elif act == "manage":
                     done = (tp and ("listen" not in req or tp.get("listen") == req["listen"])
                             and ("connect" not in req or tp.get("connect") == req["connect"]) and age > 5) or age > 60

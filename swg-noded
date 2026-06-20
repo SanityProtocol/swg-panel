@@ -608,6 +608,47 @@ def _parse_tp(svc, execl):
         return m.group(1) if m else ""
     return {"service": svc, "listen": g("listen"), "connect": g("connect"), "wrap_key": g("wrap-key")}
 
+def _installed_tp(svc):
+    """Re-read a turn unit (after install/edit) so the record carries the real ExecStart, incl. the
+    generated wrap key."""
+    unit = host_sh("cat " + shlex.quote(_turn_unit_path(svc)) + " 2>/dev/null").stdout
+    return _parse_tp(svc, _exec_of(unit))
+
+def _turn_install(svc, req):
+    """Install a new turn-proxy: download the fork's prebuilt binary, write the systemd unit, enable
+    it. Mirrors the installer's install_turn_binary (server-linux-<arch>). '' on success, else error."""
+    owner = (req.get("owner") or "").strip()
+    listen = (req.get("listen") or "").strip()
+    connect = (req.get("connect") or "").strip()
+    wrap_flags = (req.get("wrap_flags") or "").strip()
+    if "/" not in owner or ":" not in listen or ":" not in connect:
+        return "bad install request"
+    inst = svc[len("vk-turn-proxy-"):] if svc.startswith("vk-turn-proxy-") else svc
+    d = "/opt/vk-turn-proxy/" + inst
+    binp = d + "/server"
+    arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+    url = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
+    extra = ""
+    if wrap_flags:
+        key = run(["openssl", "rand", "-hex", "32"]).stdout.strip()
+        if not key:
+            return "keygen failed"
+        extra = wrap_flags + " -wrap-key " + key
+    exec_line = binp + " -listen " + listen + " -connect " + connect + ((" " + extra) if extra else "")
+    unit = ("[Unit]\nDescription=vk-turn-proxy (" + owner + ") - " + listen + " -> " + connect + "\n"
+            "After=network-online.target\nWants=network-online.target\n\n"
+            "[Service]\nExecStart=" + exec_line + "\nRestart=on-failure\nRestartSec=3\n\n"
+            "[Install]\nWantedBy=multi-user.target\n")
+    cmd = ("mkdir -p " + shlex.quote(d)
+           + " && curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 --retry-all-errors "
+           + shlex.quote(url) + " -o " + shlex.quote(binp) + " && chmod +x " + shlex.quote(binp)
+           + " && cat > " + shlex.quote(_turn_unit_path(svc)) + " <<'SWGEOF'\n" + unit + "SWGEOF\n"
+           + "systemctl daemon-reload && systemctl enable --now " + shlex.quote(svc))
+    w = host_sh(cmd, timeout=210)
+    if w.returncode != 0:
+        return (w.stderr or w.stdout or "install failed").strip()[:160]
+    return ""
+
 def apply_turn(turn, turn_onboard):
     """Apply panel turn-proxy requests (manage/rotate/delete) + onboard host .service units, then
     update the turn record so the snapshot reflects it (which clears the panel request)."""
@@ -621,6 +662,13 @@ def apply_turn(turn, turn_onboard):
     for svc, req in (turn or {}).items():
         try:
             act = req.get("action"); up = _turn_unit_path(svc)
+            if act == "install":
+                err = _turn_install(svc, req)
+                if err:
+                    res["errors"].append(svc + ": " + err)
+                else:
+                    rec[svc] = _installed_tp(svc); changed = True; res["done"].append("ins:" + svc)
+                continue
             unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
             if act == "delete":
                 host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "

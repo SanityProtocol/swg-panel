@@ -239,6 +239,11 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .chiprow{display:flex;gap:8px}
 a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
 .ifcard.tp{cursor:default}
+.ifcard.tp.clickable{cursor:pointer}
+.ifcard.tp.clickable:hover{border-color:var(--turn,#A974F2);transform:translateY(-1px)}
+.tg-busy{background:rgba(70,216,168,.14);color:var(--brand);border:1px solid color-mix(in srgb,var(--brand) 30%,transparent);border-radius:99px;padding:1px 8px;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.keyrow{display:flex;gap:8px;align-items:center}
+.keyrow input{flex:1;min-width:0}
 .ifcard-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .ifcard-top .ifname{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:13.5px}
 .ifcard-top .rowarrow{color:var(--faint)}

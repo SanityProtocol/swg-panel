@@ -285,6 +285,12 @@ const api = {
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
   ifaceCancel(b) { return this.post("/api/iface/cancel", b); },
   ifaceDelete(b) { return this.post("/api/iface/delete", b); },
+  turnManage(b) { return this.post("/api/turn/manage", b); },     // edit listen/connect (+ wrap key)
+  turnRotate(b) { return this.post("/api/turn/rotate", b); },     // regenerate the wrap key
+  turnDelete(b) { return this.post("/api/turn/delete", b); },         // stop + remove the service
+  turnInstall(b) { return this.post("/api/turn/install", b); },       // install a new turn-proxy (download + unit)
+  turnOnboard(b) { return this.post("/api/turn/onboard", b); },       // adopt a host .service by path
+  turnCancel(b) { return this.post("/api/turn/cancel", b); },
   nodeSelfUpdate(b) { return this.post("/api/node/update", b); },   // flag a node to self-update (≠ nodeUpdate, which renames)
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
@@ -921,18 +927,23 @@ function NodeDetail({ node: rawName }) {
             })}${pcards}</div>`; })()}
     <//>
 
-    ${snap && (snap.turn_proxies || []).length ? html`<${Panel} icon="relay" title="Turn proxies" tone="turn" count=${snap.turn_proxies.length}>
-      <div class="ifgrid">${snap.turn_proxies.map(tp => {
+    ${snap && ((snap.turn_proxies || []).length || nrec.turn_manage || (nrec.turn_onboarding || []).length) ? html`<${Panel} icon="relay" title="Turn proxies" tone="turn" count=${(snap.turn_proxies || []).length}
+        actions=${nrec.turn_manage ? html`<button class="btn btn-mini" onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
+      <div class="ifgrid">${(snap.turn_proxies || []).map(tp => {
         const lp = portOf(tp.connect);
         const fronted = meta ? Object.keys(meta).find(i => String(meta[i].listen_port) === lp) : null;
         const ftype = (fronted && meta[fronted].awg_params && Object.keys(meta[fronted].awg_params).length) ? "awg" : "wg";
-        return html`<div class="ifcard tp">
-          <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span>${!fronted ? html`<span class="grow"></span><span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null}</div>
+        const pend = (nrec.turn_pending || {})[tp.service];
+        return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(name, tp) : null}>
+          <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span>${pend ? html`<span class="grow"></span><span class="tg tg-busy">${pend}…</span>` : (!fronted ? html`<span class="grow"></span><span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
-            <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)}>${fronted}</a>` : (tp.connect || "—")}</span></div>
+            <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>
           </div></div>`;
-      })}</div>
+      })}
+      ${Object.entries(nrec.turn_pending || {}).filter(([s]) => !(snap.turn_proxies || []).some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><span class="tg tg-busy">${act}…</span></div></div>`)}
+      ${(nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><span class="tg tg-busy">onboard</span></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`)}
+      </div>
     <//>` : null}
   </div>`;
 }
@@ -1176,6 +1187,188 @@ function EditIfaceSheet({ node, iface }) {
       <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
       <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div></div>` : null}
     <div class="field ipk-field"><label>Public key</label><span class="grow"></span><span class="ipk-val">${meta.public_key || "—"}</span>${meta.public_key ? html`<button class="copybtn" title="Copy public key" onClick=${() => copy(meta.public_key, "Public key copied")}><${Ic} i="copy"/></button>` : null}</div>
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
+
+// ── turn-proxy management (manage modal + onboard) — only on nodes reporting turn_manage ──
+function openTurnManage(node, tp) { openModal(html`<${TurnManageSheet} node=${node} tp=${tp}/>`); }
+function TurnManageSheet({ node, tp }) {
+  const svc = tp.service;
+  const lis = tp.listen || "";
+  const lh = lis.includes(":") ? lis.slice(0, lis.lastIndexOf(":")) : lis;
+  const lp = lis.includes(":") ? lis.slice(lis.lastIndexOf(":") + 1) : "";
+  const con = tp.connect || "";
+  const [lhost, setLhost] = useState(lh);
+  const [lport, setLport] = useState(lp);
+  const snap = Store.stats[node] || {};
+  const ifaces = Object.entries(snap.interfaces || {})
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || "") })).filter(i => i.port);
+  const conPort = con.includes(":") ? con.slice(con.lastIndexOf(":") + 1) : con;
+  const match = ifaces.find(i => i.port === conPort);
+  const [fwd, setFwd] = useState(match ? match.name : "__custom__");
+  const [custom, setCustom] = useState(con || "127.0.0.1:");
+  const [wrap, setWrap] = useState(tp.wrap_key || "");
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
+  const isCustom = fwd === "__custom__";
+  const save = async () => {
+    if (!lhost.trim()) return fail("Listen IP is required.");
+    if (!/^\d+$/.test(lport.trim())) return fail("Listen port must be a number.");
+    let connect;
+    if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forward-to must be host:port."); }
+    else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
+    setBusy(true); setMsg({ k: "work", t: "saving…" });
+    const body = { node, service: svc, listen: lhost.trim() + ":" + lport.trim(), connect };
+    if (wrap.trim() !== (tp.wrap_key || "")) body.wrap_key = wrap.trim();   // only send when actually changed
+    const r = await api.turnManage(body);
+    if (!r.ok) return fail(r.error || "Request failed.");
+    closeModal(); await Store.poll();
+    toast("Turn-proxy update requested — applies on the node's next sync.", "ok");
+  };
+  const rotate = async () => {
+    if (busy) return; setBusy(true);
+    const r = await api.turnRotate({ node, service: svc });
+    if (!r.ok) { setBusy(false); return toast(r.error || "Failed.", "err"); }
+    closeModal(); await Store.poll();
+    toast("Wrap-key rotation requested — every client using the old key must re-import.", "ok");
+  };
+  return html`<${Sheet} title=${"Turn-proxy · " + turnLabel(svc, lp)}
+    foot=${html`<${Fragment}>
+      <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
+      <button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    <div class="iface-intro">
+      <div>Changing Listen or Forwards-to rewrites the unit's ExecStart on the node and restarts it.</div>
+      <div>Clients reconnect on the new listen address; the wrap key is unchanged unless you edit or rotate it.</div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Listen IP</label><input autofocus value=${lhost} onInput=${e => setLhost(e.target.value)} placeholder="203.0.113.7"/></div>
+      <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/></div>
+    </div>
+    <div class="field"><label>Forwards to</label>
+      <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
+        ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
+        <option value="__custom__">Custom port…</option>
+      </select>
+    </div>
+    ${isCustom ? html`<${Fragment}>
+      <div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>
+      <div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This forwards to a port with no managed interface behind it. Make sure a wg/awg interface is really listening there, or clients reach the proxy but get no tunnel.</span></div>
+    <//>` : null}
+    <div class="field"><label>Wrap key</label>
+      <div class="keyrow">
+        <input value=${wrap} onInput=${e => setWrap(e.target.value)} class="mono" placeholder="(none)" spellcheck="false" autocomplete="off"/>
+        ${wrap ? html`<button class="btn btn-mini" title="Copy" onClick=${() => copy(wrap, "Wrap key copied")}><${Ic} i="copy"/></button>` : null}
+        <button class="btn btn-mini" title="Generate a new key" disabled=${busy} onClick=${rotate}>Rotate</button>
+      </div>
+      <div class="hint">The fork's obfuscation key. Editing or rotating it breaks every client using the old key until they re-import.</div>
+    </div>
+    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
+function DeleteTurnSheet({ node, service, label }) {
+  const [txt, setTxt] = useState(""); const [busy, setBusy] = useState(false);
+  const phrase = "DELETE " + label;
+  const ok = txt === phrase;
+  const del = async () => {
+    if (!ok || busy) return; setBusy(true);
+    const r = await api.turnDelete({ node, service });
+    if (!r.ok) { setBusy(false); return toast(r.error || "Failed.", "err"); }
+    closeModal(); await Store.poll();
+    toast("Turn-proxy removal requested — the node stops + removes it on its next sync.", "ok");
+  };
+  return html`<${Sheet} title=${"Delete turn-proxy · " + label}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" disabled=${!ok || busy} onClick=${del}>Delete turn-proxy</button></>`}>
+    <div class="notice warn" style="margin-bottom:20px"><${Ic} i="warn"/><span>This <b>stops, disables and removes</b> the turn-proxy service <b>${label}</b> on the node. Clients pointed at it stop connecting. This can't be undone. (To keep the service running and only unlink it from the panel, use <b>Disconnect</b>.)</span></div>
+    <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
+  <//>`;
+}
+// the installable turn-proxy forks (owner repo + the fork's obfuscation flags — the node appends a
+// fresh -wrap-key). Mirrors the installer's turn_repo_owner / turn_wrap_flags.
+const TURN_FORKS = [
+  { id: "main", label: "Original", owner: "cacggghp/vk-turn-proxy", wrap: "" },
+  { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on" },
+  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/vk-turn-proxy", wrap: "-wrap" },
+  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "" },
+  { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap" },
+  { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp" },
+];
+function openSetupTurn(node) { openModal(html`<${SetupTurnSheet} node=${node}/>`); }
+function SetupTurnSheet({ node }) {
+  const [mode, setMode] = useState("new");   // new (install) | existing (adopt)
+  const [fork, setFork] = useState("main");
+  const snap = Store.stats[node] || {};
+  const ifaces = Object.entries(snap.interfaces || {})
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || "") })).filter(i => i.port);
+  const [lhost, setLhost] = useState("");
+  const [lport, setLport] = useState("56000");
+  const [fwd, setFwd] = useState(ifaces[0] ? ifaces[0].name : "__custom__");
+  const [custom, setCustom] = useState("127.0.0.1:51820");
+  const [path, setPath] = useState("");
+  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
+  const isCustom = fwd === "__custom__";
+  const f = TURN_FORKS.find(x => x.id === fork) || TURN_FORKS[0];
+  const save = async () => {
+    if (mode === "existing") {
+      const p = path.trim();
+      if (!p.startsWith("/") || !p.endsWith(".service")) return fail("Enter the absolute path to the .service unit.");
+      setBusy(true); setMsg({ k: "work", t: "requesting…" });
+      const r = await api.turnOnboard({ node, path: p });
+      if (!r.ok) return fail(r.error || "Request failed.");
+      closeModal(); await Store.poll();
+      return toast("Turn-proxy adopt requested — the node reads it on its next sync.", "ok");
+    }
+    if (!lhost.trim()) return fail("Public IP this proxy is reached at is required.");
+    if (!/^\d+$/.test(lport.trim())) return fail("Listen port must be a number.");
+    let connect;
+    if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forwards-to must be host:port."); }
+    else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
+    setBusy(true); setMsg({ k: "work", t: "installing… (the node downloads the binary, up to ~2 min)" });
+    const r = await api.turnInstall({ node, fork: f.id, owner: f.owner, wrap_flags: f.wrap,
+      listen: lhost.trim() + ":" + lport.trim(), connect });
+    if (!r.ok) return fail(r.error || "Request failed.");
+    closeModal(); await Store.poll();
+    toast("Turn-proxy install requested — the node downloads + starts it on its next sync.", "ok");
+  };
+  return html`<${Sheet} title="Setup new proxy"
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>${mode === "existing" ? "Adopt" : "Install"}</button></>`}>
+    <div class="field"><label>Source</label>
+      <div class="chiprow proto3">
+        <button class=${"chip c-awg" + (mode === "new" ? " on" : "")} onClick=${() => setMode("new")}>Install a fork</button>
+        <button class=${"chip c-ex" + (mode === "existing" ? " on" : "")} onClick=${() => setMode("existing")}>Adopt existing service</button>
+      </div></div>
+    ${mode === "existing" ? html`<${Fragment}>
+      <div class="iface-intro big">
+        <div>Adopt a turn-proxy already running as a systemd service on this node.</div>
+        <div>The node reads the unit's ExecStart (listen, forwards-to, wrap key) on its next sync and it shows up here.</div>
+      </div>
+      <div class="field"><label>Service unit path</label><input autofocus value=${path} onInput=${e => setPath(e.target.value)} placeholder="/etc/systemd/system/vk-turn-proxy-...service" autocomplete="off"/></div>
+    <//>` : html`<${Fragment}>
+      <div class="iface-intro">
+        <div>The node downloads the fork's prebuilt binary from GitHub, writes its systemd unit, and starts it.</div>
+        <div>A fresh wrap key is generated on the node for forks that support obfuscation.</div>
+      </div>
+      <div class="field"><label>Fork</label>
+        <select class="selwrap" value=${fork} onChange=${e => setFork(e.target.value)}>
+          ${TURN_FORKS.map(x => html`<option value=${x.id}>${x.label}${x.wrap ? "" : " · no obfuscation"}</option>`)}
+        </select>
+        <div class="hint">${f.owner} — ${f.wrap ? "obfuscation: " + f.wrap : "plain (-listen/-connect only)"}</div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Public IP</label><input value=${lhost} onInput=${e => setLhost(e.target.value)} placeholder="203.0.113.7"/></div>
+        <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/></div>
+      </div>
+      <div class="field"><label>Forwards to</label>
+        <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
+          ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
+          <option value="__custom__">Custom port…</option>
+        </select>
+      </div>
+      ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
+    <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
