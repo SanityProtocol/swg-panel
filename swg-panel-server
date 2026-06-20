@@ -687,6 +687,7 @@ def apply_iface_meta(node_cfg, interfaces):
             d = ov["dns"]
             ifc["dns"] = d if isinstance(d, list) else [s.strip() for s in str(d).split(",") if s.strip()]
         ifc["mtu"] = ov.get("mtu") or 1280
+        ifc["egress_ip"] = ov.get("egress_ip") or ""   # per-interface source/egress IP (blank = auto/MASQUERADE)
         # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
         # the node converges its interface to it. awg_pending flags desired != reported in the UI.
         ovawg = ov.get("awg_params")
@@ -924,6 +925,7 @@ def api(method, path, qs, body, deps):
                         "kind": snap.get("kind"),               # "docker" | "baremetal"
                         "net_mode": snap.get("net_mode") or "host",   # docker net mode: host | bridge (bridge → created-iface ports need publishing)
                         "turn_manage": bool(snap.get("turn_manage")),  # can the panel edit/restart this node's turn-proxies?
+                        "ips": snap.get("node_ips") or [],             # the node's own IPs — candidates for a per-interface egress IP
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
                         "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
                         "outdated": _ver_behind(snap.get("noded_version"), VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
@@ -1494,6 +1496,17 @@ def api(method, path, qs, body, deps):
                     ov.pop("awg_params", None)
             else:
                 return 400, {"ok": False, "error": "awg_params must be an object", "code": "bad_request"}
+        if "egress_ip" in body:                          # per-interface source/egress IP ("" = clear → MASQUERADE)
+            e = (body.get("egress_ip") or "").strip()
+            if e:
+                try:
+                    if ipaddress.ip_address(e).version != 4:
+                        raise ValueError
+                except ValueError:
+                    return 400, {"ok": False, "error": "egress IP must be an IPv4 address", "code": "bad_request"}
+                ov["egress_ip"] = e
+            else:
+                ov.pop("egress_ip", None)
         ifaces = nodes[nid].setdefault("ifaces", {})
         if ov:
             ifaces[iface] = ov
@@ -1555,6 +1568,13 @@ def api(method, path, qs, body, deps):
             ov["dns"] = [s.strip() for s in body["dns"].split(",") if s.strip()]   # list, like /iface/update
         if str(body.get("keepalive") or "").strip().isdigit():
             ov["keepalive"] = int(body["keepalive"])
+        if (body.get("egress_ip") or "").strip():       # per-interface source/egress IP
+            e = body["egress_ip"].strip()
+            try:
+                if ipaddress.ip_address(e).version == 4:
+                    ov["egress_ip"] = e
+            except ValueError:
+                pass
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Creating interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
@@ -1966,6 +1986,8 @@ class Handler(BaseHTTPRequestHandler):
                 d["listen_port"] = ov["listen_port"]
             if isinstance(ov.get("awg_params"), dict) and ov["awg_params"]:
                 d["awg_params"] = ov["awg_params"]
+            if "egress_ip" in ov:                       # per-interface source NAT ("" = clear → MASQUERADE)
+                d["egress_ip"] = ov.get("egress_ip") or ""
             if d:
                 desired_ifaces[ifn] = d
         # clear a pending self-update once the node reports a version different from when it was

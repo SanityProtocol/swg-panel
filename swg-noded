@@ -361,6 +361,89 @@ def _attach_turn_running(tps):
             t["running"] = _TURN_RUN["map"][t["service"]]
 
 
+def list_node_ips():
+    """The node's own IPv4 addresses (candidates for a per-interface egress/source IP), excluding
+    loopback + tunnel/bridge devices. On a docker host-net node this is the HOST's addresses."""
+    ips = []
+    try:
+        out = run(["ip", "-4", "-o", "addr", "show"]).stdout
+    except Exception:
+        return ips
+    for ln in out.splitlines():
+        p = ln.split()
+        if len(p) < 4 or p[2] != "inet":
+            continue
+        dev, ip = p[1], p[3].split("/")[0]
+        if dev == "lo" or dev.startswith(("wg", "awg", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
+            continue
+        if ip.startswith("127.") or ip in ips:
+            continue
+        ips.append(ip)
+    return ips
+
+
+def _detect_wan():
+    out = run(["sh", "-c", "ip -4 route get 1.1.1.1 2>/dev/null"]).stdout
+    m = re.search(r" dev (\S+)", out or "")
+    return m.group(1) if m else "eth0"
+
+
+def _iface_subnet(node_cfg, iface):
+    """The interface's tunnel subnet (CIDR) read from its conf Address — for the egress SNAT match."""
+    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
+    try:
+        with open(ic.get("conf", "")) as f:
+            m = re.search(r"(?im)^\s*Address\s*=\s*([^\s,]+)", f.read())
+    except Exception:
+        return ""
+    if not m:
+        return ""
+    import ipaddress
+    try:
+        return str(ipaddress.ip_network(m.group(1), strict=False))
+    except Exception:
+        return ""
+
+
+def reconcile_egress(node_cfg, desired_ifaces):
+    """Option-I source-NAT: per interface, ensure an SNAT rule to its chosen egress_ip (tagged with a
+    'swg-egress:<iface>' comment, inserted ahead of the default MASQUERADE), replace it on change, and
+    remove it when cleared (→ falls back to MASQUERADE). Runs iptables directly (root on bare-metal;
+    container root + NET_ADMIN + host netns on docker)."""
+    res = {"changed": 0, "errors": []}
+    if not desired_ifaces:
+        return res
+    try:
+        rules = run(["iptables", "-t", "nat", "-S", "POSTROUTING"]).stdout.splitlines()
+    except Exception as e:
+        res["errors"].append("iptables list: " + str(e)); return res
+    wan = _detect_wan()
+    for iface in (node_cfg.get("interfaces") or {}):
+        want = (desired_ifaces or {}).get(iface) or {}
+        egress = (want.get("egress_ip") or "").strip()
+        subnet = _iface_subnet(node_cfg, iface)
+        if not subnet:
+            continue
+        tag = "swg-egress:" + iface
+        existing = [ln for ln in rules if (" --comment " + tag in (" " + ln + " ")) or ("--comment " + tag) in ln]
+        cur = ""
+        for ln in existing:
+            m = re.search(r"--to-source (\S+)", ln)
+            if m:
+                cur = m.group(1)
+        if egress == cur:
+            continue
+        for ln in existing:                                   # drop stale rule(s)
+            run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)])
+        if egress:
+            r = run(["iptables", "-t", "nat", "-I", "POSTROUTING", "-s", subnet, "-o", wan,
+                     "-m", "comment", "--comment", tag, "-j", "SNAT", "--to-source", egress])
+            if r.returncode != 0:
+                res["errors"].append("egress " + iface + ": " + (r.stderr or "").strip()[:120]); continue
+        res["changed"] += 1
+    return res
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -391,7 +474,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
-            "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS)}
+            "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS),
+            "node_ips": list_node_ips()}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap
@@ -878,7 +962,11 @@ def main():
                         NODE_ERRORS.pop(k, None)
                 r = reconcile(node_cfg, reply["desired"], agent, sudo)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)
+                eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
+                for e in eg["errors"]:
+                    print("egress: " + e, flush=True)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
+                        or eg["changed"] or eg["errors"]
                         or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]
                         or dl["deleted"] or dl["errors"] or tp["done"] or tp["errors"]):
                     print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} "
