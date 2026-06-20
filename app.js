@@ -287,6 +287,8 @@ const api = {
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
   ifaceCancel(b) { return this.post("/api/iface/cancel", b); },
   ifaceDelete(b) { return this.post("/api/iface/delete", b); },
+  ifaceAdopt(b) { return this.post("/api/iface/adopt", b); },     // drift: pull the node's server-edited value
+  ifaceRestore(b) { return this.post("/api/iface/restore", b); }, // drift: re-assert the panel's value
   turnManage(b) { return this.post("/api/turn/manage", b); },     // edit listen/connect (+ wrap key)
   turnRotate(b) { return this.post("/api/turn/rotate", b); },     // regenerate the wrap key
   turnDelete(b) { return this.post("/api/turn/delete", b); },         // stop + remove the service
@@ -921,7 +923,7 @@ function NodeDetail({ node: rawName }) {
               const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
               const deleting = (nrec.deleting || []).includes(ifn);
               return html`<a class=${"ifcard" + (deleting ? " pending" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : null}</div>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="grow"></span><span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1205,6 +1207,12 @@ function EditIfaceSheet({ node, iface }) {
       <div>Changing the Listen port reconfigures the interface on the node (peers are kept; clients reconnect on the new port).</div>
       <div>DNS / MTU seed new peers — existing per-peer values aren't touched.</div>
     </div>
+    ${Object.keys(meta.drift || {}).length ? html`<div class="notice warn" style="margin-bottom:18px">
+      <${Ic} i="warn"/><span><b>Edited directly on the server.</b> The panel paused pushing these so your change survives — Adopt to keep the server value, or Restore to re-apply the panel's:
+      ${Object.entries(meta.drift).map(([k, v]) => html`<div style="margin-top:7px"><span class="mono">${k === "awg_params" ? "AWG params" : k}</span> on node = <span class="mono">${k === "awg_params" ? Object.entries(v).map(([a, b]) => a + "=" + b).join(" ") : v}</span>
+        <button type="button" class="linkbtn" style="margin-left:8px" onClick=${async () => { const r = await api.ifaceAdopt({ node, iface, key: k }); if (!r.ok) return toast(r.error || "Failed", "err"); closeModal(); await Store.poll(); toast("Adopted the server value.", "ok"); }}>Adopt</button>
+        · <button type="button" class="linkbtn" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: k }); if (!r.ok) return toast(r.error || "Failed", "err"); closeModal(); await Store.poll(); toast("Restoring the panel value on the next sync.", "ok"); }}>Restore panel value</button></div>`)}
+      </span></div>` : null}
     <div class="row2">
       <div class="field"><label>Endpoint IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Config-facing only.</div></div>
       <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"}).</div></div>

@@ -689,6 +689,7 @@ def apply_iface_meta(node_cfg, interfaces):
         ifc["mtu"] = ov.get("mtu") or 1280
         ifc["egress_ip"] = ov.get("egress_ip") or ""   # per-interface source/egress IP (blank = auto/MASQUERADE)
         ifc["wan_iface"] = ov.get("wan_iface") or ""   # per-interface egress WAN NIC (blank = auto-detect)
+        ifc["drift"] = dict(ov.get("_drift") or {})    # settings edited directly on the server (key → the node's value)
         # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
         # the node converges its interface to it. awg_pending flags desired != reported in the UI.
         ovawg = ov.get("awg_params")
@@ -1517,6 +1518,9 @@ def api(method, path, qs, body, deps):
                 ov["wan_iface"] = w
             else:
                 ov.pop("wan_iface", None)
+        for k in ("listen_port", "awg_params"):     # a user-set value re-asserts: drop its drift + synced so it re-pushes
+            if k in body:
+                (ov.get("_synced") or {}).pop(k, None); (ov.get("_drift") or {}).pop(k, None)
         ifaces = nodes[nid].setdefault("ifaces", {})
         if ov:
             ifaces[iface] = ov
@@ -1612,6 +1616,31 @@ def api(method, path, qs, body, deps):
             nodes_save(deps["nodes_path"], nodes)
             ev_append(roster_path, "node", nid, "Cancelled interface request", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "removed": removed}}
+
+    if method == "POST" and path in ("/api/iface/adopt", "/api/iface/restore"):
+        # Resolve a drift (a setting edited directly on the server): ADOPT pulls the node's value into
+        # the panel override (the panel stops fighting it); RESTORE re-asserts the panel's value.
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip(); key = (body.get("key") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        ov = (nodes[nid].get("ifaces") or {}).get(iface)
+        if not ov or key not in (ov.get("_drift") or {}):
+            return 400, {"ok": False, "error": "no pending drift for that setting", "code": "bad_request"}
+        if path.endswith("/adopt"):
+            ov[key] = ov["_drift"][key]                 # panel override ← the node's actual value
+            ov.setdefault("_synced", {})[key] = ov[key]
+            verb = "Adopted server-edited"
+        else:                                           # restore → re-push the panel value
+            (ov.get("_synced") or {}).pop(key, None)
+            verb = "Restored panel"
+        ov.get("_drift", {}).pop(key, None)
+        if not ov.get("_drift"):
+            ov.pop("_drift", None)
+        if not ov.get("_synced"):
+            ov.pop("_synced", None)
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, verb + " " + key, iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface, "key": key}}
 
     # ── turn-proxy management (only on nodes that report turn_manage=true) ──
     if method == "POST" and path == "/api/turn/install":
@@ -1992,20 +2021,67 @@ class Handler(BaseHTTPRequestHandler):
                 del buf[:len(buf) - LIVE_MAX]
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
-        # panel-managed interface config (currently the listen port) the node converges to
+        # panel-managed interface config the node converges to — drift-aware: push an override until the
+        # node confirms it (_synced); once confirmed, if the node diverges (a direct edit on the server)
+        # PAUSE pushing + record the node's value in _drift so the panel can flag it (Adopt / Restore).
+        snap_ifs = snap.get("interfaces") or {}
+        ifaces_dirty = False
         desired_ifaces = {}
         for ifn, ov in (node.get("ifaces") or {}).items():
+            rep = (snap_ifs.get(ifn) or {}).get("meta") or {}
+            synced = ov.setdefault("_synced", {})
+            drift = ov.setdefault("_drift", {})
             d = {}
+            def _clear_drift(k):
+                if k in drift:
+                    drift.pop(k, None); return True
+                return False
+            # listen port
             if ov.get("listen_port"):
-                d["listen_port"] = ov["listen_port"]
+                want = int(ov["listen_port"]); r = rep.get("listen_port")
+                rp = int(r) if str(r).isdigit() else None
+                if rp is None:
+                    d["listen_port"] = want
+                elif rp == want:
+                    if synced.get("listen_port") != want:
+                        synced["listen_port"] = want; ifaces_dirty = True
+                    ifaces_dirty = _clear_drift("listen_port") or ifaces_dirty
+                elif synced.get("listen_port") == want:                 # confirmed, then diverged → drift
+                    if drift.get("listen_port") != rp:
+                        drift["listen_port"] = rp; ifaces_dirty = True
+                else:                                                   # not yet confirmed → push to converge
+                    ifaces_dirty = _clear_drift("listen_port") or ifaces_dirty
+                    d["listen_port"] = want
+            # AmneziaWG params
             if isinstance(ov.get("awg_params"), dict) and ov["awg_params"]:
-                d["awg_params"] = ov["awg_params"]
-            if "egress_ip" in ov:                       # per-interface source NAT ("" = clear → MASQUERADE)
+                want = ov["awg_params"]; ra = rep.get("awg_params") or {}
+                if not ra:
+                    d["awg_params"] = want
+                elif all(str(ra.get(k)) == str(want[k]) for k in want):
+                    if synced.get("awg_params") != want:
+                        synced["awg_params"] = dict(want); ifaces_dirty = True
+                    ifaces_dirty = _clear_drift("awg_params") or ifaces_dirty
+                elif synced.get("awg_params") == want:                  # confirmed, then diverged → drift
+                    nd = {k: ra.get(k) for k in want}
+                    if drift.get("awg_params") != nd:
+                        drift["awg_params"] = nd; ifaces_dirty = True
+                else:
+                    ifaces_dirty = _clear_drift("awg_params") or ifaces_dirty
+                    d["awg_params"] = want
+            # egress IP + WAN NIC: the node doesn't report them back, so always push (no drift tracking)
+            if "egress_ip" in ov:
                 d["egress_ip"] = ov.get("egress_ip") or ""
-            if "wan_iface" in ov:                       # per-interface egress WAN NIC ("" = clear → auto-detect)
+            if "wan_iface" in ov:
                 d["wan_iface"] = ov.get("wan_iface") or ""
+            if not synced:
+                ov.pop("_synced", None)
+            if not drift:
+                ov.pop("_drift", None)
             if d:
                 desired_ifaces[ifn] = d
+        if ifaces_dirty:
+            with contextlib.suppress(Exception):
+                nodes_save(Handler.deps["nodes_path"], nodes)
         # clear a pending self-update once the node reports a version different from when it was
         # requested — robust to the node landing past a lagging docker-panel image version. Docker
         # nodes can't self-update (a container can't recreate its image), so never let one hang.
