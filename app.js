@@ -1211,6 +1211,7 @@ function TurnManageSheet({ node, tp }) {
   const snap = Store.stats[node] || {};
   const ifaces = Object.entries(snap.interfaces || {})
     .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || "") })).filter(i => i.port);
+  const epIp = (() => { for (const b of Object.values(snap.interfaces || {})) { const ep = (b.meta || {}).endpoint || ""; if (ep) return ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep; } return ""; })();
   const conPort = con.includes(":") ? con.slice(con.lastIndexOf(":") + 1) : con;
   const match = ifaces.find(i => i.port === conPort);
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
@@ -1250,6 +1251,7 @@ function TurnManageSheet({ node, tp }) {
       <div class="field"><label>Listen IP</label><input autofocus value=${lhost} onInput=${e => setLhost(e.target.value)} placeholder="203.0.113.7"/></div>
       <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/></div>
     </div>
+    ${lhost.trim() && epIp && lhost.trim() !== epIp ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't the node's detected IP (<span class="mono">${epIp}</span>). The proxy <b>binds</b> to this address — it must be a real IP on the server, or it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>` : null}
     <div class="field"><label>Forwards to</label>
       <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
         ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
@@ -1383,6 +1385,7 @@ function SetupTurnSheet({ node }) {
         <div class="field"><label>Public IP</label><input value=${lhost} onInput=${e => setLhost(e.target.value)} placeholder="203.0.113.7"/><div class="hint">Must be an address on this server — the proxy binds to it.</div></div>
         <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/></div>
       </div>
+      ${lhost.trim() && epIp && lhost.trim() !== epIp ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't the node's detected IP (<span class="mono">${epIp}</span>). The proxy <b>binds</b> to this address, so it must be a real IP on the server — otherwise it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>` : null}
       <div class="field"><label>Forwards to</label>
         <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
           ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
