@@ -1078,6 +1078,7 @@ function LoadIfaceSheet({ node }) {
   const [dns, setDns] = useState("1.1.1.1"); const [mtu, setMtu] = useState("1280"); const [ka, setKa] = useState("25");
   const [conf, setConf] = useState("");
   const ips = nrec.ips || []; const [egress, setEgress] = useState("");
+  const wanifs = nrec.wan_ifaces || []; const [wan, setWan] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const existing = proto === "existing";
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
@@ -1095,7 +1096,7 @@ function LoadIfaceSheet({ node }) {
       if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.");
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: host.trim(),
-        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress });
+        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan });
     }
     if (!r.ok) return fail(r.error || "Request failed.");
     closeModal(); await Store.poll();
@@ -1130,14 +1131,20 @@ function LoadIfaceSheet({ node }) {
         <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/></div>
         <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
       </div>
+      <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div>
       <div class="row2">
-        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div>
         <div class="field"><label>Outbound (egress) IP</label>
           <select class="selwrap" value=${egress} onChange=${e => setEgress(e.target.value)}>
             <option value="">Auto (MASQUERADE)</option>
             ${ips.map(ip => html`<option value=${ip}>${ip}</option>`)}
           </select>
           <div class="hint">Source IP clients egress from (SNAT). Auto = node default.</div></div>
+        <div class="field"><label>WAN egress interface</label>
+          <select class="selwrap" value=${wan} onChange=${e => setWan(e.target.value)}>
+            <option value="">Auto (default route)</option>
+            ${wanifs.map(w => html`<option value=${w}>${w}</option>`)}
+          </select>
+          <div class="hint">Which NIC clients NAT out of. Auto detects it.</div></div>
       </div>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1176,13 +1183,16 @@ function EditIfaceSheet({ node, iface }) {
   const ips = nrec.ips || [];
   const [egress, setEgress] = useState(meta.egress_ip || "");
   const egressOpts = egress && !ips.includes(egress) ? [egress, ...ips] : ips;
+  const wanifs = nrec.wan_ifaces || [];
+  const [wan, setWan] = useState(meta.wan_iface || "");
+  const wanOpts = wan && !wanifs.includes(wan) ? [wan, ...wanifs] : wanifs;
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true); setMsg({ k: "work", t: "saving…" });
-    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), egress_ip: egress };
+    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), egress_ip: egress, wan_iface: wan };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
     const r = await api.ifaceUpdate(body);
     if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to update interface." }); }
@@ -1203,12 +1213,19 @@ function EditIfaceSheet({ node, iface }) {
       <div class="field"><label>Default DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated. Default for new peers (per-peer DNS isn't overwritten).</div></div>
       <div class="field"><label>Default MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers.</div></div>
     </div>
-    <div class="field"><label>Outbound (egress) IP</label>
-      <select class="selwrap" value=${egress} onChange=${e => setEgress(e.target.value)}>
-        <option value="">Auto (MASQUERADE — node default)</option>
-        ${egressOpts.map(ip => html`<option value=${ip}>${ip}${!ips.includes(ip) ? " — not on node now" : ""}</option>`)}
-      </select>
-      <div class="hint">Source IP this interface's clients use to reach the internet. Auto uses the node's default; pick a specific IP to pin egress (SNAT). ${ips.length ? "" : "(node hasn't reported its IPs yet)"}</div>
+    <div class="row2">
+      <div class="field"><label>Outbound (egress) IP</label>
+        <select class="selwrap" value=${egress} onChange=${e => setEgress(e.target.value)}>
+          <option value="">Auto (MASQUERADE — node default)</option>
+          ${egressOpts.map(ip => html`<option value=${ip}>${ip}${!ips.includes(ip) ? " — not on node now" : ""}</option>`)}
+        </select>
+        <div class="hint">Source IP clients use to reach the internet (SNAT). Auto = node default. ${ips.length ? "" : "(node hasn't reported its IPs yet)"}</div></div>
+      <div class="field"><label>WAN egress interface</label>
+        <select class="selwrap" value=${wan} onChange=${e => setWan(e.target.value)}>
+          <option value="">Auto (detected default route)</option>
+          ${wanOpts.map(w => html`<option value=${w}>${w}${!wanifs.includes(w) ? " — not on node now" : ""}</option>`)}
+        </select>
+        <div class="hint">Which NIC clients are NAT'd out of. Auto detects the default route.</div></div>
     </div>
     ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
       <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>

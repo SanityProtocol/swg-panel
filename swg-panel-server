@@ -688,6 +688,7 @@ def apply_iface_meta(node_cfg, interfaces):
             ifc["dns"] = d if isinstance(d, list) else [s.strip() for s in str(d).split(",") if s.strip()]
         ifc["mtu"] = ov.get("mtu") or 1280
         ifc["egress_ip"] = ov.get("egress_ip") or ""   # per-interface source/egress IP (blank = auto/MASQUERADE)
+        ifc["wan_iface"] = ov.get("wan_iface") or ""   # per-interface egress WAN NIC (blank = auto-detect)
         # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
         # the node converges its interface to it. awg_pending flags desired != reported in the UI.
         ovawg = ov.get("awg_params")
@@ -926,6 +927,7 @@ def api(method, path, qs, body, deps):
                         "net_mode": snap.get("net_mode") or "host",   # docker net mode: host | bridge (bridge → created-iface ports need publishing)
                         "turn_manage": bool(snap.get("turn_manage")),  # can the panel edit/restart this node's turn-proxies?
                         "ips": snap.get("node_ips") or [],             # the node's own IPs — candidates for a per-interface egress IP
+                        "wan_ifaces": snap.get("node_ifaces") or [],   # the node's NICs — candidates for the egress WAN interface
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
                         "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
                         "outdated": _ver_behind(snap.get("noded_version"), VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
@@ -1507,6 +1509,14 @@ def api(method, path, qs, body, deps):
                 ov["egress_ip"] = e
             else:
                 ov.pop("egress_ip", None)
+        if "wan_iface" in body:                          # egress WAN NIC ("" = clear → auto-detect)
+            w = (body.get("wan_iface") or "").strip()
+            if w and (" " in w or "/" in w):
+                return 400, {"ok": False, "error": "WAN interface must be a bare device name", "code": "bad_request"}
+            if w:
+                ov["wan_iface"] = w
+            else:
+                ov.pop("wan_iface", None)
         ifaces = nodes[nid].setdefault("ifaces", {})
         if ov:
             ifaces[iface] = ov
@@ -1575,6 +1585,10 @@ def api(method, path, qs, body, deps):
                     ov["egress_ip"] = e
             except ValueError:
                 pass
+        if (body.get("wan_iface") or "").strip():        # per-interface egress WAN NIC
+            w = body["wan_iface"].strip()
+            if " " not in w and "/" not in w:
+                ov["wan_iface"] = w
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Creating interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
@@ -1988,6 +2002,8 @@ class Handler(BaseHTTPRequestHandler):
                 d["awg_params"] = ov["awg_params"]
             if "egress_ip" in ov:                       # per-interface source NAT ("" = clear → MASQUERADE)
                 d["egress_ip"] = ov.get("egress_ip") or ""
+            if "wan_iface" in ov:                       # per-interface egress WAN NIC ("" = clear → auto-detect)
+                d["wan_iface"] = ov.get("wan_iface") or ""
             if d:
                 desired_ifaces[ifn] = d
         # clear a pending self-update once the node reports a version different from when it was

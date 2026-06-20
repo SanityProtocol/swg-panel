@@ -382,6 +382,26 @@ def list_node_ips():
     return ips
 
 
+def list_node_ifaces():
+    """The node's WAN-candidate NIC names (devices carrying a non-loopback IPv4) — for the egress -o."""
+    ifs = []
+    try:
+        out = run(["ip", "-4", "-o", "addr", "show"]).stdout
+    except Exception:
+        return ifs
+    for ln in out.splitlines():
+        p = ln.split()
+        if len(p) < 4 or p[2] != "inet":
+            continue
+        dev, ip = p[1], p[3].split("/")[0]
+        if dev == "lo" or dev.startswith(("wg", "awg", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
+            continue
+        if ip.startswith("127.") or dev in ifs:
+            continue
+        ifs.append(dev)
+    return ifs
+
+
 def _detect_wan():
     out = run(["sh", "-c", "ip -4 route get 1.1.1.1 2>/dev/null"]).stdout
     m = re.search(r" dev (\S+)", out or "")
@@ -417,27 +437,36 @@ def reconcile_egress(node_cfg, desired_ifaces):
         rules = run(["iptables", "-t", "nat", "-S", "POSTROUTING"]).stdout.splitlines()
     except Exception as e:
         res["errors"].append("iptables list: " + str(e)); return res
-    wan = _detect_wan()
+    default_wan = _detect_wan()
     for iface in (node_cfg.get("interfaces") or {}):
         want = (desired_ifaces or {}).get(iface) or {}
         egress = (want.get("egress_ip") or "").strip()
+        wan_ov = (want.get("wan_iface") or "").strip()
         subnet = _iface_subnet(node_cfg, iface)
         if not subnet:
             continue
         tag = "swg-egress:" + iface
-        existing = [ln for ln in rules if (" --comment " + tag in (" " + ln + " ")) or ("--comment " + tag) in ln]
-        cur = ""
-        for ln in existing:
-            m = re.search(r"--to-source (\S+)", ln)
-            if m:
-                cur = m.group(1)
-        if egress == cur:
+        if egress:                                            # SNAT to a chosen source IP, out a chosen/auto WAN
+            des = ("SNAT", wan_ov or default_wan, egress)
+        elif wan_ov:                                          # just pin the WAN egress interface
+            des = ("MASQUERADE", wan_ov, "")
+        else:
+            des = None
+        existing = [ln for ln in rules if ("--comment " + tag) in ln]
+        cur = None
+        if existing:
+            o = re.search(r"-o (\S+)", existing[0]); src = re.search(r"--to-source (\S+)", existing[0])
+            cur = ("SNAT" if "SNAT" in existing[0] else "MASQUERADE", o.group(1) if o else "", src.group(1) if src else "")
+        if cur == des:
             continue
         for ln in existing:                                   # drop stale rule(s)
             run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)])
-        if egress:
-            r = run(["iptables", "-t", "nat", "-I", "POSTROUTING", "-s", subnet, "-o", wan,
-                     "-m", "comment", "--comment", tag, "-j", "SNAT", "--to-source", egress])
+        if des:
+            args = ["iptables", "-t", "nat", "-I", "POSTROUTING", "-s", subnet, "-o", des[1],
+                    "-m", "comment", "--comment", tag, "-j", des[0]]
+            if des[0] == "SNAT":
+                args += ["--to-source", des[2]]
+            r = run(args)
             if r.returncode != 0:
                 res["errors"].append("egress " + iface + ": " + (r.stderr or "").strip()[:120]); continue
         res["changed"] += 1
@@ -475,7 +504,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS),
-            "node_ips": list_node_ips()}
+            "node_ips": list_node_ips(), "node_ifaces": list_node_ifaces()}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap
