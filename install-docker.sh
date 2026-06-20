@@ -457,23 +457,89 @@ add_node_iface(){
   NODE_IFACES="${NODE_IFACES:+$NODE_IFACES,}${name}:${port}:${addr}:${plain}:${ep}"
   ok "queued interface $(col "$C_GREEN" "$name") — created on the node's next start"
 }
-# wg/awg step (fresh AND re-install): show the node's current interfaces and loop to add more
+# ── interface picker helpers ──────────────────────────────────────────────
+host_wg_ifaces(){   # live wg/awg interface NAMES on the host (any owner)
+  ip -o link show 2>/dev/null | sed -n 's/^[0-9]\{1,\}: \([^:@]*\).*/\1/p' | while read -r d; do
+    [ "$d" = lo ] && continue
+    ip -d link show "$d" 2>/dev/null | grep -qE 'amneziawg|wireguard' && echo "$d"
+  done
+}
+find_iface_conf(){  # echo the .conf path for an interface (searches the usual dirs); empty if none
+  local n="$1" p
+  for p in "$INSTALL_DIR/data/node-confs/$n.conf" "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf"; do
+    [ -f "$p" ] && { echo "$p"; return 0; }
+  done
+}
+bm_node_ifaces(){   # interfaces a co-located BARE-METAL node manages (from its agent config)
+  [ -f /etc/swg-agent/config.json ] || return 0
+  python3 - <<'PY' 2>/dev/null || true
+import json
+try: print(" ".join(json.load(open("/etc/swg-agent/config.json")).get("interfaces", {})))
+except Exception: pass
+PY
+}
+_in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
+onboard_iface(){    # bring an interface under this docker node: copy its .conf into ./data/node-confs
+  local n="$1" src dest="$INSTALL_DIR/data/node-confs/$n.conf"
+  src="$(find_iface_conf "$n")"
+  [ -n "$src" ] || { warn "no .conf found for '$n' (orphan interface — no keys to adopt); skipping"; return 1; }
+  run mkdir -p "$INSTALL_DIR/data/node-confs"
+  [ "$src" = "$dest" ] || run cp "$src" "$dest"
+  if _in "$n" "$(bm_node_ifaces)"; then          # transfer: detach from the bare-metal node side
+    run awg-quick down "$n" 2>/dev/null || run wg-quick down "$n" 2>/dev/null || true
+    run systemctl disable --now "awg-quick@$n" 2>/dev/null || true
+    run systemctl disable --now "wg-quick@$n"  2>/dev/null || true
+    $DRYRUN || python3 - "$n" <<'PY' 2>/dev/null || true
+import json,sys
+p="/etc/swg-agent/config.json"
+try:
+    d=json.load(open(p)); d.get("interfaces",{}).pop(sys.argv[1],None); json.dump(d,open(p,"w"),indent=2)
+except Exception: pass
+PY
+  fi
+  ok "onboarded $(col "$C_GREEN" "$n")"
+}
+# wg/awg step: pick from the host's interfaces (available / used-by-another-node) or create new
 manage_node_ifaces(){
   step "WireGuard / AmneziaWG setup"
   echo
   echo "      Interfaces run inside the swg-node container; add as many as you need now, or add more"
   echo "      later from the panel (Interfaces → Load new interface). Existing ones are KEPT."
   echo
-  [ -z "$(current_node_ifaces)" ] && add_node_iface             # nothing yet (fresh install) → create the first
-  local pick names n
+  local mine bm cand avail n pick xfer bad yn
   while :; do
-    names="$(current_node_ifaces)"
-    printf "  Current interfaces:"; while IFS= read -r n; do [ -n "$n" ] && printf ' %s' "$(col "$C_GREEN" "$n")"; done <<< "$names"; echo; echo
-    printf '  Press %s to keep these, or type %s to add another interface: ' "$(b Enter)" "$(col "$C_BLUE" new)"
+    mine="$(current_node_ifaces | tr '\n' ' ')"
+    bm="$(bm_node_ifaces)"
+    cand="$( { host_wg_ifaces; for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf; do [ -f "$c" ] && basename "$c" .conf; done; } | sort -u )"
+    avail=""; for n in $cand; do _in "$n" "$mine" && continue; _in "$n" "$bm" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
+    [ -n "$mine" ] && { printf "  Interfaces already on this node:"; for n in $mine; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
+    printf "  Currently available interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
+    [ -n "$bm" ] && { printf "  Interfaces used by the bare-metal node on this server:"; for n in $bm; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
+    echo
+    echo "  To onboard $(b "$(col "$C_BLUE" 'all available interfaces')") and $(b proceed) — press $(b Enter)"
+    printf "  Or enter interface names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
     if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
-    pick="${pick//[[:space:]]/}"
-    if [ -z "$pick" ]; then [ -z "$(current_node_ifaces)" ] && { warn "add at least one interface (type 'new')"; continue; }; break; fi
-    case "$pick" in new) echo; add_node_iface; echo;; *) warn "press Enter to keep, or type 'new' to add an interface";; esac
+    if [ -z "$(echo $pick)" ]; then                # Enter → onboard all available + proceed
+      for n in $avail; do onboard_iface "$n"; done
+      [ -n "$(current_node_ifaces)" ] || { warn "no interfaces yet — type 'new' to create one"; echo; continue; }
+      break
+    fi
+    if [ "$pick" = new ]; then echo; add_node_iface; echo; continue; fi
+    xfer=""; bad=""
+    for n in $pick; do
+      _in "$n" "$mine" && continue
+      _in "$n" "$avail" && continue
+      _in "$n" "$bm" && { xfer="$xfer $n"; continue; }
+      bad="$bad $n"
+    done
+    [ -n "$bad" ] && { warn "not found:$bad — pick from the lists above, or 'new'"; echo; continue; }
+    if [ -n "$xfer" ]; then
+      printf "  Are you sure you want to transfer %s to this node? (y/N): " "$(col "$C_RED" "$(echo $xfer)")"
+      read -r yn </dev/tty || yn=n
+      case "$yn" in [Yy]*) : ;; *) echo; continue;; esac
+    fi
+    for n in $pick; do _in "$n" "$mine" || onboard_iface "$n"; done
+    break
   done
 }
 ask_role(){          # role (panel entry) — master (panel + local node) or host (panel only); mirrors bare-metal
