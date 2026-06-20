@@ -285,7 +285,7 @@ const api = {
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
   ifaceCancel(b) { return this.post("/api/iface/cancel", b); },
   ifaceDelete(b) { return this.post("/api/iface/delete", b); },
-  nodeUpdate(b) { return this.post("/api/node/update", b); },
+  nodeSelfUpdate(b) { return this.post("/api/node/update", b); },   // flag a node to self-update (≠ nodeUpdate, which renames)
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
 };
@@ -2007,7 +2007,7 @@ function updateNode(n) {
     body: "The node pulls the swg-only updater on its next sync and self-updates (swg-noded restarts; "
       + "wg/awg/turn-proxies and your peers are left running). It'll report the new version when done. "
       + "Currently v" + (n.version || "?") + " → v" + (n.latest || "?") + ".",
-    onConfirm: async () => { const r = await api.nodeUpdate({ node: n.id }); if (r.ok) { await Store.poll(); toast("Update requested — applies on the node's next sync.", "ok"); } else toast(r.error || "Failed to request update.", "err"); },
+    onConfirm: async () => { const r = await api.nodeSelfUpdate({ node: n.id }); if (r.ok) { await Store.poll(); toast("Update requested — applies on the node's next sync.", "ok"); } else toast(r.error || "Failed to request update.", "err"); },
   });
 }
 function updateHost() {
