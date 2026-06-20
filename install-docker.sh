@@ -91,6 +91,7 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 bb(){ printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (handoff URL / login)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
+STEP="${STEP_BASE:-1}"; step(){ echo; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # sequential, continues bootstrap's numbering
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
 ask(){ local v p="$1" d="${2:-}"; echo; read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
 v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1; local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; }
@@ -325,9 +326,8 @@ fi
 # ───────────────────────── per-profile requirements ─────────────────────────
 # Compose interpolates the whole file (both services), so every referenced var must be
 # non-empty even when its service isn't in the active profile — fill sane placeholders.
-ask_panel_login(){   # Step 1 — Panel URL (identical look + parsing to bare-metal); login auto-generated
-  echo
-  echo "$(b 'Step 1. Panel URL')"
+ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login auto-generated
+  step "Panel URL"
   echo
   echo "      Where the panel is reached — an IP, a host, or a host with a subpath to"
   echo "      live under an existing site (e.g. $(b 'vpn.example.com/swg'))."
@@ -359,9 +359,8 @@ ask_panel_login(){   # Step 1 — Panel URL (identical look + parsing to bare-me
   [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
   return 0   # never let a short-circuited && above make the function (and set -e) fail
 }
-ask_panel_tls(){     # Step 2 — TLS certificate (same look as bare-metal); issued INSIDE the container by acme.sh
-  echo
-  echo "$(b 'Step 2. TLS certificate')"
+ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE the container by acme.sh
+  step "TLS certificate"
   echo
   local _opts="letsencrypt cloudflare cf15 selfsigned none" _def=letsencrypt _le='letsencrypt (default)'
   if [ "$EXISTING_DOCKER" = yes ] && [ -f "$INSTALL_DIR/data/etc/tls/fullchain.pem" ]; then
@@ -401,9 +400,8 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   [ -z "$TLS_VERIFY" ] && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n)"
   return 0
 }
-ask_node_iface(){    # Step 1 — WG/AWG interface (container-managed) + its endpoint; mirrors bare-metal
-  echo
-  echo "$(b 'Step 1. WireGuard / AmneziaWG setup')   (this interface has its own endpoint IP)"
+ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirrors bare-metal
+  step "WireGuard / AmneziaWG setup" "(this interface has its own endpoint IP)"
   echo
   echo "      The interface is brought up INSIDE the swg-node container from these values."
   echo "      Need several interfaces (each with its own endpoint) or custom AmneziaWG obfuscation?"
@@ -455,7 +453,7 @@ add_node_iface(){
 }
 # wg/awg step (fresh AND re-install): show the node's current interfaces and loop to add more
 manage_node_ifaces(){
-  echo; echo "$(b 'Step 1. WireGuard / AmneziaWG setup')"
+  step "WireGuard / AmneziaWG setup"
   echo
   echo "      Interfaces run inside the swg-node container; add as many as you need now, or add more"
   echo "      later from the panel (Interfaces → Load new interface). Existing ones are KEPT."
@@ -472,10 +470,8 @@ manage_node_ifaces(){
     case "$pick" in new) echo; add_node_iface; echo;; *) warn "press Enter to keep, or type 'new' to add an interface";; esac
   done
 }
-ask_role(){          # Step 1 (panel entry) — master (panel + local node) or host (panel only); mirrors bare-metal
-  echo
-  echo "$(b 'Step 1. Server role')"
-  echo
+ask_role(){          # role (panel entry) — master (panel + local node) or host (panel only); mirrors bare-metal
+  step "Server role"
   menu "$(b "$(col "$C_BLUE" 'master (default)')")" "Panel + this box also runs WG/AWG interfaces — a co-located, auto-enrolled node container"
   menu "$(col "$C_BLUE" host)"                       "Panel only; WG/AWG nodes are deployed separately (run their command from the panel)"
   ask_choice "Select role" "master" ROLE "master host"
@@ -551,7 +547,7 @@ fi
 # leaves the compose network, so it reaches the panel over loopback instead of the swg-panel name.
 if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
   if [ -z "$NODE_NET" ]; then
-    echo; echo "$(b 'Step 2. Networking mode')"; echo
+    step "Networking mode"; echo
     menu "$(b "$(col "$C_BLUE" 'host (default)')")" "Every interface port (incl. ones created from the panel) is reachable automatically, no publishing, best throughput. Recommended for a dedicated VPN box."
     menu "$(col "$C_BLUE" bridge)"                  "Isolated; you must publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml. Use only if host networking isn't an option."
     ask_choice "Select networking" "host" NODE_NET "host bridge"
@@ -697,7 +693,7 @@ fi
 # ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
 # Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
 if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
-  echo; echo "$(b 'Step 3. TURN-PROXY setup')"; echo
+  step "TURN-PROXY setup"; echo
   choose_turn_proxy
 fi
 

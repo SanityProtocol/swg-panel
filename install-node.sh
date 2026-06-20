@@ -51,6 +51,7 @@ have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
+STEP="${STEP_BASE:-1}"; step(){ echo; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # sequential, continues bootstrap's numbering
 
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
   echo; read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; }
@@ -426,13 +427,11 @@ fi
 # message, so default it to the hostname and don't prompt for it.
 NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"
 
-echo
-echo "$(b 'Step 1. WireGuard / AmneziaWG setup')   (each interface has its own endpoint IP)"
+step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
 echo
 choose_ifaces
 
-echo
-echo "$(b 'Step 2. TURN-PROXY setup')"
+step "TURN-PROXY setup"
 echo
 choose_turn_proxy
 

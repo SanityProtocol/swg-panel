@@ -73,6 +73,7 @@ writef(){ # writef <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"
   chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }   # menu <styled-label> <description>
+STEP="${STEP_BASE:-1}"; step(){ echo; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # sequential, continues bootstrap's numbering
 
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
   echo; read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || true; printf -v "$3" '%s' "${v:-$d}"; }
@@ -448,21 +449,20 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 # ═══════════════ I. PANEL SETUP ═══════════════
 echo; info "PANEL SETUP"
 
-# Step 1 — server role
+# Server role — skipped when already chosen (e.g. by bootstrap.sh)
 ROLE_SEL=""
 case "$ROLE" in master|host+node) ROLE_SEL=master;; host) ROLE_SEL=host;; node) die "for a node-only box run install-node.sh, not this script";; esac
-echo
-echo "$(b 'Step 1. Server role:')"
-echo
-menu "$(b "$(col "$C_BLUE" 'master (default)')")" "Masternode — this server will host the panel and run WG/AWG interfaces"
-menu "$(col "$C_BLUE" host)"                       "This server will host only the panel. WG/AWG nodes will be deployed separately"
-ask_choice "Select role" "master" ROLE_SEL "master host"
+if [ -z "$ROLE_SEL" ]; then
+  step "Server role"
+  menu "$(b "$(col "$C_BLUE" 'master (default)')")" "Masternode — this server will host the panel and run WG/AWG interfaces"
+  menu "$(col "$C_BLUE" host)"                       "This server will host only the panel. WG/AWG nodes will be deployed separately"
+  ask_choice "Select role" "master" ROLE_SEL "master host"
+fi
 case "$ROLE_SEL" in master) ROLE="host+node";; host) ROLE="host";; esac
 HOST_HAS_WG=no; [ "$ROLE" = "host+node" ] && HOST_HAS_WG=yes
 
-# Step 2 — panel URL (may include a subpath, e.g. vpn.example.com/swg)
-echo
-echo "$(b 'Step 2. Panel URL')"
+# panel URL (may include a subpath, e.g. vpn.example.com/swg)
+step "Panel URL"
 echo
 echo "      Where the panel is reached — an IP, a host, or a host with a subpath to"
 echo "      live under an existing site (e.g. $(b 'vpn.example.com/swg'))."
@@ -490,9 +490,8 @@ PANEL_DOMAIN="$PANEL_HOST_NOPORT"
 [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
 [ -n "$PANEL_BASE" ] && ok "panel will be served under subpath ${PANEL_BASE}/"
 
-# Step 3 — TLS certificate
-echo
-echo "$(b 'Step 3. TLS certificate')"
+# TLS certificate
+step "TLS certificate"
 echo
 menu "$(b "$(col "$C_BLUE" 'letsencrypt (default)')")" "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
 menu "$(col "$C_BLUE" cloudflare)"                    "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
@@ -520,9 +519,8 @@ case "$TLS_MODE" in
                ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "" CF_ORIGIN_TOKEN v_cforigin "paste an API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;
 esac
 
-# Step 4 — web server
-echo
-echo "$(b 'Step 4. Web server:')"
+# web server
+step "Web server"
 echo
 menu "$(b "$(col "$C_BLUE" 'internal (default)')")" "Self-contained, no separate web-server is required"
 menu "$(col "$C_BLUE" nginx)"                       "Web content will be served via an Nginx reverse proxy"
@@ -556,15 +554,12 @@ if [ "$KEEP_AUTH" != yes ] && [ "${BASIC_USER}" = admin ]; then BASIC_USER="admi
 declare -a SELECTED
 if [ "$HOST_HAS_WG" = yes ]; then
   echo; info "NODE SETUP"
-  echo
-  echo "$(b 'Step 1. Node name for THIS box')"
+  step "Node name for THIS box"
   ask_valid "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname)" HOST_NODE_NAME v_name "1–40 chars: letters, digits, - or _"
-  echo
-  echo "$(b 'Step 2. WireGuard / AmneziaWG setup')   (each interface has its own endpoint IP)"
+  step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
   echo
   choose_ifaces
-  echo
-  echo "$(b 'Step 3. TURN-PROXY setup')"
+  step "TURN-PROXY setup"
   echo
   choose_turn_proxy
 fi
