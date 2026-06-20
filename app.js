@@ -854,6 +854,7 @@ function NodeDetail({ node: rawName }) {
     <div class="detail-head">
       <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1><span class=${"tport" + (node.transport === "https" ? " https" : "")}>${node.transport}</span>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}</div>
       <div class="grow"></div>
+      ${nrec.removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span><button class="btn btn-mini" style="margin:0 12px 0 9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null}
       <div class="dh-ver">
         ${nrec.version ? html`<span class="nm-ver">v${nrec.version}</span>` : null}
         ${nrec.updating ? html`<span class="livepill upd-busy">updating… <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
@@ -2024,7 +2025,7 @@ function NodeCard({ n }) {
       <span class=${"tport" + (n.transport === "https" ? " https" : "")}>${n.transport}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
       <span class=${"nstat " + st}>${stTxt}</span>
-      ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span><button class="b-cancel" title="Cancel removal — keep this node" onClick=${e => { e.stopPropagation(); unflagNode(n); }}>cancel</button>` : null}
+      ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${e => { e.stopPropagation(); unflagNode(n); }}>Cancel</button>` : null}
       <span class="grow"></span>
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
