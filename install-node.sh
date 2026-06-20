@@ -206,7 +206,22 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; IF_ENDPOINT[$name]="$ep"; LAST_IFACE="$name"
   ok "created $proto interface $(col "$C_GREEN" "$name") on :$port (server $addr, NAT out $wan)"
 }
-choose_ifaces(){ # populate SELECTED[] — all detected interfaces are managed; 'new' creates more
+# ── interface picker helpers (bare-metal) ──
+_in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
+docker_node_ifaces(){   # interfaces managed by a co-located DOCKER node (its ./data/node-confs)
+  local d c; for d in "${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"; do
+    [ -d "$d/data/node-confs" ] || continue
+    for c in "$d"/data/node-confs/*.conf; do [ -f "$c" ] && basename "$c" .conf; done
+  done
+}
+transfer_from_docker(){ # move an interface from the docker node to bare-metal: copy conf out + drop it there
+  local n="$1" d="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}" src dest
+  src="$d/data/node-confs/$n.conf"; [ -f "$src" ] || return 0
+  if grep -qiE '^[[:space:]]*(Jc|S1|H1)[[:space:]]*=' "$src"; then dest="/etc/amnezia/amneziawg/$n.conf"; else dest="/etc/wireguard/$n.conf"; fi
+  run mkdir -p "$(dirname "$dest")"; run cp "$src" "$dest"; run rm -f "$src"
+  ok "transferred $(col "$C_GREEN" "$n") from the docker node"
+}
+choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' creates more
   detect_wg
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
@@ -219,24 +234,30 @@ choose_ifaces(){ # populate SELECTED[] — all detected interfaces are managed; 
       detect_wg
       [ "${#IF_CMD[@]}" -eq 0 ] && { $DRYRUN || die "create an interface, then re-run"; IF_CMD[awg0]=awg; IF_CONF[awg0]=/etc/amnezia/amneziawg/awg0.conf; }
     fi
-    local names=() pick n
+    local names pick n dk avail xfer bad yn; local -a sel=()
     while :; do
-      detect_wg; names=("${!IF_CMD[@]}")
+      detect_wg; names="${!IF_CMD[*]}"; dk="$(docker_node_ifaces)"
+      avail=""; for n in $names; do _in "$n" "$dk" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
       echo
-      printf "  Available interfaces:"
-      for n in "${names[@]}"; do printf ' %s %s' "$(col "$C_GREEN" "$n")" "$(b "(${IF_CMD[$n]})")"; done
-      echo; echo
-      # print the prompt with printf (NOT read -p) so it always shows; never hide it via 2>/dev/null
-      printf '  Press %s to proceed with the setup or enter "%s" to create an additional interface: ' "$(b Enter)" "$(col "$C_BLUE" new)"
-      if ! read -r pick </dev/tty; then
-        echo; warn "no interactive input — managing all detected interfaces"; break
-      fi
-      pick="${pick//[[:space:]]/}"
+      printf "  Currently available interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
+      [ -n "$dk" ] && { printf "  Interfaces used by the docker node on this server:"; for n in $dk; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
+      echo
+      echo "  To manage $(b "$(col "$C_BLUE" 'all available interfaces')") and $(b proceed) — press $(b Enter)"
+      printf "  Or enter interface names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
+      if ! read -r pick </dev/tty; then echo; warn "no interactive input — managing all available interfaces"; sel=($avail); break; fi
+      if [ -z "$(echo $pick)" ]; then [ -n "$avail" ] || { warn "nothing available — type 'new' to create an interface"; continue; }; sel=($avail); break; fi
       [ "$pick" = new ] && { create_iface; continue; }
-      [ -z "$pick" ] && break
-      warn "type nothing to proceed, or \"new\" to add another interface"
+      xfer=""; bad=""
+      for n in $pick; do _in "$n" "$avail" && continue; _in "$n" "$dk" && { xfer="$xfer $n"; continue; }; bad="$bad $n"; done
+      [ -n "$bad" ] && { warn "not found:$bad — pick from the lists, or 'new'"; continue; }
+      if [ -n "$xfer" ]; then
+        printf "  Are you sure you want to transfer %s to this node? (y/N): " "$(col "$C_RED" "$(echo $xfer)")"
+        read -r yn </dev/tty || yn=n
+        case "$yn" in [Yy]*) for n in $xfer; do transfer_from_docker "$n"; done; detect_wg;; *) continue;; esac
+      fi
+      sel=($pick); break
     done
-    SELECTED=("${names[@]}")          # every detected interface ends up in the web panel
+    SELECTED=("${sel[@]}")
   fi
   detect_wg
   local _ep
