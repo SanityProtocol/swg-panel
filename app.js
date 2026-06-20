@@ -1776,27 +1776,54 @@ function HealthMeter({ label, pct, text, tone, spark }) {
 }
 // Gradient area chart for a history series (0–100). Stretches to its container width;
 // the stroke stays crisp via non-scaling-stroke. Used for the CPU-load history.
-function MiniArea({ points, color, h }) {
+// format a chart point's timestamp for the hover tooltip — time of day, + date for week/month ranges
+const MON3 = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function histTime(ts, range) {
+  if (ts == null) return "";
+  const d = new Date(ts * 1000), p2 = x => String(x).padStart(2, "0");
+  const t = p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+  return (range === "week" || range === "month") ? MON3[d.getMonth()] + " " + d.getDate() + " " + t : t;
+}
+// hover overlay shared by the CPU + throughput charts: vertical guide, point dot(s), value tooltip
+function ChartHover({ xp, dots, label }) {
+  const anchor = xp < 22 ? "translateX(0)" : xp > 78 ? "translateX(-100%)" : "translateX(-50%)";
+  return html`<${Fragment}>
+    <div class="ch-guide" style=${"left:" + xp + "%"}></div>
+    ${(dots || []).map(d => html`<div class="ch-dot" style=${"left:" + xp + "%;top:" + d.yp + "%;background:" + d.color}></div>`)}
+    <div class="ch-tip" style=${"left:" + xp + "%;transform:" + anchor}>${label}</div>
+  <//>`;
+}
+function MiniArea({ points, color, h, times, range }) {
+  const [hov, setHov] = useState(null);
+  const wref = useRef(null);
   const pts = (points || []).filter(v => v != null);
   h = h || 42; const w = 100;
   if (pts.length < 2) return html`<div class="harea-empty">collecting history…</div>`;
   // tight autoscale to the series' own min/max (small vpad) so CPU reads as a jagged "heartbeat"
-  const n = pts.length, lo = Math.min(...pts), hi = Math.max(...pts), range = (hi - lo) || 1, vpad = h * 0.06;
-  const xy = pts.map((v, i) => [i / (n - 1) * w, h - vpad - ((v - lo) / range) * (h - 2 * vpad)]);
+  const n = pts.length, lo = Math.min(...pts), hi = Math.max(...pts), rng = (hi - lo) || 1, vpad = h * 0.06;
+  const xy = pts.map((v, i) => [i / (n - 1) * w, h - vpad - ((v - lo) / rng) * (h - 2 * vpad)]);
   const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
   const area = "0," + h + " " + line + " " + w + "," + h;
   const gid = "ha" + (MiniArea._n = (MiniArea._n || 0) + 1);
-  return html`<svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
-    <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
-      <stop offset="0" stop-color=${color} stop-opacity="0.32"/><stop offset="1" stop-color=${color} stop-opacity="0"/>
-    </linearGradient></defs>
-    <polygon points=${area} fill=${"url(#" + gid + ")"}/>
-    <polyline points=${line} fill="none" stroke=${color} stroke-width="1.4" vector-effect="non-scaling-stroke"/>
-  </svg>`;
+  const T = times || [];
+  const onMove = e => { const el = wref.current; if (!el) return; const r = el.getBoundingClientRect(); setHov(Math.max(0, Math.min(n - 1, Math.round((e.clientX - r.left) / r.width * (n - 1))))); };
+  return html`<div class="harea-wrap" ref=${wref} style=${"height:" + h + "px"} onMouseMove=${onMove} onMouseLeave=${() => setHov(null)}>
+    <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
+      <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stop-color=${color} stop-opacity="0.32"/><stop offset="1" stop-color=${color} stop-opacity="0"/>
+      </linearGradient></defs>
+      <polygon points=${area} fill=${"url(#" + gid + ")"}/>
+      <polyline points=${line} fill="none" stroke=${color} stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+    </svg>
+    ${hov != null ? html`<${ChartHover} xp=${n > 1 ? hov / (n - 1) * 100 : 0} dots=${[{ yp: xy[hov][1] / h * 100, color }]}
+      label=${histTime(T[hov], range) + " · " + pts[hov].toFixed(2)}/>` : null}
+  </div>`;
 }
 
 // Throughput history: rx as a filled area + tx as a line, scaled to the series max.
-function ThroughputChart({ rx, tx, h, head }) {
+function ThroughputChart({ rx, tx, h, head, times, range }) {
+  const [hov, setHov] = useState(null);
+  const wref = useRef(null);
   const R = (rx || []).map(v => v || 0), T = (tx || []).map(v => v || 0);
   const n = Math.max(R.length, T.length);
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
@@ -1808,21 +1835,28 @@ function ThroughputChart({ rx, tx, h, head }) {
     return html`<div class="tp-wrap">${legend}<div class="tp-idle">collecting throughput history…</div></div>`;
   h = h || 60; const w = 100;
   // autoscale to the combined min/max so the curve is spiky/expressive, not a flat baseline
-  const lo = Math.min(...R, ...T), range = (hi - lo) || 1, vpad = h * 0.12;
-  const X = i => i / (n - 1) * w, Y = v => h - vpad - ((v - lo) / range) * (h - 2 * vpad);
+  const lo = Math.min(...R, ...T), rng = (hi - lo) || 1, vpad = h * 0.12;
+  const X = i => i / (n - 1) * w, Y = v => h - vpad - ((v - lo) / rng) * (h - 2 * vpad);
   const line = arr => arr.map((v, i) => X(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
   const rxLine = line(R), rxArea = "0," + h + " " + rxLine + " " + w + "," + h;
   const gid = "tp" + (ThroughputChart._n = (ThroughputChart._n || 0) + 1);
+  const TT = times || [];
+  const onMove = e => { const el = wref.current; if (!el) return; const r = el.getBoundingClientRect(); setHov(Math.max(0, Math.min(n - 1, Math.round((e.clientX - r.left) / r.width * (n - 1))))); };
   return html`<div class="tp-wrap">
     ${legend}
-    <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
-      <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
-        <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
-      </linearGradient></defs>
-      <polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
-      <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
-      <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>
-    </svg>
+    <div class="harea-wrap" ref=${wref} style=${"height:" + h + "px"} onMouseMove=${onMove} onMouseLeave=${() => setHov(null)}>
+      <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
+        <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
+        </linearGradient></defs>
+        <polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
+        <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+        <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>
+      </svg>
+      ${hov != null ? html`<${ChartHover} xp=${hov / (n - 1) * 100}
+        dots=${[{ yp: Y(R[hov] || 0) / h * 100, color: "var(--brand)" }, { yp: Y(T[hov] || 0) / h * 100, color: "var(--tp-tx)" }]}
+        label=${histTime(TT[hov], range) + " · ↓ " + rate(R[hov] || 0) + " · ↑ " + rate(T[hov] || 0)}/>` : null}
+    </div>
   </div>`;
 }
 
@@ -1888,13 +1922,13 @@ function RangedHistory({ node, kind, live, h, head, liveFine }) {
     const tpinner = loading ? html`<div class="harea-empty">loading ${range}…</div>`
       : sparse ? html`<${HistMsg} span=${span} need=${need} range=${range}/>` : null;
     if (tpinner) return html`<div class="tp-wrap"><div class="tp-legend"><span class="grow"></span>${tabs}</div>${tpinner}</div>`;
-    return html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs}/>`;
+    return html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs} times=${s.t} range=${range}/>`;
   }
   return html`<div class="chartwrap">
     <div class="chart-head">${head || null}<span class="grow"></span>${tabs}</div>
     ${loading ? html`<div class="harea-empty">loading ${range}…</div>`
       : sparse ? html`<${HistMsg} span=${span} need=${need} range=${range}/>`
-      : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h}/>`}
+      : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h} times=${s.t} range=${range}/>`}
   </div>`;
 }
 
