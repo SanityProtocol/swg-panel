@@ -425,10 +425,11 @@ current_node_ifaces(){
     for c in "$INSTALL_DIR/data/node-confs/"*.conf; do [ -f "$c" ] || continue
       n="$(basename "$c" .conf)"; case "$seen" in *" $n "*) : ;; *) echo "$n"; seen="$seen$n ";; esac; done
   fi
-  if [ -n "$NODE_IFACES" ]; then OIFS="$IFS"; IFS=','
+  if [ -n "$NODE_IFACES" ]; then OIFS="$IFS"; IFS=','      # a real .env spec, or interfaces added this run
     for e in $NODE_IFACES; do IFS="$OIFS"; n="${e%%:*}"
       case "$seen" in *" $n "*) : ;; *) [ -n "$n" ] && { echo "$n"; seen="$seen$n "; };; esac; IFS=','; done; IFS="$OIFS"
-  elif [ -n "$NODE_IFACE" ]; then case "$seen" in *" $NODE_IFACE "*) : ;; *) echo "$NODE_IFACE";; esac; fi
+  elif [ "$EXISTING_DOCKER" = yes ] && [ -n "$NODE_IFACE" ]; then   # a real single bootstrap (on a FRESH install NODE_IFACE is just a default, not a real interface)
+    case "$seen" in *" $NODE_IFACE "*) : ;; *) echo "$NODE_IFACE";; esac; fi
 }
 # add one interface to NODE_IFACES (seeding the single bootstrap into the list first, so the entrypoint
 # — which ignores NODE_IFACE once NODE_IFACES is set — doesn't drop it).
@@ -446,6 +447,7 @@ add_node_iface(){
   ask_valid "Listen port" "$((51820 + nx))" port v_freeport "port 1–65535 and free (not already in use)"
   ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.$((8 + nx)).0.1/24" addr v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
   ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$name") (this interface's public IP/host)" "${NODE_ENDPOINT:-$(detect_public_ip)}" ep v_host "an IP or hostname"
+  [ -n "$NODE_ENDPOINT" ] || NODE_ENDPOINT="$ep"   # the node-level endpoint (required by compose) — seed from the first interface
   NODE_IFACES="${NODE_IFACES:+$NODE_IFACES,}${name}:${port}:${addr}:${plain}:${ep}"
   ok "queued interface $(col "$C_GREEN" "$name") — created on the node's next start"
 }
@@ -487,6 +489,8 @@ case "$PROFILE" in
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
       echo; info "NODE SETUP"
       manage_node_ifaces
+      # the node-level endpoint is required by compose; ensure it's set (kept existing interfaces only)
+      ask_valid "Endpoint clients dial for this node (public IP/host)" "$(detect_public_ip)" NODE_ENDPOINT v_host "an IP address or hostname"
       # single-pass auto-enroll (mirrors bare-metal master): mint the local node's token NOW so it
       # flows into .env below; its pbkdf2 hash + nodes.json entry are written just before compose up.
       [ -n "$NODE_NAME" ]  || NODE_NAME="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)"
@@ -500,6 +504,8 @@ case "$PROFILE" in
     echo; info "NODE SETUP"
     ask_node_conn
     manage_node_ifaces
+    # the node-level endpoint is required by compose; ensure it's set (kept existing interfaces only)
+    ask_valid "Endpoint clients dial for this node (public IP/host)" "$(detect_public_ip)" NODE_ENDPOINT v_host "an IP address or hostname"
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac
