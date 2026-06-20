@@ -93,6 +93,15 @@ else
   add_iface "$name" "$NODE_ENDPOINT"
 fi
 
+# also re-manage any interfaces created from the panel and persisted in the conf dir (survives a
+# container recreate when /etc/amnezia/amneziawg is a mounted volume) — they're not in the bootstrap
+# set above. config.json is rebuilt every start, so listing them here is what keeps them after re-up.
+for _c in "$AWG_DIR"/*.conf; do
+  [ -f "$_c" ] || continue
+  _n="$(basename "$_c" .conf)"
+  case " $MANAGED " in *" $_n "*) : ;; *) add_iface "$_n" "$NODE_ENDPOINT"; log "interface $_n from persisted conf (panel-created)";; esac
+done
+
 [ -n "$MANAGED" ] || { log "no interfaces to manage"; exit 1; }
 
 # ───────── 2) bring each up (userspace; no kernel module in a container) + NAT its subnet ─────────

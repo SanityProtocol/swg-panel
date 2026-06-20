@@ -84,6 +84,10 @@ services:
       SWG_TURN_RECORD: "/var/lib/swg-noded/turn-proxy.json"
     volumes:
       - ./data/node:/var/lib/swg-noded
+      # Persist the interface .confs (server keys) so interfaces created from the panel — and the
+      # bootstrap interface's keypair — survive a container recreate. Without this they'd be
+      # regenerated/lost on every `up`.
+      - ./data/node-confs:/etc/amnezia/amneziawg
       # Full AmneziaWG server conf(s) with your own obfuscation params. Every file
       # mounted under /etc/swg-node/*.conf becomes a managed interface:
       # - ./awg0.conf:/etc/swg-node/awg0.conf:ro
