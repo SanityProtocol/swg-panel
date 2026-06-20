@@ -193,12 +193,48 @@ rm_turn(){ local unit="$1" name fork
 
 # ───────────────────────── detect installed components ─────────────────────────
 declare -a CLABEL CDETAIL CFN CARG
+# ── richer component details: interface names+ports, node endpoints, turn-proxy ports ──
+iface_list(){  # <dir> -> "awg0:51820, awg505:51234" (interface name + ListenPort from each .conf)
+  local dir="$1" out="" f n p
+  for f in "$dir"/*.conf; do [ -f "$f" ] || continue
+    n="$(basename "$f" .conf)"
+    p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" 2>/dev/null | head -1)"
+    out="${out:+$out, }${n}${p:+:$p}"
+  done
+  printf '%s' "${out:-$dir}"
+}
+bm_node_detail(){  # bare-metal node: endpoint + interfaces from config.json
+  local cfg=/etc/swg-agent/config.json ep ifs
+  if [ -f "$cfg" ] && command -v python3 >/dev/null 2>&1; then
+    ep="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("endpoint_host",""))' "$cfg" 2>/dev/null)"
+    ifs="$(python3 -c 'import json,sys;print(", ".join((json.load(open(sys.argv[1])).get("interfaces") or {}).keys()))' "$cfg" 2>/dev/null)"
+  fi
+  printf 'swg-noded%s%s' "${ep:+ · endpoint $ep}" "${ifs:+ · ifaces: $ifs}"
+}
+docker_node_detail(){  # docker node: name/endpoint + interfaces (name:port) from the deployment .env
+  local env="$DOCKER_DIR/.env" ep nm ni ifs
+  if [ -f "$env" ]; then
+    ep="$(sed -n 's/^NODE_ENDPOINT=//p' "$env" | head -1 | tr -d '"')"
+    nm="$(sed -n 's/^NODE_NAME=//p' "$env" | head -1 | tr -d '"')"
+    ni="$(sed -n 's/^NODE_IFACES=//p' "$env" | head -1 | tr -d '"')"
+    if [ -n "$ni" ]; then ifs="$(printf '%s' "$ni" | tr ',' '\n' | cut -d: -f1,2 | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+    else ifs="$(sed -n 's/^NODE_IFACE=//p' "$env" | head -1 | tr -d '"')"; fi
+  fi
+  printf 'container swg-node%s%s%s' "${nm:+ · $nm}" "${ep:+ · endpoint $ep}" "${ifs:+ · ifaces: $ifs}"
+}
+turn_detail(){  # <unit> -> "listen 1.2.3.4:57000 → 127.0.0.1:51820  ·  <service>"
+  local unit="$1" exe lis con
+  exe="$(sed -n 's/^ExecStart=//p' "$unit" 2>/dev/null | head -1)"
+  lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
+  con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
+  printf 'listen %s%s  ·  %s' "${lis:-?}" "${con:+ → $con}" "$(basename "$unit")"
+}
 add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); }
 
 [ -d /opt/swg-panel ] || [ -f $SD/swg-panel-server.service ] && \
   add "swg-panel" "control panel (/opt/swg-panel)" rm_panel
 [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f $SD/swg-noded.service ] && \
-  add "swg-node" "bare-metal entry server (swg-noded)" rm_node
+  add "swg-node" "$(bm_node_detail)" rm_node
 
 # Docker: the panel and node are separate containers — offer each independently. If the
 # deployment dir exists but neither container does, offer a files-only cleanup.
@@ -208,7 +244,7 @@ if command -v docker >/dev/null 2>&1; then
   docker_running swg-node  && DNODE=true
 fi
 $DPANEL && add "Docker panel (swg-panel)" "container swg-panel" rm_docker_panel
-$DNODE  && add "Docker node (swg-node)"   "container swg-node"   rm_docker_node
+$DNODE  && add "Docker node (swg-node)"   "$(docker_node_detail)"   rm_docker_node
 if ! $DPANEL && ! $DNODE && { [ -f "$DOCKER_DIR/docker-compose.yml" ] || [ -f "$DOCKER_DIR/.env" ]; }; then
   add "Docker deployment (files)" "$DOCKER_DIR" rm_docker_files
 fi
@@ -217,13 +253,13 @@ awg_present(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.s
   || { command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii +amneziawg(-tools| |$)'; }; }
 wg_present(){ ls /etc/wireguard/*.conf >/dev/null 2>&1 || ls $SD/wg-quick@*.service >/dev/null 2>&1 \
   || { command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii +wireguard '; }; }
-awg_present && add "AmneziaWG" "$(ls $SD/awg*.service 2>/dev/null | head -n1 || echo /etc/amnezia/amneziawg)" rm_awg
-wg_present  && add "WireGuard" "$(ls $SD/wg-quick@*.service 2>/dev/null | head -n1 || echo /etc/wireguard)" rm_wg
+awg_present && add "AmneziaWG" "$(iface_list /etc/amnezia/amneziawg)" rm_awg
+wg_present  && add "WireGuard" "$(iface_list /etc/wireguard)" rm_wg
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
   fork="$(basename "$unit" .service)"; fork="${fork#vk-turn-proxy-}"
   owner=""; [ -f "$TURN_DIR/$fork/repo.txt" ] && owner="$(cut -d/ -f1 "$TURN_DIR/$fork/repo.txt" 2>/dev/null)"
-  add "${owner:-$fork} turn-proxy" "service file: $(basename "$unit")" rm_turn "$unit"
+  add "${owner:-${fork%-*}} turn-proxy" "$(turn_detail "$unit")" rm_turn "$unit"
 done
 
 N=${#CLABEL[@]}
@@ -253,6 +289,7 @@ rmdir /etc/swg-agent 2>/dev/null || true
 echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
 if [ "${#DID_REMOVE[@]}" -gt 0 ]; then echo "  $(b Removed):"
   for x in "${DID_REMOVE[@]}"; do echo "    $(c '0;31')✗$(c 0) $x"; done; fi
+[ "${#DID_REMOVE[@]}" -gt 0 ] && [ "${#DID_KEEP[@]}" -gt 0 ] && echo
 if [ "${#DID_KEEP[@]}" -gt 0 ]; then echo "  $(b Kept):"
   for x in "${DID_KEEP[@]}"; do echo "    $(c '0;32')•$(c 0) $x"; done; fi
 echo
