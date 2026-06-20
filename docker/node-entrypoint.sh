@@ -19,6 +19,10 @@ rand32(){ od -An -N4 -tu4 /dev/urandom | tr -d ' '; }   # one unsigned 32-bit in
 : "${NODE_ENDPOINT:?NODE_ENDPOINT required (public IP/host clients dial)}"
 AWG_DIR=/etc/amnezia/amneziawg
 mkdir -p "$AWG_DIR" /var/lib/swg-noded /etc/swg-agent
+# First boot seeds the NODE_IFACES bootstrap; after that, ./data/node-confs is the SINGLE source of
+# truth — a bootstrap interface deleted from the panel must NOT be regenerated on the next reboot.
+BOOT_MARKER=/var/lib/swg-noded/.bootstrapped   # persisted with ./data/node
+FIRST_BOOT=no; [ -f "$BOOT_MARKER" ] || FIRST_BOOT=yes
 MANAGED=""                                  # space-separated interface names
 IFJSON=""; IFSEP=""                          # swg-agent interfaces map (built per-interface, with its endpoint)
 add_iface(){ # add_iface <name> <endpoint>  — record an interface + its own endpoint for the config
@@ -80,7 +84,8 @@ elif [ -n "${NODE_IFACES:-}" ]; then
     plain=no; [ "$proto" = wg ] && plain=yes
     [ -z "$proto" ] && [ "${NODE_PLAIN_WG:-no}" = yes ] && plain=yes
     if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"
-    else gen_conf "$name" "$port" "$addr" "$plain"; fi
+    elif [ "$FIRST_BOOT" = yes ]; then gen_conf "$name" "$port" "$addr" "$plain"
+    else log "interface $name was removed from the panel — not regenerating"; IFS=','; continue; fi
     add_iface "$name" "$ep"; IFS=','
   done
   IFS="$OIFS"
@@ -88,9 +93,9 @@ else
   # single-interface fallback (back-compat)
   name="${NODE_IFACE:-awg0}"
   plain=no; [ "${NODE_PLAIN_WG:-no}" = yes ] && plain=yes
-  if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"
-  else gen_conf "$name" "${NODE_LISTEN_PORT:-51820}" "${NODE_ADDRESS:-10.8.0.1/24}" "$plain"; fi
-  add_iface "$name" "$NODE_ENDPOINT"
+  if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"; add_iface "$name" "$NODE_ENDPOINT"
+  elif [ "$FIRST_BOOT" = yes ]; then gen_conf "$name" "${NODE_LISTEN_PORT:-51820}" "${NODE_ADDRESS:-10.8.0.1/24}" "$plain"; add_iface "$name" "$NODE_ENDPOINT"
+  else log "interface $name was removed from the panel — not regenerating"; fi
 fi
 
 # also re-manage any interfaces created from the panel and persisted in the conf dir (survives a
@@ -160,6 +165,9 @@ $IFJSON
 }
 JSON
 chmod 600 /etc/swg-agent/config.json
+
+# mark bootstrap done — from now on ./data/node-confs is the source of truth (deletes stick across reboots)
+touch "$BOOT_MARKER" 2>/dev/null || true
 
 # ───────── 4) sync loop: sample interfaces -> POST snapshot -> reconcile desired peers ─────────
 log "syncing to ${PANEL_URL} (interfaces:${MANAGED}, endpoint ${NODE_ENDPOINT})"

@@ -181,6 +181,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   defport=$((51820 + idx)); defsub="10.$(( (8 + idx) % 255 )).0.0/24"
   ask_valid "Listen port" "$defport" port v_freeport "port 1–65535 and free (not already in use)"
   ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
+  echo "    server address $(col "$C_GREEN" "$(server_addr "$subnet")") — peers get the rest of $subnet"
   ask_valid "WAN egress interface (clients are NAT'd out using this)" "$(detect_wan || echo eth0)" wan v_iface "enter a network interface name"
   ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$name") (this interface's public IP/host)" "$(detect_public_ip)" ep v_host "enter an IP address or hostname"
   addr="$(server_addr "$subnet")"; conf="$dir/$name.conf"
