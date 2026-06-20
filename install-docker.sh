@@ -248,21 +248,23 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
     else warn "No turn-proxy servers found on this box."; fi
     echo
     echo "  Here is a list of turn-proxy branches available for installation:"; echo
-    menu "$(col "$C_BLUE" '[1] WINGS-N')"      "For Android — https://github.com/WINGS-N/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[2] samosvalishe')" "For Android — https://github.com/samosvalishe/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[3] kiper292')"     "For Android — https://github.com/kiper292/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[4] Moroka8')"      "For Android — https://github.com/Moroka8/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[5] anton48')"      "For iOS — https://github.com/anton48/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[0] Original')"     "The original project - https://github.com/cacggghp/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[1] WINGS-N')"      "Fork by WINGS-N - https://github.com/WINGS-N/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[2] samosvalishe')" "Fork by samosvalishe - https://github.com/samosvalishe/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[3] kiper292')"     "Fork by kiper292 - https://github.com/kiper292/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[4] Moroka8')"      "Fork by Moroka8 - https://github.com/Moroka8/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[5] anton48')"      "Fork by anton48 - https://github.com/anton48/vk-turn-proxy"
     printf '  Enter a number to install, or just press %s to skip and proceed with the setup: ' "$(b Enter)"
     if ! read -r sel 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
     sel="${sel//[[:space:]]/}"; [ -z "$sel" ] && break
     case "$sel" in
+      0|Original|main)  install_turn_proxy main; continue;;
       1|WINGS-N|wings)  install_turn_proxy WINGS-N; continue;;
       2|samosvalishe)   install_turn_proxy samosvalishe; continue;;
       3|kiper292)       install_turn_proxy kiper292; continue;;
       4|Moroka8)        install_turn_proxy Moroka8; continue;;
       5|anton48)        install_turn_proxy anton48; continue;;
-      *) warn "enter a number 1–5 (or press Enter to skip)";; esac
+      *) warn "enter a number 0–5 (or press Enter to skip)";; esac
   done; write_turn_record; }
 
 # ───────────────────────── flags ─────────────────────────
@@ -695,7 +697,7 @@ fi
 # ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
 # Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
 if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
-  echo; echo "$(b 'Step 3. TURN-PROXY setup') (https://github.com/cacggghp/vk-turn-proxy)"; echo
+  echo; echo "$(b 'Step 3. TURN-PROXY setup')"; echo
   choose_turn_proxy
 fi
 
