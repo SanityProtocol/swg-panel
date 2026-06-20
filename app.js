@@ -916,7 +916,7 @@ function NodeDetail({ node: rawName }) {
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
-                  <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length ? html`<${UsageBar} value=${onlc} total=${ps.length}/>` : html`<span class="faint">none</span>`}</span></div>
+                  <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length ? html`${onlc}<span class="faint">/${ps.length}</span>` : html`<span class="faint">none</span>`}</span></div>
                 </div></a>`;
             })}${pcards}</div>`; })()}
     <//>
@@ -931,7 +931,6 @@ function NodeDetail({ node: rawName }) {
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)}>${fronted}</a>` : (tp.connect || "—")}</span></div>
-            ${tp.wrap_key ? html`<div class="ifrow"><span class="l">Wrap key</span><span class="r addr">${String(tp.wrap_key).slice(0, 8)}…<button class="copybtn" title="Copy wrap key" onClick=${() => copy(tp.wrap_key, "Wrap key copied")}><${Ic} i="copy"/></button></span></div>` : null}
           </div></div>`;
       })}</div>
     <//>` : null}
