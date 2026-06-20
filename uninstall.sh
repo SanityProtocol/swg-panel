@@ -75,7 +75,7 @@ _goodbye_post(){
   [ -n "$url" ] && [ -n "$tok" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
   info "Signing off from the panel…"
-  if python3 - "$url" "$tok" "$verify" <<'PY'
+  python3 - "$url" "$tok" "$verify" <<'PY'
 import ssl, sys, http.client, urllib.request
 url = sys.argv[1].rstrip("/") + "/api/node/goodbye"; tok = sys.argv[2]; verify = sys.argv[3] == "yes"
 ctx = ssl.create_default_context()
@@ -84,19 +84,26 @@ if not verify:                                 # self-signed / pinned panel: don
 req = urllib.request.Request(url, data=b"{}", method="POST",
                              headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json",
                                       "User-Agent": "swg-noded"})   # urllib's default Python-urllib UA gets 403'd by some WAFs
+# The panel removes the node when it RECEIVES the request (node_remove runs before the reply), so a
+# truncated/5xx response from a proxy in front still means it landed. exit 0 = clean, 2 = uncertain
+# (got an error response, node probably dropped), 1 = never reached the panel.
 try:
-    r = urllib.request.urlopen(req, timeout=10, context=ctx)        # 2xx here = the panel accepted + dropped the node
+    r = urllib.request.urlopen(req, timeout=10, context=ctx)
     try: r.read()
-    except http.client.IncompleteRead: pass                        # body truncated by a proxy, but the node was already removed
+    except http.client.IncompleteRead: pass
+    sys.exit(0)
 except urllib.error.HTTPError as e:
-    if e.code in (200, 401, 404): sys.exit(0)                      # already gone / accepted — fine
-    sys.stderr.write("HTTP %s\n" % e.code); sys.exit(1)
+    if e.code in (200, 404): sys.exit(0)        # removed / already gone
+    if 500 <= e.code <= 599: sys.exit(2)        # proxy/gateway error — request reached the panel, node likely dropped
+    sys.stderr.write("HTTP %s\n" % e.code); sys.exit(1)   # 401 etc — rejected, not removed
 except Exception as e:
     sys.stderr.write(str(e) + "\n"); sys.exit(1)
 PY
-  then ok "Panel notified — the node will drop itself."
-  else warn "Couldn't reach the panel; Force-remove the node from the Nodes screen instead."
-  fi
+  case $? in
+    0) ok "Panel notified — the node will drop itself.";;
+    2) warn "Panel returned a gateway error but the node was likely dropped — check the Nodes screen (Force-remove if it's still listed).";;
+    *) warn "Couldn't reach the panel; Force-remove the node from the Nodes screen instead.";;
+  esac
 }
 # bare-metal node — read the panel URL + token from its config.json
 node_goodbye(){
