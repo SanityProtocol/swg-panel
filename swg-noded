@@ -775,10 +775,11 @@ def apply_turn(turn, turn_onboard):
                         "systemctl daemon-reload && systemctl restart " + shlex.quote(svc))
             if w.returncode != 0:
                 fail(svc, (w.stderr or "restart failed").strip()[:120]); continue
+            rec[svc] = _parse_tp(svc, execl); changed = True   # the unit IS rewritten — reflect it even if it won't start
             verr = _turn_verify(svc)
             if verr:
-                fail(svc, verr); continue
-            rec[svc] = _parse_tp(svc, execl); changed = True; good(svc, act + ":" + svc)
+                fail(svc, verr); continue   # report not-running; the record already shows the new (broken) params
+            good(svc, act + ":" + svc)
         except Exception as e:
             fail(svc, str(e))
     for sp in (turn_onboard or []):
