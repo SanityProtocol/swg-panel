@@ -1655,6 +1655,15 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Flagged node for removal", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid}}
 
+    if method == "POST" and path == "/api/nodes/unflag-remove":   # cancel a pending soft removal
+        nid = body.get("id") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        nodes[nid].pop("removing", None); nodes[nid].pop("removing_at", None)
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Cancelled node removal", nodes[nid].get("name", nid))
+        return 200, {"ok": True, "data": {"id": nid}}
+
     if method == "POST" and path == "/api/nodes/delete":     # force-remove (no waiting for goodbye)
         nid = body.get("id") or ""
         if nid not in nodes:

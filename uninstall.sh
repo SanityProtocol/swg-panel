@@ -69,24 +69,17 @@ rm_panel(){
 # Tell the panel this node is going away (the "goodbye" signal) so it removes itself cleanly —
 # using the node's own bearer token + panel URL from its config. Best-effort: if the panel is
 # unreachable, the operator can Force-remove it from the Nodes screen instead.
-node_goodbye(){
-  local cfg=/etc/swg-agent/config.json
-  [ -f "$cfg" ] || return 0
+# _goodbye_post <panel-url> <token> <verify:yes|no> — POST the node's bearer token to /api/node/goodbye
+_goodbye_post(){
+  local url="$1" tok="$2" verify="$3"
+  [ -n "$url" ] && [ -n "$tok" ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
   info "Signing off from the panel…"
-  if python3 - "$cfg" <<'PY'
-import json, ssl, sys, urllib.request
-try:
-    cfg = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-p = cfg.get("panel") or {}
-url = (p.get("url") or "").rstrip("/") + "/api/node/goodbye"
-tok = p.get("token") or ""
-if not (p.get("url") and tok):
-    sys.exit(0)
+  if python3 - "$url" "$tok" "$verify" <<'PY'
+import ssl, sys, urllib.request
+url = sys.argv[1].rstrip("/") + "/api/node/goodbye"; tok = sys.argv[2]; verify = sys.argv[3] == "yes"
 ctx = ssl.create_default_context()
-if not p.get("verify", True):                 # self-signed / pinned panel: don't verify for the goodbye
+if not verify:                                 # self-signed / pinned panel: don't verify for the goodbye
     ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 req = urllib.request.Request(url, data=b"{}", method="POST",
                              headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
@@ -98,6 +91,27 @@ PY
   then ok "Panel notified — the node will drop itself."
   else warn "Couldn't reach the panel; Force-remove the node from the Nodes screen instead."
   fi
+}
+# bare-metal node — read the panel URL + token from its config.json
+node_goodbye(){
+  local cfg=/etc/swg-agent/config.json
+  [ -f "$cfg" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  local url tok verify
+  url="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("panel") or {}).get("url",""))' "$cfg" 2>/dev/null)"
+  tok="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("panel") or {}).get("token",""))' "$cfg" 2>/dev/null)"
+  verify="$(python3 -c 'import json,sys;print("yes" if (json.load(open(sys.argv[1])).get("panel") or {}).get("verify",True) else "no")' "$cfg" 2>/dev/null)"
+  _goodbye_post "$url" "$tok" "$verify"
+}
+# docker node — the token + panel URL live in the deployment .env (config.json is inside the container)
+docker_node_goodbye(){
+  local env="$DOCKER_DIR/.env"; [ -f "$env" ] || return 0
+  local url tok verify
+  url="$(sed -n 's/^PANEL_URL=//p' "$env" | head -1)"; url="${url%\"}"; url="${url#\"}"
+  tok="$(sed -n 's/^NODE_TOKEN=//p' "$env" | head -1)"; tok="${tok%\"}"; tok="${tok#\"}"
+  verify="$(sed -n 's/^TLS_VERIFY=//p' "$env" | head -1)"; verify="${verify%\"}"; verify="${verify#\"}"
+  [ "$verify" = yes ] || verify=no
+  _goodbye_post "$url" "$tok" "$verify"
 }
 
 rm_node(){
@@ -137,6 +151,7 @@ docker_cleanup_if_last(){   # only tears down the shared bits when NO swg contai
 rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
   run sh -c 'docker rm -f swg-panel >/dev/null 2>&1 || true'; docker_cleanup_if_last; ok "swg-panel container removed"; }
 rm_docker_node(){  info "Removing Docker node container (swg-node)"
+  docker_node_goodbye   # sign off to the panel (token + URL from .env) so it drops itself, before teardown
   run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'; docker_cleanup_if_last; ok "swg-node container removed"; }
 rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"; docker_remove_dir; ok "Docker deployment files removed"; }
 

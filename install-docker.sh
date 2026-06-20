@@ -433,33 +433,34 @@ current_node_ifaces(){
 # add one interface to NODE_IFACES (seeding the single bootstrap into the list first, so the entrypoint
 # — which ignores NODE_IFACE once NODE_IFACES is set — doesn't drop it).
 add_node_iface(){
-  local _proto plain base i name port addr ep
-  if [ -z "$NODE_IFACES" ] && [ -n "$NODE_IFACE" ]; then
+  local _proto plain base i name port addr ep nx
+  if [ "$EXISTING_DOCKER" = yes ] && [ -z "$NODE_IFACES" ] && [ -n "$NODE_IFACE" ]; then   # promote an existing single bootstrap into the list so it isn't dropped
     local pr=""; [ "${NODE_PLAIN_WG:-}" = yes ] && pr=wg
     NODE_IFACES="${NODE_IFACE}:${NODE_LISTEN_PORT:-51820}:${NODE_ADDRESS:-10.8.0.1/24}:${pr}:${NODE_ENDPOINT}"
   fi
+  nx=$(current_node_ifaces | grep -c .)                         # offset defaults so a 2nd/3rd iface doesn't collide
   ask_choice "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
-  [ "$plain" = wg ] && base=wg || base=awg; i=1; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done
+  [ "$plain" = wg ] && base=wg || base=awg; i=0; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done
   ask_valid "Interface name" "$base$i" name v_iface "1–15 chars: letters, digits, - or _"
-  ask_valid "Listen port" "51821" port v_freeport "port 1–65535 and free (not already in use)"
-  ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.9.0.1/24" addr v_subnet "enter a CIDR, e.g. 10.9.0.0/24"
+  ask_valid "Listen port" "$((51820 + nx))" port v_freeport "port 1–65535 and free (not already in use)"
+  ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.$((8 + nx)).0.1/24" addr v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
   ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$name") (this interface's public IP/host)" "${NODE_ENDPOINT:-$(detect_public_ip)}" ep v_host "an IP or hostname"
   NODE_IFACES="${NODE_IFACES:+$NODE_IFACES,}${name}:${port}:${addr}:${plain}:${ep}"
   ok "queued interface $(col "$C_GREEN" "$name") — created on the node's next start"
 }
-# re-install: show the node's current interfaces and let the operator add more (kept either way)
+# wg/awg step (fresh AND re-install): show the node's current interfaces and loop to add more
 manage_node_ifaces(){
   echo; echo "$(b 'Step 1. WireGuard / AmneziaWG setup')"
   echo
-  echo "      Interfaces run inside the swg-node container. Existing ones are KEPT; add more here, or"
-  echo "      later from the panel (Interfaces → Load new interface)."
+  echo "      Interfaces run inside the swg-node container; add as many as you need now, or add more"
+  echo "      later from the panel (Interfaces → Load new interface). Existing ones are KEPT."
   echo
+  [ -z "$(current_node_ifaces)" ] && add_node_iface             # nothing yet (fresh install) → create the first
   local pick names n
   while :; do
     names="$(current_node_ifaces)"
-    if [ -n "$names" ]; then printf "  Current interfaces:"; while IFS= read -r n; do [ -n "$n" ] && printf ' %s' "$(col "$C_GREEN" "$n")"; done <<< "$names"; echo; echo
-    else echo "  No interfaces configured yet — add at least one."; echo; fi
+    printf "  Current interfaces:"; while IFS= read -r n; do [ -n "$n" ] && printf ' %s' "$(col "$C_GREEN" "$n")"; done <<< "$names"; echo; echo
     printf '  Press %s to keep these, or type %s to add another interface: ' "$(b Enter)" "$(col "$C_BLUE" new)"
     if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
     pick="${pick//[[:space:]]/}"
@@ -485,7 +486,7 @@ case "$PROFILE" in
       PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
       echo; info "NODE SETUP"
-      if [ "$EXISTING_DOCKER" = yes ]; then manage_node_ifaces; else ask_node_iface; fi
+      manage_node_ifaces
       # single-pass auto-enroll (mirrors bare-metal master): mint the local node's token NOW so it
       # flows into .env below; its pbkdf2 hash + nodes.json entry are written just before compose up.
       [ -n "$NODE_NAME" ]  || NODE_NAME="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)"
@@ -498,7 +499,7 @@ case "$PROFILE" in
   node)
     echo; info "NODE SETUP"
     ask_node_conn
-    if [ "$EXISTING_DOCKER" = yes ]; then manage_node_ifaces; else ask_node_iface; fi
+    manage_node_ifaces
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac

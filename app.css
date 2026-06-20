@@ -211,7 +211,9 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .b-ready{background:rgba(34,211,238,.12);color:var(--ready)}
 .b-partial{background:rgba(240,145,60,.14);color:var(--partial)}
 .b-pending{background:rgba(232,192,75,.14);color:var(--pending)}
-.b-removing{background:rgba(240,145,60,.14);color:var(--removing)}
+.b-removing{background:rgba(242,107,130,.14);color:var(--dangling)}
+.b-cancel{margin-left:7px;background:none;border:none;padding:0;font:inherit;font-size:11px;color:var(--dim);text-decoration:underline;cursor:pointer}
+.b-cancel:hover{color:var(--ink)}
 .b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
 .b-orphan{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — matches the unmanaged/warn theme */
 .b-unknown{background:rgba(95,117,105,.16);color:var(--unknown)}
@@ -529,7 +531,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nstat.online{color:var(--online)} .nstat.online::before{animation:pulse 2.6s infinite}
 .nstat.offline{color:var(--unknown)}
 .nstat.dangling{color:var(--pending)}
-.b-removing{background:rgba(226,200,74,.13);color:var(--removing)}
+.b-removing{background:rgba(242,107,130,.13);color:var(--dangling)}
 /* data row: four fixed-start columns so peers/interfaces/turn/throughput line up across
    cards regardless of content. Peers fits 555/999, interfaces ~two 8-char tags, turn takes
    the rest, throughput (no label) sits at the right with down/up each a fixed width. */

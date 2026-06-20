@@ -263,6 +263,7 @@ const api = {
   nodeUpdate(b) { return this.post("/api/nodes/update", b); },
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
   nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
+  nodeUnflagRemove(b) { return this.post("/api/nodes/unflag-remove", b); },
   nodeDelete(b) { return this.post("/api/nodes/delete", b); },
   // users
   userCreate(b) { return this.post("/api/users/create", b); },
@@ -2023,7 +2024,7 @@ function NodeCard({ n }) {
       <span class=${"tport" + (n.transport === "https" ? " https" : "")}>${n.transport}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
       <span class=${"nstat " + st}>${stTxt}</span>
-      ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span>` : null}
+      ${removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span><button class="b-cancel" title="Cancel removal — keep this node" onClick=${e => { e.stopPropagation(); unflagNode(n); }}>cancel</button>` : null}
       <span class="grow"></span>
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
@@ -2760,6 +2761,13 @@ function NodeRotateSheet({ node }) {
   <//>`;
 }
 function openNodeRemove(node) { openModal(html`<${NodeRemoveSheet} node=${node}/>`); }
+function unflagNode(n) {   // cancel a pending soft removal — keep the node
+  mutate({
+    key: "node:" + n.id,
+    patch: s => { const x = s.nodes.find(y => y.id === n.id); if (x) { delete x.removing; delete x.removing_at; } },
+    call: () => api.nodeUnflagRemove({ id: n.id }),
+  });
+}
 function NodeRemoveSheet({ node }) {
   const [flagged, setFlagged] = useState(!!node.removing);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.id));

@@ -111,6 +111,9 @@ NATTED=""                                   # subnets already masqueraded (dedup
 for IFACE in $MANAGED; do
   dest="$AWG_DIR/$IFACE.conf"
   log "bringing up $IFACE via userspace amneziawg-go"
+  # clear any leftover interface first: with host networking the device lives in the HOST netns and
+  # survives a container stop, so a plain `up` would fail with "File exists" and crash-loop the node.
+  awg-quick down "$IFACE" 2>/dev/null || ip link del "$IFACE" 2>/dev/null || true
   awg-quick up "$IFACE" || { log "awg-quick up $IFACE failed — check NET_ADMIN + /dev/net/tun"; exit 1; }
   addr_line="$(awk -F= 'tolower($1) ~ /^[[:space:]]*address[[:space:]]*$/ {print $2; exit}' "$dest" | tr -d ' ' | cut -d, -f1)"
   SUBNET="$(python3 -c "import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))" "$addr_line" 2>/dev/null || echo "")"
