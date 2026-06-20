@@ -314,9 +314,29 @@ def post_json(url, token, obj, panel, timeout=20):
 
 # ───────────────────────── snapshot ─────────────────────────
 
+_TURN_READ = {"at": 0.0}
+def _read_units_live(svcs):
+    """Batched read of the live .service ExecStart for several units (one host call). svc -> unit text."""
+    if not svcs:
+        return {}
+    cmd = "; ".join("printf '@@SWG@@%s\\n' " + shlex.quote(s) + "; cat " + shlex.quote(_turn_unit_path(s)) + " 2>/dev/null"
+                    for s in svcs)
+    out = host_sh(cmd).stdout or ""
+    res = {}; cur = None; buf = []
+    for ln in out.splitlines():
+        if ln.startswith("@@SWG@@"):
+            if cur is not None:
+                res[cur] = "\n".join(buf)
+            cur = ln[len("@@SWG@@"):]; buf = []
+        elif cur is not None:
+            buf.append(ln)
+    if cur is not None:
+        res[cur] = "\n".join(buf)
+    return res
+
 def load_turn_proxies():
-    """Turn-proxies installed on this box (written by the installer) — listen/connect/wrap_key.
-    Forwarded to the panel so it can flag turn-proxied clients and build their configs."""
+    """Turn-proxies installed on this box — listen/connect/wrap_key/params. Refreshed from the LIVE
+    .service files (throttled) so direct edits on the server show up on the panel."""
     try:
         with open(TURN_RECORD) as f:
             d = json.load(f)
@@ -324,18 +344,25 @@ def load_turn_proxies():
         tp = tp if isinstance(tp, list) else []
     except Exception:
         return []
-    # one-time backfill of 'params' (the ExecStart tail) for records that predate it, so the panel's
-    # manage modal can show + edit the real flags. Re-reads the unit once, then the rewritten record sticks.
-    missing = [t for t in tp if t.get("service") and "params" not in t]
-    if missing and TURN_MANAGE_ON:
-        for t in missing:
-            unit = host_sh("cat " + shlex.quote(_turn_unit_path(t["service"])) + " 2>/dev/null").stdout
-            t["params"] = _exec_params(_exec_of(unit))
-        with contextlib.suppress(Exception):
-            tmp = TURN_RECORD + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump({"turn_proxies": tp}, f)
-            os.replace(tmp, TURN_RECORD)
+    nowt = time.time()
+    if TURN_MANAGE_ON and (any("params" not in t for t in tp) or nowt - _TURN_READ["at"] >= 20):
+        units = _read_units_live([t["service"] for t in tp if t.get("service")])
+        changed = False
+        for t in tp:
+            u = units.get(t.get("service"))
+            if not u:
+                continue
+            live = _parse_tp(t["service"], _exec_of(u))
+            for k in ("listen", "connect", "wrap_key", "params"):
+                if t.get(k) != live.get(k):
+                    t[k] = live.get(k); changed = True
+        _TURN_READ["at"] = nowt
+        if changed:
+            with contextlib.suppress(Exception):
+                tmp = TURN_RECORD + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump({"turn_proxies": tp}, f)
+                os.replace(tmp, TURN_RECORD)
     _attach_turn_running(tp)
     return tp
 
