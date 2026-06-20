@@ -305,16 +305,18 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Idempotent re-install: re-use the current .env's values (token, URL, login, interface defaults) so
 # re-running keeps everything and the ./data state is untouched. To start fresh, run the uninstaller.
-EXISTING_DOCKER=no
+EXISTING_DOCKER=no; EXIST_TLS=""
 if [ -f "$INSTALL_DIR/.env" ]; then
   EXISTING_DOCKER=yes
-  for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT \
-            PANEL_BASE NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET DNS TLS_VERIFY; do
+  for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT PANEL_BASE \
+            NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET DNS TLS_VERIFY \
+            ACME_EMAIL CF_TOKEN CF_ORIGIN_TOKEN; do
     [ -n "${!_k:-}" ] && continue                       # an explicit flag/env wins over the stored value
     _v="$(sed -n "s/^${_k}=//p" "$INSTALL_DIR/.env" 2>/dev/null | head -1)"
     _v="${_v%\"}"; _v="${_v#\"}"                        # strip surrounding quotes
     [ -n "$_v" ] && printf -v "$_k" '%s' "$_v"
   done
+  EXIST_TLS="$(sed -n 's/^TLS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1)"   # for the 'reuse' TLS option (not auto-applied)
   info "Existing docker install detected in $INSTALL_DIR — keeping your .env + ./data (token, login, interfaces). To start fresh, uninstall first."
 fi
 
@@ -359,12 +361,18 @@ ask_panel_tls(){     # Step 2 — TLS certificate (same look as bare-metal); iss
   echo
   echo "$(b 'Step 2. TLS certificate')"
   echo
-  menu "$(b "$(col "$C_BLUE" 'letsencrypt (default)')")" "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
+  local _opts="letsencrypt cloudflare cf15 selfsigned none" _def=letsencrypt _le='letsencrypt (default)'
+  if [ "$EXISTING_DOCKER" = yes ] && [ -f "$INSTALL_DIR/data/etc/tls/fullchain.pem" ]; then
+    menu "$(b "$(col "$C_BLUE" 'reuse (default)')")"     "Keep the existing certificate and TLS mode from this install — no re-issue (recommended for a re-install)"
+    _opts="reuse $_opts"; _def=reuse; _le='letsencrypt'
+  fi
+  menu "$(b "$(col "$C_BLUE" "$_le")")" "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
   menu "$(col "$C_BLUE" cloudflare)"                    "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
   menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
   menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
   menu "$(col "$C_GREY" none)"                          "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
-  ask_choice "Select TLS certificate" "letsencrypt" TLS "letsencrypt cloudflare cf15 selfsigned none"
+  ask_choice "Select TLS certificate" "$_def" TLS "$_opts"
+  if [ "$TLS" = reuse ]; then REUSE_TLS=yes; TLS="${EXIST_TLS:-selfsigned}"; ok "reusing the existing certificate (TLS mode: $(b "$TLS"))"; return 0; fi
   case "$TLS" in letsencrypt|cloudflare|cf15)
     case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS needs a domain (FQDN), not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
     case "$PANEL_DOMAIN" in *.*) : ;; *) die "TLS=$TLS needs a domain (FQDN), not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac ;;
@@ -410,6 +418,55 @@ ask_node_iface(){    # Step 1 — WG/AWG interface (container-managed) + its end
   NODE_ENDPOINT="";    ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$NODE_IFACE") (this interface's public IP/host)" "$d_ep" NODE_ENDPOINT v_host "enter an IP address or hostname"
   return 0
 }
+# current interface names for this docker node — persisted confs (./data/node-confs) ∪ the .env spec
+current_node_ifaces(){
+  local seen=" " n e OIFS c
+  if [ -d "$INSTALL_DIR/data/node-confs" ]; then
+    for c in "$INSTALL_DIR/data/node-confs/"*.conf; do [ -f "$c" ] || continue
+      n="$(basename "$c" .conf)"; case "$seen" in *" $n "*) : ;; *) echo "$n"; seen="$seen$n ";; esac; done
+  fi
+  if [ -n "$NODE_IFACES" ]; then OIFS="$IFS"; IFS=','
+    for e in $NODE_IFACES; do IFS="$OIFS"; n="${e%%:*}"
+      case "$seen" in *" $n "*) : ;; *) [ -n "$n" ] && { echo "$n"; seen="$seen$n "; };; esac; IFS=','; done; IFS="$OIFS"
+  elif [ -n "$NODE_IFACE" ]; then case "$seen" in *" $NODE_IFACE "*) : ;; *) echo "$NODE_IFACE";; esac; fi
+}
+# add one interface to NODE_IFACES (seeding the single bootstrap into the list first, so the entrypoint
+# — which ignores NODE_IFACE once NODE_IFACES is set — doesn't drop it).
+add_node_iface(){
+  local _proto plain base i name port addr ep
+  if [ -z "$NODE_IFACES" ] && [ -n "$NODE_IFACE" ]; then
+    local pr=""; [ "${NODE_PLAIN_WG:-}" = yes ] && pr=wg
+    NODE_IFACES="${NODE_IFACE}:${NODE_LISTEN_PORT:-51820}:${NODE_ADDRESS:-10.8.0.1/24}:${pr}:${NODE_ENDPOINT}"
+  fi
+  ask_choice "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto "a w awg wg amneziawg wireguard"
+  case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
+  [ "$plain" = wg ] && base=wg || base=awg; i=1; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done
+  ask_valid "Interface name" "$base$i" name v_iface "1–15 chars: letters, digits, - or _"
+  ask_valid "Listen port" "51821" port v_freeport "port 1–65535 and free (not already in use)"
+  ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.9.0.1/24" addr v_subnet "enter a CIDR, e.g. 10.9.0.0/24"
+  ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$name") (this interface's public IP/host)" "${NODE_ENDPOINT:-$(detect_public_ip)}" ep v_host "an IP or hostname"
+  NODE_IFACES="${NODE_IFACES:+$NODE_IFACES,}${name}:${port}:${addr}:${plain}:${ep}"
+  ok "queued interface $(col "$C_GREEN" "$name") — created on the node's next start"
+}
+# re-install: show the node's current interfaces and let the operator add more (kept either way)
+manage_node_ifaces(){
+  echo; echo "$(b 'Step 1. WireGuard / AmneziaWG setup')"
+  echo
+  echo "      Interfaces run inside the swg-node container. Existing ones are KEPT; add more here, or"
+  echo "      later from the panel (Interfaces → Load new interface)."
+  echo
+  local pick names n
+  while :; do
+    names="$(current_node_ifaces)"
+    if [ -n "$names" ]; then printf "  Current interfaces:"; while IFS= read -r n; do [ -n "$n" ] && printf ' %s' "$(col "$C_GREEN" "$n")"; done <<< "$names"; echo; echo
+    else echo "  No interfaces configured yet — add at least one."; echo; fi
+    printf '  Press %s to keep these, or type %s to add another interface: ' "$(b Enter)" "$(col "$C_BLUE" new)"
+    if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
+    pick="${pick//[[:space:]]/}"
+    if [ -z "$pick" ]; then [ -z "$(current_node_ifaces)" ] && { warn "add at least one interface (type 'new')"; continue; }; break; fi
+    case "$pick" in new) echo; add_node_iface; echo;; *) warn "press Enter to keep, or type 'new' to add an interface";; esac
+  done
+}
 ask_role(){          # Step 1 (panel entry) — master (panel + local node) or host (panel only); mirrors bare-metal
   echo
   echo "$(b 'Step 1. Server role')"
@@ -428,7 +485,7 @@ case "$PROFILE" in
       PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
       echo; info "NODE SETUP"
-      ask_node_iface
+      if [ "$EXISTING_DOCKER" = yes ]; then manage_node_ifaces; else ask_node_iface; fi
       # single-pass auto-enroll (mirrors bare-metal master): mint the local node's token NOW so it
       # flows into .env below; its pbkdf2 hash + nodes.json entry are written just before compose up.
       [ -n "$NODE_NAME" ]  || NODE_NAME="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)"
@@ -441,7 +498,7 @@ case "$PROFILE" in
   node)
     echo; info "NODE SETUP"
     ask_node_conn
-    ask_node_iface
+    if [ "$EXISTING_DOCKER" = yes ]; then manage_node_ifaces; else ask_node_iface; fi
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac
@@ -569,8 +626,12 @@ ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 # (acme state in data/etc/acme is kept, so letsencrypt/cloudflare reuse their cached cert.)
 RECREATE=""
 if [ "$PROFILE" != node ]; then
-  $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth" \
-                   "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
+  if [ "${REUSE_TLS:-no}" = yes ]; then
+    : # reuse: keep the existing login + certificate (entrypoint serves them as-is)
+  else
+    $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth" \
+                     "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
+  fi
   RECREATE="--force-recreate"
 fi
 
