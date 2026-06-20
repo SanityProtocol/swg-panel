@@ -154,7 +154,7 @@ turn_wrap_flags(){ local k; case "$1" in   # per-fork obfuscation flags (verifie
   anton48)      k="$(gen_wrap_key)"; printf -- '-wrap-srtp -wrap-key %s' "$k";;
   samosvalishe) k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;
   WINGS-N)      k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;
-  Moroka8)      k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;   # TODO: verify Moroka8's wrap flags
+  Moroka8)      k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;   # verified from its README: -wrap -wrap-key
   *) printf '';; esac; }
 detect_turn(){ TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con wk
   for u in /etc/systemd/system/*.service; do [ -e "$u" ] || continue

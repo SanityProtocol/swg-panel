@@ -267,7 +267,7 @@ turn_wrap_flags(){ local k; case "$1" in
   anton48)      k="$(gen_wrap_key)"; printf -- '-wrap-srtp -wrap-key %s' "$k";;
   samosvalishe) k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;
   WINGS-N)      k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;
-  Moroka8)      k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;   # TODO: verify Moroka8's wrap flags
+  Moroka8)      k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;   # verified from its README: -wrap -wrap-key
   *) printf '';; esac; }
 turn_wg_ports(){   # echo "<iface>:<ListenPort>" for every interface managed in the wg/awg step
   local n p
