@@ -108,13 +108,25 @@ done
 export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
 WAN="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1)"; WAN="${WAN:-eth0}"
 NATTED=""                                   # subnets already masqueraded (dedupe)
+
+# Clear ORPHANS: with host networking our wg/awg devices live in the HOST netns and survive a container
+# recreate. Any wg/awg device NOT in our managed set is a leftover from a previous run and can hold one
+# of our ListenPorts (→ "Address already in use"). The container owns the host netns here, so drop them.
+for _i in $(ip -o link show 2>/dev/null | sed -n 's/^[0-9]\+: \([^:@]*\).*/\1/p'); do
+  case " $MANAGED " in *" $_i "*) continue ;; esac
+  if ip -d link show "$_i" 2>/dev/null | grep -qE 'amneziawg|wireguard'; then
+    log "clearing orphan interface $_i (not in managed set)"; ip link delete "$_i" 2>/dev/null || true
+  fi
+done
+
 for IFACE in $MANAGED; do
   dest="$AWG_DIR/$IFACE.conf"
   log "bringing up $IFACE via userspace amneziawg-go"
-  # clear any leftover interface first: with host networking the device lives in the HOST netns and
-  # survives a container stop, so a plain `up` would fail with "File exists" and crash-loop the node.
+  # clear any leftover SAME-NAMED device first (host netns survives a container stop → plain `up` = "File exists").
   awg-quick down "$IFACE" 2>/dev/null || ip link del "$IFACE" 2>/dev/null || true
-  awg-quick up "$IFACE" || { log "awg-quick up $IFACE failed — check NET_ADMIN + /dev/net/tun"; exit 1; }
+  # one interface failing (e.g. a port still held by something) must NOT crash-loop the whole node — log
+  # it and keep going so the rest + swg-noded still come up and the panel can see the node + the gap.
+  awg-quick up "$IFACE" || { log "WARNING: awg-quick up $IFACE failed (port in use / NET_ADMIN?) — skipping it"; continue; }
   addr_line="$(awk -F= 'tolower($1) ~ /^[[:space:]]*address[[:space:]]*$/ {print $2; exit}' "$dest" | tr -d ' ' | cut -d, -f1)"
   SUBNET="$(python3 -c "import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))" "$addr_line" 2>/dev/null || echo "")"
   [ -n "$SUBNET" ] || { log "WARNING: could not read subnet for $IFACE — skipping its NAT"; continue; }
