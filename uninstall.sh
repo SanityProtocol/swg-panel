@@ -27,7 +27,7 @@ ask_yn(){ local v p="$1" d="${2:-n}"; if [ -n "${!3:-}" ]; then return; fi
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
 ask_comp(){ local v; $ASSUME_YES && return 0
   if [ ! -t 0 ] && [ ! -e /dev/tty ]; then return 1; fi   # no tty, not --yes => keep
-  read -rp "  Uninstall $(b "$1")? (y/N): " v </dev/tty || true
+  read -rp "  Uninstall $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
   case "$v" in [Yy]*) return 0;; *) return 1;; esac; }
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
@@ -205,7 +205,7 @@ rm_turn(){ local unit="$1" name fork
 }
 
 # ───────────────────────── detect installed components ─────────────────────────
-declare -a CLABEL CDETAIL CFN CARG
+declare -a CLABEL CDETAIL CFN CARG CHINT
 # ── richer component details: interface names+ports, node endpoints, turn-proxy ports ──
 iface_list(){  # <dir> -> "awg0:51820, awg505:51234" (interface name + ListenPort from each .conf)
   local dir="$1" out="" f n p
@@ -242,7 +242,8 @@ turn_detail(){  # <unit> -> "listen 1.2.3.4:57000 → 127.0.0.1:51820  ·  <serv
   con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
   printf 'listen %s%s  ·  %s' "${lis:-?}" "${con:+ → $con}" "$(basename "$unit")"
 }
-add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); }
+add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); CHINT+=("${5:-}"); }
+turn_listen(){ sed -n 's/^ExecStart=//p' "$1" 2>/dev/null | head -1 | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p'; }
 
 [ -d /opt/swg-panel ] || [ -f $SD/swg-panel-server.service ] && \
   add "swg-panel" "control panel (/opt/swg-panel)" rm_panel
@@ -266,13 +267,13 @@ awg_present(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.s
   || { command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii +amneziawg(-tools| |$)'; }; }
 wg_present(){ ls /etc/wireguard/*.conf >/dev/null 2>&1 || ls $SD/wg-quick@*.service >/dev/null 2>&1 \
   || { command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii +wireguard '; }; }
-awg_present && add "AmneziaWG" "$(iface_list /etc/amnezia/amneziawg)" rm_awg
-wg_present  && add "WireGuard" "$(iface_list /etc/wireguard)" rm_wg
+awg_present && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "AmneziaWG" "$_d" rm_awg "" "$_d"; }
+wg_present  && { _d="$(iface_list /etc/wireguard)";        add "WireGuard" "$_d" rm_wg "" "$_d"; }
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
   fork="$(basename "$unit" .service)"; fork="${fork#vk-turn-proxy-}"
   owner=""; [ -f "$TURN_DIR/$fork/repo.txt" ] && owner="$(cut -d/ -f1 "$TURN_DIR/$fork/repo.txt" 2>/dev/null)"
-  add "${owner:-${fork%-*}} turn-proxy" "$(turn_detail "$unit")" rm_turn "$unit"
+  add "${owner:-${fork%-*}} turn-proxy" "$(turn_detail "$unit")" rm_turn "$unit" "$(turn_listen "$unit")"
 done
 
 N=${#CLABEL[@]}
@@ -288,7 +289,7 @@ echo
 
 DID_REMOVE=(); DID_KEEP=()
 for i in $(seq 0 $((N-1))); do
-  if ask_comp "${CLABEL[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
+  if ask_comp "${CLABEL[$i]}" "${CHINT[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
   else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}"); fi
   echo
 done
