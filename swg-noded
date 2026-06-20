@@ -579,8 +579,10 @@ def host_sh(cmd, timeout=90):
     if NODE_KIND != "docker":
         args = ["sh", "-c", cmd] if os.geteuid() == 0 else ["sudo", "-n", "sh", "-c", cmd]
     else:
-        args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--network=host", HELPER_IMAGE,
-                "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", cmd]
+        # --entrypoint nsenter is REQUIRED: the swg-node image's entrypoint is node-entrypoint.sh
+        # (it demands PANEL_URL + sets up wg) — passing nsenter as the command alone still runs it.
+        args = ["docker", "run", "--rm", "--privileged", "--pid=host", "--entrypoint", "nsenter",
+                HELPER_IMAGE, "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", cmd]
     try:
         r = run(args, timeout=timeout)
     except Exception as e:                              # e.g. 'docker' not found, or a timeout

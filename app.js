@@ -34,7 +34,8 @@ function portOf(hostport) { if (!hostport) return ""; const s = String(hostport)
 // suffix in the service name becomes ":NNNN"; otherwise the listen port is appended).
 function turnLabel(service, port) {   // just the fork name — the port shows in the Listen row
   let s = (service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn";
-  return s.replace(/-\d+$/, "") || "turn";
+  s = s.replace(/-\d+$/, "") || "turn";
+  return s === "main" ? "cacggghp" : s;   // the upstream "main" key shows as its owner
 }
 
 function ago(sec) {
@@ -1289,7 +1290,7 @@ function DeleteTurnSheet({ node, service, label }) {
 // the installable turn-proxy forks (owner repo + the fork's obfuscation flags — the node appends a
 // fresh -wrap-key). Mirrors the installer's turn_repo_owner / turn_wrap_flags.
 const TURN_FORKS = [
-  { id: "main", label: "Original", owner: "cacggghp/vk-turn-proxy", wrap: "" },
+  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "" },
   { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on" },
   { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/vk-turn-proxy", wrap: "-wrap" },
   { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "" },
