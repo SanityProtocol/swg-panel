@@ -1036,8 +1036,18 @@ function OrphanRow({ o }) {
 // Ask the node to manage an existing wg/awg interface the panel didn't auto-detect. The node only
 // needs the tool (wg/awg) + the .conf path; the public endpoint is a panel-side render override.
 function openOnboardIface(node) { openModal(html`<${LoadIfaceSheet} node=${node}/>`); }
+function BridgePortSheet({ iface, port }) {   // shown after creating an iface on a bridge docker node
+  const p = port || "PORT";
+  const portsLine = `- "${p}:${p}/udp"`;
+  return html`<${Sheet} title=${"Publish port · " + iface}>
+    <div class="iface-intro big"><div>Creation requested — it applies on the node's next sync. This node runs on <b>bridge</b> networking, so this interface's UDP port isn't reachable from outside until you publish it on the host (otherwise peers won't handshake — rx stays 0).</div></div>
+    <div class="field"><label>1. Add under <span class="mono">swg-node → ports:</span> in the node's docker-compose.yml</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${portsLine}</span><button class="copybtn" onClick=${() => copy(portsLine, "Copied")}><${Ic} i="copy"/></button></div></div>
+    <div class="field"><label>2. Apply (in the node's compose dir)</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">docker compose up -d</span><button class="copybtn" onClick=${() => copy("docker compose up -d", "Copied")}><${Ic} i="copy"/></button></div><div class="hint">Re-installing the node with host networking avoids per-port publishing entirely.</div></div>
+  <//>`;
+}
 function LoadIfaceSheet({ node }) {
-  const isDocker = ((Store.nodes || []).find(n => n.id === node) || {}).kind === "docker";
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
   const [proto, setProto] = useState("awg");   // awg | wg | existing
   const [iface, setIface] = useState(""); const [subnet, setSubnet] = useState("");
   const [host, setHost] = useState(""); const [port, setPort] = useState("");
@@ -1064,6 +1074,7 @@ function LoadIfaceSheet({ node }) {
     }
     if (!r.ok) return fail(r.error || "Request failed.");
     closeModal(); await Store.poll();
+    if (!existing && isBridge) { openModal(html`<${BridgePortSheet} iface=${nm} port=${port.trim()}/>`); return; }
     toast(existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync.", "ok");
   };
   return html`<${Sheet} title="Load new interface"
@@ -1089,7 +1100,7 @@ function LoadIfaceSheet({ node }) {
         <div class="field"><label>Endpoint host / IP</label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/></div>
         <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
       </div>
-      ${isDocker ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>Docker node — publish this listen port in the node's <span class="mono">docker-compose.yml</span> (<span class="mono">ports: "${port || "PORT"}:${port || "PORT"}/udp"</span>) and recreate the container, or clients can't reach it. (Or run the node with <span class="mono">network_mode: host</span> so any port works.)</span></div>` : null}
+      ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This docker node uses <span class="mono">bridge</span> networking — after creating you must publish this port in the node's <span class="mono">docker-compose.yml</span> (<span class="mono">ports: "${port || "PORT"}:${port || "PORT"}/udp"</span>) and <span class="mono">up -d</span>, or clients can't reach it. (A host-networking node needs none of this.)</span></div>` : null}
       <div class="row2">
         <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/></div>
         <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>

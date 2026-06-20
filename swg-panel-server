@@ -906,6 +906,7 @@ def api(method, path, qs, body, deps):
                         "health_history": hh,             # recent cpu/mem/disk % series (RRD-style ring)
                         "health_live": hl,                # raw per-sync samples for the LIVE view (5s)
                         "kind": snap.get("kind"),               # "docker" | "baremetal"
+                        "net_mode": snap.get("net_mode") or "host",   # docker net mode: host | bridge (bridge → created-iface ports need publishing)
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
                         "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
                         "outdated": bool(snap.get("noded_version") and VERSIONS.get("panel")

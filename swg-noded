@@ -54,6 +54,12 @@ def _noded_version():
 NODED_VERSION = _noded_version()
 # bare-metal vs docker — reported so the panel can tag the node (containers carry /.dockerenv)
 NODE_KIND = "docker" if (os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")) else "baremetal"
+# docker network mode (set by the installer via the compose env): "host" = every interface port is on
+# the host (no publishing); "bridge" = panel-created interface ports must be published. Bare-metal is
+# always "host"-like. The panel uses this to show port-publishing guidance only where it's needed.
+NODE_NET = (os.environ.get("NODE_NET") or "host").strip().lower()
+if NODE_NET not in ("host", "bridge"):
+    NODE_NET = "host"
 
 
 # ───────────────────────── parsing (pure) ─────────────────────────
@@ -341,7 +347,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             continue
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
-            "noded_version": NODED_VERSION, "kind": NODE_KIND}
+            "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap

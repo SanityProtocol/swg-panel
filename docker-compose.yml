@@ -72,6 +72,7 @@ services:
       PANEL_URL: "${PANEL_URL:?set PANEL_URL (master: https://swg-panel:8443)}"
       NODE_TOKEN: "${NODE_TOKEN:?create the node in the Nodes screen, then set NODE_TOKEN}"
       NODE_ENDPOINT: "${NODE_ENDPOINT:?public IP/host clients dial for this node}"
+      NODE_NET: "${NODE_NET:-host}"        # host (this container uses network_mode: host) or bridge — reported to the panel so it shows port-publishing guidance only for bridge
       # Single interface (default), or several via NODE_IFACES (see .env.example):
       NODE_IFACE: "${NODE_IFACE:-awg0}"
       NODE_IFACES: "${NODE_IFACES:-}"     # "name:port:addr[:proto[:endpoint]],…"  (blank = use NODE_IFACE)

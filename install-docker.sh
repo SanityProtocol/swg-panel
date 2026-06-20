@@ -58,6 +58,7 @@ NODE_LISTEN_PORT="${NODE_LISTEN_PORT:-51820}"
 NODE_ADDRESS="${NODE_ADDRESS:-10.8.0.1/24}"
 NODE_MTU="${NODE_MTU:-1280}"           # interface MTU; 1280 leaves headroom for turn-proxy obfuscation
 NODE_PLAIN_WG="${NODE_PLAIN_WG:-}"     # yes = plain WireGuard; blank/no = AmneziaWG v2 (Step 2 sets it)
+NODE_NET="${NODE_NET:-}"               # host (default) | bridge — docker networking for the node (-net)
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes/no; blank = ask (node profile) / default no
 DNS="${DNS:-1.1.1.1}"
 
@@ -283,6 +284,7 @@ while [ $# -gt 0 ]; do
     -key|--key|-token)      NODE_TOKEN="${2:-}"; shift 2 || shift;;
     -host|--host|-url)      PANEL_URL="${2:-}"; shift 2 || shift;;
     -endpoint|--endpoint)   NODE_ENDPOINT="${2:-}"; shift 2 || shift;;
+    -net|--net|--network)   NODE_NET="${2:-}"; shift 2 || shift;;
     -verify|--verify)       TLS_VERIFY="${2:-}"; shift 2 || shift;;
     -iface|--iface)         NODE_IFACE="${2:-}"; shift 2 || shift;;
     -ifaces|--ifaces)       NODE_IFACES="${2:-}"; shift 2 || shift;;
@@ -307,7 +309,7 @@ EXISTING_DOCKER=no
 if [ -f "$INSTALL_DIR/.env" ]; then
   EXISTING_DOCKER=yes
   for _k in PANEL_URL NODE_TOKEN NODE_ENDPOINT PANEL_USER PANEL_PASSWORD PANEL_DOMAIN PANEL_PORT \
-            PANEL_BASE NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG DNS TLS_VERIFY; do
+            PANEL_BASE NODE_IFACE NODE_IFACES NODE_LISTEN_PORT NODE_ADDRESS NODE_MTU NODE_PLAIN_WG NODE_NET DNS TLS_VERIFY; do
     [ -n "${!_k:-}" ] && continue                       # an explicit flag/env wins over the stored value
     _v="$(sed -n "s/^${_k}=//p" "$INSTALL_DIR/.env" 2>/dev/null | head -1)"
     _v="${_v%\"}"; _v="${_v#\"}"                        # strip surrounding quotes
@@ -476,19 +478,31 @@ else
   ok "staged compose file (images pulled prebuilt from GHCR — no build context needed)"
 fi
 
-# Host networking for the node datapath (standalone node AND the master's local node): every
-# interface port — including ones created from the panel — binds directly on the host, no per-port
-# publishing, better UDP throughput. host net disallows per-container `ports:`/`sysctls:`, so disable
-# them + set ip_forward on the host. The master's node leaves the compose network, so it reaches the
-# (bridge) panel over loopback at the host-published port instead of the `swg-panel` docker name.
+# Node datapath networking (profiles: node, master). HOST (default) = every interface port, incl.
+# panel-created ones, binds directly on the host: no publishing, best UDP throughput. BRIDGE = isolated,
+# but each created interface's UDP port must be published in docker-compose.yml. host net disallows
+# per-container ports/sysctls (disabled below + ip_forward set on the host); the master's node also
+# leaves the compose network, so it reaches the panel over loopback instead of the swg-panel name.
 if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
-  if [ "$PROFILE" = master ]; then
-    PANEL_URL="https://127.0.0.1:${PANEL_PORT:-443}"   # node → local panel over the host's published port
-    TLS_VERIFY="${TLS_VERIFY:-no}"                      # cert won't match 127.0.0.1; loopback hop, so don't verify
+  if [ -z "$NODE_NET" ]; then
+    echo; echo "$(b 'Networking mode')"; echo
+    echo "  $(col "$C_BLUE" host)   — every interface port (incl. ones created from the panel) is reachable"
+    echo "           automatically, no publishing, best throughput. Recommended for a dedicated VPN box."
+    echo "  $(col "$C_BLUE" bridge) — isolated; you must publish each created interface's UDP port in"
+    echo "           $INSTALL_DIR/docker-compose.yml. Use only if host networking isn't an option."
+    echo
+    ask_choice "Select networking" "host" NODE_NET "host bridge"
   fi
-  if $DRYRUN; then echo "    [skip] enable host networking for the node service + host ip_forward"
-  else
-    python3 - "$PREFIX$INSTALL_DIR/docker-compose.yml" <<'PYHOST'
+  case "$NODE_NET" in host|bridge) ;; *) NODE_NET=host;; esac
+  if [ "$PROFILE" = master ]; then       # the master's node reaches the local panel differently per mode
+    if [ "$NODE_NET" = host ]; then PANEL_URL="https://127.0.0.1:${PANEL_PORT:-443}"   # over the host-published port
+    else PANEL_URL="https://swg-panel:8443"; fi                                         # over the compose network DNS
+    TLS_VERIFY="${TLS_VERIFY:-no}"
+  fi
+  if [ "$NODE_NET" = host ]; then
+    if $DRYRUN; then echo "    [skip] enable host networking for the node service + host ip_forward"
+    else
+      python3 - "$PREFIX$INSTALL_DIR/docker-compose.yml" <<'PYHOST'
 import sys, re
 p = sys.argv[1]; lines = open(p).read().splitlines(); out = []; in_node = False
 for ln in lines:
@@ -504,12 +518,16 @@ for ln in lines:
     out.append(ln)
 open(p, 'w').write('\n'.join(out) + '\n')
 PYHOST
-    printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
-    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
-    [ "$PROFILE" = master ] && ok "host networking enabled for the node (every port reachable); node → panel via 127.0.0.1:${PANEL_PORT:-443}" \
-                           || ok "host networking enabled for the node (every interface port reachable, no per-port publishing)"
+      printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
+      sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+      [ "$PROFILE" = master ] && ok "host networking — every port reachable; node → panel via 127.0.0.1:${PANEL_PORT:-443}" \
+                             || ok "host networking — every interface port reachable, no per-port publishing"
+    fi
+  else
+    ok "bridge networking — publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml, then '$COMPOSE --profile $PROFILE up -d'"
   fi
 fi
+NODE_NET="${NODE_NET:-host}"   # ensure a concrete value lands in .env (compose default is host)
 
 # ───────────────────────── write .env ─────────────────────────
 mkdir -p "$PREFIX$INSTALL_DIR"
@@ -536,6 +554,7 @@ NODE_LISTEN_PORT=$NODE_LISTEN_PORT
 NODE_ADDRESS=$NODE_ADDRESS
 NODE_MTU=$NODE_MTU
 NODE_PLAIN_WG=$NODE_PLAIN_WG
+NODE_NET=$NODE_NET
 TLS_VERIFY=$TLS_VERIFY
 DNS=$DNS
 EOF
