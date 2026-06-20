@@ -2004,10 +2004,11 @@ class Handler(BaseHTTPRequestHandler):
         # appears; manage/rotate: the node applied + restarted — verified by listen match, else a grace)
         turn = node.get("turn") or {}; turn_onb = node.get("turn_onboard") or []
         if turn or turn_onb:
+            now_ts = int(time.time())   # NB: the module 'now' lambda is local to the api handler — not in scope here
             tps = {tp.get("service"): tp for tp in (snap.get("turn_proxies") or []) if tp.get("service")}
             t_changed = False
             for svc, req in list(turn.items()):
-                act, age = req.get("action"), now() - (req.get("at") or 0)
+                act, age = req.get("action"), now_ts - (req.get("at") or 0)
                 tp = tps.get(svc)
                 if act == "delete":
                     done = svc not in tps
@@ -2074,7 +2075,11 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path = strip_base(u.path)
         if path == "/api/node/sync":
-            return self._node_sync()
+            try:
+                return self._node_sync()
+            except Exception as e:        # never drop the connection (a proxy turns that into a 5xx/520) — a node skips a non-200 pass safely
+                import traceback; traceback.print_exc()
+                return self._send(500, {"ok": False, "error": str(e), "code": "internal"})
         if path == "/api/node/goodbye":
             return self._node_goodbye()
         if path == "/api/login":
