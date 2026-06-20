@@ -92,6 +92,22 @@ def _detect_versions():
 
 VERSIONS = _detect_versions()
 
+def _vtuple(v):
+    """'1.24.16-alpha' -> (1, 24, 16); anything unparseable -> (0, 0, 0)."""
+    import re
+    m = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", str(v or ""))
+    return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+def _ver_behind(have, ref):
+    """True only if `have` is a real version strictly older than `ref` (never on a newer node)."""
+    h, r = _vtuple(have), _vtuple(ref)
+    return bool(h != (0, 0, 0) and r != (0, 0, 0) and h < r)
+
+def _ver_ahead(have, ref):
+    """True if `have` is strictly newer than `ref` (e.g. a node updated past a lagging panel)."""
+    h, r = _vtuple(have), _vtuple(ref)
+    return bool(h != (0, 0, 0) and r != (0, 0, 0) and h > r)
+
 # Latest published version — fetched from the public repo so the panel can tell when IT is behind
 # (works for any bare-metal/docker install; just an outbound HTTPS GET). Refreshed in a daemon thread.
 REMOTE_VERSION_URL = os.environ.get(
@@ -909,8 +925,8 @@ def api(method, path, qs, body, deps):
                         "net_mode": snap.get("net_mode") or "host",   # docker net mode: host | bridge (bridge → created-iface ports need publishing)
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
                         "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
-                        "outdated": bool(snap.get("noded_version") and VERSIONS.get("panel")
-                                         and snap.get("noded_version") != VERSIONS.get("panel")),
+                        "outdated": _ver_behind(snap.get("noded_version"), VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
+                        "ahead": _ver_ahead(snap.get("noded_version"), VERSIONS.get("panel")),        # node is NEWER than the panel
                         "updating": bool(c.get("update")),                       # self-update in flight
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
                         "creating": {k: ((v.get("cmd") or ["awg"])[0])               # iface → wg/awg (we know it)
