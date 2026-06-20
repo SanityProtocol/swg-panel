@@ -936,6 +936,7 @@ def api(method, path, qs, body, deps):
                         "turn_pending": {k: (v.get("action") or "manage")           # turn service → pending action
                                          for k, v in (c.get("turn") or {}).items()},
                         "turn_onboarding": list(c.get("turn_onboard") or []),       # .service paths pending onboard
+                        "cmd_errors": (snap.get("cmd_errors") or {}),               # request key -> last host->node command error
                         "interfaces": list((snap.get("interfaces") or {}).keys())})
         return out
 

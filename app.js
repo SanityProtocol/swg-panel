@@ -32,10 +32,9 @@ function ipOf(hostport) { if (!hostport) return ""; const s = String(hostport); 
 function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
 // turn-proxy display label: strip the vk-turn-proxy- prefix and render as name:port (a "-NNNN"
 // suffix in the service name becomes ":NNNN"; otherwise the listen port is appended).
-function turnLabel(service, port) {
+function turnLabel(service, port) {   // just the fork name — the port shows in the Listen row
   let s = (service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn";
-  if (/-\d+$/.test(s)) return s.replace(/-(\d+)$/, ":$1");
-  return port ? s + ":" + port : s;
+  return s.replace(/-\d+$/, "") || "turn";
 }
 
 function ago(sec) {
@@ -109,6 +108,7 @@ const ICON = {
   check: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6 9 17l-5-5"/></svg>',
   warn: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
   info: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+  x: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
   err: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>',
   download: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>',
   plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
@@ -901,7 +901,7 @@ function NodeDetail({ node: rawName }) {
       ${(() => {
         // creating ifaces know their protocol → real wg/awg tag; onboarding doesn't yet → "load"
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
-          <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><span class="tg tg-warn"><${Ic} i="clock"/>${label}</span></div>
+          <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-warn"><${Ic} i="clock"/>${label}</span></div>
           <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it…</span><button class="btn btn-mini warn" title="Drop this pending request" onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>Cancel</button></div><${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
         const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
         const cr = nrec.creating || {};   // { iface: "wg" | "awg" }
@@ -918,7 +918,7 @@ function NodeDetail({ node: rawName }) {
               const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
               const deleting = (nrec.deleting || []).includes(ifn);
               return html`<a class=${"ifcard" + (deleting ? " pending" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : null}</div>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : null}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -934,15 +934,16 @@ function NodeDetail({ node: rawName }) {
         const fronted = meta ? Object.keys(meta).find(i => String(meta[i].listen_port) === lp) : null;
         const ftype = (fronted && meta[fronted].awg_params && Object.keys(meta[fronted].awg_params).length) ? "awg" : "wg";
         const pend = (nrec.turn_pending || {})[tp.service];
+        const err = (nrec.cmd_errors || {})[tp.service];
         return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(name, tp) : null}>
-          <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span>${pend ? html`<span class="grow"></span><span class="tg tg-busy">${pend}…</span>` : (!fronted ? html`<span class="grow"></span><span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}</div>
+          <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span>${pend ? html`<span class="grow"></span><${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${TURN_PEND[pend] || pend}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(name, { service: tp.service }); }}><${Ic} i="x"/></button>` : (!fronted ? html`<span class="grow"></span><span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>
           </div></div>`;
       })}
-      ${Object.entries(nrec.turn_pending || {}).filter(([s]) => !(snap.turn_proxies || []).some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><span class="tg tg-busy">${act}…</span></div></div>`)}
-      ${(nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><span class="tg tg-busy">onboard</span></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`)}
+      ${Object.entries(nrec.turn_pending || {}).filter(([s]) => !(snap.turn_proxies || []).some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { service: s })}><${Ic} i="x"/></button></div></div>`)}
+      ${(nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`)}
       </div>
     <//>` : null}
   </div>`;
@@ -1295,6 +1296,17 @@ const TURN_FORKS = [
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp" },
 ];
+const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting" };
+// small ⓘ next to a pending/failed command — hover for the node's error, click to read it in full
+function CmdErr({ err }) {
+  if (!err) return null;
+  return html`<span class="cmderr" title=${err} onClick=${e => { e.stopPropagation(); openConfirm({ title: "Command failed on the node", body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
+}
+async function cancelTurn(node, body) {
+  const r = await api.turnCancel({ node, ...body });
+  if (!r.ok) return toast(r.error || "Failed to cancel.", "err");
+  await Store.poll(); toast("Pending turn-proxy request cancelled.", "ok");
+}
 function openSetupTurn(node) { openModal(html`<${SetupTurnSheet} node=${node}/>`); }
 function SetupTurnSheet({ node }) {
   const [mode, setMode] = useState("new");   // new (install) | existing (adopt)

@@ -24,6 +24,7 @@ import http.client
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -355,7 +356,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
-            "turn_manage": TURN_MANAGE}
+            "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS)}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap
@@ -568,6 +569,8 @@ def delete_ifaces(node_cfg, delete, agent, sudo):
 HELPER_IMAGE = os.environ.get("HELPER_IMAGE") or "ghcr.io/sanityprotocol/swg-node:latest"
 TURN_UNIT_DIR = "/etc/systemd/system"
 TURN_MANAGE_ON = (NODE_KIND != "docker") or ((os.environ.get("TURN_MANAGE") or "manual").strip().lower() == "panel")
+NODE_ERRORS = {}   # request key (iface name / turn service / .service path) -> last apply error, reported
+                   # in the snapshot ("cmd_errors") so the panel can show WHY a host->node command failed
 
 def host_sh(cmd, timeout=90):
     """Run a shell command on the HOST. Bare-metal: directly. Docker: via a one-shot privileged
@@ -630,7 +633,7 @@ def _turn_install(svc, req):
     url = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
     extra = ""
     if wrap_flags:
-        key = run(["openssl", "rand", "-hex", "32"]).stdout.strip()
+        key = secrets.token_hex(32)   # 64 hex chars, no openssl dependency (the slim image lacks it)
         if not key:
             return "keygen failed"
         extra = wrap_flags + " -wrap-key " + key
@@ -655,8 +658,14 @@ def apply_turn(turn, turn_onboard):
     res = {"done": [], "errors": []}
     if not turn and not turn_onboard:
         return res
+    def fail(k, m):
+        res["errors"].append(k + ": " + m); NODE_ERRORS[k] = m
+    def good(k, tag):
+        res["done"].append(tag); NODE_ERRORS.pop(k, None)
     if not TURN_MANAGE_ON:
-        return {"done": [], "errors": ["turn management off (re-install the docker node with the 'panel' option)"]}
+        for k in active:
+            fail(k, "turn management off — re-install the docker node with the 'panel' option")
+        return res
     rec = {tp.get("service"): tp for tp in load_turn_proxies() if tp.get("service")}
     changed = False
     for svc, req in (turn or {}).items():
@@ -665,17 +674,19 @@ def apply_turn(turn, turn_onboard):
             if act == "install":
                 err = _turn_install(svc, req)
                 if err:
-                    res["errors"].append(svc + ": " + err)
+                    fail(svc, err)
                 else:
-                    rec[svc] = _installed_tp(svc); changed = True; res["done"].append("ins:" + svc)
+                    rec[svc] = _installed_tp(svc); changed = True; good(svc, "ins:" + svc)
                 continue
-            unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
             if act == "delete":
-                host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
-                        "rm -f " + shlex.quote(up) + "; systemctl daemon-reload")
-                rec.pop(svc, None); changed = True; res["done"].append("del:" + svc); continue
+                w = host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
+                            "rm -f " + shlex.quote(up) + "; systemctl daemon-reload")
+                if w.returncode != 0:
+                    fail(svc, (w.stderr or "remove failed").strip()[:120]); continue
+                rec.pop(svc, None); changed = True; good(svc, "del:" + svc); continue
+            unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
             if not unit:
-                res["errors"].append(svc + ": unit not found"); continue
+                fail(svc, "unit not found on the node"); continue
             execl = _exec_of(unit)
             if act == "manage":
                 if req.get("listen"):  execl = _set_arg(execl, "listen", req["listen"])
@@ -683,29 +694,26 @@ def apply_turn(turn, turn_onboard):
                 if "wrap_key" in req:
                     execl = _set_arg(execl, "wrap-key", req["wrap_key"]) if req["wrap_key"] else _strip_wrap(execl)
             elif act == "rotate":
-                key = run(["openssl", "rand", "-hex", "32"]).stdout.strip()
-                if not key:
-                    res["errors"].append(svc + ": keygen failed"); continue
-                execl = _set_arg(execl, "wrap-key", key)
+                execl = _set_arg(execl, "wrap-key", secrets.token_hex(32))
             new_unit = "\n".join(("ExecStart=" + execl) if ln.startswith("ExecStart=") else ln
                                  for ln in unit.splitlines())
             w = host_sh("cat > " + shlex.quote(up) + " <<'SWGEOF'\n" + new_unit + "\nSWGEOF\n"
                         "systemctl daemon-reload && systemctl restart " + shlex.quote(svc))
             if w.returncode != 0:
-                res["errors"].append(svc + ": " + (w.stderr or "").strip()[:120]); continue
-            rec[svc] = _parse_tp(svc, execl); changed = True; res["done"].append(act + ":" + svc)
+                fail(svc, (w.stderr or "restart failed").strip()[:120]); continue
+            rec[svc] = _parse_tp(svc, execl); changed = True; good(svc, act + ":" + svc)
         except Exception as e:
-            res["errors"].append(svc + ": " + str(e))
+            fail(svc, str(e))
     for sp in (turn_onboard or []):
         try:
             unit = host_sh("cat " + shlex.quote(sp) + " 2>/dev/null").stdout
             if not unit:
-                res["errors"].append(sp + ": not found"); continue
+                fail(sp, "unit not found at that path"); continue
             base = os.path.basename(sp)
             svc = base[:-8] if base.endswith(".service") else base
-            rec[svc] = _parse_tp(svc, _exec_of(unit)); changed = True; res["done"].append("onb:" + svc)
+            rec[svc] = _parse_tp(svc, _exec_of(unit)); changed = True; good(sp, "onb:" + svc)
         except Exception as e:
-            res["errors"].append(sp + ": " + str(e))
+            fail(sp, str(e))
     if changed:
         try:
             tmp = TURN_RECORD + ".tmp"
@@ -776,6 +784,20 @@ def main():
                 dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
+                # surface iface command failures to the panel too (cmd_errors), keyed by iface name
+                for blk in (cr, dl, ob):
+                    for e in blk["errors"]:
+                        k, _, m = e.partition(": ")
+                        NODE_ERRORS[k] = m or e
+                for k in (cr.get("created", []) + dl.get("deleted", []) + ob.get("added", [])):
+                    NODE_ERRORS.pop(k, None)
+                # prune errors for requests the panel has since cleared (iface + turn)
+                active = (set(reply.get("create") or {}) | set(reply.get("onboard") or {})
+                          | set(reply.get("delete") or []) | set(reply.get("turn") or {})
+                          | set(reply.get("turn_onboard") or []))
+                for k in list(NODE_ERRORS):
+                    if k not in active:
+                        NODE_ERRORS.pop(k, None)
                 r = reconcile(node_cfg, reply["desired"], agent, sudo)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
