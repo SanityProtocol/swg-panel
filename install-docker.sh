@@ -591,7 +591,9 @@ PYHOST
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
   if [ -z "$TURN_MANAGE" ]; then
     step "Turn-proxy management"; echo
-    menu "$(b "$(col "$C_BLUE" 'panel (default)')")" "Manage turn-proxies (edit listen/connect/keys, restart, onboard) from the panel. Mounts the Docker socket into the node container, which gives that container ROOT-EQUIVALENT access to the host — only enable if you trust the panel and this box."
+    menu "$(b "$(col "$C_BLUE" 'panel (default)')")" "Manage turn-proxies (edit listen/connect/keys, restart, onboard) from the panel.
+      Mounts the Docker socket into the node container, which gives that container ROOT-EQUIVALENT access to the host.
+      only enable if you trust the panel and this box."
     menu "$(col "$C_BLUE" manual)"                   "Turn-proxies are managed on this server by hand — no socket is mounted."
     ask_choice "Select turn-proxy management" "panel" TURN_MANAGE "panel manual"
   fi
