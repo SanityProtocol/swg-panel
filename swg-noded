@@ -321,9 +321,44 @@ def load_turn_proxies():
         with open(TURN_RECORD) as f:
             d = json.load(f)
         tp = d.get("turn_proxies") if isinstance(d, dict) else None
-        return tp if isinstance(tp, list) else []
+        tp = tp if isinstance(tp, list) else []
     except Exception:
         return []
+    # one-time backfill of 'params' (the ExecStart tail) for records that predate it, so the panel's
+    # manage modal can show + edit the real flags. Re-reads the unit once, then the rewritten record sticks.
+    missing = [t for t in tp if t.get("service") and "params" not in t]
+    if missing and TURN_MANAGE_ON:
+        for t in missing:
+            unit = host_sh("cat " + shlex.quote(_turn_unit_path(t["service"])) + " 2>/dev/null").stdout
+            t["params"] = _exec_params(_exec_of(unit))
+        with contextlib.suppress(Exception):
+            tmp = TURN_RECORD + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"turn_proxies": tp}, f)
+            os.replace(tmp, TURN_RECORD)
+    _attach_turn_running(tp)
+    return tp
+
+_TURN_RUN = {"at": 0.0, "map": {}}
+def _attach_turn_running(tps):
+    """Live `running` flag per turn-proxy (one batched `systemctl is-active`, throttled to 20s) so the
+    panel can grey out a crash-looping service (e.g. a -listen IP not local → bind fails)."""
+    svcs = [t["service"] for t in tps if t.get("service")]
+    if not svcs or not TURN_MANAGE_ON:
+        return
+    nowt = time.time()
+    if nowt - _TURN_RUN["at"] >= 20:
+        cmd = "for s in " + " ".join(shlex.quote(s) for s in svcs) + \
+              "; do printf '%s=%s\\n' \"$s\" \"$(systemctl is-active \"$s\" 2>/dev/null)\"; done"
+        m = {}
+        for ln in (host_sh(cmd).stdout or "").splitlines():
+            s, _, state = ln.partition("=")
+            if s:
+                m[s] = (state.strip() == "active")
+        _TURN_RUN["at"] = nowt; _TURN_RUN["map"] = m
+    for t in tps:
+        if t.get("service") in _TURN_RUN["map"]:
+            t["running"] = _TURN_RUN["map"][t["service"]]
 
 
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
@@ -618,11 +653,17 @@ def _strip_wrap(execl):
     execl = re.sub(r"\s*-wrap\b", "", execl)
     return execl
 
+def _exec_params(execl):
+    """Everything after '-connect <ip:port>' in the ExecStart — the free-text extra flags (wrap etc.)."""
+    m = re.search(r"-connect[ =]+\S+\s*(.*)$", execl)
+    return (m.group(1).strip() if m else "")
+
 def _parse_tp(svc, execl):
     def g(flag):
         m = re.search(r"-" + re.escape(flag) + r"[ =]+(\S+)", execl)
         return m.group(1) if m else ""
-    return {"service": svc, "listen": g("listen"), "connect": g("connect"), "wrap_key": g("wrap-key")}
+    return {"service": svc, "listen": g("listen"), "connect": g("connect"),
+            "wrap_key": g("wrap-key"), "params": _exec_params(execl)}
 
 def _installed_tp(svc):
     """Re-read a turn unit (after install/edit) so the record carries the real ExecStart, incl. the
@@ -659,11 +700,23 @@ def _turn_install(svc, req):
            + " && curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 --retry-all-errors "
            + shlex.quote(url) + " -o " + shlex.quote(binp) + " && chmod +x " + shlex.quote(binp)
            + " && cat > " + shlex.quote(_turn_unit_path(svc)) + " <<'SWGEOF'\n" + unit + "SWGEOF\n"
-           + "systemctl daemon-reload && systemctl enable --now " + shlex.quote(svc))
+           + "systemctl daemon-reload && systemctl enable --now " + shlex.quote(svc) + " >/dev/null 2>&1")
     w = host_sh(cmd, timeout=210)
     if w.returncode != 0:
         return (w.stderr or w.stdout or "install failed").strip()[:160]
-    return ""
+    return _turn_verify(svc)   # enable --now returns 0 even if the binary crash-loops — confirm it stays up
+
+def _turn_verify(svc):
+    """Confirm a turn-proxy service is actually running after install/edit. enable/restart returns 0 as
+    soon as the binary is exec'd, so a crash-loop (e.g. a -listen IP not local to the host → bind fails)
+    looks like success — this catches it + returns the journal reason so the panel can show it."""
+    v = host_sh("sleep 1.5; systemctl is-active " + shlex.quote(svc) + " 2>/dev/null; "
+                "journalctl -u " + shlex.quote(svc) + " -n 5 --no-pager -o cat 2>/dev/null | grep -iE 'error|invalid|fail|bind|address|panic' | tail -1")
+    lines = (v.stdout or "").strip().splitlines()
+    if lines and lines[0] == "active":
+        return ""
+    reason = lines[-1] if len(lines) > 1 else "not running (check the -listen IP is an address on this host)"
+    return "service didn't stay up: " + reason[:150]
 
 def apply_turn(turn, turn_onboard):
     """Apply panel turn-proxy requests (manage/rotate/delete) + onboard host .service units, then
@@ -709,8 +762,11 @@ def apply_turn(turn, turn_onboard):
             if act == "manage":
                 if req.get("listen"):  execl = _set_arg(execl, "listen", req["listen"])
                 if req.get("connect"): execl = _set_arg(execl, "connect", req["connect"])
-                if "wrap_key" in req:
-                    execl = _set_arg(execl, "wrap-key", req["wrap_key"]) if req["wrap_key"] else _strip_wrap(execl)
+                if "params" in req:    # replace the whole tail after -connect with the free-text params
+                    p = (req.get("params") or "").strip()
+                    execl = re.sub(r"(-connect[ =]+\S+).*$", lambda m: m.group(1) + ((" " + p) if p else ""), execl)
+            elif act == "restart":
+                pass                   # no ExecStart change — just rewrite (unchanged) + restart below
             elif act == "rotate":
                 execl = _set_arg(execl, "wrap-key", secrets.token_hex(32))
             new_unit = "\n".join(("ExecStart=" + execl) if ln.startswith("ExecStart=") else ln
@@ -719,6 +775,9 @@ def apply_turn(turn, turn_onboard):
                         "systemctl daemon-reload && systemctl restart " + shlex.quote(svc))
             if w.returncode != 0:
                 fail(svc, (w.stderr or "restart failed").strip()[:120]); continue
+            verr = _turn_verify(svc)
+            if verr:
+                fail(svc, verr); continue
             rec[svc] = _parse_tp(svc, execl); changed = True; good(svc, act + ":" + svc)
         except Exception as e:
             fail(svc, str(e))

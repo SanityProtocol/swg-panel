@@ -1607,7 +1607,7 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Installing turn-proxy", svc)
         return 200, {"ok": True, "data": {"node": nid, "service": svc}}
 
-    if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete"):
+    if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete", "/api/turn/restart"):
         # The node pulls these on its next sync, rewrites the unit's ExecStart / regenerates the wrap
         # key / removes it, restarts, and reports the new state (which clears the request).
         nid = body.get("node") or ""; svc = (body.get("service") or "").strip()
@@ -1620,11 +1620,13 @@ def api(method, path, qs, body, deps):
             for k in ("listen", "connect"):
                 if (body.get(k) or "").strip():
                     req[k] = body[k].strip()
-            if "wrap_key" in body:                      # "" = strip the wrap key; a 64-hex string = set it
-                req["wrap_key"] = (body.get("wrap_key") or "").strip()
+            if "params" in body:                        # free-text ExecStart tail after -connect
+                req["params"] = body.get("params") or ""
             verb = "Editing turn-proxy"
         elif path.endswith("/rotate"):
             req = {"action": "rotate", "at": now()}; verb = "Rotating turn-proxy key"
+        elif path.endswith("/restart"):
+            req = {"action": "restart", "at": now()}; verb = "Restarting turn-proxy"
         else:
             req = {"action": "delete", "at": now()}; verb = "Deleting turn-proxy"
         nodes[nid].setdefault("turn", {})[svc] = req
@@ -2014,7 +2016,7 @@ class Handler(BaseHTTPRequestHandler):
                     done = svc not in tps
                 elif act == "install":              # clears once the new service shows up
                     done = svc in tps or age > 240   # generous: download can take a couple minutes
-                elif act == "manage":
+                elif act in ("manage", "restart"):
                     done = (tp and ("listen" not in req or tp.get("listen") == req["listen"])
                             and ("connect" not in req or tp.get("connect") == req["connect"]) and age > 5) or age > 60
                 else:   # rotate — panel can't see the new key; give the node time to regen + restart

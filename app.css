@@ -240,6 +240,10 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
 .ifcard.tp{cursor:default}
 .ifcard.tp.clickable{cursor:pointer}
+.ifcard.down{opacity:.5;border-color:color-mix(in srgb,var(--dangling) 35%,var(--line-solid))}
+.ifcard.down:hover{opacity:.72}
+.iconbtn-sm{display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;color:var(--dim);cursor:pointer;padding:3px;margin-left:3px;border-radius:6px}
+.iconbtn-sm:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,var(--line-solid));background:color-mix(in srgb,var(--brand) 8%,transparent)}
 .ifcard.tp.clickable:hover{border-color:var(--turn,#A974F2);transform:translateY(-1px)}
 .tg-busy{background:rgba(70,216,168,.14);color:var(--brand);border:1px solid color-mix(in srgb,var(--brand) 30%,transparent);border-radius:99px;padding:1px 8px;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
 .tg-busy.del{background:rgba(240,90,90,.15);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 38%,transparent)}
@@ -328,6 +332,9 @@ input,select{background:var(--surface-2);border:1px solid var(--line-solid);colo
   padding:9px 12px;font-family:var(--mono);font-size:13px;transition:border-color .15s,box-shadow .15s;width:100%}
 input::placeholder{color:var(--faint)}
 input:focus,select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(70,216,168,.13)}
+textarea.ta{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);padding:9px 12px;font-family:var(--mono);font-size:13px;width:100%;resize:vertical;line-height:1.5}
+textarea.ta:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(70,216,168,.13)}
+textarea.ta::placeholder{color:var(--faint)}
 .search input{padding-left:34px}
 select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px;
   background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
