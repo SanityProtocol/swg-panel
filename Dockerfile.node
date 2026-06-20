@@ -24,9 +24,15 @@ RUN for i in 1 2 3 4 5; do git clone --depth=1 https://github.com/amnezia-vpn/am
  && test -x /out/usr/bin/awg && test -x /out/usr/bin/awg-quick
 
 FROM public.ecr.aws/docker/library/python:3.12-slim
+ARG TARGETARCH=amd64
+# util-linux = nsenter (host_sh helper), curl + the static docker CLI = drive host turn-proxy units
+# via the mounted docker.sock when TURN_MANAGE=panel (B1). The daemon is never installed — client only.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      iproute2 iptables ca-certificates procps \
- && rm -rf /var/lib/apt/lists/*
+      iproute2 iptables ca-certificates procps curl util-linux \
+ && case "$TARGETARCH" in amd64) A=x86_64;; arm64) A=aarch64;; *) A=x86_64;; esac \
+ && curl -fsSL "https://download.docker.com/linux/static/stable/${A}/docker-27.3.1.tgz" -o /tmp/d.tgz \
+ && tar -xzf /tmp/d.tgz -C /tmp && install /tmp/docker/docker /usr/bin/docker \
+ && rm -rf /tmp/d.tgz /tmp/docker /var/lib/apt/lists/*
 COPY --from=build /out/amneziawg-go /usr/bin/amneziawg-go
 COPY --from=build /out/usr/bin/awg /usr/bin/awg
 COPY --from=build /out/usr/bin/awg-quick /usr/bin/awg-quick

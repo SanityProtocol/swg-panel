@@ -23,6 +23,8 @@ import hashlib
 import http.client
 import json
 import os
+import re
+import shlex
 import shutil
 import socket
 import ssl
@@ -559,6 +561,114 @@ def delete_ifaces(node_cfg, delete, agent, sudo):
     return res
 
 
+# ── turn-proxy management (host systemd units) ──────────────────────────────────────────────────
+# UNVERIFIED ON DOCKER: the bare-metal path edits units + systemctl directly; the docker path runs
+# the same on the HOST via a privileged --pid=host helper through the mounted docker.sock (nsenter
+# into PID 1). Test on a real node before relying on it. The socket = root-on-host (opt-in install).
+HELPER_IMAGE = os.environ.get("HELPER_IMAGE") or "ghcr.io/sanityprotocol/swg-node:latest"
+TURN_UNIT_DIR = "/etc/systemd/system"
+TURN_MANAGE_ON = (NODE_KIND != "docker") or ((os.environ.get("TURN_MANAGE") or "manual").strip().lower() == "panel")
+
+def host_sh(cmd, timeout=90):
+    """Run a shell command on the HOST. Bare-metal: directly. Docker: via a one-shot privileged
+    --pid=host helper through the mounted docker socket — nsenter into PID 1 so the command runs in
+    the host's namespaces (its filesystem + systemd)."""
+    if NODE_KIND != "docker":
+        return run(["sh", "-c", cmd], timeout=timeout)
+    return run(["docker", "run", "--rm", "--privileged", "--pid=host", "--network=host", HELPER_IMAGE,
+                "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "sh", "-c", cmd], timeout=timeout)
+
+def _turn_unit_path(svc):
+    return TURN_UNIT_DIR + "/" + svc + ".service"
+
+def _exec_of(unit_text):
+    for ln in unit_text.splitlines():
+        if ln.startswith("ExecStart="):
+            return ln[len("ExecStart="):]
+    return ""
+
+def _set_arg(execl, flag, value):
+    """Replace '-flag <val>' (space- or =-separated) in the ExecStart, or append it."""
+    pat = re.compile(r"(-" + re.escape(flag) + r")[ =]+\S+")
+    if pat.search(execl):
+        return pat.sub(lambda m: m.group(1) + " " + value, execl, count=1)
+    return execl.rstrip() + " -" + flag + " " + value
+
+def _strip_wrap(execl):
+    """Remove the wrap key + the fork's wrap flag (-wrap / -wrap-srtp / -wrap-mode on)."""
+    execl = re.sub(r"\s*-wrap-key[ =]+\S+", "", execl)
+    execl = re.sub(r"\s*-wrap-mode[ =]+\S+", "", execl)
+    execl = re.sub(r"\s*-wrap-srtp\b", "", execl)
+    execl = re.sub(r"\s*-wrap\b", "", execl)
+    return execl
+
+def _parse_tp(svc, execl):
+    def g(flag):
+        m = re.search(r"-" + re.escape(flag) + r"[ =]+(\S+)", execl)
+        return m.group(1) if m else ""
+    return {"service": svc, "listen": g("listen"), "connect": g("connect"), "wrap_key": g("wrap-key")}
+
+def apply_turn(turn, turn_onboard):
+    """Apply panel turn-proxy requests (manage/rotate/delete) + onboard host .service units, then
+    update the turn record so the snapshot reflects it (which clears the panel request)."""
+    res = {"done": [], "errors": []}
+    if not turn and not turn_onboard:
+        return res
+    if not TURN_MANAGE_ON:
+        return {"done": [], "errors": ["turn management off (re-install the docker node with the 'panel' option)"]}
+    rec = {tp.get("service"): tp for tp in load_turn_proxies() if tp.get("service")}
+    changed = False
+    for svc, req in (turn or {}).items():
+        try:
+            act = req.get("action"); up = _turn_unit_path(svc)
+            unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
+            if act == "delete":
+                host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
+                        "rm -f " + shlex.quote(up) + "; systemctl daemon-reload")
+                rec.pop(svc, None); changed = True; res["done"].append("del:" + svc); continue
+            if not unit:
+                res["errors"].append(svc + ": unit not found"); continue
+            execl = _exec_of(unit)
+            if act == "manage":
+                if req.get("listen"):  execl = _set_arg(execl, "listen", req["listen"])
+                if req.get("connect"): execl = _set_arg(execl, "connect", req["connect"])
+                if "wrap_key" in req:
+                    execl = _set_arg(execl, "wrap-key", req["wrap_key"]) if req["wrap_key"] else _strip_wrap(execl)
+            elif act == "rotate":
+                key = run(["openssl", "rand", "-hex", "32"]).stdout.strip()
+                if not key:
+                    res["errors"].append(svc + ": keygen failed"); continue
+                execl = _set_arg(execl, "wrap-key", key)
+            new_unit = "\n".join(("ExecStart=" + execl) if ln.startswith("ExecStart=") else ln
+                                 for ln in unit.splitlines())
+            w = host_sh("cat > " + shlex.quote(up) + " <<'SWGEOF'\n" + new_unit + "\nSWGEOF\n"
+                        "systemctl daemon-reload && systemctl restart " + shlex.quote(svc))
+            if w.returncode != 0:
+                res["errors"].append(svc + ": " + (w.stderr or "").strip()[:120]); continue
+            rec[svc] = _parse_tp(svc, execl); changed = True; res["done"].append(act + ":" + svc)
+        except Exception as e:
+            res["errors"].append(svc + ": " + str(e))
+    for sp in (turn_onboard or []):
+        try:
+            unit = host_sh("cat " + shlex.quote(sp) + " 2>/dev/null").stdout
+            if not unit:
+                res["errors"].append(sp + ": not found"); continue
+            base = os.path.basename(sp)
+            svc = base[:-8] if base.endswith(".service") else base
+            rec[svc] = _parse_tp(svc, _exec_of(unit)); changed = True; res["done"].append("onb:" + svc)
+        except Exception as e:
+            res["errors"].append(sp + ": " + str(e))
+    if changed:
+        try:
+            tmp = TURN_RECORD + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"turn_proxies": list(rec.values())}, f)
+            os.replace(tmp, TURN_RECORD)
+        except Exception as e:
+            res["errors"].append("record: " + str(e))
+    return res
+
+
 # node self-update is NODE-ONLY: on a master box (panel + node together) it must NOT restart the
 # co-located panel, or the panel restart breaks the very sync that would clear the update request.
 DEFAULT_UPDATE_CMD = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
@@ -617,14 +727,15 @@ def main():
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
+                tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
                 r = reconcile(node_cfg, reply["desired"], agent, sudo)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
                         or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]
-                        or dl["deleted"] or dl["errors"]):
+                        or dl["deleted"] or dl["errors"] or tp["done"] or tp["errors"]):
                     print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} "
-                          f"onboard+{ob['added']} create+{cr['created']} delete-{dl['deleted']} "
-                          f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'])[:3]}", flush=True)
+                          f"onboard+{ob['added']} create+{cr['created']} delete-{dl['deleted']} turn={tp['done']} "
+                          f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'] + tp['errors'])[:3]}", flush=True)
                 interval = reply.get("interval", interval)
             elif status == 0:
                 print("sync error:", reply.get("error"), flush=True)
