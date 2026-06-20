@@ -1,6 +1,6 @@
 <h1 align="center">🚧 WORK IN PROGRESS 🚧</h1>
 <h2 align="center">PROJECT NOT READY</h2>
-<p align="center"><code>1.0.0-alpha</code></p>
+<p align="center"><code>1.24.0-alpha</code></p>
 
 ---
 
@@ -112,7 +112,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 | Node · 1 | **Node name** | *(master)* this box's node name (default: hostname) |
 | Node · 2 | **Endpoint IP** | *(master)* public IP clients dial for this box (default: detected) |
 | Node · 3 | **Interfaces** | *(master)* manages **every** wg/awg interface found (scanning all of `/etc/amnezia` and `/etc/wireguard`); offers to **create** one if none exist; press **Enter** to proceed or **`new`** to add another. New interfaces get a server key, tunnel subnet, and an automatic forward + masquerade (`PostUp`/`PostDown`) so clients reach the internet. |
-| Node · 4 | **Turn-proxy** | *(master)* optional [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — tunnels wg/awg through VK/Yandex TURN servers. Detects any installed proxy (by its `-listen`/`-connect` unit) and lists it; **Enter** to skip or **`new`** to install a fork (`wings`/`samosvalishe`/`kiper292` for Android, `anton48` for iOS). It fetches the release binary, **auto-derives** the `-connect` port from the wg/awg interface you just set up (lists all of them), **generates a 64-hex wrap key** with the fork's flags (`-wrap-srtp`/`-wrap`/`-wrap-mode`; `kiper292` has none), and records `listen`/`connect`/`wrap_key` for the panel + client configs. |
+| Node · 4 | **Turn-proxy** | *(master)* optional [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — tunnels wg/awg through VK/Yandex TURN servers. Detects any installed proxy (by its `-listen`/`-connect` unit) and lists it; **Enter** to skip or pick a fork by **number** to install one (`WINGS-N`/`samosvalishe`/`kiper292`/`Moroka8` for Android, `anton48` for iOS). It fetches the release binary, **auto-derives** the `-connect` port from the wg/awg interface you just set up (lists all of them), **generates a 64-hex wrap key** with the fork's flags (`-wrap-srtp`/`-wrap`/`-wrap-mode`; `kiper292` has none), and records `listen`/`connect`/`wrap_key` for the panel + client configs. |
 
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
@@ -177,7 +177,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 ```
 
-Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
+Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces`, `-net host|bridge` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
 **Or by hand** — one compose file, three profiles named after the roles:
 
@@ -204,9 +204,13 @@ By hand the `master` profile does **not** auto-enroll the local node — add it 
 Configure via `.env` (copied from `.env.example`):
 
 - **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `PANEL_PORT`, and `TLS` — `letsencrypt` · `cloudflare` · `cf15` · `selfsigned` · `none`, issued in-container by the bundled `acme.sh` exactly like bare-metal (set `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` as the chosen mode needs; see [TLS](#installing-the-panel)).
-- **Node:** `PANEL_URL` (for `master` use `https://swg-panel:8443`), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `TLS_VERIFY`, `DNS`.
+- **Node:** `PANEL_URL` (for a `master` on bridge use `https://swg-panel:8443`; host networking uses loopback), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `NODE_NET` (`host` · `bridge`), `TLS_VERIFY`, `DNS`.
 
-**Two images** (pulled prebuilt from GHCR by default; `--build` builds them locally). `swg-panel` is pure Python + the bundled `acme.sh`. `swg-node` carries the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It manages one interface by default (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), several via `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`), or any confs you mount under `/etc/swg-node/*.conf` — publish each ListenPort in compose. Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module.
+**Networking** — the installer puts the node on **`network_mode: host`** by default (`NODE_NET=host`), so every interface UDP port — **including interfaces you later create from the panel** — is reachable with no per-port mapping, and throughput is better (no `docker-proxy`). On a `master` the node reaches the co-located panel over loopback. Choose **`bridge`** to isolate the node's network namespace instead; then each interface's `ListenPort` must be **published** in `docker-compose.yml` (the panel flags this and prints the exact line when you create an interface on a bridge node). The node reports its mode to the panel so the guidance only shows where it's needed.
+
+**Two images** (pulled prebuilt from GHCR by default; `--build` builds them locally). `swg-panel` is pure Python + the bundled `acme.sh`. `swg-node` carries the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It manages one interface by default (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), several via `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`), or any confs you mount under `/etc/swg-node/*.conf`. Panel-created interfaces persist across `up -d` (the conf dir is a volume). Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module.
+
+**Re-running an installer is safe** — it detects an existing install, keeps your `.env` + `./data` (token, login, certificate, interfaces), and offers the current values as defaults; the wg/awg and turn-proxy steps show what's already there and let you add more. To start fresh, run the uninstaller first. (Docker: re-apply with `PULL_POLICY=always … bootstrap.sh docker host|node` so the new image + compose land.)
 
 ## Configuration reference
 

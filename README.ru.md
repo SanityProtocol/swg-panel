@@ -1,6 +1,6 @@
 <h1 align="center">🚧 WORK IN PROGRESS 🚧</h1>
 <h2 align="center">PROJECT NOT READY</h2>
-<p align="center"><code>1.0.0-alpha</code></p>
+<p align="center"><code>1.24.0-alpha</code></p>
 
 ---
 
@@ -112,7 +112,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 | Узел · 1 | **Имя узла** | *(master)* имя этого узла (по умолчанию — hostname) |
 | Узел · 2 | **Endpoint IP** | *(master)* публичный IP, который набирают клиенты (по умолчанию — определяется) |
 | Узел · 3 | **Интерфейсы** | *(master)* управляет **всеми** найденными интерфейсами wg/awg (сканируя весь `/etc/amnezia` и `/etc/wireguard`); предложит **создать**, если их нет; нажмите **Enter**, чтобы продолжить, или **`new`**, чтобы добавить ещё. Новые интерфейсы получают серверный ключ, подсеть и автоматический forward + masquerade (`PostUp`/`PostDown`). |
-| Узел · 4 | **Turn-proxy** | *(master)* опционально [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — туннелирует wg/awg через TURN-серверы VK/Яндекс. Находит установленный прокси (по unit с `-listen`/`-connect`) и показывает его; **Enter** — пропустить, **`new`** — установить форк (`wings`/`samosvalishe`/`kiper292` для Android, `anton48` для iOS). Скачивает релизный бинарник, **сам подставляет** порт `-connect` из настроенного интерфейса wg/awg (показывает все), **генерирует 64-hex wrap-ключ** с флагами форка (`-wrap-srtp`/`-wrap`/`-wrap-mode`; у `kiper292` их нет) и записывает `listen`/`connect`/`wrap_key` для панели и клиентских конфигов. |
+| Узел · 4 | **Turn-proxy** | *(master)* опционально [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — туннелирует wg/awg через TURN-серверы VK/Яндекс. Находит установленный прокси (по unit с `-listen`/`-connect`) и показывает его; **Enter** — пропустить, либо выбрать форк по **номеру** для установки (`WINGS-N`/`samosvalishe`/`kiper292`/`Moroka8` для Android, `anton48` для iOS). Скачивает релизный бинарник, **сам подставляет** порт `-connect` из настроенного интерфейса wg/awg (показывает все), **генерирует 64-hex wrap-ключ** с флагами форка (`-wrap-srtp`/`-wrap`/`-wrap-mode`; у `kiper292` их нет) и записывает `listen`/`connect`/`wrap_key` для панели и клиентских конфигов. |
 
 **TLS:**
 - **letsencrypt** (по умолчанию) — настоящий сертификат через `acme.sh` (HTTP-01 standalone для `internal`/`caddy`, webroot за `nginx`); нужен доступный порт 80.
@@ -177,7 +177,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
 ```
 
-Флаги пропускают вопросы (их использует команда подключения из панели): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces` — например `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
+Флаги пропускают вопросы (их использует команда подключения из панели): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces`, `-net host|bridge` — например `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
 
 **Или вручную** — один compose-файл, три профиля с именами ролей:
 
@@ -204,9 +204,13 @@ docker compose --profile node up -d
 Настройка через `.env` (скопируйте из `.env.example`):
 
 - **Панель:** `PANEL_PASSWORD` (обязательно), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (необязательный подпуть, например `/swg`), `PANEL_PORT` и `TLS` — `letsencrypt` · `cloudflare` · `cf15` · `selfsigned` · `none`, выпускается внутри контейнера встроенным `acme.sh` так же, как на bare-metal (задайте `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` под выбранный режим; см. [TLS](#установка-панели)).
-- **Узел:** `PANEL_URL` (для `master` используйте `https://swg-panel:8443`), `NODE_TOKEN` (из раздела Nodes), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `TLS_VERIFY`, `DNS`.
+- **Узел:** `PANEL_URL` (для `master` на bridge используйте `https://swg-panel:8443`; при host-сети — loopback), `NODE_TOKEN` (из раздела Nodes), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `NODE_NET` (`host` · `bridge`), `TLS_VERIFY`, `DNS`.
 
-**Два образа** (по умолчанию тянутся готовыми из GHCR; `--build` собирает локально). `swg-panel` — чистый Python + встроенный `acme.sh`. `swg-node` несёт userspace-датаплейн **`amneziawg-go`** и инструменты `awg` (контейнер не может загрузить модуль ядра хоста) и требует `NET_ADMIN` + `/dev/net/tun`. По умолчанию управляет одним интерфейсом (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` для обычного WG), несколькими через `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`) или любыми конфигами, смонтированными в `/etc/swg-node/*.conf` — публикуйте каждый ListenPort в compose. Masquerade добавляется автоматически. Для максимальной пропускной способности предпочтительнее **bare-metal**-узел с модулем ядра.
+**Сеть** — по умолчанию установщик ставит узел в режим **`network_mode: host`** (`NODE_NET=host`), поэтому любой UDP-порт интерфейса — **в том числе интерфейсов, созданных позже из панели** — доступен без проброса портов, а пропускная способность выше (нет `docker-proxy`). На `master` узел достаёт совмещённую панель через loopback. Выберите **`bridge`**, чтобы изолировать сетевое пространство узла; тогда `ListenPort` каждого интерфейса нужно **публиковать** в `docker-compose.yml` (панель подсказывает это и печатает точную строку при создании интерфейса на bridge-узле). Узел сообщает свой режим панели, поэтому подсказка показывается только там, где она нужна.
+
+**Два образа** (по умолчанию тянутся готовыми из GHCR; `--build` собирает локально). `swg-panel` — чистый Python + встроенный `acme.sh`. `swg-node` несёт userspace-датаплейн **`amneziawg-go`** и инструменты `awg` (контейнер не может загрузить модуль ядра хоста) и требует `NET_ADMIN` + `/dev/net/tun`. По умолчанию управляет одним интерфейсом (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` для обычного WG), несколькими через `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`) или любыми конфигами, смонтированными в `/etc/swg-node/*.conf`. Интерфейсы, созданные из панели, сохраняются между `up -d` (каталог конфигов — это том). Masquerade добавляется автоматически. Для максимальной пропускной способности предпочтительнее **bare-metal**-узел с модулем ядра.
+
+**Повторный запуск установщика безопасен** — он обнаруживает существующую установку, сохраняет `.env` + `./data` (токен, логин, сертификат, интерфейсы) и предлагает текущие значения по умолчанию; шаги wg/awg и turn-proxy показывают, что уже есть, и позволяют добавить ещё. Чтобы начать с нуля, сначала запустите деинсталлятор. (Docker: применяйте через `PULL_POLICY=always … bootstrap.sh docker host|node`, чтобы подтянулись новый образ и compose.)
 
 ## Справочник по конфигурации
 
