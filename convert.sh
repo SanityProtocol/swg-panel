@@ -67,6 +67,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       exit 1
     fi
     info "pre-flight OK — interfaces to migrate: $(b "$(for s in $specs; do printf '%s ' "${s%:*}"; done)")"
+    echo
     exit 0
   fi
   [ -n "$conflicts" ] && die "interface name clash: $conflicts (run with --check first)"
@@ -92,10 +93,12 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   done
   [ -n "$names" ] || die "no interface confs copied (looked in $confd)"
 
-  # 3) hand off to install-node.sh with the SAME token: it installs the wg/awg tools, brings the
-  #    adopted interfaces up, and wires the agent + swg-noded. Same token ⇒ the panel keeps one node.
-  info "Running install-node.sh to bring up $(b "$names") and wire the daemon…"
-  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" MANAGE_IFACES="$names" \
+  # 3) hand off to install-node.sh with the SAME token. We do NOT pass MANAGE_IFACES: the copied
+  #    confs are auto-detected, so its interface picker shows them as adoptable and lets you add more
+  #    (queued + created after the tools install). Same token ⇒ the panel keeps one node.
+  info "Running install-node.sh — adopt $(b "$names") (and add more if you want), then it wires the daemon…"
+  echo
+  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" \
        TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh"
 fi
 
