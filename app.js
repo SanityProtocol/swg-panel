@@ -962,9 +962,11 @@ function NodeDetail({ node: rawName }) {
         const pend = (nrec.turn_pending || {})[tp.service];
         const err = (nrec.cmd_errors || {})[tp.service];
         const down = tp.running === false;
+        const justRestarted = !pend && turnRestarted[name + "|" + tp.service] && Date.now() < turnRestarted[name + "|" + tp.service];
         return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "") + (down && !pend ? " down" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(name, tp) : null}>
           <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${pend
             ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${TURN_PEND[pend] || pend}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(name, { service: tp.service }); }}><${Ic} i="x"/></button>`
+            : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
             : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
@@ -1363,7 +1365,20 @@ const TURN_FORKS = [
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp" },
 ];
-const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting" };
+const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting" };
+// turn-proxy restart completion flash: when a queued 'restart' clears, show a green "restarted" tag 3s
+const _turnRestartPend = {};   // "node|service" currently mid-restart (last poll)
+const turnRestarted = {};      // "node|service" -> expiry ts for the green flash
+function trackTurnRestarts() {
+  const seen = {};
+  for (const n of (Store.nodes || [])) {
+    for (const [svc, act] of Object.entries(n.turn_pending || {})) if (act === "restart") seen[n.id + "|" + svc] = true;
+  }
+  for (const k of Object.keys(_turnRestartPend)) if (!seen[k]) {   // was restarting, now cleared → done
+    turnRestarted[k] = Date.now() + 3000; delete _turnRestartPend[k]; setTimeout(() => Store.apply(), 3100);
+  }
+  for (const k of Object.keys(seen)) _turnRestartPend[k] = true;
+}
 // small ⓘ next to a pending/failed command — hover for the node's error, click to read it in full
 function CmdErr({ err }) {
   if (!err) return null;
@@ -3180,6 +3195,7 @@ function App() {
 
   // static chrome lives in index.html — keep it in sync imperatively
   useEffect(() => {
+    trackTurnRestarts();                                             // detect completed turn restarts → green flash
     const online = Store.recon.peers.filter(p => p.online).length;   // PEERS online (not users)
     const kpi = $("#kpi-online"); if (kpi) kpi.textContent = online;
     const lp = $("#livepill"); if (lp) lp.classList.toggle("off", online === 0);   // 0 = grey, no dot
