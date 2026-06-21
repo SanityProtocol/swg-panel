@@ -509,9 +509,15 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         cmd = ic.get("cmd", ["awg"])
         try:                                        # one bad interface must never kill the whole snapshot
             _r = run(cmd + ["show", iface, "dump"])
-            if _r.returncode != 0:                  # interface isn't up — report it so the panel flags it (not just empty)
-                interfaces[iface] = {"peers": [], "meta": {},
-                                     "down": ((_r.stderr or "").strip() or "interface is not up")[:140]}
+            if _r.returncode != 0:                  # interface isn't up — flag it, but still surface its
+                try:                                # intended config from the .conf (subnet/awg/port/pubkey)
+                    conf_text = open(ic["conf"]).read()
+                except OSError:
+                    conf_text = ""
+                interfaces[iface] = {"peers": [],
+                    "meta": build_meta([], conf_text, ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
+                                       node_cfg.get("dns", []), cmd),
+                    "down": ((_r.stderr or "").strip() or "interface is not up")[:140]}
                 continue
             dump = _r.stdout
             iface_line, raw = parse_dump(dump)

@@ -951,8 +951,9 @@ function NodeDetail({ node: rawName }) {
               const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
               const orph = Store.recon.orphans.filter(o => o.node === name && o.iface === ifn).length;
               const deleting = (nrec.deleting || []).includes(ifn);
-              return html`<a class=${"ifcard" + (deleting ? " pending" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="grow"></span><span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
+              const idown = (((Store.stats[name] || {}).interfaces || {})[ifn] || {}).down;   // not up on the node
+              return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idown && !deleting ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="grow"></span><${CmdErr} err=${"interface is down on the node — " + idown}/><span class="tg tg-busy del" title=${"awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="grow"></span><span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1010,6 +1011,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
   const tps = turnProxiesFor(node, iface);
   const restarting = (nrec.restarting || []).includes(iface);
+  const idown = (((Store.stats[node] || {}).interfaces || {})[iface] || {}).down;   // not up on the node
   // AmneziaWG params split into the four header columns: J* under Endpoint, S* under Server
   // address, H* under DNS, and I* (+ anything else) under MTU.
   const ap = (meta && meta.awg_params) || {};
@@ -1029,9 +1031,10 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when">${onl} / ${peers.length} online</span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${idown ? html`<span class="badge b-dangling"><${Ic} i="err"/>down</span>` : updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when">${onl} / ${peers.length} online</span></div>
       <div class="grow"></div>
     </div>
+    ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${idown}</code>. Try <b>Restart service</b>; if it keeps failing the message usually says why (e.g. a port clash or an unsupported AmneziaWG parameter).</span></div>` : null}
 
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
