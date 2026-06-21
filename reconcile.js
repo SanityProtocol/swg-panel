@@ -27,7 +27,7 @@
 const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000 };
 
 // status priority for rolling several targets/peers into one (most-alive wins)
-const RANK = { online: 6, ready: 5, partial: 4, pending: 3, dangling: 2, unknown: 1 };
+const RANK = { online: 6, ready: 5, partial: 4, pending: 3, creating: 3, dangling: 2, unknown: 1 };
 
 function ipOf(hostport) {
   if (!hostport) return "";
@@ -95,7 +95,8 @@ function reconcile(roster, stats, now, cfg) {
     const present = live.filter(d => d.observed);
     const onlineAny = targets.some(d => d.online);
     let status;
-    if (targets.length === 0 || live.length === 0) status = "unknown";
+    if (p._creating) status = "creating";          // optimistic: the create POST is still in flight
+    else if (targets.length === 0 || live.length === 0) status = "unknown";
     else if (present.length === 0) status = (now - createdMs) <= cfg.graceMs ? "pending" : "dangling";
     else if (present.length < live.length) status = "partial";
     else status = onlineAny ? "online" : "ready";

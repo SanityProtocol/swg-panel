@@ -213,6 +213,7 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .b-removing{background:rgba(242,107,130,.14);color:var(--dangling)}
 .b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
 .b-orphan{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — matches the unmanaged/warn theme */
+.b-creating{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — optimistic "creating" (POST in flight) */
 .b-unknown{background:rgba(95,117,105,.16);color:var(--unknown)}
 .b-issue{background:rgba(226,200,74,.15);color:var(--partial)}
 .b-unassigned{background:rgba(95,117,105,.16);color:var(--unknown)}
@@ -486,7 +487,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .discard-msg{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--pending)}
 .discard-msg svg{flex:none}
 .formmsg{font-size:12.5px;font-family:var(--mono);min-height:16px}
-.formmsg.err{color:var(--dangling)} .formmsg.ok{color:var(--online)} .formmsg.work{color:var(--dim)}
+.formmsg.err{color:var(--dangling)} .formmsg.ok{color:var(--online)} .formmsg.work{color:var(--dim)} .formmsg.warn{color:#F0913C}
 
 /* result inside sheet (post-create) */
 .created-head{display:flex;align-items:center;gap:10px;margin-bottom:6px;color:var(--online);font-weight:600}

@@ -451,8 +451,8 @@ function openModal(node) { _setModal(node); }
 function closeModal() { _setModal(null); }
 
 // ───────────────────────── shared bits ─────────────────────────
-const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
-const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock",
+const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
+const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
 function Badge({ s }) {
   const ic = STATUS_ICON[s];
@@ -2698,29 +2698,36 @@ function CreatePeerSheet({ prefill }) {
   const create = async () => {
     const err = validate(); if (err) return setMsg({ k: "err", t: err });
     setBusy(true); setMsg({ k: "work", t: "generating key…" });
-    try {
-      const keys = await genKeys();
-      const pskV = psk.trim() || genPSK();
+    let keys, pskV, tgts, configs, body;
+    try {                                            // browser-side crypto/config build is the only awaited part
+      keys = await genKeys();
+      pskV = psk.trim() || genPSK();
       const dnsArr = cf.dns.split(",").map(s => s.trim()).filter(Boolean);
-      const tgts = [], configs = {};
+      tgts = []; configs = {};
       for (const t of chosen) {
         const m = Store.ifaceMeta(t.node, t.iface); if (!m) continue;
         const ipClean = String(t.ip).trim().split("/")[0];
         tgts.push({ node: t.node, iface: t.iface, ip: ipClean, type: (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg" });
         configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: ipClean + "/32", dns: dnsArr, mtu: cf.mtu.trim() || 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk: pskV, endpoint: m.endpoint, allowed: cf.allowed.trim() || "0.0.0.0/0, ::/0", keepalive: cf.keepalive.trim() });
       }
-      setMsg({ k: "work", t: "creating on " + tgts.length + " target" + (tgts.length > 1 ? "s" : "") + "…" });
-      const body = { user_id: userId || null, title: title.trim(), pubkey: keys.pub, psk: pskV, targets: tgts };
+      body = { user_id: userId || null, title: title.trim(), pubkey: keys.pub, psk: pskV, targets: tgts };
       if (Store.storeConfigs) body.configs = configs;
-      const r = await api.peerCreate(body);
-      if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: "Failed: " + (r.error || r.code || "unknown") }); }
-      Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
-      Store.recentlyCreated[r.data.id] = Date.now();
-      closeModal(); await Store.poll();
-      // launched from an interface screen → stay there; otherwise go to the user/peer just made
-      if (prefill.lock && prefill.node && prefill.iface) go("#/node/" + encodeURIComponent(prefill.node) + "/" + encodeURIComponent(prefill.iface));
-      else go(userId ? "#/user/" + encodeURIComponent(userId) : "#/peer/" + encodeURIComponent(r.data.id));
-    } catch (e) { setBusy(false); setMsg({ k: "err", t: "Error: " + e.message }); }
+    } catch (e) { setBusy(false); return setMsg({ k: "err", t: "Error: " + e.message }); }
+    // Optimistic: stash the config, drop a "creating" peer onto the grid, close the modal NOW, and let
+    // the create POST run in the background (mutate reverts + toasts on failure; the next poll supersedes).
+    Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
+    const tempId = "tmp_" + keys.pub.slice(0, 14);
+    const optimistic = { id: tempId, pubkey: keys.pub, user_id: userId || null, title: title.trim(), psk: pskV,
+      targets: tgts.map(t => ({ node: t.node, iface: t.iface, ip: t.ip, type: t.type })),
+      created_at: Math.floor(Date.now() / 1000), _creating: true };
+    closeModal();
+    if (prefill.lock && prefill.node && prefill.iface) go("#/node/" + encodeURIComponent(prefill.node) + "/" + encodeURIComponent(prefill.iface));
+    else if (userId) go("#/user/" + encodeURIComponent(userId));
+    mutate({
+      patch: s => { s.roster.peers[tempId] = optimistic; },        // shows instantly with status "creating"
+      call: () => api.peerCreate(body),
+      onOk: r => { if (r && r.data && r.data.id) Store.recentlyCreated[r.data.id] = Date.now(); },
+    });
   };
 
   return html`<${Sheet} title="New peer"
@@ -2961,12 +2968,14 @@ function EditPeerSheet({ peer, focus, done, flash }) {
     openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true,
       back: () => openEditPeer(peer, focus, done),   // cancel/esc returns to the edit modal
       body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
-      onConfirm: async () => {
-        await rotatePeerKeys(peer);
-        await Store.poll();
-        const fresh = Store.recon.peers.find(x => x.id === peer.id) || peer;
-        // the confirm closes itself after this; reopen the edit modal (next tick) with a green flash
-        setTimeout(() => openEditPeer(fresh, focus, done, { k: "ok", t: "Keys rotated — send the user the new QR / config; the old one no longer works." }), 0);
+      onConfirm: () => {
+        // reopen the edit modal AT ONCE with an orange "Rotating keys…" flash; rotate in the background
+        setTimeout(() => openEditPeer(peer, focus, done, { k: "warn", t: "Rotating keys…" }), 0);
+        rotatePeerKeys(peer).then(async () => {
+          await Store.poll();
+          const fresh = Store.recon.peers.find(x => x.id === peer.id) || peer;
+          openEditPeer(fresh, focus, done, { k: "ok", t: "Keys rotated — send the user the new QR / config; the old one no longer works." });
+        });
       } });
   };
 
