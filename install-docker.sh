@@ -108,6 +108,7 @@ v_cftoken(){ [ -n "$1" ]; }
 v_cforigin(){ [ -n "$1" ]; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
 v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
+v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }   # panel node name for this box (mirrors bare-metal)
 v_subnet(){  have python3 || return 0; python3 -c "import ipaddress,sys;ipaddress.ip_network(sys.argv[1],strict=False)" "$1" >/dev/null 2>&1; }
 v_url(){     case "$1" in ""|*" "*) return 1;; esac
              local h="${1#http://}"; h="${h#https://}"; h="${h%%/*}"; h="${h%%:*}"; v_host "$h"; }
@@ -624,6 +625,8 @@ case "$PROFILE" in
       PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
       echo; info "NODE SETUP"
+      step "Node name for THIS box"
+      ask_valid "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)" NODE_NAME v_name "1–40 chars: letters, digits, - or _"
       manage_node_ifaces
       # the node-level endpoint is required by compose; ensure it's set (kept existing interfaces only)
       ask_valid "Endpoint clients dial for this node (public IP/host)" "$(detect_public_ip)" NODE_ENDPOINT v_host "an IP address or hostname"
