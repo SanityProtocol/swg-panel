@@ -19,6 +19,23 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 info(){ echo "${C_BLUE}::${RESET} $*"; }
 warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}error:${RESET} $*" >&2; exit 1; }
+detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
+# import a (docker) conf as a BARE-METAL conf: drop any PostUp/PostDown, then add host NAT (the bare
+# datapath has no container to masquerade for it). Keys + Address + Amnezia params carry over.
+import_bare_conf(){ # <src> <dest>
+  local src="$1" dest="$2" addr subnet wan up down
+  addr="$(sed -n 's/^[[:space:]]*[Aa]ddress[[:space:]]*=//p' "$src" | head -1 | sed 's/,.*//; s/[[:space:]]//g')"
+  subnet="$(python3 -c 'import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))' "$addr" 2>/dev/null || echo "$addr")"
+  wan="$(detect_wan)"; [ -n "$wan" ] || wan=eth0
+  up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+  down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+  awk -v up="$up" -v down="$down" '
+    /^[[:space:]]*[Pp]ost(Up|Down)[[:space:]]*=/ {next}     # drop any existing NAT hooks
+    {print}
+    /^\[Interface\][[:space:]]*$/ && !d {print "PostUp = " up; print "PostDown = " down; d=1}
+  ' "$src" > "$dest"
+  chmod 600 "$dest"
+}
 
 CHECK=no; [ "${1:-}" = --check ] && { CHECK=yes; shift; }
 FROM="${1:-}"; TO="${2:-}"; ROLE="${3:-}"
@@ -87,8 +104,8 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     src="$confd/$nm.conf"
     [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
     if [ "$pr" = wg ]; then dest="/etc/wireguard/$nm.conf"; else dest="/etc/amnezia/amneziawg/$nm.conf"; fi
-    mkdir -p "$(dirname "$dest")"; cp "$src" "$dest"; chmod 600 "$dest"
-    info "imported $(b "$nm") → $dest"
+    mkdir -p "$(dirname "$dest")"; import_bare_conf "$src" "$dest"   # adds host NAT (docker confs have none)
+    info "imported $(b "$nm") → $dest (host NAT added)"
     names="${names:+$names }$nm"
   done
   [ -n "$names" ] || die "no interface confs copied (looked in $confd)"
