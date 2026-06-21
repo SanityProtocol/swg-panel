@@ -47,6 +47,11 @@ turn_install_host(){
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   mkdir -p "$dir"
   curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 --retry-all-errors "$url" -o "$bin" 2>/dev/null && chmod +x "$bin" || { warn "binary download failed for $svc ($url)"; return 1; }
+  cat > "$dir/turn.env" <<EOF
+SWG_LISTEN=${lis}
+SWG_CONNECT=${con}
+SWG_PARAMS=${params}
+EOF
   cat > "/etc/systemd/system/$svc.service" <<EOF
 [Unit]
 Description=vk-turn-proxy ($owner) — ${lis} → ${con}
@@ -54,7 +59,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=${bin} -listen ${lis} -connect ${con} ${params}
+EnvironmentFile=-${dir}/turn.env
+ExecStart=${bin} -listen \${SWG_LISTEN} -connect \${SWG_CONNECT} \$SWG_PARAMS
 Restart=on-failure
 RestartSec=3
 
@@ -98,7 +104,7 @@ EOF
 
 # host systemd turn units → docker record, then tear the units down (swg-noded recreates them as containers)
 turn_to_docker(){
-  local units u svc exe lis con params owner rec="$DOCKER_DIR/data/node/turn-proxy.json"
+  local units u svc exe lis con params owner envf rec="$DOCKER_DIR/data/node/turn-proxy.json"
   command -v python3 >/dev/null 2>&1 || return 0
   units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
   [ -n "$units" ] || return 0
@@ -109,9 +115,17 @@ turn_to_docker(){
   for u in $units; do
     svc="$(basename "$u" .service)"
     exe="$(sed -n 's/^ExecStart=//p' "$u" | head -1)"
-    lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
-    con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
-    params="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}[^ ]*[[:space:]]*\(.*\)$/\1/p')"
+    case "$exe" in
+      *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
+        envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" | head -1)"
+        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | head -1)"
+        con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | head -1)"
+        params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | head -1)" ;;
+      *)            # legacy baked-ExecStart form
+        lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
+        con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
+        params="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}[^ ]*[[:space:]]*\(.*\)$/\1/p')" ;;
+    esac
     owner="$(sed -n 's/.*vk-turn-proxy (\([^)]*\)).*/\1/p' "$u" | head -1)"
     python3 - "$rec" "$svc" "$owner" "$lis" "$con" "$params" <<'PY' || true
 import json, sys, re

@@ -396,15 +396,24 @@ turn_wg_ports(){   # echo "<iface>:<ListenPort>" for every interface managed in 
   done
 }
 detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -connect is a turn-proxy
-  TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con wk
+  TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con wk envf params
   for u in /etc/systemd/system/*.service; do
     [ -e "$u" ] || continue
     exe="$(sed -n 's/^ExecStart=//p' "$u" 2>/dev/null | head -1)"
     case "$exe" in *-listen*-connect*|*-connect*-listen*) ;; *) continue;; esac
     name="$(basename "$u" .service)"
-    lis="$(printf '%s\n' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
-    con="$(printf '%s\n' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
-    wk="$(printf '%s\n' "$exe" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
+    case "$exe" in
+      *'${SWG_'*)   # EnvironmentFile form — read listen/connect/params out of turn.env
+        envf="$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$u" 2>/dev/null | head -1)"
+        lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | head -1)"
+        con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | head -1)"
+        params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | head -1)"
+        wk="$(printf '%s\n' "$params" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
+      *)            # legacy baked-ExecStart form
+        lis="$(printf '%s\n' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
+        con="$(printf '%s\n' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
+        wk="$(printf '%s\n' "$exe" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
+    esac
     TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"; TP_WRAP[$name]="$wk"
   done
 }
@@ -427,6 +436,12 @@ install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> 
   ver="$(turn_latest_tag "$owner")"
   printf '%s\n' "$owner"          | writef "$dir/repo.txt" 644
   printf '%s\n' "${ver:-unknown}" | writef "$dir/version.txt" 644
+  # listen/connect/params live in turn.env so a panel edit only rewrites it + restarts (no daemon-reload)
+  writef "$dir/turn.env" 600 <<EOF
+SWG_LISTEN=${listen}
+SWG_CONNECT=${connect}
+SWG_PARAMS=${extra}
+EOF
   writef "/etc/systemd/system/$svc.service" 600 <<EOF
 [Unit]
 Description=vk-turn-proxy ($owner) — ${listen} → ${connect}
@@ -434,7 +449,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=${bin} -listen ${listen} -connect ${connect} ${extra}
+EnvironmentFile=-${dir}/turn.env
+ExecStart=${bin} -listen \${SWG_LISTEN} -connect \${SWG_CONNECT} \$SWG_PARAMS
 Restart=on-failure
 RestartSec=3
 

@@ -356,7 +356,7 @@ def load_turn_proxies():
             u = units.get(t.get("service"))
             if not u:
                 continue
-            live = _parse_tp(t["service"], _exec_of(u))
+            live = _tp_from_unit(t["service"], u)
             for k in ("listen", "connect", "wrap_key", "params"):
                 if t.get(k) != live.get(k):
                     t[k] = live.get(k); changed = True
@@ -887,7 +887,7 @@ def _installed_tp(svc):
     """Re-read a turn unit (after install/edit) so the record carries the real ExecStart, incl. the
     generated wrap key."""
     unit = host_sh("cat " + shlex.quote(_turn_unit_path(svc)) + " 2>/dev/null").stdout
-    return _parse_tp(svc, _exec_of(unit))
+    return _tp_from_unit(svc, unit)
 
 
 # ───────── docker turn-proxies: sibling CONTAINERS (no host systemd, no --pid=host helper) ─────────
@@ -993,6 +993,44 @@ def _dturn_reconcile():   # startup/periodic: ensure every recorded turn-proxy h
         with contextlib.suppress(Exception):
             _dturn_ensure(tp)
 
+
+# ───────── bare-metal turn-proxies: systemd unit + EnvironmentFile (edit = rewrite env, NO daemon-reload) ─────────
+# The connect/listen/params live in a turn.env next to the binary; ExecStart references them as ${SWG_…}.
+# Editing a turn-proxy then only rewrites turn.env + `systemctl restart` — systemd re-parsing EVERY unit
+# (daemon-reload) was the CPU spike. Old units (values baked into ExecStart) are migrated on first edit.
+def _turn_env_path(svc): return "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/turn.env"
+def _turn_env_text(listen, connect, params):
+    return "SWG_LISTEN=%s\nSWG_CONNECT=%s\nSWG_PARAMS=%s\n" % (listen, connect, (params or "").strip())
+def _exec_bin(execl):
+    try: return shlex.split(execl)[0]
+    except Exception: return (execl.split() or [""])[0]
+def _unit_is_envform(unit_text): return "${SWG_" in _exec_of(unit_text)
+
+def _tp_from_unit(svc, unit_text):
+    """Resolve a turn-proxy's config from its unit. EnvironmentFile form → read turn.env; old form → ExecStart."""
+    if not _unit_is_envform(unit_text):
+        return _parse_tp(svc, _exec_of(unit_text))
+    env = host_sh("cat " + shlex.quote(_turn_env_path(svc)) + " 2>/dev/null").stdout or ""
+    vals = {}
+    for ln in env.splitlines():
+        k, _, v = ln.partition("="); vals[k.strip()] = v.strip()
+    params = vals.get("SWG_PARAMS", "")
+    return {"service": svc, "listen": vals.get("SWG_LISTEN", ""), "connect": vals.get("SWG_CONNECT", ""),
+            "wrap_key": _params_wrapkey(params), "params": params}
+
+def _unit_to_envform(unit_text, svc, binp):
+    """Rewrite a baked-ExecStart unit to the EnvironmentFile form (one-time migration)."""
+    envp = _turn_env_path(svc); out = []; have_ef = any(l.startswith("EnvironmentFile=") for l in unit_text.splitlines())
+    for l in unit_text.splitlines():
+        if l.startswith("ExecStart="):
+            if not have_ef: out.append("EnvironmentFile=-" + envp)
+            out.append("ExecStart=" + binp + " -listen ${SWG_LISTEN} -connect ${SWG_CONNECT} $SWG_PARAMS")
+        elif l.startswith("EnvironmentFile="):
+            out.append("EnvironmentFile=-" + envp)
+        else:
+            out.append(l)
+    return "\n".join(out) + "\n"
+
 def _turn_install(svc, req):
     """Install a new turn-proxy: download the fork's prebuilt binary, write the systemd unit, enable
     it. Mirrors the installer's install_turn_binary (server-linux-<arch>). '' on success, else error."""
@@ -1013,15 +1051,18 @@ def _turn_install(svc, req):
         if not key:
             return "keygen failed"
         extra = wrap_flags + " -wrap-key " + key
-    exec_line = binp + " -listen " + listen + " -connect " + connect + ((" " + extra) if extra else "")
+    envp = _turn_env_path(svc)
     unit = ("[Unit]\nDescription=vk-turn-proxy (" + owner + ") - " + listen + " -> " + connect + "\n"
             "After=network-online.target\nWants=network-online.target\n\n"
-            "[Service]\nExecStart=" + exec_line + "\nRestart=on-failure\nRestartSec=3\n\n"
+            "[Service]\nEnvironmentFile=-" + envp + "\n"
+            "ExecStart=" + binp + " -listen ${SWG_LISTEN} -connect ${SWG_CONNECT} $SWG_PARAMS\n"
+            "Restart=on-failure\nRestartSec=3\n\n"
             "[Install]\nWantedBy=multi-user.target\n")
     cmd = ("mkdir -p " + shlex.quote(d)
            + " && curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 --retry-all-errors "
            + shlex.quote(url) + " -o " + shlex.quote(binp) + " && chmod +x " + shlex.quote(binp)
-           + " && cat > " + shlex.quote(_turn_unit_path(svc)) + " <<'SWGEOF'\n" + unit + "SWGEOF\n"
+           + " && cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, extra) + "SWGENV\n"
+           + "cat > " + shlex.quote(_turn_unit_path(svc)) + " <<'SWGEOF'\n" + unit + "SWGEOF\n"
            + "systemctl daemon-reload && systemctl enable --now " + shlex.quote(svc) + " >/dev/null 2>&1")
     w = host_sh(cmd, timeout=210)
     if w.returncode != 0:
@@ -1106,24 +1147,28 @@ def apply_turn(turn, turn_onboard):
             unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
             if not unit:
                 fail(svc, "unit not found on the node"); continue
-            execl = _exec_of(unit)
+            cur = _tp_from_unit(svc, unit)   # resolves env-file or old baked-ExecStart units
+            listen, connect, params = cur.get("listen", ""), cur.get("connect", ""), cur.get("params", "")
             if act == "manage":
-                if req.get("listen"):  execl = _set_arg(execl, "listen", req["listen"])
-                if req.get("connect"): execl = _set_arg(execl, "connect", req["connect"])
-                if "params" in req:    # replace the whole tail after -connect with the free-text params
-                    p = (req.get("params") or "").strip()
-                    execl = re.sub(r"(-connect[ =]+\S+).*$", lambda m: m.group(1) + ((" " + p) if p else ""), execl)
-            elif act == "restart":
-                pass                   # no ExecStart change — just rewrite (unchanged) + restart below
+                if req.get("listen"):  listen = req["listen"].strip()
+                if req.get("connect"): connect = req["connect"].strip()
+                if "params" in req:    params = (req.get("params") or "").strip()
             elif act == "rotate":
-                execl = _set_arg(execl, "wrap-key", secrets.token_hex(32))
-            new_unit = "\n".join(("ExecStart=" + execl) if ln.startswith("ExecStart=") else ln
-                                 for ln in unit.splitlines())
-            w = host_sh("cat > " + shlex.quote(up) + " <<'SWGEOF'\n" + new_unit + "\nSWGEOF\n"
-                        "systemctl daemon-reload && systemctl restart " + shlex.quote(svc))
+                params = _params_set_wrapkey(params, secrets.token_hex(32))
+            # restart: no config change — just rewrite turn.env (unchanged) + restart below
+            envp = _turn_env_path(svc)
+            env_here = "cat > " + shlex.quote(envp) + " <<'SWGENV'\n" + _turn_env_text(listen, connect, params) + "SWGENV\n"
+            if _unit_is_envform(unit):       # fast path: rewrite turn.env + restart, NO daemon-reload (the spike)
+                w = host_sh(env_here + "systemctl restart " + shlex.quote(svc))
+            else:                            # one-time migrate: move the baked ExecStart onto the EnvironmentFile
+                new_unit = _unit_to_envform(unit, svc, _exec_bin(_exec_of(unit)))
+                w = host_sh("mkdir -p " + shlex.quote(os.path.dirname(envp)) + "\n" + env_here
+                            + "cat > " + shlex.quote(up) + " <<'SWGEOF'\n" + new_unit + "SWGEOF\n"
+                            + "systemctl daemon-reload && systemctl restart " + shlex.quote(svc))
             if w.returncode != 0:
                 fail(svc, (w.stderr or "restart failed").strip()[:120]); continue
-            rec[svc] = _parse_tp(svc, execl); changed = True   # the unit IS rewritten — reflect it even if it won't start
+            rec[svc] = {"service": svc, "listen": listen, "connect": connect,
+                        "wrap_key": _params_wrapkey(params), "params": params}; changed = True   # reflect even if it won't start
             verr = _turn_verify(svc)
             if verr:
                 fail(svc, verr); continue   # report not-running; the record already shows the new (broken) params
