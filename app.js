@@ -347,7 +347,9 @@ const Store = {
     for (const id of Object.keys(this.pending)) { try { this.pending[id].apply(this); } catch (_) {} }
     // fleet entries carry the stable id (the connector everywhere) + the mutable name (display)
     this.fleet = this.nodes.map(n => ({ id: n.id, name: n.name, color: n.color, transport: "https" }));
-    this.recon = reconcile(this.roster, this.stats, Date.now());
+    const retiring = new Set();   // pubkeys mid-removal (rotation/delete) — keep them out of the orphans grid
+    for (const n of this.nodes) for (const pk of (n.retiring || [])) retiring.add(pk);
+    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring });
     bus.emit();
   },
   node(id) { return this.fleet.find(n => n.id === id); },              // lookup by stable id
@@ -2927,6 +2929,9 @@ function EditPeerSheet({ peer, focus, done, flash }) {
   const [keepalive, setKeepalive] = useState("25"); const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
   const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
+  // reopening THIS sheet with a new flash (e.g. rotate: orange "Rotating…" → green "Keys rotated")
+  // reuses the instance, so the useState initial above is ignored — sync the prop into state.
+  useEffect(() => { if (flash) setMsg(flash); }, [flash]);
 
   useEffect(() => {
     let ok = true;

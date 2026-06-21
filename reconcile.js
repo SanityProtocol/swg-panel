@@ -149,11 +149,13 @@ function reconcile(roster, stats, now, cfg) {
   });
 
   // peers on a node that the roster doesn't own — adoptable
-  const orphans = [];
+  const retiring = cfg.retiring || null;   // pubkeys the panel is actively dropping (e.g. a rotated key
+  const orphans = [];                       // still on the wire) — don't flash them as orphans mid-rotation
   for (const key of Object.keys(observed)) {
     if (managed[key]) continue;
     const parts = key.split("|");
     if (nodeStatus[parts[0]] !== "live") continue;
+    if (retiring && retiring.has(parts[2])) continue;
     orphans.push(Object.assign({ node: parts[0], iface: parts[1], pubkey: parts[2], status: "orphan" }, observed[key]));
   }
 

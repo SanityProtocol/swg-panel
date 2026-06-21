@@ -978,6 +978,7 @@ def api(method, path, qs, body, deps):
                                      for k, v in (c.get("create") or {}).items()},
                         "deleting": sorted((c.get("delete") or {}).keys()),         # ifaces being torn down
                         "restarting": sorted((c.get("restart") or {}).keys()),      # ifaces being bounced
+                        "retiring": sorted({pk for ifa in (c.get("retire") or {}).values() for pk in ifa}),  # pubkeys being dropped (rotation/delete in flight)
                         "turn_pending": {k: (v.get("action") or "manage")           # turn service → pending action
                                          for k, v in (c.get("turn") or {}).items()},
                         "turn_onboarding": list(c.get("turn_onboard") or []),       # .service paths pending onboard
