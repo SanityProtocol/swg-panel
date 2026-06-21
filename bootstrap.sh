@@ -34,7 +34,8 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
   while :; do
-    if read -rp "$pr" v </dev/tty 2>/dev/null; then rc=0; else rc=1; v=""; fi
+    printf '%s' "$pr" >/dev/tty 2>/dev/null   # read -p writes the prompt to stderr (lost if redirected) — print it to the tty ourselves
+    if read -r v </dev/tty 2>/dev/null; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"
     for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; return; }; done
     [ "$rc" -ne 0 ] && die "no interactive input for '$p' — pass it as a flag (one of: $opts)"
