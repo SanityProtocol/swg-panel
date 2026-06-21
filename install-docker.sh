@@ -734,7 +734,7 @@ PYHOST
 
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
   if [ -z "$TURN_MANAGE" ]; then
-    step "Turn-proxy management"; echo
+    step "Turn proxies management"; echo
     menu "$(keyd p 'anel (default)')" "Manage turn-proxies (edit listen/connect/keys, restart, onboard) from the panel.
       Mounts the Docker socket into the node container, which gives that container ROOT-EQUIVALENT access to the host.
       only enable if you trust the panel and this box."
@@ -759,6 +759,7 @@ PYSOCK
   else
     [ "$TURN_MANAGE" = manual ] && ok "turn-proxy management: manual (managed on this server)"
   fi
+  choose_turn_proxy   # install/onboard host turn-proxy servers as part of this step (unit retries until compose publishes the wg port)
 fi
 NODE_NET="${NODE_NET:-host}"; TURN_MANAGE="${TURN_MANAGE:-manual}"   # concrete values for .env
 
@@ -907,13 +908,6 @@ if [ "$PROFILE" != node ] && [ "$TLS" != none ] && ! $DRYRUN && have openssl; th
     "") : ;;   # couldn't read it (port not up yet) — skip
     *) ok "panel is serving a real certificate (issuer:${iss#*=})" ;;
   esac
-fi
-
-# ───────────────────────── turn-proxy (node-bearing profiles) ─────────────────────────
-# Runs on the HOST (systemd) and forwards to the wg UDP port the swg-node container publishes.
-if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
-  step "TURN-PROXY setup"; echo
-  choose_turn_proxy
 fi
 
 # ───────────────────────── SUMMARY ─────────────────────────
