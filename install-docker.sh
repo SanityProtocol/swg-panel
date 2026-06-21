@@ -466,10 +466,10 @@ ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirr
   case "$d_if" in ""|awg0|wg0) d_if="$def_if";; esac        # default name follows the protocol
   NODE_IFACE="";       ask_valid "Interface name" "$d_if" NODE_IFACE v_iface "1–15 chars: letters, digits, - or _"
   NODE_LISTEN_PORT=""; ask_valid "Listen port" "$d_port" NODE_LISTEN_PORT v_freeport "port 1–65535 and free (not already in use)"
-  local _sub="$(net_of "${d_addr:-10.8.0.0/24}")"    # auto IP range (change it later in the panel)
+  local _sub="";       ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$(net_of "${d_addr:-10.8.0.0/24}")" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
   NODE_ADDRESS="$(server_addr "$_sub")"              # the server's interface address (.1), derived from the subnet
-  echo "    Used $(bb "$NODE_ADDRESS") for $(col "$C_GREEN" "$NODE_IFACE")"
-  NODE_ENDPOINT="";    ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$NODE_IFACE") (this interface's public IP/host)" "$d_ep" NODE_ENDPOINT v_host "enter an IP address or hostname"
+  NODE_ENDPOINT="$d_ep"                              # auto endpoint clients dial — public IP/host (change it later in the panel)
+  echo "    Used $(bb "$NODE_ENDPOINT") for $(col "$C_GREEN" "$NODE_IFACE")"
   return 0
 }
 # current interface names for this docker node — persisted confs (./data/node-confs) ∪ the .env spec
@@ -501,9 +501,9 @@ add_node_iface(){
   [ "$plain" = wg ] && base=wg || base=awg; i=0; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done
   ask_valid "Interface name" "$base$i" name v_iface "1–15 chars: letters, digits, - or _"
   ask_valid "Listen port" "$((51820 + nx))" port v_freeport "port 1–65535 and free (not already in use)"
-  local _sub="10.$((8 + nx)).0.0/24"; addr="$(server_addr "$_sub")"   # auto IP range (change it later in the panel)
-  echo "    Used $(bb "$addr") for $(col "$C_GREEN" "$name")"
-  ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$name") (this interface's public IP/host)" "${NODE_ENDPOINT:-$(detect_public_ip)}" ep v_host "an IP or hostname"
+  local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.$((8 + nx)).0.0/24" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
+  ep="${NODE_ENDPOINT:-$(detect_public_ip)}"       # auto endpoint clients dial — public IP/host (change it later in the panel)
+  echo "    Used $(bb "$ep") for $(col "$C_GREEN" "$name")"
   [ -n "$NODE_ENDPOINT" ] || NODE_ENDPOINT="$ep"   # the node-level endpoint (required by compose) — seed from the first interface
   NODE_IFACES="${NODE_IFACES:+$NODE_IFACES,}${name}:${port}:${addr}:${plain}:${ep}"
   ok "queued interface $(col "$C_GREEN" "$name") — created on the node's next start"
@@ -632,7 +632,7 @@ case "$PROFILE" in
       ask_valid "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)" NODE_NAME v_name "1–40 chars: letters, digits, - or _"
       manage_node_ifaces
       # the node-level endpoint is required by compose; ensure it's set (kept existing interfaces only)
-      ask_valid "Endpoint clients dial for this node (public IP/host)" "$(detect_public_ip)" NODE_ENDPOINT v_host "an IP address or hostname"
+      [ -n "$NODE_ENDPOINT" ] || { NODE_ENDPOINT="$(detect_public_ip)"; echo "    Used $(bb "$NODE_ENDPOINT") as this node's endpoint (change it later in the panel)"; }
       # single-pass auto-enroll (mirrors bare-metal master): mint the local node's token NOW so it
       # flows into .env below; its pbkdf2 hash + nodes.json entry are written just before compose up.
       [ -n "$NODE_NAME" ]  || NODE_NAME="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)"
@@ -647,7 +647,7 @@ case "$PROFILE" in
     ask_node_conn
     manage_node_ifaces
     # the node-level endpoint is required by compose; ensure it's set (kept existing interfaces only)
-    ask_valid "Endpoint clients dial for this node (public IP/host)" "$(detect_public_ip)" NODE_ENDPOINT v_host "an IP address or hostname"
+    [ -n "$NODE_ENDPOINT" ] || { NODE_ENDPOINT="$(detect_public_ip)"; echo "    Used $(bb "$NODE_ENDPOINT") as this node's endpoint (change it later in the panel)"; }
     PANEL_PASSWORD="${PANEL_PASSWORD:-unused-on-node-only}"; PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
     ;;
 esac

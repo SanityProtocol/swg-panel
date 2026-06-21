@@ -181,11 +181,13 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   done
   defport=$((51820 + idx)); defsub="10.$(( (8 + idx) % 255 )).0.0/24"
   ask_valid "Listen port" "$defport" port v_freeport "port 1–65535 and free (not already in use)"
-  subnet="$defsub"; addr="$(server_addr "$subnet")"          # auto IP range — peers + server address (change it later in the panel)
-  echo "    Used $(bb "$addr") for $(col "$C_GREEN" "$name")"
+  ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
+  addr="$(server_addr "$subnet")"
+  echo "    server address $(col "$C_GREEN" "$addr") — peers get the rest of $subnet"
   wan="$(detect_wan)"; [ -n "$wan" ] || wan=eth0             # auto WAN egress NIC — clients NAT out this (change it later in the panel)
   echo "    Used $(bb "$wan") egress interface for $(col "$C_GREEN" "$name")"
-  ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$name") (this interface's public IP/host)" "$(detect_public_ip)" ep v_host "enter an IP address or hostname"
+  ep="$(detect_public_ip)"                                   # auto endpoint clients dial — public IP/host (change it later in the panel)
+  echo "    Used $(bb "$ep") for $(col "$C_GREEN" "$name")"
   conf="$dir/$name.conf"
   if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; return 0; fi
   up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
@@ -290,8 +292,8 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   local _ep
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
-    _ep=""; ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$n") (this interface's public IP/host)" "$(detect_public_ip)" _ep v_host "enter an IP address or hostname"
-    IF_ENDPOINT[$n]="$_ep"; done
+    _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
+    echo "    Used $(bb "$_ep") for $(col "$C_GREEN" "$n")"; done
   [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
   ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
 }
