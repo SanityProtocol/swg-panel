@@ -843,16 +843,38 @@ if [ "${AUTOENROLL:-}" = yes ] && ! $DRYRUN; then
   if python3 - "$ndir/nodes.json" "$NODE_NAME" "$NODE_TOKEN" "$NODE_COLOR" <<'PY'
 import sys, os, json, hashlib, base64
 path, name, token, color = sys.argv[1:5]
-salt = os.urandom(16)
-h = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, 200000)
-th = "pbkdf2_sha256$200000$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(h).decode()
 try:
-    nodes = json.load(open(path))
-    assert isinstance(nodes, dict)
+    nodes = json.load(open(path)); assert isinstance(nodes, dict)
 except Exception:
     nodes = {}
-nodes[name] = {"name": name, "color": color, "endpoint_host": "",
-               "stats_file": "stats-%s.json" % name, "token_hash": th, "created": 0}
+
+def tok_hash(t):
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac("sha256", t.encode(), salt, 200000)
+    return "pbkdf2_sha256$200000$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(h).decode()
+def validates(th, t):
+    try:
+        algo, it, salt, h = th.split("$")
+        return algo == "pbkdf2_sha256" and base64.b64encode(
+            hashlib.pbkdf2_hmac("sha256", t.encode(), base64.b64decode(salt), int(it))).decode() == h
+    except Exception:
+        return False
+
+# A re-install must UPDATE this node, not duplicate it: after the panel's stable-id migration the
+# entry is keyed by an opaque id (not the name), so a blind nodes[name]=… would add a second,
+# name-keyed copy. Find the existing entry by its (.env-preserved) token first, then by name.
+key = next((k for k, v in nodes.items() if isinstance(v, dict) and validates(v.get("token_hash", ""), token)), None)
+if key is None:
+    key = next((k for k, v in nodes.items() if isinstance(v, dict) and v.get("name") == name), None)
+if key is None:
+    nodes[name] = {"name": name, "color": color, "endpoint_host": "",
+                   "stats_file": "stats-%s.json" % name, "token_hash": tok_hash(token), "created": 0}
+else:
+    e = nodes[key]; e["name"] = name
+    e.setdefault("color", color); e.setdefault("endpoint_host", "")
+    e.setdefault("stats_file", "stats-%s.json" % name); e.setdefault("created", 0)
+    if not validates(e.get("token_hash", ""), token):   # token changed (e.g. a new -key) → refresh in place
+        e["token_hash"] = tok_hash(token)
 json.dump(nodes, open(path, "w"), indent=2)
 PY
   then chmod 600 "$ndir/nodes.json" 2>/dev/null || true
