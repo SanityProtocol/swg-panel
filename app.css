@@ -487,7 +487,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .sheet-foot .grow{flex:1}
 .discard-msg{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--pending)}
 .discard-msg svg{flex:none}
-.formmsg{font-size:12.5px;font-family:var(--mono);min-height:16px}
+.formmsg{font-size:12.5px;font-family:var(--mono);min-height:16px;margin-top:10px}
 .formmsg.err{color:var(--dangling)} .formmsg.ok{color:var(--online)} .formmsg.work{color:var(--dim)} .formmsg.warn{color:#F0913C}
 
 /* result inside sheet (post-create) */

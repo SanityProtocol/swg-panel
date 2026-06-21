@@ -2972,12 +2972,18 @@ function EditPeerSheet({ peer, focus, done, flash }) {
       back: () => openEditPeer(peer, focus, done),   // cancel/esc returns to the edit modal
       body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
       onConfirm: () => {
-        // reopen the edit modal AT ONCE with an orange "Rotating keys…" flash; rotate in the background
+        const ekey = "peer:" + peer.id;
+        // reopen the edit modal with an orange "Rotating keys…" flash (this setTimeout is scheduled
+        // FIRST, so FIFO guarantees it fires before the result flash below — even if the rotate is
+        // instant); rotate in the background, then flip to the result.
         setTimeout(() => openEditPeer(peer, focus, done, { k: "warn", t: "Rotating keys…" }), 0);
         rotatePeerKeys(peer).then(async () => {
           await Store.poll();
           const fresh = Store.recon.peers.find(x => x.id === peer.id) || peer;
-          openEditPeer(fresh, focus, done, { k: "ok", t: "Keys rotated — send the user the new QR / config; the old one no longer works." });
+          const re = Store.rowErrors[ekey];
+          const flash = re ? { k: "err", t: re.msg || "Rotate failed." }
+                           : { k: "ok", t: "Keys rotated — send the user the new QR / config; the old one no longer works." };
+          setTimeout(() => openEditPeer(fresh, focus, done, flash), 0);
         });
       } });
   };
