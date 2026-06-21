@@ -459,8 +459,8 @@ ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirr
   echo
   local _proto def_if d_if d_port d_addr d_ep
   d_if="$NODE_IFACE"; d_port="$NODE_LISTEN_PORT"; d_addr="$NODE_ADDRESS"; d_ep="${NODE_ENDPOINT:-$(detect_public_ip)}"
-  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation (junk packets / header magic) to slip past DPI and protocol blocking. Runs on the userspace amneziawg-go datapath built into the swg-node container."
-  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off), so standard WireGuard clients connect unchanged."
+  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the userspace amneziawg-go datapath built into the swg-node container."
+  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off)."
   ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) NODE_PLAIN_WG=yes; def_if=wg0;; *) NODE_PLAIN_WG=no; def_if=awg0;; esac
   case "$d_if" in ""|awg0|wg0) d_if="$def_if";; esac        # default name follows the protocol
@@ -494,8 +494,8 @@ add_node_iface(){
     NODE_IFACES="${NODE_IFACE}:${NODE_LISTEN_PORT:-51820}:${NODE_ADDRESS:-10.8.0.1/24}:${pr}:${NODE_ENDPOINT}"
   fi
   nx=$(current_node_ifaces | grep -c . || true)                 # offset defaults so a 2nd/3rd iface doesn't collide (grep -c exits 1 on empty → guard set -e)
-  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation (junk packets / header magic) to slip past DPI and protocol blocking. Runs on the userspace amneziawg-go datapath built into the swg-node container."
-  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off), so standard WireGuard clients connect unchanged."
+  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the userspace amneziawg-go datapath built into the swg-node container."
+  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off)."
   ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
   [ "$plain" = wg ] && base=wg || base=awg; i=0; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done

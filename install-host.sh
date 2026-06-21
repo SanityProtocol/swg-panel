@@ -74,6 +74,8 @@ writef(){ # writef <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"
   chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }   # menu <styled-label> <description>
+key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  a 'mneziawg'           → [a]mneziawg
+keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)
 STEP="${STEP_BASE:-1}"; step(){ echo; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # sequential, continues bootstrap's numbering
 
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
@@ -451,7 +453,9 @@ PY
 spec_iface(){ # prompt for one interface and queue it (no install yet)
   local _proto proto name port subnet addr cmd dir wan ep idx defname defport defsub
   idx=$(( ${#IF_CMD[@]} + ${#SPEC_ORDER[@]} ))   # offset defaults past existing + already-queued ifaces
-  ask_choice "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto "a w awg wg amneziawg wireguard"
+  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the host's AmneziaWG kernel module."
+  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Runs on the host's WireGuard kernel module."
+  ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
                                  *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
   defname="$([ "$cmd" = awg ] && echo "awg$idx" || echo "wg$idx")"
