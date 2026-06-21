@@ -1318,10 +1318,8 @@ function EditIfaceSheet({ node, iface }) {
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
-      <div>Endpoint IP only changes what configs/QRs tell clients to dial.</div>
-      <div>Changing the <b>endpoint</b>, <b>listen port</b>, or <b>tunnel subnet</b> reconfigures the interface on the node.</div>
-      <div>Existing peers will not be able to connect using the old configs.</div>
-      <div>You will need to re-distribute the QR codes.</div>
+      <div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections.</div>
+      <div>You will need to re-distribute the configs / QR codes.</div>
     </div>
     ${idown ? html`<div class="notice warn" style="margin-bottom:18px"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${Object.keys(meta.drift || {}).length ? html`<div class="notice warn" style="margin-bottom:18px">
@@ -1330,6 +1328,7 @@ function EditIfaceSheet({ node, iface }) {
         <button type="button" class="linkbtn" style="margin-left:8px" onClick=${async () => { const r = await api.ifaceAdopt({ node, iface, key: k }); if (!r.ok) return toast(r.error || "Failed", "err"); closeModal(); await Store.poll(); toast("Adopted the server value.", "ok"); }}>Adopt</button>
         · <button type="button" class="linkbtn" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: k }); if (!r.ok) return toast(r.error || "Failed", "err"); closeModal(); await Store.poll(); toast("Restoring the panel value on the next sync.", "ok"); }}>Restore panel value</button></div>`)}
       </span></div>` : null}
+    <div class="field"><label>Tunnel subnet</label><div style="font-size:13.5px;color:var(--ink);padding:2px 0"><b>${meta.subnet || "—"}</b> <span class="faint">· host uses ${(meta.address || "").split("/")[0] || "—"} (set at creation — delete & recreate to change)</span></div></div>
     <div class="row2">
       <div class="field"><label>Endpoint IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial. Config-facing only.</div></div>
       <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"}).</div></div>
