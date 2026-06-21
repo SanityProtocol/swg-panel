@@ -318,6 +318,13 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
     _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
     echo "    Used $(bb "$_ep") endpoint IP for $(col "$C_GREEN" "$n")"; done
+  # bring up any adopted interface whose conf is here but isn't running yet (transfer-from-docker / conversion)
+  for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
+    ip link show "$n" >/dev/null 2>&1 && continue          # already up → leave it
+    _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools "$_c" || continue
+    if [ "$_c" = awg ]; then run awg-quick up "$n" && { run systemctl enable "awg-quick@$n" || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"
+    else                     run wg-quick  up "$n" && { run systemctl enable "wg-quick@$n"  || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"; fi
+  done
   [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
   ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
 }

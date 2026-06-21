@@ -45,6 +45,10 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr
       pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
     fi
   done; }
+ask_yn(){ local p="$1" d="$2" var="$3" v   # ask_yn <prompt> <y|n default> <var>  → sets var to yes/no
+  printf '%s' "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " >/dev/tty 2>/dev/null
+  read -r v </dev/tty 2>/dev/null || v="$d"; v="${v:-$d}"
+  case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; }
 
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
 PASS=()
@@ -92,6 +96,37 @@ fi
 # only a node carries an enrollment key — infer the role from -key
 [ "$HAVE_KEY" = yes ] && [ -z "$ROLE" ] && ROLE=node
 
+# ───────────────── existing-install detection (drives the routing below) ─────────────────
+SD=/etc/systemd/system; DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
+dkr(){ command -v docker >/dev/null 2>&1; }
+dkr_has(){ dkr && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; }
+BARE_PANEL=no; BARE_NODE=no; DOCK_PANEL=no; DOCK_NODE=no
+if [ -d /opt/swg-panel ] || [ -f "$SD/swg-panel-server.service" ]; then BARE_PANEL=yes; fi
+if [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f "$SD/swg-noded.service" ]; then BARE_NODE=yes; fi
+if dkr_has swg-panel; then DOCK_PANEL=yes; fi
+if dkr_has swg-node;  then DOCK_NODE=yes; fi
+has_comp(){ case "$1-$2" in   # has_comp <baremetal|docker> <panel|node>  → 0 if that component is installed
+  baremetal-panel) [ "$BARE_PANEL" = yes ];; baremetal-node) [ "$BARE_NODE" = yes ];;
+  docker-panel)    [ "$DOCK_PANEL" = yes ];; docker-node)    [ "$DOCK_NODE" = yes ];; *) return 1;; esac; }
+mlabel(){ [ "$1" = baremetal ] && echo bare-metal || echo "$1"; }
+
+# Bare `install` (no method, no role): re-install exactly what's already here, skipping the prompts.
+if [ -z "$METHOD" ] && [ -z "$ROLE" ]; then
+  _bare=no; _dock=no
+  { [ "$BARE_PANEL" = yes ] || [ "$BARE_NODE" = yes ]; } && _bare=yes
+  { [ "$DOCK_PANEL" = yes ] || [ "$DOCK_NODE" = yes ]; } && _dock=yes
+  if [ "$_bare" = yes ] && [ "$_dock" = yes ]; then
+    echo ":: both a bare-metal and a docker install are present — choose which to re-install:"   # mixed → fall through to the prompts
+  elif [ "$_bare" = yes ]; then METHOD=baremetal
+    if   [ "$BARE_PANEL" = yes ] && [ "$BARE_NODE" = yes ]; then ROLE=master
+    elif [ "$BARE_PANEL" = yes ]; then ROLE=host; else ROLE=node; fi
+  elif [ "$_dock" = yes ]; then METHOD=docker
+    if   [ "$DOCK_PANEL" = yes ] && [ "$DOCK_NODE" = yes ]; then ROLE=master
+    elif [ "$DOCK_PANEL" = yes ]; then ROLE=host; else ROLE=node; fi
+  fi
+  { [ -n "$METHOD" ] && [ -n "$ROLE" ]; } && echo ":: existing $(mlabel "$METHOD") install detected — re-installing $(b "$ROLE") (your settings are the defaults)."
+fi
+
 # ── method + role (sequential step numbering — only steps actually shown here count) ──
 STEP=1
 step(){ echo; echo "$(b "Step $STEP. $1")"; echo; STEP=$((STEP+1)); }
@@ -112,6 +147,40 @@ if [ -z "$ROLE" ]; then
   menu "$(col "$C_BLUE" '[n]ode')"                    "An entry server that joins an existing panel."
   ask_choice "Select the server role" "master" ROLE "master host node"
 fi
+# ───────────────── cross-method conflict (requested method ≠ what's already installed) ─────────────────
+# For each component the requested role needs, if the OTHER method has it but THIS method doesn't,
+# offer to convert it, keep+re-install it as-is, or abort. (Same-method present ⇒ a normal re-install,
+# handled inside the installer; neither present ⇒ a fresh install — your promotion cases.)
+ROLE_COMPS=""; case "$ROLE" in host) ROLE_COMPS=panel;; node) ROLE_COMPS=node;; master) ROLE_COMPS="panel node";; esac
+OTHER=baremetal; [ "$METHOD" = baremetal ] && OTHER=docker
+CONFLICT=""
+for _c in $ROLE_COMPS; do
+  if ! has_comp "$METHOD" "$_c" && has_comp "$OTHER" "$_c"; then CONFLICT="${CONFLICT:+$CONFLICT }$_c"; fi
+done
+if [ -n "$CONFLICT" ]; then
+  while :; do
+    echo
+    echo "$(b "! A $(mlabel "$OTHER") $ROLE is already installed on this box.")"
+    echo "  Convert it to a $(mlabel "$METHOD") $ROLE, or re-install it as it is?"
+    echo
+    menu "$(b "$(col "$C_BLUE" '[c]onvert')")"      "Migrate it to $(mlabel "$METHOD") — all settings / users / peers are preserved. A port/interface pre-flight runs first."
+    menu "$(col "$C_BLUE" '[k]eep and re-install')" "Leave it on $(mlabel "$OTHER") and just re-install it (you didn't mean to switch methods)."
+    menu "$(col "$C_BLUE" '[a]bort')"               "Exit without changing anything."
+    CHOICE=""; ask_choice "Convert, keep, or abort" "convert" CHOICE "convert keep abort"
+    case "$CHOICE" in
+      abort) echo ":: aborted — nothing changed."; exit 0;;
+      keep)  METHOD="$OTHER"; echo ":: keeping the existing $(mlabel "$OTHER") install — re-installing it as-is."; break;;
+      convert)
+        # pre-flight (port/interface check) lives in convert.sh --check: exit 0 = clear, non-0 = printed conflicts
+        if bash "./convert.sh" --check "$OTHER" "$METHOD" "$ROLE"; then
+          _ans=no; ask_yn "No conflicts found, do you want to proceed with the conversion" y _ans
+          [ "$_ans" = yes ] && exec bash "./convert.sh" "$OTHER" "$METHOD" "$ROLE" ${PASS[@]+"${PASS[@]}"}
+        fi
+        ;;   # conflicts (or 'no' at the confirm) → loop the menu again
+    esac
+  done
+fi
+
 export STEP_BASE="$STEP"          # the installer numbers its steps from here
 
 case "$METHOD-$ROLE" in
