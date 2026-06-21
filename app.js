@@ -1285,9 +1285,12 @@ function EditIfaceSheet({ node, iface }) {
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
     const r = await api.ifaceUpdate(body);
     if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to update interface." }); }
-    if (idown) await api.ifaceRestart({ node, iface });   // down → also bring it up so the new port/settings apply
-    closeModal(); await Store.poll();
-    toast(idown ? "Saved — restarting the interface to apply the new settings." : "Interface saved — the node applies the port on its next sync.", "ok");
+    closeModal();
+    if (idown) {                                          // down → bring it up, driving the same start lifecycle as the button
+      startOrRestartIface(node, iface, "start");
+    } else {
+      await Store.poll(); toast("Interface saved — the node applies it on its next sync.", "ok");
+    }
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>

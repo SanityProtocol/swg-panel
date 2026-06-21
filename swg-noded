@@ -1055,8 +1055,11 @@ def main():
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
-                rs = restart_ifaces(node_cfg, reply.get("restart"), agent, sudo)   # bounce panel-requested interfaces
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
+                r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
+                ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)   # set-iface: write the new listen-port to the conf FIRST
+                rs = restart_ifaces(node_cfg, reply.get("restart"), agent, sudo)   # THEN bounce — a restart picks up the just-written conf (e.g. a changed port)
+                eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name
                 for blk in (cr, dl, ob, rs):
                     for e in blk["errors"]:
@@ -1071,9 +1074,6 @@ def main():
                 for k in list(NODE_ERRORS):
                     if k not in active:
                         NODE_ERRORS.pop(k, None)
-                r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
-                ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)
-                eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
                 for e in eg["errors"]:
                     print("egress: " + e, flush=True)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
