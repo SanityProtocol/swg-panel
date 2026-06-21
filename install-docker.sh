@@ -334,11 +334,26 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
   echo "      Where the panel is reached — an IP, a host, or a host with a subpath to"
   echo "      live under an existing site (e.g. $(b 'vpn.example.com/swg'))."
   echo
-  local def="${PANEL_DOMAIN:-$(detect_public_ip)}"; [ -z "$def" ] && def=localhost; local _url_ans
+  local def="${PANEL_DOMAIN:-$(detect_public_ip)}"; [ -z "$def" ] && def=localhost; local _url_ans _forced="" _pp _who
   PANEL_DOMAIN=""   # ask_valid skips if non-empty; force the prompt and parse the result
   ask_valid "Enter panel URL (https://…)" "$def" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
   while :; do
     parse_panel_url "$PANEL_DOMAIN"
+    # is the port the panel will publish actually free on this host? (catches nginx/apache or a prior panel)
+    _pp="${URL_PORT:-443}"
+    if [ "$_forced" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ]; then
+      _who="$(ss -lntpH "sport = :$_pp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
+      echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))} — the panel can't bind it"
+      echo "    Give the panel its own port (e.g. $(b "${PANEL_HOST_NOPORT}:8443")), or stop whatever holds it."
+      printf '  Enter a different URL, or type %s to publish on :%s anyway: ' "$(bb force)" "$_pp"
+      read -r _url_ans </dev/tty || _url_ans=force
+      case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
+        force|FORCE) _forced="$_pp";;
+        "") :;;
+        *) if v_url "$_url_ans"; then PANEL_DOMAIN="$_url_ans"; else warn "‘$_url_ans’ isn't a valid host/URL — try again."; fi;;
+      esac
+      continue
+    fi
     { [ -z "$URL_PORT" ] || v_cfport "$URL_PORT"; } && break   # no port or a Cloudflare-proxyable one → fine
     echo
     warn "Port $(col "$C_YEL" "$URL_PORT") is NOT a standard HTTPS port Cloudflare's proxy (orange cloud) forwards."
@@ -808,21 +823,16 @@ PY
 fi
 
 # ───────────────────────── bring it up ─────────────────────────
-# Pre-flight: a host already running nginx/apache (or a previous panel) may hold the ports we publish.
-# Catch it here with an actionable message instead of a cryptic docker bind error mid-up.
-if ! $DRYRUN && [ "$PROFILE" != node ] && have ss; then
-  _need="$PANEL_PORT"; [ "$TLS" = letsencrypt ] && _need="$_need 80"
-  _busy=""; for _p in $_need; do [ -n "$(ss -lntH "sport = :$_p" 2>/dev/null)" ] && _busy="$_busy $_p"; done; _busy="$(echo $_busy)"
-  if [ -n "$_busy" ]; then
-    echo; warn "host TCP port(s) already in use:$(col "$C_YEL" " $_busy") — the panel can't start until they're free"
-    for _p in $_busy; do _who="$(ss -lntpH "sport = :$_p" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"; echo "    :$_p${_who:+  (used by $(col "$C_YEL" "$_who"))}"; done
-    echo; echo "  To run the panel $(b alongside) an existing web server:"
-    case " $_busy " in *" $PANEL_PORT "*) echo "    • give the panel its own port — re-run with $(b "-port 8443") (frees $PANEL_PORT for the other server)";; esac
-    case " $_busy " in *" 80 "*) echo "    • letsencrypt needs :80 — instead re-run and pick $(b cloudflare) (DNS-01), $(b cf15), or $(b none) and reverse-proxy to the panel through nginx";; esac
-    echo
-    _go="$(ask_yn_tty "Try to start anyway?" n)"
-    [ "$_go" = yes ] || die "aborted — free the port(s) above (or re-run with the options shown), then try again"
-  fi
+# The panel's own port is checked at the URL step; here we only check :80, which letsencrypt's
+# HTTP-01 challenge needs (the TLS method is chosen after the URL, so this is the right place).
+if ! $DRYRUN && [ "$PROFILE" != node ] && [ "$TLS" = letsencrypt ] && have ss && [ -n "$(ss -lntH "sport = :80" 2>/dev/null)" ]; then
+  _who="$(ss -lntpH "sport = :80" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
+  echo; warn "letsencrypt needs host port $(col "$C_YEL" ":80") for the HTTP-01 challenge, but it's in use${_who:+ (by $(col "$C_YEL" "$_who"))}"
+  echo "    • port 80 is fixed by the ACME protocol — independent of the panel's port"
+  echo "    • to avoid it, re-run and pick $(b cloudflare) (DNS-01), $(b cf15), or $(b none) and reverse-proxy through that server"
+  echo
+  _go="$(ask_yn_tty "Try to start anyway?" n)"
+  [ "$_go" = yes ] || die "aborted — free :80 (or re-run with a TLS method that doesn't need it), then try again"
 fi
 info "Starting compose profile '$PROFILE'$($BUILD && echo ' (building from source)')"
 BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from GHCR

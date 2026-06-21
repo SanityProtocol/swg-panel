@@ -518,6 +518,22 @@ DEF_URL="$(detect_public_ip)"; [ -z "$DEF_URL" ] && DEF_URL=localhost
 PANEL_DOMAIN=""; ask_valid "Enter panel URL (https://…)" "$DEF_URL" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
 while :; do
   parse_panel_url "$PANEL_DOMAIN"
+  # is the port the panel will use free on this host? (catches nginx/apache or a prior panel)
+  _pp="${URL_PORT:-443}"
+  if [ "${_forced:-}" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ]; then
+    _who="$(ss -lntpH "sport = :$_pp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
+    echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))}"
+    echo "    Running the panel $(b standalone)? Give it a free port, e.g. $(b "${PANEL_HOST_NOPORT}:8443")."
+    echo "    Serving it $(b behind) that web server (the next step offers nginx/caddy)? Then $(bb force) is fine."
+    printf '  Enter a different URL, or type %s to keep :%s anyway: ' "$(bb force)" "$_pp"
+    read -r _url_ans </dev/tty || _url_ans=force
+    case "$(printf '%s' "$_url_ans" | tr -d '[:space:]')" in
+      force|FORCE) _forced="$_pp";;
+      "") :;;
+      *) if v_url "$_url_ans"; then PANEL_DOMAIN="$_url_ans"; else warn "‘$_url_ans’ isn't a valid host/URL — try again."; fi;;
+    esac
+    continue
+  fi
   { [ -z "$URL_PORT" ] || v_cfport "$URL_PORT"; } && break   # no port or a Cloudflare-proxyable one → fine
   echo
   warn "Port $(col "$C_YEL" "$URL_PORT") is NOT a standard HTTPS port Cloudflare's proxy (orange cloud) forwards."
@@ -900,7 +916,16 @@ obtain_cert_internal(){
       if [ "$TLS_MODE" = cloudflare ]; then [ -n "$CF_TOKEN" ] || die "cloudflare needs a CF token (re-run Step 3, or set CF_TOKEN)"
         export CF_Token="$CF_TOKEN"; [ -n "$CF_ACCOUNT_ID" ] && export CF_Account_ID="$CF_ACCOUNT_ID"; args+=(--dns dns_cf)
         info "Issuing $PANEL_DOMAIN via Let's Encrypt — DNS-01 challenge through Cloudflare (can take ~30–60s while DNS propagates)…"
-      else args+=(--standalone); info "Issuing $PANEL_DOMAIN via Let's Encrypt — HTTP-01 (acme standalone needs :80 free)…"; fi
+      else args+=(--standalone)
+        if ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :80" 2>/dev/null)" ]; then
+          local _w80 _g80=""; _w80="$(ss -lntpH "sport = :80" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
+          echo; warn "letsencrypt HTTP-01 needs host port $(col "$C_YEL" ":80"), but it's in use${_w80:+ (by $(col "$C_YEL" "$_w80"))} — issuance will fail"
+          echo "    :80 is fixed by ACME (independent of the panel's port). Free it, or re-run and pick $(b cloudflare) (DNS-01), $(b cf15), or $(b selfsigned)."
+          ask_yn "Try acme standalone on :80 anyway?" n _g80
+          [ "$_g80" = yes ] || die "aborted — free :80 or pick a TLS method that doesn't need it, then re-run"
+        fi
+        info "Issuing $PANEL_DOMAIN via Let's Encrypt — HTTP-01 (acme standalone needs :80 free)…"
+      fi
       [ -n "$ACME_EMAIL" ] && { run "$ACME" --register-account -m "$ACME_EMAIL" --server letsencrypt || true; }
       # Re-run? acme.sh already holds a cert for this domain → install it instead of re-issuing.
       # Renewals run from acme's cron. (First install on a clean box has no cert → issue below.)
