@@ -36,6 +36,7 @@ $DRYRUN && info "DRY RUN — nothing will be changed."
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
 SD="${SYSTEMD_DIR:-/etc/systemd/system}"   # overridable for testing
+KEEP_PEERS="${KEEP_PEERS:-}"               # yes|no — preset to skip the "keep the peers?" prompt
 DOMAIN=""
 [ -f /etc/nginx/sites-available/swg-panel.conf ] && \
   DOMAIN="$(sed -n 's/[[:space:]]*server_name[[:space:]]\+\([^;]*\);.*/\1/p' /etc/nginx/sites-available/swg-panel.conf | head -n1 | tr -d ' ')"
@@ -159,6 +160,10 @@ docker_remove_dir(){
          "$DOCKER_DIR/swg-panel-server" "$DOCKER_DIR/swg-agent" "$DOCKER_DIR/swg-noded" \
          "$DOCKER_DIR/index.html" "$DOCKER_DIR/app.css" "$DOCKER_DIR/app.js" "$DOCKER_DIR/reconcile.js"
     ok "Kept $DOCKER_DIR/data"
+  elif [ -d "$DOCKER_DIR/data/node-confs" ] && keep_peers; then
+    # keep ONLY the interface confs so a future install can re-onboard the peers (drop everything else)
+    run sh -c "find '$DOCKER_DIR' -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} + 2>/dev/null; find '$DOCKER_DIR/data' -mindepth 1 -maxdepth 1 ! -name node-confs -exec rm -rf {} + 2>/dev/null"
+    ok "Kept $DOCKER_DIR/data/node-confs — peers can be re-onboarded on a future install"
   else rmrf "$DOCKER_DIR"; fi
 }
 docker_cleanup_if_last(){   # only tears down the shared bits when NO swg container remains
@@ -182,11 +187,18 @@ down_ifaces(){ local dir="$1" tool="$2" f n
   for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"
     command -v "$tool" >/dev/null 2>&1 && run "$tool" down "$n"; done; }
 
+# Asked at most ONCE (ask_yn memoises via the KEEP_PEERS var): keep the interface .conf files so a
+# future install can re-onboard the peers. Returns 0 (true) when the operator wants to keep them.
+keep_peers(){
+  ask_yn "  Keep the peers? Leaves the interface .conf files (keys + peers) so a future install can re-onboard them." y KEEP_PEERS
+  [ "$KEEP_PEERS" = yes ]
+}
+
 rm_awg(){
   info "Removing AmneziaWG"
   down_ifaces /etc/amnezia/amneziawg awg-quick
-  local RC="${REMOVE_IFACE_CONFS:-}"; ask_yn "  Delete AmneziaWG configs (/etc/amnezia)? Erases peer/key data." n RC
-  [ "$RC" = yes ] && rmrf /etc/amnezia/amneziawg || info "  Left /etc/amnezia configs in place."
+  if keep_peers; then info "  Kept /etc/amnezia/amneziawg configs — peers can be re-onboarded on a future install."
+  else rmrf /etc/amnezia/amneziawg; info "  Deleted /etc/amnezia/amneziawg configs (peers/keys erased)."; fi
   if command -v apt-get >/dev/null 2>&1; then
     run apt-get purge -y amneziawg amneziawg-tools amneziawg-dkms
     run add-apt-repository -y --remove ppa:amnezia/ppa; run apt-get autoremove -y
@@ -197,8 +209,8 @@ rm_awg(){
 rm_wg(){
   info "Removing WireGuard"
   down_ifaces /etc/wireguard wg-quick
-  local RC="${REMOVE_WG_CONFS:-}"; ask_yn "  Delete WireGuard configs (/etc/wireguard)? Erases peer/key data." n RC
-  [ "$RC" = yes ] && rmrf /etc/wireguard || info "  Left /etc/wireguard configs in place."
+  if keep_peers; then info "  Kept /etc/wireguard configs — peers can be re-onboarded on a future install."
+  else rmrf /etc/wireguard; info "  Deleted /etc/wireguard configs (peers/keys erased)."; fi
   if command -v apt-get >/dev/null 2>&1; then run apt-get purge -y wireguard wireguard-tools; run apt-get autoremove -y
   else warn "Non-apt system — remove the wireguard packages with your package manager."; fi
   ok "WireGuard removed"
