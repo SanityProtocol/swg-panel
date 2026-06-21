@@ -1008,7 +1008,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const [q, setQ] = useState("");
   const node = decodeURIComponent(rawNode);
   const iface = decodeURIComponent(rawIface);
-  const nrec = Store.node(node);   // node = id (the connector)
+  const nrec = (Store.nodes || []).find(n => n.id === node);   // FULL record (turn_manage/restarting/cmd_errors/ip_ifaces)
   if (!nrec) return html`<div class="screen"><div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>server</b></div>
     <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
   const dname = nrec.name || node;
@@ -1184,17 +1184,17 @@ function LoadIfaceSheet({ node }) {
       </div>
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This docker node uses <span class="mono">bridge</span> networking — after creating you must publish this port in the node's <span class="mono">docker-compose.yml</span> (<span class="mono">ports: "${port || "PORT"}:${port || "PORT"}/udp"</span>) and <span class="mono">up -d</span>, or clients can't reach it. (A host-networking node needs none of this.)</span></div>` : null}
       <div class="row2">
-        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Blank = 1280.</div></div>
-        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25.</div></div>
+        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Blank = 1280</div></div>
+        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
       </div>
       <div class="row2">
-        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">Comma-separated. Blank = none.</div></div>
+        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">Comma-separated</div></div>
         <div class="field"><label>Outbound (egress) IP / interface</label>
           <select class="selwrap" value=${egress ? egress + "|" + wan : ""} onChange=${e => { const [eip, eifc] = e.target.value.split("|"); setEgress(eip || ""); setWan(eifc || ""); }}>
             <option value="">Auto (MASQUERADE)</option>
             ${ipIfaces.map(p => html`<option value=${p.ip + "|" + p.iface}>${p.ip} — ${p.iface}</option>`)}
           </select>
-          <div class="hint">Source IP + NIC clients egress from. Auto = node default.</div></div>
+          <div class="hint">Source IP + NIC clients egress from</div></div>
       </div>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1277,6 +1277,7 @@ function EditIfaceSheet({ node, iface }) {
   const [port, setPort] = useState(String(meta.desired_port || meta.listen_port || ""));
   const [dns, setDns] = useState((meta.dns || []).join(", "));
   const [mtu, setMtu] = useState(String(meta.mtu || 1280));
+  const [ka, setKa] = useState(String(meta.keepalive || 25));
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const ips = nrec.ips || [];
   const [egress, setEgress] = useState(meta.egress_ip || "");
@@ -1290,7 +1291,7 @@ function EditIfaceSheet({ node, iface }) {
   const idown = (((Store.stats[node] || {}).interfaces || {})[iface] || {}).down;   // not up on the node
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
-    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), egress_ip: egress, wan_iface: wan };
+    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
     // down → "start" (real bring-up); up → "apply" live (no restart). Optimistic: flip the lifecycle +
     // close the modal(s) NOW so the detail page shows starting/applying the instant Save is pressed.
@@ -1330,20 +1331,21 @@ function EditIfaceSheet({ node, iface }) {
       </span></div>` : null}
     <div class="field"><label>Tunnel subnet</label><div style="font-size:13.5px;color:var(--ink);padding:2px 0"><b>${meta.subnet || "—"}</b> <span class="faint">· host uses ${(meta.address || "").split("/")[0] || "—"} (set at creation — delete & recreate to change)</span></div></div>
     <div class="row2">
-      <div class="field"><label>Endpoint IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial. Config-facing only.</div></div>
-      <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"}).</div></div>
+      <div class="field"><label>Endpoint host / IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial — config-facing only</div></div>
+      <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"})</div></div>
     </div>
     <div class="row2">
-      <div class="field"><label>Default DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated. Default for new peers (per-peer DNS isn't overwritten).</div></div>
-      <div class="field"><label>Default MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers.</div></div>
+      <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers</div></div>
+      <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
     </div>
     <div class="row2">
+      <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated</div></div>
       <div class="field"><label>Outbound (egress) IP / interface</label>
         <select class="selwrap" value=${egress ? egress + "|" + wan : ""} onChange=${e => { const [eip, eifc] = e.target.value.split("|"); setEgress(eip || ""); setWan(eifc || ""); }}>
           <option value="">Auto (MASQUERADE)</option>
           ${egPairs.map(p => html`<option value=${p.ip + "|" + p.iface}>${p.ip} — ${p.iface}${!ipIfaces.some(x => x.ip === p.ip) ? " (not on node now)" : ""}</option>`)}
         </select>
-        <div class="hint">Source IP + NIC clients egress from (SNAT). Auto = node default.${ipIfaces.length ? "" : " (node hasn't reported its IPs yet)"}</div></div>
+        <div class="hint">Source IP + NIC clients egress from</div></div>
     </div>
     ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
       <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
