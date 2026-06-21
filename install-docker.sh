@@ -522,10 +522,14 @@ manage_node_ifaces(){
       warn "no interfaces yet — you can add one later from the panel (Interfaces → Load new interface)"; break
     elif [ -z "$avail" ] && [ -z "$mine" ]; then    # nothing free + nothing here, but other-node interfaces exist → transfer or create
       printf "  Enter a name to %s it from the other node, or %s to create one: " "$(col "$C_BLUE" transfer)" "$(col "$C_BLUE" new)"
-    else                                            # something to onboard / keep → the full picker
-      echo "  Press $(b Enter) to onboard $(col "$C_BLUE" 'all orphans above') (if any) and continue"
+    elif [ -n "$avail" ]; then                      # orphans present → onboard all / some / none
+      echo "  Press $(b Enter) to onboard $(col "$C_BLUE" 'all orphans above') and continue"
       echo "  Enter interface $(b names) (space-separated) to onboard or migrate specific ones"
-      [ -n "$avail" ] && [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
+      [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
+      printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
+    else                                            # no orphans → just finish or add more
+      echo "  Press $(b Enter) to finish with this node's interfaces"
+      [ -n "$bm" ] && echo "  Enter interface $(b names) to migrate one from the other node"
       printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
     fi
     if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
