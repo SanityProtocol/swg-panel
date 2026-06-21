@@ -462,6 +462,8 @@ function openModal(node) { _modalSeq++; _setModal(node); }
 function closeModal() { _modalSeq++; _setModal(null); }
 
 // ───────────────────────── shared bits ─────────────────────────
+const IFOP_BUSY = { start: "starting", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
+const IFOP_DONE = { start: "started", restart: "restarted", apply: "applied" };
 const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, rotating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
@@ -1041,8 +1043,8 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
           actions=${html`<${Fragment}>${op && op.phase === "busy"
-            ? html`<span class="tg-busy warn"><${Ic} i="clock"/>${op.verb === "start" ? "starting" : "restarting"}…</span>`
-            : html`<${Fragment}>${op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${op.verb === "start" ? "started" : "restarted"}</span>` : op && op.phase === "fail" ? html`<span class="tg-busy del" title=${op.err || ""}><${Ic} i="err"/>failed</span>` : null}<button class="btn btn-mini" title=${idown ? "Bring this interface up on the node" : "Bounce this interface's service on the node"} onClick=${() => startOrRestartIface(node, iface, idown ? "start" : "restart")}><${Ic} i="refresh"/> ${idown ? "Start interface" : "Restart service"}</button><//>`}<button class="btn btn-mini" onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
+            ? html`<span class="tg-busy warn"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>`
+            : html`<${Fragment}>${op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<span class="tg-busy del" title=${op.err || ""}><${Ic} i="err"/>failed</span>` : null}<button class="btn btn-mini" title=${idown ? "Bring this interface up on the node" : "Bounce this interface's service on the node"} onClick=${() => startOrRestartIface(node, iface, idown ? "start" : "restart")}><${Ic} i="refresh"/> ${idown ? "Start interface" : "Restart service"}</button><//>`}<button class="btn btn-mini" onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${meta.address || "—"}</span></div>
@@ -1243,7 +1245,10 @@ function trackIfaceOps() {
     const cerr = (nrec.cmd_errors || {})[iface];
     const pending = (nrec.restarting || []).includes(iface);   // restart request still queued on the panel
     let done = null;   // { phase, err }
-    if (op.verb === "start") {                                 // was DOWN → success once it's up
+    if (op.verb === "apply") {                                 // up iface live-apply (no restart) → time-based
+      if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
+      else if (now - op.started > 6000) done = { phase: "ok" };   // node has had a sync to pick it up
+    } else if (op.verb === "start") {                          // was DOWN → success once it's up
       if (!down) done = { phase: "ok" };
       else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
       else if (!pending && now - op.started > 6000) done = { phase: "fail", err: cerr || down };
@@ -1298,10 +1303,13 @@ function EditIfaceSheet({ node, iface }) {
       await Store.poll();   // trackIfaceOps drives busy → started/failed
       return;
     }
-    setBusy(true); setMsg({ k: "work", t: "saving…" });
+    // up → apply LIVE (no restart); light "applying… → applied" tag while the node picks it up
+    const key = node + "|" + iface;
+    Store.ifaceOp[key] = { verb: "apply", phase: "busy", started: Date.now() };
+    Store.apply(); closeModal();
     const r = await api.ifaceUpdate(body);
-    if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to update interface." }); }
-    closeModal(); await Store.poll(); toast("Interface saved — the node applies it on its next sync.", "ok");
+    if (!r.ok) { Store.ifaceOp[key] = { verb: "apply", phase: "fail", until: Date.now() + 5000, err: r.error || "save failed" }; Store.apply(); setTimeout(() => Store.apply(), 5100); return; }
+    await Store.poll();
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
