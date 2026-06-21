@@ -1233,6 +1233,7 @@ function EditIfaceSheet({ node, iface }) {
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
+  const idown = (((Store.stats[node] || {}).interfaces || {})[iface] || {}).down;   // not up on the node
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true); setMsg({ k: "work", t: "saving…" });
@@ -1240,7 +1241,9 @@ function EditIfaceSheet({ node, iface }) {
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
     const r = await api.ifaceUpdate(body);
     if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to update interface." }); }
-    closeModal(); await Store.poll(); toast("Interface saved — the node applies the port on its next sync.", "ok");
+    if (idown) await api.ifaceRestart({ node, iface });   // down → also bring it up so the new port/settings apply
+    closeModal(); await Store.poll();
+    toast(idown ? "Saved — restarting the interface to apply the new settings." : "Interface saved — the node applies the port on its next sync.", "ok");
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
@@ -1249,6 +1252,7 @@ function EditIfaceSheet({ node, iface }) {
       <div>Changing the Listen port reconfigures the interface on the node (peers are kept; clients reconnect on the new port).</div>
       <div>DNS / MTU seed new peers — existing per-peer values aren't touched.</div>
     </div>
+    ${idown ? html`<div class="notice warn" style="margin-bottom:18px"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${Object.keys(meta.drift || {}).length ? html`<div class="notice warn" style="margin-bottom:18px">
       <${Ic} i="warn"/><span><b>Edited directly on the server.</b> The panel paused pushing these so your change survives — Adopt to keep the server value, or Restore to re-apply the panel's:
       ${Object.entries(meta.drift).map(([k, v]) => html`<div style="margin-top:7px"><span class="mono">${k === "awg_params" ? "AWG params" : k}</span> on node = <span class="mono">${k === "awg_params" ? Object.entries(v).map(([a, b]) => a + "=" + b).join(" ") : v}</span>
