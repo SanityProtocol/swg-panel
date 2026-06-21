@@ -147,10 +147,10 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   done; }
 
 # ── turn-proxy (vk-turn-proxy) — host systemd service forwarding to the published wg port ──
-# The turn-proxy runs as a HOST systemd service (forwards to the node container's published wg
-# port). Its record goes into ./data/node, which is bind-mounted into swg-node at
-# /var/lib/swg-noded, so swg-noded (SWG_TURN_RECORD) reports the turn-proxies to the panel.
-TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"; TURN_RECORD="${TURN_RECORD:-$INSTALL_DIR/data/node/turn-proxy.json}"
+# Each turn-proxy runs as a sibling CONTAINER (swg-turn-*); the installer only writes the record into
+# ./data/node, which is bind-mounted into swg-node at /var/lib/swg-noded. swg-noded (SWG_TURN_RECORD)
+# materialises it into containers on its first run and reports them to the panel.
+TURN_RECORD="${TURN_RECORD:-$INSTALL_DIR/data/node/turn-proxy.json}"
 declare -A TP_LISTEN TP_CONNECT TP_WRAP
 turn_repo_owner(){ case "$1" in
   WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
@@ -177,10 +177,7 @@ for t in (tps if isinstance(tps, list) else []):
     print("\t".join([str(t.get("service", "")), str(t.get("listen", "")), str(t.get("connect", "")), str(t.get("wrap_key", ""))]))
 PY
 ) ; }
-turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }
-  curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
-# One instance == one systemd unit, keyed by <fork>-<port> so the SAME fork can run many times
+# One instance == one container (swg-turn-<fork>-<port>) so the SAME fork can run many times
 # (2× wings, 3× samosvalishe, …) — each on its own port with its own wrap key.
 install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" port inst svc
   # CONTAINER model: don't install a host systemd unit or download here — just write the turn RECORD.
@@ -235,7 +232,6 @@ install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in
   [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
                  || warn "$sel has no wrap/srtp obfuscation flags — installing plain (-listen/-connect only)."
   install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap"; }
-write_turn_record(){ :; }   # no-op: install_turn_binary writes the full record entry directly (container model)
 choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; local sel names n
   while :; do
     detect_turn; names=("${!TP_LISTEN[@]}")
@@ -262,7 +258,7 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
       4|Moroka8)        install_turn_proxy Moroka8; continue;;
       5|anton48)        install_turn_proxy anton48; continue;;
       *) warn "enter a number 0–5 (or press Enter to skip)";; esac
-  done; write_turn_record; }
+  done; }
 
 # ───────────────────────── flags ─────────────────────────
 while [ $# -gt 0 ]; do

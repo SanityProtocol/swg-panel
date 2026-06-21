@@ -93,9 +93,11 @@ EOF
   while IFS="$(printf '\t')" read -r svc owner lis con params; do
     [ -n "$svc" ] || continue
     [ -n "$owner" ] || { warn "  $svc: no fork in the record — skipping"; continue; }
+    docker rm -f "swg-turn-${svc#vk-turn-proxy-}" >/dev/null 2>&1 || true   # free the listen port BEFORE the host unit binds it
     if turn_install_host "$svc" "$owner" "$lis" "$con" "$params"; then
-      docker rm -f "swg-turn-${svc#vk-turn-proxy-}" >/dev/null 2>&1 || true
       info "  migrated $(b "$svc") → host systemd"
+    else
+      warn "  $svc: host install failed — the container was already removed, re-add it from the panel"
     fi
   done <<EOF
 $list
