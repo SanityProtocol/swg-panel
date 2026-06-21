@@ -185,12 +185,25 @@ docker_node_ifaces(){   # interfaces managed by a co-located DOCKER node (its ./
     for c in "$d"/data/node-confs/*.conf; do [ -f "$c" ] && basename "$c" .conf; done
   done
 }
-transfer_from_docker(){ # move an interface from the docker node to bare-metal: copy conf out + drop it there
-  local n="$1" d="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}" src dest
+transfer_from_docker(){ # import a docker node-conf to bare-metal: copy out, ADD host NAT, drop the source
+  local n="$1" d="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}" src dest addr subnet wan up down
   src="$d/data/node-confs/$n.conf"; [ -f "$src" ] || return 0
-  if grep -qiE '^[[:space:]]*(Jc|S1|H1)[[:space:]]*=' "$src"; then dest="/etc/amnezia/amneziawg/$n.conf"; else dest="/etc/wireguard/$n.conf"; fi
-  run mkdir -p "$(dirname "$dest")"; run cp "$src" "$dest"; run rm -f "$src"
-  ok "transferred $(col "$C_GREEN" "$n") from the docker node"
+  if grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I1)[[:space:]]*=' "$src"; then dest="/etc/amnezia/amneziawg/$n.conf"; else dest="/etc/wireguard/$n.conf"; fi
+  run mkdir -p "$(dirname "$dest")"
+  # docker confs carry NO PostUp (the container does its own NAT) — inject host NAT so the bare iface routes
+  addr="$(sed -n 's/^[[:space:]]*[Aa]ddress[[:space:]]*=//p' "$src" | head -1 | sed 's/,.*//; s/[[:space:]]//g')"
+  subnet="$(python3 -c 'import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))' "$addr" 2>/dev/null || echo "$addr")"
+  wan="$(detect_wan)"; [ -n "$wan" ] || wan=eth0
+  up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+  down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+  if $DRYRUN; then echo "    [skip] import $src → $dest (+ host NAT)"
+  else awk -v up="$up" -v down="$down" '
+    /^[[:space:]]*[Pp]ost(Up|Down)[[:space:]]*=/ {next}
+    {print}
+    /^\[Interface\][[:space:]]*$/ && !d {print "PostUp = " up; print "PostDown = " down; d=1}
+  ' "$src" > "$dest"; chmod 600 "$dest"; fi
+  run rm -f "$src"
+  ok "imported $(col "$C_GREEN" "$n") from the docker node-confs (host NAT added)"
 }
 choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' creates more
   detect_wg
@@ -198,12 +211,16 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
   else
     info "Checking for wg / awg on this host…"
-    if [ "${#IF_CMD[@]}" -eq 0 ]; then
+    # only nothing-to-do if there are NEITHER /etc confs NOR leftover docker node-confs (a removed
+    # docker node whose peers were kept) — the latter are offered for import in the loop below.
+    if [ "${#IF_CMD[@]}" -eq 0 ] && [ -z "$(docker_node_ifaces)" ]; then
       warn "No wg / awg interfaces found in /etc/wireguard or /etc/amnezia."
       local doit; ask_yn "Create one now? (installs WireGuard / AmneziaWG only if missing)" y doit
       [ "$doit" = yes ] && spec_iface
       detect_wg
       [ "${#IF_CMD[@]}" -eq 0 ] && [ "${#SPEC_ORDER[@]}" -eq 0 ] && die "No interface. Create one, then re-run (or set MANAGE_IFACES)."
+    elif [ "${#IF_CMD[@]}" -eq 0 ]; then
+      info "Found leftover docker node-confs to import: $(col "$C_GREEN" "$(echo $(docker_node_ifaces))")"
     fi
     local names pick n dk avail mine xfer bad yn; local -a sel=()
     while :; do
@@ -213,7 +230,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
       echo
       [ -n "$mine" ] && { printf "  Interfaces already on this node:"; for n in $mine; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
       printf "  Available orphan interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
-      [ -n "$dk" ] && { printf "  Interfaces used by the docker node on this server:"; for n in $dk; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
+      [ -n "$dk" ] && { printf "  Interfaces from a docker node on this server (import to this node):"; for n in $dk; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
       echo
       if [ -z "$avail" ] && [ -z "$mine" ] && [ -n "$dk" ]; then   # only docker-node interfaces → transfer or create
         printf "  Enter a name to %s it from the docker node, or %s to create one: " "$(col "$C_BLUE" transfer)" "$(col "$C_BLUE" new)"

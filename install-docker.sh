@@ -516,22 +516,27 @@ host_wg_ifaces(){   # live wg/awg interface NAMES on the host (any owner)
     ip -d link show "$d" 2>/dev/null | grep -qE 'amneziawg|wireguard' && echo "$d"
   done
 }
-find_iface_conf(){  # echo the .conf path for an interface (searches the usual dirs); empty if none
+etc_awg_conf(){     # echo the /etc/amnezia conf for an interface (ANY subdir — users install in odd places); empty if none
+  [ -f "/etc/amnezia/amneziawg/$1.conf" ] && { echo "/etc/amnezia/amneziawg/$1.conf"; return 0; }
+  [ -d /etc/amnezia ] && find /etc/amnezia -maxdepth 3 -type f -name "$1.conf" 2>/dev/null | head -1
+}
+etc_wg_conf(){ [ -f "/etc/wireguard/$1.conf" ] && echo "/etc/wireguard/$1.conf"; }
+find_iface_conf(){  # echo the .conf path for an interface (docker data dir + the default wg/awg dirs); empty if none
   local n="$1" p
-  for p in "$INSTALL_DIR/data/node-confs/$n.conf" "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf"; do
-    [ -f "$p" ] && { echo "$p"; return 0; }
-  done
+  [ -f "$INSTALL_DIR/data/node-confs/$n.conf" ] && { echo "$INSTALL_DIR/data/node-confs/$n.conf"; return 0; }
+  p="$(etc_awg_conf "$n")"; [ -n "$p" ] && { echo "$p"; return 0; }
+  p="$(etc_wg_conf "$n")";  [ -n "$p" ] && { echo "$p"; return 0; }
 }
 is_kernel_iface(){  # true if backed by a kernel/host unit or an /etc conf (NOT just a docker-data conf) —
-  [ -f "/etc/amnezia/amneziawg/$1.conf" ] && return 0    # i.e. it runs on the kernel here, not in a container
-  [ -f "/etc/wireguard/$1.conf" ] && return 0
+  [ -n "$(etc_awg_conf "$1")" ] && return 0   # i.e. it runs on the kernel here, not in a container
+  [ -n "$(etc_wg_conf "$1")" ] && return 0
   systemctl is-enabled "awg-quick@$1" >/dev/null 2>&1 && return 0
   systemctl is-enabled "wg-quick@$1"  >/dev/null 2>&1 && return 0
   return 1
 }
 kern_label(){       # human label of the kernel service an interface currently runs as
-  if   [ -f "/etc/amnezia/amneziawg/$1.conf" ]; then echo "kernel AmneziaWG (awg-quick@$1)"
-  elif [ -f "/etc/wireguard/$1.conf" ];        then echo "kernel WireGuard (wg-quick@$1)"
+  if   [ -n "$(etc_awg_conf "$1")" ]; then echo "kernel AmneziaWG (awg-quick@$1)"
+  elif [ -n "$(etc_wg_conf "$1")" ];  then echo "kernel WireGuard (wg-quick@$1)"
   else echo "the kernel datapath"; fi
 }
 bm_node_ifaces(){   # interfaces a co-located BARE-METAL node manages (from its agent config)
@@ -547,8 +552,7 @@ onboard_iface(){    # bring an interface under this docker node: import its .con
   local n="$1" src kconf="" dest                       # NB: don't reference $n in the same `local` (set -u)
   dest="$INSTALL_DIR/data/node-confs/$n.conf"
   # prefer a kernel/host conf as the source — so a migration also tears the kernel side down
-  if   [ -f "/etc/amnezia/amneziawg/$n.conf" ]; then kconf="/etc/amnezia/amneziawg/$n.conf"
-  elif [ -f "/etc/wireguard/$n.conf" ];        then kconf="/etc/wireguard/$n.conf"; fi
+  kconf="$(etc_awg_conf "$n")"; [ -n "$kconf" ] || kconf="$(etc_wg_conf "$n")"
   src="${kconf:-$(find_iface_conf "$n")}"
   [ -n "$src" ] || { warn "no .conf found for '$n' (orphan interface — no keys to adopt); skipping"; return 1; }
   run mkdir -p "$INSTALL_DIR/data/node-confs"
@@ -591,7 +595,13 @@ manage_node_ifaces(){
   while :; do
     mine="$(current_node_ifaces | tr '\n' ' ')" || true   # under set -euo pipefail these subs can exit non-zero
     bm="$(bm_node_ifaces)" || true
-    cand="$( { host_wg_ifaces; for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf; do [ -f "$c" ] && basename "$c" .conf; done; } | sort -u )" || true
+    # candidates from EVERY source: live ifaces, our docker source-of-truth dir, AND the default
+    # wg/awg dirs (any /etc/amnezia subdir + /etc/wireguard) so a pre-existing user install is found.
+    cand="$( { host_wg_ifaces        # live iface NAMES (already bare)
+      { [ -d /etc/amnezia ] && find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null
+        printf '%s\n' /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf
+      } | while read -r c; do [ -f "$c" ] && basename "$c" .conf; done    # conf PATHS -> bare names
+      } | sort -u )" || true
     # split the free interfaces: docker ORPHANS (left by a previous container) vs KERNEL interfaces
     # (running on the host's kernel datapath — onboarding one MOVES it off the kernel).
     dock=""; kern=""
