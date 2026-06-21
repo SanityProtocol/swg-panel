@@ -536,7 +536,13 @@ onboard_iface(){    # bring an interface under this docker node: copy its .conf 
   src="$(find_iface_conf "$n")"
   [ -n "$src" ] || { warn "no .conf found for '$n' (orphan interface — no keys to adopt); skipping"; return 1; }
   run mkdir -p "$INSTALL_DIR/data/node-confs"
-  [ "$src" = "$dest" ] || run cp "$src" "$dest"
+  # copy the conf WITHOUT the host PostUp/PostDown NAT hooks — inside the swg-node container those
+  # iptables rules (bound to the host's WAN) fail and break `awg-quick up`, leaving the iface DOWN.
+  # The container sets up its own NAT (node-entrypoint). Keys + Amnezia params are preserved.
+  if [ "$src" != "$dest" ]; then
+    if $DRYRUN; then echo "    [skip] import $src → $dest (strip host NAT hooks)"
+    else grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$dest"; chmod 600 "$dest"; fi
+  fi
   $DRYRUN || { grep -q '^#swg:onboarded' "$dest" 2>/dev/null || sed -i '1i #swg:onboarded' "$dest" 2>/dev/null || true; }   # add-only: swg-noded keeps the orphan's existing peers
   if _in "$n" "$(bm_node_ifaces)"; then          # transfer: detach from the bare-metal node side
     run awg-quick down "$n" 2>/dev/null || run wg-quick down "$n" 2>/dev/null || true

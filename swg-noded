@@ -507,7 +507,12 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         cmd = ic.get("cmd", ["awg"])
         try:                                        # one bad interface must never kill the whole snapshot
-            dump = run(cmd + ["show", iface, "dump"]).stdout
+            _r = run(cmd + ["show", iface, "dump"])
+            if _r.returncode != 0:                  # interface isn't up — report it so the panel flags it (not just empty)
+                interfaces[iface] = {"peers": [], "meta": {},
+                                     "down": ((_r.stderr or "").strip() or "interface is not up")[:140]}
+                continue
+            dump = _r.stdout
             iface_line, raw = parse_dump(dump)
             try:
                 conf_text = open(ic["conf"]).read()
@@ -543,7 +548,10 @@ def current_pubkeys(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = ic.get("cmd", ["awg"])
     try:
-        _, peers = parse_dump(run(cmd + ["show", iface, "dump"]).stdout)
+        r = run(cmd + ["show", iface, "dump"])
+        if r.returncode != 0:                       # interface down / no such device — NOT "zero peers"
+            return None
+        _, peers = parse_dump(r.stdout)
         return {p["public_key"] for p in peers}
     except Exception:
         return None

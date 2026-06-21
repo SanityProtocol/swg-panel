@@ -49,11 +49,12 @@ function reconcile(roster, stats, now, cfg) {
     nodeStatus[node] = (gen && (now - gen * 1000) <= cfg.nodeStaleMs) ? "live" : "stale";
   }
 
-  // observed peers, keyed node|iface|pubkey
-  const observed = {};
+  // observed peers, keyed node|iface|pubkey  (+ interfaces the node reports as DOWN, so we can say why)
+  const observed = {}, ifDown = {};
   for (const node of Object.keys(stats)) {
     const ifaces = (stats[node] && stats[node].interfaces) || {};
     for (const iface of Object.keys(ifaces)) {
+      if (ifaces[iface] && ifaces[iface].down) ifDown[node + "|" + iface] = ifaces[iface].down;
       for (const p of (ifaces[iface].peers || [])) observed[node + "|" + iface + "|" + p.public_key] = p;
     }
   }
@@ -88,7 +89,8 @@ function reconcile(roster, stats, now, cfg) {
       const via = (obs && obs.endpoint)
         ? ((turnIp[t.node] && turnIp[t.node].has(ipOf(obs.endpoint))) ? "turn" : "direct") : null;
       return { node: t.node, iface: t.iface, ip: t.ip, type: t.type,
-               status: st, online: !!(obs && obs.online), observed: obs, via: via };
+               status: st, online: !!(obs && obs.online), observed: obs, via: via,
+               down: ifDown[t.node + "|" + t.iface] || null };
     });
 
     const live = targets.filter(d => nodeStatus[d.node] === "live");
@@ -100,6 +102,14 @@ function reconcile(roster, stats, now, cfg) {
     else if (present.length === 0) status = (now - createdMs) <= cfg.graceMs ? "pending" : "dangling";
     else if (present.length < live.length) status = "partial";
     else status = onlineAny ? "online" : "ready";
+
+    let reason = null;   // why a peer isn't healthy — surfaced on the status badge (incl. a DOWN interface)
+    if (status === "dangling" || status === "partial" || status === "pending") {
+      const dt = targets.find(d => d.down);
+      reason = dt ? ("interface " + dt.iface + " is down — " + dt.down)
+                  : (status === "dangling" ? "missing on every server"
+                     : status === "partial" ? "missing on some live servers" : "created — not seen on a node yet");
+    }
 
     let lastAge = null;
     targets.forEach(d => {
@@ -113,7 +123,7 @@ function reconcile(roster, stats, now, cfg) {
       name: user ? (user.name || "") : "", tag: user ? (user.tag || "") : "",
       unassigned: !user,
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
-      status: status, online: onlineAny, lastHandshakeAge: lastAge,
+      status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,
       presentCount: present.length, liveCount: live.length,
     };
   });

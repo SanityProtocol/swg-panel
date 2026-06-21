@@ -455,9 +455,9 @@ function closeModal() { _modalSeq++; _setModal(null); }
 const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
-function Badge({ s }) {
+function Badge({ s, title }) {
   const ic = STATUS_ICON[s];
-  return html`<span class=${"badge b-" + s + (ic ? " ic" : "")}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
+  return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
 }
 
 // inline metadata tag (protocol / interface / turn-proxy / generic) — the dense, colored
@@ -1496,7 +1496,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q }) {
         const u = p.user_id ? Store.user(p.user_id) : null;
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class="clk" onClick=${() => openPeerView(p.id, t.node, t.iface)}>
-          <td data-label="Status"><${Badge} s=${t.status || p.status}/></td>
+          <td data-label="Status"><${Badge} s=${t.status || p.status} title=${(t.down ? "interface " + t.iface + " is down — " + t.down : p.reason) || ""}/></td>
           ${agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
             ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
             ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
