@@ -25,11 +25,10 @@ ask_yn(){ local v p="$1" d="${2:-n}"; if [ -n "${!3:-}" ]; then return; fi
   read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
-ask_comp(){ local v; $ASSUME_YES && return 0                # $3 = optional note (e.g. peer fate)
+ask_comp(){ local v; $ASSUME_YES && return 0
   if [ ! -t 0 ] && [ ! -e /dev/tty ]; then return 1; fi   # no tty, not --yes => keep
-  read -rp "  Uninstall $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}?${3:+ $3} (y/N): " v </dev/tty || true
+  read -rp "  Uninstall $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
   case "$v" in [Yy]*) return 0;; *) return 1;; esac; }
-_peer_fn(){ case "$1" in rm_awg|rm_wg|rm_docker_node) return 0;; *) return 1;; esac; }   # bears peer confs
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
 $DRYRUN && info "DRY RUN — nothing will be changed."
@@ -37,7 +36,7 @@ $DRYRUN && info "DRY RUN — nothing will be changed."
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
 SD="${SYSTEMD_DIR:-/etc/systemd/system}"   # overridable for testing
-KEEP_PEERS="${KEEP_PEERS:-}"               # yes|no — preset to skip the "keep the peers?" prompt
+DOCKER_DATA_DEL=""; DOCKER_KEEP_CONFS=""   # docker data-dir fate — decided up front, applied after teardown
 DOMAIN=""
 [ -f /etc/nginx/sites-available/swg-panel.conf ] && \
   DOMAIN="$(sed -n 's/[[:space:]]*server_name[[:space:]]\+\([^;]*\);.*/\1/p' /etc/nginx/sites-available/swg-panel.conf | head -n1 | tr -d ' ')"
@@ -153,21 +152,34 @@ rm_node(){
 # swg-panel and swg-node are SEPARATE containers — remove each on its own. The shared
 # deployment dir / network / images / data are only torn down once BOTH are gone.
 docker_running(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; }
-docker_remove_dir(){
-  local KEEP="${KEEP_DOCKER_DATA:-}"; ask_yn "  Keep the data dir ($DOCKER_DIR/data: login, nodes, certs) for a future reinstall?" n KEEP
-  if [ "$KEEP" = yes ]; then
+_rm_node_data(){  rmrf "$DOCKER_DIR/data/node" "$DOCKER_DIR/data/node-confs"; }      # node-only state + iface confs
+_rm_panel_data(){ rmrf "$DOCKER_DIR/data/etc" "$DOCKER_DIR/data/lib" "$DOCKER_DIR/data/stats"; }  # login/roster/certs
+ask_full_data_fate(){   # the LAST swg container is going → decide the WHOLE data dir up front (before teardown)
+  local desc=""
+  [ -d "$DOCKER_DIR/data/lib" ] && desc="login, roster (users+peers), "
+  [ -d "$DOCKER_DIR/data/etc" ] && desc="${desc}nodes, certs, "
+  [ -d "$DOCKER_DIR/data/node-confs" ] && desc="${desc}interface configs (peers), "
+  desc="${desc%, }"; [ -n "$desc" ] || desc="state"
+  ask_yn "  Delete the data dir ($DOCKER_DIR/data: $desc)?" n DOCKER_DATA_DEL
+  DOCKER_KEEP_CONFS=""
+  if [ "$DOCKER_DATA_DEL" = yes ] && [ -d "$DOCKER_DIR/data/node-confs" ]; then
+    ask_yn "  Keep at least the peers? Leaves data/node-confs (keys + peers) so a future install can re-onboard them." y DOCKER_KEEP_CONFS
+  fi
+}
+apply_full_data_fate(){   # run AFTER teardown, using the decision captured by ask_full_data_fate
+  if [ "$DOCKER_DATA_DEL" != yes ]; then
     rmrf "$DOCKER_DIR/.env" "$DOCKER_DIR/docker-compose.yml" "$DOCKER_DIR/Dockerfile" "$DOCKER_DIR/Dockerfile.node" \
          "$DOCKER_DIR/.dockerignore" "$DOCKER_DIR/VERSION" "$DOCKER_DIR/docker" "$DOCKER_DIR/vendor" \
          "$DOCKER_DIR/swg-panel-server" "$DOCKER_DIR/swg-agent" "$DOCKER_DIR/swg-noded" \
          "$DOCKER_DIR/index.html" "$DOCKER_DIR/app.css" "$DOCKER_DIR/app.js" "$DOCKER_DIR/reconcile.js"
-    ok "Kept $DOCKER_DIR/data"
-  elif [ -d "$DOCKER_DIR/data/node-confs" ] && keep_peers; then
-    # keep ONLY the interface confs so a future install can re-onboard the peers (drop everything else)
+    ok "Kept $DOCKER_DIR/data for a future reinstall"
+  elif [ "$DOCKER_KEEP_CONFS" = yes ]; then
+    # keep ONLY the interface confs (the peers) — drop everything else
     run sh -c "find '$DOCKER_DIR' -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} + 2>/dev/null; find '$DOCKER_DIR/data' -mindepth 1 -maxdepth 1 ! -name node-confs -exec rm -rf {} + 2>/dev/null"
-    ok "Kept $DOCKER_DIR/data/node-confs — peers can be re-onboarded on a future install"
+    ok "Kept $DOCKER_DIR/data/node-confs — peers re-onboardable; everything else removed"
   else rmrf "$DOCKER_DIR"; fi
 }
-docker_cleanup_if_last(){   # only tears down the shared bits when NO swg container remains
+docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only once NO swg container remains
   if docker_running swg-panel || docker_running swg-node; then return 0; fi
   if command -v docker >/dev/null 2>&1; then
     local DC=""; if docker compose version >/dev/null 2>&1; then DC="docker compose"; elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
@@ -175,46 +187,63 @@ docker_cleanup_if_last(){   # only tears down the shared bits when NO swg contai
     local RMI="${REMOVE_DOCKER_IMAGES:-}"; ask_yn "  Remove the pulled swg-panel / swg-node images too?" n RMI
     [ "$RMI" = yes ] && run sh -c 'docker rmi ghcr.io/sanityprotocol/swg-panel:latest ghcr.io/sanityprotocol/swg-node:latest swg-panel-docker-swg-panel swg-panel-docker-swg-node >/dev/null 2>&1 || true'
   fi
-  docker_remove_dir
+  apply_full_data_fate
 }
 rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
-  run sh -c 'docker rm -f swg-panel >/dev/null 2>&1 || true'; docker_cleanup_if_last; ok "swg-panel container removed"; }
+  local DELP=""
+  if docker_running swg-node; then    # node stays → only the panel's OWN data is in play (decide now)
+    ask_yn "  Delete the panel data (login, roster (users+peers), nodes, certs)? The node's interface configs are kept." n DELP
+  else ask_full_data_fate; fi         # panel is the last container → the whole data dir
+  run sh -c 'docker rm -f swg-panel >/dev/null 2>&1 || true'
+  if docker_running swg-node; then
+    [ "$DELP" = yes ] && { _rm_panel_data; info "  Removed the panel data; node interface configs untouched."; } \
+                      || info "  Kept the panel data; node interface configs untouched."
+  else docker_cleanup_if_last; fi     # applies the data-dir decision captured above
+  ok "swg-panel container removed"; }
 rm_docker_node(){  info "Removing Docker node container (swg-node)"
-  docker_node_goodbye   # sign off to the panel (token + URL from .env) so it drops itself, before teardown
-  run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'; docker_cleanup_if_last; ok "swg-node container removed"; }
-rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"; docker_remove_dir; ok "Docker deployment files removed"; }
+  local KNODE=""
+  if docker_running swg-panel; then   # master/panel stays → only the NODE's own data is in play (decide now)
+    ask_yn "  Keep the node's interface configs (peers)? Leaves data/node-confs so a future install can re-onboard them." y KNODE
+  else ask_full_data_fate; fi         # node is the last container → the whole data dir
+  docker_node_goodbye                 # sign off to the panel (token + URL from .env) before teardown
+  run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'
+  if docker_running swg-panel; then
+    [ "$KNODE" = yes ] && info "  Kept $DOCKER_DIR/data/node-confs (peers re-onboardable); panel data untouched." \
+                       || { _rm_node_data; info "  Removed the node's interface configs; panel data untouched."; }
+  else docker_cleanup_if_last; fi     # applies the data-dir decision captured above
+  ok "swg-node container removed"; }
+rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"; ask_full_data_fate; apply_full_data_fate; ok "Docker deployment files removed"; }
 
 down_ifaces(){ local dir="$1" tool="$2" f n
   for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"
     command -v "$tool" >/dev/null 2>&1 && run "$tool" down "$n"; done; }
 
-# Asked at most ONCE (ask_yn memoises via the KEEP_PEERS var): keep the interface .conf files so a
-# future install can re-onboard the peers. Returns 0 (true) when the operator wants to keep them.
-keep_peers(){
-  ask_yn "  Keep the peers? Leaves the interface .conf files (keys + peers) so a future install can re-onboard them." y KEEP_PEERS
-  [ "$KEEP_PEERS" = yes ]
-}
+# Per-component (NOT shared): keep this datapath's interface .conf files so a future install can
+# re-onboard the peers? Default yes. $1 = label for the prompt, $2 = outvar (set to yes|no).
+ask_keep_peers(){ ask_yn "  Keep the $1 peers? Leaves the interface .conf files (keys + peers) so a future install can re-onboard them." y "$2"; }
 
 rm_awg(){
-  info "Removing AmneziaWG"
+  info "Removing kernel AmneziaWG"
   down_ifaces /etc/amnezia/amneziawg awg-quick
-  if keep_peers; then info "  Kept /etc/amnezia/amneziawg configs — peers can be re-onboarded on a future install."
+  local K=""; ask_keep_peers "kernel AmneziaWG" K
+  if [ "$K" = yes ]; then info "  Kept /etc/amnezia/amneziawg configs — peers can be re-onboarded on a future install."
   else rmrf /etc/amnezia/amneziawg; info "  Deleted /etc/amnezia/amneziawg configs (peers/keys erased)."; fi
   if command -v apt-get >/dev/null 2>&1; then
     run apt-get purge -y amneziawg amneziawg-tools amneziawg-dkms
     run add-apt-repository -y --remove ppa:amnezia/ppa; run apt-get autoremove -y
   else warn "Non-apt system — remove the amneziawg packages with your package manager."; fi
-  ok "AmneziaWG removed"
+  ok "kernel AmneziaWG removed"
 }
 
 rm_wg(){
-  info "Removing WireGuard"
+  info "Removing kernel WireGuard"
   down_ifaces /etc/wireguard wg-quick
-  if keep_peers; then info "  Kept /etc/wireguard configs — peers can be re-onboarded on a future install."
+  local K=""; ask_keep_peers "kernel WireGuard" K
+  if [ "$K" = yes ]; then info "  Kept /etc/wireguard configs — peers can be re-onboarded on a future install."
   else rmrf /etc/wireguard; info "  Deleted /etc/wireguard configs (peers/keys erased)."; fi
   if command -v apt-get >/dev/null 2>&1; then run apt-get purge -y wireguard wireguard-tools; run apt-get autoremove -y
   else warn "Non-apt system — remove the wireguard packages with your package manager."; fi
-  ok "WireGuard removed"
+  ok "kernel WireGuard removed"
 }
 
 rm_turn(){ local unit="$1" name fork
@@ -290,8 +319,8 @@ awg_present(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.s
   || { command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii +amneziawg(-tools| |$)'; }; }
 wg_present(){ ls /etc/wireguard/*.conf >/dev/null 2>&1 || ls $SD/wg-quick@*.service >/dev/null 2>&1 \
   || { command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii +wireguard '; }; }
-awg_present && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "AmneziaWG" "$_d" rm_awg "" "$_d"; }
-wg_present  && { _d="$(iface_list /etc/wireguard)";        add "WireGuard" "$_d" rm_wg "" "$_d"; }
+awg_present && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "kernel AmneziaWG" "$_d" rm_awg "" "$_d"; }
+wg_present  && { _d="$(iface_list /etc/wireguard)";        add "kernel WireGuard" "$_d" rm_wg "" "$_d"; }
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
   fork="$(basename "$unit" .service)"; fork="${fork#vk-turn-proxy-}"
@@ -310,18 +339,11 @@ $ASSUME_YES && info "--yes: every component will be uninstalled (you'll still be
             || echo "  You will be prompted to uninstall or keep each component. Please pay attention."
 echo
 
-# Decide the peers' fate UP FRONT (only if something here bears peers), so each component prompt can
-# say what will happen to them before you answer. keep_peers memoises into KEEP_PEERS.
-for i in $(seq 0 $((N-1))); do _peer_fn "${CFN[$i]}" && { keep_peers || true; echo; break; }; done
-
+# Per component: ask "Uninstall X?"; if yes, the removal fn asks its own destructive sub-questions
+# (keep peers / delete data dir) so the peers' fate is decided in context, not up front.
 DID_REMOVE=(); DID_KEEP=()
 for i in $(seq 0 $((N-1))); do
-  note=""
-  if _peer_fn "${CFN[$i]}"; then
-    [ "$KEEP_PEERS" = yes ] && note="$(c '0;32')Peers will not be deleted.$(c 0)" \
-                            || note="$(c '0;31')Peers/keys will be erased.$(c 0)"
-  fi
-  if ask_comp "${CLABEL[$i]}" "${CHINT[$i]}" "$note"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
+  if ask_comp "${CLABEL[$i]}" "${CHINT[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
   else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}"); fi
   echo
 done
