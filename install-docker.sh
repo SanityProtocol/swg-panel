@@ -508,9 +508,9 @@ manage_node_ifaces(){
   echo
   local mine bm cand avail n pick xfer bad yn
   while :; do
-    mine="$(current_node_ifaces | tr '\n' ' ')"
-    bm="$(bm_node_ifaces)"
-    cand="$( { host_wg_ifaces; for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf; do [ -f "$c" ] && basename "$c" .conf; done; } | sort -u )"
+    mine="$(current_node_ifaces | tr '\n' ' ')" || true   # under set -euo pipefail these subs can exit non-zero
+    bm="$(bm_node_ifaces)" || true
+    cand="$( { host_wg_ifaces; for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf; do [ -f "$c" ] && basename "$c" .conf; done; } | sort -u )" || true
     avail=""; for n in $cand; do _in "$n" "$mine" && continue; _in "$n" "$bm" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
     [ -n "$mine" ] && { printf "  Interfaces already on this node:"; for n in $mine; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
     printf "  Currently available interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
@@ -520,7 +520,7 @@ manage_node_ifaces(){
     printf "  Or enter interface names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
     if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
     if [ -z "$(echo $pick)" ]; then                # Enter → onboard all available + proceed
-      for n in $avail; do onboard_iface "$n"; done
+      for n in $avail; do onboard_iface "$n" || true; done
       [ -n "$(current_node_ifaces)" ] || { warn "no interfaces yet — type 'new' to create one"; echo; continue; }
       break
     fi
@@ -538,7 +538,7 @@ manage_node_ifaces(){
       read -r yn </dev/tty || yn=n
       case "$yn" in [Yy]*) : ;; *) echo; continue;; esac
     fi
-    for n in $pick; do _in "$n" "$mine" || onboard_iface "$n"; done
+    for n in $pick; do _in "$n" "$mine" || onboard_iface "$n" || true; done
     break
   done
 }

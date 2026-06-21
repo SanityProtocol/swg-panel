@@ -236,7 +236,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     fi
     local names pick n dk avail xfer bad yn; local -a sel=()
     while :; do
-      detect_wg; names="${!IF_CMD[*]}"; dk="$(docker_node_ifaces)"
+      detect_wg; names="${!IF_CMD[*]}"; dk="$(docker_node_ifaces)" || true
       avail=""; for n in $names; do _in "$n" "$dk" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
       echo
       printf "  Currently available interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
@@ -253,7 +253,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
       if [ -n "$xfer" ]; then
         printf "  Are you sure you want to transfer %s to this node? (y/N): " "$(col "$C_RED" "$(echo $xfer)")"
         read -r yn </dev/tty || yn=n
-        case "$yn" in [Yy]*) for n in $xfer; do transfer_from_docker "$n"; done; detect_wg;; *) continue;; esac
+        case "$yn" in [Yy]*) for n in $xfer; do transfer_from_docker "$n" || true; done; detect_wg;; *) continue;; esac
       fi
       sel=($pick); break
     done
