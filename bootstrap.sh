@@ -107,10 +107,10 @@ if [ -z "$METHOD" ]; then
 fi
 if [ -z "$ROLE" ]; then
   step "Server role"
-  menu "$(b "$(col "$C_BLUE" '[m]aster')")" "Panel + a local WireGuard/AmneziaWG node on this box (all-in-one)."
-  menu "$(col "$C_BLUE" '[h]ost')"          "Panel only; entry-server nodes are deployed separately (run their command from the panel)."
-  menu "$(col "$C_BLUE" '[n]ode')"          "An entry server that joins an existing panel."
-  ask_choice "Select the server role" "" ROLE "master host node"
+  menu "$(b "$(col "$C_BLUE" '[m]aster (default)')")" "Panel + a local WireGuard/AmneziaWG node on this box (all-in-one)."
+  menu "$(col "$C_BLUE" '[h]ost')"                    "Panel only; entry-server nodes are deployed separately (run their command from the panel)."
+  menu "$(col "$C_BLUE" '[n]ode')"                    "An entry server that joins an existing panel."
+  ask_choice "Select the server role" "master" ROLE "master host node"
 fi
 export STEP_BASE="$STEP"          # the installer numbers its steps from here
 
