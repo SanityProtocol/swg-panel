@@ -537,6 +537,7 @@ onboard_iface(){    # bring an interface under this docker node: copy its .conf 
   [ -n "$src" ] || { warn "no .conf found for '$n' (orphan interface — no keys to adopt); skipping"; return 1; }
   run mkdir -p "$INSTALL_DIR/data/node-confs"
   [ "$src" = "$dest" ] || run cp "$src" "$dest"
+  $DRYRUN || { grep -q '^#swg:onboarded' "$dest" 2>/dev/null || sed -i '1i #swg:onboarded' "$dest" 2>/dev/null || true; }   # add-only: swg-noded keeps the orphan's existing peers
   if _in "$n" "$(bm_node_ifaces)"; then          # transfer: detach from the bare-metal node side
     run awg-quick down "$n" 2>/dev/null || run wg-quick down "$n" 2>/dev/null || true
     run systemctl disable --now "awg-quick@$n" 2>/dev/null || true

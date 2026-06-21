@@ -64,6 +64,11 @@ bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (han
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
 fwd_ifaces(){ local cp="${1##*:}" n lp out=""; for n in "${!IF_CONF[@]}"; do lp="$(conf_get "${IF_CONF[$n]}" ListenPort)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && out="${out:+$out }$n"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by ListenPort)
+# add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
+# conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.
+iface_onboarded(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] && grep -q '^#swg:onboarded' "$c" 2>/dev/null; }
+onboard_mark(){ local c="${IF_CONF[$1]:-}"; [ -n "$c" ] || return 0; $DRYRUN && return 0; [ -f "$c" ] || return 0
+  grep -q '^#swg:onboarded' "$c" 2>/dev/null || sed -i '1i #swg:onboarded' "$c" 2>/dev/null || true; }
 info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }   # every ▸ line is bold
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
 warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
@@ -243,6 +248,14 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
         case "$yn" in [Yy]*) for n in $xfer; do transfer_from_docker "$n" || true; done; detect_wg;; *) continue;; esac
       fi
       sel=($mine); for n in $pick; do _in "$n" "$mine" || sel+=("$n"); done; break   # keep mine + the chosen ones
+    done
+    # a freshly ADOPTED orphan (not created here, not a conversion import) is add-only — tag its conf
+    _nodeifs="$(node_ifaces | tr '\n' ' ')"
+    for n in ${sel[@]+"${sel[@]}"}; do n="${n// /}"; [ -z "$n" ] && continue
+      _in "$n" "$_nodeifs" && continue
+      _in "$n" "${CREATED[*]:-}" && continue
+      _in "$n" "${ADOPTED_IFACES:-}" && continue
+      onboard_mark "$n"
     done
     SELECTED=("${sel[@]}")
   fi
@@ -730,7 +743,8 @@ if [ "$HOST_HAS_WG" = yes ]; then
     LOCAL_TOKHASH="$(python3 -c 'import hashlib,os,base64,sys;t=sys.argv[1].encode();s=os.urandom(16);h=hashlib.pbkdf2_hmac("sha256",t,s,200000);print("pbkdf2_sha256$200000$"+base64.b64encode(s).decode()+"$"+base64.b64encode(h).decode())' "$LOCAL_TOKEN")"
     IFJSON=""; sep=""
     for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
-      IFJSON+="$sep    \"$n\": { \"cmd\": [\"${IF_CMD[$n]}\"], \"conf\": \"${IF_CONF[$n]}\", \"endpoint_host\": \"${IF_ENDPOINT[$n]:-}\" }"; sep=$',\n'; done
+      _onb=""; iface_onboarded "$n" && _onb=', "onboarded": true'   # add-only (adopted interface — keep its peers)
+      IFJSON+="$sep    \"$n\": { \"cmd\": [\"${IF_CMD[$n]}\"], \"conf\": \"${IF_CONF[$n]}\", \"endpoint_host\": \"${IF_ENDPOINT[$n]:-}\"${_onb} }"; sep=$',\n'; done
     # node-level endpoint_host is now a fallback (panel uses each interface's own); default it to the first interface's
     if [ -z "$HOST_ENDPOINT_IP" ]; then for n in "${SELECTED[@]}"; do [ -n "${IF_ENDPOINT[$n]:-}" ] && { HOST_ENDPOINT_IP="${IF_ENDPOINT[$n]}"; break; }; done; fi
     [ -z "$HOST_ENDPOINT_IP" ] && HOST_ENDPOINT_IP="$(detect_public_ip)"

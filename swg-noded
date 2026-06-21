@@ -660,6 +660,12 @@ def onboard_ifaces(node_cfg, onboard):
         except Exception as e:
             res["errors"].append(f"{iface}: {e}"); continue
         ifaces[iface] = {"cmd": cmd, "conf": conf, "onboarded": True}   # add-only: never wipe its peers
+        try:                                            # persist the marker in the conf so a docker restart
+            with open(conf) as _f: _t = _f.read()       # (config.json rebuilt from confs) keeps it add-only
+            if "#swg:onboarded" not in _t:
+                with open(conf, "w") as _f: _f.write("#swg:onboarded\n" + _t)
+        except OSError:
+            pass
         changed = True
         res["added"].append(iface)
     if changed:

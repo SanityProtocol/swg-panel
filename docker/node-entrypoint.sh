@@ -27,7 +27,8 @@ MANAGED=""                                  # space-separated interface names
 IFJSON=""; IFSEP=""                          # swg-agent interfaces map (built per-interface, with its endpoint)
 add_iface(){ # add_iface <name> <endpoint>  — record an interface + its own endpoint for the config
   MANAGED="$MANAGED $1"
-  IFJSON="$IFJSON$IFSEP    \"$1\": { \"cmd\": [\"awg\"], \"conf\": \"$AWG_DIR/$1.conf\", \"endpoint_host\": \"${2:-$NODE_ENDPOINT}\" }"
+  _onb=""; grep -q '^#swg:onboarded' "$AWG_DIR/$1.conf" 2>/dev/null && _onb=', "onboarded": true'   # add-only adopted iface (keep its peers)
+  IFJSON="$IFJSON$IFSEP    \"$1\": { \"cmd\": [\"awg\"], \"conf\": \"$AWG_DIR/$1.conf\", \"endpoint_host\": \"${2:-$NODE_ENDPOINT}\"${_onb} }"
   IFSEP=",
 "
 }
