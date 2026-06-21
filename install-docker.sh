@@ -101,6 +101,7 @@ v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1;
 v_host(){ v_ip "$1" && return 0; case "$1" in ""|*" "*|*[!a-zA-Z0-9.-]*) return 1;; *) return 0;; esac; }
 v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 port_free(){ have ss || return 0; [ -z "$(ss -lnuH "sport = :$1" 2>/dev/null)" ]; }   # UDP port not already bound
+panel_owns_port(){ have docker || return 1; docker port swg-panel 2>/dev/null | sed 's/.*-> //' | grep -qE ":$1\$"; }   # host port $1 is published by OUR swg-panel container (re-install) → not a real conflict
 v_freeport(){ v_port "$1" && port_free "$1"; }
 v_hostport(){ case "$1" in *:*) v_host "${1%%:*}" && v_port "${1##*:}";; *) return 1;; esac; }
 v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
@@ -349,7 +350,7 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
     parse_panel_url "$PANEL_DOMAIN"
     # is the port the panel will publish actually free on this host? (catches nginx/apache or a prior panel)
     _pp="${URL_PORT:-443}"
-    if [ "$_forced" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ]; then
+    if [ "$_forced" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ] && ! panel_owns_port "$_pp"; then
       _who="$(ss -lntpH "sport = :$_pp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
       echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))} — the panel can't bind it"
       echo "    Give the panel its own port (e.g. $(b "${PANEL_HOST_NOPORT}:8443")), or stop whatever holds it."
