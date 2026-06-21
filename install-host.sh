@@ -523,6 +523,34 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 # ═══════════════ I. PANEL SETUP ═══════════════
 echo; info "PANEL SETUP"
 
+# Idempotent re-install: detect an existing panel UP FRONT and offer its saved answers as the
+# defaults for every step (mirrors the docker installer's .env reuse). To start fresh, uninstall first.
+EXISTING_HOST=no; KEEP_AUTH=no
+DOM_SAVED=""; BASE_SAVED=""; PORT_SAVED=""; TLS_SAVED=""; SERVE_SAVED=""; ROLE_SAVED=""; EMAIL_SAVED=""; NODENAME_SAVED=""; ENDPOINT_SAVED=""
+_unit=/etc/systemd/system/swg-panel-server.service
+if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
+  EXISTING_HOST=yes; KEEP_AUTH=yes
+  [ "${BASIC_USER:-admin}" = admin ] && [ -f "$ETC_DIR/auth" ] && BASIC_USER="$(cut -d: -f1 "$ETC_DIR/auth" 2>/dev/null || echo admin)"
+  if [ -f "$ETC_DIR/install.conf" ]; then                 # snapshot of the previous install's answers
+    DOM_SAVED="$(sed -n 's/^PANEL_DOMAIN=//p'        "$ETC_DIR/install.conf" | head -1)"
+    BASE_SAVED="$(sed -n 's/^PANEL_BASE=//p'         "$ETC_DIR/install.conf" | head -1)"
+    PORT_SAVED="$(sed -n 's/^PORT=//p'               "$ETC_DIR/install.conf" | head -1)"
+    TLS_SAVED="$(sed -n 's/^TLS_MODE=//p'            "$ETC_DIR/install.conf" | head -1)"
+    SERVE_SAVED="$(sed -n 's/^SERVE_MODE=//p'        "$ETC_DIR/install.conf" | head -1)"
+    ROLE_SAVED="$(sed -n 's/^ROLE_SEL=//p'           "$ETC_DIR/install.conf" | head -1)"
+    EMAIL_SAVED="$(sed -n 's/^ACME_EMAIL=//p'        "$ETC_DIR/install.conf" | head -1)"
+    NODENAME_SAVED="$(sed -n 's/^HOST_NODE_NAME=//p' "$ETC_DIR/install.conf" | head -1)"
+    ENDPOINT_SAVED="$(sed -n 's/^HOST_ENDPOINT_IP=//p' "$ETC_DIR/install.conf" | head -1)"
+    # CF tokens load straight into the live vars so the prompt self-skips and re-issue (if any) just works
+    [ -z "$CF_TOKEN" ]        && CF_TOKEN="$(sed -n 's/^CF_TOKEN=//p'               "$ETC_DIR/install.conf" | head -1)"
+    [ -z "$CF_ORIGIN_TOKEN" ] && CF_ORIGIN_TOKEN="$(sed -n 's/^CF_ORIGIN_TOKEN=//p' "$ETC_DIR/install.conf" | head -1)"
+  fi
+  # fallback for installs predating install.conf: recover PORT + subpath from the running unit
+  [ -z "$PORT_SAVED" ] && [ -f "$_unit" ] && PORT_SAVED="$(sed -n 's/^Environment=SWG_PANEL_PORT=//p' "$_unit" | head -1)"
+  [ -z "$BASE_SAVED" ] && [ -f "$_unit" ] && BASE_SAVED="$(sed -n 's/^Environment=SWG_PANEL_BASE=//p' "$_unit" | head -1)"
+  info "Existing panel install detected — keeping your login, users, nodes + certs; your previous settings are the defaults below. To start fresh, run the uninstaller first."
+fi
+
 # Server role — skipped when already chosen (e.g. by bootstrap.sh)
 ROLE_SEL=""
 case "$ROLE" in master|host+node) ROLE_SEL=master;; host) ROLE_SEL=host;; node) die "for a node-only box run install-node.sh, not this script";; esac
@@ -530,7 +558,7 @@ if [ -z "$ROLE_SEL" ]; then
   step "Server role"
   menu "$(b "$(col "$C_BLUE" 'master (default)')")" "Masternode — this server will host the panel and run WG/AWG interfaces"
   menu "$(col "$C_BLUE" host)"                       "This server will host only the panel. WG/AWG nodes will be deployed separately"
-  ask_choice "Select role" "master" ROLE_SEL "master host"
+  ask_choice "Select role" "${ROLE_SAVED:-master}" ROLE_SEL "master host"
 fi
 case "$ROLE_SEL" in master) ROLE="host+node";; host) ROLE="host";; esac
 HOST_HAS_WG=no; [ "$ROLE" = "host+node" ] && HOST_HAS_WG=yes
@@ -542,6 +570,10 @@ echo "      Where the panel is reached — an IP, a host, or a host with a subpa
 echo "      live under an existing site (e.g. $(b 'vpn.example.com/swg'))."
 echo
 DEF_URL="$(detect_public_ip)"; [ -z "$DEF_URL" ] && DEF_URL=localhost
+if [ -n "$DOM_SAVED" ]; then DEF_URL="$DOM_SAVED"          # re-install: rebuild the saved host[:port][/subpath]
+  { [ -n "$PORT_SAVED" ] && [ "$PORT_SAVED" != 443 ]; } && DEF_URL="$DEF_URL:$PORT_SAVED"
+  [ -n "$BASE_SAVED" ] && DEF_URL="$DEF_URL$BASE_SAVED"
+fi
 PANEL_DOMAIN=""; ask_valid "Enter panel URL (https://…)" "$DEF_URL" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
 while :; do
   parse_panel_url "$PANEL_DOMAIN"
@@ -590,23 +622,23 @@ menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
 menu "$(col "$C_GREY" skip)"                          "If you are planning to use your own certificate (or terminate TLS elsewhere)"
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
 case "$TLS_MODE" in manual|none) TLS_MODE=skip;; esac
-ask_choice "Select TLS certificate" "letsencrypt" TLS_MODE "letsencrypt cloudflare cf15 selfsigned skip"
+ask_choice "Select TLS certificate" "${TLS_SAVED:-letsencrypt}" TLS_MODE "letsencrypt cloudflare cf15 selfsigned skip"
 # every public-CA / origin mode needs a real FQDN — check before asking for credentials
 case "$TLS_MODE" in letsencrypt|cloudflare|cf15)
   case "$PANEL_DOMAIN" in *.*) : ;; *) die "TLS=$TLS_MODE needs a domain (FQDN) in the panel URL, not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
   case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS_MODE needs a real domain (not an IP) — re-run and pick selfsigned for an IP";; esac ;;
 esac
 case "$TLS_MODE" in
-  letsencrypt) ask_valid "ACME account email"                                     "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
-  cloudflare)  ask_valid "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "" CF_TOKEN  v_cftoken "the API token can't be empty"
-               ask_valid "ACME account email"                                     "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+  letsencrypt) ask_valid "ACME account email"                                     "${ACME_EMAIL:-$EMAIL_SAVED}" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+  cloudflare)  ask_valid "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "" CF_TOKEN  v_cftoken "the API token can't be empty"   # pre-filled from the saved snapshot on re-install
+               ask_valid "ACME account email"                                     "${ACME_EMAIL:-$EMAIL_SAVED}" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
   cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy."
                warn "$PANEL_DOMAIN must be on Cloudflare with the orange cloud ON; a direct hit to the origin shows an untrusted cert."
                if [ -n "$URL_PORT" ] && ! v_cfport "$URL_PORT"; then
                  warn "port $(col "$C_YEL" "$URL_PORT") is NOT one Cloudflare's proxy forwards (only 443, 2053, 2083, 2087, 2096, 8443) —"
                  warn "the panel would be unreachable through the orange cloud. Use one of those ports (or Cloudflare Spectrum), or grey-cloud the record and accept an untrusted direct cert."
                fi
-               ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "" CF_ORIGIN_TOKEN v_cforigin "paste an API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;
+               ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "" CF_ORIGIN_TOKEN v_cforigin "paste an API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;   # pre-filled from the saved snapshot on re-install
 esac
 
 # web server
@@ -617,24 +649,17 @@ menu "$(col "$C_BLUE" nginx)"                       "Web content will be served 
 menu "$(col "$C_BLUE" caddy)"                       "Web content will be served via a Caddy reverse proxy"
 menu "$(col "$C_GREY" skip)"                        "If you are planning to configure the web server manually"
 case "$SERVE_MODE" in standalone) SERVE_MODE=internal;; esac
-ask_choice "Select web server" "internal" SERVE_MODE "internal nginx caddy skip"
+ask_choice "Select web server" "${SERVE_SAVED:-internal}" SERVE_MODE "internal nginx caddy skip"
 
 # port: internal serves the public port itself; proxy/manual modes keep the panel on a loopback port
 if [ "$SERVE_MODE" = internal ]; then
-  [ -z "$PORT" ] && PORT="${URL_PORT:-443}"
+  [ -z "$PORT" ] && PORT="${URL_PORT:-${PORT_SAVED:-443}}"
   ask_valid "Public HTTPS port for the panel" "$PORT" PORT v_port "port must be 1–65535"
 else
-  [ -z "$PORT" ] && PORT="${URL_PORT:-8088}"
+  [ -z "$PORT" ] && PORT="${URL_PORT:-${PORT_SAVED:-8088}}"
 fi
 
-# Idempotent re-install: an existing auth file means keep the current login (don't reset the
-# password) + all state (users/nodes/certs). To start fresh, run the uninstaller first.
-KEEP_AUTH=no; EXISTING_HOST=no
-if [ -f "$ETC_DIR/auth" ]; then
-  EXISTING_HOST=yes; KEEP_AUTH=yes
-  [ "${BASIC_USER:-admin}" = admin ] && BASIC_USER="$(cut -d: -f1 "$ETC_DIR/auth" 2>/dev/null || echo admin)"
-  info "Existing panel install detected — keeping your login, users, nodes + certs. To start fresh, run the uninstaller first."
-fi
+# (existing-install detection + saved-settings load happen up-front, at the top of PANEL SETUP)
 # Admin login — auto-generated (username admin + 3 random digits, password random); both are
 # printed at the end and can be changed later in the panel (Account). Override via BASIC_USER=/BASIC_PASS= env.
 [ "$KEEP_AUTH" != yes ] && [ -z "$BASIC_PASS" ] && BASIC_PASS="$(head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16)"
@@ -645,7 +670,7 @@ declare -a SELECTED
 if [ "$HOST_HAS_WG" = yes ]; then
   echo; info "NODE SETUP"
   step "Node name for THIS box"
-  ask_valid "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname)" HOST_NODE_NAME v_name "1–40 chars: letters, digits, - or _"
+  ask_valid "Node name for THIS box" "${NODENAME_SAVED:-$(hostname -s 2>/dev/null || hostname)}" HOST_NODE_NAME v_name "1–40 chars: letters, digits, - or _"
   step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
   echo
   choose_ifaces
@@ -777,6 +802,22 @@ writef /etc/swg-panel/fleet.json 640 <<EOF
 }
 EOF
 run chown "$PANEL_USER:swg" "$ETC_DIR/fleet.json" 2>/dev/null || true
+
+# Install snapshot — the next run of this installer reads it back to default every prompt (root-only).
+writef "$ETC_DIR/install.conf" 600 <<EOF
+# swg-panel install settings — re-running the installer offers these as defaults. Safe to edit/delete.
+ROLE_SEL=${ROLE_SEL}
+PANEL_DOMAIN=${PANEL_DOMAIN}
+PANEL_BASE=${PANEL_BASE}
+PORT=${PORT}
+TLS_MODE=${TLS_MODE}
+SERVE_MODE=${SERVE_MODE}
+ACME_EMAIL=${ACME_EMAIL}
+CF_TOKEN=${CF_TOKEN:-}
+CF_ORIGIN_TOKEN=${CF_ORIGIN_TOKEN:-}
+HOST_NODE_NAME=${HOST_NODE_NAME:-}
+HOST_ENDPOINT_IP=${HOST_ENDPOINT_IP:-}
+EOF
 
 # ───────────────────────── panel-server service ─────────────────────────
 write_panel_unit(){   # bind/TLS/base depend on SERVE_MODE; called from the serve section
