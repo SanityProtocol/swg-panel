@@ -92,7 +92,8 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 bb(){ printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (handoff URL / login)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
-key(){ printf '%s[%s]%s%s' "$BOLD$C_BLUE" "$1" "$RESET" "$2"; }   # bracketed select-key label: key l 'etsencrypt' → [l]etsencrypt
+key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  l 'etsencrypt'           → [l]etsencrypt
+keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd l 'etsencrypt (default)'  → [l]etsencrypt (default)
 STEP="${STEP_BASE:-1}"; step(){ echo; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # sequential, continues bootstrap's numbering
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
 ask(){ local v p="$1" d="${2:-}"; echo; read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
@@ -124,7 +125,7 @@ parse_panel_url(){ local u="$1" hostport rest
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   while :; do
-    if read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
+    if read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; return; }; done
     [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
@@ -389,9 +390,9 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
 ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE the container by acme.sh
   step "TLS certificate"
   echo
-  local _opts="l letsencrypt c cloudflare 15 cf15 s selfsigned n none" _def=l _le="$(key l 'etsencrypt') (default)"
+  local _opts="l letsencrypt c cloudflare 15 cf15 s selfsigned n none" _def=l _le="$(keyd l 'etsencrypt (default)')"
   if [ "$EXISTING_DOCKER" = yes ] && [ -f "$INSTALL_DIR/data/etc/tls/fullchain.pem" ]; then
-    menu "$(key r 'euse') (default)"     "Keep the existing certificate and TLS mode from this install — no re-issue (recommended for a re-install)"
+    menu "$(keyd r 'euse (default)')"    "Keep the existing certificate and TLS mode from this install — no re-issue (recommended for a re-install)"
     _opts="r reuse $_opts"; _def=r; _le="$(key l 'etsencrypt')"
   fi
   menu "$_le"                                "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
@@ -456,8 +457,8 @@ ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirr
   echo
   local _proto def_if d_if d_port d_addr d_ep
   d_if="$NODE_IFACE"; d_port="$NODE_LISTEN_PORT"; d_addr="$NODE_ADDRESS"; d_ep="${NODE_ENDPOINT:-$(detect_public_ip)}"
-  menu "$(key a 'mneziawg')" "WireGuard with AmneziaWG obfuscation (junk packets / header magic) to slip past DPI and protocol blocking. Runs on the userspace amneziawg-go datapath built into the swg-node container."
-  menu "$(key w 'ireguard')" "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off), so standard WireGuard clients connect unchanged."
+  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation (junk packets / header magic) to slip past DPI and protocol blocking. Runs on the userspace amneziawg-go datapath built into the swg-node container."
+  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off), so standard WireGuard clients connect unchanged."
   ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) NODE_PLAIN_WG=yes; def_if=wg0;; *) NODE_PLAIN_WG=no; def_if=awg0;; esac
   case "$d_if" in ""|awg0|wg0) d_if="$def_if";; esac        # default name follows the protocol
@@ -490,8 +491,8 @@ add_node_iface(){
     NODE_IFACES="${NODE_IFACE}:${NODE_LISTEN_PORT:-51820}:${NODE_ADDRESS:-10.8.0.1/24}:${pr}:${NODE_ENDPOINT}"
   fi
   nx=$(current_node_ifaces | grep -c . || true)                 # offset defaults so a 2nd/3rd iface doesn't collide (grep -c exits 1 on empty → guard set -e)
-  menu "$(key a 'mneziawg')" "WireGuard with AmneziaWG obfuscation (junk packets / header magic) to slip past DPI and protocol blocking. Runs on the userspace amneziawg-go datapath built into the swg-node container."
-  menu "$(key w 'ireguard')" "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off), so standard WireGuard clients connect unchanged."
+  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation (junk packets / header magic) to slip past DPI and protocol blocking. Runs on the userspace amneziawg-go datapath built into the swg-node container."
+  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off), so standard WireGuard clients connect unchanged."
   ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
   [ "$plain" = wg ] && base=wg || base=awg; i=0; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done
@@ -608,8 +609,8 @@ manage_node_ifaces(){
 }
 ask_role(){          # role (panel entry) — master (panel + local node) or host (panel only); mirrors bare-metal
   step "Server role"
-  menu "$(key m 'aster') (default)" "Panel + this box also runs WG/AWG interfaces — a co-located, auto-enrolled node container"
-  menu "$(key h 'ost')"             "Panel only; WG/AWG nodes are deployed separately (run their command from the panel)"
+  menu "$(keyd m 'aster (default)')" "Panel + this box also runs WG/AWG interfaces — a co-located, auto-enrolled node container"
+  menu "$(key h 'ost')"              "Panel only; WG/AWG nodes are deployed separately (run their command from the panel)"
   ask_choice "Select role" "m" ROLE "m master h host"
   case "$ROLE" in m) ROLE=master;; h) ROLE=host;; esac
 }
@@ -685,8 +686,8 @@ fi
 if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
   if [ -z "$NODE_NET" ]; then
     step "Networking mode"; echo
-    menu "$(key h 'ost') (default)" "Every interface port (incl. ones created from the panel) is reachable automatically, no publishing, best throughput. Recommended for a dedicated VPN box."
-    menu "$(key b 'ridge')"         "Isolated; you must publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml. Use only if host networking isn't an option."
+    menu "$(keyd h 'ost (default)')" "Every interface port (incl. ones created from the panel) is reachable automatically, no publishing, best throughput. Recommended for a dedicated VPN box."
+    menu "$(key b 'ridge')"          "Isolated; you must publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml. Use only if host networking isn't an option."
     ask_choice "Select networking" "h" NODE_NET "h host b bridge"
     case "$NODE_NET" in h) NODE_NET=host;; b) NODE_NET=bridge;; esac
   fi
@@ -727,10 +728,10 @@ PYHOST
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
   if [ -z "$TURN_MANAGE" ]; then
     step "Turn-proxy management"; echo
-    menu "$(key p 'anel') (default)" "Manage turn-proxies (edit listen/connect/keys, restart, onboard) from the panel.
+    menu "$(keyd p 'anel (default)')" "Manage turn-proxies (edit listen/connect/keys, restart, onboard) from the panel.
       Mounts the Docker socket into the node container, which gives that container ROOT-EQUIVALENT access to the host.
       only enable if you trust the panel and this box."
-    menu "$(key m 'anual')"          "Turn-proxies are managed on this server by hand — no socket is mounted."
+    menu "$(key m 'anual')"           "Turn-proxies are managed on this server by hand — no socket is mounted."
     ask_choice "Select turn-proxy management" "p" TURN_MANAGE "p panel m manual"
     case "$TURN_MANAGE" in p) TURN_MANAGE=panel;; m) TURN_MANAGE=manual;; esac
   fi
