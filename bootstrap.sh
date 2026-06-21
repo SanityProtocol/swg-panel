@@ -38,7 +38,11 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr
     v="${v:-$d}"
     for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; return; }; done
     [ "$rc" -ne 0 ] && die "no interactive input for '$p' — pass it as a flag (one of: $opts)"
-    pr="  ${v:+Can't understand \"$v\". }$p${d:+ or press Enter to use the default [$(col "$C_BLUE" "$sc")]}: "
+    if [ -n "$v" ]; then
+      pr="  Can't understand \"$v\". $p${d:+ or press Enter to use the default [$(col "$C_BLUE" "$sc")]}: "
+    else
+      pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
+    fi
   done; }
 
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
