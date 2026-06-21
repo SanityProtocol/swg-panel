@@ -1067,7 +1067,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     ${orphans.length ? html`<${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}
         actions=${html`<button class="btn btn-mini" onClick=${() => orphans.forEach(o => mutate({
           key: "orphan:" + o.node + "|" + o.iface + "|" + o.pubkey,
-          call: () => api.peerAdopt({ pubkey: o.pubkey, target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
+          call: () => api.peerAdopt({ pubkey: o.pubkey, psk: o.preshared_key || "", target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
         }))}><${Ic} i="link"/> Adopt all</button>`}>
       <table><tbody>
         ${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}
@@ -1084,7 +1084,7 @@ function OrphanRow({ o }) {
     <td data-label="" style="text-align:right" class="rowacts">
       <button class="btn btn-mini" onClick=${() => mutate({   // verify-only: server assigns the id
         key: "orphan:" + o.node + "|" + o.iface + "|" + o.pubkey,
-        call: () => api.peerAdopt({ pubkey: o.pubkey, target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
+        call: () => api.peerAdopt({ pubkey: o.pubkey, psk: o.preshared_key || "", target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
       })}>Adopt</button>
       <${RowError} k=${"orphan:" + o.node + "|" + o.iface + "|" + o.pubkey}/>
     </td></tr>`;

@@ -161,6 +161,7 @@ def peer_view(peers, last, dt, online_max, now):
             ts = max(0, p["tx_bytes"] - prev[1]) / dt
         out.append({
             "public_key": p["public_key"], "endpoint": p["endpoint"],
+            "preshared_key": p.get("preshared_key"),   # so adoption can reuse the on-wire PSK (panel owns PSKs)
             "allowed_ips": p["allowed_ips"], "rx_bytes": p["rx_bytes"], "tx_bytes": p["tx_bytes"],
             "rx_speed": rs, "tx_speed": ts,
             "last_handshake": p["last_handshake"] or None, "handshake_age": age,
