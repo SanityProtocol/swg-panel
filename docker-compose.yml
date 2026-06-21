@@ -23,7 +23,8 @@ services:
     profiles: ["host", "master", "host-node"]
     ports:
       - "${PANEL_PORT:-443}:8443"         # host-published port → container's 8443
-      - "80:80"                           # ONLY needed for TLS=letsencrypt (HTTP-01); harmless otherwise
+      # host port 80 (Let's Encrypt HTTP-01) is added by docker-compose.override.yml, which the
+      # installer writes ONLY for TLS=letsencrypt — so other TLS methods don't clash with nginx/apache on :80.
     environment:
       PANEL_USER: "${PANEL_USER:-admin}"
       PANEL_PASSWORD: "${PANEL_PASSWORD:?set PANEL_PASSWORD in .env}"
