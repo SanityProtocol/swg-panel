@@ -506,7 +506,7 @@ manage_node_ifaces(){
   echo "      Interfaces run inside the swg-node container; add as many as you need now, or add more"
   echo "      later from the panel (Interfaces → Load new interface). Existing ones are KEPT."
   echo
-  local mine bm cand avail n pick xfer bad yn
+  local mine bm cand avail n pick xfer bad yn doit
   while :; do
     mine="$(current_node_ifaces | tr '\n' ' ')" || true   # under set -euo pipefail these subs can exit non-zero
     bm="$(bm_node_ifaces)" || true
@@ -516,6 +516,11 @@ manage_node_ifaces(){
     printf "  Currently available interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
     [ -n "$bm" ] && { printf "  Interfaces used by the bare-metal node on this server:"; for n in $bm; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
     echo
+    if [ -z "$avail" ] && [ -z "$mine" ]; then     # nothing to onboard + nothing on the node yet → create the first one
+      doit="$(ask_yn_tty "Create one now? (installs WireGuard / AmneziaWG only if missing)" y)"
+      if [ "$doit" = yes ]; then echo; add_node_iface; echo; continue; fi
+      warn "no interfaces yet — you can add one later from the panel (Interfaces → Load new interface)"; break
+    fi
     echo "  To onboard $(b "$(col "$C_BLUE" 'all available interfaces')") and $(b proceed) — press $(b Enter)"
     printf "  Or enter interface names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
     if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
