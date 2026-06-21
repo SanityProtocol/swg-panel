@@ -516,13 +516,16 @@ manage_node_ifaces(){
     printf "  Currently available interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
     [ -n "$bm" ] && { printf "  Interfaces used by the bare-metal node on this server:"; for n in $bm; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
     echo
-    if [ -z "$avail" ] && [ -z "$mine" ]; then     # nothing to onboard + nothing on the node yet → create the first one
+    if [ -z "$avail$mine$bm" ]; then                # truly nothing on this box → offer to create the first one
       doit="$(ask_yn_tty "Create one now? (installs WireGuard / AmneziaWG only if missing)" y)"
       if [ "$doit" = yes ]; then echo; add_node_iface; echo; continue; fi
       warn "no interfaces yet — you can add one later from the panel (Interfaces → Load new interface)"; break
+    elif [ -z "$avail" ] && [ -z "$mine" ]; then    # nothing free + nothing here, but other-node interfaces exist → transfer or create
+      printf "  Enter a name to %s it from the other node, or %s to create one: " "$(col "$C_BLUE" transfer)" "$(col "$C_BLUE" new)"
+    else                                            # something to onboard / keep → the full picker
+      echo "  To onboard $(b "$(col "$C_BLUE" 'all available interfaces')") and $(b proceed) — press $(b Enter)"
+      printf "  Or enter interface names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
     fi
-    echo "  To onboard $(b "$(col "$C_BLUE" 'all available interfaces')") and $(b proceed) — press $(b Enter)"
-    printf "  Or enter interface names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
     if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
     if [ -z "$(echo $pick)" ]; then                # Enter → onboard all available + proceed
       for n in $avail; do onboard_iface "$n" || true; done
