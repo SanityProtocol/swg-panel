@@ -1034,7 +1034,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${idown ? html`<span class="badge b-dangling"><${Ic} i="err"/>down</span>` : updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when">${onl} / ${peers.length} online</span></div>
       <div class="grow"></div>
     </div>
-    ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${idown}</code>. Try <b>Restart service</b>; if it keeps failing the message usually says why (e.g. a port clash or an unsupported AmneziaWG parameter).</span></div>` : null}
+    ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Try <b>Restart service</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
 
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
