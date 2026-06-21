@@ -155,7 +155,7 @@ parse_panel_url(){ # parse_panel_url <input> -> sets PANEL_HOST_NOPORT, PANEL_BA
 }
 
 # ───────────────────────── wg/awg detection ─────────────────────────
-declare -A IF_CMD IF_CONF IF_ENDPOINT   # IF_ENDPOINT: per-interface public IP clients dial
+declare -A IF_CMD IF_CONF IF_ENDPOINT; declare -a CREATED   # IF_ENDPOINT: per-interface public IP clients dial; CREATED: ifaces made this run
 detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc/wireguard for wg
   IF_CMD=(); IF_CONF=(); local f n
   if [ -d /etc/amnezia ]; then
@@ -165,6 +165,10 @@ detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc
   for f in /etc/wireguard/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
 }
 # ── interface picker helpers (bare-metal master) ──
+node_ifaces(){ # interfaces this node already manages (keys in its config.json) — the "already on this node" set
+  { [ -f /etc/swg-agent/config.json ] && have python3; } || return 0
+  python3 -c 'import json;print("\n".join((json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).keys()))' 2>/dev/null || true
+}
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 docker_node_ifaces(){   # interfaces managed by a co-located DOCKER node (its ./data/node-confs)
   local d c; for d in "${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"; do
@@ -192,28 +196,49 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
       detect_wg
       [ "${#IF_CMD[@]}" -eq 0 ] && die "No interface. Create one, then re-run (or set MANAGE_IFACES)."
     fi
-    local names pick n dk avail xfer bad yn; local -a sel=()
+    local names pick n dk avail mine xfer bad yn; local -a sel=()
     while :; do
       detect_wg; names="${!IF_CMD[*]}"; dk="$(docker_node_ifaces)" || true
-      avail=""; for n in $names; do _in "$n" "$dk" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
+      mine=""; for n in $(node_ifaces) ${CREATED[@]+"${CREATED[@]}"}; do _in "$n" "$mine" || mine="$mine $n"; done; mine="$(echo $mine)"
+      avail=""; for n in $names; do _in "$n" "$mine" && continue; _in "$n" "$dk" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
       echo
+      [ -n "$mine" ] && { printf "  Interfaces already on this node:"; for n in $mine; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
       printf "  Available orphan interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
       [ -n "$dk" ] && { printf "  Interfaces used by the docker node on this server:"; for n in $dk; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
       echo
-      echo "  To manage $(b "$(col "$C_BLUE" 'all orphan interfaces')") (if any) and $(b proceed) — press $(b Enter)"
-      printf "  To manage specific interfaces - enter names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
-      if ! read -r pick </dev/tty; then echo; warn "no interactive input — managing all available interfaces"; sel=($avail); break; fi
-      if [ -z "$(echo $pick)" ]; then [ -n "$avail" ] || { warn "nothing available — type 'new' to create an interface"; continue; }; sel=($avail); break; fi
+      if [ -z "$avail" ] && [ -z "$mine" ] && [ -n "$dk" ]; then   # only docker-node interfaces → transfer or create
+        printf "  Enter a name to %s it from the docker node, or %s to create one: " "$(col "$C_BLUE" transfer)" "$(col "$C_BLUE" new)"
+      elif [ -n "$avail" ]; then                                   # orphans present → manage all / some / none
+        echo "  Press $(b Enter) to manage $(col "$C_BLUE" 'all orphans above') and continue"
+        echo "  Enter interface $(b names) (space-separated) to manage or migrate specific ones"
+        [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
+        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
+      else                                                        # no orphans → finish or add more
+        echo "  Press $(b Enter) to finish with this node's interfaces"
+        [ -n "$dk" ] && echo "  Enter interface $(b names) to migrate one from the docker node"
+        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
+      fi
+      if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping this node's interfaces"; sel=($mine $avail); break; fi
+      pick="$(echo $pick)"
+      if [ -z "$pick" ]; then                                     # Enter → keep mine + onboard all orphans
+        sel=($mine $avail)
+        [ ${#sel[@]} -gt 0 ] || { warn "nothing to manage — type 'new' to create an interface"; continue; }
+        break
+      fi
+      if [ "$pick" = done ]; then                                 # keep only this node's interfaces (leave orphans)
+        [ -n "$mine" ] || { warn "this node has no interfaces yet — manage one or type 'new'"; continue; }
+        sel=($mine); break
+      fi
       [ "$pick" = new ] && { create_iface; continue; }
       xfer=""; bad=""
-      for n in $pick; do _in "$n" "$avail" && continue; _in "$n" "$dk" && { xfer="$xfer $n"; continue; }; bad="$bad $n"; done
+      for n in $pick; do _in "$n" "$mine" && continue; _in "$n" "$avail" && continue; _in "$n" "$dk" && { xfer="$xfer $n"; continue; }; bad="$bad $n"; done
       [ -n "$bad" ] && { warn "not found:$bad — pick from the lists, or 'new'"; continue; }
       if [ -n "$xfer" ]; then
         printf "  Are you sure you want to transfer %s to this node? (y/N): " "$(col "$C_RED" "$(echo $xfer)")"
         read -r yn </dev/tty || yn=n
         case "$yn" in [Yy]*) for n in $xfer; do transfer_from_docker "$n" || true; done; detect_wg;; *) continue;; esac
       fi
-      sel=($pick); break
+      sel=($mine); for n in $pick; do _in "$n" "$mine" || sel+=("$n"); done; break   # keep mine + the chosen ones
     done
     SELECTED=("${sel[@]}")
   fi
@@ -460,7 +485,7 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
     warn "couldn't bring up '$name' (a port or subnet may already be in use) — removing its conf; try again with different values"
     run rm -f "$conf"; return 0
   fi
-  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; IF_ENDPOINT[$name]="$ep"; LAST_IFACE="$name"
+  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; IF_ENDPOINT[$name]="$ep"; LAST_IFACE="$name"; CREATED+=("$name")
   ok "created $proto interface $(col "$C_GREEN" "$name") on :$port (server $addr, NAT out $wan)"
 }
 
