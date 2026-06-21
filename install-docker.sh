@@ -449,6 +449,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
 # subnet (10.x.y.0/24) -> the server's interface address (10.x.y.1/24). Accepts either form as input.
 server_addr(){ python3 -c "import ipaddress,sys;n=ipaddress.ip_network(sys.argv[1],strict=False);print('%s/%d'%(next(n.hosts()),n.prefixlen))" "$1" 2>/dev/null || echo "$1"; }
 net_of(){      python3 -c "import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))" "$1" 2>/dev/null || echo "$1"; }
+fwd_ifaces(){ local cp="${1##*:}" e nm pt out=""; local -a _e; IFS=',' read -ra _e <<<"$NODE_IFACES"; for e in "${_e[@]}"; do IFS=':' read -r nm pt _ <<<"$e"; [ -n "$pt" ] && [ "$pt" = "$cp" ] && out="${out:+$out }$nm"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by listen port)
 ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirrors bare-metal
   step "WireGuard / AmneziaWG setup" "(this interface has its own endpoint IP)"
   echo
@@ -465,8 +466,9 @@ ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirr
   case "$d_if" in ""|awg0|wg0) d_if="$def_if";; esac        # default name follows the protocol
   NODE_IFACE="";       ask_valid "Interface name" "$d_if" NODE_IFACE v_iface "1–15 chars: letters, digits, - or _"
   NODE_LISTEN_PORT=""; ask_valid "Listen port" "$d_port" NODE_LISTEN_PORT v_freeport "port 1–65535 and free (not already in use)"
-  local _sub="";       ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$(net_of "${d_addr:-10.8.0.0/24}")" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
-  NODE_ADDRESS="$(server_addr "$_sub")"   # store the server's interface address (.1), derived from the subnet
+  local _sub="$(net_of "${d_addr:-10.8.0.0/24}")"    # auto IP range (change it later in the panel)
+  NODE_ADDRESS="$(server_addr "$_sub")"              # the server's interface address (.1), derived from the subnet
+  echo "    Used $(bb "$NODE_ADDRESS") for $(col "$C_GREEN" "$NODE_IFACE")"
   NODE_ENDPOINT="";    ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$NODE_IFACE") (this interface's public IP/host)" "$d_ep" NODE_ENDPOINT v_host "enter an IP address or hostname"
   return 0
 }
@@ -499,7 +501,8 @@ add_node_iface(){
   [ "$plain" = wg ] && base=wg || base=awg; i=0; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done
   ask_valid "Interface name" "$base$i" name v_iface "1–15 chars: letters, digits, - or _"
   ask_valid "Listen port" "$((51820 + nx))" port v_freeport "port 1–65535 and free (not already in use)"
-  local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.$((8 + nx)).0.0/24" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
+  local _sub="10.$((8 + nx)).0.0/24"; addr="$(server_addr "$_sub")"   # auto IP range (change it later in the panel)
+  echo "    Used $(bb "$addr") for $(col "$C_GREEN" "$name")"
   ask_valid "Endpoint clients dial for $(col "$C_GREEN" "$name") (this interface's public IP/host)" "${NODE_ENDPOINT:-$(detect_public_ip)}" ep v_host "an IP or hostname"
   [ -n "$NODE_ENDPOINT" ] || NODE_ENDPOINT="$ep"   # the node-level endpoint (required by compose) — seed from the first interface
   NODE_IFACES="${NODE_IFACES:+$NODE_IFACES,}${name}:${port}:${addr}:${plain}:${ep}"
@@ -905,16 +908,19 @@ case "$PROFILE" in node|master)
   echo; echo "  $(b 'Interface') (in the swg-node container):"
   if [ -n "$NODE_IFACES" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"
     for e in "${_ifs[@]}"; do IFS=':' read -r _nm _pt _ad _pr _ep <<< "$e"
-      printf '    %s %-9s endpoint %s  subnet %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$_nm")")" "${_pr:-amneziawg}" "$(bb "${_ep:-$NODE_ENDPOINT}:$_pt")" "$(b "$_ad")"; done
+      printf '    %s %-9s %s  %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$_nm")")" "${_pr:-amneziawg}" "$(bb "${_ep:-$NODE_ENDPOINT}:$_pt")" "$(b "$_ad")"
+      printf '        sudo nano %s\n' "$INSTALL_DIR/data/node-confs/$_nm.conf"; done
   else _pr=amneziawg; [ "$NODE_PLAIN_WG" = yes ] && _pr=wireguard
-    printf '    %s %-9s endpoint %s  subnet %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb "$NODE_ENDPOINT:$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
+    printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb "$NODE_ENDPOINT:$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
+    printf '        sudo nano %s\n' "$INSTALL_DIR/data/node-confs/$NODE_IFACE.conf"
   fi
   detect_turn 2>/dev/null || true
   if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances (host services → the node container):"
-    for n in "${!TP_LISTEN[@]}"; do wk="${TP_WRAP[$n]}"
-      printf '    %s %s → %s   %s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${wk:+wrap-key $(b "$wk")}"
+    for n in "${!TP_LISTEN[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"
+      printf '    %s %s → %s%s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"
       printf '        sudo nano /etc/systemd/system/%s.service\n\n' "$n"; done
-  fi ;;
+  fi
+  echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)" ;;
 esac
 echo
 echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile $PROFILE up -d")"
