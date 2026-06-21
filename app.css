@@ -249,7 +249,7 @@ a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
 .iconbtn-sm{display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid transparent;color:var(--dim);cursor:pointer;padding:3px;margin-left:3px;border-radius:6px}
 .iconbtn-sm:hover{color:var(--brand);border-color:color-mix(in srgb,var(--brand) 32%,var(--line-solid));background:color-mix(in srgb,var(--brand) 8%,transparent)}
 .ifcard.tp.clickable:hover{border-color:var(--turn,#A974F2);transform:translateY(-1px)}
-.tg-busy{background:rgba(70,216,168,.14);color:var(--brand);border:1px solid color-mix(in srgb,var(--brand) 30%,transparent);border-radius:99px;padding:1px 8px;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+.tg-busy{display:inline-flex;align-items:center;gap:5px;background:rgba(70,216,168,.14);color:var(--brand);border:1px solid color-mix(in srgb,var(--brand) 30%,transparent);border-radius:99px;padding:1px 8px;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
 .tg-busy.del{background:rgba(240,90,90,.15);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 38%,transparent)}
 .cmderr{display:inline-flex;align-items:center;color:var(--dangling);cursor:pointer}
 .cmderr:hover{color:#ff8585}
