@@ -694,6 +694,20 @@ def onboard_ifaces(node_cfg, onboard):
     return res
 
 
+def restart_ifaces(node_cfg, restart, agent, sudo):
+    """Bounce panel-requested interfaces (<tool>-quick down/up) via swg-agent — recovers a DOWN one."""
+    res = {"restarted": [], "errors": []}
+    for iface in (restart or []):
+        if iface not in (node_cfg.get("interfaces") or {}):
+            continue
+        r = run_agent(agent, sudo, {"op": "restart-iface", "iface": iface})
+        if r.get("ok"):
+            res["restarted"].append(iface)
+        else:
+            res["errors"].append(f"{iface}: {r.get('error')}")
+    return res
+
+
 def _persist_config(node_cfg):
     tmp = CONFIG_PATH + ".tmp"
     with open(tmp, "w") as f:
@@ -1025,17 +1039,18 @@ def main():
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
+                rs = restart_ifaces(node_cfg, reply.get("restart"), agent, sudo)   # bounce panel-requested interfaces
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name
-                for blk in (cr, dl, ob):
+                for blk in (cr, dl, ob, rs):
                     for e in blk["errors"]:
                         k, _, m = e.partition(": ")
                         NODE_ERRORS[k] = m or e
-                for k in (cr.get("created", []) + dl.get("deleted", []) + ob.get("added", [])):
+                for k in (cr.get("created", []) + dl.get("deleted", []) + ob.get("added", []) + rs.get("restarted", [])):
                     NODE_ERRORS.pop(k, None)
                 # prune errors for requests the panel has since cleared (iface + turn)
                 active = (set(reply.get("create") or {}) | set(reply.get("onboard") or {})
-                          | set(reply.get("delete") or []) | set(reply.get("turn") or {})
+                          | set(reply.get("delete") or []) | set(reply.get("restart") or []) | set(reply.get("turn") or {})
                           | set(reply.get("turn_onboard") or []))
                 for k in list(NODE_ERRORS):
                     if k not in active:

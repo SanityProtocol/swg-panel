@@ -977,6 +977,7 @@ def api(method, path, qs, body, deps):
                         "creating": {k: ((v.get("cmd") or ["awg"])[0])               # iface → wg/awg (we know it)
                                      for k, v in (c.get("create") or {}).items()},
                         "deleting": sorted((c.get("delete") or {}).keys()),         # ifaces being torn down
+                        "restarting": sorted((c.get("restart") or {}).keys()),      # ifaces being bounced
                         "turn_pending": {k: (v.get("action") or "manage")           # turn service → pending action
                                          for k, v in (c.get("turn") or {}).items()},
                         "turn_onboarding": list(c.get("turn_onboard") or []),       # .service paths pending onboard
@@ -1772,6 +1773,19 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "node", nid, "Cancelled turn-proxy request", svc or sp)
         return 200, {"ok": True, "data": {"node": nid, "removed": removed}}
 
+    if method == "POST" and path == "/api/iface/restart":
+        # Bounce the interface's service on the node (<tool>-quick down/up) — recovers a DOWN iface.
+        nid = body.get("node") or ""
+        iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not iface:
+            return 400, {"ok": False, "error": "interface name is required", "code": "bad_request"}
+        nodes[nid].setdefault("restart", {})[iface] = int(time.time())   # node bounces it on its next sync
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Restarting interface", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
     if method == "POST" and path == "/api/iface/delete":
         # Tear an interface down on the node (down + remove conf) and purge it from the panel: its
         # peers' targets here go away (peers with no other deployment are deleted), and its overrides
@@ -2180,6 +2194,18 @@ class Handler(BaseHTTPRequestHandler):
                     node.pop("retire", None)
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
+        # close RESTART requests after a grace — the node bounces the iface within a sync cycle
+        rst = node.get("restart") or {}
+        if rst:
+            now_t = int(time.time())
+            kept = {k: v for k, v in rst.items() if (now_t - (v or 0)) < 12}
+            if kept != rst:
+                if kept:
+                    node["restart"] = kept
+                else:
+                    node.pop("restart", None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         # close turn-proxy requests once the node reflects them (delete: service gone; onboard: it
         # appears; manage/rotate: the node applied + restarted — verified by listen match, else a grace)
         turn = node.get("turn") or {}; turn_onb = node.get("turn_onboard") or []
@@ -2216,6 +2242,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
                                 "delete": list((node.get("delete") or {}).keys()),
+                                "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
                                 "update": upd or None, "interval": interval})

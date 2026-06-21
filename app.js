@@ -287,6 +287,7 @@ const api = {
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
   ifaceCancel(b) { return this.post("/api/iface/cancel", b); },
   ifaceDelete(b) { return this.post("/api/iface/delete", b); },
+  ifaceRestart(b) { return this.post("/api/iface/restart", b); },   // bounce the iface service on the node
   ifaceAdopt(b) { return this.post("/api/iface/adopt", b); },     // drift: pull the node's server-edited value
   ifaceRestore(b) { return this.post("/api/iface/restore", b); }, // drift: re-assert the panel's value
   turnManage(b) { return this.post("/api/turn/manage", b); },     // edit listen/connect (+ wrap key)
@@ -999,6 +1000,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const onl = peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface && t.online)).length;
   const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
   const tps = turnProxiesFor(node, iface);
+  const restarting = (nrec.restarting || []).includes(iface);
   // AmneziaWG params split into the four header columns: J* under Endpoint, S* under Server
   // address, H* under DNS, and I* (+ anything else) under MTU.
   const ap = (meta && meta.awg_params) || {};
@@ -1024,7 +1026,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
-          actions=${html`<button class="btn btn-mini" onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button>`}>
+          actions=${html`<${Fragment}><button class="btn btn-mini" disabled=${restarting} title="Bounce this interface's service on the node (recovers a down interface)" onClick=${() => restartIface(node, iface)}><${Ic} i=${restarting ? "clock" : "refresh"}/> ${restarting ? "Restarting…" : "Restart service"}</button><button class="btn btn-mini" onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button></>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${meta.address || "—"}</span></div>
@@ -1194,6 +1196,11 @@ function DeleteIfaceSheet({ node, iface }) {
     <div class="notice warn" style="margin-bottom:20px"><${Ic} i="warn"/><span>This permanently tears down <b>${iface}</b> on the node: the interface goes <b>down</b>, its <b>.conf and server key are removed</b>, and <b>every peer on this interface is destroyed</b>. Peers deployed only here are deleted from the panel and their configs/QRs stop working. This can't be undone.</span></div>
     <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
   <//>`;
+}
+async function restartIface(node, iface) {
+  const r = await api.ifaceRestart({ node, iface });
+  if (!r.ok) return toast(r.error || "Failed to request restart.", "err");
+  await Store.poll(); toast("Restart requested — the node bounces " + iface + " on its next sync.", "ok");
 }
 function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
 function EditIfaceSheet({ node, iface }) {

@@ -535,6 +535,21 @@ def op_delete_iface(cfg, req):
     return {"iface": iface, "deleted": True}
 
 
+def op_restart_iface(cfg, req):
+    """Bounce a managed interface: <tool>-quick down (ignored if already down) then up — recovers a
+    DOWN interface (e.g. one whose bring-up failed). Re-raises an up failure so the panel sees why."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)             # raises if it isn't managed here
+    tool = (ic.get("cmd") or ["awg"])[0]
+    with contextlib.suppress(Exception):
+        run([tool + "-quick", "down", iface])
+    try:
+        run([tool + "-quick", "up", iface])
+    except Exception as e:
+        raise AgentError("up_failed", f"{tool}-quick up {iface} failed: {e}")
+    return {"iface": iface, "restarted": True}
+
+
 # ───────────────────────── dispatch ─────────────────────────
 
 def respond(ok, op, data=None, error=None, code=None):
@@ -550,7 +565,7 @@ def respond(ok, op, data=None, error=None, code=None):
 
 READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
 WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface,
-             "create-iface": op_create_iface, "delete-iface": op_delete_iface}
+             "create-iface": op_create_iface, "delete-iface": op_delete_iface, "restart-iface": op_restart_iface}
 
 
 def main():
