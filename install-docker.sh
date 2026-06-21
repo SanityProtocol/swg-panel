@@ -544,7 +544,8 @@ PY
 }
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 onboard_iface(){    # bring an interface under this docker node: import its .conf into ./data/node-confs
-  local n="$1" src dest="$INSTALL_DIR/data/node-confs/$n.conf" kconf=""
+  local n="$1" src kconf="" dest                       # NB: don't reference $n in the same `local` (set -u)
+  dest="$INSTALL_DIR/data/node-confs/$n.conf"
   # prefer a kernel/host conf as the source — so a migration also tears the kernel side down
   if   [ -f "/etc/amnezia/amneziawg/$n.conf" ]; then kconf="/etc/amnezia/amneziawg/$n.conf"
   elif [ -f "/etc/wireguard/$n.conf" ];        then kconf="/etc/wireguard/$n.conf"; fi
