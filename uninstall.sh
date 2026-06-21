@@ -256,7 +256,7 @@ add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); CHINT+=("
 turn_listen(){ sed -n 's/^ExecStart=//p' "$1" 2>/dev/null | head -1 | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p'; }
 
 [ -d /opt/swg-panel ] || [ -f $SD/swg-panel-server.service ] && \
-  add "swg-panel" "control panel (/opt/swg-panel)" rm_panel
+  add "Bare-metal swg-panel" "control panel (/opt/swg-panel)" rm_panel
 [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f $SD/swg-noded.service ] && \
   add "Bare-metal node (swg-node)" "$(bm_node_detail)" rm_node
 
