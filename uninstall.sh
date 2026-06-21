@@ -25,10 +25,11 @@ ask_yn(){ local v p="$1" d="${2:-n}"; if [ -n "${!3:-}" ]; then return; fi
   read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
-ask_comp(){ local v; $ASSUME_YES && return 0
+ask_comp(){ local v; $ASSUME_YES && return 0                # $3 = optional note (e.g. peer fate)
   if [ ! -t 0 ] && [ ! -e /dev/tty ]; then return 1; fi   # no tty, not --yes => keep
-  read -rp "  Uninstall $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
+  read -rp "  Uninstall $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}?${3:+ $3} (y/N): " v </dev/tty || true
   case "$v" in [Yy]*) return 0;; *) return 1;; esac; }
+_peer_fn(){ case "$1" in rm_awg|rm_wg|rm_docker_node) return 0;; *) return 1;; esac; }   # bears peer confs
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
 $DRYRUN && info "DRY RUN — nothing will be changed."
@@ -309,9 +310,18 @@ $ASSUME_YES && info "--yes: every component will be uninstalled (you'll still be
             || echo "  You will be prompted to uninstall or keep each component. Please pay attention."
 echo
 
+# Decide the peers' fate UP FRONT (only if something here bears peers), so each component prompt can
+# say what will happen to them before you answer. keep_peers memoises into KEEP_PEERS.
+for i in $(seq 0 $((N-1))); do _peer_fn "${CFN[$i]}" && { keep_peers || true; echo; break; }; done
+
 DID_REMOVE=(); DID_KEEP=()
 for i in $(seq 0 $((N-1))); do
-  if ask_comp "${CLABEL[$i]}" "${CHINT[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
+  note=""
+  if _peer_fn "${CFN[$i]}"; then
+    [ "$KEEP_PEERS" = yes ] && note="$(c '0;32')Peers will not be deleted.$(c 0)" \
+                            || note="$(c '0;31')Peers/keys will be erased.$(c 0)"
+  fi
+  if ask_comp "${CLABEL[$i]}" "${CHINT[$i]}" "$note"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
   else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}"); fi
   echo
 done
