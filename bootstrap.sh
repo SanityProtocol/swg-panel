@@ -27,14 +27,18 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 col(){ local c="$1"; shift; printf '%s%s%s' "$c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 die(){ echo "error: $*" >&2; exit 1; }
-ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc
+# ask_choice <prompt> <default> <var> "<opt…>" — accepts a full option OR its first-letter shortcut;
+# shows the default's letter as [x]; friendly re-prompt on bad input.
+ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr
+  sc="${d:0:1}"
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
+  pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
   while :; do
-    if read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty 2>/dev/null; then rc=0; else rc=1; v=""; fi
+    if read -rp "$pr" v </dev/tty 2>/dev/null; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"
-    for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; return; }; done
+    for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; return; }; done
     [ "$rc" -ne 0 ] && die "no interactive input for '$p' — pass it as a flag (one of: $opts)"
-    echo "  enter one of: $opts"
+    pr="  ${v:+Can't understand \"$v\". }$p${d:+ or press Enter to use the default [$(col "$C_BLUE" "$sc")]}: "
   done; }
 
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
@@ -90,18 +94,18 @@ if [ -z "$METHOD" ]; then
   if [ "$ROLE_EXPLICIT" = yes ]; then METHOD=baremetal     # a bare role word (host/master/node) ⇒ bare-metal
   else
     step "Installation method"
-    menu "$(b "$(col "$C_BLUE" 'bare-metal (default)')")" "Runs directly on this host (kernel datapath, best throughput). Recommended for a dedicated box."
-    menu "$(col "$C_BLUE" docker)"                        "Runs in containers (userspace datapath, isolated). No kernel module needed."
-    ask_choice "Select method" "bare-metal" METHOD "bare-metal baremetal docker"
+    menu "$(b "$(col "$C_BLUE" '[b]are-metal (default)')")" "Runs directly on this host (kernel datapath, best throughput). Recommended for a dedicated box."
+    menu "$(col "$C_BLUE" '[d]ocker')"                      "Runs in containers (userspace datapath, isolated). No kernel module needed."
+    ask_choice "Select the installation method" "bare-metal" METHOD "bare-metal baremetal docker"
     [ "$METHOD" = bare-metal ] && METHOD=baremetal
   fi
 fi
 if [ -z "$ROLE" ]; then
   step "Server role"
-  menu "$(b "$(col "$C_BLUE" master)")" "Panel + a local WireGuard/AmneziaWG node on this box (all-in-one)."
-  menu "$(col "$C_BLUE" host)"          "Panel only; entry-server nodes are deployed separately (run their command from the panel)."
-  menu "$(col "$C_BLUE" node)"          "An entry server that joins an existing panel."
-  ask_choice "Select role" "" ROLE "master host node"
+  menu "$(b "$(col "$C_BLUE" '[m]aster')")" "Panel + a local WireGuard/AmneziaWG node on this box (all-in-one)."
+  menu "$(col "$C_BLUE" '[h]ost')"          "Panel only; entry-server nodes are deployed separately (run their command from the panel)."
+  menu "$(col "$C_BLUE" '[n]ode')"          "An entry server that joins an existing panel."
+  ask_choice "Select the server role" "" ROLE "master host node"
 fi
 export STEP_BASE="$STEP"          # the installer numbers its steps from here
 
