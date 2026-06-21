@@ -21,6 +21,7 @@ NODE_TOKEN="${NODE_TOKEN:-}"           # one-time enrollment key from the Nodes 
 NODE_NAME="${NODE_NAME:-}"             # local label for this box's systemd unit + final message only (NOT the panel name; blank = hostname)
 ENDPOINT_IP="${ENDPOINT_IP:-}"         # public IP/host clients dial for THIS node's wg
 MANAGE_IFACES="${MANAGE_IFACES:-}"     # e.g. "awg0"  (blank = manage all detected)
+ADOPTED_IFACES="${ADOPTED_IFACES:-}"   # interfaces migrated in by convert.sh — shown as "already on this node", not orphan/docker
 WG_MTU="${WG_MTU:-1280}"               # interface MTU — 1280 leaves headroom for turn-proxy obfuscation
 DNS="${DNS:-1.1.1.1}"
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes = verify panel's cert (real CA); no = self-signed
@@ -267,8 +268,9 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     fi
     local names pick n dk avail mine xfer bad yn; local -a sel=()
     while :; do
-      detect_wg; names="${!IF_CMD[*]}"; dk="$(docker_node_ifaces)" || true
-      mine=""; for n in $(node_ifaces) ${CREATED[@]+"${CREATED[@]}"}; do _in "$n" "$mine" || mine="$mine $n"; done; mine="$(echo $mine)"
+      detect_wg; names="${!IF_CMD[*]}"
+      dk=""; for n in $(docker_node_ifaces); do _in "$n" "${ADOPTED_IFACES:-}" || dk="$dk $n"; done; dk="$(echo $dk)"   # the iface(s) we're converting away from docker are ours now, not "docker" ones
+      mine=""; for n in $(node_ifaces) ${ADOPTED_IFACES:-} ${CREATED[@]+"${CREATED[@]}"}; do _in "$n" "$mine" || mine="$mine $n"; done; mine="$(echo $mine)"
       avail=""; for n in $names; do _in "$n" "$mine" && continue; _in "$n" "$dk" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
       echo
       [ -n "$mine" ] && { printf "  Interfaces already on this node:"; for n in $mine; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }

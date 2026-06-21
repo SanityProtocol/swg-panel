@@ -89,24 +89,94 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     if [ "$pr" = wg ]; then dest="/etc/wireguard/$nm.conf"; else dest="/etc/amnezia/amneziawg/$nm.conf"; fi
     mkdir -p "$(dirname "$dest")"; cp "$src" "$dest"; chmod 600 "$dest"
     info "imported $(b "$nm") → $dest"
-    names="${names:+$names,}$nm"
+    names="${names:+$names }$nm"
   done
   [ -n "$names" ] || die "no interface confs copied (looked in $confd)"
 
-  # 3) hand off to install-node.sh with the SAME token. We do NOT pass MANAGE_IFACES: the copied
-  #    confs are auto-detected, so its interface picker shows them as adoptable and lets you add more
-  #    (queued + created after the tools install). Same token ⇒ the panel keeps one node.
+  # 3) hand off to install-node.sh with the SAME token. ADOPTED_IFACES marks the migrated interfaces
+  #    as "already on this node" (not orphan / not docker); its picker lets you add more (queued +
+  #    created after the tools install). Same token ⇒ the panel keeps one node.
   info "Running install-node.sh — adopt $(b "$names") (and add more if you want), then it wires the daemon…"
   echo
-  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" \
+  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
        TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh"
 fi
 
-# ── NODE: bare-metal → docker (not yet) ──
+# ── NODE: bare-metal → docker ──
 if [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
-  warn "Converting a bare-metal node → docker isn't automated yet."
-  echo  "  Choose 'keep and re-install', or uninstall the bare-metal node first and install the docker node." >&2
-  exit 1
+  cfg=/etc/swg-agent/config.json
+  [ -f "$cfg" ] || die "no bare-metal node found ($cfg missing)"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required to read $cfg"
+  # token / panel URL / verify / node endpoint
+  read -r NTOK PURL NVERIFY NEP <<EOF
+$(python3 - "$cfg" <<'PY'
+import json,sys
+c=json.load(open(sys.argv[1])); p=c.get("panel") or {}
+print(p.get("token","-"), p.get("url","-"), "yes" if p.get("verify",True) else "no", c.get("endpoint_host","") or "-")
+PY
+)
+EOF
+  [ "$NEP" = "-" ] && NEP=""
+  [ -n "$NTOK" ] && [ "$NTOK" != "-" ] && [ "$PURL" != "-" ] || die "couldn't read the node token / panel URL from $cfg"
+  # interface  name<TAB>conf-path  lines
+  ifaces="$(python3 - "$cfg" <<'PY'
+import json,sys
+c=json.load(open(sys.argv[1]))
+for n,ic in (c.get("interfaces") or {}).items():
+    if (ic.get("conf") or ""): print(n+"\t"+ic["conf"])
+PY
+)"
+  [ -n "$ifaces" ] || die "the bare-metal node has no interfaces in $cfg"
+
+  # pre-flight: an existing docker node deployment would be clobbered
+  if [ "$CHECK" = yes ]; then
+    if [ -f "$DOCKER_DIR/.env" ] || { command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; }; then
+      warn "a docker node already exists here ($DOCKER_DIR) — remove it first, or pick 'keep and re-install'."; exit 1
+    fi
+    info "pre-flight OK — interfaces to migrate: $(b "$(printf '%s\n' "$ifaces" | cut -f1 | tr '\n' ' ')")"
+    echo; exit 0
+  fi
+  if [ -f "$DOCKER_DIR/.env" ]; then die "a docker deployment already exists at $DOCKER_DIR — remove it first (run with --check)"; fi
+
+  info "Converting the bare-metal node → docker — keeping its token, endpoint and interfaces."
+  # 1) inject each interface's conf into the docker node's conf dir, stripping the host NAT hooks
+  #    (the swg-node container does its own NAT). The private key is preserved, so the panel keeps
+  #    the same node and peers keep working. The container uses a present conf as-is (no re-gen).
+  confd="$DOCKER_DIR/data/node-confs"; mkdir -p "$confd"
+  names=""
+  while IFS="$(printf '\t')" read -r nm src; do
+    [ -n "$nm" ] || continue
+    [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
+    grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$confd/$nm.conf"; chmod 600 "$confd/$nm.conf"
+    info "imported $(b "$nm") → $confd/$nm.conf (key preserved)"
+    names="${names:+$names }$nm"
+  done <<EOF
+$ifaces
+EOF
+  [ -n "$names" ] || die "no interface confs imported"
+
+  # 2) tear down the bare-metal datapath — free the wg ports + remove its units/files. NO panel
+  #    goodbye (the token is reused, so the panel keeps this node). Host turn-proxies stay running.
+  info "Stopping the bare-metal node…"
+  systemctl disable --now swg-noded 2>/dev/null || true
+  while IFS="$(printf '\t')" read -r nm src; do
+    [ -n "$nm" ] || continue
+    awg-quick down "$nm" 2>/dev/null || wg-quick down "$nm" 2>/dev/null || true
+    systemctl disable "awg-quick@$nm" 2>/dev/null || true; systemctl disable "wg-quick@$nm" 2>/dev/null || true
+    rm -f "/etc/amnezia/amneziawg/$nm.conf" "/etc/wireguard/$nm.conf"
+  done <<EOF
+$ifaces
+EOF
+  rm -f /etc/systemd/system/swg-noded.service; systemctl daemon-reload 2>/dev/null || true
+  rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent
+
+  # 3) hand off to install-docker.sh (docker node) with the SAME token. It detects the imported confs
+  #    (picker shows them as "already on this node"; add more if you want), writes .env and brings the
+  #    stack up. Same token ⇒ the panel keeps one node.
+  info "Running install-docker.sh (docker node) — adopt $(b "$names") and finish the setup…"
+  echo
+  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" NODE_ENDPOINT="$NEP" TLS_VERIFY="$NVERIFY" \
+       bash "$SRC/install-docker.sh" node
 fi
 
 die "unsupported conversion: $FROM → $TO ($ROLE)"
