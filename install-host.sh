@@ -615,14 +615,15 @@ PANEL_DOMAIN="$PANEL_HOST_NOPORT"
 # TLS certificate
 step "TLS certificate"
 echo
-menu "$(b "$(col "$C_BLUE" 'letsencrypt (default)')")" "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
-menu "$(col "$C_BLUE" cloudflare)"                    "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
-menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
-menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
-menu "$(col "$C_GREY" skip)"                          "If you are planning to use your own certificate (or terminate TLS elsewhere)"
+menu "$(keyd l 'etsencrypt (default)')"   "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
+menu "$(key c 'loudflare') + letsencrypt" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+menu "$(key 15 'years cloudflare')"       "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
+menu "$(key s 'elfsigned')"               "OK for testing"
+menu "$(key sk 'ip')"                     "If you are planning to use your own certificate (or terminate TLS elsewhere)"
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
 case "$TLS_MODE" in manual|none) TLS_MODE=skip;; esac
-ask_choice "Select TLS certificate" "${TLS_SAVED:-letsencrypt}" TLS_MODE "letsencrypt cloudflare cf15 selfsigned skip"
+ask_choice "Select TLS certificate" "${TLS_SAVED:-l}" TLS_MODE "l letsencrypt c cloudflare 15 cf15 s selfsigned sk skip"
+case "$TLS_MODE" in l) TLS_MODE=letsencrypt;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; sk) TLS_MODE=skip;; esac
 # every public-CA / origin mode needs a real FQDN — check before asking for credentials
 case "$TLS_MODE" in letsencrypt|cloudflare|cf15)
   case "$PANEL_DOMAIN" in *.*) : ;; *) die "TLS=$TLS_MODE needs a domain (FQDN) in the panel URL, not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
