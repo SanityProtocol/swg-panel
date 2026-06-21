@@ -27,7 +27,7 @@
 const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000 };
 
 // status priority for rolling several targets/peers into one (most-alive wins)
-const RANK = { online: 6, ready: 5, partial: 4, pending: 3, creating: 3, dangling: 2, unknown: 1 };
+const RANK = { online: 6, ready: 5, partial: 4, pending: 3, creating: 3, rotating: 3, dangling: 2, unknown: 1 };
 
 function ipOf(hostport) {
   if (!hostport) return "";
@@ -102,6 +102,9 @@ function reconcile(roster, stats, now, cfg) {
     else if (present.length === 0) status = (now - createdMs) <= cfg.graceMs ? "pending" : "dangling";
     else if (present.length < live.length) status = "partial";
     else status = onlineAny ? "online" : "ready";
+
+    // a key rotation in flight: the new key isn't on the wire yet — show "rotating", not dangling
+    if (cfg.rotating && cfg.rotating.has(pid) && (status === "dangling" || status === "pending" || status === "unknown")) status = "rotating";
 
     let reason = null;   // why a peer isn't healthy — surfaced on the status badge (incl. a DOWN interface)
     if (status === "dangling" || status === "partial" || status === "pending") {

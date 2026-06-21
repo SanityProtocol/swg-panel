@@ -214,6 +214,7 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
 .b-orphan{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — matches the unmanaged/warn theme */
 .b-creating{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — optimistic "creating" (POST in flight) */
+.b-rotating{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — key rotation in flight */
 .ifc-orph{color:#F0913C;font-weight:600}   /* orange orphan (unmanaged) peer count on the interface card */
 .b-unknown{background:rgba(95,117,105,.16);color:var(--unknown)}
 .b-issue{background:rgba(226,200,74,.15);color:var(--partial)}

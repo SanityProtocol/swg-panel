@@ -313,6 +313,7 @@ const Store = {
   sessionConfigs: {},        // pubkey -> { "node|iface" -> confText }   (built at creation, in-memory)
   configEpoch: 0,            // bumps when a config is re-issued, so QR cards re-read it
   recentlyCreated: {},       // id -> ts (row flash)
+  rotating: {},              // peer id -> ts — key rotation in flight; grid shows "rotating" until the new key is live
   pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
   rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
   async init() {
@@ -349,7 +350,12 @@ const Store = {
     this.fleet = this.nodes.map(n => ({ id: n.id, name: n.name, color: n.color, transport: "https" }));
     const retiring = new Set();   // pubkeys mid-removal (rotation/delete) — keep them out of the orphans grid
     for (const n of this.nodes) for (const pk of (n.retiring || [])) retiring.add(pk);
-    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring });
+    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, rotating: new Set(Object.keys(this.rotating)) });
+    // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
+    for (const id of Object.keys(this.rotating)) {
+      const pr = this.recon.peers.find(p => p.id === id);
+      if ((pr && (pr.status === "online" || pr.status === "ready" || pr.status === "partial")) || (Date.now() - this.rotating[id] > 45000)) delete this.rotating[id];
+    }
     bus.emit();
   },
   node(id) { return this.fleet.find(n => n.id === id); },              // lookup by stable id
@@ -455,8 +461,8 @@ function openModal(node) { _modalSeq++; _setModal(node); }
 function closeModal() { _modalSeq++; _setModal(null); }
 
 // ───────────────────────── shared bits ─────────────────────────
-const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
-const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock",
+const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, rotating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
+const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
 function Badge({ s, title }) {
   const ic = STATUS_ICON[s];
@@ -563,19 +569,20 @@ async function assignPeerToUser(peer, userId) {
 // so the client must re-import the fresh QR/config. Only meaningful for an assigned peer.
 async function rotatePeerKeys(peer) {
   const key = "peer:" + peer.id;
+  Store.rotating[peer.id] = Date.now();   // grid shows "rotating" until the new key is live
   let keys, configs;
   try {
     keys = await genKeys(); configs = {};
     for (const t of peer.targets) {
       const m = Store.ifaceMeta(t.node, t.iface);
-      if (!m) { Store.rowErrors[key] = { msg: Store.nodeName(t.node) + " hasn't reported " + t.iface + " yet", at: Date.now() }; Store.apply(); return; }
+      if (!m) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: Store.nodeName(t.node) + " hasn't reported " + t.iface + " yet", at: Date.now() }; Store.apply(); return; }
       const cur = await getConfig(peer.pubkey, t.node, t.iface);
       const s = cur ? parseFullConf(cur) : null;
       configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: (t.ip || "").split("/")[0] + "/32",
         dns: s ? s.dns : m.dns, mtu: s ? s.mtu : 1280, awg_params: m.awg_params, server_pubkey: m.public_key,
         psk: peer.psk, endpoint: m.endpoint, allowed: s ? s.allowed : "0.0.0.0/0, ::/0", keepalive: s ? s.keepalive : 25 });
     }
-  } catch (e) { Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
+  } catch (e) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
   await mutate({
     key,
     call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk: peer.psk, configs }),
