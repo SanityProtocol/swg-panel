@@ -1132,6 +1132,7 @@ function LoadIfaceSheet({ node }) {
   const [conf, setConf] = useState("");
   const ips = nrec.ips || []; const [egress, setEgress] = useState("");
   const wanifs = nrec.wan_ifaces || []; const [wan, setWan] = useState("");
+  const ipIfaces = nrec.ip_ifaces || [];   // [{ip, iface}] for the merged egress picker
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const existing = proto === "existing";
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
@@ -1171,35 +1172,29 @@ function LoadIfaceSheet({ node }) {
         <div>It's applied on the node's next sync, then the interface appears here.</div>
       </div>
       <div class="field"><label>Config path</label><input autofocus value=${conf} onInput=${e => setConf(e.target.value)} placeholder="/etc/wireguard/wg0.conf" autocomplete="off"/></div>
-      <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
+      <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
     <//>` : html`<${Fragment}>
       <div class="row2">
         <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
         <div class="field"><label>Tunnel subnet (CIDR)</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/><div class="hint">The server takes the first host (e.g. 10.8.0.1);</div></div>
       </div>
       <div class="row2">
-        <div class="field"><label>Endpoint host / IP</label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/></div>
+        <div class="field"><label>Endpoint host / IP</label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/></div>
         <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
       </div>
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This docker node uses <span class="mono">bridge</span> networking — after creating you must publish this port in the node's <span class="mono">docker-compose.yml</span> (<span class="mono">ports: "${port || "PORT"}:${port || "PORT"}/udp"</span>) and <span class="mono">up -d</span>, or clients can't reach it. (A host-networking node needs none of this.)</span></div>` : null}
       <div class="row2">
-        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/></div>
-        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
-        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div>
+        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Blank = 1280.</div></div>
+        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25.</div></div>
       </div>
       <div class="row2">
-        <div class="field"><label>Outbound (egress) IP</label>
-          <select class="selwrap" value=${egress} onChange=${e => setEgress(e.target.value)}>
+        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">Comma-separated. Blank = none.</div></div>
+        <div class="field"><label>Outbound (egress) IP / interface</label>
+          <select class="selwrap" value=${egress ? egress + "|" + wan : ""} onChange=${e => { const [eip, eifc] = e.target.value.split("|"); setEgress(eip || ""); setWan(eifc || ""); }}>
             <option value="">Auto (MASQUERADE)</option>
-            ${ips.map(ip => html`<option value=${ip}>${ip}</option>`)}
+            ${ipIfaces.map(p => html`<option value=${p.ip + "|" + p.iface}>${p.ip} — ${p.iface}</option>`)}
           </select>
-          <div class="hint">Source IP clients egress from (SNAT).<br/>Auto = node default.</div></div>
-        <div class="field"><label>WAN egress interface</label>
-          <select class="selwrap" value=${wan} onChange=${e => setWan(e.target.value)}>
-            <option value="">Auto (default route)</option>
-            ${wanifs.map(w => html`<option value=${w}>${w}</option>`)}
-          </select>
-          <div class="hint">Which NIC clients NAT out of.<br/>Auto detects it.</div></div>
+          <div class="hint">Source IP + NIC clients egress from. Auto = node default.</div></div>
       </div>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
@@ -1285,10 +1280,10 @@ function EditIfaceSheet({ node, iface }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const ips = nrec.ips || [];
   const [egress, setEgress] = useState(meta.egress_ip || "");
-  const egressOpts = egress && !ips.includes(egress) ? [egress, ...ips] : ips;
   const wanifs = nrec.wan_ifaces || [];
   const [wan, setWan] = useState(meta.wan_iface || "");
-  const wanOpts = wan && !wanifs.includes(wan) ? [wan, ...wanifs] : wanifs;
+  const ipIfaces = nrec.ip_ifaces || [];   // [{ip, iface}] — merged egress picker
+  const egPairs = (egress && !ipIfaces.some(p => p.ip === egress)) ? [{ ip: egress, iface: wan || "?" }, ...ipIfaces] : ipIfaces;
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
@@ -1336,7 +1331,7 @@ function EditIfaceSheet({ node, iface }) {
         · <button type="button" class="linkbtn" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: k }); if (!r.ok) return toast(r.error || "Failed", "err"); closeModal(); await Store.poll(); toast("Restoring the panel value on the next sync.", "ok"); }}>Restore panel value</button></div>`)}
       </span></div>` : null}
     <div class="row2">
-      <div class="field"><label>Endpoint IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Config-facing only.</div></div>
+      <div class="field"><label>Endpoint IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial. Config-facing only.</div></div>
       <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"}).</div></div>
     </div>
     <div class="row2">
@@ -1344,18 +1339,12 @@ function EditIfaceSheet({ node, iface }) {
       <div class="field"><label>Default MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers.</div></div>
     </div>
     <div class="row2">
-      <div class="field"><label>Outbound (egress) IP</label>
-        <select class="selwrap" value=${egress} onChange=${e => setEgress(e.target.value)}>
+      <div class="field"><label>Outbound (egress) IP / interface</label>
+        <select class="selwrap" value=${egress ? egress + "|" + wan : ""} onChange=${e => { const [eip, eifc] = e.target.value.split("|"); setEgress(eip || ""); setWan(eifc || ""); }}>
           <option value="">Auto (MASQUERADE)</option>
-          ${egressOpts.map(ip => html`<option value=${ip}>${ip}${!ips.includes(ip) ? " — not on node now" : ""}</option>`)}
+          ${egPairs.map(p => html`<option value=${p.ip + "|" + p.iface}>${p.ip} — ${p.iface}${!ipIfaces.some(x => x.ip === p.ip) ? " (not on node now)" : ""}</option>`)}
         </select>
-        <div class="hint">Source IP clients use to reach the internet (SNAT). Auto = node default. ${ips.length ? "" : "(node hasn't reported its IPs yet)"}</div></div>
-      <div class="field"><label>WAN egress interface</label>
-        <select class="selwrap" value=${wan} onChange=${e => setWan(e.target.value)}>
-          <option value="">Auto</option>
-          ${wanOpts.map(w => html`<option value=${w}>${w}${!wanifs.includes(w) ? " — not on node now" : ""}</option>`)}
-        </select>
-        <div class="hint">Which NIC clients are NAT'd out of. Auto detects the default route.</div></div>
+        <div class="hint">Source IP + NIC clients egress from (SNAT). Auto = node default.${ipIfaces.length ? "" : " (node hasn't reported its IPs yet)"}</div></div>
     </div>
     ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
       <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
