@@ -568,8 +568,17 @@ def current_listen_port(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = ic.get("cmd", ["awg"])
     try:
-        iface_line, _ = parse_dump(run(cmd + ["show", iface, "dump"]).stdout)
-        return int(iface_line[2]) if len(iface_line) > 2 and str(iface_line[2]).isdigit() else None
+        r = run(cmd + ["show", iface, "dump"])
+        if r.returncode == 0:
+            iface_line, _ = parse_dump(r.stdout)
+            if len(iface_line) > 2 and str(iface_line[2]).isdigit():
+                return int(iface_line[2])
+    except Exception:
+        pass
+    try:                                  # interface DOWN — fall back to the .conf so a port change still
+        info = parse_interface_section(open(ic["conf"]).read())   # converges (set-iface persists it for next up)
+        lp = str(info.get("ListenPort", "")).strip()
+        return int(lp) if lp.isdigit() else None
     except Exception:
         return None
 
