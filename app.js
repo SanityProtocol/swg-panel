@@ -1163,8 +1163,10 @@ function LoadIfaceSheet({ node }) {
       <div class="field"><label>Config path</label><input autofocus value=${conf} onInput=${e => setConf(e.target.value)} placeholder="/etc/wireguard/wg0.conf" autocomplete="off"/></div>
       <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
     <//>` : html`<${Fragment}>
-      <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
-      <div class="field"><label>Tunnel subnet (CIDR)</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/><div class="hint">The server takes the first host (e.g. 10.8.0.1); peers get the rest.</div></div>
+      <div class="row2">
+        <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
+        <div class="field"><label>Tunnel subnet (CIDR)</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/><div class="hint">The server takes the first host (e.g. 10.8.0.1);</div></div>
+      </div>
       <div class="row2">
         <div class="field"><label>Endpoint host / IP</label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.example.com or 203.0.113.7"/></div>
         <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
@@ -1173,21 +1175,21 @@ function LoadIfaceSheet({ node }) {
       <div class="row2">
         <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/></div>
         <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
+        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div>
       </div>
-      <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div>
       <div class="row2">
         <div class="field"><label>Outbound (egress) IP</label>
           <select class="selwrap" value=${egress} onChange=${e => setEgress(e.target.value)}>
             <option value="">Auto (MASQUERADE)</option>
             ${ips.map(ip => html`<option value=${ip}>${ip}</option>`)}
           </select>
-          <div class="hint">Source IP clients egress from (SNAT). Auto = node default.</div></div>
+          <div class="hint">Source IP clients egress from (SNAT).<br/>Auto = node default.</div></div>
         <div class="field"><label>WAN egress interface</label>
           <select class="selwrap" value=${wan} onChange=${e => setWan(e.target.value)}>
             <option value="">Auto (default route)</option>
             ${wanifs.map(w => html`<option value=${w}>${w}</option>`)}
           </select>
-          <div class="hint">Which NIC clients NAT out of. Auto detects it.</div></div>
+          <div class="hint">Which NIC clients NAT out of.<br/>Auto detects it.</div></div>
       </div>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
