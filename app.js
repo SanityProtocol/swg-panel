@@ -1280,17 +1280,26 @@ function EditIfaceSheet({ node, iface }) {
   const idown = (((Store.stats[node] || {}).interfaces || {})[iface] || {}).down;   // not up on the node
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const save = async () => {
-    setBusy(true); setMsg({ k: "work", t: "saving…" });
     const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), egress_ip: egress, wan_iface: wan };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
+    if (idown) {
+      // optimistic: flip to the start lifecycle + close the modal NOW, before the network round-trips,
+      // so the button changes to "starting…" the instant Save is pressed.
+      const key = node + "|" + iface;
+      Store.ifaceOp[key] = { verb: "start", phase: "busy", started: Date.now() };
+      Store.apply(); closeModal();
+      const fail = (m) => { Store.ifaceOp[key] = { verb: "start", phase: "fail", until: Date.now() + 5000, err: m }; Store.apply(); setTimeout(() => Store.apply(), 5100); };
+      const r = await api.ifaceUpdate(body);
+      if (!r.ok) return fail(r.error || "save failed");
+      const r2 = await api.ifaceRestart({ node, iface });
+      if (!r2.ok) return fail(r2.error || "restart failed");
+      await Store.poll();   // trackIfaceOps drives busy → started/failed
+      return;
+    }
+    setBusy(true); setMsg({ k: "work", t: "saving…" });
     const r = await api.ifaceUpdate(body);
     if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "Failed to update interface." }); }
-    closeModal();
-    if (idown) {                                          // down → bring it up, driving the same start lifecycle as the button
-      startOrRestartIface(node, iface, "start");
-    } else {
-      await Store.poll(); toast("Interface saved — the node applies it on its next sync.", "ok");
-    }
+    closeModal(); await Store.poll(); toast("Interface saved — the node applies it on its next sync.", "ok");
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
