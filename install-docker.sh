@@ -522,6 +522,18 @@ find_iface_conf(){  # echo the .conf path for an interface (searches the usual d
     [ -f "$p" ] && { echo "$p"; return 0; }
   done
 }
+is_kernel_iface(){  # true if backed by a kernel/host unit or an /etc conf (NOT just a docker-data conf) —
+  [ -f "/etc/amnezia/amneziawg/$1.conf" ] && return 0    # i.e. it runs on the kernel here, not in a container
+  [ -f "/etc/wireguard/$1.conf" ] && return 0
+  systemctl is-enabled "awg-quick@$1" >/dev/null 2>&1 && return 0
+  systemctl is-enabled "wg-quick@$1"  >/dev/null 2>&1 && return 0
+  return 1
+}
+kern_label(){       # human label of the kernel service an interface currently runs as
+  if   [ -f "/etc/amnezia/amneziawg/$1.conf" ]; then echo "kernel AmneziaWG (awg-quick@$1)"
+  elif [ -f "/etc/wireguard/$1.conf" ];        then echo "kernel WireGuard (wg-quick@$1)"
+  else echo "the kernel datapath"; fi
+}
 bm_node_ifaces(){   # interfaces a co-located BARE-METAL node manages (from its agent config)
   [ -f /etc/swg-agent/config.json ] || return 0
   python3 - <<'PY' 2>/dev/null || true
@@ -531,9 +543,12 @@ except Exception: pass
 PY
 }
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
-onboard_iface(){    # bring an interface under this docker node: copy its .conf into ./data/node-confs
-  local n="$1" src dest="$INSTALL_DIR/data/node-confs/$n.conf"
-  src="$(find_iface_conf "$n")"
+onboard_iface(){    # bring an interface under this docker node: import its .conf into ./data/node-confs
+  local n="$1" src dest="$INSTALL_DIR/data/node-confs/$n.conf" kconf=""
+  # prefer a kernel/host conf as the source — so a migration also tears the kernel side down
+  if   [ -f "/etc/amnezia/amneziawg/$n.conf" ]; then kconf="/etc/amnezia/amneziawg/$n.conf"
+  elif [ -f "/etc/wireguard/$n.conf" ];        then kconf="/etc/wireguard/$n.conf"; fi
+  src="${kconf:-$(find_iface_conf "$n")}"
   [ -n "$src" ] || { warn "no .conf found for '$n' (orphan interface — no keys to adopt); skipping"; return 1; }
   run mkdir -p "$INSTALL_DIR/data/node-confs"
   # copy the conf WITHOUT the host PostUp/PostDown NAT hooks — inside the swg-node container those
@@ -544,17 +559,23 @@ onboard_iface(){    # bring an interface under this docker node: copy its .conf 
     else grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$dest"; chmod 600 "$dest"; fi
   fi
   $DRYRUN || { grep -q '^#swg:onboarded' "$dest" 2>/dev/null || sed -i '1i #swg:onboarded' "$dest" 2>/dev/null || true; }   # add-only: swg-noded keeps the orphan's existing peers
-  if _in "$n" "$(bm_node_ifaces)"; then          # transfer: detach from the bare-metal node side
-    run awg-quick down "$n" 2>/dev/null || run wg-quick down "$n" 2>/dev/null || true
+  if [ -n "$kconf" ]; then          # MIGRATION: take the interface OFF the kernel/host side so its name
+    run awg-quick down "$n" 2>/dev/null || true   # doesn't collide with the container (host networking)
+    run wg-quick  down "$n" 2>/dev/null || true
     run systemctl disable --now "awg-quick@$n" 2>/dev/null || true
     run systemctl disable --now "wg-quick@$n"  2>/dev/null || true
-    $DRYRUN || python3 - "$n" <<'PY' 2>/dev/null || true
+    if _in "$n" "$(bm_node_ifaces)"; then          # also detach from a co-located bare-metal swg node
+      $DRYRUN || python3 - "$n" <<'PY' 2>/dev/null || true
 import json,sys
 p="/etc/swg-agent/config.json"
 try:
     d=json.load(open(p)); d.get("interfaces",{}).pop(sys.argv[1],None); json.dump(d,open(p,"w"),indent=2)
 except Exception: pass
 PY
+    fi
+    # move the kernel conf aside (not delete) so the unit can't re-create it on boot — recoverable
+    if $DRYRUN; then echo "    [skip] mv $kconf $kconf.bak (off the kernel)"
+    else mv -f "$kconf" "$kconf.bak" 2>/dev/null || true; fi
   fi
   ok "onboarded $(col "$C_GREEN" "$n")"
 }
@@ -565,57 +586,71 @@ manage_node_ifaces(){
   echo "      Interfaces run inside the swg-node container; add as many as you need now, or add more"
   echo "      later from the panel (Interfaces → Load new interface). Existing ones are KEPT."
   echo
-  local mine bm cand avail n pick xfer bad yn doit
+  local mine bm cand dock kern n pick xfer kpick dpick bad yn doit
   while :; do
     mine="$(current_node_ifaces | tr '\n' ' ')" || true   # under set -euo pipefail these subs can exit non-zero
     bm="$(bm_node_ifaces)" || true
     cand="$( { host_wg_ifaces; for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf; do [ -f "$c" ] && basename "$c" .conf; done; } | sort -u )" || true
-    avail=""; for n in $cand; do _in "$n" "$mine" && continue; _in "$n" "$bm" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
+    # split the free interfaces: docker ORPHANS (left by a previous container) vs KERNEL interfaces
+    # (running on the host's kernel datapath — onboarding one MOVES it off the kernel).
+    dock=""; kern=""
+    for n in $cand; do
+      _in "$n" "$mine" && continue
+      _in "$n" "$bm" && continue
+      if is_kernel_iface "$n"; then kern="$kern $n"; else dock="$dock $n"; fi
+    done
+    dock="$(echo $dock)"; kern="$(echo $kern)"
     [ -n "$mine" ] && { printf "  Interfaces already on this node:"; for n in $mine; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
-    printf "  Available orphan interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
+    [ -n "$dock" ] && { printf "  Available orphan interfaces:"; for n in $dock; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
+    [ -n "$kern" ] && { printf "  Existing %s interfaces:" "$(col "$C_RED" kernel)"; for n in $kern; do printf ' %s' "$(col "$C_RED" "$n")"; done; printf " %s\n" "$(col "$C_RED" '— picking one MOVES it off the kernel into this node')"; }
     [ -n "$bm" ] && { printf "  Interfaces used by the bare-metal node on this server:"; for n in $bm; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
     echo
-    if [ -z "$avail$mine$bm" ]; then                # truly nothing on this box → offer to create the first one
+    if [ -z "$dock$kern$mine$bm" ]; then            # truly nothing on this box → offer to create the first one
       doit="$(ask_yn_tty "Create one now? (installs WireGuard / AmneziaWG only if missing)" y)"
       if [ "$doit" = yes ]; then echo; add_node_iface; echo; continue; fi
       warn "no interfaces yet — you can add one later from the panel (Interfaces → Load new interface)"; break
-    elif [ -z "$avail" ] && [ -z "$mine" ]; then    # nothing free + nothing here, but other-node interfaces exist → transfer or create
-      printf "  Enter a name to %s it from the other node, or %s to create one: " "$(col "$C_BLUE" transfer)" "$(col "$C_BLUE" new)"
-    elif [ -n "$avail" ]; then                      # orphans present → onboard all / some / none
-      echo "  Press $(b Enter) to onboard $(col "$C_BLUE" 'all orphans above') and continue"
+    elif [ -n "$dock" ]; then                       # docker orphans present → onboard all / some / none
+      echo "  Press $(b Enter) to onboard $(col "$C_BLUE" 'all available orphans above') and continue"
       echo "  Enter interface $(b names) (space-separated) to onboard or migrate specific ones"
       [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
       printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
-    else                                            # no orphans → just finish or add more
+    else                                            # no orphans (maybe kernel/bm/own) → finish or migrate
       echo "  Press $(b Enter) to finish with this node's interfaces"
-      [ -n "$bm" ] && echo "  Enter interface $(b names) to migrate one from the other node"
+      { [ -n "$kern" ] || [ -n "$bm" ]; } && echo "  Enter interface $(b names) to migrate one onto this node"
       printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
     fi
     if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
-    if [ -z "$(echo $pick)" ]; then                # Enter → onboard all available + proceed
-      for n in $avail; do onboard_iface "$n" || true; done
-      [ -n "$(current_node_ifaces)" ] || { warn "no interfaces yet — type 'new' to create one"; echo; continue; }
+    if [ -z "$(echo $pick)" ]; then                # Enter → onboard all docker orphans + proceed (kernel needs explicit confirm)
+      for n in $dock; do onboard_iface "$n" || true; done
+      [ -n "$(current_node_ifaces)" ] || { warn "no interfaces yet — type 'new' or name a kernel interface to migrate"; echo; continue; }
       break
     fi
-    if [ "$pick" = done ]; then                     # keep only what's on the node → leave the orphans alone
+    if [ "$pick" = done ]; then                     # keep only what's on the node → leave the rest alone
       [ -n "$(current_node_ifaces)" ] || { warn "this node has no interfaces yet — onboard one or type 'new'"; echo; continue; }
       break
     fi
     if [ "$pick" = new ]; then echo; add_node_iface; echo; continue; fi
-    xfer=""; bad=""
+    xfer=""; kpick=""; dpick=""; bad=""
     for n in $pick; do
       _in "$n" "$mine" && continue
-      _in "$n" "$avail" && continue
+      _in "$n" "$dock" && { dpick="$dpick $n"; continue; }
+      _in "$n" "$kern" && { kpick="$kpick $n"; continue; }
       _in "$n" "$bm" && { xfer="$xfer $n"; continue; }
       bad="$bad $n"
     done
     [ -n "$bad" ] && { warn "not found:$bad — pick from the lists above, or 'new'"; echo; continue; }
-    if [ -n "$xfer" ]; then
+    for n in $dpick; do onboard_iface "$n" || true; done           # docker orphans → straight onboard
+    for n in $kpick; do                                            # kernel → per-interface migration confirm
+      echo
+      echo "  You are about to move $(col "$C_RED" "$n") from $(kern_label "$n") to this docker-managed node."
+      echo "  It will no longer run on the kernel here ($(b 'its peers are preserved'); the conf is kept as a .bak)."
+      if [ "$(ask_yn_tty "Move $n into docker?" y)" = yes ]; then onboard_iface "$n" || true; else warn "kept $n on the kernel"; fi
+    done
+    if [ -n "$xfer" ]; then                                        # bare-metal swg node → transfer confirm
       printf "  Are you sure you want to transfer %s to this node? (y/N): " "$(col "$C_RED" "$(echo $xfer)")"
       read -r yn </dev/tty || yn=n
-      case "$yn" in [Yy]*) : ;; *) echo; continue;; esac
+      case "$yn" in [Yy]*) for n in $xfer; do onboard_iface "$n" || true; done;; *) echo; continue;; esac
     fi
-    for n in $pick; do _in "$n" "$mine" || onboard_iface "$n" || true; done
     break
   done
 }
