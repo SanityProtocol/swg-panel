@@ -410,6 +410,26 @@ def list_node_ips():
     return ips
 
 
+def list_node_ip_ifaces():
+    """The node's (ipv4, nic) pairs — for the merged egress picker (a source IP always lives on a NIC)."""
+    pairs = []
+    try:
+        out = run(["ip", "-4", "-o", "addr", "show"]).stdout
+    except Exception:
+        return pairs
+    for ln in out.splitlines():
+        p = ln.split()
+        if len(p) < 4 or p[2] != "inet":
+            continue
+        dev, ip = p[1], p[3].split("/")[0]
+        if dev == "lo" or dev.startswith(("wg", "awg", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
+            continue
+        if ip.startswith("127.") or any(x["ip"] == ip for x in pairs):
+            continue
+        pairs.append({"ip": ip, "iface": dev})
+    return pairs
+
+
 def list_node_ifaces():
     """The node's WAN-candidate NIC names (devices carrying a non-loopback IPv4) — for the egress -o."""
     ifs = []
@@ -543,7 +563,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS),
-            "node_ips": list_node_ips(), "node_ifaces": list_node_ifaces()}
+            "node_ips": list_node_ips(), "node_ifaces": list_node_ifaces(),
+            "node_ip_ifaces": list_node_ip_ifaces()}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap

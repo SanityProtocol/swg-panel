@@ -968,6 +968,7 @@ def api(method, path, qs, body, deps):
                         "turn_manage": bool(snap.get("turn_manage")),  # can the panel edit/restart this node's turn-proxies?
                         "ips": snap.get("node_ips") or [],             # the node's own IPs — candidates for a per-interface egress IP
                         "wan_ifaces": snap.get("node_ifaces") or [],   # the node's NICs — candidates for the egress WAN interface
+                        "ip_ifaces": snap.get("node_ip_ifaces") or [], # (ip, iface) pairs — for the merged egress picker
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
                         "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
                         "outdated": _ver_behind(snap.get("noded_version"), VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
