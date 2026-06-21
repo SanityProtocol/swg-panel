@@ -2951,7 +2951,7 @@ function EditPeerSheet({ peer, focus, done, flash }) {
       if (first) { const s = parseFullConf(first); setDns((s.dns || []).join(", ")); setMtu(String(s.mtu)); setKeepalive(String(s.keepalive)); setAllowed(s.allowed); }
     })();
     return () => { ok = false; };
-  }, [peer.id]);
+  }, [peer.id, peer.pubkey, Store.configEpoch]);   // pubkey/epoch change (e.g. after Rotate) re-reads the now-available config
 
   const editable = Object.keys(confs).length;
   const ipChangedFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && v !== (t.ip || "").split("/")[0]; };
@@ -3024,7 +3024,7 @@ function EditPeerSheet({ peer, focus, done, flash }) {
   };
 
   return html`<${Sheet} title=${"Edit peer"} onClose=${done}
-    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Copy to interface</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    foot=${html`<${Fragment}>${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, () => openEditPeer(peer, focus, done))}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Copy to interface</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
