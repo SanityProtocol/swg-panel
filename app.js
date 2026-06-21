@@ -447,8 +447,9 @@ function dismissError(key) { if (Store.rowErrors[key]) { delete Store.rowErrors[
 
 // ───────────────────────── modal ─────────────────────────
 let _setModal = () => {};
-function openModal(node) { _setModal(node); }
-function closeModal() { _setModal(null); }
+let _modalSeq = 0;   // bumps on every open/close — lets a confirm tell if onConfirm replaced the modal
+function openModal(node) { _modalSeq++; _setModal(node); }
+function closeModal() { _modalSeq++; _setModal(null); }
 
 // ───────────────────────── shared bits ─────────────────────────
 const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
@@ -2495,7 +2496,8 @@ function openConfirm(opts) { openModal(html`<${ConfirmSheet} ...${opts}/>`); }
 function ConfirmSheet({ title, body, confirmLabel, danger, warn, onConfirm, back }) {
   back = back || closeModal;
   const [busy, setBusy] = useState(false);
-  const go = async () => { if (busy) return; setBusy(true); try { await onConfirm(); } finally { closeModal(); } };
+  const go = async () => { if (busy) return; setBusy(true); const seq = _modalSeq;
+    try { await onConfirm(); } finally { if (_modalSeq === seq) closeModal(); } };   // skip close if onConfirm opened another modal (no flicker)
   const tone = danger || warn;
   return html`<${Sheet} title=${title} onClose=${back}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button>
@@ -2973,17 +2975,16 @@ function EditPeerSheet({ peer, focus, done, flash }) {
       body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
       onConfirm: () => {
         const ekey = "peer:" + peer.id;
-        // reopen the edit modal with an orange "Rotating keys…" flash (this setTimeout is scheduled
-        // FIRST, so FIFO guarantees it fires before the result flash below — even if the rotate is
-        // instant); rotate in the background, then flip to the result.
-        setTimeout(() => openEditPeer(peer, focus, done, { k: "warn", t: "Rotating keys…" }), 0);
+        // open the edit modal RIGHT AWAY (replaces this confirm — go() sees the modal changed and
+        // won't close it, so no flicker) showing the orange "Rotating keys…" flash; rotate in the
+        // background, then replace it with the result.
+        openEditPeer(peer, focus, done, { k: "warn", t: "Rotating keys…" });
         rotatePeerKeys(peer).then(async () => {
           await Store.poll();
           const fresh = Store.recon.peers.find(x => x.id === peer.id) || peer;
           const re = Store.rowErrors[ekey];
-          const flash = re ? { k: "err", t: re.msg || "Rotate failed." }
-                           : { k: "ok", t: "Keys rotated — send the user the new QR / config; the old one no longer works." };
-          setTimeout(() => openEditPeer(fresh, focus, done, flash), 0);
+          openEditPeer(fresh, focus, done, re ? { k: "err", t: re.msg || "Rotate failed." }
+            : { k: "ok", t: "Keys rotated — send the user the new QR / config; the old one no longer works." });
         });
       } });
   };
@@ -3167,7 +3168,12 @@ function App() {
     const onHash = () => { setHash(location.hash || "#/"); setModalState(null); window.scrollTo(0, 0); };
     window.addEventListener("hashchange", onHash);
     // Esc/Enter inside dialogs are owned by <Sheet> (with its dirty-guard); nothing global here.
-    return () => window.removeEventListener("hashchange", onHash);
+    // A MOUSE click on an icon button / nav tab shouldn't leave a lingering focus ring (it persists
+    // after a modal closes, then any keypress like Shift re-shows it). Suppressing the focus on
+    // mousedown keeps the click working while keyboard Tab still focuses (and shows the ring).
+    const onMD = e => { const el = e.target && e.target.closest && e.target.closest(".iconbtn, #tabs a"); if (el) e.preventDefault(); };
+    document.addEventListener("mousedown", onMD, true);
+    return () => { window.removeEventListener("hashchange", onHash); document.removeEventListener("mousedown", onMD, true); };
   }, []);
 
   const { route, params } = matchRoute(hash);
