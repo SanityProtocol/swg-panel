@@ -498,6 +498,26 @@ def unassign_peer(p, store_configs, config_dir, now):
         del_config(store_configs, config_dir, p.get("pubkey", ""), t["node"], t["iface"])
 
 
+def retire_pubkey(nodes, nodes_path, targets, old_pubkey):
+    """Queue a pubkey for EXPLICIT removal on each target's node/iface. The node drops it even on an
+    add-only (onboarded) interface — so a key the panel rotated/deleted is removed, while genuine
+    external orphans (keys the panel never owned) are still left alone. Cleared once the node stops
+    reporting the key (in _node_sync)."""
+    if not old_pubkey:
+        return
+    changed = False
+    for t in targets or []:
+        nid = t.get("node"); iface = t.get("iface")
+        if not nid or not iface or nid not in nodes:
+            continue
+        lst = nodes[nid].setdefault("retire", {}).setdefault(iface, [])
+        if old_pubkey not in lst:
+            lst.append(old_pubkey); changed = True
+    if changed:
+        with contextlib.suppress(Exception):
+            nodes_save(nodes_path, nodes)
+
+
 # ───────────────────────── node store + sync ─────────────────────────
 
 def make_token_hash(token, iters=200000):
@@ -1239,6 +1259,7 @@ def api(method, path, qs, body, deps):
             return 409, {"ok": False, "error": "this is the peer's only deployment — "
                          "delete the peer instead (unassign it first)", "code": "last_target"}
         del_config(store_configs, config_dir, p["pubkey"], node, iface)
+        retire_pubkey(nodes, deps["nodes_path"], [{"node": node, "iface": iface}], p["pubkey"])   # drop it even on add-only ifaces
         p2 = peer_set(roster, pid, {"targets": kept}, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Removed deployment", peer_label(roster, p2),
@@ -1317,6 +1338,7 @@ def api(method, path, qs, body, deps):
         label = peer_label(roster, p)
         for t in p["targets"]:
             del_config(store_configs, config_dir, p["pubkey"], t["node"], t["iface"])
+        retire_pubkey(nodes, deps["nodes_path"], p.get("targets", []), p["pubkey"])   # drop it even on add-only ifaces
         del roster["peers"][pid]
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Deleted peer", label)
@@ -1360,6 +1382,7 @@ def api(method, path, qs, body, deps):
         if old_pubkey and old_pubkey != pubkey:
             for t in p.get("targets", []):
                 del_config(store_configs, config_dir, old_pubkey, t["node"], t["iface"])
+            retire_pubkey(nodes, deps["nodes_path"], p.get("targets", []), old_pubkey)   # drop the old key even on add-only ifaces
         psk = body.get("psk") or gen_psk()
         p2 = peer_set(roster, pid, {"user_id": uid or None, "pubkey": pubkey, "psk": psk}, now())
         roster_save(roster_path, roster)
@@ -2136,6 +2159,27 @@ class Handler(BaseHTTPRequestHandler):
                     node.pop("delete", None)
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
+        # clear RETIRE entries once the node stops reporting the pubkey (it removed it)
+        retire = node.get("retire") or {}
+        if retire:
+            snap_ifs2 = snap.get("interfaces") or {}
+            r_changed = False
+            for ifn in list(retire.keys()):
+                cur_pks = {pp.get("public_key") for pp in ((snap_ifs2.get(ifn) or {}).get("peers") or [])}
+                kept = [pk for pk in retire[ifn] if pk in cur_pks]   # still on the iface → keep asking the node to drop it
+                if kept != retire[ifn]:
+                    r_changed = True
+                    if kept:
+                        retire[ifn] = kept
+                    else:
+                        retire.pop(ifn, None)
+            if r_changed:
+                if retire:
+                    node["retire"] = retire
+                else:
+                    node.pop("retire", None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         # close turn-proxy requests once the node reflects them (delete: service gone; onboard: it
         # appears; manage/rotate: the node applied + restarted — verified by listen match, else a grace)
         turn = node.get("turn") or {}; turn_onb = node.get("turn_onboard") or []
@@ -2170,6 +2214,7 @@ class Handler(BaseHTTPRequestHandler):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
+                                "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
                                 "delete": list((node.get("delete") or {}).keys()),
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],

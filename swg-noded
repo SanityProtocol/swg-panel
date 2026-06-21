@@ -597,15 +597,25 @@ def reconcile_ifaces(node_cfg, desired_ifaces, agent, sudo):
     return res
 
 
-def reconcile(node_cfg, desired_by_iface, agent, sudo):
+def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
     """Apply the panel's desired peer set. Only ever called on a valid sync reply."""
     res = {"added": 0, "removed": 0, "errors": []}
+    remove_by_iface = remove_by_iface or {}
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         desired = {p["public_key"]: p for p in (desired_by_iface.get(iface) or [])}
         current = current_pubkeys(node_cfg, iface)
         if current is None:
             res["errors"].append(f"{iface}: cannot read interface")
             continue
+        # EXPLICIT retirements from the panel (a key it rotated/deleted) FIRST — removed even on an
+        # add-only interface, and before the add below so the replacement key can take the freed IP.
+        for pk in remove_by_iface.get(iface, []):
+            if pk in current and pk not in desired:
+                r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
+                if r.get("ok"):
+                    res["removed"] += 1; current.discard(pk)
+                else:
+                    res["errors"].append(f"retire {pk[:8]}: {r.get('error')}")
         for pk, p in desired.items():
             if pk in current:
                 continue
@@ -1022,7 +1032,7 @@ def main():
                 for k in list(NODE_ERRORS):
                     if k not in active:
                         NODE_ERRORS.pop(k, None)
-                r = reconcile(node_cfg, reply["desired"], agent, sudo)
+                r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)
                 eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
                 for e in eg["errors"]:
