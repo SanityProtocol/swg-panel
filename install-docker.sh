@@ -280,7 +280,7 @@ while [ $# -gt 0 ]; do
     -user|--user|-username) PANEL_USER="${2:-}"; shift 2 || shift;;
     -domain|--domain)       PANEL_DOMAIN="${2:-}"; shift 2 || shift;;
     -base|--base)           PANEL_BASE="${2:-}"; shift 2 || shift;;
-    -port|--port)           PANEL_PORT="${2:-}"; shift 2 || shift;;
+    -port|--port)           PANEL_PORT="${2:-}"; PANEL_PORT_EXPLICIT=yes; shift 2 || shift;;
     -tls|--tls)             TLS="${2:-}"; shift 2 || shift;;
     -email|--email)         ACME_EMAIL="${2:-}"; shift 2 || shift;;
     -cf-token|--cf-token)   CF_TOKEN="${2:-}"; shift 2 || shift;;
@@ -356,7 +356,11 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
   done
   PANEL_DOMAIN="$PANEL_HOST_NOPORT"; [ -z "$PANEL_DOMAIN" ] && PANEL_DOMAIN=localhost
   [ -n "$PANEL_BASE" ] && ok "panel will be served under subpath ${PANEL_BASE}/"
-  PANEL_PORT="${PANEL_PORT:-${URL_PORT:-443}}"   # honor :port from the URL; else default 443 (host-published port)
+  # an explicit -port flag wins; otherwise the URL's :port wins (even over a stale value loaded from a
+  # re-install's .env, so changing the URL to host:8443 actually moves the published port); else 443.
+  if   [ "${PANEL_PORT_EXPLICIT:-no}" = yes ]; then :
+  elif [ -n "$URL_PORT" ];                     then PANEL_PORT="$URL_PORT"
+  else PANEL_PORT="${PANEL_PORT:-443}"; fi
   [ "${PANEL_USER:-admin}" = admin ] && PANEL_USER="admin$(( RANDOM % 900 + 100 ))"   # admin+3 digits, like bare-metal (-user overrides)
   [ -z "$PANEL_PASSWORD" ] && PANEL_PASSWORD="$(rand_pw)"   # auto-generated; pass -pass to set your own
   return 0   # never let a short-circuited && above make the function (and set -e) fail
