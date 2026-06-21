@@ -57,19 +57,30 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   NIFS="$(getv NODE_IFACES)"; NIF="$(getv NODE_IFACE)"; NPLAIN="$(getv NODE_PLAIN_WG)"; NVERIFY="$(getv TLS_VERIFY)"
   [ "$NVERIFY" = yes ] || NVERIFY=no
 
-  # interface specs as "name:proto" (proto = awg|wg) from NODE_IFACES, else the single NODE_IFACE
+  # interface specs as "name:proto" (proto = awg|wg). The PERSISTED confs in data/node-confs are the
+  # real interface set the docker node manages (node-entrypoint scans that dir) — .env's NODE_IFACES
+  # only lists what was set at INSTALL time, so panel-added interfaces (e.g. da221) are missing there.
+  # Detect each protocol from its conf (AmneziaWG obfuscation keys ⇒ awg, else wg).
   specs=""
-  if [ -n "$NIFS" ]; then
+  if [ -d "$confd" ]; then
+    for f in "$confd"/*.conf; do
+      [ -f "$f" ] || continue
+      nm="$(basename "$f" .conf)"
+      if grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I1)[[:space:]]*=' "$f"; then pr=awg; else pr=wg; fi
+      specs="${specs:+$specs }$nm:$pr"
+    done
+  fi
+  if [ -z "$specs" ] && [ -n "$NIFS" ]; then        # fall back to .env if no confs are on disk yet
     OIFS=$IFS; IFS=','
     for e in $NIFS; do IFS=$OIFS
       nm="$(printf '%s' "$e" | cut -d: -f1)"; pr="$(printf '%s' "$e" | cut -d: -f4)"
       [ "$pr" = wg ] || pr=awg
       [ -n "$nm" ] && specs="${specs:+$specs }$nm:$pr"; IFS=','
     done; IFS=$OIFS
-  elif [ -n "$NIF" ]; then
+  elif [ -z "$specs" ] && [ -n "$NIF" ]; then
     pr=awg; [ "$NPLAIN" = yes ] && pr=wg; specs="$NIF:$pr"
   fi
-  [ -n "$specs" ] || die "no interfaces found in the docker node's .env"
+  [ -n "$specs" ] || die "no interfaces found (looked in $confd and the docker node's .env)"
 
   # pre-flight: a bare-metal conf of the same NAME already present is a real clash (the docker
   # node still holds the ports, but those free up the moment we stop its container below).
