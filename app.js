@@ -1314,7 +1314,7 @@ function EditIfaceSheet({ node, iface }) {
     if (portChanged || epChanged) {           // client-breaking → confirm first (the editor stays open behind it)
       const what = portChanged && epChanged ? "endpoint and listen port" : portChanged ? "listen port" : "endpoint";
       pushModal(html`<${ConfirmSheet} title=${"Change " + what + "?"} confirmLabel="Apply change" warn=${true}
-        body=${"Every existing client's config / QR points to the current " + what + " — after this they won't reconnect until you re-issue and re-import them (like rotating a peer's keys). The interface's keys and peers are kept."}
+        body=${"This reconfigures the interface on the node. Existing peers will NOT be able to connect using their old configs — you'll need to re-issue and re-distribute the QR codes. The interface's keys and peers are kept."}
         onConfirm=${() => { doSave(); }}/>`);
       return;
     }
@@ -1324,8 +1324,9 @@ function EditIfaceSheet({ node, iface }) {
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
       <div>Endpoint IP only changes what configs/QRs tell clients to dial.</div>
-      <div>Changing the Listen port reconfigures the interface on the node (peers are kept; clients reconnect on the new port).</div>
-      <div>DNS / MTU seed new peers — existing per-peer values aren't touched.</div>
+      <div>Changing the <b>endpoint</b>, <b>listen port</b>, or <b>tunnel subnet</b> reconfigures the interface on the node.</div>
+      <div>Existing peers will not be able to connect using the old configs.</div>
+      <div>You will need to re-distribute the QR codes.</div>
     </div>
     ${idown ? html`<div class="notice warn" style="margin-bottom:18px"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${Object.keys(meta.drift || {}).length ? html`<div class="notice warn" style="margin-bottom:18px">
