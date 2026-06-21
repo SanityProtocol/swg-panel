@@ -335,6 +335,11 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
   echo "      live under an existing site (e.g. $(b 'vpn.example.com/swg'))."
   echo
   local def="${PANEL_DOMAIN:-$(detect_public_ip)}"; [ -z "$def" ] && def=localhost; local _url_ans _forced="" _pp _who
+  # re-install (or -host): show the saved port/subpath in the default URL, e.g. host:8443/swg — not just the host
+  if [ -n "${PANEL_DOMAIN:-}" ]; then
+    { [ -n "${PANEL_PORT:-}" ] && [ "$PANEL_PORT" != 443 ]; } && def="$def:$PANEL_PORT"
+    [ -n "${PANEL_BASE:-}" ] && def="$def$PANEL_BASE"
+  fi
   PANEL_DOMAIN=""   # ask_valid skips if non-empty; force the prompt and parse the result
   ask_valid "Enter panel URL (https://…)" "$def" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
   while :; do
@@ -393,7 +398,23 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
   menu "$(col "$C_BLUE" cf15)"                          "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
   menu "$(col "$C_BLUE" selfsigned)"                    "OK for testing"
   menu "$(col "$C_GREY" none)"                          "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
-  ask_choice "Select TLS certificate" "$_def" TLS "$_opts"
+  local _w80 _ans80
+  while :; do
+    ask_choice "Select TLS certificate" "$_def" TLS "$_opts"
+    # letsencrypt's HTTP-01 needs host :80 — if it's taken (nginx/apache), make the user switch or force
+    if [ "$TLS" = letsencrypt ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
+      _w80="$(ss -lntpH 'sport = :80' 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
+      echo; warn "letsencrypt needs host port $(col "$C_YEL" ':80') for HTTP-01, but it's in use${_w80:+ (by $(col "$C_YEL" "$_w80"))} — issuance will fail"
+      echo "    :80 is fixed by ACME (independent of the panel's port). Pick $(b cloudflare) (DNS-01), $(b cf15), $(b selfsigned), or $(b none) — or $(bb force) to keep letsencrypt."
+      printf '  Select another certificate, or type %s: ' "$(bb force)"
+      read -r _ans80 </dev/tty || _ans80=force
+      _ans80="$(printf '%s' "$_ans80" | tr -d '[:space:]')"
+      [ "$_ans80" = force ] && break
+      case " $_opts " in *" $_ans80 "*) TLS="$_ans80";; *) TLS=""; warn "enter one of: $_opts — or 'force'";; esac
+      continue
+    fi
+    break
+  done
   if [ "$TLS" = reuse ]; then REUSE_TLS=yes; TLS="${EXIST_TLS:-selfsigned}"; ok "reusing the existing certificate (TLS mode: $(b "$TLS"))"; return 0; fi
   case "$TLS" in letsencrypt|cloudflare|cf15)
     case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS needs a domain (FQDN), not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
@@ -823,17 +844,7 @@ PY
 fi
 
 # ───────────────────────── bring it up ─────────────────────────
-# The panel's own port is checked at the URL step; here we only check :80, which letsencrypt's
-# HTTP-01 challenge needs (the TLS method is chosen after the URL, so this is the right place).
-if ! $DRYRUN && [ "$PROFILE" != node ] && [ "$TLS" = letsencrypt ] && have ss && [ -n "$(ss -lntH "sport = :80" 2>/dev/null)" ]; then
-  _who="$(ss -lntpH "sport = :80" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
-  echo; warn "letsencrypt needs host port $(col "$C_YEL" ":80") for the HTTP-01 challenge, but it's in use${_who:+ (by $(col "$C_YEL" "$_who"))}"
-  echo "    • port 80 is fixed by the ACME protocol — independent of the panel's port"
-  echo "    • to avoid it, re-run and pick $(b cloudflare) (DNS-01), $(b cf15), or $(b none) and reverse-proxy through that server"
-  echo
-  _go="$(ask_yn_tty "Try to start anyway?" n)"
-  [ "$_go" = yes ] || die "aborted — free :80 (or re-run with a TLS method that doesn't need it), then try again"
-fi
+# (port checks happen earlier: the panel port at the URL step, :80 at the TLS step for letsencrypt)
 info "Starting compose profile '$PROFILE'$($BUILD && echo ' (building from source)')"
 BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from GHCR
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
