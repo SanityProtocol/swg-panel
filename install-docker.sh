@@ -904,7 +904,7 @@ case "$PROFILE" in host|master)
   echo "  TLS       $(b "$TLS")  ·  host port $(b "$PANEL_PORT")" ;;
 esac
 case "$PROFILE" in node|master)
-  echo "  Node      → syncs to $(bb "$PANEL_URL")   ·  endpoint $(bb "$NODE_ENDPOINT")"
+  echo "  Node      → syncs to $(bb "$PANEL_URL")   ·  $(bb "$NODE_ENDPOINT")"
   echo; echo "  $(b 'Interface') (in the swg-node container):"
   if [ -n "$NODE_IFACES" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"
     for e in "${_ifs[@]}"; do IFS=':' read -r _nm _pt _ad _pr _ep <<< "$e"

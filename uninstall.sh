@@ -124,6 +124,16 @@ docker_node_goodbye(){
   tok="$(sed -n 's/^NODE_TOKEN=//p' "$env" | head -1)"; tok="${tok%\"}"; tok="${tok#\"}"
   verify="$(sed -n 's/^TLS_VERIFY=//p' "$env" | head -1)"; verify="${verify%\"}"; verify="${verify#\"}"
   [ "$verify" = yes ] || verify=no
+  # A co-located master's node signs off to its OWN panel. If that panel was already removed
+  # earlier in this same run (master teardown removes swg-panel before swg-node), the goodbye
+  # would just hit a dead local port — skip it instead of printing a scary connection error.
+  local host="${url#*://}"; host="${host%%/*}"; host="${host%%:*}"
+  case "$host" in swg-panel|127.0.0.1|localhost|::1)
+    if ! docker_running swg-panel; then
+      info "Local panel already removed — skipping node sign-off (Force-remove the node in the panel later if it persists)."
+      return 0
+    fi ;;
+  esac
   _goodbye_post "$url" "$tok" "$verify"
 }
 
