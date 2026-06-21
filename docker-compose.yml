@@ -74,7 +74,9 @@ services:
       NODE_TOKEN: "${NODE_TOKEN:?create the node in the Nodes screen, then set NODE_TOKEN}"
       NODE_ENDPOINT: "${NODE_ENDPOINT:?public IP/host clients dial for this node}"
       NODE_NET: "${NODE_NET:-host}"        # host (this container uses network_mode: host) or bridge — reported to the panel so it shows port-publishing guidance only for bridge
-      TURN_MANAGE: "${TURN_MANAGE:-manual}"  # panel = the installer mounted docker.sock so swg-noded can manage host turn-proxies; manual = no socket
+      TURN_MANAGE: "${TURN_MANAGE:-manual}"  # panel = the installer mounted docker.sock so swg-noded can run turn-proxy CONTAINERS; manual = no socket
+      SWG_TURN_IMAGE: "${SWG_TURN_IMAGE:-ghcr.io/sanityprotocol/swg-node:latest}"  # image swg-noded runs each turn-proxy container from
+      SWG_HOST_NODE_DIR: "${SWG_HOST_NODE_DIR:-}"   # absolute HOST path of ./data/node — for bind-mounting the turn binary into its container
       # Single interface (default), or several via NODE_IFACES (see .env.example):
       NODE_IFACE: "${NODE_IFACE:-awg0}"
       NODE_IFACES: "${NODE_IFACES:-}"     # "name:port:addr[:proto[:endpoint]],…"  (blank = use NODE_IFACE)
@@ -84,8 +86,8 @@ services:
       NODE_PLAIN_WG: "${NODE_PLAIN_WG:-}"  # yes = plain WireGuard; blank/no = AmneziaWG v2
       TLS_VERIFY: "${TLS_VERIFY:-no}"     # yes to verify the panel's cert (real CA)
       DNS: "${DNS:-1.1.1.1}"
-      # turn-proxies run as host systemd services; the installer writes their record into
-      # ./data/node (mounted below), and swg-noded reads it here to report them to the panel.
+      # turn-proxies run as SIBLING CONTAINERS (swg-turn-*, via the mounted docker.sock) — NOT host
+      # systemd. swg-noded keeps their config in this record under ./data/node (mounted below).
       SWG_TURN_RECORD: "/var/lib/swg-noded/turn-proxy.json"
     volumes:
       - ./data/node:/var/lib/swg-noded

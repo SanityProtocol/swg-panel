@@ -345,6 +345,9 @@ def load_turn_proxies():
         tp = tp if isinstance(tp, list) else []
     except Exception:
         return []
+    if TURN_DOCKER:                 # container model — the record IS the config; just flag running via docker ps
+        _dturn_attach_running(tp)
+        return tp
     nowt = time.time()
     if TURN_MANAGE_ON and (any("params" not in t for t in tp) or nowt - _TURN_READ["at"] >= 20):
         units = _read_units_live([t["service"] for t in tp if t.get("service")])
@@ -886,6 +889,110 @@ def _installed_tp(svc):
     unit = host_sh("cat " + shlex.quote(_turn_unit_path(svc)) + " 2>/dev/null").stdout
     return _parse_tp(svc, _exec_of(unit))
 
+
+# ───────── docker turn-proxies: sibling CONTAINERS (no host systemd, no --pid=host helper) ─────────
+# A docker node runs each turn-proxy as its OWN container (swg-turn-<inst>, host networking) instead of
+# editing host systemd through a privileged --pid=host nsenter helper. swg-noded fetches the fork binary
+# into its host-mounted data dir and runs it in the swg-node image; a change = recreate the container
+# (fast, no daemon-reload). TURN_RECORD is the source of truth for the config on a docker node.
+SWG_HOST_NODE_DIR = (os.environ.get("SWG_HOST_NODE_DIR") or "").rstrip("/")   # host path mapped to /var/lib/swg-noded
+SWG_TURN_IMAGE = os.environ.get("SWG_TURN_IMAGE") or ""                       # image used to run the turn binary
+TURN_DOCKER = (NODE_KIND == "docker")
+
+def _turn_inst(svc):  return svc[len("vk-turn-proxy-"):] if svc.startswith("vk-turn-proxy-") else svc
+def _turn_cname(svc): return "swg-turn-" + _turn_inst(svc)
+def _turn_bin_local(svc): return "/var/lib/swg-noded/turn/" + _turn_inst(svc) + "/server"   # inside swg-noded
+def _turn_bin_host(svc):  return SWG_HOST_NODE_DIR + "/turn/" + _turn_inst(svc) + "/server"  # same file on the host
+
+def _params_wrapkey(params):
+    m = re.search(r"-wrap-key[ =]+(\S+)", params or ""); return m.group(1) if m else ""
+def _params_set_wrapkey(params, key):
+    params = params or ""
+    if re.search(r"-wrap-key[ =]+\S+", params):
+        return re.sub(r"-wrap-key[ =]+\S+", "-wrap-key " + key, params)
+    return (params + " -wrap-key " + key).strip()
+
+def _dturn_args(tp):
+    args = ["-listen", tp.get("listen", ""), "-connect", tp.get("connect", "")]
+    p = (tp.get("params") or "").strip()
+    if p:
+        try: args += shlex.split(p)
+        except Exception: args += p.split()
+    return args
+
+def _dturn_download(svc, owner):
+    arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+    url = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
+    binp = _turn_bin_local(svc)
+    try: os.makedirs(os.path.dirname(binp), exist_ok=True)
+    except OSError as e: return "mkdir: " + str(e)
+    r = run(["curl", "-fsSL", "--connect-timeout", "10", "--max-time", "180", "--retry", "2",
+             "--retry-all-errors", url, "-o", binp], timeout=210)
+    if r.returncode != 0: return (r.stderr or "binary download failed").strip()[:160]
+    with contextlib.suppress(OSError): os.chmod(binp, 0o755)
+    return ""
+
+def _dturn_run(tp):   # (re)create the container to match tp; returns the docker-run CompletedProcess
+    svc = tp["service"]; cn = _turn_cname(svc)
+    run(["docker", "rm", "-f", cn], timeout=30)   # ignore errors (may not exist yet)
+    return run(["docker", "run", "-d", "--name", cn, "--network", "host", "--restart", "unless-stopped",
+                "-v", _turn_bin_host(svc) + ":/turn-server:ro", "--entrypoint", "/turn-server",
+                SWG_TURN_IMAGE] + _dturn_args(tp), timeout=60)
+
+def _dturn_verify(svc):
+    time.sleep(1.5)
+    r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
+    if (r.stdout or "").strip() == "true": return ""
+    lg = run(["docker", "logs", "--tail", "5", _turn_cname(svc)])
+    return ("turn container isn't running: " + ((lg.stderr or lg.stdout or "").strip() or "see docker logs"))[:160]
+
+def _dturn_delete(svc):
+    run(["docker", "rm", "-f", _turn_cname(svc)], timeout=30)
+    shutil.rmtree(os.path.dirname(_turn_bin_local(svc)), ignore_errors=True)
+
+def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
+    owner = (req.get("owner") or "").strip(); listen = (req.get("listen") or "").strip()
+    connect = (req.get("connect") or "").strip(); wrap_flags = (req.get("wrap_flags") or "").strip()
+    if "/" not in owner or ":" not in listen or ":" not in connect: return "bad install request", None
+    if not SWG_TURN_IMAGE or not SWG_HOST_NODE_DIR:
+        return "turn-on-docker not configured (re-install the node with turn management on)", None
+    params = (wrap_flags + " -wrap-key " + secrets.token_hex(32)) if wrap_flags else ""
+    err = _dturn_download(svc, owner)
+    if err: return err, None
+    tp = {"service": svc, "listen": listen, "connect": connect,
+          "wrap_key": _params_wrapkey(params), "params": params, "owner": owner}
+    r = _dturn_run(tp)
+    if r.returncode != 0: return (r.stderr or "container start failed").strip()[:160], None
+    verr = _dturn_verify(svc)
+    return (verr, tp)   # keep the record even if down, so the panel shows it (greyed)
+
+_DTURN_RUN = {"at": 0.0, "set": set()}
+def _dturn_attach_running(tps):
+    nowt = time.time()
+    if nowt - _DTURN_RUN["at"] >= 15:
+        r = run(["docker", "ps", "--filter", "name=swg-turn-", "--format", "{{.Names}}"])
+        _DTURN_RUN["set"] = set((r.stdout or "").split()); _DTURN_RUN["at"] = nowt
+    for t in tps:
+        if t.get("service"): t["running"] = _turn_cname(t["service"]) in _DTURN_RUN["set"]
+
+def _dturn_ensure(tp):   # make the container match the record entry (download binary if missing, run if not up)
+    svc = tp.get("service")
+    if not svc:
+        return
+    r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
+    if (r.stdout or "").strip() == "true":
+        return
+    if not os.path.exists(_turn_bin_local(svc)) and tp.get("owner"):
+        _dturn_download(svc, tp["owner"])
+    _dturn_run(tp)
+
+def _dturn_reconcile():   # startup/periodic: ensure every recorded turn-proxy has a running container
+    if not (TURN_DOCKER and SWG_TURN_IMAGE and SWG_HOST_NODE_DIR):
+        return
+    for tp in load_turn_proxies():
+        with contextlib.suppress(Exception):
+            _dturn_ensure(tp)
+
 def _turn_install(svc, req):
     """Install a new turn-proxy: download the fork's prebuilt binary, write the systemd unit, enable
     it. Mirrors the installer's install_turn_binary (server-linux-<arch>). '' on success, else error."""
@@ -956,7 +1063,33 @@ def apply_turn(turn, turn_onboard):
     changed = False
     for svc, req in (turn or {}).items():
         try:
-            act = req.get("action"); up = _turn_unit_path(svc)
+            act = req.get("action")
+            if TURN_DOCKER:                                   # ── container model ──
+                if act == "install":
+                    err, tp = _dturn_install(svc, req)
+                    if tp is not None: rec[svc] = tp; changed = True
+                    fail(svc, err) if err else good(svc, "ins:" + svc)
+                    continue
+                if act == "delete":
+                    _dturn_delete(svc); rec.pop(svc, None); changed = True; good(svc, "del:" + svc); continue
+                tp = rec.get(svc)
+                if not tp:
+                    fail(svc, "turn-proxy not in the node record"); continue
+                if act == "manage":
+                    if req.get("listen"):  tp["listen"] = req["listen"].strip()
+                    if req.get("connect"): tp["connect"] = req["connect"].strip()
+                    if "params" in req:    tp["params"] = (req.get("params") or "").strip(); tp["wrap_key"] = _params_wrapkey(tp["params"])
+                elif act == "rotate":
+                    nk = secrets.token_hex(32); tp["params"] = _params_set_wrapkey(tp.get("params", ""), nk); tp["wrap_key"] = nk
+                # restart: no config change — just recreate the container
+                r = _dturn_run(tp)
+                if r.returncode != 0:
+                    fail(svc, (r.stderr or "container start failed").strip()[:120]); continue
+                rec[svc] = tp; changed = True
+                verr = _dturn_verify(svc)
+                fail(svc, verr) if verr else good(svc, act + ":" + svc)
+                continue
+            up = _turn_unit_path(svc)                          # ── bare-metal systemd model ──
             if act == "install":
                 err = _turn_install(svc, req)
                 if err:
@@ -1065,6 +1198,9 @@ def main():
     update_started = False                          # spawn the self-updater at most once per process
     print(f"swg-noded: panel={panel['url']} interval={interval}s "
           f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
+    if TURN_DOCKER:                          # materialise any recorded turn-proxies into containers on boot
+        with contextlib.suppress(Exception):
+            _dturn_reconcile()
     while True:
         t0 = time.time()
         try:

@@ -165,46 +165,46 @@ turn_wrap_flags(){ local k; case "$1" in   # per-fork obfuscation flags (verifie
   WINGS-N)      k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;
   Moroka8)      k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;   # verified from its README: -wrap -wrap-key
   *) printf '';; esac; }
-detect_turn(){ TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con wk
-  for u in /etc/systemd/system/*.service; do [ -e "$u" ] || continue
-    exe="$(sed -n 's/^ExecStart=//p' "$u" 2>/dev/null | head -1)"
-    case "$exe" in *-listen*-connect*|*-connect*-listen*) ;; *) continue;; esac
-    name="$(basename "$u" .service)"
-    lis="$(printf '%s\n' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
-    con="$(printf '%s\n' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
-    wk="$(printf '%s\n' "$exe" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
-    TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"; TP_WRAP[$name]="$wk"; done; }
+detect_turn(){ TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local name lis con wk   # container model: read the RECORD
+  [ -f "$TURN_RECORD" ] || return 0
+  while IFS=$'\t' read -r name lis con wk; do
+    [ -n "$name" ] && { TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"; TP_WRAP[$name]="$wk"; }
+  done < <(python3 - "$TURN_RECORD" 2>/dev/null <<'PY'
+import json, sys
+try: d = json.load(open(sys.argv[1])); tps = d.get("turn_proxies") or []
+except Exception: tps = []
+for t in (tps if isinstance(tps, list) else []):
+    print("\t".join([str(t.get("service", "")), str(t.get("listen", "")), str(t.get("connect", "")), str(t.get("wrap_key", ""))]))
+PY
+) ; }
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }
   curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
 # One instance == one systemd unit, keyed by <fork>-<port> so the SAME fork can run many times
 # (2× wings, 3× samosvalishe, …) — each on its own port with its own wrap key.
-install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst
-  case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
-  port="${listen##*:}"; inst="$fork-$port"; dir="$TURN_DIR/$inst"; bin="$dir/server"; svc="vk-turn-proxy-$inst"
-  if [ -e "/etc/systemd/system/$svc.service" ]; then warn "turn-proxy $svc already exists — pick another port"; return 0; fi
-  url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
-  mkdir -p "$PREFIX$dir"; info "Installing $owner ($listen → $connect) — downloading the binary from GitHub (up to ~2 min)…"
-  if $DRYRUN; then echo "    [skip] curl -fsSL $url -o $bin"
-  elif ! { curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 --retry-all-errors "$url" -o "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then warn "download failed ($url) — skipping"; return 0; fi
-  ver="$(turn_latest_tag "$owner")"
-  printf '%s\n' "$owner" | writef "$dir/repo.txt" 644; printf '%s\n' "${ver:-unknown}" | writef "$dir/version.txt" 644
-  writef "/etc/systemd/system/$svc.service" 600 <<EOF
-[Unit]
-Description=vk-turn-proxy ($owner) — ${listen} → ${connect}
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=${bin} -listen ${listen} -connect ${connect} ${extra}
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
-  ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"; }
+install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" port inst svc
+  # CONTAINER model: don't install a host systemd unit or download here — just write the turn RECORD.
+  # swg-noded materialises it into a sibling container (swg-turn-*) on its next start (it fetches the binary).
+  port="${listen##*:}"; inst="$fork-$port"; svc="vk-turn-proxy-$inst"
+  if $DRYRUN; then echo "    [skip] record turn-proxy $svc ($owner: $listen → $connect) in $TURN_RECORD"
+  else
+    mkdir -p "$(dirname "$TURN_RECORD")"
+    python3 - "$TURN_RECORD" "$svc" "$owner" "$listen" "$connect" "$extra" <<'PY' || { warn "couldn't write turn record"; return 0; }
+import json, sys, re
+p, svc, owner, listen, connect, extra = sys.argv[1:7]
+try:
+    d = json.load(open(p)); tps = d.get("turn_proxies") if isinstance(d, dict) else None
+    tps = tps if isinstance(tps, list) else []
+except Exception:
+    tps = []
+tps = [t for t in tps if t.get("service") != svc]
+m = re.search(r"-wrap-key[ =]+(\S+)", extra or "")
+tps.append({"service": svc, "listen": listen, "connect": connect,
+            "params": (extra or "").strip(), "wrap_key": (m.group(1) if m else ""), "owner": owner})
+json.dump({"turn_proxies": tps}, open(p, "w"))
+PY
+  fi
+  ok "configured turn-proxy $(col "$C_GREEN" "$inst") ($owner) — $listen → $connect (starts as a container on first run)"; }
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
   local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
@@ -235,16 +235,7 @@ install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in
   [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
                  || warn "$sel has no wrap/srtp obfuscation flags — installing plain (-listen/-connect only)."
   install_turn_binary "$sel" "$owner" "$pub:$port" "$connect" "$wrap"; }
-write_turn_record(){ detect_turn; local json="" sep="" n
-  for n in "${!TP_LISTEN[@]}"; do json+="$sep    { \"service\": \"$n\", \"listen\": \"${TP_LISTEN[$n]}\", \"connect\": \"${TP_CONNECT[$n]}\", \"wrap_key\": \"${TP_WRAP[$n]}\" }"; sep=$',\n'; done
-  writef "$TURN_RECORD" 640 <<EOF
-{
-  "turn_proxies": [
-$json
-  ]
-}
-EOF
-}
+write_turn_record(){ :; }   # no-op: install_turn_binary writes the full record entry directly (container model)
 choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; local sel names n
   while :; do
     detect_turn; names=("${!TP_LISTEN[@]}")
@@ -788,9 +779,9 @@ PYHOST
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
   if [ -z "$TURN_MANAGE" ]; then
     step "Turn proxies management"; echo
-    menu "$(keyd p 'anel (default)')" "Manage turn-proxies (edit listen/connect/keys, restart, onboard) from the panel.
-      Mounts the Docker socket into the node container, which gives that container ROOT-EQUIVALENT access to the host.
-      only enable if you trust the panel and this box."
+    menu "$(keyd p 'anel (default)')" "Manage turn-proxies (edit listen/connect/keys, restart) from the panel — they run as
+      sibling CONTAINERS (swg-turn-*), not host services. Mounts the Docker socket into the node container, which gives it
+      ROOT-EQUIVALENT host access (it manages sibling containers). Only enable if you trust the panel and this box."
     menu "$(key m 'anual')"           "Turn-proxies are managed on this server by hand — no socket is mounted."
     ask_choice "Select turn-proxy management" "p" TURN_MANAGE "p panel m manual"
     case "$TURN_MANAGE" in p) TURN_MANAGE=panel;; m) TURN_MANAGE=manual;; esac
@@ -843,6 +834,7 @@ NODE_MTU=$NODE_MTU
 NODE_PLAIN_WG=$NODE_PLAIN_WG
 NODE_NET=$NODE_NET
 TURN_MANAGE=$TURN_MANAGE
+SWG_HOST_NODE_DIR=$INSTALL_DIR/data/node
 TLS_VERIFY=$TLS_VERIFY
 DNS=$DNS
 EOF
@@ -985,10 +977,10 @@ case "$PROFILE" in node|master)
     printf '        sudo nano %s\n' "$INSTALL_DIR/data/node-confs/$NODE_IFACE.conf"
   fi
   detect_turn 2>/dev/null || true
-  if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances (host services → the node container):"
+  if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances (sibling containers — swg-turn-*, managed from the panel):"
     for n in "${!TP_LISTEN[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"
       printf '    %s %s → %s%s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"
-      printf '        sudo nano /etc/systemd/system/%s.service\n\n' "$n"; done
+      printf '        docker logs %s   (it starts on the node container'\''s first run)\n\n' "swg-turn-${n#vk-turn-proxy-}"; done
   fi
   echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)" ;;
 esac
