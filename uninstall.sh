@@ -207,6 +207,7 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
   else ask_full_data_fate; fi         # node is the last container → the whole data dir
   docker_node_goodbye                 # sign off to the panel (token + URL from .env) before teardown
   run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'
+  run sh -c 'ids=$(docker ps -aq --filter name=swg-turn- 2>/dev/null); [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1 || true'   # this node's turn-proxy containers
   if docker_running swg-panel; then
     [ "$KNODE" = yes ] && info "  Kept $DOCKER_DIR/data/node-confs (peers re-onboardable); panel data untouched." \
                        || { _rm_node_data; info "  Removed the node's interface configs; panel data untouched."; }
