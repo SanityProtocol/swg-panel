@@ -456,10 +456,18 @@ function rowError(key) { return Store.rowErrors[key] || null; }
 function dismissError(key) { if (Store.rowErrors[key]) { delete Store.rowErrors[key]; Store.apply(); } }
 
 // ───────────────────────── modal ─────────────────────────
-let _setModal = () => {};
+// Modal STACK. openModal replaces the current top (so every legacy single-modal flow behaves exactly
+// as before — the stack is just length 1), pushModal stacks a CHILD over its parent (parent stays
+// open behind it), closeModal pops back to the parent. _stack is a synchronous mirror of the state.
+let _setStack = () => {};
+let _stack = [];
 let _modalSeq = 0;   // bumps on every open/close — lets a confirm tell if onConfirm replaced the modal
-function openModal(node) { _modalSeq++; _setModal(node); }
-function closeModal() { _modalSeq++; _setModal(null); }
+function _applyStack(next) { _stack = next; _modalSeq++; _setStack(next); }
+function openModal(node) { _applyStack(_stack.length ? [..._stack.slice(0, -1), node] : [node]); }
+function pushModal(node) { _applyStack([..._stack, node]); }
+function closeModal() { _applyStack(_stack.slice(0, -1)); }
+function closeAllModals() { _applyStack([]); }
+let _sheetStack = [];   // mounted Sheet tokens (LIFO) — only the topmost handles Esc/Enter/Tab
 
 // ───────────────────────── shared bits ─────────────────────────
 const IFOP_BUSY = { start: "starting", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
@@ -1207,7 +1215,7 @@ function DeleteIfaceSheet({ node, iface }) {
     setBusy(true);
     const r = await api.ifaceDelete({ node, iface });
     if (!r.ok) { setBusy(false); return toast(r.error || "Failed to delete interface.", "err"); }
-    closeModal(); await Store.poll();
+    closeAllModals(); await Store.poll();   // iface is gone → close this + the editor behind it
     toast("Interface deletion requested — the node tears it down on its next sync.", "ok");
     go("#/node/" + encodeURIComponent(node));   // this interface's page is going away
   };
@@ -1312,7 +1320,7 @@ function EditIfaceSheet({ node, iface }) {
     await Store.poll();
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
-    foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
       <div>Endpoint IP only changes what configs/QRs tell clients to dial.</div>
       <div>Changing the Listen port reconfigures the interface on the node (peers are kept; clients reconnect on the new port).</div>
@@ -2556,8 +2564,10 @@ function Sheet({ title, children, foot, onClose, width }) {
     root.addEventListener("change", onEdit, true);
     const first = root.querySelector("[autofocus]") || root.querySelector("input,textarea,select,button.btn-primary");
     if (first) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
+    const tok = {}; _sheetStack.push(tok);   // only the TOP stacked Sheet reacts to Esc/Enter/Tab
     const onKey = e => {
       if (qrZoomEl) return;   // a QR enlargement is open — let it handle Esc (collapse it, keep the modal)
+      if (_sheetStack[_sheetStack.length - 1] !== tok) return;   // a child modal is on top — defer to it
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryClose(); return; }
       if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
         const primary = root.querySelector(".sheet-foot .btn-primary:not([disabled])") || root.querySelector(".btn-primary:not([disabled])");
@@ -2575,6 +2585,7 @@ function Sheet({ title, children, foot, onClose, width }) {
     document.addEventListener("keydown", onKey, true);          // capture so it works regardless of focus
     return () => {
       document.removeEventListener("keydown", onKey, true);
+      _sheetStack = _sheetStack.filter(t => t !== tok);
       root.removeEventListener("input", onEdit, true);
       root.removeEventListener("change", onEdit, true);
     };
@@ -3269,10 +3280,10 @@ function matchRoute(hash) {
 function App() {
   useStore();                                   // re-render on every poll
   const [hash, setHash] = useState(location.hash || "#/");
-  const [modal, setModalState] = useState(null);
-  useEffect(() => { _setModal = setModalState; }, []);
+  const [modalStack, setModalStack] = useState([]);
+  useEffect(() => { _setStack = setModalStack; }, []);
   useEffect(() => {
-    const onHash = () => { setHash(location.hash || "#/"); setModalState(null); window.scrollTo(0, 0); };
+    const onHash = () => { setHash(location.hash || "#/"); _applyStack([]); window.scrollTo(0, 0); };
     window.addEventListener("hashchange", onHash);
     // Esc/Enter inside dialogs are owned by <Sheet> (with its dirty-guard); nothing global here.
     // A MOUSE click on an icon button / nav tab shouldn't leave a lingering focus ring (it persists
@@ -3319,7 +3330,7 @@ function App() {
 
   return html`<${Fragment}>
     ${h(route.fn, params)}
-    ${modal}
+    ${modalStack}
   <//>`;
 }
 
