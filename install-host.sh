@@ -157,6 +157,7 @@ parse_panel_url(){ # parse_panel_url <input> -> sets PANEL_HOST_NOPORT, PANEL_BA
 
 # ───────────────────────── wg/awg detection ─────────────────────────
 declare -A IF_CMD IF_CONF IF_ENDPOINT; declare -a CREATED   # IF_ENDPOINT: per-interface public IP clients dial; CREATED: ifaces made this run
+declare -A SPEC_CMD SPEC_PROTO SPEC_PORT SPEC_SUBNET SPEC_ADDR SPEC_WAN SPEC_EP SPEC_DIR; declare -a SPEC_ORDER=()   # queued interfaces (prompted now, installed at the end by apply_specs)
 detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc/wireguard for wg
   IF_CMD=(); IF_CONF=(); local f n
   if [ -d /etc/amnezia ]; then
@@ -193,9 +194,9 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     if [ "${#IF_CMD[@]}" -eq 0 ]; then
       warn "No wg / awg interfaces found in /etc/wireguard or /etc/amnezia."
       local doit; ask_yn "Create one now? (installs WireGuard / AmneziaWG only if missing)" y doit
-      [ "$doit" = yes ] && create_iface
+      [ "$doit" = yes ] && spec_iface
       detect_wg
-      [ "${#IF_CMD[@]}" -eq 0 ] && die "No interface. Create one, then re-run (or set MANAGE_IFACES)."
+      [ "${#IF_CMD[@]}" -eq 0 ] && [ "${#SPEC_ORDER[@]}" -eq 0 ] && die "No interface. Create one, then re-run (or set MANAGE_IFACES)."
     fi
     local names pick n dk avail mine xfer bad yn; local -a sel=()
     while :; do
@@ -230,7 +231,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
         [ -n "$mine" ] || { warn "this node has no interfaces yet — manage one or type 'new'"; continue; }
         sel=($mine); break
       fi
-      [ "$pick" = new ] && { create_iface; continue; }
+      [ "$pick" = new ] && { spec_iface; continue; }
       xfer=""; bad=""
       for n in $pick; do _in "$n" "$mine" && continue; _in "$n" "$avail" && continue; _in "$n" "$dk" && { xfer="$xfer $n"; continue; }; bad="$bad $n"; done
       [ -n "$bad" ] && { warn "not found:$bad — pick from the lists, or 'new'"; continue; }
@@ -243,12 +244,13 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     done
     SELECTED=("${sel[@]}")
   fi
+  apply_specs   # install tools + write confs + bring up every queued interface now (after all prompts)
   detect_wg
   local _ep
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
     _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
-    echo "    Used $(bb "$_ep") for $(col "$C_GREEN" "$n")"; done
+    echo "    Used $(bb "$_ep") endpoint IP for $(col "$C_GREEN" "$n")"; done
   [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
   ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
 }
@@ -349,7 +351,6 @@ install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in
       pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
       printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$p")"
     done <<< "$ports"
-    echo
   fi
   ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${defport}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
   echo
@@ -444,18 +445,21 @@ n = ipaddress.ip_network(sys.argv[1], strict=False)
 print(f"{next(n.hosts())}/{n.prefixlen}")
 PY
 }
-create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain WG), NAT it to the WAN, bring up, register
-  local _proto proto name port subnet addr conf cmd priv dir wan up down idx defname defport defsub upok ep
-  idx=${#IF_CMD[@]}                              # offset defaults so a 2nd/3rd iface doesn't collide
+# Two-phase interface creation: spec_iface() only PROMPTS and queues a spec, so the user can add
+# every interface up front; apply_specs() then installs tools + writes confs + brings them all up
+# once, at the end. Queued names show in 'mine' (via CREATED) and block name collisions immediately.
+spec_iface(){ # prompt for one interface and queue it (no install yet)
+  local _proto proto name port subnet addr cmd dir wan ep idx defname defport defsub
+  idx=$(( ${#IF_CMD[@]} + ${#SPEC_ORDER[@]} ))   # offset defaults past existing + already-queued ifaces
   ask_choice "Protocol — (a)mneziawg or (w)ireguard?" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
                                  *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
   defname="$([ "$cmd" = awg ] && echo "awg$idx" || echo "wg$idx")"
-  while [ -n "${IF_CMD[$defname]:-}" ] || [ -e "/etc/amnezia/amneziawg/$defname.conf" ] || [ -e "/etc/wireguard/$defname.conf" ]; do
+  while [ -n "${IF_CMD[$defname]:-}" ] || [ -n "${SPEC_CMD[$defname]:-}" ] || [ -e "/etc/amnezia/amneziawg/$defname.conf" ] || [ -e "/etc/wireguard/$defname.conf" ]; do
     idx=$((idx+1)); defname="$([ "$cmd" = awg ] && echo "awg$idx" || echo "wg$idx")"; done
   while :; do
     ask_valid "Interface name" "$defname" name v_iface "1–15 chars: letters, digits, - or _"
-    if [ -n "${IF_CMD[$name]:-}" ] || [ -e "/etc/amnezia/amneziawg/$name.conf" ] || [ -e "/etc/wireguard/$name.conf" ]; then
+    if [ -n "${IF_CMD[$name]:-}" ] || [ -n "${SPEC_CMD[$name]:-}" ] || [ -e "/etc/amnezia/amneziawg/$name.conf" ] || [ -e "/etc/wireguard/$name.conf" ]; then
       warn "interface '$name' already exists — pick another name"; name=""; continue
     fi
     break
@@ -468,29 +472,44 @@ create_iface(){ # prompt, gen server key, write conf (AWG v2 + QUIC I1, or plain
   wan="$(detect_wan)"; [ -n "$wan" ] || wan=eth0             # auto WAN egress NIC — clients NAT out this (change it later in the panel)
   echo "    Used $(bb "$wan") egress interface for $(col "$C_GREEN" "$name")"
   ep="$(detect_public_ip)"                                   # auto endpoint clients dial — public IP/host (change it later in the panel)
-  echo "    Used $(bb "$ep") for $(col "$C_GREEN" "$name")"
-  conf="$dir/$name.conf"
-  if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; return 0; fi
-  # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
-  up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
-  down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
-  printf 'net.ipv4.ip_forward = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
-  run sysctl -q -w net.ipv4.ip_forward=1
-  if $DRYRUN; then priv="<generated-on-real-run>"
-  elif ! priv="$("$cmd" genkey 2>/dev/null)" || [ -z "$priv" ]; then warn "'$cmd genkey' failed — skipping interface '$name'"; return 0; fi
-  { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\nMTU = %s\n' "$priv" "$addr" "$port" "$WG_MTU"
-    printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
-    if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
-  # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)
-  upok=yes
-  if [ "$cmd" = awg ]; then run awg-quick up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "awg-quick@$name" || true; }
-  else                     run wg-quick  up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "wg-quick@$name"  || true; }; fi
-  if [ "$upok" = no ]; then
-    warn "couldn't bring up '$name' (a port or subnet may already be in use) — removing its conf; try again with different values"
-    run rm -f "$conf"; return 0
+  echo "    Used $(bb "$ep") endpoint IP for $(col "$C_GREEN" "$name")"
+  SPEC_CMD[$name]="$cmd"; SPEC_PROTO[$name]="$proto"; SPEC_PORT[$name]="$port"; SPEC_SUBNET[$name]="$subnet"
+  SPEC_ADDR[$name]="$addr"; SPEC_WAN[$name]="$wan"; SPEC_EP[$name]="$ep"; SPEC_DIR[$name]="$dir"
+  SPEC_ORDER+=("$name"); CREATED+=("$name")                  # CREATED makes it show in 'mine' on the next pass
+  ok "queued interface $(col "$C_GREEN" "$name") ($proto, :$port) — installed once you finish adding interfaces"
+}
+apply_specs(){ # install tools + write confs + bring up every queued interface, then prune failures
+  [ "${#SPEC_ORDER[@]}" -gt 0 ] || return 0
+  local name proto port subnet addr conf cmd priv dir wan up down upok ep failed=""
+  echo; info "Setting up ${#SPEC_ORDER[@]} interface(s)…"
+  for name in "${SPEC_ORDER[@]}"; do
+    cmd="${SPEC_CMD[$name]}"; proto="${SPEC_PROTO[$name]}"; port="${SPEC_PORT[$name]}"; subnet="${SPEC_SUBNET[$name]}"
+    addr="${SPEC_ADDR[$name]}"; wan="${SPEC_WAN[$name]}"; ep="${SPEC_EP[$name]}"; dir="${SPEC_DIR[$name]}"; conf="$dir/$name.conf"
+    if ! ensure_wg_tools "$cmd"; then warn "couldn't install $cmd tools — skipping interface '$name'"; failed="$failed $name"; continue; fi
+    # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
+    up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+    down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+    printf 'net.ipv4.ip_forward = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
+    run sysctl -q -w net.ipv4.ip_forward=1
+    if $DRYRUN; then priv="<generated-on-real-run>"
+    elif ! priv="$("$cmd" genkey 2>/dev/null)" || [ -z "$priv" ]; then warn "'$cmd genkey' failed — skipping interface '$name'"; failed="$failed $name"; continue; fi
+    { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\nMTU = %s\n' "$priv" "$addr" "$port" "$WG_MTU"
+      printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
+      if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
+    # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)
+    upok=yes
+    if [ "$cmd" = awg ]; then run awg-quick up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "awg-quick@$name" || true; }
+    else                     run wg-quick  up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "wg-quick@$name"  || true; }; fi
+    if [ "$upok" = no ]; then
+      warn "couldn't bring up '$name' (a port or subnet may already be in use) — removing its conf; try again with different values"
+      run rm -f "$conf"; failed="$failed $name"; continue
+    fi
+    IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; IF_ENDPOINT[$name]="$ep"; LAST_IFACE="$name"
+    ok "created $proto interface $(col "$C_GREEN" "$name") on :$port (server $addr, NAT out $wan)"
+  done
+  if [ -n "$failed" ]; then   # drop interfaces that failed to come up from the selected set
+    local keep=() n; for n in ${SELECTED[@]+"${SELECTED[@]}"}; do _in "$n" "$failed" || keep+=("$n"); done; SELECTED=(${keep[@]+"${keep[@]}"})
   fi
-  IF_CMD[$name]="$cmd"; IF_CONF[$name]="$conf"; IF_ENDPOINT[$name]="$ep"; LAST_IFACE="$name"; CREATED+=("$name")
-  ok "created $proto interface $(col "$C_GREEN" "$name") on :$port (server $addr, NAT out $wan)"
 }
 
 # ───────────────────────── prompts ─────────────────────────

@@ -469,7 +469,7 @@ ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirr
   local _sub="";       ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$(net_of "${d_addr:-10.8.0.0/24}")" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
   NODE_ADDRESS="$(server_addr "$_sub")"              # the server's interface address (.1), derived from the subnet
   NODE_ENDPOINT="$d_ep"                              # auto endpoint clients dial — public IP/host (change it later in the panel)
-  echo "    Used $(bb "$NODE_ENDPOINT") for $(col "$C_GREEN" "$NODE_IFACE")"
+  echo "    Used $(bb "$NODE_ENDPOINT") endpoint IP for $(col "$C_GREEN" "$NODE_IFACE")"
   return 0
 }
 # current interface names for this docker node — persisted confs (./data/node-confs) ∪ the .env spec
@@ -503,7 +503,7 @@ add_node_iface(){
   ask_valid "Listen port" "$((51820 + nx))" port v_freeport "port 1–65535 and free (not already in use)"
   local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.$((8 + nx)).0.0/24" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
   ep="${NODE_ENDPOINT:-$(detect_public_ip)}"       # auto endpoint clients dial — public IP/host (change it later in the panel)
-  echo "    Used $(bb "$ep") for $(col "$C_GREEN" "$name")"
+  echo "    Used $(bb "$ep") endpoint IP for $(col "$C_GREEN" "$name")"
   [ -n "$NODE_ENDPOINT" ] || NODE_ENDPOINT="$ep"   # the node-level endpoint (required by compose) — seed from the first interface
   NODE_IFACES="${NODE_IFACES:+$NODE_IFACES,}${name}:${port}:${addr}:${plain}:${ep}"
   ok "queued interface $(col "$C_GREEN" "$name") — created on the node's next start"
