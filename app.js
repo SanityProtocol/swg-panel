@@ -1042,7 +1042,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <//>`}
 
     ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="turn" count=${tps.length}>
-      <div class="ifgrid">${tps.map(tp => html`<div class="ifcard tp">
+      <div class="ifgrid">${tps.map(tp => html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(node, tp) : null}>
         <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span></div>
         <div class="ifcard-rows">
           <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
