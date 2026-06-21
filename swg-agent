@@ -403,8 +403,9 @@ def op_set_iface(cfg, req):
             raise AgentError("bad_request", "listen_port must be a number")
         if not (1 <= port <= 65535):
             raise AgentError("bad_request", "listen_port out of range (1-65535)")
-        run(ic["cmd"] + ["set", iface, "listen-port", str(port)])   # live
-        set_listen_port_in_conf(ic["conf"], port)                    # persist
+        with contextlib.suppress(Exception):
+            run(ic["cmd"] + ["set", iface, "listen-port", str(port)])   # live, best-effort (iface may be DOWN)
+        set_listen_port_in_conf(ic["conf"], port)                        # persist ALWAYS — applies on next bring-up
         out["listen_port"] = port
     awg = req.get("awg_params")
     if isinstance(awg, dict) and awg:
