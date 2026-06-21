@@ -314,6 +314,7 @@ const Store = {
   configEpoch: 0,            // bumps when a config is re-issued, so QR cards re-read it
   recentlyCreated: {},       // id -> ts (row flash)
   rotating: {},              // peer id -> ts — key rotation in flight; grid shows "rotating" until the new key is live
+  ifaceOp: {},               // "node|iface" -> { verb:start|restart, phase:busy|ok|fail, started, until, err }
   pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
   rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
   async init() {
@@ -1012,6 +1013,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const tps = turnProxiesFor(node, iface);
   const restarting = (nrec.restarting || []).includes(iface);
   const idown = (((Store.stats[node] || {}).interfaces || {})[iface] || {}).down;   // not up on the node
+  const op = Store.ifaceOp[node + "|" + iface];   // start/restart lifecycle (busy/ok/fail flash)
   // AmneziaWG params split into the four header columns: J* under Endpoint, S* under Server
   // address, H* under DNS, and I* (+ anything else) under MTU.
   const ap = (meta && meta.awg_params) || {};
@@ -1034,11 +1036,13 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${idown ? html`<span class="badge b-dangling"><${Ic} i="err"/>down</span>` : updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when">${onl} / ${peers.length} online</span></div>
       <div class="grow"></div>
     </div>
-    ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Try <b>Restart service</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
+    ${idown ? html`<div class="notice warn" style="margin-bottom:18px"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
 
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
-          actions=${html`<${Fragment}><button class="btn btn-mini" disabled=${restarting} title="Bounce this interface's service on the node (recovers a down interface)" onClick=${() => restartIface(node, iface)}><${Ic} i=${restarting ? "clock" : "refresh"}/> ${restarting ? "Restarting…" : "Restart service"}</button><button class="btn btn-mini" onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button></>`}>
+          actions=${html`<${Fragment}>${op && op.phase === "busy"
+            ? html`<span class="tg-busy warn"><${Ic} i="clock"/>${op.verb === "start" ? "starting" : "restarting"}…</span>`
+            : html`<${Fragment}>${op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${op.verb === "start" ? "started" : "restarted"}</span>` : op && op.phase === "fail" ? html`<span class="tg-busy del" title=${op.err || ""}><${Ic} i="err"/>failed</span>` : null}<button class="btn btn-mini" title=${idown ? "Bring this interface up on the node" : "Bounce this interface's service on the node"} onClick=${() => startOrRestartIface(node, iface, idown ? "start" : "restart")}><${Ic} i="refresh"/> ${idown ? "Start interface" : "Restart service"}</button><//>`}<button class="btn btn-mini" onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${meta.address || "—"}</span></div>
@@ -1209,10 +1213,50 @@ function DeleteIfaceSheet({ node, iface }) {
     <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
   <//>`;
 }
-async function restartIface(node, iface) {
+async function restartIface(node, iface) {   // legacy callers (e.g. Save auto-restart) — fire-and-forget
   const r = await api.ifaceRestart({ node, iface });
   if (!r.ok) return toast(r.error || "Failed to request restart.", "err");
-  await Store.poll(); toast("Restart requested — the node bounces " + iface + " on its next sync.", "ok");
+  await Store.poll();
+}
+// start/restart with an inline progress lifecycle on the interface card: busy tag (button hidden)
+// → green "started/restarted" 3s or red "failed" 5s (button back). verb = "start" (down) | "restart".
+async function startOrRestartIface(node, iface, verb) {
+  const key = node + "|" + iface;
+  Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply();
+  const r = await api.ifaceRestart({ node, iface });
+  if (!r.ok) {
+    Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 5000, err: r.error || "request failed" };
+    Store.apply(); setTimeout(() => Store.apply(), 5100); return;
+  }
+  await Store.poll();   // queued on the node; trackIfaceOps() watches for completion each poll
+}
+function trackIfaceOps() {
+  const now = Date.now();
+  for (const key of Object.keys(Store.ifaceOp)) {
+    const op = Store.ifaceOp[key];
+    if (op.phase !== "busy") { if (op.until && now > op.until) delete Store.ifaceOp[key]; continue; }
+    const cut = key.indexOf("|"); const node = key.slice(0, cut), iface = key.slice(cut + 1);
+    const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+    const down = (((Store.stats[node] || {}).interfaces || {})[iface] || {}).down;
+    const cerr = (nrec.cmd_errors || {})[iface];
+    const pending = (nrec.restarting || []).includes(iface);   // restart request still queued on the panel
+    let done = null;   // { phase, err }
+    if (op.verb === "start") {                                 // was DOWN → success once it's up
+      if (!down) done = { phase: "ok" };
+      else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
+      else if (!pending && now - op.started > 6000) done = { phase: "fail", err: cerr || down };
+      else if (now - op.started > 18000) done = { phase: "fail", err: cerr || down || "timed out" };
+    } else {                                                   // RESTART of an up iface → done when the request clears
+      if (down && cerr) done = { phase: "fail", err: cerr };
+      else if (!pending && now - op.started > 6000) done = down ? { phase: "fail", err: cerr || down } : { phase: "ok" };
+      else if (now - op.started > 18000) done = down ? { phase: "fail", err: cerr || down } : { phase: "ok" };
+    }
+    if (done) {
+      const ms = done.phase === "ok" ? 3000 : 5000;
+      Store.ifaceOp[key] = { verb: op.verb, phase: done.phase, until: now + ms, err: done.err || "" };
+      setTimeout(() => Store.apply(), ms + 100);
+    }
+  }
 }
 function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
 function EditIfaceSheet({ node, iface }) {
@@ -1270,13 +1314,13 @@ function EditIfaceSheet({ node, iface }) {
     <div class="row2">
       <div class="field"><label>Outbound (egress) IP</label>
         <select class="selwrap" value=${egress} onChange=${e => setEgress(e.target.value)}>
-          <option value="">Auto (MASQUERADE — node default)</option>
+          <option value="">Auto (MASQUERADE)</option>
           ${egressOpts.map(ip => html`<option value=${ip}>${ip}${!ips.includes(ip) ? " — not on node now" : ""}</option>`)}
         </select>
         <div class="hint">Source IP clients use to reach the internet (SNAT). Auto = node default. ${ips.length ? "" : "(node hasn't reported its IPs yet)"}</div></div>
       <div class="field"><label>WAN egress interface</label>
         <select class="selwrap" value=${wan} onChange=${e => setWan(e.target.value)}>
-          <option value="">Auto (detected default route)</option>
+          <option value="">Auto</option>
           ${wanOpts.map(w => html`<option value=${w}>${w}${!wanifs.includes(w) ? " — not on node now" : ""}</option>`)}
         </select>
         <div class="hint">Which NIC clients are NAT'd out of. Auto detects the default route.</div></div>
@@ -3222,6 +3266,7 @@ function App() {
   // static chrome lives in index.html — keep it in sync imperatively
   useEffect(() => {
     trackTurnRestarts();                                             // detect completed turn restarts → green flash
+    trackIfaceOps();                                                 // interface start/restart progress lifecycle
     const online = Store.recon.peers.filter(p => p.online).length;   // PEERS online (not users)
     const kpi = $("#kpi-online"); if (kpi) kpi.textContent = online;
     const lp = $("#livepill"); if (lp) lp.classList.toggle("off", online === 0);   // 0 = grey, no dot
