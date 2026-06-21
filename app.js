@@ -2019,6 +2019,7 @@ function NodesScreen() {
 }
 // load/util tone: green under 70%, amber to 90%, red above.
 function htone(pct) { return pct >= 90 ? "hot" : (pct >= 70 ? "warn" : "ok"); }
+function htcolor(pct) { return pct >= 90 ? "var(--dangling)" : (pct >= 70 ? "var(--pending)" : "var(--online)"); }   // matches the hm-fill bar tones
 // Threshold alerts for a node: disk/memory > 90%, CPU saturated (load-per-core > 1.5).
 function healthAlerts(health) {
   const out = [];
@@ -2340,7 +2341,7 @@ function NodeCard({ n }) {
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
       <span class="grow"></span>
-      <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style="color:var(--brand)">${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
+      <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style=${"color:" + htcolor(cpct)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
     <div class="nmeta">
       <span class="nm-item"><span class="nm-l">Peers</span>${here.length ? html`<span class="nm-v nm-peers">${onl}<small>/${here.length}</small></span>` : html`<span class="nm-v nm-peers faint">none</span>`}</span>
@@ -3163,9 +3164,8 @@ function App() {
       if (seenPanelVer && seenPanelVer !== v.panel) { hostUpdating = false; openUpdateDone(seenPanelVer, v.panel); }
       seenPanelVer = v.panel;
     }
-    if (el && v.panel) {
-      const tools = ["awg", "wg", "docker"].filter(k => v[k]).map(k => k + " " + v[k]);
-      el.innerHTML = `<b>${esc(v.panel)}</b>` + (tools.length ? `<span class="tools"> · ${esc(tools.join(" · "))}</span>` : "");
+    if (el && v.panel) {        // panel version only — the host's awg/wg/docker versions aren't shown
+      el.innerHTML = `<b>${esc(v.panel)}</b>`;
     }
     const slot = $("#updslot");
     if (slot) {
