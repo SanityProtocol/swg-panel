@@ -37,6 +37,99 @@ import_bare_conf(){ # <src> <dest>
   chmod 600 "$dest"
 }
 
+cyn(){ local a; printf '  %s (Y/n): ' "$1"; read -r a </dev/tty 2>/dev/null || a=y; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
+
+# install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
+turn_install_host(){
+  local svc="$1" owner="$2" lis="$3" con="$4" params="$5" inst dir bin arch url
+  inst="${svc#vk-turn-proxy-}"; dir="/opt/vk-turn-proxy/$inst"; bin="$dir/server"
+  case "$(uname -m)" in aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+  url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
+  mkdir -p "$dir"
+  curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 --retry-all-errors "$url" -o "$bin" 2>/dev/null && chmod +x "$bin" || { warn "binary download failed for $svc ($url)"; return 1; }
+  cat > "/etc/systemd/system/$svc.service" <<EOF
+[Unit]
+Description=vk-turn-proxy ($owner) — ${lis} → ${con}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=${bin} -listen ${lis} -connect ${con} ${params}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now "$svc" 2>/dev/null || warn "couldn't start $svc"
+}
+
+# docker turn record → host systemd units, then drop the swg-turn containers
+turn_to_bare(){
+  local rec="$DOCKER_DIR/data/node/turn-proxy.json" list svc owner lis con params
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$rec" ] || return 0
+  list="$(python3 - "$rec" <<'PY' 2>/dev/null
+import json, sys
+try: d = json.load(open(sys.argv[1])); tps = d.get("turn_proxies") or []
+except Exception: tps = []
+for t in (tps if isinstance(tps, list) else []):
+    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), (t.get("params") or "")]))
+PY
+)"
+  [ -n "$list" ] || return 0
+  echo; info "Turn-proxies on the docker node:"
+  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && printf '    %s  %s → %s\n' "$(b "$svc")" "$lis" "$con"; done <<EOF
+$list
+EOF
+  cyn "Transfer these turn-proxies to bare-metal (host systemd)?" || { info "  left them on docker (they stop when the swg-turn containers go)"; return 0; }
+  while IFS="$(printf '\t')" read -r svc owner lis con params; do
+    [ -n "$svc" ] || continue
+    [ -n "$owner" ] || { warn "  $svc: no fork in the record — skipping"; continue; }
+    if turn_install_host "$svc" "$owner" "$lis" "$con" "$params"; then
+      docker rm -f "swg-turn-${svc#vk-turn-proxy-}" >/dev/null 2>&1 || true
+      info "  migrated $(b "$svc") → host systemd"
+    fi
+  done <<EOF
+$list
+EOF
+}
+
+# host systemd turn units → docker record, then tear the units down (swg-noded recreates them as containers)
+turn_to_docker(){
+  local units u svc exe lis con params owner rec="$DOCKER_DIR/data/node/turn-proxy.json"
+  command -v python3 >/dev/null 2>&1 || return 0
+  units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
+  [ -n "$units" ] || return 0
+  echo; info "Turn-proxy services on this box:"
+  for u in $units; do printf '    %s\n' "$(b "$(basename "$u" .service)")"; done
+  cyn "Transfer these turn-proxies into the docker node?" || { info "  left the host turn-proxies running"; return 0; }
+  mkdir -p "$(dirname "$rec")"
+  for u in $units; do
+    svc="$(basename "$u" .service)"
+    exe="$(sed -n 's/^ExecStart=//p' "$u" | head -1)"
+    lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
+    con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
+    params="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}[^ ]*[[:space:]]*\(.*\)$/\1/p')"
+    owner="$(sed -n 's/.*vk-turn-proxy (\([^)]*\)).*/\1/p' "$u" | head -1)"
+    python3 - "$rec" "$svc" "$owner" "$lis" "$con" "$params" <<'PY' || true
+import json, sys, re
+p, svc, owner, lis, con, params = sys.argv[1:7]
+try: d = json.load(open(p)); tps = d.get("turn_proxies") if isinstance(d, dict) else None; tps = tps if isinstance(tps, list) else []
+except Exception: tps = []
+tps = [t for t in tps if t.get("service") != svc]
+m = re.search(r"-wrap-key[ =]+(\S+)", params or "")
+tps.append({"service": svc, "listen": lis, "connect": con, "params": (params or "").strip(),
+            "wrap_key": (m.group(1) if m else ""), "owner": owner})
+json.dump({"turn_proxies": tps}, open(p, "w"))
+PY
+    systemctl disable --now "$svc" 2>/dev/null || true; rm -f "$u"
+    info "  migrated $(b "$svc") → docker record (recreated as a container on the node's first run)"
+  done
+  systemctl daemon-reload 2>/dev/null || true
+}
+
 CHECK=no; [ "${1:-}" = --check ] && { CHECK=yes; shift; }
 FROM="${1:-}"; TO="${2:-}"; ROLE="${3:-}"
 [ -n "$FROM" ] && [ -n "$TO" ] && [ -n "$ROLE" ] || die "usage: convert.sh [--check] <docker|baremetal> <docker|baremetal> <node|host|master>"
@@ -121,6 +214,8 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   done
   [ -n "$names" ] || die "no interface confs copied (looked in $confd)"
 
+  turn_to_bare   # offer to migrate the docker node's turn-proxies → host systemd units
+
   # 3) hand off to install-node.sh with the SAME token. ADOPTED_IFACES marks the migrated interfaces
   #    as "already on this node" (not orphan / not docker); its picker lets you add more (queued +
   #    created after the tools install). Same token ⇒ the panel keeps one node.
@@ -184,7 +279,7 @@ EOF
   [ -n "$names" ] || die "no interface confs imported"
 
   # 2) tear down the bare-metal datapath — free the wg ports + remove its units/files. NO panel
-  #    goodbye (the token is reused, so the panel keeps this node). Host turn-proxies stay running.
+  #    goodbye (the token is reused, so the panel keeps this node). Turn-proxies are offered for transfer below.
   info "Stopping the bare-metal node…"
   systemctl disable --now swg-noded 2>/dev/null || true
   while IFS="$(printf '\t')" read -r nm src; do
@@ -197,6 +292,8 @@ $ifaces
 EOF
   rm -f /etc/systemd/system/swg-noded.service; systemctl daemon-reload 2>/dev/null || true
   rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent
+
+  turn_to_docker   # offer to migrate this box's host turn-proxies → the docker node's record (→ containers)
 
   # 3) hand off to install-docker.sh (docker node) with the SAME token. It detects the imported confs
   #    (picker shows them as "already on this node"; add more if you want), writes .env and brings the
