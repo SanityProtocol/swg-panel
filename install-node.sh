@@ -239,11 +239,11 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
       detect_wg; names="${!IF_CMD[*]}"; dk="$(docker_node_ifaces)" || true
       avail=""; for n in $names; do _in "$n" "$dk" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
       echo
-      printf "  Currently available interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
+      printf "  Available orphan interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
       [ -n "$dk" ] && { printf "  Interfaces used by the docker node on this server:"; for n in $dk; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
       echo
-      echo "  To manage $(b "$(col "$C_BLUE" 'all available interfaces')") and $(b proceed) — press $(b Enter)"
-      printf "  Or enter interface names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
+      echo "  To manage $(b "$(col "$C_BLUE" 'all orphan interfaces')") (if any) and $(b proceed) — press $(b Enter)"
+      printf "  To manage specific interfaces - enter names (space-separated), or %s to create one: " "$(col "$C_BLUE" new)"
       if ! read -r pick </dev/tty; then echo; warn "no interactive input — managing all available interfaces"; sel=($avail); break; fi
       if [ -z "$(echo $pick)" ]; then [ -n "$avail" ] || { warn "nothing available — type 'new' to create an interface"; continue; }; sel=($avail); break; fi
       [ "$pick" = new ] && { create_iface; continue; }
