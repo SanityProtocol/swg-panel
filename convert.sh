@@ -230,6 +230,13 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   done
   [ -n "$names" ] || die "no interface confs copied (looked in $confd)"
 
+  # carry the per-interface keypair backups across so the server-key revert baseline survives the move
+  if [ -d "$DOCKER_DIR/data/node/iface-keys" ]; then
+    mkdir -p /var/lib/swg-noded/iface-keys
+    cp -a "$DOCKER_DIR/data/node/iface-keys/." /var/lib/swg-noded/iface-keys/ 2>/dev/null || true
+    info "carried interface keypair backups → /var/lib/swg-noded/iface-keys"
+  fi
+
   turn_to_bare   # offer to migrate the docker node's turn-proxies → host systemd units
 
   # 3) hand off to install-node.sh with the SAME token. ADOPTED_IFACES marks the migrated interfaces
@@ -293,6 +300,13 @@ PY
 $ifaces
 EOF
   [ -n "$names" ] || die "no interface confs imported"
+
+  # carry the per-interface keypair backups across so the server-key revert baseline survives the move
+  if [ -d /var/lib/swg-noded/iface-keys ]; then
+    mkdir -p "$DOCKER_DIR/data/node/iface-keys"
+    cp -a /var/lib/swg-noded/iface-keys/. "$DOCKER_DIR/data/node/iface-keys/" 2>/dev/null || true
+    info "carried interface keypair backups → $DOCKER_DIR/data/node/iface-keys"
+  fi
 
   # 2) tear down the bare-metal datapath — free the wg ports + remove its units/files. NO panel
   #    goodbye (the token is reused, so the panel keeps this node). Turn-proxies are offered for transfer below.
