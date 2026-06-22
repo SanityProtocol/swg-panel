@@ -322,6 +322,12 @@ if [ -f "$INSTALL_DIR/.env" ]; then
       --data '{"state":"reinstalling"}' "${PANEL_URL%/}/api/node/proc-status" >/dev/null 2>&1 || true
     rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
   fi
+  # panel re-install: if this deployment runs a panel, flag the still-running container's host_proc so
+  # the header shows "re-installing"; the recreated panel clears it on boot. ./data/lib ↦ /var/lib/swg-panel.
+  if ! $DRYRUN && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null
+    printf 'reinstalling' > "$INSTALL_DIR/data/lib/host_proc" 2>/dev/null || true
+  fi
 fi
 
 # ───────────────────────── per-profile requirements ─────────────────────────
