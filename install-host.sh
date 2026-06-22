@@ -567,7 +567,7 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
 $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; rm -rf "$PREFIX"; }
 
 # ═══════════════ I. PANEL SETUP ═══════════════
-echo; info "PANEL SETUP"
+echo; info "BARE-METAL SWG PANEL SETUP"
 
 # Idempotent re-install: detect an existing panel UP FRONT and offer its saved answers as the
 # defaults for every step (mirrors the docker installer's .env reuse). To start fresh, uninstall first.
@@ -717,7 +717,7 @@ if [ "$KEEP_AUTH" != yes ] && [ "${BASIC_USER}" = admin ]; then BASIC_USER="admi
 # ═══════════════ II. NODE SETUP (master only) ═══════════════
 declare -a SELECTED
 if [ "$HOST_HAS_WG" = yes ]; then
-  echo; info "NODE SETUP"
+  echo; info "BARE-METAL SWG NODE SETUP"
   step "Node name for THIS box"
   ask_valid "Node name for THIS box" "${NODENAME_SAVED:-$(hostname -s 2>/dev/null || hostname)}" HOST_NODE_NAME v_name "1–40 chars: letters, digits, - or _"
   step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"

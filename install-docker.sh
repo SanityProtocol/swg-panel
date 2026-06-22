@@ -681,12 +681,12 @@ case "$PROFILE" in
   host|master)
     [ -n "$ROLE" ] || ask_role
     [ "$ROLE" = master ] && PROFILE=master || PROFILE=host
-    echo; info "PANEL SETUP"
+    echo; info "DOCKER SWG PANEL SETUP"
     ask_panel_login; ask_panel_tls
     if [ "$PROFILE" = master ]; then
       PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
-      echo; info "NODE SETUP"
+      echo; info "DOCKER SWG NODE SETUP"
       step "Node name for THIS box"
       ask_valid "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)" NODE_NAME v_name "1–40 chars: letters, digits, - or _"
       manage_node_ifaces
@@ -702,7 +702,7 @@ case "$PROFILE" in
     fi
     ;;
   node)
-    echo; info "NODE SETUP"
+    echo; info "DOCKER SWG NODE SETUP"
     ask_node_conn
     manage_node_ifaces
     # the node-level endpoint is required by compose; ensure it's set (kept existing interfaces only)

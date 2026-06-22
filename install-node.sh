@@ -538,7 +538,7 @@ choose_turn_proxy(){   # one looped step: list installed (if any) + available br
 $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; rm -rf "$PREFIX"; }
 
 # ═══════════════ NODE SETUP ═══════════════
-echo; info "NODE SETUP"
+echo; info "BARE-METAL SWG NODE SETUP"
 read_existing
 if [ "$EXISTING" = yes ]; then
   info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
