@@ -901,19 +901,25 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .deppop .dep-name{font-size:12px;color:var(--ink)}
 .deppop .dep-ip{margin-left:auto;font-size:11.5px;color:var(--ink-2)}
 /* online users / peers breakdown bubble + its trigger tag */
-.onlinetag{cursor:pointer;border-radius:6px;transition:background .12s}
-.onlinetag:hover,.onlinetag.on{background:rgba(63,216,154,.12)}
-.onlinetag.bare,.onlinetag.bare:hover,.onlinetag.bare.on{background:none;display:inline-flex;align-items:center;gap:7px}
-.onlinetag.nm-peerpop{display:inline-flex;align-items:baseline;gap:8px;padding:0 4px;margin:0 -4px}
+/* the hover trigger: a slightly enlarged hit area + a clearer highlight (the header uses .bare = none) */
+.onlinetag{cursor:pointer;border-radius:6px;padding:3px 7px;margin:-3px -4px;transition:background .12s,box-shadow .12s}
+.onlinetag:hover,.onlinetag.on{background:rgba(63,216,154,.2);box-shadow:inset 0 0 0 1px rgba(63,216,154,.45)}
+.onlinetag.bare,.onlinetag.bare:hover,.onlinetag.bare.on{background:none;box-shadow:none;padding:0;margin:0;display:inline-flex;align-items:center;gap:7px}
+.onlinetag.nm-peerpop{display:inline-flex;align-items:baseline;gap:8px}
 .oncount.on{color:var(--online)}   /* first number green when any peer is online */
-.onlpop{min-width:200px;max-height:50vh;overflow:auto}
-.onlpop .onpop-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:4px 8px 6px}
+.onlpop{min-width:210px;max-height:50vh;overflow:auto}
+.onlpop .onpop-h{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:4px 8px 6px;text-decoration:none}
+.onlpop a.onpop-h:hover{color:var(--brand)}
 .onlpop .onrow{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:5px 8px;border-radius:6px;white-space:nowrap}
 .onlpop .onrow:hover{background:var(--surface)}
 .onlpop .onrow.un .on-name{color:var(--dim);font-style:italic}
 .onlpop .on-name{font-size:12.5px;color:var(--ink)}
 .onlpop .on-ct{font-size:12px;color:var(--online);font-family:var(--mono)}
 .onlpop .on-user{font-size:11.5px}
+.onlpop .orphrow{border-top:1px solid var(--line);margin-top:3px;padding-top:7px}
+.onlpop .orphrow .on-name{color:var(--ready)}
+.onlpop .onpop-viewall{display:block;font-size:11.5px;color:var(--brand);text-decoration:none;padding:7px 8px 4px;margin-top:3px;border-top:1px solid var(--line)}
+.onlpop .onpop-viewall:hover{text-decoration:underline}
 .assigncell{display:flex;align-items:center;gap:6px}
 /* searchable user picker */
 .usercombo{position:relative;min-width:150px}

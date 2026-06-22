@@ -568,16 +568,24 @@ function Popover({ trigger, cls, children }) {
 }
 
 // online USERS + their online-peer counts — global (nodeId null) or scoped to a node
+const _byHandshake = (a, b) => {   // most-recent handshake first; never-seen last
+  const av = a.lastAge == null ? Infinity : a.lastAge, bv = b.lastAge == null ? Infinity : b.lastAge;
+  return av - bv;
+};
+function orphCount(nodeId, iface) {
+  return (Store.recon.orphans || []).filter(o => o.node === nodeId && (iface == null || o.iface === iface)).length;
+}
 function onlineUserRows(nodeId) {
   const m = {};
   (Store.recon.peers || []).forEach(p => {
     const isOn = nodeId ? p.targets.some(t => t.node === nodeId && t.online) : p.online;
     if (!isOn) return;
     const id = p.unassigned ? "_un" : ("u" + p.user_id);
-    if (!m[id]) m[id] = { name: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), count: 0, unassigned: !!p.unassigned };
+    if (!m[id]) m[id] = { name: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), count: 0, unassigned: !!p.unassigned, lastAge: null };
     m[id].count++;
+    if (p.lastHandshakeAge != null) m[id].lastAge = (m[id].lastAge == null) ? p.lastHandshakeAge : Math.min(m[id].lastAge, p.lastHandshakeAge);
   });
-  return Object.values(m).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  return Object.values(m).sort(_byHandshake);
 }
 // online PEERS on an interface (or the whole node when iface == null), each with its owning user
 function onlinePeerRows(nodeId, iface) {
@@ -585,8 +593,8 @@ function onlinePeerRows(nodeId, iface) {
   return (Store.recon.peers || []).filter(p => p.targets.some(onT))
     .map(p => { const t = p.targets.find(onT) || {};
       return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"),
-               ip: t.ip || "", iface: t.iface, unassigned: !!p.unassigned }; })
-    .sort((a, b) => (a.user || "").localeCompare(b.user || "") || (a.title || "").localeCompare(b.title || ""));
+               ip: t.ip || "", iface: t.iface, unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
+    .sort(_byHandshake);
 }
 // peers reaching `iface` THROUGH a turn-proxy: online, and the wg-observed endpoint IP == the proxy's
 // connect IP (so they came via the relay, not directly). connectIp = ipOf(turn.connect).
@@ -594,29 +602,31 @@ function turnConnRows(nodeId, iface, connectIp) {
   const onT = (t) => t.node === nodeId && t.iface === iface && t.online && t.observed && ipOf(t.observed.endpoint) === connectIp;
   return (Store.recon.peers || []).filter(p => p.targets.some(onT))
     .map(p => { const t = p.targets.find(onT) || {};
-      return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned }; })
-    .sort((a, b) => (a.user || "").localeCompare(b.user || "") || (a.title || "").localeCompare(b.title || ""));
+      return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
+    .sort(_byHandshake);
 }
-// "N online" tag → bubble of users (name · online-peer count). nodeId null = whole fleet.
-// trigger: optional (count)=>vnode to customise the visible label.
+// shared online-breakdown bubble: a Live-linked header, top-10 rows (already handshake-sorted), an
+// optional "n orphan peers" line, and a "view all" link past 10. trigger: (count)=>vnode.
+function OnlPop({ title, rows, peer, orphans, trigger, cls }) {
+  const renderRow = peer
+    ? r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.iface ? " · " + r.iface : ""}${r.ip ? " · " + r.ip : ""}</span></div>`
+    : r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.name}</span><span class="on-ct">${r.count} <span class="faint">peer${r.count > 1 ? "s" : ""}</span></span></div>`;
+  return html`<${Popover} cls=${"onlinetag " + (cls || "")} trigger=${trigger(rows.length)}>
+    <a class="onpop-h onpop-link" href="#/connections" onClick=${e => e.stopPropagation()}>${title} · ${rows.length} →</a>
+    ${rows.length ? rows.slice(0, 10).map(renderRow) : html`<div class="onrow faint">${peer ? "no peers online" : "no one online"}</div>`}
+    ${orphans ? html`<div class="onrow orphrow"><span class="on-name">${orphans} orphan peer${orphans > 1 ? "s" : ""}</span><span class="on-user faint">unmanaged</span></div>` : null}
+    ${rows.length > 10 ? html`<a class="onpop-viewall" href="#/connections" onClick=${e => e.stopPropagation()}>view all ${rows.length} connections →</a>` : null}
+  </${Popover}>`;
+}
+// "N online" tag → users bubble. nodeId null = whole fleet. trigger: optional (count)=>vnode.
 function OnlineUsersTag({ nodeId, cls, trigger }) {
-  const rows = onlineUserRows(nodeId);
-  return html`<${Popover} cls=${"onlinetag " + (cls || "")}
-    trigger=${trigger ? trigger(rows.length) : html`<span class="dot"></span><b class=${"oncount" + (rows.length ? " on" : "")}>${rows.length}</b> online`}>
-    <div class="onpop-h">Online users · ${rows.length}</div>
-    ${rows.length ? rows.map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.name}</span><span class="on-ct">${r.count} <span class="faint">peer${r.count > 1 ? "s" : ""}</span></span></div>`)
-                  : html`<div class="onrow faint">no one online</div>`}
-  </${Popover}>`;
+  return html`<${OnlPop} title="Online users" rows=${onlineUserRows(nodeId)} cls=${cls}
+    trigger=${trigger || (c => html`<span class="dot"></span><b class=${"oncount" + (c ? " on" : "")}>${c}</b> online`)}/>`;
 }
-// "N online" (peers) tag → bubble of peers (device · user · ip). Used on interface cards/screens.
-function OnlinePeersTag({ nodeId, iface, total, cls, trigger }) {
-  const rows = onlinePeerRows(nodeId, iface);
-  return html`<${Popover} cls=${"onlinetag " + (cls || "")}
-    trigger=${trigger ? trigger(rows.length) : html`<b class=${"oncount" + (rows.length ? " on" : "")}>${rows.length}</b>${total != null ? " / " + total : ""} online`}>
-    <div class="onpop-h">Online peers · ${rows.length}</div>
-    ${rows.length ? rows.map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.ip ? " · " + r.ip : ""}</span></div>`)
-                  : html`<div class="onrow faint">no peers online</div>`}
-  </${Popover}>`;
+// "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
+function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans }) {
+  return html`<${OnlPop} peer title="Online peers" rows=${onlinePeerRows(nodeId, iface)} orphans=${orphans} cls=${cls}
+    trigger=${trigger || (c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>${total != null ? " / " + total : ""} online`)}/>`;
 }
 
 function TargetPips({ peer }) {
@@ -1039,10 +1049,8 @@ function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
                   <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length
-                    ? html`<${Popover} cls="onlinetag" trigger=${html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}>
-                        <div class="onpop-h">Online peers · ${onlc}</div>
-                        ${onlc ? onlinePeerRows(name, ifn).map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.ip ? " · " + r.ip : ""}</span></div>`) : html`<div class="onrow faint">no peers online</div>`}
-                      </${Popover}>${orph ? html` <span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>(${orph})</span>` : null}`
+                    ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph}
+                        trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>${orph ? html` <span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>(${orph})</span>` : null}`
                     : (orph ? html`<span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>${orph}</span>` : html`<span class="faint">none</span>`)}</span></div>
                 </div></a>`;
             })}${pcards}</div>`; })()}
@@ -1066,12 +1074,9 @@ function NodeDetail({ node: rawName }) {
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>
-            <div class="ifrow"><span class="l">Connections</span><span class="r">${(() => {
-              const crows = fronted ? turnConnRows(name, fronted, ipOf(tp.connect)) : [];
-              return html`<${Popover} cls="onlinetag" trigger=${html`<b class=${"oncount" + (crows.length ? " on" : "")}>${crows.length}</b>`}>
-                <div class="onpop-h">Via this turn-proxy · ${crows.length}</div>
-                ${crows.length ? crows.map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.ip ? " · " + r.ip : ""}</span></div>`) : html`<div class="onrow faint">no one via this proxy</div>`}
-              </${Popover}>`; })()}</span></div>
+            <div class="ifrow"><span class="l">Connections</span><span class="r"><${OnlPop} peer title="Via this turn-proxy"
+              rows=${fronted ? turnConnRows(name, fronted, ipOf(tp.connect)) : []}
+              trigger=${c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>`}/></span></div>
           </div></div>`;
       })}
       ${Object.entries(nrec.turn_pending || {}).filter(([s]) => !(snap.turn_proxies || []).some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { service: s })}><${Ic} i="x"/></button></div></div>`)}
@@ -1122,7 +1127,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${idown ? html`<span class="badge b-dangling"><${Ic} i="err"/>down</span>` : updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${idown ? html`<span class="badge b-dangling"><${Ic} i="err"/>down</span>` : updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
     ${idown ? html`<div class="notice warn" style="margin-bottom:18px"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
@@ -2537,10 +2542,8 @@ function NodeCard({ n }) {
     </div>
     <div class="nmeta">
       <span class="nm-item">${here.length
-        ? html`<${Popover} cls="onlinetag nm-peerpop" trigger=${html`<span class="nm-l">Peers</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}>
-            <div class="onpop-h">Online peers · ${onl}</div>
-            ${onl ? onlinePeerRows(n.id, null).map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.iface ? " · " + r.iface : ""}${r.ip ? " · " + r.ip : ""}</span></div>`) : html`<div class="onrow faint">no peers online</div>`}
-          </${Popover}>`
+        ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
+            trigger=${() => html`<span class="nm-l">Peers</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
         : html`<span class="nm-l">Peers</span><span class="nm-v nm-peers faint">none</span>`}</span>
       <span class="nm-item"><span class="nm-l">Interfaces</span>${ifTags.length ? html`<span class="tags">${ifTags}</span>` : html`<span class="nm-v faint">—</span>`}</span>
       <span class="nm-item"><span class="nm-l">Turn-proxies</span>${tps.length ? html`<span class="tags">${tps.map(tp => html`<span class="tg tg-turn">${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}</span>` : html`<span class="nm-v faint">—</span>`}</span>
