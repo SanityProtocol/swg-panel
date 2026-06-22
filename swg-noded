@@ -380,6 +380,15 @@ def _read_units_live(svcs):
         res[cur] = "\n".join(buf)
     return res
 
+def _list_turn_units():
+    """Bare-metal turn-proxy services present on disk (vk-turn-proxy-*.service in /etc/systemd/system).
+    None on a read error (so the caller keeps the record rather than wiping it); [] means genuinely none."""
+    try:
+        files = os.listdir("/etc/systemd/system")
+    except OSError:
+        return None
+    return [f[:-len(".service")] for f in files if f.startswith("vk-turn-proxy-") and f.endswith(".service")]
+
 def load_turn_proxies():
     """Turn-proxies installed on this box — listen/connect/wrap_key/params. Refreshed from the LIVE
     .service files (throttled) so direct edits on the server show up on the panel."""
@@ -395,6 +404,10 @@ def load_turn_proxies():
         _attach_turn_version(tp)
         return tp
     nowt = time.time()
+    on_disk = _list_turn_units()   # bare-metal: the units on disk are the source of truth — reconcile the list
+    if on_disk is not None:        # to them so convert/installer/hand-created units show (and deleted ones drop)
+        rec_by = {t.get("service"): t for t in tp if t.get("service")}
+        tp = [rec_by.get(svc) or {"service": svc} for svc in on_disk]
     if TURN_MANAGE_ON and (any("params" not in t for t in tp) or nowt - _TURN_READ["at"] >= 20):
         units = _read_units_live([t["service"] for t in tp if t.get("service")])
         changed = False

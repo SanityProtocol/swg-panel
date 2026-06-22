@@ -586,8 +586,11 @@ step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
 echo
 choose_ifaces
 
-# a docker→bare conversion already migrated the existing turn-proxies (convert.sh) — don't offer to install new ones
-if [ "${SWG_CONVERT:-}" != 1 ]; then
+# a docker→bare conversion already migrated the existing turn-proxies (convert.sh) — don't offer the fork menu,
+# but STILL record the migrated units (write_turn_record), or the panel would show no turn-proxies after the convert.
+if [ "${SWG_CONVERT:-}" = 1 ]; then
+  write_turn_record
+else
   step "TURN-PROXY setup"
   echo
   choose_turn_proxy
