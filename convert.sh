@@ -39,6 +39,14 @@ import_bare_conf(){ # <src> <dest>
 
 cyn(){ local a; printf '  %s (Y/n): ' "$1"; read -r a </dev/tty 2>/dev/null || a=y; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
 
+# tell the panel this node is about to go down for a conversion, so the UI shows it (best-effort)
+signal_status(){
+  [ -n "${NTOK:-}" ] && [ -n "${PURL:-}" ] || return 0
+  local ins=""; [ "${NVERIFY:-no}" = yes ] || ins="-k"
+  curl -fsS $ins --max-time 8 -X POST -H "Authorization: Bearer $NTOK" -H "Content-Type: application/json" \
+    --data "{\"state\":\"$1\"}" "${PURL%/}/api/node/proc-status" >/dev/null 2>&1 || true
+}
+
 # install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
 turn_install_host(){
   local svc="$1" owner="$2" lis="$3" con="$4" params="$5" inst dir bin arch url
@@ -210,6 +218,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   [ -n "$conflicts" ] && die "interface name clash: $conflicts (run with --check first)"
 
   info "Converting the docker node → bare-metal — keeping its token, endpoint and interfaces."
+  signal_status converting-bare     # tell the panel before the datapath goes down
   # 1) stop the docker datapath so it releases the wg UDP ports + /dev/net/tun
   if command -v docker >/dev/null 2>&1; then
     docker rm -f swg-node >/dev/null 2>&1 || true
@@ -311,6 +320,7 @@ EOF
   # 2) tear down the bare-metal datapath — free the wg ports + remove its units/files. NO panel
   #    goodbye (the token is reused, so the panel keeps this node). Turn-proxies are offered for transfer below.
   info "Stopping the bare-metal node…"
+  signal_status converting-docker   # tell the panel before the datapath goes down
   systemctl disable --now swg-noded 2>/dev/null || true
   while IFS="$(printf '\t')" read -r nm src; do
     [ -n "$nm" ] || continue
