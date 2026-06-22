@@ -229,30 +229,36 @@ node_iface_rows(){
     done
   fi
 }
+# turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
+v_fwd(){ local names; names=" $(node_iface_rows | cut -d' ' -f1 | tr '\n' ' ')${NODE_IFACE:+$NODE_IFACE }"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
+fwd_resolve(){ local n p x; while read -r n p x; do [ -n "$n" ] && [ "$n" = "$1" ] && { echo "127.0.0.1:$p"; return; }; done <<< "$(node_iface_rows)"
+  [ -n "${NODE_IFACE:-}" ] && [ "$1" = "$NODE_IFACE" ] && { echo "127.0.0.1:${NODE_LISTEN_PORT:-51820}"; return; }; echo "$1"; }
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
   local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
   ask_valid "Turn-proxy listen port" "$(turn_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
   detect_turn; local n; for n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$n' — pick another port (enter 'new' again)"; return 0; }; done
-  local defport="${NODE_LISTEN_PORT:-51820}" _nm _pt _pr label clabel pad rows
+  local defport="${NODE_LISTEN_PORT:-51820}" defname _nm _pt _pr label clabel pad rows
   rows="$(node_iface_rows)"
   echo
   echo "  Available wg/awg interfaces:"
   if [ -n "$rows" ]; then
-    defport="$(printf '%s\n' "$rows" | head -1)"; defport="${defport#* }"; defport="${defport%% *}"   # first interface's real port
+    defname="$(printf '%s\n' "$rows" | head -1)"; defname="${defname%% *}"   # first interface NAME
     while read -r _nm _pt _pr; do [ -n "$_nm" ] || continue
       [ "$_pr" = wg ] && _pr=wg || _pr=awg
-      label="$_nm on $_pr"; clabel="$(col "$C_GREEN" "$_nm") on $(b "$_pr")"
+      label="[$_nm] on $_pr"; clabel="$(col "$C_GREEN" "[$_nm]") on $(b "$_pr")"
       pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
       printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$_pt")"
     done <<< "$rows"
   else
     _pr=awg; [ "${NODE_PLAIN_WG:-}" = yes ] && _pr=wg
-    label="$NODE_IFACE on $_pr"; clabel="$(col "$C_GREEN" "$NODE_IFACE") on $(b "$_pr")"
+    label="[$NODE_IFACE] on $_pr"; clabel="$(col "$C_GREEN" "[$NODE_IFACE]") on $(b "$_pr")"
     pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
     printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$defport")"
+    defname="${NODE_IFACE:-127.0.0.1:$defport}"
   fi
-  ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${defport}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
+  ask_valid "WireGuard/AmneziaWG address it forwards to - interface name or custom ip:port" "$defname" connect v_fwd "an interface name (e.g. awg0) or ip:port"
+  connect="$(fwd_resolve "$connect")"
   echo
   local wrap; wrap="$(turn_wrap_flags "$sel")"
   [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \

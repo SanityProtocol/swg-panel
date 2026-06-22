@@ -403,23 +403,27 @@ EOF
   run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
   ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"
 }
+# turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
+v_fwd(){ local names; names=" $(turn_wg_ports | cut -d: -f1 | tr '\n' ' ')"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
+fwd_resolve(){ local n p; while IFS=: read -r n p; do [ -n "$n" ] && [ "$n" = "$1" ] && { echo "127.0.0.1:$p"; return; }; done <<< "$(turn_wg_ports)"; echo "$1"; }
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
   local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "$(detect_public_ip)" pub v_host "an IP or hostname"
   ask_valid "Turn-proxy listen port" "$(turn_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
   detect_turn; local _n; for _n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$_n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$_n' — pick another port (enter 'new' again)"; return 0; }; done
-  local ports defport=51820 n p proto label clabel pad; ports="$(turn_wg_ports)"
+  local ports defport=51820 defname="127.0.0.1:51820" n p proto label clabel pad; ports="$(turn_wg_ports)"
   echo
   if [ -n "$ports" ]; then
-    defport="$(printf '%s\n' "$ports" | head -1 | cut -d: -f2)"
+    defname="$(printf '%s\n' "$ports" | head -1 | cut -d: -f1)"   # first interface NAME
     echo "  Available wg/awg interfaces:"
     while IFS=: read -r n p; do proto="${IF_CMD[$n]:-wg}"
-      label="$n on $proto"; clabel="$(col "$C_GREEN" "$n") on $(b "$proto")"
+      label="[$n] on $proto"; clabel="$(col "$C_GREEN" "[$n]") on $(b "$proto")"
       pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
       printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$p")"
     done <<< "$ports"
   fi
-  ask_valid "WireGuard/AmneziaWG address it forwards to (ip:port)" "127.0.0.1:${defport}" connect v_hostport "ip:port, e.g. 127.0.0.1:51820"
+  ask_valid "WireGuard/AmneziaWG address it forwards to - interface name or custom ip:port" "$defname" connect v_fwd "an interface name (e.g. awg0) or ip:port"
+  connect="$(fwd_resolve "$connect")"
   echo
   local wrap; wrap="$(turn_wrap_flags "$sel")"
   [ -n "$wrap" ] && info "Obfuscation: a 64-hex wrap key is generated, baked into the unit, and recorded for the panel / client configs." \
