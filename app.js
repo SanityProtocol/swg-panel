@@ -541,6 +541,73 @@ function DepBadge({ others }) {
 }
 function peerLabel(p) { return p.unassigned ? "" : (p.name || ""); }
 
+// Generic hover/click bubble (the DepBadge mechanics, reusable): hover opens, click pins (touch),
+// position:fixed anchored to the trigger so overflow:hidden can't clip it.
+function Popover({ trigger, cls, children }) {
+  const [open, setOpen] = useState(false), [pinned, setPinned] = useState(false), [pos, setPos] = useState(null);
+  const ref = useRef(null), closeT = useRef(null);
+  const show = open || pinned;
+  const cancelClose = () => clearTimeout(closeT.current);
+  const scheduleClose = () => { cancelClose(); closeT.current = setTimeout(() => setOpen(false), 140); };
+  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect(); setPos({ left: Math.round(r.left), top: Math.round(r.bottom + 6) }); };
+  useEffect(() => {
+    if (!show) return; place();
+    const onMove = () => place();
+    const onDoc = e => { if (!(ref.current && ref.current.contains(e.target))) { setPinned(false); setOpen(false); } };
+    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
+    if (pinned) document.addEventListener("mousedown", onDoc, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
+  }, [show, pinned]);
+  useEffect(() => () => clearTimeout(closeT.current), []);
+  return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
+    onClick=${e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); }}
+    onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>${trigger}
+    ${show && pos ? html`<div class="deppop onlpop" style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
+      onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div>` : null}
+  </span>`;
+}
+
+// online USERS + their online-peer counts — global (nodeId null) or scoped to a node
+function onlineUserRows(nodeId) {
+  const m = {};
+  (Store.recon.peers || []).forEach(p => {
+    const isOn = nodeId ? p.targets.some(t => t.node === nodeId && t.online) : p.online;
+    if (!isOn) return;
+    const id = p.unassigned ? "_un" : ("u" + p.user_id);
+    if (!m[id]) m[id] = { name: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), count: 0, unassigned: !!p.unassigned };
+    m[id].count++;
+  });
+  return Object.values(m).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+// online PEERS on an interface, each with its owning user
+function onlinePeerRows(nodeId, iface) {
+  return (Store.recon.peers || []).filter(p => p.targets.some(t => t.node === nodeId && t.iface === iface && t.online))
+    .map(p => { const t = p.targets.find(x => x.node === nodeId && x.iface === iface && x.online) || {};
+      return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned }; })
+    .sort((a, b) => (a.user || "").localeCompare(b.user || "") || (a.title || "").localeCompare(b.title || ""));
+}
+// "N online" tag → bubble of users (name · online-peer count). nodeId null = whole fleet.
+// trigger: optional (count)=>vnode to customise the visible label.
+function OnlineUsersTag({ nodeId, cls, trigger }) {
+  const rows = onlineUserRows(nodeId);
+  return html`<${Popover} cls=${"onlinetag " + (cls || "")}
+    trigger=${trigger ? trigger(rows.length) : html`<span class="dot"></span><b>${rows.length}</b> online`}>
+    <div class="onpop-h">Online users · ${rows.length}</div>
+    ${rows.length ? rows.map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.name}</span><span class="on-ct">${r.count} <span class="faint">peer${r.count > 1 ? "s" : ""}</span></span></div>`)
+                  : html`<div class="onrow faint">no one online</div>`}
+  </${Popover}>`;
+}
+// "N online" (peers) tag → bubble of peers (device · user · ip). Used on interface cards/screens.
+function OnlinePeersTag({ nodeId, iface, total, cls, trigger }) {
+  const rows = onlinePeerRows(nodeId, iface);
+  return html`<${Popover} cls=${"onlinetag " + (cls || "")}
+    trigger=${trigger ? trigger(rows.length) : html`<b>${rows.length}</b>${total != null ? " / " + total : ""} online`}>
+    <div class="onpop-h">Online peers · ${rows.length}</div>
+    ${rows.length ? rows.map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.ip ? " · " + r.ip : ""}</span></div>`)
+                  : html`<div class="onrow faint">no peers online</div>`}
+  </${Popover}>`;
+}
+
 function TargetPips({ peer }) {
   return html`<span class="pips">${peer.targets.map(d => {
     const col = Store.nodeColor(d.node);
@@ -745,7 +812,7 @@ function FleetNodeCard({ n }) {
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
         <div><span class="fl">Traffic</span><span class=${"ratecell" + (nrx + ntx > 0 ? " live" : "")}>↓ ${rate(nrx)} <span class="up">↑ ${rate(ntx)}</span></span></div>
-        <div><span class="fl">Online</span><span class="fv">${onl} / ${here.length}</span></div>
+        <div><span class="fl">Online</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} trigger=${c => html`${c} <span class="faint">user${c === 1 ? "" : "s"}</span>`}/></span></div>
         <div><span class="fl">Sync</span><span class="fv">${sync}</span></div>
       </div>
     </div>
@@ -961,7 +1028,10 @@ function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
                   <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length
-                    ? html`${onlc}<span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>(${orph})</span>` : null}`
+                    ? html`<${Popover} cls="onlinetag" trigger=${html`${onlc}<span class="faint">/${ps.length}</span>`}>
+                        <div class="onpop-h">Online peers · ${onlc}</div>
+                        ${onlc ? onlinePeerRows(name, ifn).map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.ip ? " · " + r.ip : ""}</span></div>`) : html`<div class="onrow faint">no peers online</div>`}
+                      </${Popover}>${orph ? html` <span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>(${orph})</span>` : null}`
                     : (orph ? html`<span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>${orph}</span>` : html`<span class="faint">none</span>`)}</span></div>
                 </div></a>`;
             })}${pcards}</div>`; })()}
@@ -1035,7 +1105,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${idown ? html`<span class="badge b-dangling"><${Ic} i="err"/>down</span>` : updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when">${onl} / ${peers.length} online</span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${idown ? html`<span class="badge b-dangling"><${Ic} i="err"/>down</span>` : updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length}/></span></div>
       <div class="grow"></div>
     </div>
     ${idown ? html`<div class="notice warn" style="margin-bottom:18px"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
@@ -2449,7 +2519,7 @@ function NodeCard({ n }) {
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style=${"color:" + htcolor(cpct)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
     <div class="nmeta">
-      <span class="nm-item"><span class="nm-l">Peers</span>${here.length ? html`<span class="nm-v nm-peers">${onl}<small>/${here.length}</small></span>` : html`<span class="nm-v nm-peers faint">none</span>`}</span>
+      <span class="nm-item"><span class="nm-l">Peers</span>${here.length ? html`<span class="nm-v nm-peers"><${OnlineUsersTag} nodeId=${n.id} trigger=${() => html`${onl}<small>/${here.length}</small>`}/></span>` : html`<span class="nm-v nm-peers faint">none</span>`}</span>
       <span class="nm-item"><span class="nm-l">Interfaces</span>${ifTags.length ? html`<span class="tags">${ifTags}</span>` : html`<span class="nm-v faint">—</span>`}</span>
       <span class="nm-item"><span class="nm-l">Turn-proxies</span>${tps.length ? html`<span class="tags">${tps.map(tp => html`<span class="tg tg-turn">${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}</span>` : html`<span class="nm-v faint">—</span>`}</span>
       <span class="nm-item nm-thru"><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
@@ -3289,9 +3359,11 @@ function App() {
   useEffect(() => {
     trackTurnRestarts();                                             // detect completed turn restarts → green flash
     trackIfaceOps();                                                 // interface start/restart progress lifecycle
-    const online = Store.recon.peers.filter(p => p.online).length;   // PEERS online (not users)
-    const kpi = $("#kpi-online"); if (kpi) kpi.textContent = online;
-    const lp = $("#livepill"); if (lp) lp.classList.toggle("off", online === 0);   // 0 = grey, no dot
+    const lp = $("#livepill");                                       // online USERS, with a per-user peer-count bubble
+    if (lp) {
+      lp.classList.toggle("off", onlineUserRows(null).length === 0);   // 0 = grey, no dot
+      render(html`<${OnlineUsersTag} nodeId=${null} cls="bare" trigger=${c => html`<span class="dot"></span><b id="kpi-online">${c}</b> online`}/>`, lp);
+    }
     const v = Store.versions || {}, el = $("#appver");
     if (v.panel) {            // panel came back on a different version → it was updated; prompt a hard reload
       if (seenPanelVer && seenPanelVer !== v.panel) { hostUpdating = false; openUpdateDone(seenPanelVer, v.panel); }
