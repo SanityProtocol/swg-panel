@@ -391,6 +391,7 @@ def load_turn_proxies():
         return []
     if TURN_DOCKER:                 # container model — the record IS the config; just flag running via docker ps
         _dturn_attach_running(tp)
+        _attach_turn_version(tp)
         return tp
     nowt = time.time()
     if TURN_MANAGE_ON and (any("params" not in t for t in tp) or nowt - _TURN_READ["at"] >= 20):
@@ -412,6 +413,7 @@ def load_turn_proxies():
                     json.dump({"turn_proxies": tp}, f)
                 os.replace(tmp, TURN_RECORD)
     _attach_turn_running(tp)
+    _attach_turn_version(tp)
     return tp
 
 _TURN_RUN = {"at": 0.0, "map": {}}
@@ -1010,6 +1012,7 @@ def _dturn_download(svc, owner):
              "--retry-delay", "3", "--retry-all-errors", url, "-o", binp], timeout=320)
     if r.returncode != 0: return (r.stderr or "binary download failed").strip()[:160]
     with contextlib.suppress(OSError): os.chmod(binp, 0o755)
+    _turn_write_version(svc, _turn_resolve_tag(owner))   # record which release tag we just fetched
     return ""
 
 def _dturn_run(tp):   # (re)create the container to match tp; returns the docker-run CompletedProcess
@@ -1029,6 +1032,47 @@ def _dturn_verify(svc):
 def _dturn_delete(svc):
     run(["docker", "rm", "-f", _turn_cname(svc)], timeout=30)
     shutil.rmtree(os.path.dirname(_turn_bin_local(svc)), ignore_errors=True)
+
+# ── turn-proxy VERSION (the GitHub release tag we downloaded) — a sidecar next to the binary ──
+# docker: /var/lib/swg-noded/turn/<inst>/version (swg-noded writes it) · bare: /opt/vk-turn-proxy/<inst>/version
+# (the installer writes it; swg-noded re-writes it on a reinstall). Reported per-proxy in the snapshot.
+def _turn_ver_path(svc):     # filename matches the bare-metal installer (writes version.txt + repo.txt)
+    if TURN_DOCKER:
+        return os.path.join(os.path.dirname(_turn_bin_local(svc)), "version.txt")
+    return "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/version.txt"
+def _turn_repo_path(svc):    # owner repo recorded by the bare-metal installer (fallback if a reinstall req lacks owner)
+    return "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/repo.txt"
+def _turn_version(svc):
+    try:
+        with open(_turn_ver_path(svc)) as f:
+            return f.read().strip()[:40]
+    except Exception:
+        return ""
+def _turn_write_version(svc, tag):
+    if not tag:
+        return
+    p = _turn_ver_path(svc)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write(tag.strip()[:40])
+        with contextlib.suppress(OSError): os.chmod(p, 0o644)
+    except OSError:
+        pass
+def _turn_resolve_tag(owner):
+    """Latest release tag, read from the 302 of releases/latest/download (no API → no rate limit)."""
+    if not owner:
+        return ""
+    arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+    url = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
+    r = run(["curl", "-fsS", "-o", "/dev/null", "-w", "%{redirect_url}",
+             "--connect-timeout", "15", "--max-time", "30", url], timeout=40)
+    m = re.search(r"/releases/download/([^/]+)/", r.stdout or "")
+    return m.group(1) if m else ""
+def _attach_turn_version(tps):
+    for t in tps:
+        if t.get("service"):
+            t["version"] = _turn_version(t["service"])
 
 def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
     owner = (req.get("owner") or "").strip(); listen = (req.get("listen") or "").strip()
@@ -1213,6 +1257,23 @@ def apply_turn(turn, turn_onboard):
                     continue
                 if act == "delete":
                     _dturn_delete(svc); rec.pop(svc, None); changed = True; good(svc, "del:" + svc); continue
+                if act == "reinstall":      # force a fresh binary (fix a failed download / update to latest) + (re)create
+                    tp = rec.get(svc) or {"service": svc, "listen": req.get("listen", ""), "connect": req.get("connect", ""), "params": req.get("params", "")}
+                    if req.get("owner"): tp["owner"] = req["owner"].strip()
+                    if not tp.get("owner"):
+                        fail(svc, "no owner repo for reinstall"); continue
+                    with contextlib.suppress(OSError): os.remove(_turn_bin_local(svc))
+                    with contextlib.suppress(OSError): os.remove(_turn_ver_path(svc))
+                    derr = _dturn_download(svc, tp["owner"])
+                    if derr:
+                        fail(svc, derr); continue
+                    r = _dturn_run(tp)
+                    if r.returncode != 0:
+                        fail(svc, (r.stderr or "container start failed").strip()[:120]); continue
+                    rec[svc] = tp; changed = True
+                    verr = _dturn_verify(svc)
+                    fail(svc, verr) if verr else good(svc, "rei:" + svc)
+                    continue
                 tp = rec.get(svc)
                 if not tp:
                     fail(svc, "turn-proxy not in the node record"); continue
@@ -1244,6 +1305,29 @@ def apply_turn(turn, turn_onboard):
                 if w.returncode != 0:
                     fail(svc, (w.stderr or "remove failed").strip()[:120]); continue
                 rec.pop(svc, None); changed = True; good(svc, "del:" + svc); continue
+            if act == "reinstall":          # re-download the binary (fix/update) + restart the unit
+                owner = (req.get("owner") or "").strip()
+                if not owner:               # fall back to the repo.txt the installer recorded next to the binary
+                    try:
+                        with open(_turn_repo_path(svc)) as f: owner = f.read().strip()
+                    except Exception: owner = ""
+                if not owner:
+                    fail(svc, "no owner repo for reinstall"); continue
+                arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+                burl = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
+                binp = "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/server"; tag = _turn_resolve_tag(owner); vp = _turn_ver_path(svc)
+                cmd = ("mkdir -p " + shlex.quote(os.path.dirname(binp))
+                       + " && curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "
+                       + shlex.quote(burl) + " -o " + shlex.quote(binp) + " && chmod 755 " + shlex.quote(binp))
+                if tag:
+                    cmd += " && printf %s " + shlex.quote(tag) + " > " + shlex.quote(vp) + " && chmod 644 " + shlex.quote(vp)
+                cmd += " && systemctl restart " + shlex.quote(svc)
+                w = host_sh(cmd, timeout=340)
+                if w.returncode != 0:
+                    fail(svc, (w.stderr or "reinstall failed").strip()[:140]); continue
+                verr = _turn_verify(svc)
+                fail(svc, verr) if verr else good(svc, "rei:" + svc)
+                continue
             unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
             if not unit:
                 fail(svc, "unit not found on the node"); continue

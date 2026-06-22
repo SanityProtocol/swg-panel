@@ -723,6 +723,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .iface-amnezia .ig-v{display:flex;flex-direction:column;gap:3px}
 /* edit-interface intro: one sentence per line, label colour, small */
 .iface-intro{display:flex;flex-direction:column;gap:4px;margin:0 0 16px;font-size:11px;line-height:1.4;color:var(--dim)}
+/* turn-proxy installed-version row (edit modal) */
+.turn-ver-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.turn-ver-row .ver{font-size:13px;color:var(--ink)}
+.turn-ver-row .ver-err{font-size:12px;color:var(--dangling)}
 .iface-intro.big{gap:9px;margin:4px 0 18px;font-size:13px;line-height:1.55;color:var(--ink-2)}
 /* AmneziaWG param editor: four columns grouped by prefix (J / S / H / I) */
 .awg-cols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px 10px;align-items:start}

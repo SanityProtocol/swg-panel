@@ -622,6 +622,7 @@ manage_node_ifaces(){
     [ -n "$bm" ] && { printf "  Interfaces used by the bare-metal node on this server:"; for n in $bm; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
     echo
     if [ -z "$dock$kern$mine$bm" ]; then            # truly nothing on this box → offer to create the first one
+      warn "No wg / awg interfaces found."; echo
       doit="$(ask_yn_tty "Create one now? (installs WireGuard / AmneziaWG only if missing)" y)"
       if [ "$doit" = yes ]; then echo; add_node_iface; echo; continue; fi
       warn "no interfaces yet — you can add one later from the panel (Interfaces → Load new interface)"; break

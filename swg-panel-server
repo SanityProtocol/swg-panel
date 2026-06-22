@@ -1740,7 +1740,7 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Installing turn-proxy", svc)
         return 200, {"ok": True, "data": {"node": nid, "service": svc}}
 
-    if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete", "/api/turn/restart"):
+    if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete", "/api/turn/restart", "/api/turn/reinstall"):
         # The node pulls these on its next sync, rewrites the unit's ExecStart / regenerates the wrap
         # key / removes it, restarts, and reports the new state (which clears the request).
         nid = body.get("node") or ""; svc = (body.get("service") or "").strip()
@@ -1760,6 +1760,10 @@ def api(method, path, qs, body, deps):
             req = {"action": "rotate", "at": now()}; verb = "Rotating turn-proxy key"
         elif path.endswith("/restart"):
             req = {"action": "restart", "at": now()}; verb = "Restarting turn-proxy"
+        elif path.endswith("/reinstall"):
+            req = {"action": "reinstall", "at": now()}; verb = "Reinstalling turn-proxy"
+            if (body.get("owner") or "").strip():   # repo to re-fetch the binary from (UI maps fork → owner)
+                req["owner"] = body["owner"].strip()
         else:
             req = {"action": "delete", "at": now()}; verb = "Deleting turn-proxy"
         nodes[nid].setdefault("turn", {})[svc] = req

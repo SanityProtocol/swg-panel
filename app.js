@@ -37,6 +37,12 @@ function turnLabel(service, port) {   // just the fork name — the port shows i
   s = s.replace(/-\d+$/, "") || "turn";
   return s === "main" ? "cacggghp" : s;   // legacy "main" services (pre-rename) still display as cacggghp
 }
+// the fork id baked into a service name (vk-turn-proxy-<fork>-<port>) → its owner repo (for version/update checks)
+function turnFork(svc) { return turnLabel(svc, ""); }
+function turnOwner(svc) {
+  const f = turnFork(svc); const fk = (typeof TURN_FORKS !== "undefined") ? TURN_FORKS.find(x => x.id === f) : null;
+  return fk ? fk.owner : (f && f !== "turn" ? f + "/vk-turn-proxy" : "");
+}
 
 function ago(sec) {
   if (sec == null) return "—";
@@ -294,6 +300,7 @@ const api = {
   turnRotate(b) { return this.post("/api/turn/rotate", b); },     // regenerate the wrap key
   turnDelete(b) { return this.post("/api/turn/delete", b); },         // stop + remove the service
   turnRestart(b) { return this.post("/api/turn/restart", b); },       // restart the service
+  turnReinstall(b) { return this.post("/api/turn/reinstall", b); },   // re-download the binary (fix a failed install / update) + (re)start
   turnInstall(b) { return this.post("/api/turn/install", b); },       // install a new turn-proxy (download + unit)
   turnOnboard(b) { return this.post("/api/turn/onboard", b); },       // adopt a host .service by path
   turnCancel(b) { return this.post("/api/turn/cancel", b); },
@@ -1469,6 +1476,27 @@ function TurnManageSheet({ node, tp }) {
   const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
+  const installed = tp.version || "";
+  const down = tp.running === false;
+  const owner = turnOwner(svc);
+  const [verChk, setVerChk] = useState(null);   // null | {checking} | {latest} | {err}
+  const updateAvail = verChk && verChk.latest && installed && verChk.latest !== installed;
+  const checkUpdate = async () => {
+    setVerChk({ checking: true });
+    try {
+      const r = await fetch("https://api.github.com/repos/" + owner + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } });
+      if (!r.ok) throw new Error("GitHub " + r.status);
+      const j = await r.json();
+      setVerChk({ latest: String(j.tag_name || "").trim() });
+    } catch (e) { setVerChk({ err: String((e && e.message) || e) }); }
+  };
+  const doReinstall = async (verb) => {
+    setBusy(true); setMsg({ k: "work", t: verb.toLowerCase() + "…" });
+    const r = await api.turnReinstall({ node, service: svc, owner });
+    if (!r.ok) return fail(r.error || "Request failed.");
+    closeModal(); await Store.poll();
+    toast("Turn-proxy " + verb.toLowerCase() + " requested — applies on the node's next sync.", "ok");
+  };
   const save = async () => {
     if (!lhost.trim()) return fail("Listen IP is required.");
     if (!/^\d+$/.test(lport.trim())) return fail("Listen port must be a number.");
@@ -1489,7 +1517,9 @@ function TurnManageSheet({ node, tp }) {
   return html`<${Sheet} title=${"Turn-proxy · " + turnLabel(svc, lp)}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
-      <button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Restart the systemd service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>
+      ${down
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Re-download the binary and start the service on the node" onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`
+        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Restart the service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
       <button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
@@ -1514,6 +1544,17 @@ function TurnManageSheet({ node, tp }) {
     <div class="field"><label>Additional ExecStart parameters</label>
       <textarea class="ta mono" rows="4" value=${params} onInput=${e => setParams(e.target.value)} placeholder="-wrap-mode on -wrap-key <64 hex chars>" spellcheck="false"></textarea>
       <div class="hint">Free text appended after <span class="mono">-connect ip:port</span>. Changing the wrap key breaks every client using the old one. <button type="button" class="linkbtn" onClick=${randKey}>Copy a random 64-hex key</button></div>
+    </div>
+    <div class="field turn-ver"><label>Installed version</label>
+      <div class="turn-ver-row">
+        <span class="mono ver">${installed || "unknown"}</span>
+        ${verChk && verChk.checking ? html`<span class="faint">checking…</span>`
+          : verChk && verChk.err ? html`<${Fragment}><span class="ver-err" title=${verChk.err}>check failed</span> <button type="button" class="linkbtn" onClick=${checkUpdate}>retry</button></>`
+          : verChk && verChk.latest ? (updateAvail
+              ? html`<button class="btn btn-mini" disabled=${busy} onClick=${() => doReinstall("Update")}><${Ic} i="download"/> Update → ${verChk.latest}</button>`
+              : html`<span class="tg-ok"><${Ic} i="check"/> up to date</span>`)
+          : html`<button class="btn btn-mini" disabled=${busy || !owner} onClick=${checkUpdate}>Check for update</button>`}
+      </div>
     </div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -1545,7 +1586,7 @@ const TURN_FORKS = [
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp" },
 ];
-const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting" };
+const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "reinstalling" };
 // turn-proxy restart completion flash: when a queued 'restart' clears, show a green "restarted" tag 3s
 const _turnRestartPend = {};   // "node|service" currently mid-restart (last poll)
 const turnRestarted = {};      // "node|service" -> expiry ts for the green flash
