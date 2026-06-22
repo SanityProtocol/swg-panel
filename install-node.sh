@@ -539,24 +539,25 @@ choose_turn_proxy(){   # one looped step: list installed (if any) + available br
     echo
     echo "  Here is a list of turn-proxy branches available for installation:"
     echo
-    menu "$(col "$C_BLUE" '[0] cacggghp')"     "The original project - https://github.com/cacggghp/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[1] WINGS-N')"      "Fork by WINGS-N - https://github.com/WINGS-N/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[2] samosvalishe')" "Fork by samosvalishe - https://github.com/samosvalishe/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[3] kiper292')"     "Fork by kiper292 - https://github.com/kiper292/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[4] Moroka8')"      "Fork by Moroka8 - https://github.com/Moroka8/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[5] anton48')"      "Fork by anton48 - https://github.com/anton48/vk-turn-proxy"
-    printf '  Enter a number to install, or just press %s to skip and proceed with the setup: ' "$(b Enter)"
+    menu "$(col "$C_BLUE" '[0] [c]acggghp')"     "The original project - https://github.com/cacggghp/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[1] [W]INGS-N')"      "Fork by WINGS-N - https://github.com/WINGS-N/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[2] [s]amosvalishe')" "Fork by samosvalishe - https://github.com/samosvalishe/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[3] [k]iper292')"     "Fork by kiper292 - https://github.com/kiper292/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[4] [M]oroka8')"      "Fork by Moroka8 - https://github.com/Moroka8/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[5] [a]nton48')"      "Fork by anton48 - https://github.com/anton48/vk-turn-proxy"
+    printf '  Enter a number, letter or name to install, or just press %s to skip and proceed with the setup: ' "$(b Enter)"
     if ! read -r sel 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
     sel="${sel//[[:space:]]/}"
     [ -z "$sel" ] && break
+    sel="$(printf '%s' "$sel" | tr '[:upper:]' '[:lower:]')"   # case-insensitive (W/w, M/m, …)
     case "$sel" in
-      0|cacggghp|Original|main)  install_turn_proxy cacggghp; continue;;
-      1|WINGS-N|wings)  install_turn_proxy WINGS-N; continue;;
-      2|samosvalishe)   install_turn_proxy samosvalishe; continue;;
-      3|kiper292)       install_turn_proxy kiper292; continue;;
-      4|Moroka8)        install_turn_proxy Moroka8; continue;;
-      5|anton48)        install_turn_proxy anton48; continue;;
-      *) warn "enter a number 0–5 (or press Enter to skip)";;
+      0|c|cacggghp|original|main)  install_turn_proxy cacggghp; continue;;
+      1|w|wings|wings-n)           install_turn_proxy WINGS-N; continue;;
+      2|s|samosvalishe)            install_turn_proxy samosvalishe; continue;;
+      3|k|kiper|kiper292)          install_turn_proxy kiper292; continue;;
+      4|m|moroka|moroka8)          install_turn_proxy Moroka8; continue;;
+      5|a|anton|anton48)           install_turn_proxy anton48; continue;;
+      *) warn "enter 0–5, a letter (c/w/s/k/m/a) or a name (or press Enter to skip)";;
     esac
   done
   write_turn_record
