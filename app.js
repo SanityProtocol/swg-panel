@@ -2493,9 +2493,13 @@ function RangedHistory({ node, kind, live, h, head, liveFine }) {
   const span = tt.length > 1 ? (tt[tt.length - 1] - tt[0]) : 0;
   const need = HIST_WIN[range] || 0;
   const sparse = !loading && tt.length > 1 && need && span < need * 0.7;
+  const nlive = Store.recon.nodeStatus[node] === "live";   // node hasn't reported for several rounds → the live feed is frozen
+  const staleLive = !nlive && (range === "live" || range === "hour");   // only the live-fed ranges; day/week/month keep their stored history
+  const staleMsg = html`<div class="harea-msg"><${Ic} i="info"/><span>This node isn't sending any data right now — the chart will fill back in as soon as it's reporting again.</span></div>`;
   const tabs = html`<div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div>`;
   if (kind === "throughput") {
     const tpinner = loading ? html`<div class="harea-empty">loading ${range}…</div>`
+      : staleLive ? staleMsg
       : sparse ? html`<${HistMsg} span=${span} need=${need} range=${range}/>` : null;
     if (tpinner) return html`<div class="tp-wrap"><div class="tp-legend"><span class="grow"></span>${tabs}</div>${tpinner}</div>`;
     return html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs} times=${s.t} range=${range}/>`;
@@ -2503,6 +2507,7 @@ function RangedHistory({ node, kind, live, h, head, liveFine }) {
   return html`<div class="chartwrap">
     <div class="chart-head">${head || null}<span class="grow"></span>${tabs}</div>
     ${loading ? html`<div class="harea-empty">loading ${range}…</div>`
+      : staleLive ? staleMsg
       : sparse ? html`<${HistMsg} span=${span} need=${need} range=${range}/>`
       : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h} times=${s.t} range=${range}/>`}
   </div>`;
