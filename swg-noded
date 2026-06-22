@@ -150,6 +150,50 @@ def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None):
     }
 
 
+# ───────── interface keypair backup (the node keeps a copy of each iface's blessed identity) ─────────
+# The panel only ever stores the PUBLIC key, so it can't revert a server-key change on its own. Instead
+# the NODE keeps a local backup of {private_key, public_key, listen_port, address} per interface — the
+# private key is already in the .conf, so this adds no new exposure. If the live key diverges, the panel
+# flags it and can ask the node to Restore (from this backup) or Adopt (re-baseline the backup).
+IFACE_KEYS_DIR = "/var/lib/swg-noded/iface-keys"
+def _iface_backup_path(iface): return os.path.join(IFACE_KEYS_DIR, iface + ".json")
+
+def harvest_iface_backup(conf_text, cmd=None):
+    """Blessed-identity record from a .conf, or None if it has no private key."""
+    info = parse_interface_section(conf_text)
+    priv = (info.get("PrivateKey") or "").strip()
+    if not priv:
+        return None
+    port = str(info.get("ListenPort", "")).strip()
+    return {"private_key": priv, "public_key": derive_pubkey(cmd, priv),
+            "listen_port": int(port) if port.isdigit() else None,
+            "address": (info.get("Address", "").split(",")[0].strip() or None),
+            "saved_at": int(time.time())}
+
+def write_iface_backup(iface, rec):
+    with contextlib.suppress(Exception):
+        os.makedirs(IFACE_KEYS_DIR, exist_ok=True)
+        p = _iface_backup_path(iface); tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rec, f)
+        os.chmod(tmp, 0o600); os.replace(tmp, p)
+
+def read_iface_backup(iface):
+    with contextlib.suppress(Exception):
+        with open(_iface_backup_path(iface)) as f:
+            return json.load(f)
+    return None
+
+def ensure_iface_backup(iface, conf_text, cmd=None):
+    """Write a backup if one doesn't exist yet — covers create/onboard/install/first-sight. Re-install
+    and conversion overwrite it explicitly; Adopt re-baselines it via a panel request."""
+    if not conf_text or os.path.exists(_iface_backup_path(iface)):
+        return
+    rec = harvest_iface_backup(conf_text, cmd)
+    if rec:
+        write_iface_backup(iface, rec)
+
+
 def peer_view(peers, last, dt, online_max, now):
     out = []
     for p in peers:
@@ -541,6 +585,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                     "meta": build_meta([], conf_text, ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
                                        node_cfg.get("dns", []), cmd),
                     "down": ((_r.stderr or "").strip() or "interface is not up")[:140]}
+                ensure_iface_backup(iface, conf_text, cmd)
                 continue
             dump = _r.stdout
             iface_line, raw = parse_dump(dump)
@@ -559,6 +604,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                                    ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
                                    node_cfg.get("dns", []), cmd),
             }
+            ensure_iface_backup(iface, conf_text, cmd)
         except Exception as e:
             print(f"snapshot: skipping {iface}: {e}", flush=True)
             continue
