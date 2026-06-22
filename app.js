@@ -857,22 +857,11 @@ function Overview() {
 }
 
 // ═════════════════════════ SCREEN: NODE DETAIL ═════════════════════════
-// health-check roll-up badge (issues) + the manual re-check trigger (animated while polling)
+// health-check roll-up badge (issues). The data refreshes itself on the 5s poll — no manual re-check
+// button (removed as redundant). The `activity` pulse icon it used is now free for a future feature.
 function HealthDot({ issues }) {
   if (!issues || !issues.length) return null;
   return html`<span class="badge b-issue ic" title=${issues.join("\n")}><${Ic} i="warn"/>${issues.length} issue${issues.length > 1 ? "s" : ""}</span>`;
-}
-function HealthCheckBtn({ small }) {
-  const [busy, setBusy] = useState(false);
-  const run = async (e) => { e && e.stopPropagation(); if (busy) return; setBusy(true); await Store.poll(); await new Promise(r => setTimeout(r, 600)); setBusy(false); toast("Health re-checked.", "ok"); };
-  return html`<button class=${"iconbtn" + (small ? " sm" : "") + (busy ? " checking" : "")} title="Re-check this node's health" onClick=${run}><${Ic} i="activity"/></button>`;
-}
-async function healthCheckAll() {
-  const hc = document.getElementById("hc-all"); if (hc) hc.classList.add("checking");
-  await Store.poll();
-  await new Promise(r => setTimeout(r, 600));
-  if (hc) hc.classList.remove("checking");
-  toast("Re-checked all nodes.", "ok");
 }
 function NodeDetail({ node: rawName }) {
   const name = decodeURIComponent(rawName);   // `name` is the node id (the connector); display uses dname
@@ -929,7 +918,7 @@ function NodeDetail({ node: rawName }) {
     </div>
 
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online"
-      actions=${html`<${Fragment}><${HealthDot} issues=${nrec.issues}/><${HealthCheckBtn}/>${nrec.removing ? html`<span class="badge b-removing ic" style="margin-left:9px"><${Ic} i="trash"/>flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null}</>`}>
+      actions=${html`<${Fragment}><${HealthDot} issues=${nrec.issues}/>${nrec.removing ? html`<span class="badge b-removing ic" style="margin-left:9px"><${Ic} i="trash"/>flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null}</>`}>
       <${HealthAlerts} health=${nrec.health}/>
       ${nrec.health_history
         ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} liveFine=${nrec.health_live} h=${52} head=${html`<${HealthMeters} health=${nrec.health}/>`}/>`
@@ -3305,13 +3294,11 @@ function App() {
     }
     const slot = $("#updslot");
     if (slot) {
-      const HC = `<button class="iconbtn lg" id="hc-all" title="Re-check all nodes' health"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 8L9 4l-3 8H2"/></svg></button>`;
       let body;
       if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
       else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
       else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
-      slot.innerHTML = HC + body;
-      const hc = $("#hc-all"); if (hc) hc.onclick = healthCheckAll;
+      slot.innerHTML = body;
       const b = $("#host-upd"); if (b) b.onclick = updateHost;
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
     }
