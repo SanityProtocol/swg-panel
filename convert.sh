@@ -267,25 +267,26 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     info "carried interface keypair backups → /var/lib/swg-noded/iface-keys"
   fi
 
-  turn_to_bare   # offer to migrate the docker node's turn-proxies → host systemd units
+  # 3) bring the node UP FIRST — hand wg/awg + the daemon to install-node.sh so it's reporting in seconds;
+  #    only THEN migrate the turn-proxies (their binary downloads are slow and must not hold the node back).
+  #    ADOPTED_IFACES marks the migrated interfaces as "already on this node"; same token ⇒ one panel node.
+  #    NB: NOT exec — we return to migrate turn-proxies + tidy up once the node is live.
+  info "Running install-node.sh — adopt $(b "$names") (and add more if you want), then it wires the daemon…"
+  echo
+  env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
+      SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh"
+  CONVERT_HANDOFF=1   # node is up + reporting now → it owns the "converting…" clear (a later failure won't reset it)
 
-  # the docker node's data is fully migrated out now (confs imported, keys + turn-proxies carried). Move its
-  # dir aside (timestamped backup) so a later bare→docker convert isn't blocked by the leftover .env — the
-  # bare-metal install below works off the imported confs + ADOPTED_IFACES, not $DOCKER_DIR.
+  echo; info "Node is up — migrating its turn-proxies now (downloads can be slow; the node already serves peers)."
+  turn_to_bare   # docker turn-proxies → host systemd units (reads the still-present $DOCKER_DIR turn record)
+
+  # finally move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker
+  # convert isn't blocked by the leftover .env.
   if [ -d "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S)"
     if mv "$DOCKER_DIR" "$_bak" 2>/dev/null; then info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)"
     else warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"; fi
   fi
-
-  # 3) hand off to install-node.sh with the SAME token. ADOPTED_IFACES marks the migrated interfaces
-  #    as "already on this node" (not orphan / not docker); its picker lets you add more (queued +
-  #    created after the tools install). Same token ⇒ the panel keeps one node.
-  info "Running install-node.sh — adopt $(b "$names") (and add more if you want), then it wires the daemon…"
-  echo
-  CONVERT_HANDOFF=1   # installer takes over the "converting…" marker (its swg-noded clears it once the bare node reports)
-  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
-       SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh"
 fi
 
 # ── NODE: bare-metal → docker ──
