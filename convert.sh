@@ -204,6 +204,9 @@ write_recovery(){   # write_recovery <space-separated interface names>
   } > "$RECOVERY" 2>/dev/null && chmod 600 "$RECOVERY" 2>/dev/null || true
 }
 clear_recovery(){ rm -f "$RECOVERY" 2>/dev/null || true; }
+# a LIVE docker node = an actual swg-node container (running or stopped). A bare $DOCKER_DIR with no
+# container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).
+docker_node_present(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; }
 
 # ── Panel/host conversion isn't automated yet → non-zero so the caller loops back to keep/abort ──
 case "$ROLE" in host|master)
@@ -370,15 +373,21 @@ PY
   fi
   [ -n "$ifaces" ] || die "the bare-metal node has no interfaces in $cfg"
 
-  # pre-flight: an existing docker node deployment would be clobbered
+  # pre-flight: a LIVE docker node would be clobbered. A stale leftover $DOCKER_DIR (no container — e.g.
+  # a previous convert that aborted before moving it aside) is NOT a conflict; the convert moves it aside.
   if [ "$CHECK" = yes ]; then
-    if [ -f "$DOCKER_DIR/.env" ] || { command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; }; then
-      warn "a docker node already exists here ($DOCKER_DIR) — remove it first, or pick 'keep and re-install'."; exit 1
+    if docker_node_present; then
+      warn "a docker node (swg-node container) already exists here — remove it first, or pick 'keep and re-install'."; exit 1
     fi
+    [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") from a previous run will be moved aside."
     info "pre-flight OK — interfaces to migrate: $(b "$(printf '%s\n' "$ifaces" | cut -f1 | tr '\n' ' ')")"
     echo; exit 0
   fi
-  if [ -f "$DOCKER_DIR/.env" ]; then die "a docker deployment already exists at $DOCKER_DIR — remove it first (run with --check)"; fi
+  if docker_node_present; then die "a docker node (swg-node container) already exists — remove it first (run with --check)"; fi
+  if [ -e "$DOCKER_DIR" ]; then   # stale leftover (no live container) → move aside so the fresh docker node can be created
+    _bak="$DOCKER_DIR.pre-convert-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
+    mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved a leftover $(b "$DOCKER_DIR") aside → $(b "$_bak") (backup — safe to delete)" || rm -rf "$DOCKER_DIR" 2>/dev/null || true
+  fi
 
   info "Converting the bare-metal node → docker — keeping its token, endpoint and interfaces."
   # 1) inject each interface's conf into the docker node's conf dir, stripping the host NAT hooks
