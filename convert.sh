@@ -283,6 +283,15 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       [ -f "$DOCKER_DIR/docker-compose.yml" ] && ( cd "$DOCKER_DIR" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1 || true; } )
     fi
   fi
+  # host-net leftover: a swg-node container on HOST networking creates its wg/awg netdevs in the HOST
+  # kernel namespace; kernel-wireguard ones survive `docker rm`, so bare-metal wg-quick later fails with
+  # "wgN already exists". Remove any leftover netdev of a name we're about to migrate before bringing it up.
+  for s in $specs; do nm="${s%:*}"
+    if command -v ip >/dev/null 2>&1 && ip link show "$nm" >/dev/null 2>&1; then
+      ip link delete dev "$nm" 2>/dev/null || true
+      info "  removed a leftover $(b "$nm") interface (left in the host kernel by the docker container)"
+    fi
+  done
   # 2) copy each interface's .conf into the bare-metal location (private key + Amnezia params carry over)
   names=""
   for s in $specs; do nm="${s%:*}"; pr="${s#*:}"
@@ -309,8 +318,11 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   #    NB: NOT exec — we return to migrate turn-proxies + tidy up once the node is live.
   info "Running install-node.sh — adopt $(b "$names") (and add more if you want), then it wires the daemon…"
   echo
+  # NB: '|| warn' — a non-zero exit (e.g. one interface failed to come up) must NOT abort the convert under
+  # set -e, or the turn-proxy migration + dir cleanup below would be skipped (the node would lose its proxies).
   env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
-      SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh"
+      SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh" \
+    || warn "install-node.sh reported an error — continuing with the turn-proxy migration (check the interface(s) on the panel)."
   CONVERT_HANDOFF=1   # node is up + reporting now → it owns the "converting…" clear (a later failure won't reset it)
 
   echo; info "Node is up — migrating its turn-proxies now (downloads can be slow; the node already serves peers)."
