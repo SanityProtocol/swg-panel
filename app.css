@@ -245,7 +245,7 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .ifcard.pending{border-style:dashed;opacity:.85}
 .ifcard.pending .tg-warn svg{width:11px;height:11px;margin-right:3px}
 .chiprow{display:flex;gap:8px}
-a.ifcard:hover{border-color:var(--brand);transform:translateY(-1px)}
+a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)}   /* lift via shadow, NOT transform — a transform would become the containing block for the online-count popover (position:fixed) and mis-anchor it */
 .ifcard.tp{cursor:default}
 .ifcard.tp.clickable{cursor:pointer}
 .ifcard.down{opacity:.5;border-color:color-mix(in srgb,var(--dangling) 35%,var(--line-solid))}
@@ -904,6 +904,8 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .onlinetag{cursor:pointer;border-radius:6px;transition:background .12s}
 .onlinetag:hover,.onlinetag.on{background:rgba(63,216,154,.12)}
 .onlinetag.bare,.onlinetag.bare:hover,.onlinetag.bare.on{background:none;display:inline-flex;align-items:center;gap:7px}
+.onlinetag.nm-peerpop{display:inline-flex;align-items:baseline;gap:8px;padding:0 4px;margin:0 -4px}
+.oncount.on{color:var(--online)}   /* first number green when any peer is online */
 .onlpop{min-width:200px;max-height:50vh;overflow:auto}
 .onlpop .onpop-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:4px 8px 6px}
 .onlpop .onrow{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:5px 8px;border-radius:6px;white-space:nowrap}
