@@ -49,8 +49,10 @@ signal_status(){
 # if the convert aborts (error / Ctrl-C) AFTER we told the panel "converting…" but BEFORE the installer handoff,
 # clear that marker so the node's real (down/stale) status shows instead of a stuck "converting…".
 CONVERT_SIGNALED=""; CONVERT_HANDOFF=""; _convert_aborted=""
-_convert_abort(){ [ -n "$_convert_aborted" ] && return; _convert_aborted=1
-  [ -n "$CONVERT_SIGNALED" ] && [ -z "$CONVERT_HANDOFF" ] && signal_status ""; }
+_convert_abort(){ local rc=$?                       # MUST preserve the exit status: an EXIT trap's last command
+  [ -n "$_convert_aborted" ] && return $rc; _convert_aborted=1   # would otherwise become the script's exit code (broke convert.sh --check)
+  [ -n "$CONVERT_SIGNALED" ] && [ -z "$CONVERT_HANDOFF" ] && signal_status ""
+  return $rc; }
 trap _convert_abort EXIT INT TERM
 
 # download the turn-proxy server binary: GitHub direct first, then any SWG_TURN_MIRROR proxy prefix(es). Opt-in
