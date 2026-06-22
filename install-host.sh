@@ -243,11 +243,11 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
         echo "  Press $(b Enter) to manage $(col "$C_BLUE" 'all orphans above') and continue"
         echo "  Enter interface $(b names) (space-separated) to manage or migrate specific ones"
         [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
-        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
+        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
       else                                                        # no orphans → finish or add more
         echo "  Press $(b Enter) to finish with this node's interfaces"
         [ -n "$dk" ] && echo "  Enter interface $(b names) to migrate one from the docker node"
-        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
+        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
       fi
       if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping this node's interfaces"; sel=($mine $avail); break; fi
       pick="$(echo $pick)"
@@ -260,7 +260,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
         [ -n "$mine" ] || { warn "this node has no interfaces yet — manage one or type 'new'"; continue; }
         sel=($mine); break
       fi
-      [ "$pick" = new ] && { spec_iface; continue; }
+      { [ "$pick" = new ] || [ "$pick" = n ]; } && { spec_iface; continue; }
       xfer=""; bad=""
       for n in $pick; do _in "$n" "$mine" && continue; _in "$n" "$avail" && continue; _in "$n" "$dk" && { xfer="$xfer $n"; continue; }; bad="$bad $n"; done
       [ -n "$bad" ] && { warn "not found:$bad — pick from the lists, or 'new'"; continue; }

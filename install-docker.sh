@@ -635,11 +635,11 @@ manage_node_ifaces(){
       echo "  Press $(b Enter) to onboard $(col "$C_BLUE" 'all available orphans above') and continue"
       echo "  Enter interface $(b names) (space-separated) to onboard or migrate specific ones"
       [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
-      printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
+      printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
     else                                            # no orphans (maybe kernel/bm/own) → finish or migrate
       echo "  Press $(b Enter) to finish with this node's interfaces"
       { [ -n "$kern" ] || [ -n "$bm" ]; } && echo "  Enter interface $(b names) to migrate one onto this node"
-      printf "  Enter %s to create another interface: " "$(col "$C_BLUE" new)"
+      printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
     fi
     if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping current interfaces"; break; fi
     if [ -z "$(echo $pick)" ]; then                # Enter → onboard all docker orphans + proceed (kernel needs explicit confirm)
@@ -651,7 +651,7 @@ manage_node_ifaces(){
       [ -n "$(current_node_ifaces)" ] || { warn "this node has no interfaces yet — onboard one or type 'new'"; echo; continue; }
       break
     fi
-    if [ "$pick" = new ]; then echo; add_node_iface; echo; continue; fi
+    if [ "$pick" = new ] || [ "$pick" = n ]; then echo; add_node_iface; echo; continue; fi
     xfer=""; kpick=""; dpick=""; bad=""
     for n in $pick; do
       _in "$n" "$mine" && continue
