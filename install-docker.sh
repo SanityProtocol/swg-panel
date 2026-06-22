@@ -505,9 +505,9 @@ taken_iface_names(){
     { [ -d /etc/amnezia ] && find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null
       printf '%s\n' /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf
     } | while read -r c; do [ -f "$c" ] && basename "$c" .conf; done
-  } 2>/dev/null | sort -u
+  } 2>/dev/null | sort -u || true   # must end 0 (set -euo pipefail): a non-file glob makes the inner while exit 1
 }
-v_iface_free(){ v_iface "$1" || return 1; taken_iface_names | grep -qx "$1" && return 1; return 0; }   # valid name AND not already taken
+v_iface_free(){ v_iface "$1" || return 1; if taken_iface_names | grep -qx "$1"; then return 1; fi; return 0; }   # valid name AND not already taken
 # add one interface to NODE_IFACES (seeding the single bootstrap into the list first, so the entrypoint
 # — which ignores NODE_IFACE once NODE_IFACES is set — doesn't drop it).
 add_node_iface(){
