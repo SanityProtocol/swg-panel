@@ -1015,6 +1015,7 @@ function NodeDetail({ node: rawName }) {
   const dname = node.name || name;
 
   const live = Store.recon.nodeStatus[name] === "live";
+  const blocked = !live || !!nrec.proc_status;   // node down or mid convert/re-install → only recovery actions (rotate key, delete) stay enabled
   const snap = Store.stats[name];
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === name));
   const onl = here.filter(p => p.targets.some(t => t.node === name && t.online)).length;
@@ -1030,13 +1031,13 @@ function NodeDetail({ node: rawName }) {
       <div class="dh-ver">
         ${nrec.version ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? "Node is running a newer version than the panel — update the panel to catch up" : ""}>v${nrec.version}</span>` : null}
         ${nrec.updating ? html`<span class="livepill upd-busy">updating… <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
-          : nrec.outdated ? html`<button class="livepill updpill" onClick=${() => updateNode(nrec)} title="Update this node">update node to <b>${nrec.latest || "?"}</b></button>`
+          : nrec.outdated ? html`<button class="livepill updpill" disabled=${blocked} onClick=${() => updateNode(nrec)} title=${blocked ? "Unavailable while the node is down / converting" : "Update this node"}>update node to <b>${nrec.latest || "?"}</b></button>`
           : (Store.nodeUpdFlash && Store.nodeUpdFlash.id === nrec.id && Date.now() < Store.nodeUpdFlash.until)
           ? html`<span class="livepill upd-uptodate" title="This node is on the latest version"><${Ic} i="check"/> up to date</span>`
-          : html`<button class="iconbtn" title="Check for updates" onClick=${e => checkForUpdate(e, nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
+          : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Check for updates"} onClick=${e => checkForUpdate(e, nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
-        <button class="iconbtn" title="Edit node" onClick=${() => openNodeEdit(nrec)}><${Ic} i="pencil"/></button>
-        <button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>
+        <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit node"} onClick=${() => openNodeEdit(nrec)}><${Ic} i="pencil"/></button>
+        <button class="iconbtn" title="Rotate token (re-enroll / re-install)" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>
         <button class="iconbtn danger" title=${nrec.removing ? "Force remove node" : "Remove node"} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
       </div>
     </div>
@@ -1066,7 +1067,7 @@ function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}
-        actions=${html`<button class="btn btn-mini" onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load new interface</button>`}>
+        actions=${html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load new interface</button>`}>
       ${(() => {
         // creating ifaces know their protocol → real wg/awg tag; onboarding doesn't yet → "load"
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
@@ -1106,7 +1107,7 @@ function NodeDetail({ node: rawName }) {
     <//>
 
     ${snap && ((snap.turn_proxies || []).length || nrec.turn_manage || (nrec.turn_onboarding || []).length) ? html`<${Panel} icon="relay" title="Turn proxies" tone="turn" count=${(snap.turn_proxies || []).length}
-        actions=${nrec.turn_manage ? html`<button class="btn btn-mini" onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
+        actions=${nrec.turn_manage ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
       <div class="ifgrid">${(snap.turn_proxies || []).map(tp => html`<${TurnCard} node=${name} tp=${tp} nrec=${nrec} metas=${meta}/>`)}
       ${Object.entries(nrec.turn_pending || {}).filter(([s]) => !(snap.turn_proxies || []).some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { service: s })}><${Ic} i="x"/></button></div></div>`)}
       ${(nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`)}
@@ -1127,6 +1128,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const dname = nrec.name || node;
   const meta = Store.ifaceMeta(node, iface);
   const live = Store.recon.nodeStatus[node] === "live";
+  const blocked = !live || !!nrec.proc_status;   // node down or mid convert/re-install → only the per-peer QR (view config) stays enabled
   // a pending listen-port change: desired (panel) != reported (node) until the node converges
   const updating = !!(meta && meta.desired_port && meta.listen_port && Number(meta.desired_port) !== Number(meta.listen_port));
   const type = (meta && meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
@@ -1165,7 +1167,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
           actions=${html`<${Fragment}>${op && op.phase === "busy"
             ? html`<span class="tg-busy warn"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>`
-            : html`<${Fragment}>${op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<span class="tg-busy del" title=${op.err || ""}><${Ic} i="err"/>failed</span>` : null}<button class="btn btn-mini" title=${idown ? "Bring this interface up on the node" : "Bounce this interface's service on the node"} onClick=${() => startOrRestartIface(node, iface, idown ? "start" : "restart")}><${Ic} i="refresh"/> ${idown ? "Start interface" : "Restart service"}</button><//>`}<button class="btn btn-mini" onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
+            : html`<${Fragment}>${op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<span class="tg-busy del" title=${op.err || ""}><${Ic} i="err"/>failed</span>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : (idown ? "Bring this interface up on the node" : "Bounce this interface's service on the node")} onClick=${() => startOrRestartIface(node, iface, idown ? "start" : "restart")}><${Ic} i="refresh"/> ${idown ? "Start interface" : "Restart service"}</button><//>`}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${meta.address || "—"}</span></div>
@@ -1186,8 +1188,8 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
-        actions=${html`<button class="btn btn-mini" onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> Add peer</button>`}>
-      <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q}/>
+        actions=${html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openCreatePeer({ node, iface, lock: true })}><${Ic} i="plus"/> Add peer</button>`}>
+      <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>
     <//>
 
     ${orphans.length ? html`<${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}
@@ -1760,7 +1762,7 @@ function StoreOffBanner() {
 // The shared peers grid — one row per (peer, target) deployment. Reused by the Peers screen and
 // the interface-detail screen so they're identical. `agg` adds the Server/IF column; `shownByPeer`
 // drives the "+N other deployments" badge; row click opens the peer-view popup.
-function PeerGrid({ rows, agg, node, iface, shownByPeer, q }) {
+function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked }) {
   return html`<div class="tablewrap"><table class="peergrid">
     <thead><tr><th>Status</th>${agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null}<th>User</th><th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
     <tbody>
@@ -1784,10 +1786,10 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q }) {
           <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(obs ? obs.rx_bytes : 0)} <span class="up">↑ ${fmtBytes(obs ? obs.tx_bytes : 0)}</span></span></td>
           <td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
             <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>
-            <button class="iconbtn" title="Edit peer" onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
+            <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit peer"} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
             ${p.unassigned
-              ? html`<button class="iconbtn danger" title="Delete peer" onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
-              : html`<button class="iconbtn danger" title="Unassign peer" onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
+              ? html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Delete peer"} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
+              : html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Unassign peer"} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
             <${RowError} k=${"peer:" + p.id}/>
           </td></tr>`;
       }) : html`<tr><td colspan=${agg ? 9 : 8} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}

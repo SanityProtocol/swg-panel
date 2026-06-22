@@ -90,6 +90,7 @@ h1,h2,h3{font-family:var(--sans)}
 .panel-head .btn-mini:hover{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
 .btn-mini.warn:hover{color:var(--dangling);border-color:var(--dangling)}
 .btn:disabled{opacity:.45;cursor:not-allowed;transform:none;filter:none}
+.iconbtn:disabled,.livepill:disabled{opacity:.35;cursor:not-allowed;pointer-events:none}   /* down/converting node → only recovery actions stay live */
 
 /* ───── view + screens ───── */
 .view{max-width:1260px;margin:0 auto;padding:18px 22px 64px}
