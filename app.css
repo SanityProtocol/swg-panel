@@ -903,6 +903,11 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .peergrid .xfer{font-size:11.5px;color:var(--dim);white-space:nowrap} .peergrid .xfer .up{color:var(--ready)}
 .peergrid td[data-label="Rate"],.peergrid td[data-label="Total"],.peergrid th{white-space:nowrap}   /* keep 4-digit rates (1023 MB/s) on one line */
 .peergrid td.rowacts{text-align:right;white-space:nowrap}
+/* a long title / user name must not widen the table past its wrap (which clips the row actions): truncate
+   with … (fits the common case) and let the wrap scroll-x as a safety net so the actions are NEVER clipped. */
+.tablewrap:has(>table.peergrid){overflow-x:auto;overflow-y:hidden}
+.peergrid td.c-name>b,.peergrid td.c-name>span{display:inline-block;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+.peergrid td.usercell .namecell>span{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* fleet-wide column: server name (left) + interface tag (right) on one line */
 .peergrid .srvcell{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
 .peergrid .srv-name{font-family:var(--mono);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
