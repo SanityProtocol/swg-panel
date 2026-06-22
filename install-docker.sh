@@ -314,6 +314,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   done
   EXIST_TLS="$(sed -n 's/^TLS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1)"   # for the 'reuse' TLS option (not auto-applied)
   info "Existing docker install detected in $INSTALL_DIR — keeping your .env + ./data (token, login, interfaces). To start fresh, uninstall first."
+  if ! $DRYRUN && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
+    # node re-install: flag the panel (best-effort; a master's swg-panel:8443 isn't reachable from here)
+    # and drop the keypair backups so swg-noded re-harvests the current confs on its next sync
+    _ins=""; [ "${TLS_VERIFY:-no}" = yes ] || _ins="-k"
+    curl -fsS $_ins --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+      --data '{"state":"reinstalling"}' "${PANEL_URL%/}/api/node/proc-status" >/dev/null 2>&1 || true
+    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
+  fi
 fi
 
 # ───────────────────────── per-profile requirements ─────────────────────────
