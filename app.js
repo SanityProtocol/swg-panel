@@ -607,14 +607,14 @@ function turnConnRows(nodeId, iface, connectIp) {
 }
 // shared online-breakdown bubble: a Live-linked header, top-10 rows (already handshake-sorted), an
 // optional "n orphan peers" line, and a "view all" link past 10. trigger: (count)=>vnode.
-function OnlPop({ title, rows, peer, orphans, trigger, cls }) {
+function OnlPop({ title, rows, peer, orphans, orphHref, trigger, cls }) {
   const renderRow = peer
     ? r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.iface ? " · " + r.iface : ""}${r.ip ? " · " + r.ip : ""}</span></div>`
     : r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.name}</span><span class="on-ct">${r.count} <span class="faint">peer${r.count > 1 ? "s" : ""}</span></span></div>`;
   return html`<${Popover} cls=${"onlinetag " + (cls || "")} trigger=${trigger(rows.length)}>
     <a class="onpop-h onpop-link" href="#/connections" onClick=${e => e.stopPropagation()}>${title} · ${rows.length} →</a>
     ${rows.length ? rows.slice(0, 10).map(renderRow) : html`<div class="onrow faint">${peer ? "no peers online" : "no one online"}</div>`}
-    ${orphans ? html`<div class="onrow orphrow"><span class="on-name">${orphans} orphan peer${orphans > 1 ? "s" : ""}</span><span class="on-user faint">unmanaged</span></div>` : null}
+    ${orphans ? html`<a class="onpop-orph" href=${orphHref || "#/connections"} onClick=${e => e.stopPropagation()}>${orphans} unmanaged orphan peer${orphans > 1 ? "s" : ""}</a>` : null}
     ${rows.length > 10 ? html`<a class="onpop-viewall" href="#/connections" onClick=${e => e.stopPropagation()}>view all ${rows.length} connections →</a>` : null}
   </${Popover}>`;
 }
@@ -624,8 +624,8 @@ function OnlineUsersTag({ nodeId, cls, trigger }) {
     trigger=${trigger || (c => html`<span class="dot"></span><b class=${"oncount" + (c ? " on" : "")}>${c}</b> online`)}/>`;
 }
 // "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
-function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans }) {
-  return html`<${OnlPop} peer title="Online peers" rows=${onlinePeerRows(nodeId, iface)} orphans=${orphans} cls=${cls}
+function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans, orphHref }) {
+  return html`<${OnlPop} peer title="Online peers" rows=${onlinePeerRows(nodeId, iface)} orphans=${orphans} orphHref=${orphHref} cls=${cls}
     trigger=${trigger || (c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>${total != null ? " / " + total : ""} online`)}/>`;
 }
 
@@ -1049,8 +1049,8 @@ function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
                   <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length
-                    ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph}
-                        trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>`}/>${orph ? html` <span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>(${orph})</span>` : null}`
+                    ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}
+                        trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>(${orph})</span>` : null}`}/>`
                     : (orph ? html`<span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>${orph}</span>` : html`<span class="faint">none</span>`)}</span></div>
                 </div></a>`;
             })}${pcards}</div>`; })()}
