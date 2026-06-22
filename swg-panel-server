@@ -966,7 +966,7 @@ def api(method, path, qs, body, deps):
                         "health": snap.get("health"),     # per-node load/mem/disk/uptime (additive)
                         "health_history": hh,             # recent cpu/mem/disk % series (RRD-style ring)
                         "health_live": hl,                # raw per-sync samples for the LIVE view (5s)
-                        "kind": snap.get("kind"),               # "docker" | "baremetal"
+                        "kind": snap.get("kind") or c.get("kind"),   # "docker" | "baremetal" — fall back to the last-reported kind so a DOWN node still knows its method (Recover)
                         "net_mode": snap.get("net_mode") or "host",   # docker net mode: host | bridge (bridge → created-iface ports need publishing)
                         "turn_manage": bool(snap.get("turn_manage")),  # can the panel edit/restart this node's turn-proxies?
                         "ips": snap.get("node_ips") or [],             # the node's own IPs — candidates for a per-interface egress IP
@@ -2094,6 +2094,9 @@ class Handler(BaseHTTPRequestHandler):
         snap = body.get("snapshot") or {}
         Handler.deps.setdefault("node_snaps", {})[nid] = snap
         Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
+        if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
+            node["kind"] = snap["kind"]
+            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
         if snap and node.get("proc_status"):              # the node checked back in
             cur_state = (node.get("proc_status") or {}).get("state")
             tgt = {"converting-bare": "baremetal", "converting-docker": "docker"}.get(cur_state)
