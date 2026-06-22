@@ -309,7 +309,11 @@ a.ifgroup-head:hover b{color:var(--brand)}
 .rowerr-x{background:none;border:none;color:var(--dangling);cursor:pointer;font-size:14px;line-height:1;padding:0 0 0 2px;opacity:.7}
 .rowerr-x:hover{opacity:1}
 /* multi-target picker (new peer) */
-.targetpick{display:flex;flex-direction:column;gap:6px}
+.targetpick{display:flex;flex-direction:column;gap:6px;max-height:478px;overflow-y:auto;padding-right:3px;scrollbar-width:thin;scrollbar-color:var(--line-solid) transparent}   /* ~10 rows, then scroll */
+.targetpick::-webkit-scrollbar{width:10px}
+.targetpick::-webkit-scrollbar-track{background:transparent}
+.targetpick::-webkit-scrollbar-thumb{background:var(--line-solid);border-radius:8px;border:2px solid var(--surface)}
+.targetpick::-webkit-scrollbar-thumb:hover{background:var(--dim)}
 .targetopt{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:7px 10px;background:var(--surface-2)}
 .targetopt.sel{border-color:var(--line-solid)}
 .targetopt .topt-main{display:flex;align-items:center;gap:9px;flex:1;cursor:pointer;min-width:0}
@@ -320,6 +324,7 @@ a.ifgroup-head:hover b{color:var(--brand)}
 .targetopt .nm{font-weight:500;color:var(--ink)}
 .targetopt .tp{font-size:11px;color:var(--faint)}
 .targetopt .topt-ip{width:130px;flex:none;padding:5px 8px;font-size:12.5px}
+.targetopt .topt-ip.existing{display:inline-flex;align-items:center;justify-content:flex-end;font-family:var(--mono);color:var(--ink-2);text-align:right}   /* already-deployed address, read-only */
 
 /* ───── node pips (redundancy signature) ───── */
 .pips{display:inline-flex;gap:5px;align-items:center}

@@ -1911,7 +1911,7 @@ function PeerLine({ peer }) {
       <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(peer)}><${Ic} i="qr"/></button>
       <button class="iconbtn" title="Download config" onClick=${download}><${Ic} i="download"/></button>
       <button class="iconbtn" title="Edit config" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/></button>
-      <button class="iconbtn" title="Copy to another interface" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/></button>
+      <button class="iconbtn" title="Manage targets — deploy to or remove from interfaces" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/></button>
       <button class="iconbtn danger" title="Delete peer (revoke + remove)" onClick=${() => openConfirm({ title: "Delete peer", confirmLabel: "Delete", danger: true, body: "This revokes access immediately and removes the peer from every interface it's deployed on. This can't be undone.", onConfirm: () => deleteAssignedPeer(peer) })}><${Ic} i="trash"/></button>
     </div>
     <${RowError} k=${"peer:" + peer.id}/>
@@ -2078,7 +2078,7 @@ function UserTargetCard({ peer, t }) {
       <span class="addr" title=${peer.pubkey}>${peer.pubkey.slice(0, 14)}…</span>
       <span class="grow"></span>
       <button class="btn btn-mini" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/> Config</button>
-      <button class="btn btn-mini" onClick=${() => openAddTarget(peer)}>Copy → iface</button>
+      <button class="btn btn-mini" onClick=${() => openAddTarget(peer)}>Targets</button>
       ${peer.targets.length > 1 ? html`<${DangerButton} label="Remove here" confirm="Remove here?" onConfirm=${() => mutate({
         key, patch: s => { const pp = s.roster.peers[peer.id]; if (pp) pp.targets = pp.targets.filter(x => !(x.node === t.node && x.iface === t.iface)); },
         call: () => api.peerRemoveTarget({ peer_id: peer.id, node: t.node, iface: t.iface }),
@@ -2138,7 +2138,7 @@ function PeerCard({ peer }) {
     <div class="deploys">
       ${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t}/>`)}
       <div class="deploy adder" onClick=${() => openAddTarget(peer)}>
-        <div class="inner"><div class="ring"><${Ic} i="plus"/></div><div>Copy to another interface</div><div class="faint" style="font-size:11px">same key · new endpoint</div></div>
+        <div class="inner"><div class="ring"><${Ic} i="plus"/></div><div>Manage targets</div><div class="faint" style="font-size:11px">deploy or remove · same key</div></div>
       </div>
     </div>
   </div>`;
@@ -2772,7 +2772,7 @@ function allTargets() {
 // Reusable (node,iface) picker with per-target IP allocation. `exclude` is a Set of tkeys
 // to hide (interfaces a user is already on); `onChange` receives the chosen target list
 // [{node,iface,ip,ipHint}]. Used by the create-peer, create-user and add-peers flows.
-function TargetPicker({ prefill, exclude, onChange }) {
+function TargetPicker({ prefill, exclude, onChange, initial }) {
   const all = useMemo(allTargets, [Store.describe]);
   // locked: launched from one interface — show only that target, no toggling, just the IP.
   const locked = !!(prefill && prefill.lock && prefill.node && prefill.iface);
@@ -2791,8 +2791,16 @@ function TargetPicker({ prefill, exclude, onChange }) {
     else allocIp(node, iface);
   };
   const setIp = (k, v) => setSel(s => s[k] ? { ...s, [k]: { ...s[k], ip: v } } : s);
+  const seeded = useRef(false);
+  useEffect(() => {                                  // seed already-deployed targets (their assigned IP, read-only)
+    if (seeded.current || !initial || !initial.length || !all.length) return;
+    seeded.current = true;
+    const seed = {};
+    initial.forEach(t => { seed[tkey(t.node, t.iface)] = { node: t.node, iface: t.iface, ip: String(t.ip || "").split("/")[0], existing: true }; });
+    setSel(seed);
+  }, [all, initial]);
   useEffect(() => {                                  // preselect from prefill once targets are known
-    if (!targets.length || Object.keys(sel).length) return;
+    if (!targets.length || Object.keys(sel).length || (initial && initial.length)) return;
     if (prefill && prefill.node && prefill.iface) allocIp(prefill.node, prefill.iface);
     else if (prefill && prefill.node) targets.filter(t => t.node === prefill.node).slice(0, 1).forEach(t => allocIp(t.node, t.iface));
   }, [all]);
@@ -2806,7 +2814,9 @@ function TargetPicker({ prefill, exclude, onChange }) {
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
         <span class="swatch" style=${"background:" + Store.nodeColor(t.node)}></span>
         <span class="nm">${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></label>
-      ${s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>` : null}
+      ${s ? (s.existing
+        ? html`<span class="topt-ip existing" title="Current address — already deployed here">${s.ip || "—"}</span>`
+        : html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>`) : null}
     </div>`;
   })}</div>`;
 }
@@ -2954,12 +2964,10 @@ function CreatePeerSheet({ prefill }) {
 function openAddTarget(peer, back) { openModal(html`<${AddTargetSheet} peer=${peer} back=${back || closeModal}/>`); }
 function AddTargetSheet({ peer, back }) {
   back = back || closeModal;
-  const [iface, setIface] = useState(""); const [node, setNode] = useState("");
-  const [ip, setIp] = useState(""); const [ipHint, setIpHint] = useState("");
+  const [chosen, setChosen] = useState([]);
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  // source config (holds the client's private key) to rebuild the copy's QR: session first, then
-  // the panel's stored copy when store_configs is on — so copy works across sessions, not just the
-  // one the peer was created in. Any target's config carries the same key.
+  // source config (holds the client's private key) so NEW targets can rebuild a QR: session first,
+  // then the panel's stored copy when store_configs is on. Any target's config carries the same key.
   const [srcConf, setSrcConf] = useState(() => anySessionConf(peer.pubkey));
   const [confLoaded, setConfLoaded] = useState(() => !!anySessionConf(peer.pubkey) || !Store.storeConfigs);
   useEffect(() => {
@@ -2972,69 +2980,55 @@ function AddTargetSheet({ peer, back }) {
     return () => { ok = false; };
   }, [peer.id]);
 
-  const have = new Set(peer.targets.map(t => tkey(t.node, t.iface)));
-  // server id -> the interfaces on it this peer isn't deployed to yet; servers with none drop out.
-  const avail = useMemo(() => {
-    const m = {};
-    Object.keys(Store.describe).forEach(n => {
-      const free = Object.keys(Store.describe[n] || {}).filter(i => !have.has(tkey(n, i)));
-      if (free.length) m[n] = free;
-    });
-    return m;
-  }, [Store.describe]);
-  const availNodes = Object.keys(avail);
-  const none = availNodes.length === 0;             // peer already lives on every interface, everywhere
-  const ifaceOpts = node && avail[node] ? avail[node] : [];
+  const initial = useMemo(() => peer.targets.map(t => ({ node: t.node, iface: t.iface, ip: t.ip })), [peer.id]);
+  const haveKeys = new Set(peer.targets.map(t => tkey(t.node, t.iface)));
+  const chosenKeys = new Set(chosen.map(c => tkey(c.node, c.iface)));
+  const added = chosen.filter(c => !haveKeys.has(tkey(c.node, c.iface)));         // newly checked
+  const removed = peer.targets.filter(t => !chosenKeys.has(tkey(t.node, t.iface))); // unchecked existing
+  const badIp = added.some(c => !c.ip || !V.ipv4(String(c.ip).split("/")[0]));
+  const nochange = !added.length && !removed.length;
 
-  useEffect(() => {                                  // keep a valid server selected (server first)
-    if (none) { if (node) setNode(""); return; }
-    if (!avail[node]) setNode(availNodes[0]);
-  }, [availNodes.join("|")]);
-  useEffect(() => {                                  // keep a valid interface for the chosen server
-    const opts = avail[node] || [];
-    if (!opts.includes(iface)) setIface(opts[0] || "");
-  }, [node, availNodes.join("|")]);
-  useEffect(() => {                                  // then pick a free address for server+interface
-    if (!node || !iface) { setIp(""); setIpHint(""); return; }
-    setIp(""); setIpHint("finding a free address on " + Store.nodeName(node) + "…");
-    api.nextIp([node], iface).then(r => { if (r.ok) { setIp(String(r.data.next_ip).split("/")[0]); setIpHint("Next free address."); } else { setIp(""); setIpHint(r.error || "couldn't pick an address"); } });
-  }, [node, iface]);
-
-  const ipBad = ip.trim() && !V.ipv4(ip.trim().split("/")[0]);
-  const deploy = async () => {
-    if (!node) return setMsg({ k: "err", t: "Pick a server." });
-    if (!ip.trim()) return setMsg({ k: "err", t: "No address available." });
-    if (!V.ipv4(ip.trim().split("/")[0])) return setMsg({ k: "err", t: "Address must be a valid IPv4." });
-    setBusy(true); setMsg({ k: "work", t: "deploying to " + Store.nodeName(node) + "…" });
-    const info = Store.ifaceMeta(node, iface);
-    const ipClean = ip.trim().split("/")[0];
-    let conf = null;
-    if (srcConf) { const s = parseFullConf(srcConf); conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); }
-    const body = { peer_id: peer.id, target: { node, iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" } };
-    if (Store.storeConfigs && conf) body.config = conf;
-    const r = await api.peerAddTarget(body);
-    if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: "Failed: " + (r.error || r.code || "") }); }
-    if (conf) (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(node, iface)] = conf;
-    toast("Copied to " + Store.nodeName(node) + "/" + iface + ".", "ok"); back(); await Store.poll();
+  const doSave = async () => {
+    setBusy(true); setMsg({ k: "work", t: "applying…" });
+    const fails = [];
+    for (const t of added) {
+      const info = Store.ifaceMeta(t.node, t.iface);
+      const ipClean = String(t.ip || "").split("/")[0];
+      let conf = null;
+      if (srcConf) { const s = parseFullConf(srcConf); conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); }
+      const body = { peer_id: peer.id, target: { node: t.node, iface: t.iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" } };
+      if (Store.storeConfigs && conf) body.config = conf;
+      const r = await api.peerAddTarget(body);
+      if (r.ok) { if (conf) (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(t.node, t.iface)] = conf; }
+      else fails.push(Store.nodeName(t.node) + "/" + t.iface + " (add)");
+    }
+    for (const t of removed) {
+      const r = await api.peerRemoveTarget({ peer_id: peer.id, node: t.node, iface: t.iface });
+      if (!r.ok) fails.push(Store.nodeName(t.node) + "/" + t.iface + " (remove)");
+    }
+    setBusy(false);
+    if (fails.length) { setMsg({ k: "err", t: "Some changes failed: " + fails.join(", ") }); return false; }
+    toast("Peer targets updated.", "ok"); await Store.poll(); return true;
+  };
+  const save = () => {
+    if (nochange) { back(); return; }
+    if (badIp) return setMsg({ k: "err", t: "A newly-added target has an invalid address." });
+    if (removed.length) {
+      pushModal(html`<${ConfirmSheet} title=${"Remove from " + removed.length + " interface" + (removed.length > 1 ? "s" : "") + "?"} confirmLabel="Remove & apply" danger=${true}
+        body=${"You unchecked " + removed.length + " interface" + (removed.length > 1 ? "s" : "") + " this peer is currently deployed on (" + removed.map(t => Store.nodeName(t.node) + "/" + t.iface).join(", ") + "). Saving removes the peer from " + (removed.length > 1 ? "them" : "it") + " — the live tunnel drops immediately and the client can no longer connect through " + (removed.length > 1 ? "those interfaces" : "that interface") + ". This can't be undone."}
+        onConfirm=${async () => { if (await doSave()) { closeModal(); back(); } }}/>`);
+    } else doSave().then(ok => { if (ok) back(); });
   };
 
-  return html`<${Sheet} title=${"Copy peer to another interface"} onClose=${back}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button><button class="btn btn-primary" disabled=${busy || none || !confLoaded} onClick=${deploy}>Deploy</button></>`}>
-    ${none ? html`<div class="notice"><${Ic} i="info"/><span>This peer already exists on all the available interfaces across the servers.</span></div>`
+  return html`<${Sheet} title=${"Peer targets"} onClose=${back}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button><button class="btn btn-primary" disabled=${busy || !confLoaded || nochange} onClick=${save}>${removed.length ? "Save changes" : "Deploy"}</button></>`}>
+    ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : html`<${Fragment}>
-        ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
-          : !srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
-              ? "This peer was created before configs were stored, so its private key is gone here — the copy is added with the same key + PSK, but a fresh QR / config can't be generated. Re-issue (rotate keys) to get a downloadable config."
-              : "store_configs is off, so the client's private key isn't kept — a fresh QR can't be shown unless you copy right after creating. The target is still added with the same key + PSK."}</span></div>` : null}
-        <div class="field"><label>Server</label>
-          <select class="selwrap" value=${node} onChange=${e => setNode(e.target.value)}>
-            ${availNodes.map(n => html`<option value=${n}>${Store.nodeName(n)}</option>`)}
-          </select></div>
-        <div class="field"><label>Interface</label>
-          <select class="selwrap" value=${iface} onChange=${e => setIface(e.target.value)}>
-            ${ifaceOpts.map(i => html`<option value=${i}>${i}</option>`)}
-          </select></div>
-        <div class="field"><label>Address</label><input class=${ipBad ? "bad" : ""} value=${ip} onInput=${e => setIp(e.target.value)}/><div class=${"hint" + (ipBad ? " err" : "")}>${ipBad ? "Must be a valid IPv4 address." : ipHint}</div></div>
+        ${added.length && !srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
+            ? "This peer's private key isn't available here, so newly-added targets get the same key + PSK but a fresh QR / config can't be generated. Re-issue (rotate keys) for a downloadable config."
+            : "store_configs is off, so the client's private key isn't kept — new targets get the same key + PSK, but a fresh QR can't be shown."}</span></div>` : null}
+        <div class="field"><label>Targets <span class="faint" style="text-transform:none;letter-spacing:0">— check to deploy, uncheck to remove</span></label>
+          <${TargetPicker} initial=${initial} onChange=${setChosen}/></div>
         ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
       </>`}
   <//>`;
@@ -3055,7 +3049,7 @@ function PeerViewSheet({ pid, node, iface }) {
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, () => openPeerView(p.id, node, iface))}><${Ic} i="qr"/> QR</button>
-      <button class="btn btn-ghost" onClick=${() => openAddTarget(p, () => openPeerView(p.id, node, iface))}><${Ic} i="copy"/> Copy to interface</button>
+      <button class="btn btn-ghost" onClick=${() => openAddTarget(p, () => openPeerView(p.id, node, iface))}><${Ic} i="copy"/> Targets</button>
       <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null, () => openPeerView(p.id, node, iface))}><${Ic} i="pencil"/> Edit</button>
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p, () => openPeerView(p.id, node, iface))}>Unassign</button>`}<//>`}>
@@ -3192,7 +3186,7 @@ function EditPeerSheet({ peer, focus, done, flash }) {
   };
 
   return html`<${Sheet} title=${"Edit peer"} onClose=${done}
-    foot=${html`<${Fragment}>${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, () => openEditPeer(peer, focus, done))}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Copy to interface</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    foot=${html`<${Fragment}>${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, () => openEditPeer(peer, focus, done))}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
