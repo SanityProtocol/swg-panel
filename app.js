@@ -3292,6 +3292,13 @@ function App() {
     if (el && v.panel) {        // panel version only — the host's awg/wg/docker versions aren't shown
       el.innerHTML = `<b>${esc(v.panel)}</b>`;
     }
+    const ht = $("#host-tport");      // how the PANEL itself is deployed (docker / bare-metal)
+    if (ht && Store.env && ("docker" in Store.env)) {
+      const dk = !!Store.env.docker;
+      ht.className = "tport " + (dk ? "docker" : "baremetal");
+      ht.textContent = dk ? "docker" : "bare-metal";
+      ht.hidden = false;
+    }
     const slot = $("#updslot");
     if (slot) {
       let body;
