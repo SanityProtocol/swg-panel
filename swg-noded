@@ -1092,7 +1092,8 @@ def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
     return (verr, tp)   # keep the record even if down, so the panel shows it (greyed)
 
 _DTURN_RUN = {"at": 0.0, "set": set()}
-_TURN_INSTALLING = set()   # services whose container is being downloaded/(re)created RIGHT NOW → "installing" on the panel
+_TURN_INSTALLING = set()   # services whose container is being downloaded/(re)created RIGHT NOW → "installing"
+_TURN_FAILED = set()       # services whose last install/run attempt errored → "install failed" on the panel
 def _dturn_attach_running(tps):
     nowt = time.time()
     if nowt - _DTURN_RUN["at"] >= 15:
@@ -1100,8 +1101,12 @@ def _dturn_attach_running(tps):
         _DTURN_RUN["set"] = set((r.stdout or "").split()); _DTURN_RUN["at"] = nowt
     for t in tps:
         if t.get("service"):
-            t["running"] = _turn_cname(t["service"]) in _DTURN_RUN["set"]
-            t["installing"] = t["service"] in _TURN_INSTALLING
+            svc = t["service"]
+            t["running"] = _turn_cname(svc) in _DTURN_RUN["set"]
+            failed = (svc in _TURN_FAILED) and not t["running"]
+            t["failed"] = failed
+            # docker: any not-running, not-failed proxy is mid/pending install → "installing" (never a bare "down")
+            t["installing"] = (svc in _TURN_INSTALLING) or (not t["running"] and not failed)
 
 def _dturn_ensure(tp):   # make the container match the record entry (download binary if missing, run if not up)
     svc = tp.get("service")
@@ -1109,7 +1114,7 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
         return
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
     if (r.stdout or "").strip() == "true":
-        _TURN_INSTALLING.discard(svc)
+        _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc)
         return
     _TURN_INSTALLING.add(svc)   # downloading / (re)creating now → the panel shows it as "installing"
     try:
@@ -1118,12 +1123,20 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
             if derr:
                 print("swg-noded: turn %s binary download failed: %s" % (svc, derr), flush=True)
         if not os.path.exists(_turn_bin_local(svc)):   # no binary (download timed out) → don't create a broken container; the reconcile retries
+            _TURN_FAILED.add(svc)
             print("swg-noded: turn %s has no binary yet — will retry on the next pass" % svc, flush=True)
             return
         rr = _dturn_run(tp)
         if rr.returncode != 0:
+            _TURN_FAILED.add(svc)
             print("swg-noded: turn %s 'docker run' failed: %s" % (svc, (rr.stderr or rr.stdout or "").strip()[:200]), flush=True)
+            return
+        verr = _dturn_verify(svc)
+        if verr:
+            _TURN_FAILED.add(svc)
+            print("swg-noded: turn %s started but didn't stay up: %s" % (svc, verr), flush=True)
         else:
+            _TURN_FAILED.discard(svc)
             print("swg-noded: turn %s container (re)started (%s)" % (svc, _turn_cname(svc)), flush=True)
     finally:
         _TURN_INSTALLING.discard(svc)
@@ -1282,13 +1295,16 @@ def apply_turn(turn, turn_onboard):
                     with contextlib.suppress(OSError): os.remove(_turn_ver_path(svc))
                     derr = _dturn_download(svc, tp["owner"])
                     if derr:
-                        fail(svc, derr); continue
+                        _TURN_FAILED.add(svc); fail(svc, derr); continue
                     r = _dturn_run(tp)
                     if r.returncode != 0:
-                        fail(svc, (r.stderr or "container start failed").strip()[:120]); continue
+                        _TURN_FAILED.add(svc); fail(svc, (r.stderr or "container start failed").strip()[:120]); continue
                     rec[svc] = tp; changed = True
                     verr = _dturn_verify(svc)
-                    fail(svc, verr) if verr else good(svc, "rei:" + svc)
+                    if verr:
+                        _TURN_FAILED.add(svc); fail(svc, verr)
+                    else:
+                        _TURN_FAILED.discard(svc); good(svc, "rei:" + svc)
                     continue
                 tp = rec.get(svc)
                 if not tp:

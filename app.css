@@ -726,6 +726,11 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* turn-proxy installed-version row (edit modal) — sits just above the foot, so trim its gap */
 .field.turn-ver{margin-bottom:0}
 .turn-ver-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+/* blue "update to vX" button — matches the panel's .updpill version-update tag */
+.btn.btn-upd{border-color:color-mix(in srgb,var(--ready) 45%,transparent);color:var(--ready)}
+.btn.btn-upd:hover{border-color:var(--ready);background:color-mix(in srgb,var(--ready) 12%,transparent)}
+/* header "up to date" flash (5s after a check-for-updates that found nothing) */
+.upd-uptodate{pointer-events:none;cursor:default;color:var(--online);border-color:color-mix(in srgb,var(--online) 42%,var(--line-solid))}
 .turn-ver-row .ver{font-size:13px;color:var(--ink)}
 .turn-ver-row .ver-err{font-size:12px;color:var(--dangling)}
 .iface-intro.big{gap:9px;margin:4px 0 18px;font-size:13px;line-height:1.55;color:var(--ink-2)}

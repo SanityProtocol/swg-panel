@@ -395,13 +395,18 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
   const pend = (nrec.turn_pending || {})[tp.service];
   const err = (nrec.cmd_errors || {})[tp.service];
-  const down = tp.running === false;
   const installing = !!tp.installing;
-  const justRestarted = !pend && turnRestarted[node + "|" + tp.service] && Date.now() < turnRestarted[node + "|" + tp.service];
-  return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "") + ((down || installing) && !pend ? " down" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(node, tp) : null}>
+  const failed = !!tp.failed;
+  const down = tp.running === false && !installing && !failed;   // bare-metal not-running (docker not-running is always installing/failed)
+  const k = node + "|" + tp.service;
+  const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
+  const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
+  const dim = !justRestarted && (pend || installing || failed || down || err);   // anything needing attention → dim the card
+  return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(node, tp) : null}>
     <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${pend
-      ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${TURN_PEND[pend] || pend}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
+      ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${updating ? "updating" : (TURN_PEND[pend] || pend)}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
       : installing ? html`<span class="tg tg-busy" title="Downloading the binary and starting the container on the node"><${Ic} i="clock"/>installing</span>`
+      : failed ? html`<${CmdErr} err=${err || "the install failed on the node"}/><span class="tg tg-busy del"><${Ic} i="warn"/>install failed</span>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
     <div class="ifcard-rows">
@@ -1078,8 +1083,10 @@ function NodeDetail({ node: rawName }) {
               const orph = Store.recon.orphans.filter(o => o.node === name && o.iface === ifn).length;
               const deleting = (nrec.deleting || []).includes(ifn);
               const idown = (((Store.stats[name] || {}).interfaces || {})[ifn] || {}).down;   // not up on the node
-              return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idown && !deleting ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="grow"></span><span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="grow"></span><span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
+              const irestarting = (nrec.restarting || []).includes(ifn);
+              const idim = deleting || idown || irestarting || !!(nrec.cmd_errors || {})[ifn];   // anything needing attention → dim the card at a glance
+              return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="grow"></span><span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : irestarting ? html`<span class="grow"></span><span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="grow"></span><span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1321,14 +1328,14 @@ async function restartIface(node, iface) {   // legacy callers (e.g. Save auto-r
   await Store.poll();
 }
 // start/restart with an inline progress lifecycle on the interface card: busy tag (button hidden)
-// → green "started/restarted" 3s or red "failed" 5s (button back). verb = "start" (down) | "restart".
+// → green "started/restarted" 5s or red "failed" 10s (button back). verb = "start" (down) | "restart".
 async function startOrRestartIface(node, iface, verb) {
   const key = node + "|" + iface;
   Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply();
   const r = await api.ifaceRestart({ node, iface });
   if (!r.ok) {
-    Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 5000, err: r.error || "request failed" };
-    Store.apply(); setTimeout(() => Store.apply(), 5100); return;
+    Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 10000, err: r.error || "request failed" };
+    Store.apply(); setTimeout(() => Store.apply(), 10100); return;
   }
   await Store.poll();   // queued on the node; trackIfaceOps() watches for completion each poll
 }
@@ -1357,7 +1364,7 @@ function trackIfaceOps() {
       else if (now - op.started > 18000) done = down ? { phase: "fail", err: cerr || down } : { phase: "ok" };
     }
     if (done) {
-      const ms = done.phase === "ok" ? 3000 : 5000;
+      const ms = done.phase === "ok" ? 5000 : 10000;
       Store.ifaceOp[key] = { verb: op.verb, phase: done.phase, until: now + ms, err: done.err || "" };
       setTimeout(() => Store.apply(), ms + 100);
     }
@@ -1479,6 +1486,8 @@ function TurnManageSheet({ node, tp }) {
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
   const installed = tp.version || "";
+  const installing = !!tp.installing;
+  const failed = !!tp.failed;
   const down = tp.running === false;
   const owner = turnOwner(svc);
   const [verChk, setVerChk] = useState(null);   // null | {checking} | {latest} | {err}
@@ -1489,13 +1498,16 @@ function TurnManageSheet({ node, tp }) {
       const r = await fetch("https://api.github.com/repos/" + owner + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } });
       if (!r.ok) throw new Error("GitHub " + r.status);
       const j = await r.json();
-      setVerChk({ latest: String(j.tag_name || "").trim() });
-    } catch (e) { setVerChk({ err: String((e && e.message) || e) }); }
+      const latest = String(j.tag_name || "").trim();
+      setVerChk({ latest });
+      if (!(latest && installed && latest !== installed)) setTimeout(() => setVerChk(null), 5000);   // up to date → show the tag for 5s, then revert
+    } catch (e) { setVerChk({ err: String((e && e.message) || e) }); setTimeout(() => setVerChk(null), 5000); }   // no connection → 5s, then revert
   };
   const doReinstall = async (verb) => {
     setBusy(true); setMsg({ k: "work", t: verb.toLowerCase() + "…" });
+    if (verb === "Update") turnUpdating[node + "|" + svc] = Date.now() + 120000;   // card shows "updating" (not "installing") while it applies
     const r = await api.turnReinstall({ node, service: svc, owner });
-    if (!r.ok) return fail(r.error || "Request failed.");
+    if (!r.ok) { delete turnUpdating[node + "|" + svc]; return fail(r.error || "Request failed."); }
     closeModal(); await Store.poll();
     toast("Turn-proxy " + verb.toLowerCase() + " requested — applies on the node's next sync.", "ok");
   };
@@ -1519,9 +1531,9 @@ function TurnManageSheet({ node, tp }) {
   return html`<${Sheet} title=${"Turn-proxy · " + turnLabel(svc, lp)}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
-      ${down
-        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Re-download the binary and start the service on the node" onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`
-        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Restart the service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>`}
+      ${tp.running !== false && !installing && !failed
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Restart the service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>`
+        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy || !failed} title=${failed ? "Re-download the binary and start the service on the node" : "Installing…"} onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
       <button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
@@ -1547,17 +1559,17 @@ function TurnManageSheet({ node, tp }) {
       <textarea class="ta mono" rows="4" value=${params} onInput=${e => setParams(e.target.value)} placeholder="-wrap-mode on -wrap-key <64 hex chars>" spellcheck="false"></textarea>
       <div class="hint">Free text appended after <span class="mono">-connect ip:port</span>. Changing the wrap key breaks every client using the old one. <button type="button" class="linkbtn" onClick=${randKey}>Copy a random 64-hex key</button></div>
     </div>
-    <div class="field turn-ver"><label>Installed version</label>
+    ${installing ? null : html`<div class="field turn-ver"><label>Installed version</label>
       <div class="turn-ver-row">
         <span class="mono ver">${installed || "unknown"}</span>
         ${verChk && verChk.checking ? html`<span class="faint">checking…</span>`
-          : verChk && verChk.err ? html`<${Fragment}><span class="ver-err" title=${verChk.err}>check failed</span> <button type="button" class="linkbtn" onClick=${checkUpdate}>retry</button></>`
+          : verChk && verChk.err ? html`<span class="tg tg-busy del" title=${verChk.err}><${Ic} i="warn"/>no connection</span>`
           : verChk && verChk.latest ? (updateAvail
-              ? html`<button class="btn btn-mini" disabled=${busy} onClick=${() => doReinstall("Update")}><${Ic} i="download"/> Update → ${verChk.latest}</button>`
-              : html`<span class="tg-ok"><${Ic} i="check"/> up to date</span>`)
+              ? html`<button class="btn btn-mini btn-upd" disabled=${busy} onClick=${() => doReinstall("Update")}><${Ic} i="download"/> update to ${verChk.latest}</button>`
+              : html`<span class="tg tg-ok"><${Ic} i="check"/> up to date</span>`)
           : html`<button class="btn btn-mini" disabled=${busy || !owner} onClick=${checkUpdate}>Check for update</button>`}
       </div>
-    </div>
+    </div>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -1588,17 +1600,18 @@ const TURN_FORKS = [
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp" },
 ];
-const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "reinstalling" };
-// turn-proxy restart completion flash: when a queued 'restart' clears, show a green "restarted" tag 3s
+const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "installing" };
+// turn-proxy restart completion flash: when a queued 'restart' clears, show a green "restarted" tag 5s
 const _turnRestartPend = {};   // "node|service" currently mid-restart (last poll)
 const turnRestarted = {};      // "node|service" -> expiry ts for the green flash
+const turnUpdating = {};        // "node|service" -> expiry ts; set on an "Update" click so the pending tag reads "updating" (not "installing")
 function trackTurnRestarts() {
   const seen = {};
   for (const n of (Store.nodes || [])) {
     for (const [svc, act] of Object.entries(n.turn_pending || {})) if (act === "restart") seen[n.id + "|" + svc] = true;
   }
   for (const k of Object.keys(_turnRestartPend)) if (!seen[k]) {   // was restarting, now cleared → done
-    turnRestarted[k] = Date.now() + 3000; delete _turnRestartPend[k]; setTimeout(() => Store.apply(), 3100);
+    turnRestarted[k] = Date.now() + 5000; delete _turnRestartPend[k]; setTimeout(() => Store.apply(), 5100);
   }
   for (const k of Object.keys(seen)) _turnRestartPend[k] = true;
 }
@@ -2576,7 +2589,7 @@ async function checkForUpdate(e) {
     if (!r.ok) toast(r.error || "Couldn't check for updates.", "err");
     else if (r.data && !r.data.checked) toast("Couldn't reach the repo to check for updates.", "err");
     else if (r.data && r.data.panel_outdated) toast("Update available — v" + r.data.latest_remote, "ok");
-    else toast("You're on the latest version (v" + ((r.data && r.data.latest_remote) || "?") + ").", "ok");
+    else { Store.updFlash = Date.now() + 5000; Store.apply(); setTimeout(() => Store.apply(), 5100); }   // up to date → green "up to date" tag for 5s
   } finally { if (btn) btn.classList.remove("checking"); }
 }
 function NodeCard({ n }) {
@@ -3503,6 +3516,7 @@ function App() {
       if (Store.hostProc) body = `<span class="hostproc-tag">${UPD_SPIN_SVG} ${esc(PROC_LABEL[Store.hostProc] || Store.hostProc)}</span>`;   // this panel host is mid re-install/convert
       else if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
       else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
+      else if (Store.updFlash && Date.now() < Store.updFlash) body = `<span class="livepill upd-uptodate" title="You're on the latest version"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> up to date</span>`;
       else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
       slot.innerHTML = body;
       const b = $("#host-upd"); if (b) b.onclick = updateHost;
