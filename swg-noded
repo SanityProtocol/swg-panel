@@ -389,6 +389,27 @@ def _list_turn_units():
         return None
     return [f[:-len(".service")] for f in files if f.startswith("vk-turn-proxy-") and f.endswith(".service")]
 
+TURN_PENDING_DIR = "/var/lib/swg-noded/turn-pending"   # an installer/convert drops "<svc>" here (listen\nconnect\nowner) WHILE setting a turn-proxy up
+def _turn_installing_markers():
+    """Turn-proxies an installer/convert is actively setting up right now (fresh markers only, < 5min — a
+    crashed installer's stale marker is ignored). svc -> {listen, connect, owner}. Surfaced as 'installing'."""
+    out = {}
+    try:
+        names = os.listdir(TURN_PENDING_DIR)
+    except OSError:
+        return out
+    for f in names:
+        p = os.path.join(TURN_PENDING_DIR, f)
+        try:
+            if time.time() - os.path.getmtime(p) > 300:
+                continue
+            with open(p) as fh:
+                ls = fh.read().splitlines()
+        except OSError:
+            continue
+        out[f] = {"listen": (ls[0] if len(ls) > 0 else ""), "connect": (ls[1] if len(ls) > 1 else ""), "owner": (ls[2] if len(ls) > 2 else "")}
+    return out
+
 def load_turn_proxies():
     """Turn-proxies installed on this box — listen/connect/wrap_key/params. Refreshed from the LIVE
     .service files (throttled) so direct edits on the server show up on the panel."""
@@ -428,6 +449,17 @@ def load_turn_proxies():
                 os.replace(tmp, TURN_RECORD)
     _attach_turn_running(tp)
     _attach_turn_version(tp)
+    marks = _turn_installing_markers()   # an installer/convert is setting these up → show "installing" (synthetic entry if no unit yet)
+    if marks:
+        have = {t.get("service") for t in tp}
+        for svc, m in marks.items():
+            if svc in have:
+                for t in tp:
+                    if t.get("service") == svc and t.get("running") is not True:
+                        t["installing"] = True
+            else:
+                tp.append({"service": svc, "listen": m["listen"], "connect": m["connect"],
+                           "owner": m["owner"], "running": False, "installing": True})
     return tp
 
 _TURN_RUN = {"at": 0.0, "map": {}}

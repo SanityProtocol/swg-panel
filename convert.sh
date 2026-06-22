@@ -64,13 +64,15 @@ dl_turn_bin(){ local owner="$1" arch="$2" out="$3" base url m; base="https://git
 # install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
 turn_install_host(){
   local svc="$1" owner="$2" lis="$3" con="$4" params="$5" inst dir bin arch url
-  local ok=1 ver fork fdir sbin
+  local ok=1 ver fork fdir sbin mk
   inst="${svc#vk-turn-proxy-}"; fork="${inst%-*}"
   fdir="/opt/vk-turn-proxy/.bin/$fork"; sbin="$fdir/server"   # ONE binary per fork — shared by every instance
   dir="/opt/vk-turn-proxy/$inst"; bin="$dir/server"          # this instance: turn.env + a 'server' symlink → the shared binary
   case "$(uname -m)" in aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   mkdir -p "$fdir" "$dir"
+  mk="/var/lib/swg-noded/turn-pending/$svc"; mkdir -p /var/lib/swg-noded/turn-pending 2>/dev/null || true
+  printf '%s\n%s\n%s\n' "$lis" "$con" "$owner" > "$mk" 2>/dev/null || true   # the running node shows this as "installing" until its unit is up
   if [ -x "$sbin" ]; then info "  $(b "$svc") — reusing the $fork binary already downloaded"
   else
     info "  migrating $(b "$svc") — downloading $owner from GitHub (up to ~2 min)…"
@@ -103,6 +105,7 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable --now "$svc" 2>/dev/null || true   # without the binary the unit just stays down (panel shows it, Reinstall re-fetches)
+  rm -f "$mk" 2>/dev/null || true   # done → the node reports the real unit now (up, or down if the download failed)
   [ "$ok" = 1 ]
 }
 
