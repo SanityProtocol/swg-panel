@@ -318,11 +318,9 @@ a.ifgroup-head:hover b{color:var(--brand)}
 .targetopt.sel{border-color:var(--line-solid)}
 .targetopt .topt-main{display:flex;align-items:center;gap:9px;flex:1;cursor:pointer;min-width:0}
 .targetopt.locked .topt-main{cursor:default}
-.targetopt .box{width:17px;height:17px;border:1.5px solid var(--line-solid);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;flex:none;color:var(--online)}
-.targetopt.sel .box{border-color:var(--online)}
-.targetopt .swatch{width:10px;height:10px;border-radius:50%;flex:none}
-.targetopt .nm{font-weight:500;color:var(--ink)}
-.targetopt .tp{font-size:11px;color:var(--faint)}
+.targetopt .box{width:17px;height:17px;border:1.5px solid var(--line-solid);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;flex:none;color:var(--brand)}
+.targetopt.sel .box{border-color:var(--brand);background:rgba(31,200,214,.16)}
+.targetopt .nm{font-weight:600}
 .targetopt .topt-ip{width:130px;flex:none;padding:5px 8px;font-size:12.5px}
 .targetopt .topt-ip.existing{display:inline-flex;align-items:center;justify-content:flex-end;font-family:var(--mono);color:var(--ink-2);text-align:right}   /* already-deployed address, read-only */
 

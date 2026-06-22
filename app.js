@@ -2816,11 +2816,13 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
     || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class="targetpick">${ordered.map(t => {
     const k = tkey(t.node, t.iface); const s = sel[k];
+    const im = (Store.describe[t.node] || {})[t.iface] || {};
+    const ity = (im.awg_params && Object.keys(im.awg_params).length) ? "awg" : "wg";
     return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "")}>
       <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
-        <span class="swatch" style=${"background:" + Store.nodeColor(t.node)}></span>
-        <span class="nm">${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></label>
+        <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
+        <${Tag} kind=${ity} label=${t.iface}/></label>
       ${s ? (s.existing
         ? html`<span class="topt-ip existing" title="Current address — already deployed here">${s.ip || "—"}</span>`
         : html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>`) : null}
