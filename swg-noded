@@ -794,6 +794,40 @@ def restart_ifaces(node_cfg, restart, agent, sudo):
     return res
 
 
+def apply_iface_keys(node_cfg, iface_key, agent, sudo):
+    """Panel keypair requests per interface: 'rebaseline' overwrites the on-disk backup from the live
+    conf (after an Adopt); 'restore' re-keys the interface from that backup + bounces it (a Restore)."""
+    res = {"done": [], "errors": []}
+    for iface, req in (iface_key or {}).items():
+        ic = (node_cfg.get("interfaces") or {}).get(iface)
+        if not ic:
+            continue
+        action = (req or {}).get("action")
+        cmd = ic.get("cmd", ["awg"])
+        try:
+            if action == "rebaseline":
+                conf_text = ""
+                with contextlib.suppress(OSError):
+                    conf_text = open(ic["conf"]).read()
+                rec = harvest_iface_backup(conf_text, cmd) if conf_text else None
+                if rec:
+                    write_iface_backup(iface, rec); res["done"].append(iface)
+            elif action == "restore":
+                bak = read_iface_backup(iface)
+                if not bak or not bak.get("private_key"):
+                    res["errors"].append(iface + ": no keypair backup to restore from"); continue
+                r = run_agent(agent, sudo, {"op": "restore-iface-key", "iface": iface, "conf": ic["conf"],
+                                            "private_key": bak["private_key"], "listen_port": bak.get("listen_port"),
+                                            "address": bak.get("address")})
+                if r.get("ok"):
+                    res["done"].append(iface)
+                else:
+                    res["errors"].append(iface + ": " + str(r.get("error")))
+        except Exception as e:
+            res["errors"].append(iface + ": " + str(e))
+    return res
+
+
 def _persist_config(node_cfg):
     tmp = CONFIG_PATH + ".tmp"
     with open(tmp, "w") as f:
@@ -1307,6 +1341,7 @@ def main():
                 r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)   # set-iface: write the new listen-port to the conf FIRST
                 rs = restart_ifaces(node_cfg, reply.get("restart"), agent, sudo)   # THEN bounce — a restart picks up the just-written conf (e.g. a changed port)
+                ik = apply_iface_keys(node_cfg, reply.get("iface_key"), agent, sudo)   # keypair restore/rebaseline from the on-disk backup
                 eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name
                 for blk in (cr, dl, ob, rs):

@@ -226,6 +226,33 @@ def set_listen_port_in_conf(path, port):
     write_conf_atomic(path, "\n".join(out).rstrip("\n") + "\n")
 
 
+def set_iface_fields_in_conf(path, fields):
+    """Replace (or insert) the given [Interface] fields. fields = {Name: value}. Atomic, 0600."""
+    want = {k.lower(): (k, str(v)) for k, v in fields.items()}
+    lines = read_conf(path).splitlines()
+    out, in_iface, seen = [], False, set()
+    for line in lines:
+        s = line.strip()
+        if s.startswith("["):
+            in_iface = (s.lower() == "[interface]"); out.append(line); continue
+        if in_iface and "=" in s and not s.startswith("#"):
+            k = s.split("=", 1)[0].strip().lower()
+            if k in want:
+                name, val = want[k]; out.append(f"{name} = {val}"); seen.add(k); continue
+        out.append(line)
+    missing = [(name, val) for k, (name, val) in want.items() if k not in seen]
+    if missing:
+        res, added = [], False
+        for line in out:
+            res.append(line)
+            if not added and line.strip().lower() == "[interface]":
+                for name, val in missing:
+                    res.append(f"{name} = {val}")
+                added = True
+        out = res
+    write_conf_atomic(path, "\n".join(out).rstrip("\n") + "\n")
+
+
 @contextlib.contextmanager
 def locked():
     os.makedirs(os.path.dirname(LOCK_PATH) or "/run", exist_ok=True)
@@ -551,6 +578,30 @@ def op_restart_iface(cfg, req):
     return {"iface": iface, "restarted": True}
 
 
+def op_restore_iface_key(cfg, req):
+    """Revert an interface to its blessed identity from the node's on-disk backup: rewrite the conf's
+    [Interface] PrivateKey (+ Address + ListenPort), then bounce so the original server key is live."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)                 # raises if it isn't managed here
+    priv = (req.get("private_key") or "").strip()
+    if not priv:
+        raise AgentError("bad_request", "private_key required")
+    fields = {"PrivateKey": priv}
+    if req.get("address"):
+        fields["Address"] = req["address"]
+    if req.get("listen_port"):
+        fields["ListenPort"] = str(req["listen_port"])
+    set_iface_fields_in_conf(ic["conf"], fields)
+    tool = (ic.get("cmd") or ["awg"])[0]
+    with contextlib.suppress(Exception):
+        run([tool + "-quick", "down", iface])
+    try:
+        run([tool + "-quick", "up", iface])
+    except Exception as e:
+        raise AgentError("up_failed", f"{tool}-quick up {iface} failed after key restore: {e}")
+    return {"iface": iface, "restored": True}
+
+
 # ───────────────────────── dispatch ─────────────────────────
 
 def respond(ok, op, data=None, error=None, code=None):
@@ -566,7 +617,8 @@ def respond(ok, op, data=None, error=None, code=None):
 
 READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
 WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface,
-             "create-iface": op_create_iface, "delete-iface": op_delete_iface, "restart-iface": op_restart_iface}
+             "create-iface": op_create_iface, "delete-iface": op_delete_iface, "restart-iface": op_restart_iface,
+             "restore-iface-key": op_restore_iface_key}
 
 
 def main():

@@ -1672,6 +1672,24 @@ def api(method, path, qs, body, deps):
         ov = (nodes[nid].get("ifaces") or {}).get(iface)
         if not ov or key not in (ov.get("_drift") or {}):
             return 400, {"ok": False, "error": "no pending drift for that setting", "code": "bad_request"}
+        if key == "public_key":
+            # the server keypair is NODE-owned (the panel never holds the private key), so this is driven
+            # by a node request, not a pushed override. ADOPT re-blesses the new key + tells the node to
+            # re-baseline its on-disk backup; RESTORE tells the node to revert from that backup (the drift
+            # clears on its own once the node reports the original key again).
+            if path.endswith("/adopt"):
+                ov["public_key"] = ov["_drift"]["public_key"]
+                nodes[nid].setdefault("iface_key", {})[iface] = {"action": "rebaseline", "at": int(time.time())}
+                ov.get("_drift", {}).pop("public_key", None)
+                if not ov.get("_drift"):
+                    ov.pop("_drift", None)
+                verb = "Adopted new server key on"
+            else:
+                nodes[nid].setdefault("iface_key", {})[iface] = {"action": "restore", "at": int(time.time())}
+                verb = "Restoring original server key on"
+            nodes_save(deps["nodes_path"], nodes)
+            ev_append(roster_path, "node", nid, verb, iface)
+            return 200, {"ok": True, "data": {"node": nid, "iface": iface, "key": key}}
         if path.endswith("/adopt"):
             ov[key] = ov["_drift"][key]                 # panel override ← the node's actual value
             ov.setdefault("_synced", {})[key] = ov[key]
@@ -2127,6 +2145,18 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     ifaces_dirty = _clear_drift("awg_params") or ifaces_dirty
                     d["awg_params"] = want
+            # server keypair — the NODE owns the private key (the panel never holds it). Bless the first
+            # public key we see; if it later changes (key rotated on the server) flag drift so the operator
+            # can Restore (node reverts from its on-disk backup) or Adopt (accept new → every client breaks).
+            rep_pub = rep.get("public_key")
+            if rep_pub:
+                blessed = ov.get("public_key")
+                if not blessed:
+                    ov["public_key"] = rep_pub; ifaces_dirty = True            # first sight → bless it
+                elif rep_pub == blessed:
+                    ifaces_dirty = _clear_drift("public_key") or ifaces_dirty
+                elif drift.get("public_key") != rep_pub:
+                    drift["public_key"] = rep_pub; ifaces_dirty = True
             # egress IP + WAN NIC: the node doesn't report them back, so always push (no drift tracking)
             if "egress_ip" in ov:
                 d["egress_ip"] = ov.get("egress_ip") or ""
@@ -2208,6 +2238,18 @@ class Handler(BaseHTTPRequestHandler):
                     node.pop("restart", None)
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
+        # close IFACE_KEY requests after a grace — a rebaseline is a backup-file write (no snapshot effect)
+        # and a restore re-keys + restarts within a sync cycle; the public_key drift clears on its own.
+        ik = node.get("iface_key") or {}
+        if ik:
+            now_t = int(time.time())
+            kept = {k: v for k, v in ik.items() if (now_t - ((v or {}).get("at") or 0)) < 20}
+            if kept != ik:
+                node["iface_key"] = kept
+                if not kept:
+                    node.pop("iface_key", None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         # close turn-proxy requests once the node reflects them (delete: service gone; onboard: it
         # appears; manage/rotate: the node applied + restarted — verified by listen match, else a grace)
         turn = node.get("turn") or {}; turn_onb = node.get("turn_onboard") or []
@@ -2247,6 +2289,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
+                                "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):
