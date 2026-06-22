@@ -35,7 +35,7 @@ function portOf(hostport) { if (!hostport) return ""; const s = String(hostport)
 function turnLabel(service, port) {   // just the fork name — the port shows in the Listen row
   let s = (service || "turn-proxy").replace(/^vk-turn-proxy-?/, "") || "turn";
   s = s.replace(/-\d+$/, "") || "turn";
-  return s === "main" ? "cacggghp" : s;   // the upstream "main" key shows as its owner
+  return s === "main" ? "cacggghp" : s;   // legacy "main" services (pre-rename) still display as cacggghp
 }
 
 function ago(sec) {
@@ -376,6 +376,32 @@ function turnProxiesFor(node, iface) {
   const snap = Store.stats[node]; if (!snap) return [];
   const lp = String((((snap.interfaces || {})[iface] || {}).meta || {}).listen_port || "");
   return (snap.turn_proxies || []).filter(tp => lp && portOf(tp.connect) === lp);
+}
+
+// One turn-proxy card — shared by the node detail (Forwards-to shown) and the interface detail
+// (showForwards=false, that view is already scoped to the fronted iface). Same data, status tags,
+// online/down dimming, click-to-manage. `metas` = the node's all-interface metas (Store.describe[node]).
+function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
+  metas = metas || {};
+  const lp = portOf(tp.connect);
+  const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp);
+  const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
+  const pend = (nrec.turn_pending || {})[tp.service];
+  const err = (nrec.cmd_errors || {})[tp.service];
+  const down = tp.running === false;
+  const justRestarted = !pend && turnRestarted[node + "|" + tp.service] && Date.now() < turnRestarted[node + "|" + tp.service];
+  return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "") + (down && !pend ? " down" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(node, tp) : null}>
+    <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${pend
+      ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${TURN_PEND[pend] || pend}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
+      : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
+      : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
+    <div class="ifcard-rows">
+      <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
+      ${showForwards ? html`<div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
+      <div class="ifrow"><span class="l">Connections</span><span class="r"><${OnlPop} peer title="Via this turn-proxy"
+        rows=${fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : []}
+        trigger=${c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>`}/></span></div>
+    </div></div>`;
 }
 
 // resolve a per-target client config: session (built at creation) → stored → none
@@ -1058,27 +1084,7 @@ function NodeDetail({ node: rawName }) {
 
     ${snap && ((snap.turn_proxies || []).length || nrec.turn_manage || (nrec.turn_onboarding || []).length) ? html`<${Panel} icon="relay" title="Turn proxies" tone="turn" count=${(snap.turn_proxies || []).length}
         actions=${nrec.turn_manage ? html`<button class="btn btn-mini" onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
-      <div class="ifgrid">${(snap.turn_proxies || []).map(tp => {
-        const lp = portOf(tp.connect);
-        const fronted = meta ? Object.keys(meta).find(i => String(meta[i].listen_port) === lp) : null;
-        const ftype = (fronted && meta[fronted].awg_params && Object.keys(meta[fronted].awg_params).length) ? "awg" : "wg";
-        const pend = (nrec.turn_pending || {})[tp.service];
-        const err = (nrec.cmd_errors || {})[tp.service];
-        const down = tp.running === false;
-        const justRestarted = !pend && turnRestarted[name + "|" + tp.service] && Date.now() < turnRestarted[name + "|" + tp.service];
-        return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "") + (down && !pend ? " down" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(name, tp) : null}>
-          <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${pend
-            ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${TURN_PEND[pend] || pend}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(name, { service: tp.service }); }}><${Ic} i="x"/></button>`
-            : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
-            : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
-          <div class="ifcard-rows">
-            <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
-            <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>
-            <div class="ifrow"><span class="l">Connections</span><span class="r"><${OnlPop} peer title="Via this turn-proxy"
-              rows=${fronted ? turnConnRows(name, fronted, ipOf(tp.connect)) : []}
-              trigger=${c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>`}/></span></div>
-          </div></div>`;
-      })}
+      <div class="ifgrid">${(snap.turn_proxies || []).map(tp => html`<${TurnCard} node=${name} tp=${tp} nrec=${nrec} metas=${meta}/>`)}
       ${Object.entries(nrec.turn_pending || {}).filter(([s]) => !(snap.turn_proxies || []).some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { service: s })}><${Ic} i="x"/></button></div></div>`)}
       ${(nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`)}
       </div>
@@ -1152,11 +1158,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <//>`}
 
     ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="turn" count=${tps.length}>
-      <div class="ifgrid">${tps.map(tp => html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(node, tp) : null}>
-        <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span></div>
-        <div class="ifcard-rows">
-          <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
-        </div></div>`)}</div>
+      <div class="ifgrid">${tps.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${Store.describe[node] || {}} showForwards=${false}/>`)}</div>
     <//>` : null}
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
@@ -2199,7 +2201,6 @@ function TargetCard({ peer, t, bare }) {
     ${conf ? html`<div class="acts">
       <button class="btn btn-mini" onClick=${() => downloadConf(conf, (peer.name || "peer") + "-" + dnode)}><${Ic} i="download"/> Config</button>
       <button class="btn btn-mini" onClick=${() => copy(conf, "Config copied")}><${Ic} i="copy"/> Copy</button>
-      ${tps.length ? html`<button class="btn btn-mini" title="Import via turn-proxy" onClick=${() => qrZoom(turnConf(conf, tps[0].listen), label + " · turn-proxy")}>turn-proxy QR</button>` : null}
     </div>` : null}
   </div>`;
 }

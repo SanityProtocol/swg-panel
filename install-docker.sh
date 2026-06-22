@@ -156,7 +156,7 @@ turn_repo_owner(){ case "$1" in
   WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
   kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
   Moroka8) echo "Moroka8/vk-turn-proxy";;
-  main) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
+  cacggghp) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
 gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }
   openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 turn_wrap_flags(){ local k; case "$1" in   # per-fork obfuscation flags (verified from each binary's -h)
@@ -241,7 +241,7 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
     else warn "No turn-proxy servers found on this box."; fi
     echo
     echo "  Here is a list of turn-proxy branches available for installation:"; echo
-    menu "$(col "$C_BLUE" '[0] Original')"     "The original project - https://github.com/cacggghp/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[0] cacggghp')"     "The original project - https://github.com/cacggghp/vk-turn-proxy"
     menu "$(col "$C_BLUE" '[1] WINGS-N')"      "Fork by WINGS-N - https://github.com/WINGS-N/vk-turn-proxy"
     menu "$(col "$C_BLUE" '[2] samosvalishe')" "Fork by samosvalishe - https://github.com/samosvalishe/vk-turn-proxy"
     menu "$(col "$C_BLUE" '[3] kiper292')"     "Fork by kiper292 - https://github.com/kiper292/vk-turn-proxy"
@@ -251,7 +251,7 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
     if ! read -r sel 2>/dev/null </dev/tty; then echo; warn "no interactive input — skipping turn-proxy step"; break; fi
     sel="${sel//[[:space:]]/}"; [ -z "$sel" ] && break
     case "$sel" in
-      0|Original|main)  install_turn_proxy main; continue;;
+      0|cacggghp|Original|main)  install_turn_proxy cacggghp; continue;;
       1|WINGS-N|wings)  install_turn_proxy WINGS-N; continue;;
       2|samosvalishe)   install_turn_proxy samosvalishe; continue;;
       3|kiper292)       install_turn_proxy kiper292; continue;;
