@@ -588,6 +588,15 @@ function onlinePeerRows(nodeId, iface) {
                ip: t.ip || "", iface: t.iface, unassigned: !!p.unassigned }; })
     .sort((a, b) => (a.user || "").localeCompare(b.user || "") || (a.title || "").localeCompare(b.title || ""));
 }
+// peers reaching `iface` THROUGH a turn-proxy: online, and the wg-observed endpoint IP == the proxy's
+// connect IP (so they came via the relay, not directly). connectIp = ipOf(turn.connect).
+function turnConnRows(nodeId, iface, connectIp) {
+  const onT = (t) => t.node === nodeId && t.iface === iface && t.online && t.observed && ipOf(t.observed.endpoint) === connectIp;
+  return (Store.recon.peers || []).filter(p => p.targets.some(onT))
+    .map(p => { const t = p.targets.find(onT) || {};
+      return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned }; })
+    .sort((a, b) => (a.user || "").localeCompare(b.user || "") || (a.title || "").localeCompare(b.title || ""));
+}
 // "N online" tag → bubble of users (name · online-peer count). nodeId null = whole fleet.
 // trigger: optional (count)=>vnode to customise the visible label.
 function OnlineUsersTag({ nodeId, cls, trigger }) {
@@ -1057,6 +1066,12 @@ function NodeDetail({ node: rawName }) {
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
             <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>
+            <div class="ifrow"><span class="l">Connections</span><span class="r">${(() => {
+              const crows = fronted ? turnConnRows(name, fronted, ipOf(tp.connect)) : [];
+              return html`<${Popover} cls="onlinetag" trigger=${html`<b class=${"oncount" + (crows.length ? " on" : "")}>${crows.length}</b>`}>
+                <div class="onpop-h">Via this turn-proxy · ${crows.length}</div>
+                ${crows.length ? crows.map(r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.ip ? " · " + r.ip : ""}</span></div>`) : html`<div class="onrow faint">no one via this proxy</div>`}
+              </${Popover}>`; })()}</span></div>
           </div></div>`;
       })}
       ${Object.entries(nrec.turn_pending || {}).filter(([s]) => !(snap.turn_proxies || []).some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { service: s })}><${Ic} i="x"/></button></div></div>`)}
