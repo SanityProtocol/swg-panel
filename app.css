@@ -145,6 +145,8 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 /* https transport gets a thin light-blue accent */
 .tport.baremetal{color:#7DC4F0;border-color:rgba(125,196,240,.4);background:rgba(125,196,240,.08)}
 .tport.docker{color:#A974F2;border-color:rgba(169,116,242,.45);background:rgba(169,116,242,.1)}
+/* panel-header deploy tag: livepill geometry/size/font, but keep the docker/bare colour above */
+#host-tport{font-size:11px;letter-spacing:.08em;border-radius:99px;padding:5px 11px;margin-left:0}
 /* glowing "reporting" pill (after the transport tag) */
 .reporting{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;
   font-weight:600;color:var(--online);background:rgba(63,216,154,.12);padding:3px 9px 3px 8px;border-radius:99px}
