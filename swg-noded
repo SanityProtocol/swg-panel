@@ -1047,6 +1047,7 @@ def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
     return (verr, tp)   # keep the record even if down, so the panel shows it (greyed)
 
 _DTURN_RUN = {"at": 0.0, "set": set()}
+_DTURN_RECON_AT = [0.0]   # throttle the periodic turn-proxy reconcile (≥30s apart)
 def _dturn_attach_running(tps):
     nowt = time.time()
     if nowt - _DTURN_RUN["at"] >= 15:
@@ -1063,15 +1064,31 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
     if (r.stdout or "").strip() == "true":
         return
     if not os.path.exists(_turn_bin_local(svc)) and tp.get("owner"):
-        _dturn_download(svc, tp["owner"])
-    _dturn_run(tp)
+        derr = _dturn_download(svc, tp["owner"])
+        if derr:
+            print("swg-noded: turn %s binary download failed: %s" % (svc, derr), flush=True)
+    rr = _dturn_run(tp)
+    if rr.returncode != 0:
+        print("swg-noded: turn %s 'docker run' failed: %s" % (svc, (rr.stderr or rr.stdout or "").strip()[:200]), flush=True)
+    else:
+        print("swg-noded: turn %s container (re)started (%s)" % (svc, _turn_cname(svc)), flush=True)
 
 def _dturn_reconcile():   # startup/periodic: ensure every recorded turn-proxy has a running container
-    if not (TURN_DOCKER and SWG_TURN_IMAGE and SWG_HOST_NODE_DIR):
+    if not TURN_DOCKER:
         return
-    for tp in load_turn_proxies():
-        with contextlib.suppress(Exception):
+    tps = load_turn_proxies()
+    if not tps:
+        return
+    if not (SWG_TURN_IMAGE and SWG_HOST_NODE_DIR):   # the #1 silent failure — say so loudly
+        print("swg-noded: %d turn-proxy record(s) present but turn-on-docker isn't configured "
+              "(SWG_TURN_IMAGE=%r SWG_HOST_NODE_DIR=%r) — re-install the node with turn management ON"
+              % (len(tps), SWG_TURN_IMAGE, SWG_HOST_NODE_DIR), flush=True)
+        return
+    for tp in tps:
+        try:
             _dturn_ensure(tp)
+        except Exception as e:
+            print("swg-noded: turn reconcile %s failed: %s" % (tp.get("service"), e), flush=True)
 
 
 # ───────── bare-metal turn-proxies: systemd unit + EnvironmentFile (edit = rewrite env, NO daemon-reload) ─────────
@@ -1323,12 +1340,13 @@ def main():
     update_started = False                          # spawn the self-updater at most once per process
     print(f"swg-noded: panel={panel['url']} interval={interval}s "
           f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
-    if TURN_DOCKER:                          # materialise any recorded turn-proxies into containers on boot
-        with contextlib.suppress(Exception):
-            _dturn_reconcile()
     while True:
         t0 = time.time()
         try:
+            if TURN_DOCKER and time.time() - _DTURN_RECON_AT[0] >= 30:   # keep recorded turn-proxies up — boot + every ~30s, panel-independent
+                _DTURN_RECON_AT[0] = time.time()
+                try: _dturn_reconcile()
+                except Exception as e: print("swg-noded: turn reconcile error: %s" % e, flush=True)
             snap = build_snapshot(node_cfg, online_max, last_samples)
             status, reply = post_json(url, token, {"snapshot": snap}, panel)
             if status == 200 and isinstance(reply.get("desired"), dict):
