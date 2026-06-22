@@ -1224,12 +1224,24 @@ function BridgePortSheet({ iface, port }) {   // shown after creating an iface o
     <div class="field"><label>2. Apply (in the node's compose dir)</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">docker compose up -d</span><button class="copybtn" onClick=${() => copy("docker compose up -d", "Copied")}><${Ic} i="copy"/></button></div><div class="hint">Re-installing the node with host networking avoids per-port publishing entirely.</div></div>
   <//>`;
 }
+// suggest the next listen port for a NEW interface ("iface") or turn-proxy ("turn") on a node: the highest
+// existing port OF THAT KIND + 1 (or the base default if none), skipping any port already used by either.
+function suggestPort(node, kind) {
+  const snap = Store.stats[node] || {};
+  const ifacePorts = Object.values(snap.interfaces || {}).map(b => Number((b.meta || {}).listen_port)).filter(Boolean);
+  const turnPorts = ((snap.turn_proxies) || []).map(t => Number(portOf(t.listen))).filter(Boolean);
+  const used = new Set([...ifacePorts, ...turnPorts]);
+  const mine = kind === "turn" ? turnPorts : ifacePorts;
+  let p = mine.length ? Math.max(...mine) + 1 : (kind === "turn" ? 56000 : 51820);
+  while (used.has(p) && p < 65535) p++;
+  return p;
+}
 function LoadIfaceSheet({ node }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
   const [proto, setProto] = useState("awg");   // awg | wg | existing
   const [iface, setIface] = useState(""); const [subnet, setSubnet] = useState("");
-  const [host, setHost] = useState(""); const [port, setPort] = useState("");
+  const [host, setHost] = useState(""); const [port, setPort] = useState(String(suggestPort(node, "iface")));
   const [dns, setDns] = useState("1.1.1.1"); const [mtu, setMtu] = useState("1280"); const [ka, setKa] = useState("25");
   const [conf, setConf] = useState("");
   const ips = nrec.ips || []; const [egress, setEgress] = useState("");
@@ -1648,7 +1660,7 @@ function SetupTurnSheet({ node }) {
     return "";
   })();
   const [lhost, setLhost] = useState(epIp);
-  const [lport, setLport] = useState("56000");
+  const [lport, setLport] = useState(String(suggestPort(node, "turn")));
   const [fwd, setFwd] = useState(ifaces[0] ? ifaces[0].name : "__custom__");
   const [custom, setCustom] = useState("127.0.0.1:51820");
   const [path, setPath] = useState("");

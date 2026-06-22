@@ -103,6 +103,11 @@ v_port(){ case "$1" in ""|*[!0-9]*) return 1;; esac; [ "$1" -ge 1 ] && [ "$1" -l
 port_free(){ have ss || return 0; [ -z "$(ss -lnuH "sport = :$1" 2>/dev/null)" ]; }   # UDP port not already bound
 panel_owns_port(){ have docker || return 1; docker port swg-panel 2>/dev/null | sed 's/.*-> //' | grep -qE ":$1\$"; }   # host port $1 is published by OUR swg-panel container (re-install) → not a real conflict
 v_freeport(){ v_port "$1" && port_free "$1"; }
+# smart default ports: first install offers the base; later ones offer (highest used OF THAT KIND)+1, then
+# the next host-free port. turn = TP_LISTEN record; wg/awg = ListenPort across persisted confs + this session's spec.
+next_free_port(){ local p="${1:-51820}"; while [ "$p" -le 65535 ] && ! port_free "$p"; do p=$((p+1)); done; echo "$p"; }
+turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
+iface_default_port(){ local hi=0 p f e _ifs; for f in "$INSTALL_DIR"/data/node-confs/*.conf; do [ -f "$f" ] || continue; p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$f" | head -1)"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; if [ -n "${NODE_IFACES:-}" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"; for e in "${_ifs[@]}"; do p="$(printf '%s' "$e" | cut -d: -f2)"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 51820; }
 v_hostport(){ case "$1" in *:*) v_host "${1%%:*}" && v_port "${1##*:}";; *) return 1;; esac; }
 v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cftoken(){ [ -n "$1" ]; }
@@ -205,7 +210,7 @@ PY
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
   local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
-  ask_valid "Turn-proxy listen port" "56000" port v_freeport "port 1–65535 and free (not already in use)"
+  ask_valid "Turn-proxy listen port" "$(turn_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
   detect_turn; local n; for n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$n' — pick another port (enter 'new' again)"; return 0; }; done
   local defport="${NODE_LISTEN_PORT:-51820}" _e _nm _pt _pr label clabel pad _ifs
   echo
@@ -506,7 +511,7 @@ add_node_iface(){
   case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
   [ "$plain" = wg ] && base=wg || base=awg; i=0; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done
   ask_valid "Interface name" "$base$i" name v_iface "1–15 chars: letters, digits, - or _"
-  ask_valid "Listen port" "$((51820 + nx))" port v_freeport "port 1–65535 and free (not already in use)"
+  ask_valid "Listen port" "$(iface_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
   local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.$((8 + nx)).0.0/24" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
   ep="${NODE_ENDPOINT:-$(detect_public_ip)}"       # auto endpoint clients dial — public IP/host (change it later in the panel)
   echo "    Used $(bb "$ep") endpoint IP for $(col "$C_GREEN" "$name")"
