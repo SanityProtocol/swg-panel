@@ -1371,11 +1371,10 @@ def apply_turn(turn, turn_onboard):
                 if not owner:
                     fail(svc, "no owner repo for reinstall"); continue
                 arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
-                burl = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
                 binp = "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/server"; tag = _turn_resolve_tag(owner); vp = _turn_ver_path(svc)
-                cmd = ("mkdir -p " + shlex.quote(os.path.dirname(binp))
-                       + " && curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "
-                       + shlex.quote(burl) + " -o " + shlex.quote(binp) + " && chmod 755 " + shlex.quote(binp))
+                dl = " || ".join("curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "   # GitHub direct, then any SWG_TURN_MIRROR proxies
+                                 + shlex.quote(u) + " -o " + shlex.quote(binp) for u in _turn_dl_urls(owner, arch))
+                cmd = "mkdir -p " + shlex.quote(os.path.dirname(binp)) + " && ( " + dl + " ) && chmod 755 " + shlex.quote(binp)
                 if tag:
                     cmd += " && printf %s " + shlex.quote(tag) + " > " + shlex.quote(vp) + " && chmod 644 " + shlex.quote(vp)
                 cmd += " && systemctl restart " + shlex.quote(svc)

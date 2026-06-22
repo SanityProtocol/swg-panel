@@ -47,6 +47,12 @@ signal_status(){
     --data "{\"state\":\"$1\"}" "${PURL%/}/api/node/proc-status" >/dev/null 2>&1 || true
 }
 
+# download the turn-proxy server binary: GitHub direct first, then any SWG_TURN_MIRROR proxy prefix(es). Opt-in
+# (off by default) — a proxy serving a binary you execute is a supply-chain trust decision. dl_turn_bin <owner> <arch> <out>
+dl_turn_bin(){ local owner="$1" arch="$2" out="$3" base url m; base="https://github.com/$owner/releases/latest/download/server-linux-$arch"
+  for url in "$base" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$base"; done); do
+    curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "$url" -o "$out" && return 0
+  done; return 1; }
 # install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
 turn_install_host(){
   local svc="$1" owner="$2" lis="$3" con="$4" params="$5" inst dir bin arch url
@@ -56,7 +62,7 @@ turn_install_host(){
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   mkdir -p "$dir"
   info "  migrating $(b "$svc") — downloading $owner from GitHub (up to ~2 min)…"
-  curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "$url" -o "$bin" && chmod +x "$bin" || ok=0
+  dl_turn_bin "$owner" "$arch" "$bin" && chmod +x "$bin" || ok=0
   # remember the proxy's settings so it survives a failed download: repo.txt (reinstall owner), version, turn.env, the unit.
   printf '%s\n' "$owner" > "$dir/repo.txt"; chmod 644 "$dir/repo.txt" 2>/dev/null || true
   ver=unknown; [ "$ok" = 1 ] && ver="$(curl -fsS -o /dev/null -w '%{redirect_url}' --connect-timeout 15 --max-time 30 "$url" 2>/dev/null | sed -nE 's#.*/releases/download/([^/]+)/.*#\1#p')"
