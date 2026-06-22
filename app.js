@@ -1366,7 +1366,8 @@ function trackIfaceOps() {
     if (done) {
       const ms = done.phase === "ok" ? 5000 : 10000;
       Store.ifaceOp[key] = { verb: op.verb, phase: done.phase, until: now + ms, err: done.err || "" };
-      setTimeout(() => Store.apply(), ms + 100);
+      setTimeout(() => Store.apply(), 0);        // re-render NOW so the done tag shows on the current screen
+      setTimeout(() => Store.apply(), ms + 100); // and again to clear it when it expires
     }
   }
 }
@@ -1611,7 +1612,9 @@ function trackTurnRestarts() {
     for (const [svc, act] of Object.entries(n.turn_pending || {})) if (act === "restart") seen[n.id + "|" + svc] = true;
   }
   for (const k of Object.keys(_turnRestartPend)) if (!seen[k]) {   // was restarting, now cleared → done
-    turnRestarted[k] = Date.now() + 5000; delete _turnRestartPend[k]; setTimeout(() => Store.apply(), 5100);
+    turnRestarted[k] = Date.now() + 5000; delete _turnRestartPend[k];
+    setTimeout(() => Store.apply(), 0);      // re-render NOW so the "restarted" flash shows on the current screen
+    setTimeout(() => Store.apply(), 5100);   // and again to clear it when the 5s window ends
   }
   for (const k of Object.keys(seen)) _turnRestartPend[k] = true;
 }
