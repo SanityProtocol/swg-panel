@@ -1787,7 +1787,6 @@ function PeersScreen() {
           ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
         </select>
       </label>
-      <span class="grow"></span>
       <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, rows.length)} of ${rows.length}</span>
       <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
       <span class="pager-pg">${page} / ${totalPages}</span>
@@ -3098,7 +3097,7 @@ function PeerViewSheet({ pid, node, iface }) {
   const p = Store.peer(pid);
   if (!p) return html`<${Sheet} title="Peer" foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>Close</button>`}><div class="empty"><b>Peer not found</b>It may have been removed.</div><//>`;
   const u = p.user_id ? Store.user(p.user_id) : null;
-  return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")}
+  return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")} width=${640}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, () => openPeerView(p.id, node, iface))}><${Ic} i="qr"/> QR</button>
@@ -3124,7 +3123,7 @@ function PeerViewSheet({ pid, node, iface }) {
             ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}
           </span></div>
         <div class="pv-dep-grid">
-          <span><span class="k">Server</span> ${Store.nodeName(t.node)}</span>
+          <span><span class="k">Server</span> <span style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></span>
           <span><span class="k">Interface</span> ${t.iface}</span>
           <span><span class="k">Address</span> <span class="addr">${t.ip || "—"}</span></span>
           <span><span class="k">Rate</span> ${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</span>
