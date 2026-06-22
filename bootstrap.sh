@@ -206,6 +206,42 @@ fi
 
 export STEP_BASE="$STEP"          # the installer numbers its steps from here
 
+# ── salvage a leftover node identity (NO recovery marker — e.g. an install/convert interrupted on an
+#    older version). A half-finished node may still hold its token in a docker .env, a moved docker
+#    backup (…​.converted-*), the swg-node container's env, or the bare agent config. Re-using it
+#    re-enrolls this box as the SAME node so it isn't orphaned on the panel (its peers re-sync). ──
+if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ]; then
+  salv_tok=""; salv_url=""; salv_src=""
+  if command -v docker >/dev/null 2>&1; then
+    _env="$(docker inspect swg-node --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)"
+    salv_tok="$(printf '%s\n' "$_env" | sed -n 's/^NODE_TOKEN=//p' | head -1)"
+    salv_url="$(printf '%s\n' "$_env" | sed -n 's/^PANEL_URL=//p' | head -1)"
+    [ -n "$salv_tok" ] && salv_src="the swg-node container"
+  fi
+  if [ -z "$salv_tok" ]; then
+    for _f in /opt/swg-panel-docker/.env $(ls -dt /opt/swg-panel-docker.converted-*/.env 2>/dev/null || true); do
+      [ -f "$_f" ] || continue
+      _t="$(sed -n 's/^NODE_TOKEN=//p' "$_f" | head -1 | tr -d '"')"
+      [ -n "$_t" ] && [ "$_t" != "set-in-nodes-screen" ] && { salv_tok="$_t"; salv_url="$(sed -n 's/^PANEL_URL=//p' "$_f" | head -1 | tr -d '"')"; salv_src="$_f"; break; }
+    done
+  fi
+  if [ -z "$salv_tok" ] && [ -f /etc/swg-agent/config.json ] && command -v python3 >/dev/null 2>&1; then
+    _tu="$(python3 -c 'import json;d=json.load(open("/etc/swg-agent/config.json")).get("panel") or {};print((d.get("token") or "")+"|"+(d.get("url") or ""))' 2>/dev/null || true)"
+    salv_tok="${_tu%%|*}"; salv_url="${_tu#*|}"; [ -n "$salv_tok" ] && salv_src="/etc/swg-agent/config.json"
+  fi
+  if [ -n "$salv_tok" ]; then
+    echo
+    warn "Found a leftover node token on this box ($salv_src) — a previous install/convert that didn't finish."
+    echo "  Re-using it re-enrolls this box as the SAME node, so it isn't orphaned on the panel (its peers re-sync)."
+    _sa=yes; ask_yn "Re-enroll with the recovered token" y _sa
+    if [ "$_sa" = yes ]; then
+      NODE_TOKEN="$salv_tok"; export NODE_TOKEN
+      [ -n "$salv_url" ] && { PANEL_URL="$salv_url"; export PANEL_URL; }
+      echo ":: re-enrolling this node with the recovered token."
+    fi
+  fi
+fi
+
 case "$METHOD-$ROLE" in
   baremetal-master|baremetal-host) export ROLE; SCRIPT="install-host.sh" ;;
   baremetal-node)                  unset ROLE; SCRIPT="install-node.sh" ;;
