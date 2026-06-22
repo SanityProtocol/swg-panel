@@ -1016,6 +1016,7 @@ function NodeDetail({ node: rawName }) {
 
   const live = Store.recon.nodeStatus[name] === "live";
   const blocked = !live || !!nrec.proc_status;   // node down or mid convert/re-install → only recovery actions (rotate key, delete) stay enabled
+  const down = !live && !nrec.proc_status;        // genuinely not reporting (not just mid-convert) → offer one-click Recover in place of rotate-token
   const snap = Store.stats[name];
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === name));
   const onl = here.filter(p => p.targets.some(t => t.node === name && t.online)).length;
@@ -1037,7 +1038,9 @@ function NodeDetail({ node: rawName }) {
           : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Check for updates"} onClick=${e => checkForUpdate(e, nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
         <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit node"} onClick=${() => openNodeEdit(nrec)}><${Ic} i="pencil"/></button>
-        <button class="iconbtn" title="Rotate token (re-enroll / re-install)" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>
+        ${down
+          ? html`<button class="iconbtn recover" title="Recover this node — rotate its token and get a fresh paste-on-the-server install command (the node keeps its peers)" onClick=${() => openNodeRecover(nrec)}><${Ic} i="key"/> recover</button>`
+          : html`<button class="iconbtn" title="Rotate token (re-enroll / re-install)" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>`}
         <button class="iconbtn danger" title=${nrec.removing ? "Force remove node" : "Remove node"} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
       </div>
     </div>
@@ -3425,6 +3428,15 @@ function NodeEditSheet({ node }) {
     <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  <//>`;
+}
+function openNodeRecover(node) { openModal(html`<${NodeRecoverSheet} node=${node}/>`); }
+function NodeRecoverSheet({ node }) {
+  const go = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(r.error || "couldn't generate a recovery command", "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false}/>`); };
+  return html`<${Sheet} title=${"Recover node · " + node.name}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${go}>Generate recovery command</button></>`}>
+    <div class="notice"><${Ic} i="info"/><span>This node isn't reporting. Generating a recovery command rotates its token and gives you a one-line command to paste on the server — it re-installs/recovers <b>${node.name}</b> as the <b>same node</b>, so its interfaces and peers come straight back (no need to find the old token).</span></div>
+    <div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>The node's current token stops working immediately — use this only when the node is genuinely down or you've lost its install command.</span></div>
   <//>`;
 }
 function openNodeRotate(node) { openModal(html`<${NodeRotateSheet} node=${node}/>`); }

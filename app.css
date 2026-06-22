@@ -860,6 +860,10 @@ a.tg:hover{filter:brightness(1.25)}
   display:inline-flex;align-items:center;justify-content:center;transition:all .14s}
 .iconbtn:hover{color:var(--ink);background:var(--raise);border-color:var(--line-solid)}
 .iconbtn.danger:hover{color:var(--dangling);border-color:var(--dangling)}
+/* down-node Recover button (replaces the rotate-token icon): green, labelled */
+.iconbtn.recover{width:auto;gap:5px;padding:0 10px;color:var(--online);border-color:color-mix(in srgb,var(--online) 45%,transparent);background:color-mix(in srgb,var(--online) 12%,transparent);font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.iconbtn.recover:hover{color:#04110b;background:var(--online);border-color:var(--online)}
+.iconbtn.recover svg{width:14px;height:14px}
 .linkbtn{background:none;border:0;color:var(--brand);cursor:pointer;padding:0;font:inherit}
 .linkbtn.danger{color:var(--dangling)}
 .cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:flex-start}
