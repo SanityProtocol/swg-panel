@@ -1752,16 +1752,23 @@ function PeersScreen() {
   for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
   const orphans = !agg ? Store.recon.orphans.filter(o => o.node === node && o.iface === iface) : [];
 
+  // pagination — default 20/page; the +N badge still reflects ALL rows (shownByPeer above), not the page.
+  const pageSize = peersView.pageSize || 20;
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = Math.min(Math.max(1, peersView.page || 1), totalPages);
+  const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
+  const setPage = p => { peersView.page = p; force(x => x + 1); };
+
   return html`<div class="screen">
     <${StoreOffBanner}/>
     <div class="toolbar">
       <div class="search"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${peersView.q}
-        onInput=${e => { peersView.q = e.target.value.trim(); force(x => x + 1); }}/></div>
-      <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; force(x => x + 1); }}>
+        onInput=${e => { peersView.q = e.target.value.trim(); peersView.page = 1; force(x => x + 1); }}/></div>
+      <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}>
         ${multiServer ? html`<option value="*">All servers</option>` : null}
         ${fleet.map(n => html`<option value=${n.id}>${n.name}</option>`)}
       </select>
-      <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; force(x => x + 1); }}>
+      <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; peersView.page = 1; force(x => x + 1); }}>
         ${(node === "*" || ifaceOpts.length > 1) ? html`<option value="*">All interfaces</option>` : null}
         ${ifaceOpts.length ? ifaceOpts.map(i => html`<option value=${i}>${i}</option>`) : (node === "*" ? null : html`<option value="">no interfaces reported</option>`)}
       </select>
@@ -1773,7 +1780,19 @@ function PeersScreen() {
       ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
     </span><span class="count">${rows.length}</span></div>
-    <${PeerGrid} rows=${rows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q}/>
+    ${rows.length > 20 ? html`<div class="pager">
+      <label class="pager-size">Rows per page
+        <select class="selwrap" value=${pageSize} onChange=${e => { peersView.pageSize = +e.target.value; peersView.page = 1; force(x => x + 1); }}>
+          ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
+        </select>
+      </label>
+      <span class="grow"></span>
+      <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, rows.length)} of ${rows.length}</span>
+      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
+      <span class="pager-pg">${page} / ${totalPages}</span>
+      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>Next ›</button>
+    </div>` : null}
 
     ${orphans.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged here</h2></div>
