@@ -396,10 +396,12 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const pend = (nrec.turn_pending || {})[tp.service];
   const err = (nrec.cmd_errors || {})[tp.service];
   const down = tp.running === false;
+  const installing = !!tp.installing;
   const justRestarted = !pend && turnRestarted[node + "|" + tp.service] && Date.now() < turnRestarted[node + "|" + tp.service];
-  return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "") + (down && !pend ? " down" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(node, tp) : null}>
+  return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "") + ((down || installing) && !pend ? " down" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(node, tp) : null}>
     <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${pend
       ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${TURN_PEND[pend] || pend}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
+      : installing ? html`<span class="tg tg-busy" title="Downloading the binary and starting the container on the node"><${Ic} i="clock"/>installing</span>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
     <div class="ifcard-rows">
