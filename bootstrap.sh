@@ -19,6 +19,10 @@
 #
 # Override the source with SWG_REPO / SWG_REF (branch or tag). Anything else is passed through.
 set -euo pipefail
+# Survive being launched from a directory that no longer exists — common right after an uninstall
+# removed it (the shell stays "in" the deleted dir, getcwd() fails, and git/curl refuse to run).
+# Step into a guaranteed-present directory before doing anything.
+cd / 2>/dev/null || cd "${TMPDIR:-/tmp}" 2>/dev/null || true
 REPO="${SWG_REPO:-https://github.com/SanityProtocol/swg-panel}"
 REF="${SWG_REF:-main}"
 
