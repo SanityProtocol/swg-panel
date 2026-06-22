@@ -90,8 +90,13 @@ elif [ -n "${NODE_IFACES:-}" ]; then
     add_iface "$name" "$ep"; IFS=','
   done
   IFS="$OIFS"
+elif ls "$AWG_DIR"/*.conf >/dev/null 2>&1; then
+  # No mounted confs and no NODE_IFACES spec, but the node already has panel-created confs persisted
+  # in AWG_DIR (e.g. kept across an uninstall/reinstall). THOSE are the interface set — handled by the
+  # re-manage loop below. Do NOT also invent the default awg0: it would collide on :51820 and show DOWN.
+  log "using persisted interface conf(s) — not generating a default bootstrap interface"
 else
-  # single-interface fallback (back-compat)
+  # single-interface fallback (back-compat) — only when the node has no interfaces at all
   name="${NODE_IFACE:-awg0}"
   plain=no; [ "${NODE_PLAIN_WG:-no}" = yes ] && plain=yes
   if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"; add_iface "$name" "$NODE_ENDPOINT"

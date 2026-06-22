@@ -1006,8 +1006,8 @@ def _dturn_download(svc, owner):
     binp = _turn_bin_local(svc)
     try: os.makedirs(os.path.dirname(binp), exist_ok=True)
     except OSError as e: return "mkdir: " + str(e)
-    r = run(["curl", "-fsSL", "--connect-timeout", "10", "--max-time", "180", "--retry", "2",
-             "--retry-all-errors", url, "-o", binp], timeout=210)
+    r = run(["curl", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
+             "--retry-delay", "3", "--retry-all-errors", url, "-o", binp], timeout=320)
     if r.returncode != 0: return (r.stderr or "binary download failed").strip()[:160]
     with contextlib.suppress(OSError): os.chmod(binp, 0o755)
     return ""
@@ -1067,6 +1067,9 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
         derr = _dturn_download(svc, tp["owner"])
         if derr:
             print("swg-noded: turn %s binary download failed: %s" % (svc, derr), flush=True)
+    if not os.path.exists(_turn_bin_local(svc)):   # no binary (download timed out) → don't create a broken container; the periodic reconcile retries
+        print("swg-noded: turn %s has no binary yet — will retry on the next pass" % svc, flush=True)
+        return
     rr = _dturn_run(tp)
     if rr.returncode != 0:
         print("swg-noded: turn %s 'docker run' failed: %s" % (svc, (rr.stderr or rr.stdout or "").strip()[:200]), flush=True)
