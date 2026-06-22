@@ -339,6 +339,8 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     else warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"; fi
   fi
   clear_recovery   # convert finished cleanly → drop the recovery marker
+  echo; info "Conversion complete — the node is bare-metal now."
+  exit 0           # done (this block no longer execs install-node.sh, so end here, not the catch-all die)
 fi
 
 # ── NODE: bare-metal → docker ──

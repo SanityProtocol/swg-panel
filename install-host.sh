@@ -1304,4 +1304,4 @@ else
   echo "  Edit      panel $(b /etc/swg-panel/)"
 fi
 [ "$TLS_MODE" = selfsigned ] && echo "  Note      self-signed cert — the browser warns once, that's expected"
-$DRYRUN && { echo; ok "DRY RUN done — inspect ./dryrun"; }
+if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command
