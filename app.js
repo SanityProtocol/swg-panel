@@ -2807,7 +2807,11 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   useEffect(() => { onChange(Object.values(sel)); }, [sel]);
 
   if (!targets.length) return html`<div class="hint">No interfaces available — is a node online?</div>`;
-  return html`<div class="targetpick">${targets.map(t => {
+  const ordered = [...targets].sort((a, b) =>   // checked first, then by node name, then interface
+    (sel[tkey(a.node, a.iface)] ? 0 : 1) - (sel[tkey(b.node, b.iface)] ? 0 : 1)
+    || (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
+    || (a.iface || "").localeCompare(b.iface || ""));
+  return html`<div class="targetpick">${ordered.map(t => {
     const k = tkey(t.node, t.iface); const s = sel[k];
     return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "")}>
       <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
