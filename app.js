@@ -2822,10 +2822,9 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
       <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
         <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
-        <${Tag} kind=${ity} label=${t.iface}/></label>
-      ${s ? (s.existing
-        ? html`<span class="topt-ip existing" title="Current address — already deployed here">${s.ip || "—"}</span>`
-        : html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>`) : null}
+        <span class="tp">${t.iface}</span></label>
+      <${Tag} kind=${ity} label=${ity}/>
+      ${s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>` : null}
     </div>`;
   })}</div>`;
 }
@@ -2991,11 +2990,13 @@ function AddTargetSheet({ peer, back }) {
 
   const initial = useMemo(() => peer.targets.map(t => ({ node: t.node, iface: t.iface, ip: t.ip })), [peer.id]);
   const haveKeys = new Set(peer.targets.map(t => tkey(t.node, t.iface)));
+  const origIp = {}; peer.targets.forEach(t => origIp[tkey(t.node, t.iface)] = String(t.ip || "").split("/")[0]);
   const chosenKeys = new Set(chosen.map(c => tkey(c.node, c.iface)));
   const added = chosen.filter(c => !haveKeys.has(tkey(c.node, c.iface)));         // newly checked
   const removed = peer.targets.filter(t => !chosenKeys.has(tkey(t.node, t.iface))); // unchecked existing
-  const badIp = added.some(c => !c.ip || !V.ipv4(String(c.ip).split("/")[0]));
-  const nochange = !added.length && !removed.length;
+  const ipChanged = chosen.filter(c => haveKeys.has(tkey(c.node, c.iface)) && c.ip && String(c.ip).split("/")[0] !== origIp[tkey(c.node, c.iface)]);  // existing whose address was edited
+  const badIp = added.concat(ipChanged).some(c => !c.ip || !V.ipv4(String(c.ip).split("/")[0]));
+  const nochange = !added.length && !removed.length && !ipChanged.length;
 
   const doSave = async () => {
     setBusy(true); setMsg({ k: "work", t: "applying…" });
@@ -3011,6 +3012,14 @@ function AddTargetSheet({ peer, back }) {
       if (r.ok) { if (conf) (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(t.node, t.iface)] = conf; }
       else fails.push(Store.nodeName(t.node) + "/" + t.iface + " (add)");
     }
+    for (const t of ipChanged) {
+      const info = Store.ifaceMeta(t.node, t.iface);
+      const ipClean = String(t.ip || "").split("/")[0];
+      const body = { peer_id: peer.id, node: t.node, iface: t.iface, ip: ipClean };
+      if (srcConf && Store.storeConfigs) { const s = parseFullConf(srcConf); const conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); body.config = conf; (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(t.node, t.iface)] = conf; }
+      const r = await api.peerUpdateTarget(body);
+      if (!r.ok) fails.push(Store.nodeName(t.node) + "/" + t.iface + " (address)");
+    }
     for (const t of removed) {
       const r = await api.peerRemoveTarget({ peer_id: peer.id, node: t.node, iface: t.iface });
       if (!r.ok) fails.push(Store.nodeName(t.node) + "/" + t.iface + " (remove)");
@@ -3021,7 +3030,7 @@ function AddTargetSheet({ peer, back }) {
   };
   const save = () => {
     if (nochange) { back(); return; }
-    if (badIp) return setMsg({ k: "err", t: "A newly-added target has an invalid address." });
+    if (badIp) return setMsg({ k: "err", t: "A target has an invalid address." });
     if (chosen.length === 0) {                       // a peer must live on at least one interface — none left = delete it
       pushModal(html`<${ConfirmSheet} title="Delete this peer?" confirmLabel="Yes, delete" danger=${true}
         body=${"You've unchecked every interface, so there's nothing left to deploy this peer to — saving will completely delete it. Its access is revoked everywhere and its config / QR stops working. This action is irreversible. Are you sure you want to continue?"}
@@ -3033,15 +3042,20 @@ function AddTargetSheet({ peer, back }) {
         }}/>`);
       return;
     }
-    if (removed.length) {
-      pushModal(html`<${ConfirmSheet} title=${"Remove from " + removed.length + " interface" + (removed.length > 1 ? "s" : "") + "?"} confirmLabel="Remove & apply" danger=${true}
-        body=${"You unchecked " + removed.length + " interface" + (removed.length > 1 ? "s" : "") + " this peer is currently deployed on (" + removed.map(t => Store.nodeName(t.node) + "/" + t.iface).join(", ") + "). Saving removes the peer from " + (removed.length > 1 ? "them" : "it") + " — the live tunnel drops immediately and the client can no longer connect through " + (removed.length > 1 ? "those interfaces" : "that interface") + ". This can't be undone."}
+    if (removed.length || ipChanged.length) {
+      const parts = [];
+      if (removed.length) parts.push("Remove the peer from " + removed.map(t => Store.nodeName(t.node) + "/" + t.iface).join(", ") + " — " + (removed.length > 1 ? "those tunnels drop" : "that tunnel drops") + " immediately and the client can no longer connect through " + (removed.length > 1 ? "them" : "it") + ".");
+      if (ipChanged.length) parts.push("Change the peer's address on " + ipChanged.map(c => Store.nodeName(c.node) + "/" + c.iface).join(", ") + " — the config / QR already handed out for " + (ipChanged.length > 1 ? "those interfaces stops" : "that interface stops") + " connecting, so you'll need to re-issue and re-distribute " + (ipChanged.length > 1 ? "them" : "it") + ".");
+      const title = removed.length && ipChanged.length ? "Apply these changes?"
+        : removed.length ? ("Remove from " + removed.length + " interface" + (removed.length > 1 ? "s" : "") + "?")
+        : ("Change " + ipChanged.length + " address" + (ipChanged.length > 1 ? "es" : "") + "?");
+      pushModal(html`<${ConfirmSheet} title=${title} confirmLabel="Save changes" danger=${true} body=${parts.join(" ") + " This can't be undone."}
         onConfirm=${async () => { if (await doSave()) { closeModal(); back(); } }}/>`);
     } else doSave().then(ok => { if (ok) back(); });
   };
 
   return html`<${Sheet} title=${"Peer targets"} onClose=${back}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button><button class=${"btn " + (chosen.length === 0 ? "btn-danger" : "btn-primary")} disabled=${busy || !confLoaded || nochange} onClick=${save}>${chosen.length === 0 ? "Delete peer" : (removed.length ? "Save changes" : "Deploy")}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button><button class=${"btn " + (chosen.length === 0 ? "btn-danger" : "btn-primary")} disabled=${busy || !confLoaded || nochange} onClick=${save}>${chosen.length === 0 ? "Delete peer" : ((removed.length || ipChanged.length) ? "Save changes" : "Deploy")}</button></>`}>
     ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : html`<${Fragment}>
         ${added.length && !srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
@@ -3219,8 +3233,11 @@ function EditPeerSheet({ peer, focus, done, flash }) {
     <div class="field"><label>Addresses</label>
       <div class="targetpick">${peer.targets.map(t => {
         const k = tkey(t.node, t.iface);
+        const im = (Store.describe[t.node] || {})[t.iface] || {};
+        const ity = (im.awg_params && Object.keys(im.awg_params).length) ? "awg" : "wg";
         return html`<div class="targetopt sel locked" key=${k}>
-          <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="swatch" style=${"background:" + Store.nodeColor(t.node)}></span><span class="nm">${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
+          <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
+          <${Tag} kind=${ity} label=${ity}/>
           <input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>
         </div>`;
       })}</div>
