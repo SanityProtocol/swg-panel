@@ -179,6 +179,15 @@ n = ipaddress.ip_network(sys.argv[1], strict=False)
 print(f"{next(n.hosts())}/{n.prefixlen}")
 PY
 }
+# pick a default tunnel subnet that isn't already taken — by a queued spec OR a persisted interface — so a
+# 2nd interface doesn't collide with a non-default subnet the user chose for the 1st (and v_subnet_free rejects a typed dup).
+_net24(){ local ip="${1%%/*}" m="${1##*/}"; [ "$1" = "$m" ] && m=24; printf '%s.0/%s' "${ip%.*}" "$m"; }   # 10.9.0.1/24 → 10.9.0.0/24
+subnet_used(){ local s n a; s="$(_net24 "$1")"
+  for n in ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do [ -n "${SPEC_SUBNET[$n]:-}" ] && [ "$(_net24 "${SPEC_SUBNET[$n]}")" = "$s" ] && return 0; done
+  for n in "${!IF_CONF[@]}"; do a="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "${IF_CONF[$n]}" 2>/dev/null | head -1)"; [ -n "$a" ] && [ "$(_net24 "$a")" = "$s" ] && return 0; done
+  return 1; }
+next_free_subnet(){ local i="${1:-0}" cand; while [ "$i" -lt 255 ]; do cand="10.$(( (8 + i) % 256 )).0.0/24"; subnet_used "$cand" || { echo "$cand"; return; }; i=$((i+1)); done; echo "10.$(( (8 + ${1:-0}) % 256 )).0.0/24"; }
+v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return 0; }
 # Two-phase interface creation: spec_iface() only PROMPTS and queues a spec, so the user can add
 # every interface up front; apply_specs() then installs tools + writes confs + brings them all up
 # once, at the end. Queued names show in 'mine' (via CREATED) and block name collisions immediately.
@@ -200,9 +209,9 @@ spec_iface(){ # prompt for one interface and queue it (no install yet)
     fi
     break
   done
-  defport=$(iface_default_port "$idx"); defsub="10.$(( (8 + idx) % 255 )).0.0/24"
+  defport=$(iface_default_port "$idx"); defsub="$(next_free_subnet "$idx")"
   ask_valid "Listen port" "$defport" port v_freeport "port 1–65535 and free (not already in use)"
-  ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet "enter a CIDR, e.g. 10.8.0.0/24"
+  ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet_free "a CIDR not already used, e.g. 10.8.0.0/24"
   addr="$(server_addr "$subnet")"
   echo "    server address $(col "$C_GREEN" "$addr") — peers get the rest of $subnet"
   wan="$(detect_wan)"; [ -n "$wan" ] || wan=eth0             # auto WAN egress NIC — clients NAT out this (change it later in the panel)
