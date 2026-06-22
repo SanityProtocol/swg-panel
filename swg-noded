@@ -1003,18 +1003,31 @@ def _dturn_args(tp):
         except Exception: args += p.split()
     return args
 
+def _turn_dl_urls(owner, arch):
+    """GitHub release assets are single-origin (objects.githubusercontent.com). Try GitHub direct first, then
+    any operator-configured proxy mirrors (SWG_TURN_MIRROR, space-separated prefixes — OPT-IN: proxying a binary
+    you execute is a supply-chain trust decision, so it's off by default)."""
+    base = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
+    urls = [base]
+    for m in (os.environ.get("SWG_TURN_MIRROR") or "").split():
+        urls.append(m.rstrip("/") + "/" + base)   # e.g. https://ghproxy.example/https://github.com/<owner>/releases/...
+    return urls
+
 def _dturn_download(svc, owner):
     arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
-    url = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
     binp = _turn_bin_local(svc)
     try: os.makedirs(os.path.dirname(binp), exist_ok=True)
     except OSError as e: return "mkdir: " + str(e)
-    r = run(["curl", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
-             "--retry-delay", "3", "--retry-all-errors", url, "-o", binp], timeout=320)
-    if r.returncode != 0: return (r.stderr or "binary download failed").strip()[:160]
-    with contextlib.suppress(OSError): os.chmod(binp, 0o755)
-    _turn_write_version(svc, _turn_resolve_tag(owner))   # record which release tag we just fetched
-    return ""
+    err = "binary download failed"
+    for url in _turn_dl_urls(owner, arch):
+        r = run(["curl", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
+                 "--retry-delay", "3", "--retry-all-errors", url, "-o", binp], timeout=320)
+        if r.returncode == 0:
+            with contextlib.suppress(OSError): os.chmod(binp, 0o755)
+            _turn_write_version(svc, _turn_resolve_tag(owner))   # record which release tag we just fetched
+            return ""
+        err = (r.stderr or "binary download failed").strip()[:160]
+    return err
 
 def _dturn_run(tp):   # (re)create the container to match tp; returns the docker-run CompletedProcess
     svc = tp["service"]; cn = _turn_cname(svc)
@@ -1094,6 +1107,8 @@ def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
 _DTURN_RUN = {"at": 0.0, "set": set()}
 _TURN_INSTALLING = set()   # services whose container is being downloaded/(re)created RIGHT NOW → "installing"
 _TURN_FAILED = set()       # services whose last install/run attempt errored → "install failed" on the panel
+_TURN_ATTEMPTS = {}        # svc -> consecutive failed-download count; the bg reconcile STOPS retrying after
+TURN_MAX_ATTEMPTS = 4      # this many (so a stuck 502/timeout becomes "install failed", not an endless "installing"). A manual Reinstall resets it.
 def _dturn_attach_running(tps):
     nowt = time.time()
     if nowt - _DTURN_RUN["at"] >= 15:
@@ -1114,18 +1129,27 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
         return
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
     if (r.stdout or "").strip() == "true":
-        _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc)
+        _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None)
+        return
+    if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS and not os.path.exists(_turn_bin_local(svc)):
+        _TURN_FAILED.add(svc); _TURN_INSTALLING.discard(svc)   # given up — leave it "install failed"; a manual Reinstall resets the counter
         return
     _TURN_INSTALLING.add(svc)   # downloading / (re)creating now → the panel shows it as "installing"
     try:
         if not os.path.exists(_turn_bin_local(svc)) and tp.get("owner"):
             derr = _dturn_download(svc, tp["owner"])
             if derr:
-                print("swg-noded: turn %s binary download failed: %s" % (svc, derr), flush=True)
-        if not os.path.exists(_turn_bin_local(svc)):   # no binary (download timed out) → don't create a broken container; the reconcile retries
-            _TURN_FAILED.add(svc)
-            print("swg-noded: turn %s has no binary yet — will retry on the next pass" % svc, flush=True)
+                _TURN_ATTEMPTS[svc] = _TURN_ATTEMPTS.get(svc, 0) + 1
+                print("swg-noded: turn %s binary download failed (attempt %d/%d): %s" % (svc, _TURN_ATTEMPTS[svc], TURN_MAX_ATTEMPTS, derr), flush=True)
+        if not os.path.exists(_turn_bin_local(svc)):   # no binary yet
+            if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS:   # stop the endless "installing" → mark failed + report it
+                _TURN_FAILED.add(svc)
+                NODE_ERRORS[svc] = "binary download failed after %d attempts — Reinstall to retry" % TURN_MAX_ATTEMPTS
+                print("swg-noded: turn %s — gave up after %d download attempts; Reinstall from the panel to retry" % (svc, TURN_MAX_ATTEMPTS), flush=True)
+            else:
+                print("swg-noded: turn %s has no binary yet — will retry on the next pass" % svc, flush=True)
             return
+        _TURN_ATTEMPTS.pop(svc, None); NODE_ERRORS.pop(svc, None)   # got the binary → clear any prior failure
         rr = _dturn_run(tp)
         if rr.returncode != 0:
             _TURN_FAILED.add(svc)
@@ -1291,6 +1315,7 @@ def apply_turn(turn, turn_onboard):
                     if req.get("owner"): tp["owner"] = req["owner"].strip()
                     if not tp.get("owner"):
                         fail(svc, "no owner repo for reinstall"); continue
+                    _TURN_ATTEMPTS.pop(svc, None)   # manual retry → clear the give-up counter so the bg reconcile resumes if this one also fails
                     with contextlib.suppress(OSError): os.remove(_turn_bin_local(svc))
                     with contextlib.suppress(OSError): os.remove(_turn_ver_path(svc))
                     derr = _dturn_download(svc, tp["owner"])

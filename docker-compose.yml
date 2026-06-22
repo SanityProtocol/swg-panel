@@ -77,6 +77,7 @@ services:
       TURN_MANAGE: "${TURN_MANAGE:-manual}"  # panel = the installer mounted docker.sock so swg-noded can run turn-proxy CONTAINERS; manual = no socket
       SWG_TURN_IMAGE: "${SWG_TURN_IMAGE:-ghcr.io/sanityprotocol/swg-node:latest}"  # image swg-noded runs each turn-proxy container from
       SWG_HOST_NODE_DIR: "${SWG_HOST_NODE_DIR:-}"   # absolute HOST path of ./data/node — for bind-mounting the turn binary into its container
+      SWG_TURN_MIRROR: "${SWG_TURN_MIRROR:-}"   # OPT-IN: space-separated GitHub proxy prefix(es) to fall back to if the direct release download fails (you must trust them to serve the right binary)
       # Single interface (default), or several via NODE_IFACES (see .env.example):
       NODE_IFACE: "${NODE_IFACE:-awg0}"
       NODE_IFACES: "${NODE_IFACES:-}"     # "name:port:addr[:proto[:endpoint]],…"  (blank = use NODE_IFACE)
