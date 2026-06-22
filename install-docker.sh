@@ -207,24 +207,45 @@ json.dump({"turn_proxies": tps}, open(p, "w"))
 PY
   fi
   ok "configured turn-proxy $(col "$C_GREEN" "$inst") ($owner) — $listen → $connect (starts as a container on first run)"; }
+# every wg/awg interface on this node as "<name> <listen-port> <proto>": persisted node-confs (AUTHORITATIVE
+# ListenPort) first, then this session's NODE_IFACES additions not already on disk. Drives the turn-proxy
+# forward-to picker so it lists ALL interfaces with their REAL ports — not just the bootstrap NODE_IFACE on a
+# stale .env port (which is why a re-install showed only awg0:51820 + the new iface, missing wg2/wg4).
+node_iface_rows(){
+  local seen=" " c n pt pr e _ifs
+  if [ -d "$INSTALL_DIR/data/node-confs" ]; then
+    for c in "$INSTALL_DIR/data/node-confs/"*.conf; do [ -f "$c" ] || continue
+      n="$(basename "$c" .conf)"
+      pt="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$c" | head -1)"
+      if grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I[1-5]|Itime)[[:space:]]*=' "$c"; then pr=awg; else pr=wg; fi
+      case "$seen" in *" $n "*) :;; *) printf '%s %s %s\n' "$n" "${pt:-?}" "$pr"; seen="$seen$n ";; esac
+    done
+  fi
+  if [ -n "${NODE_IFACES:-}" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"
+    for e in "${_ifs[@]}"; do
+      n="$(printf '%s' "$e"|cut -d: -f1)"; pt="$(printf '%s' "$e"|cut -d: -f2)"; pr="$(printf '%s' "$e"|cut -d: -f4)"
+      [ "$pr" = wg ] || pr=awg; [ -n "$n" ] || continue
+      case "$seen" in *" $n "*) :;; *) printf '%s %s %s\n' "$n" "${pt:-?}" "$pr"; seen="$seen$n ";; esac
+    done
+  fi
+}
 install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in choose_turn_proxy)
   local sel="$1" owner pub port connect; owner="$(turn_repo_owner "$sel")" || { warn "unknown turn-proxy branch: $sel"; return 0; }
   ask_valid "Public IP this turn-proxy is reached at" "${NODE_ENDPOINT:-$(detect_public_ip)}" pub v_host "an IP or hostname"
   ask_valid "Turn-proxy listen port" "$(turn_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
   detect_turn; local n; for n in "${!TP_LISTEN[@]}"; do [ "${TP_LISTEN[$n]##*:}" = "$port" ] && { warn "port $port is already used by turn-proxy '$n' — pick another port (enter 'new' again)"; return 0; }; done
-  local defport="${NODE_LISTEN_PORT:-51820}" _e _nm _pt _pr label clabel pad _ifs
+  local defport="${NODE_LISTEN_PORT:-51820}" _nm _pt _pr label clabel pad rows
+  rows="$(node_iface_rows)"
   echo
   echo "  Available wg/awg interfaces:"
-  if [ -n "$NODE_IFACES" ]; then
-    IFS=',' read -ra _ifs <<< "$NODE_IFACES"
-    defport="$(printf '%s' "${_ifs[0]}" | cut -d: -f2)"
-    for _e in "${_ifs[@]}"; do
-      _nm="$(printf '%s' "$_e"|cut -d: -f1)"; _pt="$(printf '%s' "$_e"|cut -d: -f2)"; _pr="$(printf '%s' "$_e"|cut -d: -f4)"
+  if [ -n "$rows" ]; then
+    defport="$(printf '%s\n' "$rows" | head -1)"; defport="${defport#* }"; defport="${defport%% *}"   # first interface's real port
+    while read -r _nm _pt _pr; do [ -n "$_nm" ] || continue
       [ "$_pr" = wg ] && _pr=wg || _pr=awg
       label="$_nm on $_pr"; clabel="$(col "$C_GREEN" "$_nm") on $(b "$_pr")"
       pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
       printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$_pt")"
-    done
+    done <<< "$rows"
   else
     _pr=awg; [ "${NODE_PLAIN_WG:-}" = yes ] && _pr=wg
     label="$NODE_IFACE on $_pr"; clabel="$(col "$C_GREEN" "$NODE_IFACE") on $(b "$_pr")"
@@ -460,7 +481,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
 # subnet (10.x.y.0/24) -> the server's interface address (10.x.y.1/24). Accepts either form as input.
 server_addr(){ python3 -c "import ipaddress,sys;n=ipaddress.ip_network(sys.argv[1],strict=False);print('%s/%d'%(next(n.hosts()),n.prefixlen))" "$1" 2>/dev/null || echo "$1"; }
 net_of(){      python3 -c "import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))" "$1" 2>/dev/null || echo "$1"; }
-fwd_ifaces(){ local cp="${1##*:}" e nm pt out=""; local -a _e; IFS=',' read -ra _e <<<"$NODE_IFACES"; for e in "${_e[@]}"; do IFS=':' read -r nm pt _ <<<"$e"; [ -n "$pt" ] && [ "$pt" = "$cp" ] && out="${out:+$out }$nm"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by listen port)
+fwd_ifaces(){ local cp="${1##*:}" nm pt pr out=""; while read -r nm pt pr; do [ -n "$nm" ] && [ "$pt" = "$cp" ] && out="${out:+$out }$nm"; done <<< "$(node_iface_rows)"; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by REAL listen port across node-confs + this session)
 ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirrors bare-metal
   step "WireGuard / AmneziaWG setup" "(this interface has its own endpoint IP)"
   echo
