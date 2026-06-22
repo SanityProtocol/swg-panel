@@ -46,6 +46,12 @@ signal_status(){
   curl -fsS $ins --max-time 8 -X POST -H "Authorization: Bearer $NTOK" -H "Content-Type: application/json" \
     --data "{\"state\":\"$1\"}" "${PURL%/}/api/node/proc-status" >/dev/null 2>&1 || true
 }
+# if the convert aborts (error / Ctrl-C) AFTER we told the panel "converting…" but BEFORE the installer handoff,
+# clear that marker so the node's real (down/stale) status shows instead of a stuck "converting…".
+CONVERT_SIGNALED=""; CONVERT_HANDOFF=""; _convert_aborted=""
+_convert_abort(){ [ -n "$_convert_aborted" ] && return; _convert_aborted=1
+  [ -n "$CONVERT_SIGNALED" ] && [ -z "$CONVERT_HANDOFF" ] && signal_status ""; }
+trap _convert_abort EXIT INT TERM
 
 # download the turn-proxy server binary: GitHub direct first, then any SWG_TURN_MIRROR proxy prefix(es). Opt-in
 # (off by default) — a proxy serving a binary you execute is a supply-chain trust decision. dl_turn_bin <owner> <arch> <out>
@@ -231,7 +237,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   [ -n "$conflicts" ] && die "interface name clash: $conflicts (run with --check first)"
 
   info "Converting the docker node → bare-metal — keeping its token, endpoint and interfaces."
-  signal_status converting-bare     # tell the panel before the datapath goes down
+  signal_status converting-bare; CONVERT_SIGNALED=1     # tell the panel before the datapath goes down
   # 1) stop the docker datapath so it releases the wg UDP ports + /dev/net/tun
   if command -v docker >/dev/null 2>&1; then
     docker rm -f swg-node >/dev/null 2>&1 || true
@@ -275,6 +281,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   #    created after the tools install). Same token ⇒ the panel keeps one node.
   info "Running install-node.sh — adopt $(b "$names") (and add more if you want), then it wires the daemon…"
   echo
+  CONVERT_HANDOFF=1   # installer takes over the "converting…" marker (its swg-noded clears it once the bare node reports)
   exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
        SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh"
 fi
@@ -342,7 +349,7 @@ EOF
   # 2) tear down the bare-metal datapath — free the wg ports + remove its units/files. NO panel
   #    goodbye (the token is reused, so the panel keeps this node). Turn-proxies are offered for transfer below.
   info "Stopping the bare-metal node…"
-  signal_status converting-docker   # tell the panel before the datapath goes down
+  signal_status converting-docker; CONVERT_SIGNALED=1   # tell the panel before the datapath goes down
   systemctl disable --now swg-noded 2>/dev/null || true
   while IFS="$(printf '\t')" read -r nm src; do
     [ -n "$nm" ] || continue
@@ -362,6 +369,7 @@ EOF
   #    stack up. Same token ⇒ the panel keeps one node.
   info "Running install-docker.sh (docker node) — adopt $(b "$names") and finish the setup…"
   echo
+  CONVERT_HANDOFF=1   # installer takes over the "converting…" marker (its node clears it once the docker node reports)
   exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" NODE_ENDPOINT="$NEP" TLS_VERIFY="$NVERIFY" \
        bash "$SRC/install-docker.sh" node
 fi

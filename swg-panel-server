@@ -956,7 +956,9 @@ def api(method, path, qs, body, deps):
                         "transport": "https",
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
-                        "proc_status": (c.get("proc_status") or {}).get("state"),   # re-install / convert in progress
+                        # re-install / convert in progress — but drop a marker older than 30min (a hung/killed
+                        # convert that never reported back), so the node's real status surfaces again.
+                        "proc_status": (lambda p: p.get("state") if p.get("state") and time.time() - (p.get("at") or 0) <= 1800 else None)(c.get("proc_status") or {}),
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
@@ -2092,17 +2094,25 @@ class Handler(BaseHTTPRequestHandler):
         snap = body.get("snapshot") or {}
         Handler.deps.setdefault("node_snaps", {})[nid] = snap
         Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
-        if snap and node.get("proc_status"):              # the node checked back in → its re-install/convert is done
-            ps = node.pop("proc_status", None)
-            if (ps or {}).get("state") == "reinstalling":  # a re-install blesses the CURRENT state → re-bless server keys
-                for ov in (node.get("ifaces") or {}).values():
-                    ov.pop("public_key", None)
-                    if isinstance(ov.get("_drift"), dict):
-                        ov["_drift"].pop("public_key", None)
-                        if not ov["_drift"]:
-                            ov.pop("_drift", None)
-            with contextlib.suppress(Exception):
-                nodes_save(Handler.deps["nodes_path"], nodes)
+        if snap and node.get("proc_status"):              # the node checked back in
+            cur_state = (node.get("proc_status") or {}).get("state")
+            tgt = {"converting-bare": "baremetal", "converting-docker": "docker"}.get(cur_state)
+            # a convert is only "done" when the TARGET method reports. A stray snapshot from the OLD method
+            # (the dying container / torn-down units) must NOT clear "converting…", or the UI flips to stale
+            # mid-convert. reinstall (tgt None) clears on any snapshot, as before.
+            if tgt and snap.get("kind") and snap.get("kind") != tgt:
+                pass
+            else:
+                ps = node.pop("proc_status", None)
+                if (ps or {}).get("state") == "reinstalling":  # a re-install blesses the CURRENT state → re-bless server keys
+                    for ov in (node.get("ifaces") or {}).values():
+                        ov.pop("public_key", None)
+                        if isinstance(ov.get("_drift"), dict):
+                            ov["_drift"].pop("public_key", None)
+                            if not ov["_drift"]:
+                                ov.pop("_drift", None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         stats_dir = Handler.deps.get("stats_dir")
         if stats_dir and snap:
             sf = node.get("stats_file", f"stats-{nid}.json")
