@@ -398,12 +398,15 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const installing = !!tp.installing;
   const failed = !!tp.failed;
   const down = tp.running === false && !installing && !failed;   // bare-metal not-running (docker not-running is always installing/failed)
+  const converting = (nrec.proc_status || "").startsWith("converting");   // node is mid bare↔docker convert → every card "converting"
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
-  const dim = !justRestarted && (pend || installing || failed || down || err);   // anything needing attention → dim the card
-  return html`<div class=${"ifcard tp" + (nrec.turn_manage ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage ? () => openTurnManage(node, tp) : null}>
-    <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${pend
+  const dim = converting || (!justRestarted && (pend || installing || failed || down || err));   // anything needing attention → dim the card
+  return html`<div class=${"ifcard tp" + (nrec.turn_manage && !converting ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage && !converting ? () => openTurnManage(node, tp) : null}>
+    <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${converting
+      ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>`
+      : pend
       ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${updating ? "updating" : (TURN_PEND[pend] || pend)}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
       : installing ? html`<span class="tg tg-busy" title="Downloading the binary and starting the container on the node"><${Ic} i="clock"/>installing</span>`
       : failed ? html`<${CmdErr} err=${err || "the install failed on the node"}/><span class="tg tg-busy del"><${Ic} i="warn"/>install failed</span>`
@@ -1084,9 +1087,10 @@ function NodeDetail({ node: rawName }) {
               const deleting = (nrec.deleting || []).includes(ifn);
               const idown = (((Store.stats[name] || {}).interfaces || {})[ifn] || {}).down;   // not up on the node
               const irestarting = (nrec.restarting || []).includes(ifn);
-              const idim = deleting || idown || irestarting || !!(nrec.cmd_errors || {})[ifn];   // anything needing attention → dim the card at a glance
+              const iconverting = (nrec.proc_status || "").startsWith("converting");   // node is mid bare↔docker convert
+              const idim = iconverting || deleting || idown || irestarting || !!(nrec.cmd_errors || {})[ifn];   // anything needing attention → dim the card at a glance
               return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="grow"></span><span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : irestarting ? html`<span class="grow"></span><span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="grow"></span><span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>${iconverting ? html`<span class="grow"></span><span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="grow"></span><span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : irestarting ? html`<span class="grow"></span><span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="grow"></span><span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
