@@ -260,9 +260,11 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .keyrow{display:flex;gap:8px;align-items:center}
 .keyrow input{flex:1;min-width:0}
 .ifcard-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
-.ifcard-top .ifname{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:13.5px}
+/* the name truncates (…) so a long fork name never pushes the status tag + cancel × out of the card */
+.ifcard-top .ifname{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ifcard-top .iftype,.ifcard-top .tg-busy,.ifcard-top .tg-ok,.ifcard-top .tg-warn,.ifcard-top .tg-del,.ifcard-top .cmderr,.ifcard-top .xbtn{flex:none}
 .ifcard-top .rowarrow{color:var(--faint)}
-.ifcard-top .grow{flex:1}
+.ifcard-top .grow{flex:1 1 0;min-width:0}
 .ifcard-rows{display:flex;flex-direction:column;gap:6px}
 .ifrow{display:flex;justify-content:space-between;gap:10px;font-size:12px}
 .ifrow .l{color:var(--dim)} .ifrow .r{font-family:var(--mono);color:var(--ink-2)}
