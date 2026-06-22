@@ -211,34 +211,55 @@ export STEP_BASE="$STEP"          # the installer numbers its steps from here
 #    backup (…​.converted-*), the swg-node container's env, or the bare agent config. Re-using it
 #    re-enrolls this box as the SAME node so it isn't orphaned on the panel (its peers re-sync). ──
 if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ]; then
-  salv_tok=""; salv_url=""; salv_src=""
+  _salvf="$(mktemp 2>/dev/null || echo "/tmp/swg-salv.$$")"; : > "$_salvf"
+  # collect every candidate identity as "<token>\t<url>\t<source>" — most authoritative first: a leftover
+  # swg-node container, then docker .env (live + moved backups, NEWEST first), then the bare agent config.
   if command -v docker >/dev/null 2>&1; then
     _env="$(docker inspect swg-node --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null || true)"
-    salv_tok="$(printf '%s\n' "$_env" | sed -n 's/^NODE_TOKEN=//p' | head -1)"
-    salv_url="$(printf '%s\n' "$_env" | sed -n 's/^PANEL_URL=//p' | head -1)"
-    [ -n "$salv_tok" ] && salv_src="the swg-node container"
+    _t="$(printf '%s\n' "$_env" | sed -n 's/^NODE_TOKEN=//p' | head -1)"
+    [ -n "$_t" ] && printf '%s\t%s\t%s\n' "$_t" "$(printf '%s\n' "$_env" | sed -n 's/^PANEL_URL=//p' | head -1)" "the swg-node container" >> "$_salvf"
   fi
-  if [ -z "$salv_tok" ]; then
-    for _f in /opt/swg-panel-docker/.env $(ls -dt /opt/swg-panel-docker.converted-*/.env 2>/dev/null || true); do
-      [ -f "$_f" ] || continue
-      _t="$(sed -n 's/^NODE_TOKEN=//p' "$_f" | head -1 | tr -d '"')"
-      [ -n "$_t" ] && [ "$_t" != "set-in-nodes-screen" ] && { salv_tok="$_t"; salv_url="$(sed -n 's/^PANEL_URL=//p' "$_f" | head -1 | tr -d '"')"; salv_src="$_f"; break; }
-    done
+  for _f in /opt/swg-panel-docker/.env $(ls -dt /opt/swg-panel-docker.converted-*/.env 2>/dev/null || true); do
+    [ -f "$_f" ] || continue
+    _t="$(sed -n 's/^NODE_TOKEN=//p' "$_f" | head -1 | tr -d '"')"
+    [ -n "$_t" ] && [ "$_t" != "set-in-nodes-screen" ] && printf '%s\t%s\t%s\n' "$_t" "$(sed -n 's/^PANEL_URL=//p' "$_f" | head -1 | tr -d '"')" "$_f" >> "$_salvf"
+  done
+  if [ -f /etc/swg-agent/config.json ] && command -v python3 >/dev/null 2>&1; then
+    python3 - >> "$_salvf" 2>/dev/null <<'PY' || true
+import json
+try:
+    d=(json.load(open("/etc/swg-agent/config.json")).get("panel") or {})
+    if d.get("token"): print(d["token"]+"\t"+(d.get("url") or "")+"\t/etc/swg-agent/config.json")
+except Exception: pass
+PY
   fi
-  if [ -z "$salv_tok" ] && [ -f /etc/swg-agent/config.json ] && command -v python3 >/dev/null 2>&1; then
-    _tu="$(python3 -c 'import json;d=json.load(open("/etc/swg-agent/config.json")).get("panel") or {};print((d.get("token") or "")+"|"+(d.get("url") or ""))' 2>/dev/null || true)"
-    salv_tok="${_tu%%|*}"; salv_url="${_tu#*|}"; [ -n "$salv_tok" ] && salv_src="/etc/swg-agent/config.json"
-  fi
-  if [ -n "$salv_tok" ]; then
+  # dedup by token (a node keeps its token across converts, so repeated backups collapse to ONE identity)
+  _uniq="$(awk -F'\t' '$1 && !seen[$1]++' "$_salvf" 2>/dev/null || true)"; rm -f "$_salvf"
+  _ntok="$(printf '%s\n' "$_uniq" | grep -c . 2>/dev/null || true)"; _ntok="${_ntok:-0}"
+  salv_tok=""; salv_url=""
+  if [ "$_ntok" = 1 ]; then
+    salv_tok="$(printf '%s' "$_uniq" | cut -f1)"; salv_url="$(printf '%s' "$_uniq" | cut -f2)"
     echo
-    warn "Found a leftover node token on this box ($salv_src) — a previous install/convert that didn't finish."
+    warn "Found a leftover node token on this box ($(printf '%s' "$_uniq" | cut -f3-)) — a previous install/convert that didn't finish."
     echo "  Re-using it re-enrolls this box as the SAME node, so it isn't orphaned on the panel (its peers re-sync)."
     _sa=yes; ask_yn "Re-enroll with the recovered token" y _sa
-    if [ "$_sa" = yes ]; then
-      NODE_TOKEN="$salv_tok"; export NODE_TOKEN
-      [ -n "$salv_url" ] && { PANEL_URL="$salv_url"; export PANEL_URL; }
-      echo ":: re-enrolling this node with the recovered token."
+    [ "$_sa" = yes ] || salv_tok=""
+  elif [ "$_ntok" != 0 ]; then
+    echo
+    warn "Found $_ntok different leftover node identities here (multiple converts / re-installs) — pick which to re-enroll as:"
+    _i=0
+    while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); echo "  [$_i]  token …$(printf '%s' "$_t" | tail -c 8)   ·   ${_u:-no panel url}   ·   $_s"; done <<EOF2
+$_uniq
+EOF2
+    printf '  Number to re-enroll with (or press Enter to skip and pass NODE_TOKEN= yourself): '; _pick=""; read -r _pick </dev/tty 2>/dev/null || _pick=""
+    if printf '%s' "$_pick" | grep -qE '^[0-9]+$'; then
+      _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
+      salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"
     fi
+  fi
+  if [ -n "$salv_tok" ]; then
+    NODE_TOKEN="$salv_tok"; export NODE_TOKEN; [ -n "$salv_url" ] && { PANEL_URL="$salv_url"; export PANEL_URL; }
+    echo ":: re-enrolling this node with the recovered token."
   fi
 fi
 
