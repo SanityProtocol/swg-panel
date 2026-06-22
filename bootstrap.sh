@@ -134,6 +134,25 @@ fi
 # ── method + role (sequential step numbering — only steps actually shown here count) ──
 STEP=1
 step(){ echo; echo "$(b "Step $STEP. $1")"; echo; STEP=$((STEP+1)); }
+
+# ── resume an interrupted conversion ─────────────────────────────────────────
+# convert.sh persists the node's identity to /var/lib/swg-recovery before any teardown. If the session
+# dropped mid-convert, finish it with the SAME token instead of starting over (which would orphan the node).
+if [ -f /var/lib/swg-recovery ]; then
+  . /var/lib/swg-recovery 2>/dev/null || true
+  if [ -n "${SWG_RV_FROM:-}" ] && [ -n "${SWG_RV_TO:-}" ] && [ -n "${SWG_RV_ROLE:-}" ]; then
+    echo
+    warn "An interrupted conversion ($(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO")) was found — its node would be LOST if you start over."
+    _ans=yes; ask_yn "Resume it now and finish the conversion (keeps the same node)" y _ans
+    if [ "$_ans" = yes ]; then
+      echo ":: resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
+      exec bash "$SRC/convert.sh" "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
+    fi
+    warn "not resuming — removing the recovery marker; the half-converted node may be orphaned on the panel until you re-add it."
+    rm -f /var/lib/swg-recovery 2>/dev/null || true
+  fi
+fi
+
 if [ -z "$METHOD" ]; then
   if [ "$ROLE_EXPLICIT" = yes ]; then METHOD=baremetal     # a bare role word (host/master/node) ⇒ bare-metal
   else

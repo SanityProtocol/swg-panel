@@ -188,6 +188,23 @@ CHECK=no; [ "${1:-}" = --check ] && { CHECK=yes; shift; }
 FROM="${1:-}"; TO="${2:-}"; ROLE="${3:-}"
 [ -n "$FROM" ] && [ -n "$TO" ] && [ -n "$ROLE" ] || die "usage: convert.sh [--check] <docker|baremetal> <docker|baremetal> <node|host|master>"
 
+# ── crash/network-drop recovery ──────────────────────────────────────────────
+# A convert tears the old method down before the new one is finished. If the session drops in between,
+# the node's IDENTITY (token + panel URL) would be lost and the installer would start from scratch —
+# orphaning the node on the panel. So we persist it to /var/lib/swg-recovery the moment a convert starts
+# (BEFORE any teardown) and only delete it once the convert completes. bootstrap.sh sees this file on the
+# next run and resumes the convert with the SAME identity instead of treating the box as a fresh install.
+RECOVERY="/var/lib/swg-recovery"
+[ "$CHECK" = yes ] || { [ -f "$RECOVERY" ] && . "$RECOVERY" 2>/dev/null || true; }   # resume: the saved identity wins (the source may be half torn down)
+write_recovery(){   # write_recovery <space-separated interface names>
+  mkdir -p /var/lib 2>/dev/null || true
+  { printf "SWG_RV_FROM='%s'\nSWG_RV_TO='%s'\nSWG_RV_ROLE='%s'\n" "$FROM" "$TO" "$ROLE"
+    printf "SWG_RV_TOKEN='%s'\nSWG_RV_URL='%s'\nSWG_RV_EP='%s'\nSWG_RV_VERIFY='%s'\n" "$NTOK" "$PURL" "$NEP" "${NVERIFY:-no}"
+    printf "SWG_RV_NAMES='%s'\nSWG_RV_AT='%s'\n" "${1:-}" "$(date +%s 2>/dev/null || echo 0)"
+  } > "$RECOVERY" 2>/dev/null && chmod 600 "$RECOVERY" 2>/dev/null || true
+}
+clear_recovery(){ rm -f "$RECOVERY" 2>/dev/null || true; }
+
 # ── Panel/host conversion isn't automated yet → non-zero so the caller loops back to keep/abort ──
 case "$ROLE" in host|master)
   warn "Converting the PANEL between docker and bare-metal isn't automated yet (only nodes are)."
@@ -198,11 +215,13 @@ esac
 # ── NODE: docker → bare-metal ──
 if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   envf="$DOCKER_DIR/.env"; confd="$DOCKER_DIR/data/node-confs"
-  [ -f "$envf" ] || die "no docker node settings found at $envf"
+  [ -f "$envf" ] || [ -n "${SWG_RV_TOKEN:-}" ] || die "no docker node settings found at $envf"   # resuming? the saved identity covers a half-torn-down .env
   getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//'; }
   NTOK="$(getv NODE_TOKEN)"; PURL="$(getv PANEL_URL)"; NEP="$(getv NODE_ENDPOINT)"
   NIFS="$(getv NODE_IFACES)"; NIF="$(getv NODE_IFACE)"; NPLAIN="$(getv NODE_PLAIN_WG)"; NVERIFY="$(getv TLS_VERIFY)"
+  [ -n "${SWG_RV_TOKEN:-}" ] && { NTOK="$SWG_RV_TOKEN"; PURL="$SWG_RV_URL"; NEP="$SWG_RV_EP"; NVERIFY="${SWG_RV_VERIFY:-no}"; }   # resume: saved identity wins
   [ "$NVERIFY" = yes ] || NVERIFY=no
+  [ -n "$NTOK" ] && [ -n "$PURL" ] || die "couldn't read the node token / panel URL (docker .env missing and no recovery state)"
 
   # interface specs as "name:proto" (proto = awg|wg). The PERSISTED confs in data/node-confs are the
   # real interface set the docker node manages (node-entrypoint scans that dir) — .env's NODE_IFACES
@@ -227,6 +246,12 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   elif [ -z "$specs" ] && [ -n "$NIF" ]; then
     pr=awg; [ "$NPLAIN" = yes ] && pr=wg; specs="$NIF:$pr"
   fi
+  if [ -z "$specs" ] && [ -n "${SWG_RV_NAMES:-}" ]; then   # resume after the docker dir was already moved → derive from the bare confs
+    for nm in $SWG_RV_NAMES; do
+      if   [ -e "/etc/wireguard/$nm.conf" ];          then specs="${specs:+$specs }$nm:wg"
+      elif [ -e "/etc/amnezia/amneziawg/$nm.conf" ];  then specs="${specs:+$specs }$nm:awg"; fi
+    done
+  fi
   [ -n "$specs" ] || die "no interfaces found (looked in $confd and the docker node's .env)"
 
   # pre-flight: a bare-metal conf of the same NAME already present is a real clash (the docker
@@ -248,6 +273,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   [ -n "$conflicts" ] && die "interface name clash: $conflicts (run with --check first)"
 
   info "Converting the docker node → bare-metal — keeping its token, endpoint and interfaces."
+  write_recovery "$(for s in $specs; do printf '%s ' "${s%:*}"; done)"   # persist identity BEFORE teardown so a dropped session can resume
   signal_status converting-bare; CONVERT_SIGNALED=1     # tell the panel before the datapath goes down
   # 1) stop the docker datapath so it releases the wg UDP ports + /dev/net/tun
   if command -v docker >/dev/null 2>&1; then
@@ -261,8 +287,9 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   names=""
   for s in $specs; do nm="${s%:*}"; pr="${s#*:}"
     src="$confd/$nm.conf"
-    [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
     if [ "$pr" = wg ]; then dest="/etc/wireguard/$nm.conf"; else dest="/etc/amnezia/amneziawg/$nm.conf"; fi
+    if [ -f "$dest" ]; then info "kept $(b "$nm") → $dest (already imported)"; names="${names:+$names }$nm"; continue; fi   # resume: don't re-import
+    [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
     mkdir -p "$(dirname "$dest")"; import_bare_conf "$src" "$dest"   # adds host NAT (docker confs have none)
     info "imported $(b "$nm") → $dest (host NAT added)"
     names="${names:+$names }$nm"
@@ -296,12 +323,13 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     if mv "$DOCKER_DIR" "$_bak" 2>/dev/null; then info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)"
     else warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"; fi
   fi
+  clear_recovery   # convert finished cleanly → drop the recovery marker
 fi
 
 # ── NODE: bare-metal → docker ──
 if [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   cfg=/etc/swg-agent/config.json
-  [ -f "$cfg" ] || die "no bare-metal node found ($cfg missing)"
+  [ -f "$cfg" ] || [ -n "${SWG_RV_TOKEN:-}" ] || die "no bare-metal node found ($cfg missing)"   # resuming? recovery state covers a half-torn-down config
   command -v python3 >/dev/null 2>&1 || die "python3 is required to read $cfg"
   # token / panel URL / verify / node endpoint
   read -r NTOK PURL NVERIFY NEP <<EOF
@@ -313,15 +341,21 @@ PY
 )
 EOF
   [ "$NEP" = "-" ] && NEP=""
-  [ -n "$NTOK" ] && [ "$NTOK" != "-" ] && [ "$PURL" != "-" ] || die "couldn't read the node token / panel URL from $cfg"
+  [ -n "${SWG_RV_TOKEN:-}" ] && { NTOK="$SWG_RV_TOKEN"; PURL="$SWG_RV_URL"; NEP="$SWG_RV_EP"; NVERIFY="${SWG_RV_VERIFY:-no}"; }   # resume: saved identity wins
+  [ -n "$NTOK" ] && [ "$NTOK" != "-" ] && [ "$PURL" != "-" ] || die "couldn't read the node token / panel URL (config missing and no recovery state)"
   # interface  name<TAB>conf-path  lines
   ifaces="$(python3 - "$cfg" <<'PY'
 import json,sys
-c=json.load(open(sys.argv[1]))
+try: c=json.load(open(sys.argv[1]))
+except Exception: c={}
 for n,ic in (c.get("interfaces") or {}).items():
     if (ic.get("conf") or ""): print(n+"\t"+ic["conf"])
 PY
 )"
+  if [ -z "$ifaces" ] && [ -d "$DOCKER_DIR/data/node-confs" ]; then   # resume after the bare config was removed → derive from the already-imported docker confs
+    for f in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] && printf '%s\t%s\n' "$(basename "$f" .conf)" "$f"; done > /tmp/.swg_ifaces.$$ 2>/dev/null
+    ifaces="$(cat /tmp/.swg_ifaces.$$ 2>/dev/null)"; rm -f /tmp/.swg_ifaces.$$
+  fi
   [ -n "$ifaces" ] || die "the bare-metal node has no interfaces in $cfg"
 
   # pre-flight: an existing docker node deployment would be clobbered
@@ -342,6 +376,7 @@ PY
   names=""
   while IFS="$(printf '\t')" read -r nm src; do
     [ -n "$nm" ] || continue
+    if [ -f "$confd/$nm.conf" ]; then info "kept $(b "$nm") → $confd/$nm.conf (already imported)"; names="${names:+$names }$nm"; continue; fi   # resume
     [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
     grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$confd/$nm.conf"; chmod 600 "$confd/$nm.conf"
     info "imported $(b "$nm") → $confd/$nm.conf (key preserved)"
@@ -361,6 +396,7 @@ EOF
   # 2) tear down the bare-metal datapath — free the wg ports + remove its units/files. NO panel
   #    goodbye (the token is reused, so the panel keeps this node). Turn-proxies are offered for transfer below.
   info "Stopping the bare-metal node…"
+  write_recovery "$names"   # persist identity BEFORE teardown so a dropped session can resume
   signal_status converting-docker; CONVERT_SIGNALED=1   # tell the panel before the datapath goes down
   systemctl disable --now swg-noded 2>/dev/null || true
   while IFS="$(printf '\t')" read -r nm src; do
