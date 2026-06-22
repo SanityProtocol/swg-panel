@@ -2807,8 +2807,11 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   useEffect(() => { onChange(Object.values(sel)); }, [sel]);
 
   if (!targets.length) return html`<div class="hint">No interfaces available — is a node online?</div>`;
-  const ordered = [...targets].sort((a, b) =>   // checked first, then by node name, then interface
-    (sel[tkey(a.node, a.iface)] ? 0 : 1) - (sel[tkey(b.node, b.iface)] ? 0 : 1)
+  // order by the INITIAL checked state (already-deployed targets), then node, then interface — so the
+  // pre-checked rows sit on top and the list does NOT reshuffle as you toggle.
+  const initialKeys = new Set((initial || []).map(t => tkey(t.node, t.iface)));
+  const ordered = [...targets].sort((a, b) =>
+    (initialKeys.has(tkey(a.node, a.iface)) ? 0 : 1) - (initialKeys.has(tkey(b.node, b.iface)) ? 0 : 1)
     || (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
     || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class="targetpick">${ordered.map(t => {
