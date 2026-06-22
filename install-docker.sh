@@ -496,10 +496,22 @@ current_node_ifaces(){
   elif [ "$EXISTING_DOCKER" = yes ] && [ -n "$NODE_IFACE" ]; then   # a real single bootstrap (on a FRESH install NODE_IFACE is just a default, not a real interface)
     case "$seen" in *" $NODE_IFACE "*) : ;; *) echo "$NODE_IFACE";; esac; fi
 }
+# EVERY interface NAME already present or queued on this box: node confs + queued spec (current_node_ifaces),
+# live wg/awg ifaces, a co-located bare-metal node, and any /etc/amnezia//etc/wireguard conf. A new
+# interface's default (and a typed name) is checked against this so it never collides with one that's
+# already there, available to onboard, or queued this run.
+taken_iface_names(){
+  { current_node_ifaces; host_wg_ifaces; bm_node_ifaces
+    { [ -d /etc/amnezia ] && find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null
+      printf '%s\n' /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf
+    } | while read -r c; do [ -f "$c" ] && basename "$c" .conf; done
+  } 2>/dev/null | sort -u
+}
+v_iface_free(){ v_iface "$1" || return 1; taken_iface_names | grep -qx "$1" && return 1; return 0; }   # valid name AND not already taken
 # add one interface to NODE_IFACES (seeding the single bootstrap into the list first, so the entrypoint
 # — which ignores NODE_IFACE once NODE_IFACES is set — doesn't drop it).
 add_node_iface(){
-  local _proto plain base i name port addr ep nx
+  local _proto plain base i name port addr ep nx taken
   if [ "$EXISTING_DOCKER" = yes ] && [ -z "$NODE_IFACES" ] && [ -n "$NODE_IFACE" ]; then   # promote an existing single bootstrap into the list so it isn't dropped
     local pr=""; [ "${NODE_PLAIN_WG:-}" = yes ] && pr=wg
     NODE_IFACES="${NODE_IFACE}:${NODE_LISTEN_PORT:-51820}:${NODE_ADDRESS:-10.8.0.1/24}:${pr}:${NODE_ENDPOINT}"
@@ -509,8 +521,9 @@ add_node_iface(){
   menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off)."
   ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
-  [ "$plain" = wg ] && base=wg || base=awg; i=0; while current_node_ifaces | grep -qx "$base$i"; do i=$((i+1)); done
-  ask_valid "Interface name" "$base$i" name v_iface "1–15 chars: letters, digits, - or _"
+  taken="$(taken_iface_names)"   # all names already on the box (computed once)
+  [ "$plain" = wg ] && base=wg || base=awg; i=0; while printf '%s\n' "$taken" | grep -qx "$base$i"; do i=$((i+1)); done
+  ask_valid "Interface name" "$base$i" name v_iface_free "1–15 chars (letters, digits, - or _) and not already used"
   ask_valid "Listen port" "$(iface_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
   local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.$((8 + nx)).0.0/24" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
   ep="${NODE_ENDPOINT:-$(detect_public_ip)}"       # auto endpoint clients dial — public IP/host (change it later in the panel)
