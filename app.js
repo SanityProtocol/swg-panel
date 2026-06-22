@@ -3013,6 +3013,17 @@ function AddTargetSheet({ peer, back }) {
   const save = () => {
     if (nochange) { back(); return; }
     if (badIp) return setMsg({ k: "err", t: "A newly-added target has an invalid address." });
+    if (chosen.length === 0) {                       // a peer must live on at least one interface — none left = delete it
+      pushModal(html`<${ConfirmSheet} title="Delete this peer?" confirmLabel="Yes, delete" danger=${true}
+        body=${"You've unchecked every interface, so there's nothing left to deploy this peer to — saving will completely delete it. Its access is revoked everywhere and its config / QR stops working. This action is irreversible. Are you sure you want to continue?"}
+        onConfirm=${async () => {
+          if (peer.user_id != null) { const u = await api.peerUnassign({ peer_id: peer.id }); if (!u.ok) return setMsg({ k: "err", t: "Delete failed: " + (u.error || u.code || "") }); }
+          const r = await api.peerDelete({ peer_id: peer.id });
+          if (!r.ok) return setMsg({ k: "err", t: "Delete failed: " + (r.error || r.code || "") });
+          closeModal(); back(); toast("Peer deleted.", "ok"); await Store.poll();
+        }}/>`);
+      return;
+    }
     if (removed.length) {
       pushModal(html`<${ConfirmSheet} title=${"Remove from " + removed.length + " interface" + (removed.length > 1 ? "s" : "") + "?"} confirmLabel="Remove & apply" danger=${true}
         body=${"You unchecked " + removed.length + " interface" + (removed.length > 1 ? "s" : "") + " this peer is currently deployed on (" + removed.map(t => Store.nodeName(t.node) + "/" + t.iface).join(", ") + "). Saving removes the peer from " + (removed.length > 1 ? "them" : "it") + " — the live tunnel drops immediately and the client can no longer connect through " + (removed.length > 1 ? "those interfaces" : "that interface") + ". This can't be undone."}
@@ -3021,7 +3032,7 @@ function AddTargetSheet({ peer, back }) {
   };
 
   return html`<${Sheet} title=${"Peer targets"} onClose=${back}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button><button class="btn btn-primary" disabled=${busy || !confLoaded || nochange} onClick=${save}>${removed.length ? "Save changes" : "Deploy"}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button><button class=${"btn " + (chosen.length === 0 ? "btn-danger" : "btn-primary")} disabled=${busy || !confLoaded || nochange} onClick=${save}>${chosen.length === 0 ? "Delete peer" : (removed.length ? "Save changes" : "Deploy")}</button></>`}>
     ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : html`<${Fragment}>
         ${added.length && !srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
