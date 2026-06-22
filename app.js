@@ -1031,7 +1031,9 @@ function NodeDetail({ node: rawName }) {
         ${nrec.version ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? "Node is running a newer version than the panel — update the panel to catch up" : ""}>v${nrec.version}</span>` : null}
         ${nrec.updating ? html`<span class="livepill upd-busy">updating… <svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>`
           : nrec.outdated ? html`<button class="livepill updpill" onClick=${() => updateNode(nrec)} title="Update this node">update node to <b>${nrec.latest || "?"}</b></button>`
-          : html`<button class="iconbtn" title="Check for updates" onClick=${checkForUpdate}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
+          : (Store.nodeUpdFlash && Store.nodeUpdFlash.id === nrec.id && Date.now() < Store.nodeUpdFlash.until)
+          ? html`<span class="livepill upd-uptodate" title="This node is on the latest version"><${Ic} i="check"/> up to date</span>`
+          : html`<button class="iconbtn" title="Check for updates" onClick=${e => checkForUpdate(e, nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
         <button class="iconbtn" title="Edit node" onClick=${() => openNodeEdit(nrec)}><${Ic} i="pencil"/></button>
         <button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>
@@ -2599,7 +2601,7 @@ function updateHost() {
     },
   });
 }
-async function checkForUpdate(e) {
+async function checkForUpdate(e, nodeId) {
   const btn = e && e.currentTarget;                  // spin + cyan it while we poll, so it reads as "searching"
   if (btn) btn.classList.add("checking");
   try {
@@ -2607,8 +2609,12 @@ async function checkForUpdate(e) {
     await Store.poll();
     if (!r.ok) toast(r.error || "Couldn't check for updates.", "err");
     else if (r.data && !r.data.checked) toast("Couldn't reach the repo to check for updates.", "err");
+    else if (nodeId) {                               // invoked from a NODE header → show the result THERE, not on the panel header
+      const n = (Store.nodes || []).find(x => x.id === nodeId);   // outdated → its "update node" button appears; up-to-date → flash on the node row
+      if (!(n && n.outdated)) { Store.nodeUpdFlash = { id: nodeId, until: Date.now() + 5000 }; Store.apply(); setTimeout(() => Store.apply(), 5100); }
+    }
     else if (r.data && r.data.panel_outdated) toast("Update available — v" + r.data.latest_remote, "ok");
-    else { Store.updFlash = Date.now() + 5000; Store.apply(); setTimeout(() => Store.apply(), 5100); }   // up to date → green "up to date" tag for 5s
+    else { Store.updFlash = Date.now() + 5000; Store.apply(); setTimeout(() => Store.apply(), 5100); }   // panel up to date → green "up to date" tag for 5s
   } finally { if (btn) btn.classList.remove("checking"); }
 }
 function NodeCard({ n }) {
