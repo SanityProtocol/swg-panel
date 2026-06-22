@@ -50,11 +50,17 @@ signal_status(){
 # install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
 turn_install_host(){
   local svc="$1" owner="$2" lis="$3" con="$4" params="$5" inst dir bin arch url
+  local ok=1 ver
   inst="${svc#vk-turn-proxy-}"; dir="/opt/vk-turn-proxy/$inst"; bin="$dir/server"
   case "$(uname -m)" in aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   mkdir -p "$dir"
-  curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 --retry-all-errors "$url" -o "$bin" 2>/dev/null && chmod +x "$bin" || { warn "binary download failed for $svc ($url)"; return 1; }
+  info "  migrating $(b "$svc") — downloading $owner from GitHub (up to ~2 min)…"
+  curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "$url" -o "$bin" && chmod +x "$bin" || ok=0
+  # remember the proxy's settings so it survives a failed download: repo.txt (reinstall owner), version, turn.env, the unit.
+  printf '%s\n' "$owner" > "$dir/repo.txt"; chmod 644 "$dir/repo.txt" 2>/dev/null || true
+  ver=unknown; [ "$ok" = 1 ] && ver="$(curl -fsS -o /dev/null -w '%{redirect_url}' --connect-timeout 15 --max-time 30 "$url" 2>/dev/null | sed -nE 's#.*/releases/download/([^/]+)/.*#\1#p')"
+  printf '%s\n' "${ver:-unknown}" > "$dir/version.txt"; chmod 644 "$dir/version.txt" 2>/dev/null || true
   cat > "$dir/turn.env" <<EOF
 SWG_LISTEN=${lis}
 SWG_CONNECT=${con}
@@ -76,7 +82,8 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload 2>/dev/null || true
-  systemctl enable --now "$svc" 2>/dev/null || warn "couldn't start $svc"
+  systemctl enable --now "$svc" 2>/dev/null || true   # without the binary the unit just stays down (panel shows it, Reinstall re-fetches)
+  [ "$ok" = 1 ]
 }
 
 # docker turn record → host systemd units, then drop the swg-turn containers
@@ -105,7 +112,7 @@ EOF
     if turn_install_host "$svc" "$owner" "$lis" "$con" "$params"; then
       info "  migrated $(b "$svc") → host systemd"
     else
-      warn "  $svc: host install failed — the container was already removed, re-add it from the panel"
+      warn "  $svc: binary download failed — its unit + settings were kept, so it shows on the panel as failed; open it and press Reinstall (no re-entry needed)"
     fi
   done <<EOF
 $list
@@ -248,13 +255,22 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
 
   turn_to_bare   # offer to migrate the docker node's turn-proxies → host systemd units
 
+  # the docker node's data is fully migrated out now (confs imported, keys + turn-proxies carried). Move its
+  # dir aside (timestamped backup) so a later bare→docker convert isn't blocked by the leftover .env — the
+  # bare-metal install below works off the imported confs + ADOPTED_IFACES, not $DOCKER_DIR.
+  if [ -d "$DOCKER_DIR" ]; then
+    _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S)"
+    if mv "$DOCKER_DIR" "$_bak" 2>/dev/null; then info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)"
+    else warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"; fi
+  fi
+
   # 3) hand off to install-node.sh with the SAME token. ADOPTED_IFACES marks the migrated interfaces
   #    as "already on this node" (not orphan / not docker); its picker lets you add more (queued +
   #    created after the tools install). Same token ⇒ the panel keeps one node.
   info "Running install-node.sh — adopt $(b "$names") (and add more if you want), then it wires the daemon…"
   echo
   exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
-       TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh"
+       SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh"
 fi
 
 # ── NODE: bare-metal → docker ──

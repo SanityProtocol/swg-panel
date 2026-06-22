@@ -1550,7 +1550,7 @@ function TurnManageSheet({ node, tp }) {
       <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
       ${tp.running !== false && !installing && !failed
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Restart the service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>`
-        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy || !failed} title=${failed ? "Re-download the binary and start the service on the node" : "Installing…"} onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
+        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy || installing} title=${installing ? "Installing…" : "Re-download the binary and start the service on the node"} onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
       <button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">

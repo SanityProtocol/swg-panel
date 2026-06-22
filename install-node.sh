@@ -580,9 +580,12 @@ step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
 echo
 choose_ifaces
 
-step "TURN-PROXY setup"
-echo
-choose_turn_proxy
+# a docker→bare conversion already migrated the existing turn-proxies (convert.sh) — don't offer to install new ones
+if [ "${SWG_CONVERT:-}" != 1 ]; then
+  step "TURN-PROXY setup"
+  echo
+  choose_turn_proxy
+fi
 
 # ───────────────────────── install binaries ─────────────────────────
 info "Agent + daemon"
