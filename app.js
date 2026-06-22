@@ -3397,17 +3397,22 @@ function NodeCreateSheet() {
   <//>`;
 }
 const BOOTSTRAP_URL = "https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh";
-function NodeTokenSheet({ name, token, isNew }) {
+function NodeTokenSheet({ name, token, isNew, kind }) {
   const host = `${location.origin}${BASE}`;
   const bare = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s node -key ${token} -host ${host}`;
   const docker = `curl -fsSL ${BOOTSTRAP_URL} | sudo bash -s docker node -key ${token} -host ${host}`;
+  // recover/rotate of an existing node → show ONLY its method's command (a docker box re-installed as
+  // bare, or vice-versa, would NOT carry its turn-proxies over — that's a deliberate convert, not this).
+  const cmds = kind === "docker" ? [["docker", docker, "#c084e8"]]
+    : kind === "baremetal" ? [["bare-metal", bare, "#60a5fa"]]
+    : [["bare-metal", bare, "#60a5fa"], ["docker", docker, "#c084e8"]];
   return html`<${Sheet} title=${(isNew ? "Node created" : "New token") + " · " + name}
     foot=${html`<button class="btn btn-primary" onClick=${closeModal}>Done</button>`}>
     <div class="notice warn"><${Ic} i="warn"/><span><b>Shown once.</b> This token authenticates the node to the panel — copy it now. You can rotate it later if it leaks.</span></div>
+    ${kind ? html`<div class="hint" style="margin-top:9px">This recovers <b>${name}</b> as <b>${kind === "docker" ? "docker" : "bare-metal"}</b> — the method it was already running, so its turn-proxies and interfaces are kept. To switch methods, convert the node instead.</div>` : null}
     <div class="field" style="margin-top:15px"><label>Enrollment token</label><div class="cmdrow"><div class="tokenbox">${token}</div><button class="copyaction" onClick=${() => copy(token, "Copied")}><${Ic} i="copy"/> Copy</button></div></div>
-    <div class="field"><label>Run on the node — <span style="color:#60a5fa;font-weight:700">bare-metal</span></label><div class="cmdrow"><div class="tokenbox">${bare}</div><button class="copyaction" onClick=${() => copy(bare, "Copied")}><${Ic} i="copy"/> Copy</button></div></div>
-    <div class="field"><label>Run on the node — <span style="color:#c084e8;font-weight:700">docker</span></label><div class="cmdrow"><div class="tokenbox">${docker}</div><button class="copyaction" onClick=${() => copy(docker, "Copied")}><${Ic} i="copy"/> Copy</button></div>
-      <div class="hint">Pick one. Both fetch the installer and prompt for the node's endpoint.</div></div>
+    ${cmds.map(([label, cmd, color]) => html`<div class="field"><label>Run on the node — <span style=${"color:" + color + ";font-weight:700"}>${label}</span></label><div class="cmdrow"><div class="tokenbox">${cmd}</div><button class="copyaction" onClick=${() => copy(cmd, "Copied")}><${Ic} i="copy"/> Copy</button></div></div>`)}
+    ${kind ? null : html`<div class="hint">Pick one. Both fetch the installer and prompt for the node's endpoint.</div>`}
   <//>`;
 }
 function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
@@ -3432,7 +3437,7 @@ function NodeEditSheet({ node }) {
 }
 function openNodeRecover(node) { openModal(html`<${NodeRecoverSheet} node=${node}/>`); }
 function NodeRecoverSheet({ node }) {
-  const go = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(r.error || "couldn't generate a recovery command", "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false}/>`); };
+  const go = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(r.error || "couldn't generate a recovery command", "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind}/>`); };
   return html`<${Sheet} title=${"Recover node · " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${go}>Generate recovery command</button></>`}>
     <div class="notice"><${Ic} i="info"/><span>This node isn't reporting. Generating a recovery command rotates its token and gives you a one-line command to paste on the server — it re-installs/recovers <b>${node.name}</b> as the <b>same node</b>, so its interfaces and peers come straight back (no need to find the old token).</span></div>
@@ -3441,7 +3446,7 @@ function NodeRecoverSheet({ node }) {
 }
 function openNodeRotate(node) { openModal(html`<${NodeRotateSheet} node=${node}/>`); }
 function NodeRotateSheet({ node }) {
-  const go2 = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(r.error || "rotate failed", "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false}/>`); };
+  const go2 = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(r.error || "rotate failed", "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind}/>`); };
   return html`<${Sheet} title=${"Rotate token · " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${go2}>Rotate</button></>`}>
     <div class="notice warn"><${Ic} i="warn"/><span>The current token stops working immediately. Re-enroll the node with the new token or it will go offline.</span></div>
