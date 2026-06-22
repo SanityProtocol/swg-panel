@@ -334,6 +334,7 @@ const Store = {
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
+    if (s && s.ok) this.hostProc = d.host_proc || null;   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime
     if (ev && Array.isArray(ev.data)) this.events = ev.data;
     this.apply();
   },
@@ -3309,7 +3310,8 @@ function App() {
     const slot = $("#updslot");
     if (slot) {
       let body;
-      if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
+      if (Store.hostProc) body = `<span class="hostproc-tag">${UPD_SPIN_SVG} ${esc(PROC_LABEL[Store.hostProc] || Store.hostProc)}</span>`;   // this panel host is mid re-install/convert
+      else if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
       else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
       else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
       slot.innerHTML = body;

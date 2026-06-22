@@ -1010,7 +1010,12 @@ def api(method, path, qs, body, deps):
         # One consolidated read: everything the UI polls for, in a single round trip.
         # Status is NOT computed here — the browser derives it from roster + snapshots via
         # reconcile.js (the single source of truth), so this stays a raw-data bundle.
+        _hp = ""
+        with contextlib.suppress(Exception):
+            with open(deps.get("host_proc_path") or "") as _f:
+                _hp = (_f.read() or "").strip()
         return 200, {"ok": True, "data": {
+            "host_proc": _hp or None,                    # this panel host is mid re-install/convert (UI tag)
             "roster": roster_load(roster_path),          # {version, users, peers}
             "nodes": nodes_view(),                       # fleet metadata + live counters
             "describe": describe_view(),                 # per-node interface meta for config building
@@ -2415,7 +2420,10 @@ def main():
     _sc = fleet.get("store_configs", True) is not False
     _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")
     migrate_node_ids(nodes_path, _rp, _sc, _cd)        # legacy name-keyed -> stable id-keyed (one-time)
-    Handler.deps = {"fleet": fleet,
+    _hpp = os.path.join(os.path.dirname(nodes_path) or ".", "host_proc")   # this host's re-install/convert flag
+    with contextlib.suppress(Exception):
+        os.remove(_hpp)                                # a fresh panel process == any in-flight re-install is done
+    Handler.deps = {"fleet": fleet, "host_proc_path": _hpp,
                     "roster_path": fleet.get("roster_path", "/var/lib/swg-panel/users.json"),
                     "stats_dir": fleet.get("stats_dir", "/var/www/wgstats"),
                     "nodes_path": nodes_path, "nodes": nodes_load(nodes_path),
