@@ -540,7 +540,20 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 # ═══════════════ NODE SETUP ═══════════════
 echo; info "NODE SETUP"
 read_existing
-[ "$EXISTING" = yes ] && info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
+if [ "$EXISTING" = yes ]; then
+  info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
+  if ! $DRYRUN; then
+    # tell the panel we're re-installing (UI tag), and drop the keypair backups so swg-noded re-harvests
+    # the CURRENT confs on its next sync — the panel re-blesses the current server key on re-install.
+    if [ -n "$EXIST_TOKEN" ] && [ -n "$EXIST_URL" ]; then
+      _verify="$(python3 -c 'import json;print("yes" if json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("verify",True) else "no")' 2>/dev/null || echo no)"
+      _ins=""; [ "$_verify" = yes ] || _ins="-k"
+      curl -fsS $_ins --max-time 8 -X POST -H "Authorization: Bearer $EXIST_TOKEN" -H "Content-Type: application/json" \
+        --data '{"state":"reinstalling"}' "${EXIST_URL%/}/api/node/proc-status" >/dev/null 2>&1 || true
+    fi
+    rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
+  fi
+fi
 
 # Panel connection — normally supplied by the install command's -host / -key flags; on a re-install
 # the current values are offered as defaults so you can just press Enter.

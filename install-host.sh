@@ -576,6 +576,8 @@ DOM_SAVED=""; BASE_SAVED=""; PORT_SAVED=""; TLS_SAVED=""; SERVE_SAVED=""; ROLE_S
 _unit=/etc/systemd/system/swg-panel-server.service
 if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
   EXISTING_HOST=yes; KEEP_AUTH=yes
+  # flag the still-running panel as re-installing so the header shows it; the new process clears it on boot
+  $DRYRUN || { mkdir -p "$STATE_DIR" 2>/dev/null; printf 'reinstalling' > "$STATE_DIR/host_proc" 2>/dev/null || true; }
   [ "${BASIC_USER:-admin}" = admin ] && [ -f "$ETC_DIR/auth" ] && BASIC_USER="$(cut -d: -f1 "$ETC_DIR/auth" 2>/dev/null || echo admin)"
   if [ -f "$ETC_DIR/install.conf" ]; then                 # snapshot of the previous install's answers
     DOM_SAVED="$(sed -n 's/^PANEL_DOMAIN=//p'        "$ETC_DIR/install.conf" | head -1)"
