@@ -475,6 +475,8 @@ const IFOP_DONE = { start: "started", restart: "restarted", apply: "applied" };
 const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, rotating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
+// a node/panel host that's mid re-install or method conversion (signalled before it goes down)
+const PROC_LABEL = { reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker" };
 function Badge({ s, title }) {
   const ic = STATUS_ICON[s];
   return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
@@ -891,7 +893,7 @@ function NodeDetail({ node: rawName }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<${HealthDot} issues=${nrec.issues}/></div>
+      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${nrec.proc_status ? html`<span class="nstat proc"><${Ic} i="clock"/> ${PROC_LABEL[nrec.proc_status] || nrec.proc_status}</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? "Node is running a newer version than the panel — update the panel to catch up" : ""}>v${nrec.version}</span>` : null}
@@ -2439,7 +2441,7 @@ function NodeCard({ n }) {
       ${n.outdated && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
-      <span class=${"nstat " + st}>${stTxt}</span>
+      ${n.proc_status ? html`<span class="nstat proc"><${Ic} i="clock"/> ${PROC_LABEL[n.proc_status] || n.proc_status}</span>` : html`<span class=${"nstat " + st}>${stTxt}</span>`}
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
       <span class="grow"></span>

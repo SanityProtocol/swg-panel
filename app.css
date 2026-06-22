@@ -557,6 +557,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nstat.online{color:var(--online)} .nstat.online::before{animation:pulse 2.6s infinite}
 .nstat.offline{color:var(--unknown)}
 .nstat.dangling{color:var(--pending)}
+.nstat.proc{color:var(--pending)} .nstat.proc::before{display:none}   /* re-install/convert: clock icon instead of the dot */
 .b-removing{background:rgba(242,107,130,.13);color:var(--dangling)}
 /* data row: four fixed-start columns so peers/interfaces/turn/throughput line up across
    cards regardless of content. Peers fits 555/999, interfaces ~two 8-char tags, turn takes

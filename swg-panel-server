@@ -956,6 +956,7 @@ def api(method, path, qs, body, deps):
                         "transport": "https",
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
+                        "proc_status": (c.get("proc_status") or {}).get("state"),   # re-install / convert in progress
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
@@ -2082,6 +2083,17 @@ class Handler(BaseHTTPRequestHandler):
         snap = body.get("snapshot") or {}
         Handler.deps.setdefault("node_snaps", {})[nid] = snap
         Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
+        if snap and node.get("proc_status"):              # the node checked back in → its re-install/convert is done
+            ps = node.pop("proc_status", None)
+            if (ps or {}).get("state") == "reinstalling":  # a re-install blesses the CURRENT state → re-bless server keys
+                for ov in (node.get("ifaces") or {}).values():
+                    ov.pop("public_key", None)
+                    if isinstance(ov.get("_drift"), dict):
+                        ov["_drift"].pop("public_key", None)
+                        if not ov["_drift"]:
+                            ov.pop("_drift", None)
+            with contextlib.suppress(Exception):
+                nodes_save(Handler.deps["nodes_path"], nodes)
         stats_dir = Handler.deps.get("stats_dir")
         if stats_dir and snap:
             sf = node.get("stats_file", f"stats-{nid}.json")
@@ -2305,6 +2317,33 @@ class Handler(BaseHTTPRequestHandler):
             nm = node_remove(Handler.deps, nid)
         return self._send(200, {"ok": True, "removed": nm or nid})
 
+    def _node_proc_status(self):
+        # An installer/converter (its bearer token) flags that the node is about to go down for a
+        # re-install or a method conversion, so the UI shows that instead of plain "offline". Cleared
+        # when the node's next snapshot lands (it's back) — see _node_sync.
+        nodes = nodes_load(Handler.deps["nodes_path"])
+        hdr = self.headers.get("Authorization", "")
+        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
+        nid, _ = find_node_by_token(nodes, token)
+        if not nid:
+            return self._send(401, {"error": "invalid node token"})
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            length = 0
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception:
+            body = {}
+        state = (body.get("state") or "").strip()
+        with _api_lock:
+            if state in ("reinstalling", "converting-bare", "converting-docker"):
+                nodes[nid]["proc_status"] = {"state": state, "at": int(time.time())}
+            else:
+                nodes[nid].pop("proc_status", None)          # blank/unknown = clear it
+            nodes_save(Handler.deps["nodes_path"], nodes)
+        return self._send(200, {"ok": True, "data": {"id": nid, "state": state}})
+
     def do_GET(self):
         u = urlparse(self.path)
         path = strip_base(u.path)
@@ -2335,6 +2374,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(500, {"ok": False, "error": str(e), "code": "internal"})
         if path == "/api/node/goodbye":
             return self._node_goodbye()
+        if path == "/api/node/proc-status":
+            return self._node_proc_status()
         if path == "/api/login":
             return self._login()
         if path == "/api/logout":
