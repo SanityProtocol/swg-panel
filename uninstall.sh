@@ -158,9 +158,9 @@ ask_full_data_fate(){   # the LAST swg container is going → decide the WHOLE d
   local desc=""
   [ -d "$DOCKER_DIR/data/lib" ] && desc="login, roster (users+peers), "
   [ -d "$DOCKER_DIR/data/etc" ] && desc="${desc}nodes, certs, "
-  [ -d "$DOCKER_DIR/data/node-confs" ] && desc="${desc}interface configs (peers), "
+  [ -d "$DOCKER_DIR/data/node-confs" ] && desc="${desc}interface configs / peers, "
   desc="${desc%, }"; [ -n "$desc" ] || desc="state"
-  ask_yn "  Delete the data dir ($DOCKER_DIR/data: $desc)?" n DOCKER_DATA_DEL
+  ask_yn "  Delete the data dir $DOCKER_DIR/data ($desc)?" n DOCKER_DATA_DEL
   DOCKER_KEEP_CONFS=""
   if [ "$DOCKER_DATA_DEL" = yes ] && [ -d "$DOCKER_DIR/data/node-confs" ]; then
     ask_yn "  Keep at least the peers? Leaves data/node-confs (keys + peers) so a future install can re-onboard them." y DOCKER_KEEP_CONFS
