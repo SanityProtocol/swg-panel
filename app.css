@@ -443,7 +443,8 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .deploy.adder .inner{display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center;padding:18px}
 .deploy.adder .ring{width:40px;height:40px;border-radius:50%;border:1.5px dashed currentColor;display:flex;align-items:center;justify-content:center;font-size:20px}
 
-.notice{display:flex;gap:9px;align-items:flex-start;padding:11px 14px;border-radius:var(--r-sm);font-size:12.5px}
+.notice{display:flex;gap:9px;align-items:flex-start;padding:11px 14px;border-radius:var(--r-sm);font-size:12.5px;margin-bottom:16px}   /* consistent gap below every notice; :last-child trims it */
+.notice:last-child{margin-bottom:0}
 .notice.warn{background:rgba(232,192,75,.08);border:1px solid rgba(232,192,75,.25);color:var(--pending)}
 .notice svg{flex:none;margin-top:1px}
 /* full-width attention banner (e.g. store_configs off) — sits at the top of a screen */
@@ -891,7 +892,7 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .peergrid .srv-name{font-family:var(--mono);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* user cell is a link to the user screen — blue (matches the upload total) so admins know it navigates away */
 .peergrid .namecell{color:var(--ready);justify-content:space-between;width:100%} .peergrid .namecell:hover{text-decoration:underline}
-.peergrid .namecell svg{width:14px;height:14px;color:var(--ready);flex:none;opacity:0;transition:opacity .12s}
+.peergrid .namecell svg{width:14px;height:14px;color:var(--ready);flex:none;opacity:0;transition:opacity .12s;position:relative;top:3px}   /* nudge down to sit on the text's baseline */
 /* hovering an assigned user's cell tints the whole row blue + reveals the user icon */
 .peergrid tbody tr.clk:has(td.usercell.linked:hover){background:rgba(79,168,240,.09)}
 .peergrid td.usercell.linked:hover .namecell svg{opacity:1}
