@@ -252,6 +252,7 @@ rm_turn(){ local unit="$1" name fork
   info "Removing turn-proxy ($fork)"
   [ -e "$unit" ] && run systemctl disable --now "$name"
   rmrf "$unit" "$TURN_DIR/$fork"; run systemctl daemon-reload
+  ls $SD/vk-turn-proxy-"${fork%-*}"-*.service >/dev/null 2>&1 || rmrf "$TURN_DIR/.bin/${fork%-*}"   # fork's last instance → drop its shared binary
   # last one out removes the shared dir + the panel-facing record
   ls $SD/vk-turn-proxy-*.service >/dev/null 2>&1 || rmrf "$TURN_DIR" /etc/swg-agent/turn-proxy.json
   ok "turn-proxy ($fork) removed"
@@ -333,7 +334,9 @@ wg_present  && { _d="$(iface_list /etc/wireguard)";        add "kernel WireGuard
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
   fork="$(basename "$unit" .service)"; fork="${fork#vk-turn-proxy-}"
-  owner=""; [ -f "$TURN_DIR/$fork/repo.txt" ] && owner="$(cut -d/ -f1 "$TURN_DIR/$fork/repo.txt" 2>/dev/null)"
+  owner=""; _ff="${fork%-*}"   # actual fork (instance minus -<port>); repo.txt is shared per fork under .bin/, legacy per-instance fallback
+  [ -f "$TURN_DIR/.bin/$_ff/repo.txt" ] && owner="$(cut -d/ -f1 "$TURN_DIR/.bin/$_ff/repo.txt" 2>/dev/null)"
+  [ -z "$owner" ] && [ -f "$TURN_DIR/$fork/repo.txt" ] && owner="$(cut -d/ -f1 "$TURN_DIR/$fork/repo.txt" 2>/dev/null)"
   add "${owner:-${fork%-*}} turn-proxy" "$(turn_detail "$unit")" rm_turn "$unit" "$(turn_listen "$unit")"
 done
 

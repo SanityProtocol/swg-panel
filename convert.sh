@@ -64,17 +64,23 @@ dl_turn_bin(){ local owner="$1" arch="$2" out="$3" base url m; base="https://git
 # install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
 turn_install_host(){
   local svc="$1" owner="$2" lis="$3" con="$4" params="$5" inst dir bin arch url
-  local ok=1 ver
-  inst="${svc#vk-turn-proxy-}"; dir="/opt/vk-turn-proxy/$inst"; bin="$dir/server"
+  local ok=1 ver fork fdir sbin
+  inst="${svc#vk-turn-proxy-}"; fork="${inst%-*}"
+  fdir="/opt/vk-turn-proxy/.bin/$fork"; sbin="$fdir/server"   # ONE binary per fork — shared by every instance
+  dir="/opt/vk-turn-proxy/$inst"; bin="$dir/server"          # this instance: turn.env + a 'server' symlink → the shared binary
   case "$(uname -m)" in aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
-  mkdir -p "$dir"
-  info "  migrating $(b "$svc") — downloading $owner from GitHub (up to ~2 min)…"
-  dl_turn_bin "$owner" "$arch" "$bin" && chmod +x "$bin" || ok=0
-  # remember the proxy's settings so it survives a failed download: repo.txt (reinstall owner), version, turn.env, the unit.
-  printf '%s\n' "$owner" > "$dir/repo.txt"; chmod 644 "$dir/repo.txt" 2>/dev/null || true
+  mkdir -p "$fdir" "$dir"
+  if [ -x "$sbin" ]; then info "  $(b "$svc") — reusing the $fork binary already downloaded"
+  else
+    info "  migrating $(b "$svc") — downloading $owner from GitHub (up to ~2 min)…"
+    dl_turn_bin "$owner" "$arch" "$sbin" && chmod +x "$sbin" || ok=0
+  fi
+  ln -sfn "../.bin/$fork/server" "$bin"   # unit ExecStart points here; resolves to the shared binary
+  # remember the fork's settings so it survives a failed download: repo.txt (reinstall owner) + version (shared), turn.env + unit.
+  printf '%s\n' "$owner" > "$fdir/repo.txt"; chmod 644 "$fdir/repo.txt" 2>/dev/null || true
   ver=unknown; [ "$ok" = 1 ] && ver="$(curl -fsS -o /dev/null -w '%{redirect_url}' --connect-timeout 15 --max-time 30 "$url" 2>/dev/null | sed -nE 's#.*/releases/download/([^/]+)/.*#\1#p')"
-  printf '%s\n' "${ver:-unknown}" > "$dir/version.txt"; chmod 644 "$dir/version.txt" 2>/dev/null || true
+  printf '%s\n' "${ver:-unknown}" > "$fdir/version.txt"; chmod 644 "$fdir/version.txt" 2>/dev/null || true
   cat > "$dir/turn.env" <<EOF
 SWG_LISTEN=${lis}
 SWG_CONNECT=${con}

@@ -432,21 +432,27 @@ dl_turn_bin(){ local owner="$1" arch="$2" out="$3" base url m; base="https://git
     curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "$url" -o "$out" && return 0
   done; return 1; }
 install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
-  local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst
+  local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst fdir sbin
   case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
   # key each instance by <fork>-<port> so one fork can run many times (different ports + wrap keys)
-  port="${listen##*:}"; inst="$fork-$port"; dir="$TURN_DIR/$inst"; bin="$dir/server"; svc="vk-turn-proxy-$inst"
+  port="${listen##*:}"; inst="$fork-$port"; svc="vk-turn-proxy-$inst"
+  fdir="$TURN_DIR/.bin/$fork"; sbin="$fdir/server"   # ONE binary per fork — shared by every instance
+  dir="$TURN_DIR/$inst"; bin="$dir/server"            # this instance: turn.env + a 'server' symlink → the shared binary
   if [ -e "/etc/systemd/system/$svc.service" ]; then warn "turn-proxy $svc already exists — pick another port"; return 0; fi
   url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
-  mkdir -p "$PREFIX$dir"
-  info "Installing $owner ($listen → $connect) — downloading the binary from GitHub (up to ~2 min)…"
-  if $DRYRUN; then echo "    [skip] curl -fsSL $url -o $bin"
-  elif ! { dl_turn_bin "$owner" "$arch" "$PREFIX$bin" && chmod +x "$PREFIX$bin"; }; then
-    warn "download failed for $owner — skipping this turn-proxy (retry later, or set SWG_TURN_MIRROR=<proxy> and re-run)"; return 0
+  mkdir -p "$PREFIX$fdir" "$PREFIX$dir"
+  if $DRYRUN; then echo "    [skip] reuse-or-download the $fork binary → $sbin"
+  elif [ -x "$PREFIX$sbin" ]; then info "reusing the $fork binary already downloaded ($sbin)"
+  else
+    info "Installing $owner ($listen → $connect) — downloading the binary from GitHub (up to ~2 min)…"
+    if ! { dl_turn_bin "$owner" "$arch" "$PREFIX$sbin" && chmod +x "$PREFIX$sbin"; }; then
+      warn "download failed for $owner — skipping this turn-proxy (retry later, or set SWG_TURN_MIRROR=<proxy> and re-run)"; return 0
+    fi
   fi
+  $DRYRUN || ln -sfn "../.bin/$fork/server" "$PREFIX$bin"   # ExecStart points here; resolves to the shared binary
   ver="$(turn_latest_tag "$owner")"
-  printf '%s\n' "$owner"          | writef "$dir/repo.txt" 644
-  printf '%s\n' "${ver:-unknown}" | writef "$dir/version.txt" 644
+  printf '%s\n' "$owner"          | writef "$fdir/repo.txt" 644
+  printf '%s\n' "${ver:-unknown}" | writef "$fdir/version.txt" 644
   # listen/connect/params live in turn.env so a panel edit only rewrites it + restarts (no daemon-reload)
   writef "$dir/turn.env" 600 <<EOF
 SWG_LISTEN=${listen}
