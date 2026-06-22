@@ -133,7 +133,7 @@ EOF
     [ -n "$owner" ] || { warn "  $svc: no fork in the record — skipping"; continue; }
     docker rm -f "swg-turn-${svc#vk-turn-proxy-}" >/dev/null 2>&1 || true   # free the listen port BEFORE the host unit binds it
     if turn_install_host "$svc" "$owner" "$lis" "$con" "$params"; then
-      info "  migrated $(b "$svc") → host systemd"
+      info "  migrated $(b "$svc") → host systemd"; MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"
     else
       warn "  $svc: binary download failed — its unit + settings were kept, so it shows on the panel as failed; open it and press Reinstall (no re-entry needed)"
     fi
@@ -204,6 +204,34 @@ write_recovery(){   # write_recovery <space-separated interface names>
   } > "$RECOVERY" 2>/dev/null && chmod 600 "$RECOVERY" 2>/dev/null || true
 }
 clear_recovery(){ rm -f "$RECOVERY" 2>/dev/null || true; }
+MIGRATED_TURNS=""   # turn-proxy services turn_to_bare moved onto host systemd (for the final summary)
+# final summary after a docker→bare convert: interfaces (now bare) + turn-proxies that migrated.
+print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel url>
+  local ifn="$1" nep="$2" purl="$3" n conf lp addr proto svc inst lis con
+  echo; echo "$(b '──────────────── CONVERSION COMPLETE ────────────────')"; echo
+  echo "  Node      $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), syncs to $(b "$purl")"
+  echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"
+  for n in $ifn; do
+    if   [ -f "/etc/wireguard/$n.conf" ];        then conf="/etc/wireguard/$n.conf"; proto=wg
+    elif [ -f "/etc/amnezia/amneziawg/$n.conf" ]; then conf="/etc/amnezia/amneziawg/$n.conf"; proto=awg
+    else continue; fi
+    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" | head -1)"
+    addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" | head -1)"
+    printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${nep:-?}" "${lp:-?}" "${addr:-?}"
+  done
+  if [ -n "$MIGRATED_TURNS" ]; then
+    echo; echo "  $(b 'Turn-proxies') (migrated → host systemd, managed from the panel):"
+    for svc in $MIGRATED_TURNS; do inst="${svc#vk-turn-proxy-}"
+      lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1)"
+      con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1)"
+      printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$(printf '%-28s' "$svc")" "$RESET" "${lis:-?}" "${con:-?}"
+    done
+  else
+    echo; echo "  $(b 'Turn-proxies'): none migrated."
+  fi
+  echo; echo "  Manage    peers + per-interface egress in the panel → $(b 'Interfaces / Nodes')"
+  echo "  Logs      $(b 'journalctl -u swg-noded -f')  ·  the node turns green in ~5s"
+}
 # a LIVE docker node = an actual swg-node container (running or stopped). A bare $DOCKER_DIR with no
 # container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).
 docker_node_present(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; }
@@ -339,7 +367,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     else warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"; fi
   fi
   clear_recovery   # convert finished cleanly → drop the recovery marker
-  echo; info "Conversion complete — the node is bare-metal now."
+  print_bare_summary "$names" "$NEP" "$PURL"   # complete summary: interfaces + the turn-proxies that migrated
   exit 0           # done (this block no longer execs install-node.sh, so end here, not the catch-all die)
 fi
 
