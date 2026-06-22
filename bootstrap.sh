@@ -31,6 +31,8 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 col(){ local c="$1"; shift; printf '%s%s%s' "$c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 die(){ echo "error: $*" >&2; exit 1; }
+warn(){ echo "$(b "! $*")" >&2; }
+info(){ echo ":: $*"; }
 # ask_choice <prompt> <default> <var> "<opt…>" — accepts a full option OR its first-letter shortcut;
 # shows the default's letter as [x]; friendly re-prompt on bad input.
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr
