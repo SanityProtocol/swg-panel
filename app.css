@@ -152,7 +152,7 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 #host-tport{font-size:11px;letter-spacing:.08em;border-radius:99px;padding:5px 11px;margin-left:0}
 /* glowing "reporting" pill (after the transport tag) */
 .reporting{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;
-  font-weight:600;color:var(--online);background:rgba(63,216,154,.12);padding:3px 9px 3px 8px;border-radius:99px}
+  font-weight:600;color:var(--online);background:rgba(63,216,154,.12);padding:3px 9px 3px 8px;border-radius:99px;border:1px solid color-mix(in srgb,var(--online) 28%,transparent)}
 .reporting::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(63,216,154,.7);animation:blink 2.6s infinite}
 /* one-line node ribbon: interface/turn tags left, sync/uptime right */
 .noderibbon{display:flex;align-items:center;gap:12px;margin:0 0 22px;flex-wrap:wrap}
@@ -205,7 +205,7 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 
 /* ───── status badges ───── */
 .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px 3px 8px;border-radius:99px;font-size:11px;
-  font-weight:700;letter-spacing:.01em}
+  font-weight:700;letter-spacing:.01em;border:1px solid color-mix(in srgb,currentColor 28%,transparent)}   /* subtle colour-matched border (grey for the stale/unknown badge) — matches the docker/reporting header pills */
 .badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .badge.ic{padding-left:7px}
 .badge.ic::before{display:none}
