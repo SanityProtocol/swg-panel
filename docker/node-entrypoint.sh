@@ -23,6 +23,17 @@ mkdir -p "$AWG_DIR" /var/lib/swg-noded /etc/swg-agent
 # truth — a bootstrap interface deleted from the panel must NOT be regenerated on the next reboot.
 BOOT_MARKER=/var/lib/swg-noded/.bootstrapped   # persisted with ./data/node
 FIRST_BOOT=no; [ -f "$BOOT_MARKER" ] || FIRST_BOOT=yes
+# Per-interface "seeded" list: a NODE_IFACES entry with no conf is created the FIRST time we see it
+# (a freshly-added interface on a re-install), but NOT regenerated once seeded (so a panel-deleted one
+# stays gone). Replaces the all-or-nothing FIRST_BOOT gate, which skipped interfaces added on re-install.
+SEEDED=/var/lib/swg-noded/.seeded-ifaces
+if [ ! -f "$SEEDED" ]; then : > "$SEEDED"
+  if [ "$FIRST_BOOT" = no ]; then   # legacy node: treat the interfaces it already HAS (confs on disk) as seeded
+    for _sc in "$AWG_DIR"/*.conf "${WG_DIR:-/etc/wireguard}"/*.conf; do [ -f "$_sc" ] && basename "$_sc" .conf >> "$SEEDED"; done
+  fi
+fi
+iface_seeded(){ grep -qxF "$1" "$SEEDED" 2>/dev/null; }
+mark_seeded(){ iface_seeded "$1" || echo "$1" >> "$SEEDED"; }
 MANAGED=""                                  # space-separated interface names
 IFJSON=""; IFSEP=""                          # swg-agent interfaces map (built per-interface, with its endpoint)
 add_iface(){ # add_iface <name> <endpoint>  — record an interface + its own endpoint for the config
@@ -85,9 +96,9 @@ elif [ -n "${NODE_IFACES:-}" ]; then
     plain=no; [ "$proto" = wg ] && plain=yes
     [ -z "$proto" ] && [ "${NODE_PLAIN_WG:-no}" = yes ] && plain=yes
     if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"
-    elif [ "$FIRST_BOOT" = yes ]; then gen_conf "$name" "$port" "$addr" "$plain"
+    elif ! iface_seeded "$name"; then gen_conf "$name" "$port" "$addr" "$plain"; mark_seeded "$name"   # newly added (first boot or added on re-install)
     else log "interface $name was removed from the panel — not regenerating"; IFS=','; continue; fi
-    add_iface "$name" "$ep"; IFS=','
+    mark_seeded "$name"; add_iface "$name" "$ep"; IFS=','
   done
   IFS="$OIFS"
 elif ls "$AWG_DIR"/*.conf >/dev/null 2>&1; then
@@ -99,8 +110,8 @@ else
   # single-interface fallback (back-compat) — only when the node has no interfaces at all
   name="${NODE_IFACE:-awg0}"
   plain=no; [ "${NODE_PLAIN_WG:-no}" = yes ] && plain=yes
-  if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"; add_iface "$name" "$NODE_ENDPOINT"
-  elif [ "$FIRST_BOOT" = yes ]; then gen_conf "$name" "${NODE_LISTEN_PORT:-51820}" "${NODE_ADDRESS:-10.8.0.1/24}" "$plain"; add_iface "$name" "$NODE_ENDPOINT"
+  if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"; mark_seeded "$name"; add_iface "$name" "$NODE_ENDPOINT"
+  elif ! iface_seeded "$name"; then gen_conf "$name" "${NODE_LISTEN_PORT:-51820}" "${NODE_ADDRESS:-10.8.0.1/24}" "$plain"; mark_seeded "$name"; add_iface "$name" "$NODE_ENDPOINT"
   else log "interface $name was removed from the panel — not regenerating"; fi
 fi
 

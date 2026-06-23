@@ -224,10 +224,10 @@ print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel 
   echo; echo "$(b '──────────────── CONVERSION COMPLETE ────────────────')"; echo
   echo "  Node      $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), syncs to $(b "$purl")"
   echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
-  for n in $ifn; do
-    if   [ -f "/etc/wireguard/$n.conf" ];        then conf="/etc/wireguard/$n.conf"; proto=wg
-    elif [ -f "/etc/amnezia/amneziawg/$n.conf" ]; then conf="/etc/amnezia/amneziawg/$n.conf"; proto=awg
-    else continue; fi
+  # ALL bare interfaces on disk (migrated $ifn PLUS any created during the install-node.sh step), not just $ifn.
+  for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do
+    [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
+    case "$conf" in */wireguard/*) proto=wg;; *) proto=awg;; esac
     iface_row "$n" "$proto" "$conf" "$nep"
   done
   if [ -n "$MIGRATED_TURNS" ]; then

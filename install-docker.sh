@@ -970,8 +970,10 @@ if [ "$PROFILE" != node ]; then
     $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth" \
                      "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
   fi
-  RECREATE="--force-recreate"
 fi
+# always recreate (incl. node): a plain `up -d` just (re)starts the EXISTING container on its OLD .env,
+# so changes from a re-install (e.g. an added interface in NODE_IFACES) never reach the running node.
+RECREATE="--force-recreate"
 
 # ── master: auto-enroll the local node in ONE pass (mirrors bare-metal master) ──
 # Write the node into ./data/lib/nodes.json BEFORE compose up. The panel entrypoint only seeds
