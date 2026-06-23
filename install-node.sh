@@ -193,6 +193,13 @@ subnet_used(){ local s n a; s="$(_net24 "$1")"
   return 1; }
 next_free_subnet(){ local i="${1:-0}" cand; while [ "$i" -lt 255 ]; do cand="10.$(( (8 + i) % 256 )).0.0/24"; subnet_used "$cand" || { echo "$cand"; return; }; i=$((i+1)); done; echo "10.$(( (8 + ${1:-0}) % 256 )).0.0/24"; }
 v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return 0; }
+# warn if any two managed interfaces share a tunnel subnet — only ONE can be up at a time (the rest fail to
+# start), so the node will report some interfaces down until the operator edits one to a free subnet.
+warn_dup_subnets(){ local n a key; declare -A _seen=()
+  for n in "${!IF_CONF[@]}"; do a="$(conf_get "${IF_CONF[$n]}" Address)"; [ -n "$a" ] || continue; key="$(_net24 "$a")"
+    if [ -n "${_seen[$key]:-}" ]; then warn "interfaces $(col "$C_GREEN" "$n") and $(col "$C_GREEN" "${_seen[$key]}") share subnet $(b "$key") — only one can be up at a time; edit one to a free subnet, then restart it."
+    else _seen[$key]="$n"; fi
+  done; }
 # Two-phase interface creation: spec_iface() only PROMPTS and queues a spec, so the user can add
 # every interface up front; apply_specs() then installs tools + writes confs + brings them all up
 # once, at the end. Queued names show in 'mine' (via CREATED) and block name collisions immediately.
@@ -321,6 +328,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
       if [ -n "$avail" ]; then echo "  Available orphan interfaces:"; echo; for n in $avail; do iface_row "$n"; done; echo
       else echo "  Available orphan interfaces: (none)"; fi
       [ -n "$dk" ] && { printf "  Interfaces from a docker node on this server (import to this node):"; for n in $dk; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
+      warn_dup_subnets   # flag any interfaces that share a subnet (only one of them can be up)
       echo
       if [ -z "$avail" ] && [ -z "$mine" ] && [ -n "$dk" ]; then   # only docker-node interfaces → transfer or create
         printf "  Enter a name to %s it from the docker node, or %s to create one: " "$(col "$C_BLUE" transfer)" "$(col "$C_BLUE" new)"
@@ -732,3 +740,4 @@ echo "  Edit      interfaces in $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguar
 echo "  Logs      $(b 'journalctl -u swg-noded -f')  ·  turns green in the panel's Nodes screen in ~${INTERVAL}s"
 [ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       not verifying the panel cert (self-signed) — set TLS_FINGERPRINT to pin it"
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # NB: an `if` (not `$DRYRUN && {…}`) so a non-dry-run doesn't make the script's LAST command exit non-zero (convert.sh read that as "install-node.sh reported an error")
+exit 0   # reaching here = success (every fatal error die'd with exit 1 earlier; a single interface that couldn't come up is a non-fatal warning)

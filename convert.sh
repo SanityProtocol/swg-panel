@@ -33,7 +33,7 @@ turn_unit_lc(){ local u="$1" svc inst envf exe lis="" con=""
   if [ -f "$envf" ]; then lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | head -1)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | head -1)"; fi
   if [ -z "$lis" ]; then exe="$(sed -n 's/^ExecStart=//p' "$u" | head -1)"
     lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"; con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"; fi
-  printf '%s\t%s' "$lis" "$con"; }
+  printf '%s\t%s\n' "$lis" "$con"; }
 detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
 # import a (docker) conf as a BARE-METAL conf: drop any PostUp/PostDown, then add host NAT (the bare
 # datapath has no container to masquerade for it). Keys + Address + Amnezia params carry over.
@@ -160,12 +160,13 @@ EOF
 
 # host systemd turn units → docker record, then tear the units down (swg-noded recreates them as containers)
 turn_to_docker(){
-  local units u svc exe lis con params owner envf rec="$DOCKER_DIR/data/node/turn-proxy.json"
+  local units u svc exe lis con params owner envf _lis _con rec="$DOCKER_DIR/data/node/turn-proxy.json"
   command -v python3 >/dev/null 2>&1 || return 0
   units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
   [ -n "$units" ] || return 0
   echo; info "Turn-proxy services to migrate:"; echo
-  for u in $units; do svc="$(basename "$u" .service)"; IFS="$(printf '\t')" read -r _lis _con < <(turn_unit_lc "$u"); turn_row "$svc" "$_lis" "$_con"; done
+  # NB: '|| true' — turn_unit_lc has no trailing newline, so read returns 1 at EOF and would abort under set -e.
+  for u in $units; do svc="$(basename "$u" .service)"; IFS="$(printf '\t')" read -r _lis _con < <(turn_unit_lc "$u") || true; turn_row "$svc" "$_lis" "$_con"; done
   echo
   cyn "Transfer these turn-proxies into the docker node?" || { info "  left the host turn-proxies running"; return 0; }
   mkdir -p "$(dirname "$rec")"
@@ -384,6 +385,10 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     else warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"; fi
   fi
   clear_recovery   # convert finished cleanly → drop the recovery marker
+  # backstop: the conversion is verified complete here, so clear "converting…" ourselves instead of waiting
+  # for the bare node's first snapshot (if swg-noded is slow/erroring to report, the node would stay stuck on
+  # "converting to bare-metal"). The bare node then just reports normally (online) on its next sync.
+  signal_status ""
   print_bare_summary "$names" "$NEP" "$PURL"   # complete summary: interfaces + the turn-proxies that migrated
   exit 0           # done (this block no longer execs install-node.sh, so end here, not the catch-all die)
 fi
