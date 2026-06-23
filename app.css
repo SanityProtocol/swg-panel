@@ -143,13 +143,14 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 .dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown)}
 .dot.live{background:var(--online);animation:pulse 2.6s infinite}
 .dot.stale{background:var(--unknown)}
-.tport{display:inline-flex;align-items:center;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line-solid);
-  border-radius:99px;padding:3px 9px;margin-left:2px}   /* pill, matching the "reporting" / issues badges in the header */
-/* https transport gets a thin light-blue accent */
-.tport.baremetal{color:#7DC4F0;border-color:rgba(125,196,240,.4);background:rgba(125,196,240,.08)}
-.tport.docker{color:#A974F2;border-color:rgba(169,116,242,.45);background:rgba(169,116,242,.1)}
-/* panel-header deploy tag: livepill geometry/size/font, but keep the docker/bare colour above */
-#host-tport{font-size:11px;letter-spacing:.08em;border-radius:99px;padding:5px 11px;margin-left:0}
+.tport{display:inline-flex;align-items:center;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;
+  padding:2px 7px;border-radius:6px;margin-left:2px}   /* same shape as the wg/awg .iftype badge; colour per .docker/.baremetal */
+.tport.baremetal{color:#7DC4F0;background:rgba(125,196,240,.14)}
+.tport.docker{color:#A974F2;background:rgba(169,116,242,.16)}
+/* panel-header deploy tag keeps the bordered livepill pill geometry (overrides the node-badge look above) */
+#host-tport{font-size:11px;letter-spacing:.08em;border-radius:99px;padding:5px 11px;margin-left:0;border:1px solid var(--line-solid)}
+#host-tport.baremetal{border-color:rgba(125,196,240,.4);background:rgba(125,196,240,.08)}
+#host-tport.docker{border-color:rgba(169,116,242,.45);background:rgba(169,116,242,.1)}
 /* glowing "reporting" pill (after the transport tag) */
 .reporting{display:inline-flex;align-items:center;gap:6px;line-height:1;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;
   font-weight:600;color:var(--online);background:rgba(63,216,154,.12);padding:3px 9px 3px 8px;border-radius:99px;border:1px solid color-mix(in srgb,var(--online) 28%,transparent)}
