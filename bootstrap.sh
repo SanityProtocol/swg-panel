@@ -227,6 +227,40 @@ if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ]; then
   fi
   [ "$_have_live_token" = yes ] && info "re-installing the existing $(mlabel "$METHOD") node (its token is reused — to recover/rotate instead, use the panel's Recover button or pass -key)."
 fi
+# Render a leftover identity as a readable block: method, panel URL, token, where its configs live, the
+# interfaces + turn-proxies it had, when it was created, and (best-effort, via the panel) its name + last-online.
+_fmt_epoch(){ [ -n "${1:-}" ] && date -d "@$1" '+%d.%m.%Y %H:%M:%S' 2>/dev/null || echo "unknown"; }
+_salv_created(){ local s="$1" ts
+  case "$s" in *.converted-*) ts="$(printf '%s' "$s" | sed -n 's/.*\.converted-\([0-9]\{8\}\)-\([0-9]\{6\}\).*/\1\2/p')"
+    [ -n "$ts" ] && { printf '%s.%s.%s %s:%s:%s\n' "${ts:6:2}" "${ts:4:2}" "${ts:0:4}" "${ts:8:2}" "${ts:10:2}" "${ts:12:2}"; return; };; esac
+  [ -f "$s" ] && _fmt_epoch "$(stat -c %Y "$s" 2>/dev/null)" || echo "unknown"; }
+_salv_block(){ local idx="$1" tok="$2" url="$3" src="$4" method dir ifaces turns name last wj ls
+  case "$src" in
+    *config.json) method="Bare-metal"; dir="/etc/swg-agent";;
+    "the swg-node container") method="Docker"; dir="/opt/swg-panel-docker";;
+    *) method="Docker"; dir="$(dirname "$src" 2>/dev/null)";; esac
+  if [ "$method" = Docker ]; then
+    ifaces="$(ls "$dir/data/node-confs"/*.conf 2>/dev/null | while read -r c; do basename "$c" .conf; done | tr '\n' ' ')"
+    turns="$(python3 -c 'import json,sys;print(len((json.load(open(sys.argv[1])).get("turn_proxies") or [])))' "$dir/data/node/turn-proxy.json" 2>/dev/null || echo '?')"
+  else
+    ifaces="$(python3 -c 'import json;print(" ".join((json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).keys()))' 2>/dev/null || true)"; turns="?"
+  fi
+  name=""; last=""
+  if [ -n "$url" ] && command -v curl >/dev/null 2>&1; then
+    wj="$(curl -fsS -k --max-time 6 -H "Authorization: Bearer $tok" "${url%/}/api/node/whoami" 2>/dev/null || true)"
+    name="$(printf '%s' "$wj" | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p')"
+    ls="$(printf '%s' "$wj" | sed -n 's/.*"last_seen": *\([0-9][0-9]*\).*/\1/p')"; [ -n "$ls" ] && last="$(_fmt_epoch "$ls")"
+  fi
+  echo "  [$idx]  $(b "$method node${name:+ $name}")"
+  echo "           Panel URL:     ${url:-unknown}"
+  echo "           Token:         $tok"
+  echo "           Configs path:  $dir/"
+  echo "           Interfaces:    ${ifaces:-none}"
+  echo "           Turn-proxies:  ${turns:-0}"
+  echo "           Created:       $(_salv_created "$src")"
+  echo "           Last online:   ${last:-unknown (no answer from panel)}"
+  echo
+}
 if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ] && [ "$_have_live_token" = no ]; then
   _salvf="$(mktemp 2>/dev/null || echo "/tmp/swg-salv.$$")"; : > "$_salvf"
   # collect every candidate identity as "<token>\t<url>\t<source>" — most authoritative first: a leftover
@@ -257,18 +291,19 @@ PY
   if [ "$_ntok" = 1 ]; then
     salv_tok="$(printf '%s' "$_uniq" | cut -f1)"; salv_url="$(printf '%s' "$_uniq" | cut -f2)"
     echo
-    warn "Found a leftover node token on this box ($(printf '%s' "$_uniq" | cut -f3-)) — a previous install/convert that didn't finish."
-    echo "  Re-using it re-enrolls this box as the SAME node, so it isn't orphaned on the panel (its peers re-sync)."
-    _sa=yes; ask_yn "Re-enroll with the recovered token" y _sa
+    warn "Found a leftover node identity on this box — a previous install/convert that did not finish. Re-using it re-enrolls this box as the SAME node (its peers re-sync):"
+    echo
+    _salv_block 1 "$salv_tok" "$salv_url" "$(printf '%s' "$_uniq" | cut -f3-)"
+    _sa=yes; ask_yn "Re-enroll with this token" y _sa
     [ "$_sa" = yes ] || salv_tok=""
   elif [ "$_ntok" != 0 ]; then
     echo
     warn "Found $_ntok different leftover node identities here (multiple converts / re-installs) — pick which to re-enroll as:"
+    echo
     _i=0
-    while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); echo "  [$_i]  token …$(printf '%s' "$_t" | tail -c 8)   ·   ${_u:-no panel url}   ·   $_s"; done <<EOF2
+    while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); _salv_block "$_i" "$_t" "$_u" "$_s"; done <<EOF2
 $_uniq
 EOF2
-    echo
     printf '  Number to re-enroll with (or press Enter to skip and pass NODE_TOKEN= yourself): '; _pick=""; read -r _pick </dev/tty 2>/dev/null || _pick=""
     if printf '%s' "$_pick" | grep -qE '^[0-9]+$'; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
