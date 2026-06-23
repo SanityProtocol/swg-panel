@@ -2323,7 +2323,11 @@ class Handler(BaseHTTPRequestHandler):
             kept = {}
             for ifc, at in reqd.items():
                 e = ifsnap.get(ifc)
-                reflected = e is not None and bool(e.get("down")) == want_down
+                # "up" = reported AND neither down nor stopped. A stopped iface has `stopped` (not `down`), so the
+                # old `bool(e.get("down"))==want_down` cleared a start request instantly (down absent) before the
+                # node applied it → the start never reached the node. Compare against real up/not-up instead.
+                is_up = e is not None and not e.get("down") and not e.get("stopped")
+                reflected = (not is_up) if want_down else is_up
                 if not reflected and (now_t - (at or 0)) < 30:
                     kept[ifc] = at
             if kept != reqd:
