@@ -19,6 +19,21 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 info(){ echo "${C_BLUE}::${RESET} $*"; }
 warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}error:${RESET} $*" >&2; exit 1; }
+# ── consistent list rows (green name + detail), matching the installers' summaries ──
+# iface_row <name> <proto> <conf> <endpoint> — green name, proto, endpoint:listenport, address (from the conf)
+iface_row(){ local n="$1" proto="$2" conf="$3" ep="$4" lp addr
+  lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1)"
+  addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1)"
+  printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
+# turn_row <service> <listen> <connect> — green service + (listen → connect)
+turn_row(){ printf '    %s%s%s (%s → %s)\n' "$C_GREEN" "$1" "$RESET" "${2:-?}" "${3:-?}"; }
+# turn_unit_lc <unit-path> — echo "<listen>\t<connect>" for a host turn-proxy systemd unit (turn.env, else ExecStart)
+turn_unit_lc(){ local u="$1" svc inst envf exe lis="" con=""
+  svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
+  if [ -f "$envf" ]; then lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | head -1)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | head -1)"; fi
+  if [ -z "$lis" ]; then exe="$(sed -n 's/^ExecStart=//p' "$u" | head -1)"
+    lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"; con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"; fi
+  printf '%s\t%s' "$lis" "$con"; }
 detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
 # import a (docker) conf as a BARE-METAL conf: drop any PostUp/PostDown, then add host NAT (the bare
 # datapath has no container to masquerade for it). Keys + Address + Amnezia params carry over.
@@ -123,8 +138,8 @@ for t in (tps if isinstance(tps, list) else []):
 PY
 )"
   [ -n "$list" ] || return 0
-  echo; info "Turn-proxies on the docker node:"; echo
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "$lis" "$con"; done <<EOF
+  echo; info "Turn-proxy services to migrate:"; echo
+  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && turn_row "$svc" "$lis" "$con"; done <<EOF
 $list
 EOF
   echo
@@ -149,8 +164,8 @@ turn_to_docker(){
   command -v python3 >/dev/null 2>&1 || return 0
   units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
   [ -n "$units" ] || return 0
-  echo; info "Turn-proxy services on this box:"; echo
-  for u in $units; do printf '    %s%s%s\n' "$C_GREEN" "$(basename "$u" .service)" "$RESET"; done
+  echo; info "Turn-proxy services to migrate:"; echo
+  for u in $units; do svc="$(basename "$u" .service)"; IFS="$(printf '\t')" read -r _lis _con < <(turn_unit_lc "$u"); turn_row "$svc" "$_lis" "$_con"; done
   echo
   cyn "Transfer these turn-proxies into the docker node?" || { info "  left the host turn-proxies running"; return 0; }
   mkdir -p "$(dirname "$rec")"
@@ -209,24 +224,22 @@ clear_recovery(){ rm -f "$RECOVERY" 2>/dev/null || true; }
 MIGRATED_TURNS=""   # turn-proxy services turn_to_bare moved onto host systemd (for the final summary)
 # final summary after a docker→bare convert: interfaces (now bare) + turn-proxies that migrated.
 print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel url>
-  local ifn="$1" nep="$2" purl="$3" n conf lp addr proto svc inst lis con
+  local ifn="$1" nep="$2" purl="$3" n conf proto svc inst lis con
   echo; echo "$(b '──────────────── CONVERSION COMPLETE ────────────────')"; echo
   echo "  Node      $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), syncs to $(b "$purl")"
-  echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"
+  echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
   for n in $ifn; do
     if   [ -f "/etc/wireguard/$n.conf" ];        then conf="/etc/wireguard/$n.conf"; proto=wg
     elif [ -f "/etc/amnezia/amneziawg/$n.conf" ]; then conf="/etc/amnezia/amneziawg/$n.conf"; proto=awg
     else continue; fi
-    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" | head -1)"
-    addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" | head -1)"
-    printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${nep:-?}" "${lp:-?}" "${addr:-?}"
+    iface_row "$n" "$proto" "$conf" "$nep"
   done
   if [ -n "$MIGRATED_TURNS" ]; then
-    echo; echo "  $(b 'Turn-proxies') (migrated → host systemd, managed from the panel):"
+    echo; echo "  $(b 'Turn-proxies') (migrated → host systemd, managed from the panel):"; echo
     for svc in $MIGRATED_TURNS; do inst="${svc#vk-turn-proxy-}"
       lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1)"
       con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1)"
-      printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$(printf '%-28s' "$svc")" "$RESET" "${lis:-?}" "${con:-?}"
+      turn_row "$svc" "$lis" "$con"
     done
   else
     echo; echo "  $(b 'Turn-proxies'): none migrated."
@@ -301,7 +314,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     fi
     info "pre-flight OK"
     info "Interfaces to migrate:"; echo
-    for s in $specs; do printf '    %s%s%s\n' "$C_GREEN" "${s%:*}" "$RESET"; done
+    for s in $specs; do iface_row "${s%:*}" "${s#*:}" "$confd/${s%:*}.conf" "$NEP"; done
     echo
     exit 0
   fi
@@ -416,7 +429,8 @@ PY
     [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") from a previous run will be moved aside."
     info "pre-flight OK"
     info "Interfaces to migrate:"; echo
-    printf '%s\n' "$ifaces" | cut -f1 | while read -r _n; do [ -n "$_n" ] && printf '    %s%s%s\n' "$C_GREEN" "$_n" "$RESET"; done
+    printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r _n _cf; do [ -n "$_n" ] || continue
+      _pr=awg; case "$_cf" in */wireguard/*) _pr=wg;; esac; iface_row "$_n" "$_pr" "$_cf" "$NEP"; done
     echo; exit 0
   fi
   if docker_node_present; then die "a docker node (swg-node container) already exists — remove it first (run with --check)"; fi

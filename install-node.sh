@@ -193,6 +193,7 @@ v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return
 # once, at the end. Queued names show in 'mine' (via CREATED) and block name collisions immediately.
 spec_iface(){ # prompt for one interface and queue it (no install yet)
   local _proto proto name port subnet addr cmd dir wan ep idx defname defport defsub
+  detect_wg   # refresh IF_CMD/IF_CONF from disk first, so the name/port/subnet defaults always see every existing interface
   idx=$(( ${#IF_CMD[@]} + ${#SPEC_ORDER[@]} ))   # offset defaults past existing + already-queued ifaces
   menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the host's AmneziaWG kernel module."
   menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Runs on the host's WireGuard kernel module."
