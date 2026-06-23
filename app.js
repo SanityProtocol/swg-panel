@@ -1649,10 +1649,7 @@ function TurnManageSheet({ node, tp }) {
       <div>Changing any field rewrites the unit's ExecStart on the node and restarts it.</div>
       <div>The parameters below are placed verbatim after <span class="mono">-connect</span> — wrap key, wrap mode, any flags the fork supports.</div>
     </div>
-    <div class="row2">
-      <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/></div>
-      <div class="field"><label>Fork</label><div style="font-size:14px;color:var(--ink);padding:7px 2px"><b>${turnFork(svc)}</b></div></div>
-    </div>
+    <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/></div>
     <div class="row2">
       <div class="field"><label>Listen IP</label>
         <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/></div>
