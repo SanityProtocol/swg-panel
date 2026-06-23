@@ -416,7 +416,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
    .appbar-right selector beats `.appbar-right .iconbtn{color:--dim}` (same specificity, later). */
 .iconbtn.checking, .appbar-right .iconbtn.checking{color:var(--brand);pointer-events:none}
 .iconbtn.checking svg{animation:spin .8s linear infinite;transform-box:border-box;transform-origin:center}   /* transform-box pins the pivot to the icon's box centre so it never spins off-axis on the first start */
-.detail-head .title h1{margin:0;font-family:var(--mono);font-size:22px;font-weight:600;color:var(--ink)}
+.detail-head .title h1{margin:0;font-family:var(--mono);font-size:22px;line-height:1;font-weight:600;color:var(--ink)}
 .detail-head .grow{flex:1}
 .bigdots{display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap}
 
@@ -562,7 +562,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ncard:hover{background:var(--surface-2)}
 .ncard .ntop{grid-column:1 / -1;display:flex;align-items:center;gap:9px;margin-bottom:18px;cursor:pointer}
 .ncard .nmeta{grid-column:1}
-.ncard .nname{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink)}
+.ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
 /* CPU load lives at the right of the title row, reaching over the controls */
 .ncard .nm-cpuitem{flex:none}
