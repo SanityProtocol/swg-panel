@@ -105,17 +105,14 @@ panel_owns_port(){ have docker || return 1; docker port swg-panel 2>/dev/null | 
 v_freeport(){ v_port "$1" && port_free "$1"; }
 # smart default ports: first install offers the base; later ones offer (highest used OF THAT KIND)+1, then
 # the next host-free port. turn = TP_LISTEN record; wg/awg = ListenPort across persisted confs + this session's spec.
-next_free_port(){ local p="${1:-51820}"; while [ "$p" -le 65535 ] && ! port_free "$p"; do p=$((p+1)); done; echo "$p"; }
 turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
 iface_default_port(){ local hi=0 p f e _ifs; for f in "$INSTALL_DIR"/data/node-confs/*.conf; do [ -f "$f" ] || continue; p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$f" | head -1)"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; if [ -n "${NODE_IFACES:-}" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"; for e in "${_ifs[@]}"; do p="$(printf '%s' "$e" | cut -d: -f2)"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 51820; }
-v_hostport(){ case "$1" in *:*) v_host "${1%%:*}" && v_port "${1##*:}";; *) return 1;; esac; }
 v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cftoken(){ [ -n "$1" ]; }
 v_cforigin(){ [ -n "$1" ]; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
-v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }   # panel node name for this box (mirrors bare-metal)
-v_subnet(){  have python3 || return 0; python3 -c "import ipaddress,sys;ipaddress.ip_network(sys.argv[1],strict=False)" "$1" >/dev/null 2>&1; }
+# v_iface/v_subnet/v_hostport + next_free_port now in lib/common.sh
 v_url(){     case "$1" in ""|*" "*) return 1;; esac
              local h="${1#http://}"; h="${h#https://}"; h="${h%%/*}"; h="${h%%:*}"; v_host "$h"; }
 v_httpsurl(){ case "$1" in https://*|http://*) v_host "$(x="${1#http://}"; x="${x#https://}"; x="${x%%/*}"; printf '%s' "${x%%:*}")";; *) return 1;; esac; }
@@ -157,11 +154,6 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
 # materialises it into containers on its first run and reports them to the panel.
 TURN_RECORD="${TURN_RECORD:-$INSTALL_DIR/data/node/turn-proxy.json}"
 declare -A TP_LISTEN TP_CONNECT TP_WRAP
-turn_repo_owner(){ case "$1" in
-  WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
-  kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
-  Moroka8) echo "Moroka8/vk-turn-proxy";;
-  cacggghp) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
 gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }
   openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 turn_wrap_flags(){ local k; case "$1" in   # per-fork obfuscation flags (verified from each binary's -h)
@@ -354,6 +346,7 @@ case "$ROLE" in ""|master|host) ;; *) die "role must be master|host";; esac
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
 $DRYRUN && { info "DRY RUN — .env renders under ./dryrun, no Docker commands run."; rm -rf "$PREFIX"; }
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
 
 # Idempotent re-install: re-use the current .env's values (token, URL, login, interface defaults) so
 # re-running keeps everything and the ./data state is untouched. To start fresh, run the uninstaller.

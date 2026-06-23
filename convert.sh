@@ -12,6 +12,7 @@
 # "keep and re-install" or a manual uninstall+install.
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
+. "$SRC/lib/common.sh"   # shared helpers (dl_turn_bin + validators)
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then C_BLUE=$'\033[38;5;39m'; C_YEL=$'\033[33m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; RESET=$'\033[0m'; BOLD=$'\033[1m'
 else C_BLUE=""; C_YEL=""; C_RED=""; C_GREEN=""; RESET=""; BOLD=""; fi
@@ -70,12 +71,6 @@ _convert_abort(){ local rc=$?                       # MUST preserve the exit sta
   return $rc; }
 trap _convert_abort EXIT INT TERM
 
-# download the turn-proxy server binary: GitHub direct first, then any SWG_TURN_MIRROR proxy prefix(es). Opt-in
-# (off by default) — a proxy serving a binary you execute is a supply-chain trust decision. dl_turn_bin <owner> <arch> <out>
-dl_turn_bin(){ local owner="$1" arch="$2" out="$3" base url m; base="https://github.com/$owner/releases/latest/download/server-linux-$arch"
-  for url in "$base" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$base"; done); do
-    curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "$url" -o "$out" && return 0
-  done; return 1; }
 # install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
 turn_install_host(){
   local svc="$1" owner="$2" lis="$3" con="$4" params="$5" inst dir bin arch url

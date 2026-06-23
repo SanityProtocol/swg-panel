@@ -52,6 +52,7 @@ ACME_WEBROOT="${ACME_WEBROOT:-/var/www/acme}"
 DRYRUN=false; [ "${1:-}" = "--dry-run" ] && DRYRUN=true
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
 PALETTE=("#34d399" "#22d3ee" "#c084e8" "#f0913c" "#e8c04b" "#60a5fa" "#f0596b")
 
 # ── colours / styling (honour NO_COLOR + non-tty) ──
@@ -113,18 +114,15 @@ port_free(){ local p="$1" n   # UDP port not already bound AND not already taken
 v_freeport(){ v_port "$1" && port_free "$1"; }
 # smart default ports: first install offers the base; later ones offer (highest used OF THAT KIND)+1, then the
 # next host-free port. turn = TP_LISTEN units; wg/awg = highest ListenPort across confs, never below 51820+queued.
-next_free_port(){ local p="${1:-51820}"; while [ "$p" -le 65535 ] && ! port_free "$p"; do p=$((p+1)); done; echo "$p"; }
 turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
 iface_default_port(){ local cnt="${1:-0}" hi=0 p f n base; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$f" ] || continue; p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$f" | head -1)"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; for n in ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do p="${SPEC_PORT[$n]:-}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; base=$((51820 + cnt)); { [ "$hi" -ge 51820 ] && [ $((hi+1)) -gt "$base" ]; } && base=$((hi+1)); next_free_port "$base"; }
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }
-v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
 v_user(){    case "$1" in ""|*:*|*" "*) return 1;; esac; [ "${#1}" -le 40 ]; }
 v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cftoken(){ [ -n "$1" ] && [ "${#1}" -ge 10 ]; }
 v_cforigin(){ [ -n "$1" ] && [ "${#1}" -ge 20 ]; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
-v_hostport(){ case "$1" in *:*) v_host "${1%%:*}" && v_port "${1##*:}";; *) return 1;; esac; }
-v_subnet(){  have python3 || return 0; python3 -c "import ipaddress,sys;ipaddress.ip_network(sys.argv[1],strict=False)" "$1" >/dev/null 2>&1; }
+# v_iface/v_subnet/v_hostport now in lib/common.sh
 
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
@@ -311,11 +309,6 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
 TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
 TURN_RECORD="${TURN_RECORD:-/etc/swg-agent/turn-proxy.json}"
 declare -A TP_LISTEN TP_CONNECT TP_WRAP
-turn_repo_owner(){ case "$1" in
-  WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
-  kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
-  Moroka8) echo "Moroka8/vk-turn-proxy";;
-  cacggghp) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
 gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }   # 32-byte key as 64 hex chars
   openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 # Per-fork obfuscation flags (verified from each binary's -h). Echoes the flags WITH a
@@ -359,12 +352,6 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
 turn_latest_tag(){ $DRYRUN && { echo "v0.0.0"; return 0; }   # turn_latest_tag <owner/repo>
   curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true; }
-# download the turn-proxy server binary: GitHub direct first, then any SWG_TURN_MIRROR proxy prefix(es). Opt-in
-# (off by default) — a proxy serving a binary you execute is a supply-chain trust decision. dl_turn_bin <owner> <arch> <out>
-dl_turn_bin(){ local owner="$1" arch="$2" out="$3" base url m; base="https://github.com/$owner/releases/latest/download/server-linux-$arch"
-  for url in "$base" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$base"; done); do
-    curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "$url" -o "$out" && return 0
-  done; return 1; }
 install_turn_binary(){ # <fork> <owner/repo> <listen ip:port> <connect ip:port> <extra-flags>
   local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" arch dir bin svc url ver port inst fdir sbin
   case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
