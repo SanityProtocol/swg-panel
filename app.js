@@ -1062,7 +1062,12 @@ function Overview() {
 // button (removed as redundant). The `activity` pulse icon it used is now free for a future feature.
 function HealthDot({ issues }) {
   if (!issues || !issues.length) return null;
-  return html`<span class="badge b-issue ic" title=${issues.join("\n")}><${Ic} i="warn"/>${issues.length} issue${issues.length > 1 ? "s" : ""}</span>`;
+  const n = issues.length;
+  const trigger = html`<span class="badge b-issue ic"><${Ic} i="warn"/>${n} issue${n > 1 ? "s" : ""}</span>`;
+  return html`<${Popover} cls="onlinetag bare healthpop" trigger=${trigger}>
+    <div class="onpop-h">${n} issue${n > 1 ? "s" : ""} on this node</div>
+    ${issues.map(it => html`<div class="onrow hrow"><span class="on-name">${it}</span></div>`)}
+  </${Popover}>`;
 }
 function NodeDetail({ node: rawName }) {
   const name = decodeURIComponent(rawName);   // `name` is the node id (the connector); display uses dname
@@ -1128,7 +1133,7 @@ function NodeDetail({ node: rawName }) {
     </div>
 
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online"
-      actions=${html`<${Fragment}><${HealthDot} issues=${nrec.issues}/>${nrec.removing ? html`<span class="badge b-removing ic" style="margin-left:9px"><${Ic} i="trash"/>flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null}</>`}>
+      actions=${html`<${Fragment}>${nrec.removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null}</>`}>
       <${HealthAlerts} health=${nrec.health}/>
       ${nrec.health_history
         ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} liveFine=${nrec.health_live} h=${52} head=${html`<${HealthMeters} health=${nrec.health}/>`}/>`

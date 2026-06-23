@@ -675,6 +675,9 @@ def _node_issues(c, snap):
         wn = ov.get("wan_iface")
         if wn and nifs and wn not in nifs:
             issues.append(ifn + ": WAN interface " + wn + " is no longer on the node")
+    for ifn, e in (snap.get("interfaces") or {}).items():
+        if e.get("down") and not e.get("stopped"):   # genuinely failed to come up (stopped = operator choice, not an issue)
+            issues.append(ifn + ": interface down on the node")
     for tp in (snap.get("turn_proxies") or []):
         if tp.get("running") is False:
             issues.append((tp.get("service") or "turn-proxy") + ": not running")
