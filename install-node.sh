@@ -588,6 +588,9 @@ $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; 
 if [ "${SWG_TURN_ADD:-}" = 1 ]; then
   echo; info "TURN-PROXY setup — add more, or press $(b Enter) to keep the migrated ones."
   echo
+  # choose_ifaces didn't run in this turn-only re-entry, so seed SELECTED from the node's on-disk
+  # interfaces — otherwise turn_wg_ports is empty and the "forwards to" prompt can't suggest an interface.
+  detect_wg; SELECTED=("${!IF_CMD[@]}")
   choose_turn_proxy
   run systemctl restart swg-noded || warn "couldn't restart swg-noded — added turn-proxies reach the panel on its next start"
   exit 0
