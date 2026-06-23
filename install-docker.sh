@@ -1069,22 +1069,30 @@ case "$PROFILE" in host|master)
 esac
 case "$PROFILE" in node|master)
   echo "  Node      → syncs to $(bb "$PANEL_URL")   ·  $(bb "$NODE_ENDPOINT")"
-  echo; echo "  $(b 'Interface') (in the swg-node container):"
-  if [ -n "$NODE_IFACES" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"
-    for e in "${_ifs[@]}"; do IFS=':' read -r _nm _pt _ad _pr _ep <<< "$e"
-      printf '    %s %-9s %s  %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$_nm")")" "${_pr:-amneziawg}" "$(bb "${_ep:-$NODE_ENDPOINT}:$_pt")" "$(b "$_ad")"
-      printf '        sudo nano %s\n' "$INSTALL_DIR/data/node-confs/$_nm.conf"; done
+  echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
+  _names="$(node_iface_rows | cut -d' ' -f1)"   # ALL node interfaces — persisted node-confs ∪ this run's NODE_IFACES (not just the new one)
+  if [ -n "$_names" ]; then
+    while read -r _nm; do [ -n "$_nm" ] || continue
+      iface_row "$_nm"; printf '        sudo nano %s\n' "$INSTALL_DIR/data/node-confs/$_nm.conf"
+    done <<< "$_names"
   else _pr=amneziawg; [ "$NODE_PLAIN_WG" = yes ] && _pr=wireguard
     printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb "$NODE_ENDPOINT:$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
     printf '        sudo nano %s\n' "$INSTALL_DIR/data/node-confs/$NODE_IFACE.conf"
   fi
-  detect_turn 2>/dev/null || true
-  if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances (sibling containers — swg-turn-*, managed from the panel):"
-    for n in "${!TP_LISTEN[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"
-      printf '    %s %s → %s%s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"
-      printf '        docker logs %s   (it starts on the node container'\''s first run)\n\n' "swg-turn-${n#vk-turn-proxy-}"; done
+  # docker turn-proxies are CONTAINERS, recorded in the node turn record (swg-noded creates them on first run) —
+  # detect_turn (systemd) finds none, so read the record instead.
+  _trec="$INSTALL_DIR/data/node/turn-proxy.json"
+  if [ -f "$_trec" ] && have python3; then
+    _tlist="$(python3 -c 'import json,sys
+try: tps=(json.load(open(sys.argv[1])).get("turn_proxies") or [])
+except Exception: tps=[]
+for t in tps:
+    if t.get("service"): print(t["service"]+"\t"+t.get("listen","")+"\t"+t.get("connect",""))' "$_trec" 2>/dev/null || true)"
+    if [ -n "$_tlist" ]; then echo; echo "  $(b 'Turn-proxy') instances (sibling containers — swg-turn-*, managed from the panel):"; echo
+      while IFS="$(printf '\t')" read -r _svc _lis _con; do [ -n "$_svc" ] && printf '    %s%s%s (%s → %s)\n' "$C_GREEN" "$_svc" "$RESET" "${_lis:-?}" "${_con:-?}"; done <<< "$_tlist"
+    fi
   fi
-  echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)" ;;
+  echo; echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)" ;;
 esac
 echo
 echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile $PROFILE up -d")"
