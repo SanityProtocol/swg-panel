@@ -408,7 +408,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
       ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>`
       : pend
       ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${updating ? "updating" : (TURN_PEND[pend] || pend)}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
-      : installing ? html`<span class="tg tg-busy" title="Downloading the binary and starting the container on the node"><${Ic} i="clock"/>installing</span>`
+      : installing ? html`${tp.install_msg ? html`<${CmdErr} err=${tp.install_msg} cls="warn" title="Installing on the node"/>` : null}<span class=${"tg tg-busy" + (tp.install_msg ? " warn" : "")} title=${tp.install_msg || "Downloading the binary and starting the container on the node"}><${Ic} i="clock"/>installing</span>`
       : failed ? html`<${CmdErr} err=${err || "the install failed on the node"}/><span class="tg tg-busy del"><${Ic} i="warn"/>install failed</span>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
@@ -1642,10 +1642,11 @@ function trackTurnRestarts() {
   }
   for (const k of Object.keys(seen)) _turnRestartPend[k] = true;
 }
-// small ⓘ next to a pending/failed command — hover for the node's error, click to read it in full
-function CmdErr({ err }) {
+// small ⓘ next to a pending/failed command — hover for the node's error, click to read it in full.
+// `cls` tones it (e.g. "warn" = yellow for a non-fatal in-progress note); `title` overrides the modal heading.
+function CmdErr({ err, cls, title }) {
   if (!err) return null;
-  return html`<span class="cmderr" title=${err} onClick=${e => { e.stopPropagation(); openConfirm({ title: "Command failed on the node", body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
+  return html`<span class=${"cmderr" + (cls ? " " + cls : "")} title=${err} onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Command failed on the node", body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
 }
 async function cancelTurn(node, body) {
   const r = await api.turnCancel({ node, ...body });
