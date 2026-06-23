@@ -220,7 +220,7 @@ clear_recovery(){ rm -f "$RECOVERY" 2>/dev/null || true; }
 MIGRATED_TURNS=""   # turn-proxy services turn_to_bare moved onto host systemd (for the final summary)
 # final summary after a docker→bare convert: interfaces (now bare) + turn-proxies that migrated.
 print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel url>
-  local ifn="$1" nep="$2" purl="$3" n conf proto svc inst lis con
+  local ifn="$1" nep="$2" purl="$3" n conf proto svc inst lis con u units
   echo; echo "$(b '──────────────── CONVERSION COMPLETE ────────────────')"; echo
   echo "  Node      $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), syncs to $(b "$purl")"
   echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
@@ -230,15 +230,18 @@ print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel 
     case "$conf" in */wireguard/*) proto=wg;; *) proto=awg;; esac
     iface_row "$n" "$proto" "$conf" "$nep"
   done
-  if [ -n "$MIGRATED_TURNS" ]; then
-    echo; echo "  $(b 'Turn-proxies') (migrated → host systemd, managed from the panel):"; echo
-    for svc in $MIGRATED_TURNS; do inst="${svc#vk-turn-proxy-}"
-      lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1)"
-      con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1)"
+  # ALL host turn-proxies on the box (migrated PLUS any added in the turn-add step), not just $MIGRATED_TURNS —
+  # mirrors the interface loop above which scans disk, not just the migrated set.
+  units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
+  if [ -n "$units" ]; then
+    echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
+    for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"
+      lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
+      con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
       turn_row "$svc" "$lis" "$con"
     done
   else
-    echo; echo "  $(b 'Turn-proxies'): none migrated."
+    echo; echo "  $(b 'Turn-proxies'): none."
   fi
   echo; echo "  Manage    peers + per-interface egress in the panel → $(b 'Interfaces / Nodes')"
   echo "  Edit      interfaces in $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)  ·  daemon $(b /etc/swg-agent/config.json)"
@@ -372,6 +375,12 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
 
   echo; info "Node is up — migrating its turn-proxies now (downloads can be slow; the node already serves peers)."
   turn_to_bare   # docker turn-proxies → host systemd units (reads the still-present $DOCKER_DIR turn record)
+
+  # offer the SAME "add more?" step interfaces got — re-enter install-node.sh's turn menu now that the
+  # existing proxies are migrated and listed (it also (re)writes the bare turn record incl. the migrated
+  # units). Non-fatal: a failure here must not skip the dir cleanup + final summary below.
+  env SWG_TURN_ADD=1 bash "$SRC/install-node.sh" \
+    || warn "turn-proxy add step reported an error — continuing (check the panel)."
 
   # finally move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker
   # convert isn't blocked by the leftover .env.

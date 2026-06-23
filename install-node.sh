@@ -581,6 +581,18 @@ choose_turn_proxy(){   # one looped step: list installed (if any) + available br
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
 $DRYRUN && { info "DRY RUN — files render under ./dryrun, nothing executes."; rm -rf "$PREFIX"; }
 
+# convert.sh (docker→bare) re-enters here AFTER migrating the existing turn-proxies, to offer the same
+# "add more?" step interfaces get — reusing this script's turn menu instead of duplicating the fork list
+# in convert.sh. choose_turn_proxy lists what's already installed (incl. the just-migrated units), lets
+# you add more, and (re)writes the turn record; restart swg-noded so any additions reach the panel.
+if [ "${SWG_TURN_ADD:-}" = 1 ]; then
+  echo; info "TURN-PROXY setup — add more, or press $(b Enter) to keep the migrated ones."
+  echo
+  choose_turn_proxy
+  run systemctl restart swg-noded || warn "couldn't restart swg-noded — added turn-proxies reach the panel on its next start"
+  exit 0
+fi
+
 # ═══════════════ NODE SETUP ═══════════════
 echo; info "BARE-METAL SWG NODE SETUP"
 read_existing
