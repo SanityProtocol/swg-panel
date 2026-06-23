@@ -412,6 +412,7 @@ function turnProxiesFor(node, iface) {
 // trust any live state then, so cross-reference badges grey out (don't claim "active" on a node gone dark).
 function nodeStale(node) { return Store.recon.nodeStatus[node] !== "live"; }
 function ifaceDown(node, ifn) { return !!(((((Store.stats[node] || {}).interfaces) || {})[ifn] || {}).down); }
+function ifaceNotUp(node, ifn) { const s = (((Store.stats[node] || {}).interfaces) || {})[ifn] || {}; return !!s.down || !!s.stopped; }  // down OR stopped → grey chips
 function turnDown(tp) { return tp && tp.running === false; }
 // turn badges for an interface card: one fork-coloured "turn" chip per distinct forwarding fork
 // (collapses to one in the common single-fork case), greyed when that fork's proxies are all down / node stale.
@@ -463,8 +464,27 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">Turn-proxy fork</span><span class="r">${turnFork(tp.service)}</span></div>
       <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
-      ${showForwards ? html`<div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + ((nodeStale(node) || ifaceDown(node, fronted)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
+      ${showForwards ? html`<div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + ((nodeStale(node) || ifaceNotUp(node, fronted)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
     </div></div>`;
+}
+
+// The turn-proxies block — ONE component for both the node screen and the interface screen, so the cards
+// never drift. Pass `iface` to scope it to one interface: it then (1) uses a different title, (2) shows only
+// the proxies that forward to that interface, and (3) drops the "Forwards to" row. Everything else (the
+// cards, the Setup button, pending/onboarding chips) is the node view and is omitted when scoped.
+function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
+  snap = snap || Store.stats[node] || {}; metas = metas || Store.describe[node] || {}; nrec = nrec || {};
+  const all = snap.turn_proxies || [];
+  const cards = iface ? turnProxiesFor(node, iface) : all;
+  if (iface && !cards.length) return null;               // interface view: nothing forwards here → no block
+  const blocked = (Store.recon.nodeStatus[node] !== "live") || !!nrec.proc_status;
+  return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length}
+      actions=${(!iface && nrec.turn_manage) ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
+    <div class="ifgrid">${cards.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface}/>`)}
+    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
+    ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
+    </div>
+  <//>`;
 }
 
 // resolve a per-target client config: session (built at creation) → stored → none
@@ -1099,7 +1119,7 @@ function NodeDetail({ node: rawName }) {
       <div class="nr-tags">
         ${(meta ? Object.keys(meta) : []).map(ifn => {
           const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
-          return html`<a class=${"tg tg-" + type + ((nodeStale(name) || ifaceDown(name, ifn)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
+          return html`<a class=${"tg tg-" + type + ((nodeStale(name) || ifaceNotUp(name, ifn)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
         })}
         ${((snap && snap.turn_proxies) || []).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}
       </div>
@@ -1164,13 +1184,7 @@ function NodeDetail({ node: rawName }) {
             })}${pcards}</div>`; })()}
     <//>
 
-    ${hasTurns ? html`<${Panel} icon="relay" title="Turn proxies" tone="turn" count=${(snap.turn_proxies || []).length}
-        actions=${nrec.turn_manage ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
-      <div class="ifgrid">${(snap.turn_proxies || []).map(tp => html`<${TurnCard} node=${name} tp=${tp} nrec=${nrec} metas=${meta}/>`)}
-      ${Object.entries(nrec.turn_pending || {}).filter(([s]) => !(snap.turn_proxies || []).some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { service: s })}><${Ic} i="x"/></button></div></div>`)}
-      ${(nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(name, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`)}
-      </div>
-    <//>` : null}
+    ${hasTurns ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title="Turn proxies"/>` : null}
   </div>`;
 }
 
@@ -1193,7 +1207,6 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const peers = Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface));
   const onl = peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface && t.online)).length;
   const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
-  const tps = turnProxiesFor(node, iface);
   const restarting = (nrec.restarting || []).includes(iface);
   const istate = (((Store.stats[node] || {}).interfaces || {})[iface] || {});
   const istopped = !!istate.stopped;   // operator stopped it → a choice, not a failure (no error notice)
@@ -1243,9 +1256,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         </div>` : null}
       <//>`}
 
-    ${tps.length ? html`<${Panel} icon="relay" title="Reachable via turn-proxy" tone="turn" count=${tps.length}>
-      <div class="ifgrid">${tps.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${Store.describe[node] || {}} showForwards=${false}/>`)}</div>
-    <//>` : null}
+    <${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title="Reachable via turn-proxy" iface=${iface}/>
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
@@ -1560,9 +1571,8 @@ function EditIfaceSheet({ node, iface }) {
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button>
       ${notup
-        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { startIface(node, iface); closeModal(); }}><${Ic} i="play"/> Start service</button>`
-        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { stopIface(node, iface); closeModal(); }}><${Ic} i="stop"/> Stop service</button>`}
-      <button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { restartIfaceToast(node, iface); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
+        : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
       <div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections.</div>
@@ -2637,7 +2647,7 @@ function ifaceTags(node) {
   const meta = Store.describe[node] || {};
   return Object.keys(meta).map(ifn => {
     const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
-    const muted = nodeStale(node) || ifaceDown(node, ifn);
+    const muted = nodeStale(node) || ifaceNotUp(node, ifn);
     return html`<a class=${"tg tg-" + type + (muted ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}>${ifn}</a>`;
   });
 }
