@@ -253,6 +253,7 @@ PY
     while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); echo "  [$_i]  token …$(printf '%s' "$_t" | tail -c 8)   ·   ${_u:-no panel url}   ·   $_s"; done <<EOF2
 $_uniq
 EOF2
+    echo
     printf '  Number to re-enroll with (or press Enter to skip and pass NODE_TOKEN= yourself): '; _pick=""; read -r _pick </dev/tty 2>/dev/null || _pick=""
     if printf '%s' "$_pick" | grep -qE '^[0-9]+$'; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
