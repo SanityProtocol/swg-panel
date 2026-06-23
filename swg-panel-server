@@ -2366,6 +2366,22 @@ class Handler(BaseHTTPRequestHandler):
             nodes_save(Handler.deps["nodes_path"], nodes)
         return self._send(200, {"ok": True, "data": {"id": nid, "state": state}})
 
+    def _node_whoami(self):
+        # Identify a node by its bearer token — for the installer's leftover-token salvage, so it can show
+        # the operator the node's name / method / last-online instead of an opaque token. Read-only.
+        nodes = nodes_load(Handler.deps["nodes_path"])
+        hdr = self.headers.get("Authorization", "")
+        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
+        nid, node = find_node_by_token(nodes, token)
+        if not nid:
+            return self._send(404, {"ok": False, "error": "unknown node token"})
+        snap = (Handler.deps.get("node_snaps") or {}).get(nid) or {}
+        return self._send(200, {"ok": True, "data": {
+            "name": node.get("name", nid),
+            "kind": node.get("kind") or snap.get("kind") or "",
+            "created": node.get("created"),
+            "last_seen": (Handler.deps.get("node_seen") or {}).get(nid)}})
+
     def do_GET(self):
         u = urlparse(self.path)
         path = strip_base(u.path)
@@ -2373,6 +2389,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         if path in STATIC:                 # SPA assets are public so the login page can load
             return self._static(path)
+        if path == "/api/node/whoami":     # node-token auth (not a session) — lets a re-installer identify a leftover token
+            return self._node_whoami()
         if not self._require_auth():       # everything else (data) needs a session
             return
         if path.startswith("/wgstats/"):
