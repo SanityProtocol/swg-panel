@@ -208,7 +208,8 @@ FROM="${1:-}"; TO="${2:-}"; ROLE="${3:-}"
 # (BEFORE any teardown) and only delete it once the convert completes. bootstrap.sh sees this file on the
 # next run and resumes the convert with the SAME identity instead of treating the box as a fresh install.
 RECOVERY="/var/lib/swg-recovery"
-[ "$CHECK" = yes ] || { [ -f "$RECOVERY" ] && . "$RECOVERY" 2>/dev/null || true; }   # resume: the saved identity wins (the source may be half torn down)
+RESUMING=no   # set when we picked up a recovery marker → this is finishing an interrupted convert, not a fresh one
+if [ "$CHECK" != yes ] && [ -f "$RECOVERY" ]; then . "$RECOVERY" 2>/dev/null || true; RESUMING=yes; fi   # resume: the saved identity wins (the source may be half torn down)
 write_recovery(){   # write_recovery <space-separated interface names>
   mkdir -p /var/lib 2>/dev/null || true
   { printf "SWG_RV_FROM='%s'\nSWG_RV_TO='%s'\nSWG_RV_ROLE='%s'\n" "$FROM" "$TO" "$ROLE"
@@ -302,10 +303,14 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
 
   # pre-flight: a bare-metal conf of the same NAME already present is a real clash (the docker
   # node still holds the ports, but those free up the moment we stop its container below).
+  # On a RESUME these confs are OURS — the interrupted run already imported them — so they're not a clash;
+  # the import step below keeps them as-is ("resume: don't re-import").
   conflicts=""
-  for s in $specs; do nm="${s%:*}"
-    { [ -e "/etc/amnezia/amneziawg/$nm.conf" ] || [ -e "/etc/wireguard/$nm.conf" ]; } && conflicts="${conflicts:+$conflicts }$nm"
-  done
+  if [ "$RESUMING" != yes ]; then
+    for s in $specs; do nm="${s%:*}"
+      { [ -e "/etc/amnezia/amneziawg/$nm.conf" ] || [ -e "/etc/wireguard/$nm.conf" ]; } && conflicts="${conflicts:+$conflicts }$nm"
+    done
+  fi
   if [ "$CHECK" = yes ]; then
     if [ -n "$conflicts" ]; then
       warn "a bare-metal interface already exists with these name(s): $(b "$conflicts")"
