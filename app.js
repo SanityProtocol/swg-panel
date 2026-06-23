@@ -405,7 +405,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
   const dim = converting || (!justRestarted && (pend || installing || failed || down || err));   // anything needing attention → dim the card
   return html`<div class=${"ifcard tp" + (nrec.turn_manage && !converting ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage && !converting ? () => openTurnManage(node, tp) : null}>
-    <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${converting
+    <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${converting
       ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>`
       : pend
       ? html`<${CmdErr} err=${err}/>${prog ? html`<${CmdErr} err=${prog} cls="warn" title="Working on the node"/>` : null}<span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${updating ? "updating" : (TURN_PEND[pend] || pend)}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
@@ -414,6 +414,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
     <div class="ifcard-rows">
+      <div class="ifrow"><span class="l">Binary (fork)</span><span class="r">${turnFork(tp.service)}</span></div>
       <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
       ${showForwards ? html`<div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
       <div class="ifrow"><span class="l">Connections</span><span class="r"><${OnlPop} peer title="Via this turn-proxy"
@@ -1250,15 +1251,41 @@ function suggestPort(node, kind) {
   while (used.has(p) && p < 65535) p++;
   return p;
 }
+// next free interface name (<base><n>): highest numeric suffix across ALL interfaces + 1, then skip any taken (mirrors install-node.sh iface_next_index)
+function suggestIface(node, proto) {
+  const names = Object.keys((Store.stats[node] || {}).interfaces || {});
+  const base = proto === "wg" ? "wg" : "awg";
+  let hi = 0;
+  for (const n of names) { const m = /(\d+)$/.exec(n); if (m) hi = Math.max(hi, Number(m[1])); }
+  let i = hi + 1;
+  while (names.includes(base + i)) i++;
+  return base + i;
+}
+// next free 10.X.0.0/24 tunnel subnet: highest used second octet + 1 (default 10.8) (mirrors install-node.sh next_free_subnet)
+function suggestSubnet(node) {
+  let hi = 7;   // → first suggestion 10.8.0.0/24
+  for (const b of Object.values((Store.stats[node] || {}).interfaces || {})) {
+    const s = (b.meta || {}).subnet || (b.meta || {}).address || "";
+    const m = /^10\.(\d{1,3})\./.exec(s); if (m) hi = Math.max(hi, Number(m[1]));
+  }
+  return "10." + (hi + 1) + ".0.0/24";
+}
 function LoadIfaceSheet({ node }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
   const [proto, setProto] = useState("awg");   // awg | wg | existing
-  const [iface, setIface] = useState(""); const [subnet, setSubnet] = useState("");
+  const sugAwg = suggestIface(node, "awg"), sugWg = suggestIface(node, "wg");   // auto-suggested names (per base)
+  const [iface, setIface] = useState(sugAwg); const [subnet, setSubnet] = useState(suggestSubnet(node));
   const [host, setHost] = useState(""); const [port, setPort] = useState(String(suggestPort(node, "iface")));
   const [dns, setDns] = useState("1.1.1.1"); const [mtu, setMtu] = useState("1280"); const [ka, setKa] = useState("25");
   const [conf, setConf] = useState("");
   const ips = nrec.ips || []; const [egress, setEgress] = useState("");
+  // endpoint host: dropdown of the node's known IPs (default the first), last entry = a free-text "Custom IP / Host…"
+  const [hostSel, setHostSel] = useState(ips[0] || "__custom__"); const [hostCustom, setHostCustom] = useState("");
+  const pickProto = p => {   // switching base re-suggests the name only if the field is still an untouched suggestion
+    if (p !== "existing" && (iface === sugAwg || iface === sugWg || !iface.trim())) setIface(p === "wg" ? sugWg : sugAwg);
+    setProto(p);
+  };
   const wanifs = nrec.wan_ifaces || []; const [wan, setWan] = useState("");
   const ipIfaces = nrec.ip_ifaces || [];   // [{ip, iface}] for the merged egress picker
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
@@ -1277,7 +1304,8 @@ function LoadIfaceSheet({ node }) {
       if (!nm || /[\s/]/.test(nm)) return fail("Interface name is required (no spaces or /).");
       if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.");
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
-      r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: host.trim(),
+      const hostVal = hostSel === "__custom__" ? hostCustom.trim() : hostSel;
+      r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan });
     }
     if (!r.ok) return fail(r.error || "Request failed.");
@@ -1289,9 +1317,9 @@ function LoadIfaceSheet({ node }) {
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>${existing ? "Adopt" : "Create"}</button></>`}>
     <div class="field"><label>Protocol</label>
       <div class="chiprow proto3">
-        <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => setProto("awg")}>AmneziaWG</button>
-        <button class=${"chip c-wg" + (proto === "wg" ? " on" : "")} onClick=${() => setProto("wg")}>WireGuard</button>
-        <button class=${"chip c-ex" + (proto === "existing" ? " on" : "")} onClick=${() => setProto("existing")}>Existing unbound interface</button>
+        <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
+        <button class=${"chip c-wg" + (proto === "wg" ? " on" : "")} onClick=${() => pickProto("wg")}>WireGuard</button>
+        <button class=${"chip c-ex" + (proto === "existing" ? " on" : "")} onClick=${() => pickProto("existing")}>Existing unbound interface</button>
       </div></div>
     ${existing ? html`<${Fragment}>
       <div class="iface-intro big">
@@ -1307,7 +1335,13 @@ function LoadIfaceSheet({ node }) {
         <div class="field"><label>Tunnel subnet (CIDR)</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/><div class="hint">The server takes the first host (e.g. 10.8.0.1);</div></div>
       </div>
       <div class="row2">
-        <div class="field"><label>Endpoint host / IP</label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/></div>
+        <div class="field"><label>Endpoint host / IP</label>
+          <select class="selwrap" value=${hostSel} onChange=${e => setHostSel(e.target.value)}>
+            ${ips.map(ip => html`<option value=${ip}>${ip}</option>`)}
+            <option value="__custom__">Custom IP / Host…</option>
+          </select>
+          ${hostSel === "__custom__" ? html`<input style="margin-top:6px" value=${hostCustom} onInput=${e => setHostCustom(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7" autocomplete="off"/>` : null}
+          <div class="hint">What clients dial</div></div>
         <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
       </div>
       ${isBridge ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This docker node uses <span class="mono">bridge</span> networking — after creating you must publish this port in the node's <span class="mono">docker-compose.yml</span> (<span class="mono">ports: "${port || "PORT"}:${port || "PORT"}/udp"</span>) and <span class="mono">up -d</span>, or clients can't reach it. (A host-networking node needs none of this.)</span></div>` : null}
@@ -1508,6 +1542,7 @@ function TurnManageSheet({ node, tp }) {
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
   const [custom, setCustom] = useState(con || "127.0.0.1:");
   const [params, setParams] = useState(tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : ""));
+  const [title, setTitle] = useState(tp.title || "");
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
@@ -1545,7 +1580,7 @@ function TurnManageSheet({ node, tp }) {
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forward-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
     setBusy(true); setMsg({ k: "work", t: "saving…" });
-    const body = { node, service: svc, listen: lhost.trim() + ":" + lport.trim(), connect, params: params.trim() };
+    const body = { node, service: svc, listen: lhost.trim() + ":" + lport.trim(), connect, params: params.trim(), title: title.trim() };
     const r = await api.turnManage(body);
     if (!r.ok) return fail(r.error || "Request failed.");
     closeModal(); await Store.poll();
@@ -1567,6 +1602,7 @@ function TurnManageSheet({ node, tp }) {
       <div>Changing any field rewrites the unit's ExecStart on the node and restarts it.</div>
       <div>The parameters below are placed verbatim after <span class="mono">-connect</span> — wrap key, wrap mode, any flags the fork supports.</div>
     </div>
+    <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/><div class="hint">Shown on the card; blank = the fork name (${turnFork(svc)})</div></div>
     <div class="row2">
       <div class="field"><label>Listen IP</label><input autofocus value=${lhost} onInput=${e => setLhost(e.target.value)} placeholder="203.0.113.7"/></div>
       <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/></div>
@@ -1575,7 +1611,7 @@ function TurnManageSheet({ node, tp }) {
     <div class="field"><label>Forwards to</label>
       <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
         ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
-        <option value="__custom__">Custom port…</option>
+        <option value="__custom__">Custom IP:Port…</option>
       </select>
     </div>
     ${isCustom ? html`<${Fragment}>
@@ -1684,6 +1720,7 @@ function SetupTurnSheet({ node }) {
   const [lport, setLport] = useState(String(suggestPort(node, "turn")));
   const [fwd, setFwd] = useState(ifaces[0] ? ifaces[0].name : "__custom__");
   const [custom, setCustom] = useState("127.0.0.1:51820");
+  const [title, setTitle] = useState("");
   const [path, setPath] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
@@ -1706,7 +1743,7 @@ function SetupTurnSheet({ node }) {
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
     setBusy(true); setMsg({ k: "work", t: "installing… (the node downloads the binary, up to ~2 min)" });
     const r = await api.turnInstall({ node, fork: f.id, owner: f.owner, wrap_flags: f.wrap,
-      listen: lhost.trim() + ":" + lport.trim(), connect });
+      listen: lhost.trim() + ":" + lport.trim(), connect, title: title.trim() });
     if (!r.ok) return fail(r.error || "Request failed.");
     closeModal(); await Store.poll();
     toast("Turn-proxy install requested — the node downloads + starts it on its next sync.", "ok");
@@ -1735,6 +1772,7 @@ function SetupTurnSheet({ node }) {
         </select>
         <div class="hint">${f.owner} — ${f.wrap ? "obfuscation: " + f.wrap : "plain (-listen/-connect only)"}</div>
       </div>
+      <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${f.label} autocomplete="off"/><div class="hint">Shown on the card; blank = the fork name (${f.label})</div></div>
       <div class="row2">
         <div class="field"><label>Public IP</label><input value=${lhost} onInput=${e => setLhost(e.target.value)} placeholder="203.0.113.7"/><div class="hint">Must be an address on this server — the proxy binds to it.</div></div>
         <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/></div>
@@ -1743,7 +1781,7 @@ function SetupTurnSheet({ node }) {
       <div class="field"><label>Forwards to</label>
         <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
           ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
-          <option value="__custom__">Custom port…</option>
+          <option value="__custom__">Custom IP:Port…</option>
         </select>
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}

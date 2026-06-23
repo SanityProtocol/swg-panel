@@ -1738,7 +1738,8 @@ def api(method, path, qs, body, deps):
         if svc in (nodes[nid].get("turn") or {}):
             return 409, {"ok": False, "error": "an install for this fork+port is already pending", "code": "conflict"}
         nodes[nid].setdefault("turn", {})[svc] = {"action": "install", "owner": owner, "listen": listen,
-                                                  "connect": connect, "wrap_flags": wrap_flags, "at": now()}
+                                                  "connect": connect, "wrap_flags": wrap_flags,
+                                                  "title": (body.get("title") or "").strip(), "at": now()}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Installing turn-proxy", svc)
         return 200, {"ok": True, "data": {"node": nid, "service": svc}}
@@ -1758,6 +1759,8 @@ def api(method, path, qs, body, deps):
                     req[k] = body[k].strip()
             if "params" in body:                        # free-text ExecStart tail after -connect
                 req["params"] = body.get("params") or ""
+            if "title" in body:                          # optional display label (node stores it on the record)
+                req["title"] = (body.get("title") or "").strip()
             verb = "Editing turn-proxy"
         elif path.endswith("/rotate"):
             req = {"action": "rotate", "at": now()}; verb = "Rotating turn-proxy key"

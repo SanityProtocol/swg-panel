@@ -1184,6 +1184,8 @@ def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
     if err: return err, None
     tp = {"service": svc, "listen": listen, "connect": connect,
           "wrap_key": _params_wrapkey(params), "params": params, "owner": owner}
+    _ti = (req.get("title") or "").strip()
+    if _ti: tp["title"] = _ti          # optional display label, kept on the record
     r = _dturn_run(tp)
     if r.returncode != 0: return (r.stderr or "container start failed").strip()[:160], None
     verr = _dturn_verify(svc)
@@ -1436,6 +1438,7 @@ def apply_turn(turn, turn_onboard):
                     if req.get("listen"):  tp["listen"] = req["listen"].strip()
                     if req.get("connect"): tp["connect"] = req["connect"].strip()
                     if "params" in req:    tp["params"] = (req.get("params") or "").strip(); tp["wrap_key"] = _params_wrapkey(tp["params"])
+                    if "title" in req:     tp["title"] = (req.get("title") or "").strip()
                 elif act == "rotate":
                     nk = secrets.token_hex(32); tp["params"] = _params_set_wrapkey(tp.get("params", ""), nk); tp["wrap_key"] = nk
                 # restart: no config change — just recreate the container
@@ -1452,7 +1455,10 @@ def apply_turn(turn, turn_onboard):
                 if err:
                     fail(svc, err)
                 else:
-                    rec[svc] = _installed_tp(svc); changed = True; good(svc, "ins:" + svc)
+                    rec[svc] = _installed_tp(svc)
+                    _ti = (req.get("title") or "").strip()
+                    if _ti: rec[svc]["title"] = _ti
+                    changed = True; good(svc, "ins:" + svc)
                 continue
             if act == "delete":
                 w = host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; "
@@ -1513,8 +1519,12 @@ def apply_turn(turn, turn_onboard):
                             + "systemctl daemon-reload && systemctl restart " + shlex.quote(svc))
             if w.returncode != 0:
                 fail(svc, (w.stderr or "restart failed").strip()[:120]); continue
+            _ti = req.get("title")   # set if the request carried one, else preserve the existing record's title
+            _ti = _ti.strip() if isinstance(_ti, str) else (rec.get(svc) or {}).get("title", "")
             rec[svc] = {"service": svc, "listen": listen, "connect": connect,
-                        "wrap_key": _params_wrapkey(params), "params": params}; changed = True   # reflect even if it won't start
+                        "wrap_key": _params_wrapkey(params), "params": params}   # reflect even if it won't start
+            if _ti: rec[svc]["title"] = _ti
+            changed = True
             verr = _turn_verify(svc)
             if verr:
                 fail(svc, verr); continue   # report not-running; the record already shows the new (broken) params

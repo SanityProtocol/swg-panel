@@ -277,6 +277,13 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .iftype.wg{background:rgba(63,216,154,.14);color:var(--online)}
 .iftype.awg{background:rgba(31,200,214,.15);color:var(--brand)}
 .iftype.turn{background:rgba(167,139,245,.17);color:#B49BF7}
+/* per-fork turn badge colours — distinguishable violet/purple variations (unknown forks fall back to the base above) */
+.iftype.turn.tf-cacggghp{color:#A974F2;background:color-mix(in srgb,#A974F2 17%,transparent)}
+.iftype.turn.tf-WINGS-N{color:#7C5CFF;background:color-mix(in srgb,#7C5CFF 17%,transparent)}
+.iftype.turn.tf-samosvalishe{color:#C77DFF;background:color-mix(in srgb,#C77DFF 17%,transparent)}
+.iftype.turn.tf-kiper292{color:#9D8DFF;background:color-mix(in srgb,#9D8DFF 17%,transparent)}
+.iftype.turn.tf-Moroka8{color:#C04FD6;background:color-mix(in srgb,#C04FD6 17%,transparent)}
+.iftype.turn.tf-anton48{color:#8E72E8;background:color-mix(in srgb,#8E72E8 17%,transparent)}
 .iftype.muted{background:rgba(98,116,139,.13);color:var(--unknown)}
 
 /* user detail: peers grouped by interface */
