@@ -230,12 +230,14 @@ node_iface_rows(){
   fi
 }
 # one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
-iface_row(){ local n="$1" conf proto ep lp addr
+iface_row(){ local n="$1" conf proto=wg ep lp="" addr=""   # set -e safe: every sub-command can't abort the row (a queued iface has no conf yet)
   conf="$(find_iface_conf "$n" 2>/dev/null || true)"
-  if [ -n "$conf" ] && grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I[1-5]|Itime)[[:space:]]*=' "$conf" 2>/dev/null; then proto=awg; else proto=wg; fi
-  ep="${NODE_ENDPOINT:-$(detect_public_ip 2>/dev/null || true)}"
-  lp="$([ -n "$conf" ] && sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" | head -1)"
-  addr="$([ -n "$conf" ] && sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" | head -1)"
+  if [ -n "$conf" ]; then
+    grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I[1-5]|Itime)[[:space:]]*=' "$conf" 2>/dev/null && proto=awg || proto=wg
+    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+    addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+  fi
+  ep="${NODE_ENDPOINT:-}"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
   printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
 v_fwd(){ local names; names=" $(node_iface_rows | cut -d' ' -f1 | tr '\n' ' ')${NODE_IFACE:+$NODE_IFACE }"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
@@ -497,6 +499,19 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
 # subnet (10.x.y.0/24) -> the server's interface address (10.x.y.1/24). Accepts either form as input.
 server_addr(){ python3 -c "import ipaddress,sys;n=ipaddress.ip_network(sys.argv[1],strict=False);print('%s/%d'%(next(n.hosts()),n.prefixlen))" "$1" 2>/dev/null || echo "$1"; }
 net_of(){      python3 -c "import ipaddress,sys;print(ipaddress.ip_network(sys.argv[1],strict=False))" "$1" 2>/dev/null || echo "$1"; }
+# tunnel subnets already used on this node (persisted node-confs + queued NODE_IFACES) → so a new interface's
+# default + validator never collide with an existing one (e.g. offering 10.13 when wg4 already has it).
+node_used_subnets(){ local c a e _ifs
+  if [ -d "$INSTALL_DIR/data/node-confs" ]; then
+    for c in "$INSTALL_DIR/data/node-confs/"*.conf; do [ -f "$c" ] || continue
+      a="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$c" 2>/dev/null | head -1)"; [ -n "$a" ] && net_of "$a"; done
+  fi
+  if [ -n "${NODE_IFACES:-}" ]; then IFS=',' read -ra _ifs <<< "$NODE_IFACES"
+    for e in "${_ifs[@]}"; do a="$(printf '%s' "$e" | cut -d: -f3)"; [ -n "$a" ] && net_of "$a"; done
+  fi; }
+subnet_used(){ local s; s="$(net_of "$1")"; node_used_subnets | grep -qx "$s"; }
+next_free_subnet(){ local i=0 cand; while [ "$i" -lt 255 ]; do cand="10.$(( (8 + i) % 256 )).0.0/24"; subnet_used "$cand" || { echo "$cand"; return; }; i=$((i+1)); done; echo "10.8.0.0/24"; }
+v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return 0; }
 fwd_ifaces(){ local cp="${1##*:}" nm pt pr out=""; while read -r nm pt pr; do [ -n "$nm" ] && [ "$pt" = "$cp" ] && out="${out:+$out }$nm"; done <<< "$(node_iface_rows)"; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by REAL listen port across node-confs + this session)
 ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirrors bare-metal
   step "WireGuard / AmneziaWG setup" "(this interface has its own endpoint IP)"
@@ -562,7 +577,7 @@ add_node_iface(){
   [ "$plain" = wg ] && base=wg || base=awg; i=0; while printf '%s\n' "$taken" | grep -qx "$base$i"; do i=$((i+1)); done
   ask_valid "Interface name" "$base$i" name v_iface_free "1–15 chars (letters, digits, - or _) and not already used"
   ask_valid "Listen port" "$(iface_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
-  local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "10.$((8 + nx)).0.0/24" _sub v_subnet "enter a CIDR, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
+  local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$(next_free_subnet)" _sub v_subnet_free "a CIDR not already used, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
   ep="${NODE_ENDPOINT:-$(detect_public_ip)}"       # auto endpoint clients dial — public IP/host (change it later in the panel)
   echo "    Used $(bb "$ep") endpoint IP for $(col "$C_GREEN" "$name")"
   [ -n "$NODE_ENDPOINT" ] || NODE_ENDPOINT="$ep"   # the node-level endpoint (required by compose) — seed from the first interface

@@ -45,9 +45,9 @@ bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (sum
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
 # one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
-iface_row(){ local n="$1" conf="${IF_CONF[$n]:-}" proto="${IF_CMD[$n]:-?}" ep lp addr
-  ep="${IF_ENDPOINT[$n]:-${ENDPOINT_IP:-$(detect_public_ip 2>/dev/null)}}"
-  lp="$(conf_get "$conf" ListenPort)"; addr="$(conf_get "$conf" Address)"
+iface_row(){ local n="$1" conf="${IF_CONF[$n]:-}" proto="${IF_CMD[$n]:-?}" ep lp addr   # set -e safe
+  ep="${IF_ENDPOINT[$n]:-${ENDPOINT_IP:-}}"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
+  lp="$(conf_get "$conf" ListenPort || true)"; addr="$(conf_get "$conf" Address || true)"
   printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 fwd_ifaces(){ local cp="${1##*:}" n lp out=""; for n in "${!IF_CONF[@]}"; do lp="$(conf_get "${IF_CONF[$n]}" ListenPort)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && out="${out:+$out }$n"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by ListenPort)
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
