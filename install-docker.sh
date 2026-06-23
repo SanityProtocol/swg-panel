@@ -230,14 +230,26 @@ node_iface_rows(){
   fi
 }
 # one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
-iface_row(){ local n="$1" conf proto=wg ep lp="" addr=""   # set -e safe: every sub-command can't abort the row (a queued iface has no conf yet)
-  conf="$(find_iface_conf "$n" 2>/dev/null || true)"
-  if [ -n "$conf" ]; then
-    grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I[1-5]|Itime)[[:space:]]*=' "$conf" 2>/dev/null && proto=awg || proto=wg
-    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
-    addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+# queued spec for an interface from NODE_IFACES (name:port:addr:proto:ep), if any — so a just-queued iface
+# (no conf written yet) still shows its real proto/port/address instead of guessing.
+node_iface_spec(){ local n="$1" e _ifs; [ -n "${NODE_IFACES:-}" ] || return 1; IFS=',' read -ra _ifs <<< "$NODE_IFACES"
+  for e in "${_ifs[@]}"; do [ "$(printf '%s' "$e" | cut -d: -f1)" = "$n" ] && { printf '%s' "$e"; return 0; }; done; return 1; }
+iface_row(){ local n="$1" conf spec proto="" ep="" lp="" addr=""   # set -e safe; prefer a queued NODE_IFACES spec, else the conf
+  spec="$(node_iface_spec "$n" || true)"
+  if [ -n "$spec" ]; then
+    lp="$(printf '%s' "$spec" | cut -d: -f2)"; addr="$(printf '%s' "$spec" | cut -d: -f3)"
+    proto="$(printf '%s' "$spec" | cut -d: -f4)"; [ "$proto" = wg ] || proto=awg   # empty field4 = awg (plain=="")
+    ep="$(printf '%s' "$spec" | cut -d: -f5-)"
+  else
+    conf="$(find_iface_conf "$n" 2>/dev/null || true)"
+    if [ -n "$conf" ]; then
+      grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I[1-5]|Itime)[[:space:]]*=' "$conf" 2>/dev/null && proto=awg || proto=wg
+      lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+      addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+    fi
   fi
-  ep="${NODE_ENDPOINT:-}"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
+  [ -n "$proto" ] || proto=wg
+  [ -n "$ep" ] || ep="${NODE_ENDPOINT:-}"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
   printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
 v_fwd(){ local names; names=" $(node_iface_rows | cut -d' ' -f1 | tr '\n' ' ')${NODE_IFACE:+$NODE_IFACE }"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
@@ -510,8 +522,12 @@ node_used_subnets(){ local c a e _ifs
     for e in "${_ifs[@]}"; do a="$(printf '%s' "$e" | cut -d: -f3)"; [ -n "$a" ] && net_of "$a"; done
   fi; }
 subnet_used(){ local s; s="$(net_of "$1")"; node_used_subnets | grep -qx "$s"; }
-next_free_subnet(){ local i=0 cand; while [ "$i" -lt 255 ]; do cand="10.$(( (8 + i) % 256 )).0.0/24"; subnet_used "$cand" || { echo "$cand"; return; }; i=$((i+1)); done; echo "10.8.0.0/24"; }
+# default subnet = (highest used 10.X.0.0/24 second-octet)+1, then the next free above it (10.8 if none).
+next_free_subnet(){ local hi=7 s o; while read -r s; do [ -n "$s" ] || continue; o="$(printf '%s' "$s" | cut -d. -f2)"; case "$o" in ''|*[!0-9]*) :;; *) [ "$o" -gt "$hi" ] && hi="$o";; esac; done <<< "$(node_used_subnets)"
+  o=$((hi+1)); while [ "$o" -lt 255 ] && subnet_used "10.$o.0.0/24"; do o=$((o+1)); done; echo "10.$o.0.0/24"; }
 v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return 0; }
+# default interface index = (highest numeric suffix across existing names)+1 — so a new iface increments past the highest (awg3,wg4 → 5).
+iface_next_index(){ local hi=-1 n s; while read -r n; do [ -n "$n" ] || continue; s="${n##*[!0-9]}"; case "$s" in ''|*[!0-9]*) :;; *) [ "$s" -gt "$hi" ] && hi="$s";; esac; done <<< "$(taken_iface_names)"; echo $((hi+1)); }
 fwd_ifaces(){ local cp="${1##*:}" nm pt pr out=""; while read -r nm pt pr; do [ -n "$nm" ] && [ "$pt" = "$cp" ] && out="${out:+$out }$nm"; done <<< "$(node_iface_rows)"; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by REAL listen port across node-confs + this session)
 ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirrors bare-metal
   step "WireGuard / AmneziaWG setup" "(this interface has its own endpoint IP)"
@@ -574,7 +590,7 @@ add_node_iface(){
   ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
   taken="$(taken_iface_names)"   # all names already on the box (computed once)
-  [ "$plain" = wg ] && base=wg || base=awg; i=0; while printf '%s\n' "$taken" | grep -qx "$base$i"; do i=$((i+1)); done
+  [ "$plain" = wg ] && base=wg || base=awg; i=$(iface_next_index); while printf '%s\n' "$taken" | grep -qx "$base$i"; do i=$((i+1)); done
   ask_valid "Interface name" "$base$i" name v_iface_free "1–15 chars (letters, digits, - or _) and not already used"
   ask_valid "Listen port" "$(iface_default_port)" port v_freeport "port 1–65535 and free (not already in use)"
   local _sub=""; ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$(next_free_subnet)" _sub v_subnet_free "a CIDR not already used, e.g. 10.8.0.0/24"; addr="$(server_addr "$_sub")"
