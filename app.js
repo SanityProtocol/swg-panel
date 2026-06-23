@@ -43,6 +43,23 @@ function turnOwner(svc) {
   const f = turnFork(svc); const fk = (typeof TURN_FORKS !== "undefined") ? TURN_FORKS.find(x => x.id === f) : null;
   return fk ? fk.owner : (f && f !== "turn" ? f + "/vk-turn-proxy" : "");
 }
+// turn create/edit sheet heading: "Turn-proxy · <title> · <fork>" (title omitted when blank)
+function turnSheetTitle(fork, title) { return "Turn-proxy · " + ((title || "").trim() ? (title.trim() + " · ") : "") + fork; }
+// a fresh 64-hex wrap key (browser crypto) — used to pre-fill the create form's params for obfuscation forks
+function randWrapKey() { const a = new Uint8Array(32); crypto.getRandomValues(a); return Array.from(a, b => b.toString(16).padStart(2, "0")).join(""); }
+// dropdown of a node's known IPs + a trailing free-text "Custom IP / Host…". Shared by the interface
+// endpoint field and the turn-proxy listen-IP field so they look/behave identically. Parent owns the
+// sel/custom state; resolve the chosen value with ipPickerVal(sel, custom).
+function IpPicker({ ips, sel, setSel, custom, setCustom, placeholder }) {
+  return html`<${Fragment}>
+    <select class="selwrap" value=${sel} onChange=${e => setSel(e.target.value)}>
+      ${(ips || []).map(ip => html`<option value=${ip}>${ip}</option>`)}
+      <option value="__custom__">Custom IP / Host…</option>
+    </select>
+    ${sel === "__custom__" ? html`<input style="margin-top:6px" value=${custom} onInput=${e => setCustom(e.target.value)} placeholder=${placeholder || "203.0.113.7"} autocomplete="off"/>` : null}
+  <//>`;
+}
+const ipPickerVal = (sel, custom) => sel === "__custom__" ? (custom || "").trim() : sel;
 
 function ago(sec) {
   if (sec == null) return "—";
@@ -1322,7 +1339,7 @@ function LoadIfaceSheet({ node }) {
       if (!nm || /[\s/]/.test(nm)) return fail("Interface name is required (no spaces or /).");
       if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.");
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
-      const hostVal = hostSel === "__custom__" ? hostCustom.trim() : hostSel;
+      const hostVal = ipPickerVal(hostSel, hostCustom);
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan });
     }
@@ -1354,11 +1371,7 @@ function LoadIfaceSheet({ node }) {
       </div>
       <div class="row2">
         <div class="field"><label>Endpoint host / IP</label>
-          <select class="selwrap" value=${hostSel} onChange=${e => setHostSel(e.target.value)}>
-            ${ips.map(ip => html`<option value=${ip}>${ip}</option>`)}
-            <option value="__custom__">Custom IP / Host…</option>
-          </select>
-          ${hostSel === "__custom__" ? html`<input style="margin-top:6px" value=${hostCustom} onInput=${e => setHostCustom(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7" autocomplete="off"/>` : null}
+          <${IpPicker} ips=${ips} sel=${hostSel} setSel=${setHostSel} custom=${hostCustom} setCustom=${setHostCustom} placeholder="vpn.xyz.com or 203.0.113.7"/>
           <div class="hint">What clients dial</div></div>
         <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder="51820"/></div>
       </div>
@@ -1549,7 +1562,11 @@ function TurnManageSheet({ node, tp }) {
   const lh = lis.includes(":") ? lis.slice(0, lis.lastIndexOf(":")) : lis;
   const lp = lis.includes(":") ? lis.slice(lis.lastIndexOf(":") + 1) : "";
   const con = tp.connect || "";
-  const [lhost, setLhost] = useState(lh);
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const ips = nrec.ips || [];
+  const lInit = ips.includes(lh) ? lh : "__custom__";
+  const [lsel, setLsel] = useState(lInit);
+  const [lcustom, setLcustom] = useState(lInit === "__custom__" ? lh : "");
   const [lport, setLport] = useState(lp);
   const snap = Store.stats[node] || {};
   const ifaces = Object.entries(snap.interfaces || {})
@@ -1566,6 +1583,7 @@ function TurnManageSheet({ node, tp }) {
   const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
+  const lhost = ipPickerVal(lsel, lcustom);
   const installed = tp.version || "";
   const installing = !!tp.installing;
   const failed = !!tp.failed;
@@ -1593,12 +1611,12 @@ function TurnManageSheet({ node, tp }) {
     toast("Turn-proxy " + verb.toLowerCase() + " requested — applies on the node's next sync.", "ok");
   };
   const save = async () => {
-    if (!lhost.trim()) return fail("Listen IP is required.");
+    if (!lhost) return fail("Listen IP is required.");
     if (!/^\d+$/.test(lport.trim())) return fail("Listen port must be a number.");
     let connect;
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forward-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
-    const newListen = lhost.trim() + ":" + lport.trim();
+    const newListen = lhost + ":" + lport.trim();
     // title-only change → save it WITHOUT restarting the proxy (a cosmetic label shouldn't bounce traffic)
     const titleOnly = newListen === (tp.listen || "") && connect === (tp.connect || "") && params.trim() === origParams.trim();
     setBusy(true); setMsg({ k: "work", t: "saving…" });
@@ -1619,7 +1637,7 @@ function TurnManageSheet({ node, tp }) {
     const a = new Uint8Array(32); crypto.getRandomValues(a);
     copy(Array.from(a, b => b.toString(16).padStart(2, "0")).join(""), "Random 64-hex key copied — paste it into the parameters");
   };
-  return html`<${Sheet} title=${"Turn-proxy · " + turnLabel(svc, lp)}
+  return html`<${Sheet} title=${turnSheetTitle(turnFork(svc), title)}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
       ${tp.running !== false && !installing && !failed
@@ -1631,12 +1649,16 @@ function TurnManageSheet({ node, tp }) {
       <div>Changing any field rewrites the unit's ExecStart on the node and restarts it.</div>
       <div>The parameters below are placed verbatim after <span class="mono">-connect</span> — wrap key, wrap mode, any flags the fork supports.</div>
     </div>
-    <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/><div class="hint">Shown on the card; blank = the fork name (${turnFork(svc)})</div></div>
     <div class="row2">
-      <div class="field"><label>Listen IP</label><input autofocus value=${lhost} onInput=${e => setLhost(e.target.value)} placeholder="203.0.113.7"/></div>
+      <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/></div>
+      <div class="field"><label>Fork</label><div style="font-size:14px;color:var(--ink);padding:7px 2px"><b>${turnFork(svc)}</b></div></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Listen IP</label>
+        <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/></div>
       <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/></div>
     </div>
-    ${lhost.trim() && epIp && lhost.trim() !== epIp ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't the node's detected IP (<span class="mono">${epIp}</span>). The proxy <b>binds</b> to this address — it must be a real IP on the server, or it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>` : null}
+    ${lsel === "__custom__" && lhost && ips.length && !ips.includes(lhost) ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't a detected address on the node. The proxy <b>binds</b> to this address — it must be a real IP on the server, or it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>` : null}
     <div class="field"><label>Forwards to</label>
       <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
         ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
@@ -1735,6 +1757,8 @@ function openSetupTurn(node) { openModal(html`<${SetupTurnSheet} node=${node}/>`
 function SetupTurnSheet({ node }) {
   const [mode, setMode] = useState("new");   // new (install) | existing (adopt)
   const [fork, setFork] = useState(TURN_FORKS[0].id);
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const ips = nrec.ips || [];
   const snap = Store.stats[node] || {};
   const ifaces = Object.entries(snap.interfaces || {})
     .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || "") })).filter(i => i.port);
@@ -1745,16 +1769,29 @@ function SetupTurnSheet({ node }) {
     }
     return "";
   })();
-  const [lhost, setLhost] = useState(epIp);
+  const lInit = epIp ? (ips.includes(epIp) ? epIp : "__custom__") : (ips[0] || "__custom__");
+  const [lsel, setLsel] = useState(lInit);
+  const [lcustom, setLcustom] = useState(lInit === "__custom__" ? epIp : "");
   const [lport, setLport] = useState(String(suggestPort(node, "turn")));
   const [fwd, setFwd] = useState(ifaces[0] ? ifaces[0].name : "__custom__");
   const [custom, setCustom] = useState("127.0.0.1:51820");
   const [title, setTitle] = useState("");
+  const [wrapKey] = useState(randWrapKey);            // one fresh key, reused so a fork switch is deterministic
+  const dflParams = fk => fk.wrap ? (fk.wrap + " -wrap-key " + wrapKey) : "";
+  const [params, setParams] = useState(dflParams(TURN_FORKS[0]));
   const [path, setPath] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
   const f = TURN_FORKS.find(x => x.id === fork) || TURN_FORKS[0];
+  const lhost = ipPickerVal(lsel, lcustom);
+  const pickFork = id => {   // re-default params for the new fork only if the field is still an untouched default
+    const cf = TURN_FORKS.find(x => x.id === fork) || TURN_FORKS[0];
+    const nf = TURN_FORKS.find(x => x.id === id) || TURN_FORKS[0];
+    if (params === dflParams(cf)) setParams(dflParams(nf));
+    setFork(id);
+  };
+  const randKey = () => copy(randWrapKey(), "Random 64-hex key copied — paste it into the parameters");
   const save = async () => {
     if (mode === "existing") {
       const p = path.trim();
@@ -1765,19 +1802,19 @@ function SetupTurnSheet({ node }) {
       closeModal(); await Store.poll();
       return toast("Turn-proxy adopt requested — the node reads it on its next sync.", "ok");
     }
-    if (!lhost.trim()) return fail("Public IP this proxy is reached at is required.");
+    if (!lhost) return fail("Listen IP is required.");
     if (!/^\d+$/.test(lport.trim())) return fail("Listen port must be a number.");
     let connect;
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forwards-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
     setBusy(true); setMsg({ k: "work", t: "installing… (the node downloads the binary, up to ~2 min)" });
     const r = await api.turnInstall({ node, fork: f.id, owner: f.owner, wrap_flags: f.wrap,
-      listen: lhost.trim() + ":" + lport.trim(), connect, title: title.trim() });
+      listen: lhost + ":" + lport.trim(), connect, title: title.trim(), params: params.trim() });
     if (!r.ok) return fail(r.error || "Request failed.");
     closeModal(); await Store.poll();
     toast("Turn-proxy install requested — the node downloads + starts it on its next sync.", "ok");
   };
-  return html`<${Sheet} title="Setup new proxy"
+  return html`<${Sheet} title=${mode === "new" ? turnSheetTitle(f.label, title) : "Adopt turn-proxy"}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>${mode === "existing" ? "Adopt" : "Install"}</button></>`}>
     <div class="field"><label>Source</label>
       <div class="chiprow proto3">
@@ -1791,22 +1828,21 @@ function SetupTurnSheet({ node }) {
       </div>
       <div class="field"><label>Service unit path</label><input autofocus value=${path} onInput=${e => setPath(e.target.value)} placeholder="/etc/systemd/system/vk-turn-proxy-...service" autocomplete="off"/></div>
     <//>` : html`<${Fragment}>
-      <div class="iface-intro">
-        <div>The node downloads the fork's prebuilt binary from GitHub, writes its systemd unit, and starts it.</div>
-        <div>A fresh wrap key is generated on the node for forks that support obfuscation.</div>
-      </div>
-      <div class="field"><label>Fork</label>
-        <select class="selwrap" value=${fork} onChange=${e => setFork(e.target.value)}>
-          ${TURN_FORKS.map(x => html`<option value=${x.id}>${x.label}${x.wrap ? "" : " · no obfuscation"}</option>`)}
-        </select>
-        <div class="hint">${f.owner} — ${f.wrap ? "obfuscation: " + f.wrap : "plain (-listen/-connect only)"}</div>
-      </div>
-      <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${f.label} autocomplete="off"/><div class="hint">Shown on the card; blank = the fork name (${f.label})</div></div>
       <div class="row2">
-        <div class="field"><label>Public IP</label><input value=${lhost} onInput=${e => setLhost(e.target.value)} placeholder="203.0.113.7"/><div class="hint">Must be an address on this server — the proxy binds to it.</div></div>
+        <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${f.label} autocomplete="off"/></div>
+        <div class="field"><label>Fork</label>
+          <select class="selwrap" value=${fork} onChange=${e => pickFork(e.target.value)}>
+            ${TURN_FORKS.map(x => html`<option value=${x.id}>${x.label}${x.wrap ? "" : " · no obfuscation"}</option>`)}
+          </select>
+          <div class="hint">${f.owner}</div></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Listen IP</label>
+          <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/>
+          <div class="hint">An address on this server — the proxy binds to it</div></div>
         <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/></div>
       </div>
-      ${lhost.trim() && epIp && lhost.trim() !== epIp ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't the node's detected IP (<span class="mono">${epIp}</span>). The proxy <b>binds</b> to this address, so it must be a real IP on the server — otherwise it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>` : null}
+      ${lsel === "__custom__" && lhost && ips.length && !ips.includes(lhost) ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't a detected address on the node. The proxy <b>binds</b> to it, so it must be a real IP on the server — otherwise it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>` : null}
       <div class="field"><label>Forwards to</label>
         <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
           ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
@@ -1814,6 +1850,10 @@ function SetupTurnSheet({ node }) {
         </select>
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
+      <div class="field"><label>Additional ExecStart parameters</label>
+        <textarea class="ta mono" rows="3" value=${params} onInput=${e => setParams(e.target.value)} placeholder="-wrap-mode on -wrap-key <64 hex chars>" spellcheck="false"></textarea>
+        <div class="hint">Appended after <span class="mono">-connect ip:port</span>. ${f.wrap ? "Pre-filled with this fork's obfuscation flags + a fresh key." : "This fork has no obfuscation flags."} <button type="button" class="linkbtn" onClick=${randKey}>Copy a random 64-hex key</button></div>
+      </div>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;

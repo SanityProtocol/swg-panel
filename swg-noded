@@ -1179,7 +1179,10 @@ def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
     if "/" not in owner or ":" not in listen or ":" not in connect: return "bad install request", None
     if not SWG_TURN_IMAGE or not SWG_HOST_NODE_DIR:
         return "turn-on-docker not configured (re-install the node with turn management on)", None
-    params = (wrap_flags + " -wrap-key " + secrets.token_hex(32)) if wrap_flags else ""
+    if "params" in req:   # explicit ExecStart tail from the create form (verbatim, including its wrap key)
+        params = (req.get("params") or "").strip()
+    else:                 # legacy: build from the fork's wrap flags + a generated key
+        params = (wrap_flags + " -wrap-key " + secrets.token_hex(32)) if wrap_flags else ""
     err = _dturn_download(svc, owner)
     if err: return err, None
     tp = {"service": svc, "listen": listen, "connect": connect,
@@ -1337,7 +1340,9 @@ def _turn_install(svc, req):
     binp = d + "/server"
     arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
     extra = ""
-    if wrap_flags:
+    if "params" in req:   # explicit ExecStart tail from the create form (verbatim, including its wrap key)
+        extra = (req.get("params") or "").strip()
+    elif wrap_flags:
         key = secrets.token_hex(32)   # 64 hex chars, no openssl dependency (the slim image lacks it)
         if not key:
             return "keygen failed"

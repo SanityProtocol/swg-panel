@@ -1737,9 +1737,11 @@ def api(method, path, qs, body, deps):
         svc = "vk-turn-proxy-" + fork + "-" + listen.rsplit(":", 1)[1]
         if svc in (nodes[nid].get("turn") or {}):
             return 409, {"ok": False, "error": "an install for this fork+port is already pending", "code": "conflict"}
-        nodes[nid].setdefault("turn", {})[svc] = {"action": "install", "owner": owner, "listen": listen,
-                                                  "connect": connect, "wrap_flags": wrap_flags,
-                                                  "title": (body.get("title") or "").strip(), "at": now()}
+        ireq = {"action": "install", "owner": owner, "listen": listen, "connect": connect,
+                "wrap_flags": wrap_flags, "title": (body.get("title") or "").strip(), "at": now()}
+        if "params" in body:   # explicit ExecStart tail from the create form (the node uses it verbatim, incl. its wrap key)
+            ireq["params"] = body.get("params") or ""
+        nodes[nid].setdefault("turn", {})[svc] = ireq
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Installing turn-proxy", svc)
         return 200, {"ok": True, "data": {"node": nid, "service": svc}}
