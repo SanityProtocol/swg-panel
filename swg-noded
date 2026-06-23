@@ -671,7 +671,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
-            "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS),
+            "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
             "node_ips": list_node_ips(), "node_ifaces": list_node_ifaces(),
             "node_ip_ifaces": list_node_ip_ifaces()}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
@@ -962,6 +962,8 @@ def delete_ifaces(node_cfg, delete, agent, sudo):
 HELPER_IMAGE = os.environ.get("HELPER_IMAGE") or "ghcr.io/sanityprotocol/swg-node:latest"
 TURN_UNIT_DIR = "/etc/systemd/system"
 TURN_MANAGE_ON = (NODE_KIND != "docker") or ((os.environ.get("TURN_MANAGE") or "manual").strip().lower() == "panel")
+NODE_PROGRESS = {} # request key (iface name / turn service) -> transient "what's happening right now" line
+                   # (e.g. a slow GitHub download retrying) → cmd_progress on the snapshot → yellow card note.
 NODE_ERRORS = {}   # request key (iface name / turn service / .service path) -> last apply error, reported
                    # in the snapshot ("cmd_errors") so the panel can show WHY a host->node command failed
 
@@ -1079,15 +1081,16 @@ def _turn_dl_urls(owner, arch):
 def _dturn_download(svc, owner):
     arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
     binp = _turn_bin_local(svc)   # shared per-fork slot
+    if os.path.exists(binp):       # already have this fork's binary (another instance, or a prior install) → REUSE,
+        return ""                  # no GitHub hit. (A panel Reinstall removes binp first, so it still forces a fresh fetch.)
     try: os.makedirs(os.path.dirname(binp), exist_ok=True)
     except OSError as e: return "mkdir: " + str(e)
-    if not os.path.exists(binp):                          # upgrade: reuse a pre-dedup per-instance binary instead of re-downloading
-        leg = _turn_bin_local_legacy(svc)
-        if os.path.exists(leg):
-            with contextlib.suppress(OSError):
-                os.replace(leg, binp); os.chmod(binp, 0o755)
-            if os.path.exists(binp):
-                _turn_write_version(svc, _turn_resolve_tag(owner)); return ""
+    leg = _turn_bin_local_legacy(svc)                    # upgrade: reuse a pre-dedup per-instance binary instead of re-downloading
+    if os.path.exists(leg):
+        with contextlib.suppress(OSError):
+            os.replace(leg, binp); os.chmod(binp, 0o755)
+        if os.path.exists(binp):
+            _turn_write_version(svc, _turn_resolve_tag(owner)); return ""
     err = "binary download failed"
     for url in _turn_dl_urls(owner, arch):
         r = run(["curl", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
@@ -1191,8 +1194,6 @@ _TURN_INSTALLING = set()   # services whose container is being downloaded/(re)cr
 _TURN_FAILED = set()       # services whose last install/run attempt errored → "install failed" on the panel
 _TURN_ATTEMPTS = {}        # svc -> consecutive failed-download count; the bg reconcile STOPS retrying after
 TURN_MAX_ATTEMPTS = 4      # this many (so a stuck 502/timeout becomes "install failed", not an endless "installing"). A manual Reinstall resets it.
-_TURN_PROGRESS = {}        # svc -> human "what's happening right now" line (slow GitHub download, retry reason) → install_msg
-                           # on the snapshot, so a slow-but-not-failed install isn't a silent, scary-looking "installing".
 def _dturn_attach_running(tps):
     nowt = time.time()
     if nowt - _DTURN_RUN["at"] >= 15:
@@ -1206,10 +1207,6 @@ def _dturn_attach_running(tps):
             t["failed"] = failed
             # docker: any not-running, not-failed proxy is mid/pending install → "installing" (never a bare "down")
             t["installing"] = (svc in _TURN_INSTALLING) or (not t["running"] and not failed)
-            if t["installing"]:
-                m = _TURN_PROGRESS.get(svc)
-                if m:
-                    t["install_msg"] = m   # "still downloading / retrying: <reason>" → clickable note on the card
 
 def _dturn_ensure(tp):   # make the container match the record entry (download binary if missing, run if not up)
     svc = tp.get("service")
@@ -1217,43 +1214,43 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
         return
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
     if (r.stdout or "").strip() == "true":
-        _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None); _TURN_PROGRESS.pop(svc, None)
+        _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None); NODE_PROGRESS.pop(svc, None)
         return
     if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS and not os.path.exists(_turn_bin_local(svc)):
-        _TURN_FAILED.add(svc); _TURN_INSTALLING.discard(svc); _TURN_PROGRESS.pop(svc, None)   # given up — "install failed" (a manual Reinstall resets the counter)
+        _TURN_FAILED.add(svc); _TURN_INSTALLING.discard(svc); NODE_PROGRESS.pop(svc, None)   # given up — "install failed" (a manual Reinstall resets the counter)
         return
     _TURN_INSTALLING.add(svc)   # downloading / (re)creating now → the panel shows it as "installing"
     try:
         if not os.path.exists(_turn_bin_local(svc)) and tp.get("owner"):
-            _TURN_PROGRESS[svc] = "Downloading the turn-proxy binary from GitHub — this can take a minute…"
+            NODE_PROGRESS[svc] = "Downloading the turn-proxy binary from GitHub — this can take a minute…"
             derr = _dturn_download(svc, tp["owner"])
             if derr:
                 _TURN_ATTEMPTS[svc] = _TURN_ATTEMPTS.get(svc, 0) + 1
                 # NON-terminating: keep retrying every pass, but tell the operator WHY it's slow so it doesn't look hung.
-                _TURN_PROGRESS[svc] = ("GitHub download failed (attempt %d/%d): %s. Still retrying — please wait for the install to finish."
+                NODE_PROGRESS[svc] = ("GitHub download failed (attempt %d/%d): %s. Still retrying — please wait for the install to finish."
                                        % (_TURN_ATTEMPTS[svc], TURN_MAX_ATTEMPTS, derr))
                 print("swg-noded: turn %s binary download failed (attempt %d/%d): %s" % (svc, _TURN_ATTEMPTS[svc], TURN_MAX_ATTEMPTS, derr), flush=True)
         if not os.path.exists(_turn_bin_local(svc)):   # no binary yet
             if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS:   # stop the endless "installing" → mark failed + report it
-                _TURN_FAILED.add(svc); _TURN_PROGRESS.pop(svc, None)
+                _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
                 NODE_ERRORS[svc] = "binary download failed after %d attempts — Reinstall to retry" % TURN_MAX_ATTEMPTS
                 print("swg-noded: turn %s — gave up after %d download attempts; Reinstall from the panel to retry" % (svc, TURN_MAX_ATTEMPTS), flush=True)
             else:
                 print("swg-noded: turn %s has no binary yet — will retry on the next pass" % svc, flush=True)
             return
         _TURN_ATTEMPTS.pop(svc, None); NODE_ERRORS.pop(svc, None)   # got the binary → clear any prior failure
-        _TURN_PROGRESS[svc] = "Binary downloaded — starting the container…"
+        NODE_PROGRESS[svc] = "Binary downloaded — starting the container…"
         rr = _dturn_run(tp)
         if rr.returncode != 0:
-            _TURN_FAILED.add(svc); _TURN_PROGRESS.pop(svc, None)
+            _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
             print("swg-noded: turn %s 'docker run' failed: %s" % (svc, (rr.stderr or rr.stdout or "").strip()[:200]), flush=True)
             return
         verr = _dturn_verify(svc)
         if verr:
-            _TURN_FAILED.add(svc); _TURN_PROGRESS.pop(svc, None)
+            _TURN_FAILED.add(svc); NODE_PROGRESS.pop(svc, None)
             print("swg-noded: turn %s started but didn't stay up: %s" % (svc, verr), flush=True)
         else:
-            _TURN_FAILED.discard(svc); _TURN_PROGRESS.pop(svc, None)
+            _TURN_FAILED.discard(svc); NODE_PROGRESS.pop(svc, None)
             print("swg-noded: turn %s container (re)started (%s)" % (svc, _turn_cname(svc)), flush=True)
     finally:
         _TURN_INSTALLING.discard(svc)

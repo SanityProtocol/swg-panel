@@ -395,6 +395,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
   const pend = (nrec.turn_pending || {})[tp.service];
   const err = (nrec.cmd_errors || {})[tp.service];
+  const prog = (nrec.cmd_progress || {})[tp.service];   // node "what's happening now" (slow GitHub download / retry) → yellow note
   const installing = !!tp.installing;
   const failed = !!tp.failed;
   const down = tp.running === false && !installing && !failed;   // bare-metal not-running (docker not-running is always installing/failed)
@@ -407,8 +408,8 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
     <div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(tp.service, portOf(tp.listen))}</span><span class="grow"></span>${converting
       ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>`
       : pend
-      ? html`<${CmdErr} err=${err}/><span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${updating ? "updating" : (TURN_PEND[pend] || pend)}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
-      : installing ? html`${tp.install_msg ? html`<${CmdErr} err=${tp.install_msg} cls="warn" title="Installing on the node"/>` : null}<span class=${"tg tg-busy" + (tp.install_msg ? " warn" : "")} title=${tp.install_msg || "Downloading the binary and starting the container on the node"}><${Ic} i="clock"/>installing</span>`
+      ? html`<${CmdErr} err=${err}/>${prog ? html`<${CmdErr} err=${prog} cls="warn" title="Working on the node"/>` : null}<span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${updating ? "updating" : (TURN_PEND[pend] || pend)}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
+      : installing ? html`${prog ? html`<${CmdErr} err=${prog} cls="warn" title="Installing on the node"/>` : null}<span class=${"tg tg-busy" + (prog ? " warn" : "")} title=${prog || "Downloading the binary and starting the container on the node"}><${Ic} i="clock"/>installing</span>`
       : failed ? html`<${CmdErr} err=${err || "the install failed on the node"}/><span class="tg tg-busy del"><${Ic} i="warn"/>install failed</span>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
@@ -1095,9 +1096,10 @@ function NodeDetail({ node: rawName }) {
               const irestarting = (nrec.restarting || []).includes(ifn);
               const iconverting = (nrec.proc_status || "").startsWith("converting");   // node is mid bare↔docker convert
               const fwdTurns = turnProxiesFor(name, ifn);   // turn-proxies forwarding to this interface (by connect-port == listen_port)
-              const idim = iconverting || deleting || idown || irestarting || !!(nrec.cmd_errors || {})[ifn];   // anything needing attention → dim the card at a glance
+              const iprog = (nrec.cmd_progress || {})[ifn];   // node "what's happening now" (yellow note) for this interface
+              const idim = iconverting || deleting || idown || irestarting || !!iprog || !!(nrec.cmd_errors || {})[ifn];   // anything needing attention → dim the card at a glance
               return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${fwdTurns.length ? html`<span class="tg tg-turn" title=${fwdTurns.length + " turn-prox" + (fwdTurns.length > 1 ? "ies" : "y") + " forward to this interface"}>turn</span>` : null}${iconverting ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${fwdTurns.length ? html`<span class="tg tg-turn" title=${fwdTurns.length + " turn-prox" + (fwdTurns.length > 1 ? "ies" : "y") + " forward to this interface"}>turn</span>` : null}${nodeMsgs(nrec, ifn)}${iconverting ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1647,6 +1649,12 @@ function trackTurnRestarts() {
 function CmdErr({ err, cls, title }) {
   if (!err) return null;
   return html`<span class=${"cmderr" + (cls ? " " + cls : "")} title=${err} onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Command failed on the node", body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
+}
+// red ⓘ for a node error + yellow ⓘ for a transient "what's going on" note, both clickable — keyed by request key
+// (iface name / turn service). Shared by interface + turn cards so any node message shows the same way everywhere.
+function nodeMsgs(nrec, k) {
+  const err = (nrec.cmd_errors || {})[k], prog = (nrec.cmd_progress || {})[k];
+  return html`${err ? html`<${CmdErr} err=${err}/>` : null}${prog ? html`<${CmdErr} err=${prog} cls="warn" title="Working on the node"/>` : null}`;
 }
 async function cancelTurn(node, body) {
   const r = await api.turnCancel({ node, ...body });
