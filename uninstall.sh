@@ -300,9 +300,9 @@ turn_exec_env(){  # <unit> -> "<listen>\t<connect>", resolving the EnvironmentFi
       printf '%s\t%s' "$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')" "$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
   esac
 }
-turn_detail(){  # <unit> -> "listen 1.2.3.4:57000 → 127.0.0.1:51820  ·  <service>"
+turn_detail(){  # <unit> -> "(1.2.3.4:57000 → 127.0.0.1:51820)" — matches the (listen → connect) style used elsewhere
   local lis con; IFS="$(printf '\t')" read -r lis con < <(turn_exec_env "$1")
-  printf 'listen %s%s  ·  %s' "${lis:-?}" "${con:+ → $con}" "$(basename "$1")"
+  printf '(%s%s)' "${lis:-?}" "${con:+ → $con}"
 }
 add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); CHINT+=("${5:-}"); }
 turn_listen(){ local lis con; IFS="$(printf '\t')" read -r lis con < <(turn_exec_env "$1"); printf '%s' "$lis"; }
@@ -333,19 +333,15 @@ awg_present && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "kernel AmneziaW
 wg_present  && { _d="$(iface_list /etc/wireguard)";        add "kernel WireGuard" "$_d" rm_wg "" "$_d"; }
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
-  fork="$(basename "$unit" .service)"; fork="${fork#vk-turn-proxy-}"
-  owner=""; _ff="${fork%-*}"   # actual fork (instance minus -<port>); repo.txt is shared per fork under .bin/, legacy per-instance fallback
-  [ -f "$TURN_DIR/.bin/$_ff/repo.txt" ] && owner="$(cut -d/ -f1 "$TURN_DIR/.bin/$_ff/repo.txt" 2>/dev/null)"
-  [ -z "$owner" ] && [ -f "$TURN_DIR/$fork/repo.txt" ] && owner="$(cut -d/ -f1 "$TURN_DIR/$fork/repo.txt" 2>/dev/null)"
-  add "${owner:-${fork%-*}} turn-proxy" "$(turn_detail "$unit")" rm_turn "$unit" "$(turn_listen "$unit")"
+  add "$(basename "$unit" .service)" "$(turn_detail "$unit")" rm_turn "$unit" "$(turn_listen "$unit")"   # green service name + (listen → connect)
 done
 
 N=${#CLABEL[@]}
 [ "$N" -gt 0 ] || die "swg-panel does not appear to be installed here (nothing to do)"
 
 # ───────────────────────── list, then prompt per component ─────────────────────────
-echo; info "Found these installed components:"
-for i in $(seq 0 $((N-1))); do printf '    %s  %s\n' "$(b "${CLABEL[$i]}")" "$(c '0;90')${CDETAIL[$i]}$(c 0)"; done
+echo; info "Found these installed components:"; echo
+for i in $(seq 0 $((N-1))); do printf '    %s%s%s  %s\n' "$(c '0;32')" "${CLABEL[$i]}" "$(c 0)" "$(c '0;90')${CDETAIL[$i]}$(c 0)"; done
 echo
 $ASSUME_YES && info "--yes: every component will be uninstalled (you'll still be asked the destructive sub-questions)." \
             || echo "  You will be prompted to uninstall or keep each component. Please pay attention."
