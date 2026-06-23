@@ -1431,6 +1431,12 @@ def apply_turn(turn, turn_onboard):
                     else:
                         _TURN_FAILED.discard(svc); good(svc, "rei:" + svc)
                     continue
+                if act == "title":            # cosmetic label only → update the record, DON'T touch the container
+                    tp = rec.get(svc)
+                    if not tp:
+                        fail(svc, "turn-proxy not in the node record"); continue
+                    tp["title"] = (req.get("title") or "").strip(); rec[svc] = tp; changed = True
+                    good(svc, "title:" + svc); continue
                 tp = rec.get(svc)
                 if not tp:
                     fail(svc, "turn-proxy not in the node record"); continue
@@ -1496,6 +1502,12 @@ def apply_turn(turn, turn_onboard):
                 verr = _turn_verify(svc)
                 fail(svc, verr) if verr else good(svc, "rei:" + svc)
                 continue
+            if act == "title":                # cosmetic label only → update the record, DON'T restart the unit
+                tp = rec.get(svc)
+                if not tp:
+                    fail(svc, "turn-proxy not in the node record"); continue
+                tp["title"] = (req.get("title") or "").strip(); rec[svc] = tp; changed = True
+                good(svc, "title:" + svc); continue
             unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
             if not unit:
                 fail(svc, "unit not found on the node"); continue

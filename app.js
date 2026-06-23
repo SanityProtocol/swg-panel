@@ -297,6 +297,7 @@ const api = {
   ifaceAdopt(b) { return this.post("/api/iface/adopt", b); },     // drift: pull the node's server-edited value
   ifaceRestore(b) { return this.post("/api/iface/restore", b); }, // drift: re-assert the panel's value
   turnManage(b) { return this.post("/api/turn/manage", b); },     // edit listen/connect (+ wrap key)
+  turnTitle(b) { return this.post("/api/turn/title", b); },       // set the display title only — no restart/bounce
   turnRotate(b) { return this.post("/api/turn/rotate", b); },     // regenerate the wrap key
   turnDelete(b) { return this.post("/api/turn/delete", b); },         // stop + remove the service
   turnRestart(b) { return this.post("/api/turn/restart", b); },       // restart the service
@@ -384,6 +385,23 @@ function turnProxiesFor(node, iface) {
   const lp = String((((snap.interfaces || {})[iface] || {}).meta || {}).listen_port || "");
   return (snap.turn_proxies || []).filter(tp => lp && portOf(tp.connect) === lp);
 }
+// a node is "stale" when its last snapshot is older than the staleness window (reconcile.js) — we can't
+// trust any live state then, so cross-reference badges grey out (don't claim "active" on a node gone dark).
+function nodeStale(node) { return Store.recon.nodeStatus[node] !== "live"; }
+function ifaceDown(node, ifn) { return !!(((((Store.stats[node] || {}).interfaces) || {})[ifn] || {}).down); }
+function turnDown(tp) { return tp && tp.running === false; }
+// turn badges for an interface card: one fork-coloured "turn" chip per distinct forwarding fork
+// (collapses to one in the common single-fork case), greyed when that fork's proxies are all down / node stale.
+function ifaceTurnBadges(node, fwdTurns) {
+  if (!fwdTurns || !fwdTurns.length) return null;
+  const stale = nodeStale(node), groups = {};
+  fwdTurns.forEach(tp => { const f = turnFork(tp.service); (groups[f] = groups[f] || []).push(tp); });
+  return Object.entries(groups).map(([f, list]) => {
+    const allDown = list.every(turnDown);
+    return html`<span class=${"tg tg-turn tf-" + f + ((stale || allDown) ? " muted" : "")}
+      title=${list.length + " " + f + " turn-prox" + (list.length > 1 ? "ies" : "y") + " forward to this interface" + (allDown ? " — down" : "")}>turn</span>`;
+  });
+}
 
 // One turn-proxy card — shared by the node detail (Forwards-to shown) and the interface detail
 // (showForwards=false, that view is already scoped to the fronted iface). Same data, status tags,
@@ -403,7 +421,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
-  const dim = converting || (!justRestarted && (pend || installing || failed || down || err));   // anything needing attention → dim the card
+  const dim = converting || nodeStale(node) || (!justRestarted && (pend || installing || failed || down || err));   // attention / node gone dark → dim
   return html`<div class=${"ifcard tp" + (nrec.turn_manage && !converting ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage && !converting ? () => openTurnManage(node, tp) : null}>
     <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${converting
       ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>`
@@ -416,7 +434,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">Binary (fork)</span><span class="r">${turnFork(tp.service)}</span></div>
       <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
-      ${showForwards ? html`<div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
+      ${showForwards ? html`<div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + ((nodeStale(node) || ifaceDown(node, fronted)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
       <div class="ifrow"><span class="l">Connections</span><span class="r"><${OnlPop} peer title="Via this turn-proxy"
         rows=${fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : []}
         trigger=${c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>`}/></span></div>
@@ -1051,9 +1069,9 @@ function NodeDetail({ node: rawName }) {
       <div class="nr-tags">
         ${(meta ? Object.keys(meta) : []).map(ifn => {
           const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
-          return html`<a class=${"tg tg-" + type} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
+          return html`<a class=${"tg tg-" + type + ((nodeStale(name) || ifaceDown(name, ifn)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
         })}
-        ${((snap && snap.turn_proxies) || []).map(tp => html`<span class="tg tg-turn">${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}
+        ${((snap && snap.turn_proxies) || []).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}
       </div>
       <span class="grow"></span>
       <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}</div>
@@ -1098,9 +1116,9 @@ function NodeDetail({ node: rawName }) {
               const iconverting = (nrec.proc_status || "").startsWith("converting");   // node is mid bare↔docker convert
               const fwdTurns = turnProxiesFor(name, ifn);   // turn-proxies forwarding to this interface (by connect-port == listen_port)
               const iprog = (nrec.cmd_progress || {})[ifn];   // node "what's happening now" (yellow note) for this interface
-              const idim = iconverting || deleting || idown || irestarting || !!iprog || !!(nrec.cmd_errors || {})[ifn];   // anything needing attention → dim the card at a glance
+              const idim = iconverting || deleting || idown || irestarting || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / node gone dark → dim
               return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${fwdTurns.length ? html`<span class="tg tg-turn" title=${fwdTurns.length + " turn-prox" + (fwdTurns.length > 1 ? "ies" : "y") + " forward to this interface"}>turn</span>` : null}${nodeMsgs(nrec, ifn)}${iconverting ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${nodeMsgs(nrec, ifn)}${iconverting ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1542,6 +1560,7 @@ function TurnManageSheet({ node, tp }) {
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
   const [custom, setCustom] = useState(con || "127.0.0.1:");
   const [params, setParams] = useState(tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : ""));
+  const origParams = tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : "");
   const [title, setTitle] = useState(tp.title || "");
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1579,8 +1598,18 @@ function TurnManageSheet({ node, tp }) {
     let connect;
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forward-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
+    const newListen = lhost.trim() + ":" + lport.trim();
+    // title-only change → save it WITHOUT restarting the proxy (a cosmetic label shouldn't bounce traffic)
+    const titleOnly = newListen === (tp.listen || "") && connect === (tp.connect || "") && params.trim() === origParams.trim();
     setBusy(true); setMsg({ k: "work", t: "saving…" });
-    const body = { node, service: svc, listen: lhost.trim() + ":" + lport.trim(), connect, params: params.trim(), title: title.trim() };
+    if (titleOnly) {
+      if (title.trim() === (tp.title || "")) { closeModal(); return toast("No changes.", "ok"); }
+      const r = await api.turnTitle({ node, service: svc, title: title.trim() });
+      if (!r.ok) return fail(r.error || "Request failed.");
+      closeModal(); await Store.poll();
+      return toast("Title saved — the proxy keeps running.", "ok");
+    }
+    const body = { node, service: svc, listen: newListen, connect, params: params.trim(), title: title.trim() };
     const r = await api.turnManage(body);
     if (!r.ok) return fail(r.error || "Request failed.");
     closeModal(); await Store.poll();
@@ -2499,7 +2528,8 @@ function ifaceTags(node) {
   const meta = Store.describe[node] || {};
   return Object.keys(meta).map(ifn => {
     const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
-    return html`<a class=${"tg tg-" + type} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}>${ifn}</a>`;
+    const muted = nodeStale(node) || ifaceDown(node, ifn);
+    return html`<a class=${"tg tg-" + type + (muted ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}>${ifn}</a>`;
   });
 }
 
@@ -2704,7 +2734,7 @@ function NodeCard({ n }) {
             trigger=${() => html`<span class="nm-l">Peers</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
         : html`<span class="nm-l">Peers</span><span class="nm-v nm-peers faint">none</span>`}</span>
       <span class="nm-item"><span class="nm-l">Interfaces</span>${ifTags.length ? html`<span class="tags">${ifTags}</span>` : html`<span class="nm-v faint">—</span>`}</span>
-      <span class="nm-item"><span class="nm-l">Turn-proxies</span>${tps.length ? html`<span class="tags">${tps.map(tp => html`<span class="tg tg-turn">${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}</span>` : html`<span class="nm-v faint">—</span>`}</span>
+      <span class="nm-item"><span class="nm-l">Turn-proxies</span>${tps.length ? html`<span class="tags">${tps.map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(n.id) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}</span>` : html`<span class="nm-v faint">—</span>`}</span>
       <span class="nm-item nm-thru"><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
     </div>
     <div class="nacts" onClick=${e => e.stopPropagation()}>

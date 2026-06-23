@@ -1777,6 +1777,19 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, verb, svc)
         return 200, {"ok": True, "data": {"node": nid, "service": svc}}
 
+    if method == "POST" and path == "/api/turn/title":
+        # Set ONLY the display title — the node updates its turn record but does NOT restart the proxy
+        # (a title is cosmetic). Keeps the running service untouched, unlike /manage.
+        nid = body.get("node") or ""; svc = (body.get("service") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not svc:
+            return 400, {"ok": False, "error": "service is required", "code": "bad_request"}
+        nodes[nid].setdefault("turn", {})[svc] = {"action": "title", "title": (body.get("title") or "").strip(), "at": now()}
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Renaming turn-proxy", svc)
+        return 200, {"ok": True, "data": {"node": nid, "service": svc}}
+
     if method == "POST" and path == "/api/turn/onboard":
         # Adopt an existing turn-proxy systemd unit by its .service path; the node reads it + reports it.
         nid = body.get("node") or ""; sp = (body.get("path") or "").strip()
@@ -2305,6 +2318,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif act in ("manage", "restart"):
                     done = (tp and ("listen" not in req or tp.get("listen") == req["listen"])
                             and ("connect" not in req or tp.get("connect") == req["connect"]) and age > 5) or age > 60
+                elif act == "title":                # clears once the node's record shows the new title
+                    done = (tp is not None and tp.get("title", "") == req.get("title", "")) or age > 30
                 else:   # rotate — panel can't see the new key; give the node time to regen + restart
                     done = age > 12
                 if done:
