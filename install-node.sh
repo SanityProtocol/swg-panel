@@ -711,14 +711,14 @@ run systemctl enable swg-noded
 run systemctl restart swg-noded || warn "couldn't start swg-noded"
 $DRYRUN || rm -f /var/lib/swg-recovery 2>/dev/null || true   # node is wired → clear any convert-recovery marker
 
-# during a convert this is an INTERIM summary — convert.sh prints the final one (with migrated turn-proxies) after.
+# during a convert, skip this summary entirely — convert.sh prints ONE final combined summary (interfaces +
+# migrated turn-proxies) after. The "node is up — migrating turn-proxies next" line is enough here.
 if [ "${SWG_CONVERT:-}" = 1 ]; then
   echo; ok "Node '$(bb "$NODE_NAME")' is up — migrating turn-proxies next…"
-  echo; echo "$(b '──────────── INTERIM SUMMARY (turn-proxies migrate next) ────────────')"; echo
-else
-  echo; ok "Node '$(bb "$NODE_NAME")' install complete."
-  echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
+  exit 0
 fi
+echo; ok "Node '$(bb "$NODE_NAME")' install complete."
+echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
 echo "  Node      $(bb "$NODE_NAME")  →  syncs to $(bb "$PANEL_URL") every ${INTERVAL}s"
 if [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (manage peers in the panel):"
   for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
