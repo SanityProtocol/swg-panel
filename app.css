@@ -151,7 +151,7 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 /* panel-header deploy tag: livepill geometry/size/font, but keep the docker/bare colour above */
 #host-tport{font-size:11px;letter-spacing:.08em;border-radius:99px;padding:5px 11px;margin-left:0}
 /* glowing "reporting" pill (after the transport tag) */
-.reporting{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;
+.reporting{display:inline-flex;align-items:center;gap:6px;line-height:1;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;
   font-weight:600;color:var(--online);background:rgba(63,216,154,.12);padding:3px 9px 3px 8px;border-radius:99px;border:1px solid color-mix(in srgb,var(--online) 28%,transparent)}
 .reporting::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(63,216,154,.7);animation:blink 2.6s infinite}
 /* one-line node ribbon: interface/turn tags left, sync/uptime right */
@@ -204,7 +204,7 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .empty b{display:block;color:var(--dim);margin-bottom:4px;font-weight:600;font-size:14px}
 
 /* ───── status badges ───── */
-.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px 3px 8px;border-radius:99px;font-size:11px;
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px 3px 8px;border-radius:99px;font-size:11px;line-height:1;
   font-weight:700;letter-spacing:.01em;border:1px solid color-mix(in srgb,currentColor 28%,transparent)}   /* subtle colour-matched border (grey for the stale/unknown badge) — matches the docker/reporting header pills */
 .badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .badge.ic{padding-left:7px}
@@ -577,7 +577,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ncard .nsync{font-size:11.5px;white-space:nowrap}
 .ncard .ntop .rowarrow{color:var(--faint)}
 .ncard .grow{flex:1}
-.nstat{display:inline-flex;align-items:center;gap:6px;font-size:10px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;font-family:var(--mono)}
+.nstat{display:inline-flex;align-items:center;gap:6px;line-height:1;font-size:10px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;font-family:var(--mono)}
 .nstat::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
 .nstat.online{color:var(--online)} .nstat.online::before{animation:pulse 2.6s infinite}
 .nstat.offline{color:var(--unknown)}

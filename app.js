@@ -2826,7 +2826,6 @@ async function checkForUpdate(e, nodeId) {
 }
 function NodeCard({ n }) {
   const st = n.status || "dangling";
-  const stTxt = st === "online" ? "reporting" : (st === "offline" ? "offline" : "awaiting enroll");
   const ifTags = ifaceTags(n.id);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
@@ -2841,7 +2840,10 @@ function NodeCard({ n }) {
       ${n.outdated && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
-      ${n.proc_status ? html`<span class="nstat proc"><${Ic} i="clock"/> ${PROC_LABEL[n.proc_status] || n.proc_status}</span>` : html`<span class=${"nstat " + st}>${stTxt}</span>`}
+      ${n.proc_status ? html`<span class="nstat proc"><${Ic} i="clock"/> ${PROC_LABEL[n.proc_status] || n.proc_status}</span>`
+        : st === "online" ? html`<span class="reporting">reporting</span>`
+        : st === "offline" ? html`<span class="badge b-unknown ic"><${Ic} i="info"/>offline</span>`
+        : html`<span class="badge b-pending ic"><${Ic} i="clock"/>awaiting enroll</span>`}
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
       <span class="grow"></span>
