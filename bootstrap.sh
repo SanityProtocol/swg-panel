@@ -148,7 +148,7 @@ if [ -f /var/lib/swg-recovery ]; then
     _ans=yes; ask_yn "Resume it now and finish the conversion (keeps the same node)" y _ans
     if [ "$_ans" = yes ]; then
       echo ":: resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
-      exec bash "$SRC/convert.sh" "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
+      exec bash "./convert.sh" "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
     fi
     warn "not resuming — removing the recovery marker; the half-converted node may be orphaned on the panel until you re-add it."
     rm -f /var/lib/swg-recovery 2>/dev/null || true
