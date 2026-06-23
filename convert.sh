@@ -123,10 +123,11 @@ for t in (tps if isinstance(tps, list) else []):
 PY
 )"
   [ -n "$list" ] || return 0
-  echo; info "Turn-proxies on the docker node:"
-  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && printf '    %s  %s → %s\n' "$(b "$svc")" "$lis" "$con"; done <<EOF
+  echo; info "Turn-proxies on the docker node:"; echo
+  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "$lis" "$con"; done <<EOF
 $list
 EOF
+  echo
   cyn "Transfer these turn-proxies to bare-metal (host systemd)?" || { info "  left them on docker (they stop when the swg-turn containers go)"; return 0; }
   while IFS="$(printf '\t')" read -r svc owner lis con params; do
     [ -n "$svc" ] || continue
@@ -148,8 +149,9 @@ turn_to_docker(){
   command -v python3 >/dev/null 2>&1 || return 0
   units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
   [ -n "$units" ] || return 0
-  echo; info "Turn-proxy services on this box:"
-  for u in $units; do printf '    %s\n' "$(b "$(basename "$u" .service)")"; done
+  echo; info "Turn-proxy services on this box:"; echo
+  for u in $units; do printf '    %s%s%s\n' "$C_GREEN" "$(basename "$u" .service)" "$RESET"; done
+  echo
   cyn "Transfer these turn-proxies into the docker node?" || { info "  left the host turn-proxies running"; return 0; }
   mkdir -p "$(dirname "$rec")"
   for u in $units; do
@@ -297,7 +299,9 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       echo  "  Rename/remove them (or pick 'keep and re-install'), then retry." >&2
       exit 1
     fi
-    info "pre-flight OK — interfaces to migrate: $(b "$(for s in $specs; do printf '%s ' "${s%:*}"; done)")"
+    info "pre-flight OK"
+    info "Interfaces to migrate:"; echo
+    for s in $specs; do printf '    %s%s%s\n' "$C_GREEN" "${s%:*}" "$RESET"; done
     echo
     exit 0
   fi
@@ -410,7 +414,9 @@ PY
       warn "a docker node (swg-node container) already exists here — remove it first, or pick 'keep and re-install'."; exit 1
     fi
     [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") from a previous run will be moved aside."
-    info "pre-flight OK — interfaces to migrate: $(b "$(printf '%s\n' "$ifaces" | cut -f1 | tr '\n' ' ')")"
+    info "pre-flight OK"
+    info "Interfaces to migrate:"; echo
+    printf '%s\n' "$ifaces" | cut -f1 | while read -r _n; do [ -n "$_n" ] && printf '    %s%s%s\n' "$C_GREEN" "$_n" "$RESET"; done
     echo; exit 0
   fi
   if docker_node_present; then die "a docker node (swg-node container) already exists — remove it first (run with --check)"; fi
