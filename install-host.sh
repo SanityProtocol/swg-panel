@@ -64,10 +64,12 @@ bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (han
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
 # one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
-iface_row(){ local n="$1" conf="${IF_CONF[$n]:-}" proto="${IF_CMD[$n]:-?}" ep lp addr   # set -e safe
-  ep="${IF_ENDPOINT[$n]:-${HOST_ENDPOINT_IP:-}}"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
-  lp="$(conf_get "$conf" ListenPort || true)"; addr="$(conf_get "$conf" Address || true)"
-  printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
+iface_row(){ local n="$1" conf proto ep lp addr   # set -e safe; prefer a just-queued spec (no conf yet), else the conf
+  if [ -n "${SPEC_CMD[$n]:-}" ]; then proto="${SPEC_CMD[$n]}"; lp="${SPEC_PORT[$n]:-}"; addr="${SPEC_ADDR[$n]:-}"; ep="${SPEC_EP[$n]:-}"
+  else conf="${IF_CONF[$n]:-}"; proto="${IF_CMD[$n]:-?}"; ep="${IF_ENDPOINT[$n]:-${HOST_ENDPOINT_IP:-}}"
+    lp="$(conf_get "$conf" ListenPort || true)"; addr="$(conf_get "$conf" Address || true)"; fi
+  [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
+  printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "${proto:-?}" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 fwd_ifaces(){ local cp="${1##*:}" n lp out=""; for n in "${!IF_CONF[@]}"; do lp="$(conf_get "${IF_CONF[$n]}" ListenPort)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && out="${out:+$out }$n"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by ListenPort)
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
 # conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.
@@ -531,7 +533,13 @@ subnet_used(){ local s n a; s="$(_net24 "$1")"
   for n in ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do [ -n "${SPEC_SUBNET[$n]:-}" ] && [ "$(_net24 "${SPEC_SUBNET[$n]}")" = "$s" ] && return 0; done
   for n in "${!IF_CONF[@]}"; do a="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "${IF_CONF[$n]}" 2>/dev/null | head -1)"; [ -n "$a" ] && [ "$(_net24 "$a")" = "$s" ] && return 0; done
   return 1; }
-next_free_subnet(){ local i="${1:-0}" cand; while [ "$i" -lt 255 ]; do cand="10.$(( (8 + i) % 256 )).0.0/24"; subnet_used "$cand" || { echo "$cand"; return; }; i=$((i+1)); done; echo "10.$(( (8 + ${1:-0}) % 256 )).0.0/24"; }
+# default subnet = (highest used 10.X.0.0/24 second-octet)+1, then the next free above it (10.8 if none).
+next_free_subnet(){ local hi=7 n a o
+  for n in ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do a="${SPEC_SUBNET[$n]:-}"; [ -n "$a" ] || continue; o="$(_net24 "$a" | cut -d. -f2)"; case "$o" in ''|*[!0-9]*) :;; *) [ "$o" -gt "$hi" ] && hi="$o";; esac; done
+  for n in "${!IF_CONF[@]}"; do a="$(conf_get "${IF_CONF[$n]}" Address)"; [ -n "$a" ] || continue; o="$(_net24 "$a" | cut -d. -f2)"; case "$o" in ''|*[!0-9]*) :;; *) [ "$o" -gt "$hi" ] && hi="$o";; esac; done
+  o=$((hi+1)); while [ "$o" -lt 255 ] && subnet_used "10.$o.0.0/24"; do o=$((o+1)); done; echo "10.$o.0.0/24"; }
+# default interface index = (highest numeric suffix across existing + queued names)+1 (awg3,wg4 → 5).
+iface_next_index(){ local hi=-1 n s; for n in "${!IF_CMD[@]}" ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do s="${n##*[!0-9]}"; case "$s" in ''|*[!0-9]*) :;; *) [ "$s" -gt "$hi" ] && hi="$s";; esac; done; echo $((hi+1)); }
 v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return 0; }
 # Two-phase interface creation: spec_iface() only PROMPTS and queues a spec, so the user can add
 # every interface up front; apply_specs() then installs tools + writes confs + brings them all up
@@ -544,9 +552,10 @@ spec_iface(){ # prompt for one interface and queue it (no install yet)
   ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
                                  *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
-  defname="$([ "$cmd" = awg ] && echo "awg$idx" || echo "wg$idx")"
+  local nidx; nidx=$(iface_next_index)   # name = highest-suffix+1, bumped past any exact collision
+  defname="$([ "$cmd" = awg ] && echo "awg$nidx" || echo "wg$nidx")"
   while [ -n "${IF_CMD[$defname]:-}" ] || [ -n "${SPEC_CMD[$defname]:-}" ] || [ -e "/etc/amnezia/amneziawg/$defname.conf" ] || [ -e "/etc/wireguard/$defname.conf" ]; do
-    idx=$((idx+1)); defname="$([ "$cmd" = awg ] && echo "awg$idx" || echo "wg$idx")"; done
+    nidx=$((nidx+1)); defname="$([ "$cmd" = awg ] && echo "awg$nidx" || echo "wg$nidx")"; done
   while :; do
     ask_valid "Interface name" "$defname" name v_iface "1–15 chars: letters, digits, - or _"
     if [ -n "${IF_CMD[$name]:-}" ] || [ -n "${SPEC_CMD[$name]:-}" ] || [ -e "/etc/amnezia/amneziawg/$name.conf" ] || [ -e "/etc/wireguard/$name.conf" ]; then
@@ -554,7 +563,7 @@ spec_iface(){ # prompt for one interface and queue it (no install yet)
     fi
     break
   done
-  defport=$(iface_default_port "$idx"); defsub="$(next_free_subnet "$idx")"
+  defport=$(iface_default_port "$idx"); defsub="$(next_free_subnet)"
   ask_valid "Listen port" "$defport" port v_freeport "port 1–65535 and free (not already in use)"
   ask_valid "Tunnel subnet (CIDR; server takes the first host)" "$defsub" subnet v_subnet_free "a CIDR not already used, e.g. 10.8.0.0/24"
   addr="$(server_addr "$subnet")"
