@@ -229,6 +229,14 @@ node_iface_rows(){
     done
   fi
 }
+# one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
+iface_row(){ local n="$1" conf proto ep lp addr
+  conf="$(find_iface_conf "$n" 2>/dev/null || true)"
+  if [ -n "$conf" ] && grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I[1-5]|Itime)[[:space:]]*=' "$conf" 2>/dev/null; then proto=awg; else proto=wg; fi
+  ep="${NODE_ENDPOINT:-$(detect_public_ip 2>/dev/null || true)}"
+  lp="$([ -n "$conf" ] && sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" | head -1)"
+  addr="$([ -n "$conf" ] && sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" | head -1)"
+  printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
 v_fwd(){ local names; names=" $(node_iface_rows | cut -d' ' -f1 | tr '\n' ' ')${NODE_IFACE:+$NODE_IFACE }"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
 fwd_resolve(){ local n p x; while read -r n p x; do [ -n "$n" ] && [ "$n" = "$1" ] && { echo "127.0.0.1:$p"; return; }; done <<< "$(node_iface_rows)"
@@ -268,8 +276,9 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
   while :; do
     detect_turn; names=("${!TP_LISTEN[@]}")
     echo
-    if [ "${#names[@]}" -gt 0 ]; then echo "  Installed turn-proxy servers:"
-      for n in "${names[@]}"; do printf '    %s %s\n' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done
+    if [ "${#names[@]}" -gt 0 ]; then echo "  Installed turn-proxy servers:"; echo
+      for n in "${names[@]}"; do printf '    %s%s%s (%s → %s)\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}"; done
+      echo
     else warn "No turn-proxy servers found on this box."; fi
     echo
     echo "  Here is a list of turn-proxy branches available for installation:"; echo
@@ -662,8 +671,8 @@ manage_node_ifaces(){
       if is_kernel_iface "$n"; then kern="$kern $n"; else dock="$dock $n"; fi
     done
     dock="$(echo $dock)"; kern="$(echo $kern)"
-    [ -n "$mine" ] && { printf "  Interfaces already on this node:"; for n in $mine; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
-    [ -n "$dock" ] && { printf "  Available orphan interfaces:"; for n in $dock; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
+    [ -n "$mine" ] && { echo "  Interfaces already on this node:"; echo; for n in $mine; do iface_row "$n"; done; echo; }
+    [ -n "$dock" ] && { echo "  Available orphan interfaces:"; echo; for n in $dock; do iface_row "$n"; done; echo; }
     [ -n "$kern" ] && { printf "  Existing %s interfaces:" "$(col "$C_RED" kernel)"; for n in $kern; do printf ' %s' "$(col "$C_RED" "$n")"; done; printf " %s\n" "$(col "$C_RED" '— picking one MOVES it off the kernel into this node')"; }
     [ -n "$bm" ] && { printf "  Interfaces used by the bare-metal node on this server:"; for n in $bm; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
     echo

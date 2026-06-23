@@ -44,6 +44,11 @@ b(){   printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (summary highlights)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
+# one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
+iface_row(){ local n="$1" conf="${IF_CONF[$n]:-}" proto="${IF_CMD[$n]:-?}" ep lp addr
+  ep="${IF_ENDPOINT[$n]:-${ENDPOINT_IP:-$(detect_public_ip 2>/dev/null)}}"
+  lp="$(conf_get "$conf" ListenPort)"; addr="$(conf_get "$conf" Address)"
+  printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 fwd_ifaces(){ local cp="${1##*:}" n lp out=""; for n in "${!IF_CONF[@]}"; do lp="$(conf_get "${IF_CONF[$n]}" ListenPort)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && out="${out:+$out }$n"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by ListenPort)
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
 # conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.
@@ -312,8 +317,9 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
       mine=""; for n in $(node_ifaces) ${ADOPTED_IFACES:-} ${CREATED[@]+"${CREATED[@]}"}; do _in "$n" "$mine" || mine="$mine $n"; done; mine="$(echo $mine)"
       avail=""; for n in $names; do _in "$n" "$mine" && continue; _in "$n" "$dk" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
       echo
-      [ -n "$mine" ] && { printf "  Interfaces already on this node:"; for n in $mine; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; echo; }
-      printf "  Available orphan interfaces:"; if [ -n "$avail" ]; then for n in $avail; do printf ' %s' "$(col "$C_GREEN" "$n")"; done; else printf ' (none)'; fi; echo
+      [ -n "$mine" ] && { echo "  Interfaces already on this node:"; echo; for n in $mine; do iface_row "$n"; done; echo; }
+      if [ -n "$avail" ]; then echo "  Available orphan interfaces:"; echo; for n in $avail; do iface_row "$n"; done; echo
+      else echo "  Available orphan interfaces: (none)"; fi
       [ -n "$dk" ] && { printf "  Interfaces from a docker node on this server (import to this node):"; for n in $dk; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
       echo
       if [ -z "$avail" ] && [ -z "$mine" ] && [ -n "$dk" ]; then   # only docker-node interfaces → transfer or create
@@ -536,8 +542,9 @@ choose_turn_proxy(){   # one looped step: list installed (if any) + available br
     detect_turn; names=("${!TP_LISTEN[@]}")
     echo
     if [ "${#names[@]}" -gt 0 ]; then
-      echo "  Installed turn-proxy servers:"
-      for n in "${names[@]}"; do printf '    %s %s\n' "$(col "$C_GREEN" "$n")" "$(b "(${TP_LISTEN[$n]} → ${TP_CONNECT[$n]})")"; done
+      echo "  Installed turn-proxy servers:"; echo
+      for n in "${names[@]}"; do printf '    %s%s%s (%s → %s)\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}"; done
+      echo
     else
       warn "No turn-proxy servers found on this box."
     fi
