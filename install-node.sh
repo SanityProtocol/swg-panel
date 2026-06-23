@@ -603,7 +603,11 @@ fi
 # the current values are offered as defaults so you can just press Enter.
 if $DRYRUN; then ask "Panel URL (https://host[/subpath])" "$EXIST_URL" PANEL_URL
 else ask_valid "Panel URL (https://host[/subpath])" "$EXIST_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"; fi
-if $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
+# token: a re-install reuses the existing one SILENTLY (no prompt — re-typing it is useless/error-prone);
+# a fresh install (or no stored token) still asks. -key always wins.
+if [ -n "$NODE_TOKEN" ]; then :                                                # provided via -key
+elif [ "$EXISTING" = yes ] && [ -n "$EXIST_TOKEN" ]; then NODE_TOKEN="$EXIST_TOKEN"
+elif $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
 else ask_valid "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
 case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then

@@ -362,7 +362,11 @@ if [ -f "$INSTALL_DIR/.env" ]; then
     [ -n "$_v" ] && printf -v "$_k" '%s' "$_v"
   done
   EXIST_TLS="$(sed -n 's/^TLS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1)"   # for the 'reuse' TLS option (not auto-applied)
-  info "Existing docker install detected in $INSTALL_DIR — keeping your .env + ./data (token, login, interfaces). To start fresh, uninstall first."
+  if [ "$PROFILE" = node ]; then
+    info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
+  else
+    info "Existing docker install detected in $INSTALL_DIR — keeping your .env + ./data (token, login, interfaces). To start fresh, uninstall first."
+  fi
   if ! $DRYRUN && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
     # node re-install: flag the panel ("re-installing" tag + server-key re-baseline) and drop the
     # keypair backups so swg-noded re-harvests the current confs on its next sync.
@@ -495,6 +499,15 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
 }
 ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the per-interface wg/awg step)
   # Panel connection — normally supplied by the install command's -host / -key flags.
+  # On a re-install, ALWAYS re-prompt the URL + TLS (the panel may have moved / changed cert) with the
+  # current value as the default; the TOKEN is reused silently (re-typing it is useless). Mirrors bare-metal.
+  if [ "$EXISTING_DOCKER" = yes ]; then
+    local _exurl="$PANEL_URL" _extls="$TLS_VERIFY"; PANEL_URL=""; TLS_VERIFY=""
+    ask_valid "Panel URL (https://host[/subpath])" "$_exurl" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
+    case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
+    TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" "$([ "$_extls" = yes ] && echo y || echo n)")"
+    return 0
+  fi
   ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
   ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
   case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
