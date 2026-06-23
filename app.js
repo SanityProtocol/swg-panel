@@ -437,32 +437,33 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const pend = (nrec.turn_pending || {})[tp.service];
   const err = (nrec.cmd_errors || {})[tp.service];
   const prog = (nrec.cmd_progress || {})[tp.service];   // node "what's happening now" (slow GitHub download / retry) → yellow note
-  const installing = !!tp.installing;
+  const installing = !!tp.installing;   // actively being downloaded / (re)created right now
+  const queued = !!tp.pending;          // not up yet, waiting its turn in the sequential reconcile
   const failed = !!tp.failed;
   const stopped = !!tp.stopped;   // intentionally stopped from the panel (kept down)
-  const down = tp.running === false && !installing && !failed && !stopped;   // bare-metal not-running (docker not-running is always installing/failed)
+  const down = tp.running === false && !installing && !queued && !failed && !stopped;   // not-running, not in any in-flight state
   const converting = (nrec.proc_status || "").startsWith("converting");   // node is mid bare↔docker convert → every card "converting"
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
-  const dim = converting || nodeStale(node) || (!justRestarted && (pend || installing || failed || down || stopped || err));   // attention / node gone dark → dim
+  const dim = converting || nodeStale(node) || (!justRestarted && (pend || installing || failed || down || stopped || err));   // attention / node gone dark → dim (NOT mere 'pending' queue)
+  const conn = fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : [];   // online peers via this proxy → header count
   return html`<div class=${"ifcard tp" + (nrec.turn_manage && !converting ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage && !converting ? () => openTurnManage(node, tp) : null}>
-    <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${converting
-      ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>`
+    <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
+      ? html`<${StatusTag} cls="tg-busy" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
       : pend
-      ? html`<${CmdErr} err=${err}/>${prog ? html`<${CmdErr} err=${prog} cls="warn" title="Working on the node"/>` : null}<span class=${"tg tg-busy" + (pend === "delete" ? " del" : "")}>${updating ? "updating" : (TURN_PEND[pend] || pend)}…</span><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
-      : installing ? html`${prog ? html`<${CmdErr} err=${prog} cls="warn" title="Installing on the node"/>` : null}<span class=${"tg tg-busy" + (prog ? " warn" : "")} title=${prog || "Downloading the binary and starting the container on the node"}><${Ic} i="clock"/>installing</span>`
-      : failed ? html`<${CmdErr} err=${err || "the install failed on the node"}/><span class="tg tg-busy del"><${Ic} i="warn"/>install failed</span>`
+      ? html`<${StatusTag} cls=${"tg-busy" + (pend === "delete" ? " del" : "")} label=${(updating ? "updating" : (TURN_PEND[pend] || pend)) + "…"} msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
+      : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label="installing" msg=${prog} title="Installing on the node"/>`
+      : queued ? html`<${StatusTag} cls="tg-busy" icon="clock" label="pending" title="Queued — the node brings these up one at a time"/>`
+      : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="install failed" msg=${err || "the install failed on the node"} title="Command failed on the node"/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : stopped ? html`<span class="tg muted" title="Stopped from the panel — open to Start it"><${Ic} i="stop"/>stopped</span>`
-      : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
+      : down ? html`<${StatusTag} cls="tg-busy del" label="down" msg=${err || "service is not running on the node"} title="Service down on the node"/>`
+      : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}</div>
     <div class="ifcard-rows">
-      <div class="ifrow"><span class="l">Binary (fork)</span><span class="r">${turnFork(tp.service)}</span></div>
+      <div class="ifrow"><span class="l">Turn-proxy fork</span><span class="r">${turnFork(tp.service)}</span></div>
       <div class="ifrow"><span class="l">Listen</span><span class="r addr">${tp.listen || "—"}</span></div>
       ${showForwards ? html`<div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype + ((nodeStale(node) || ifaceDown(node, fronted)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (tp.connect || "—")}</span></div>` : null}
-      <div class="ifrow"><span class="l">Connections</span><span class="r"><${OnlPop} peer title="Via this turn-proxy"
-        rows=${fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : []}
-        trigger=${c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>`}/></span></div>
     </div></div>`;
 }
 
@@ -559,8 +560,8 @@ function closeAllModals() { _applyStack([]); }
 let _sheetStack = [];   // mounted Sheet tokens (LIFO) — only the topmost handles Esc/Enter/Tab
 
 // ───────────────────────── shared bits ─────────────────────────
-const IFOP_BUSY = { start: "starting", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
-const IFOP_DONE = { start: "started", restart: "restarted", apply: "applied" };
+const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
+const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied" };
 const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, rotating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
@@ -1141,9 +1142,11 @@ function NodeDetail({ node: rawName }) {
               const iconverting = (nrec.proc_status || "").startsWith("converting");   // node is mid bare↔docker convert
               const fwdTurns = turnProxiesFor(name, ifn);   // turn-proxies forwarding to this interface (by connect-port == listen_port)
               const iprog = (nrec.cmd_progress || {})[ifn];   // node "what's happening now" (yellow note) for this interface
-              const idim = iconverting || deleting || idown || irestarting || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / node gone dark → dim
+              const iop = Store.ifaceOp[name + "|" + ifn];   // optimistic start/stop/restart lifecycle (set on click, before the node reflects it)
+              const iopBusy = iop && iop.phase === "busy";
+              const idim = iconverting || deleting || idown || irestarting || iopBusy || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / in-flight / node gone dark → dim
               return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${nodeMsgs(nrec, ifn)}${iconverting ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<span class="tg tg-del"><${Ic} i="clock"/>deleting</span>` : idown ? html`<span class="tg tg-busy del" title=${"interface is down on the node — awg-quick couldn't bring it up: " + idown}><${Ic} i="warn"/>down</span>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1207,7 +1210,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${idown ? html`<span class="badge b-dangling"><${Ic} i="err"/>down</span>` : updating ? html`<span class="badge" style="background:rgba(154,139,240,.16);color:var(--pending)"><${Ic} i="clock"/>updating</span>` : html`<span class="badge b-${live ? "online" : "unknown"}">${live ? "reporting" : "stale"}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span><span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
@@ -1216,7 +1219,9 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
           actions=${html`<${Fragment}>${op && op.phase === "busy"
             ? html`<span class="tg-busy warn"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>`
-            : html`<${Fragment}>${op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<span class="tg-busy del" title=${op.err || ""}><${Ic} i="err"/>failed</span>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : (idown ? "Bring this interface up on the node" : "Bounce this interface's service on the node")} onClick=${() => startOrRestartIface(node, iface, idown ? "start" : "restart")}><${Ic} i="refresh"/> ${idown ? "Start interface" : "Restart service"}</button><//>`}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
+            : html`<${Fragment}>${op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<span class="tg-busy del" title=${op.err || ""}><${Ic} i="err"/>failed</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} title="Interface down on the node"/>` : restarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting…</span>` : updating ? html`<span class="tg tg-busy warn"><${Ic} i="clock"/>updating</span>` : html`<span class=${"badge b-" + (live ? "online" : "unknown")}>${live ? "reporting" : "stale"}</span>`}${idown
+              ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Bring this interface up on the node"} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> Start service</button>`
+              : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Take this interface down on the node (stays down until started)"} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> Stop service</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Bounce this interface's service on the node"} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> Restart service</button><//>`}<//>`}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
         <div class="iface-grid">
           <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${meta.endpoint || "—"}</span></div>
           <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${meta.address || "—"}</span></div>
@@ -1446,7 +1451,8 @@ async function restartIfaceToast(node, iface) {
 async function startOrRestartIface(node, iface, verb) {
   const key = node + "|" + iface;
   Store.ifaceOp[key] = { verb, phase: "busy", started: Date.now() }; Store.apply();
-  const r = await api.ifaceRestart({ node, iface });
+  const m = verb === "stop" ? "ifaceStop" : verb === "start" ? "ifaceStart" : "ifaceRestart";
+  const r = await api[m]({ node, iface });
   if (!r.ok) {
     Store.ifaceOp[key] = { verb, phase: "fail", until: Date.now() + 10000, err: r.error || "request failed" };
     Store.apply(); setTimeout(() => Store.apply(), 10100); return;
@@ -1472,6 +1478,10 @@ function trackIfaceOps() {
       else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
       else if (!pending && now - op.started > 6000) done = { phase: "fail", err: cerr || down };
       else if (now - op.started > 18000) done = { phase: "fail", err: cerr || down || "timed out" };
+    } else if (op.verb === "stop") {                           // was UP → success once it's down
+      if (down) done = { phase: "ok" };
+      else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
+      else if (now - op.started > 18000) done = { phase: "fail", err: cerr || "timed out" };
     } else {                                                   // RESTART of an up iface → done when the request clears
       if (down && cerr) done = { phase: "fail", err: cerr };
       else if (!pending && now - op.started > 6000) done = down ? { phase: "fail", err: cerr || down } : { phase: "ok" };
@@ -1747,7 +1757,7 @@ const TURN_FORKS = [
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp" },
 ];
-const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "installing" };
+const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "installing", start: "starting", stop: "stopping" };
 // turn-proxy restart completion flash: when a queued 'restart' clears, show a green "restarted" tag 5s
 const _turnRestartPend = {};   // "node|service" currently mid-restart (last poll)
 const turnRestarted = {};      // "node|service" -> expiry ts for the green flash
@@ -1770,11 +1780,13 @@ function CmdErr({ err, cls, title }) {
   if (!err) return null;
   return html`<span class=${"cmderr" + (cls ? " " + cls : "")} title=${err} onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Command failed on the node", body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
 }
-// red ⓘ for a node error + yellow ⓘ for a transient "what's going on" note, both clickable — keyed by request key
-// (iface name / turn service). Shared by interface + turn cards so any node message shows the same way everywhere.
-function nodeMsgs(nrec, k) {
-  const err = (nrec.cmd_errors || {})[k], prog = (nrec.cmd_progress || {})[k];
-  return html`${err ? html`<${CmdErr} err=${err}/>` : null}${prog ? html`<${CmdErr} err=${prog} cls="warn" title="Working on the node"/>` : null}`;
+// a status tag that, when it carries a node `msg`, makes the WHOLE tag clickable (opens the message) with
+// a hover highlight + pointer — so the click target is the tag, not a tiny icon next to it.
+function StatusTag({ cls, icon, label, msg, title }) {
+  const ic = icon ? html`<${Ic} i=${icon}/>` : null;
+  if (!msg) return html`<span class=${"tg " + cls} title=${title || ""}>${ic}${label}</span>`;
+  return html`<span class=${"tg " + cls + " tg-click"} title=${msg}
+    onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Node message", body: msg, confirmLabel: "Close" }); }}>${ic}${label}</span>`;
 }
 async function cancelTurn(node, body) {
   const r = await api.turnCancel({ node, ...body });

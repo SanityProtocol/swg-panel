@@ -1237,11 +1237,13 @@ def _dturn_attach_running(tps):
             svc = t["service"]
             t["running"] = _turn_cname(svc) in _DTURN_RUN["set"]
             stopped = bool(t.get("stopped"))
+            active = svc in _TURN_INSTALLING   # being downloaded / (re)created RIGHT NOW (only one at a time)
             failed = (svc in _TURN_FAILED) and not t["running"] and not stopped
             t["failed"] = failed
-            # docker: any not-running, not-failed proxy is mid/pending install → "installing" (never a bare "down");
-            # a 'stopped' one is intentionally down → neither installing nor failed.
-            t["installing"] = (not stopped) and ((svc in _TURN_INSTALLING) or (not t["running"] and not failed))
+            # docker: only the proxy the bg reconcile is working on right now is "installing"; the others not
+            # yet up (and not failed/stopped) are "pending" — queued for the sequential reconcile, not stuck.
+            t["installing"] = active and not stopped
+            t["pending"] = (not t["running"]) and (not failed) and (not stopped) and (not active)
 
 def _dturn_ensure(tp):   # make the container match the record entry (download binary if missing, run if not up)
     svc = tp.get("service")
