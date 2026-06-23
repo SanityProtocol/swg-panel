@@ -212,7 +212,22 @@ export STEP_BASE="$STEP"          # the installer numbers its steps from here
 #    older version). A half-finished node may still hold its token in a docker .env, a moved docker
 #    backup (…​.converted-*), the swg-node container's env, or the bare agent config. Re-using it
 #    re-enrolls this box as the SAME node so it isn't orphaned on the panel (its peers re-sync). ──
+# A NORMAL re-install reuses the token from the LIVE deployment itself — install-docker.sh from its .env,
+# install-node.sh from the agent config — so the installer handles it and we must NOT hijack into recovery.
+# The salvage is only for a node that's actually GONE (live source missing; token only in old backups).
+_have_live_token=no
 if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ]; then
+  if [ "$METHOD" = docker ]; then
+    if [ -f "$DOCKER_DIR/.env" ]; then _lt="$(sed -n 's/^NODE_TOKEN=//p' "$DOCKER_DIR/.env" | head -1 | tr -d '"')"
+      [ -n "$_lt" ] && [ "$_lt" != "set-in-nodes-screen" ] && _have_live_token=yes; fi
+  else
+    if [ -f /etc/swg-agent/config.json ] && command -v python3 >/dev/null 2>&1; then
+      _lt="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
+      [ -n "$_lt" ] && _have_live_token=yes; fi
+  fi
+  [ "$_have_live_token" = yes ] && info "re-installing the existing $(mlabel "$METHOD") node (its token is reused — to recover/rotate instead, use the panel's Recover button or pass -key)."
+fi
+if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ] && [ "$_have_live_token" = no ]; then
   _salvf="$(mktemp 2>/dev/null || echo "/tmp/swg-salv.$$")"; : > "$_salvf"
   # collect every candidate identity as "<token>\t<url>\t<source>" — most authoritative first: a leftover
   # swg-node container, then docker .env (live + moved backups, NEWEST first), then the bare agent config.
