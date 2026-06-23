@@ -1041,6 +1041,18 @@ fi
 # (port checks happen earlier: the panel port at the URL step, :80 at the TLS step for letsencrypt)
 info "Starting compose profile '$PROFILE'$($BUILD && echo ' (building from source)')"
 BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from GHCR
+# A re-install MUST refresh the prebuilt image first: compose's pull_policy is "missing", so a plain
+# `up --force-recreate` rebuilds the container from the STALE local :latest — entrypoint/datapath fixes
+# shipped in a newer image never reach a re-installed node (this is exactly how a stale entrypoint kept
+# silently dropping an interface added on re-install). Pull the profile's image(s) up front, like update.sh.
+# Skipped when --build (we're compiling locally) and non-fatal (offline → fall back to the local image).
+if ! $BUILD; then
+  if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE pull)"
+  else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" pull ) \
+         && ok "pulled current image(s) for profile $(b "$PROFILE")" \
+         || warn "image pull failed — recreating from the local image (run $(b 'bootstrap update') for the newest)"
+  fi
+fi
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
 $DRYRUN || rm -f /var/lib/swg-recovery 2>/dev/null || true   # stack is up → clear any convert-recovery marker
