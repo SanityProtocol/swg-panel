@@ -214,7 +214,7 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
 .b-ready{background:rgba(34,211,238,.12);color:var(--ready)}
 .b-partial{background:rgba(240,145,60,.14);color:var(--partial)}
-.b-pending{background:rgba(232,192,75,.14);color:var(--pending)}
+.b-pending{background:rgba(154,139,240,.14);color:var(--pending)}   /* violet — bg matches the --pending text/border (awaiting-enroll); was a mismatched yellow bg */
 .b-removing{background:rgba(242,107,130,.14);color:var(--dangling)}
 .b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
 .b-orphan{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — matches the unmanaged/warn theme */
