@@ -457,7 +457,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
       : queued ? html`<${StatusTag} cls="tg-busy" icon="clock" label="pending" title="Queued — the node brings these up one at a time"/>`
       : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="install failed" msg=${err || "the install failed on the node"} title="Command failed on the node"/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
-      : stopped ? html`<span class="tg muted" title="Stopped from the panel — open to Start it"><${Ic} i="stop"/>stopped</span>`
+      : stopped ? html`<span class="tg-off" title="Stopped from the panel — open to Start it"><${Ic} i="stop"/>stopped</span>`
       : down ? html`<${StatusTag} cls="tg-busy del" label="down" msg=${err || "service is not running on the node"} title="Service down on the node"/>`
       : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}</div>
     <div class="ifcard-rows">
@@ -562,6 +562,7 @@ let _sheetStack = [];   // mounted Sheet tokens (LIFO) — only the topmost hand
 // ───────────────────────── shared bits ─────────────────────────
 const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
 const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied" };
+const IFOP_FAIL = { start: "failed to start", stop: "failed to stop", restart: "failed to restart", apply: "failed to apply" };
 const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, rotating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
@@ -1151,7 +1152,7 @@ function NodeDetail({ node: rawName }) {
               const iopBusy = iop && iop.phase === "busy";
               const idim = iconverting || deleting || idown || istopped || irestarting || iopBusy || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / stopped / in-flight / node gone dark → dim
               return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg muted" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
+                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-warn" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1218,14 +1219,14 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${op && op.phase === "busy" ? html`<span class="tg tg-busy warn"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>` : op && op.phase === "ok" ? html`<span class="tg tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<span class="tg tg-busy del" title=${op.err || ""}><${Ic} i="err"/>failed</span>` : istopped ? html`<span class="tg muted" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} title="Interface down on the node"/>` : restarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting…</span>` : updating ? html`<span class="tg tg-busy warn"><${Ic} i="clock"/>updating</span>` : html`<span class=${"badge b-" + (live ? "online" : "unknown")}>${live ? "reporting" : "stale"}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${istopped ? html`<span class="tg-off" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} title="Interface down on the node"/>` : html`<span class=${live ? "tg-ok" : "tg-off"}>${live ? "reporting" : "stale"}</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
 
     ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
-          actions=${html`<${Fragment}>${notup
+          actions=${html`<${Fragment}>${op && op.phase === "busy" ? html`<span class="tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>` : op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${IFOP_FAIL[op.verb] || "failed"} msg=${op.err || "the action failed on the node"} title="Action failed on the node"/>` : null}${notup
               ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Bring this interface up on the node"} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> Start service</button>`
               : html`<${Fragment}><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Take this interface down on the node (stays down until started)"} onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> Stop service</button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Bounce this interface's service on the node"} onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> Restart service</button><//>`}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openEditIface(node, iface)}><${Ic} i="pencil"/> Edit interface</button><//>`}>
         <div class="iface-grid">
@@ -1472,26 +1473,30 @@ function trackIfaceOps() {
     if (op.phase !== "busy") { if (op.until && now > op.until) delete Store.ifaceOp[key]; continue; }
     const cut = key.indexOf("|"); const node = key.slice(0, cut), iface = key.slice(cut + 1);
     const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-    const down = (((Store.stats[node] || {}).interfaces || {})[iface] || {}).down;
+    const istate = (((Store.stats[node] || {}).interfaces || {})[iface] || {});
+    const down = !!istate.down, stopped = !!istate.stopped, notup = down || stopped;   // a stopped iface reports `stopped`, not `down`
     const cerr = (nrec.cmd_errors || {})[iface];
-    const pending = (nrec.restarting || []).includes(iface);   // restart request still queued on the panel
+    const starting = (nrec.starting || []).includes(iface);   // panel requests still queued (cleared once the snapshot reflects)
+    const stopping = (nrec.stopping || []).includes(iface);
+    const restarting = (nrec.restarting || []).includes(iface);
     let done = null;   // { phase, err }
     if (op.verb === "apply") {                                 // up iface live-apply (no restart) → time-based
       if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
       else if (now - op.started > 6000) done = { phase: "ok" };   // node has had a sync to pick it up
-    } else if (op.verb === "start") {                          // was DOWN → success once it's up
-      if (!down) done = { phase: "ok" };
+    } else if (op.verb === "start") {                          // success once the iface is actually UP (not just "not down")
+      if (!notup) done = { phase: "ok" };
       else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
-      else if (!pending && now - op.started > 6000) done = { phase: "fail", err: cerr || down };
-      else if (now - op.started > 18000) done = { phase: "fail", err: cerr || down || "timed out" };
-    } else if (op.verb === "stop") {                           // was UP → success once it's down
-      if (down) done = { phase: "ok" };
+      else if (!starting && now - op.started > 8000) done = { phase: "fail", err: cerr || "the interface didn't come up" };
+      else if (now - op.started > 20000) done = { phase: "fail", err: cerr || "timed out" };
+    } else if (op.verb === "stop") {                           // success once it's actually down/stopped
+      if (notup) done = { phase: "ok" };
       else if (cerr && now - op.started > 4000) done = { phase: "fail", err: cerr };
-      else if (now - op.started > 18000) done = { phase: "fail", err: cerr || "timed out" };
-    } else {                                                   // RESTART of an up iface → done when the request clears
+      else if (!stopping && now - op.started > 8000) done = { phase: "fail", err: cerr || "the interface didn't stop" };
+      else if (now - op.started > 20000) done = { phase: "fail", err: cerr || "timed out" };
+    } else {                                                   // RESTART of an up iface → done when the request clears + it's up
       if (down && cerr) done = { phase: "fail", err: cerr };
-      else if (!pending && now - op.started > 6000) done = down ? { phase: "fail", err: cerr || down } : { phase: "ok" };
-      else if (now - op.started > 18000) done = down ? { phase: "fail", err: cerr || down } : { phase: "ok" };
+      else if (!restarting && now - op.started > 6000) done = down ? { phase: "fail", err: cerr || "didn't come back up" } : { phase: "ok" };
+      else if (now - op.started > 18000) done = down ? { phase: "fail", err: cerr || "didn't come back up" } : { phase: "ok" };
     }
     if (done) {
       const ms = done.phase === "ok" ? 5000 : 10000;
@@ -1793,8 +1798,8 @@ function CmdErr({ err, cls, title }) {
 // a hover highlight + pointer — so the click target is the tag, not a tiny icon next to it.
 function StatusTag({ cls, icon, label, msg, title }) {
   const ic = icon ? html`<${Ic} i=${icon}/>` : null;
-  if (!msg) return html`<span class=${"tg " + cls} title=${title || ""}>${ic}${label}</span>`;
-  return html`<span class=${"tg " + cls + " tg-click"} title=${msg}
+  if (!msg) return html`<span class=${cls} title=${title || ""}>${ic}${label}</span>`;
+  return html`<span class=${cls + " tg-click"} title=${msg}
     onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Node message", body: msg, confirmLabel: "Close" }); }}>${ic}${label}</span>`;
 }
 async function cancelTurn(node, body) {

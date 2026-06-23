@@ -699,14 +699,17 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-turn{color:var(--tfc,#B49BF7);background:color-mix(in srgb,var(--tfc,#A78BF5) 17%,transparent)}
 /* status pills (busy/ok/warn/del) — ONE uniform shape; colour per state. Defined after .tg so the
    pill shape wins even when written as "tg tg-busy" on cards (the type tags .tg-wg/.tg-awg stay small). */
-.tg-busy,.tg-ok,.tg-warn,.tg-del{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:1px 8px;font-family:var(--mono);font-size:9.5px;font-weight:700;line-height:1.45;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;border:1px solid transparent}
+/* status pills — ONE shape/size/font for all; only colour differs (busy=cyan, ok=green, warn=yellow, del=red, off=grey) */
+.tg-busy,.tg-ok,.tg-warn,.tg-del,.tg-off{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:1px 8px;font-family:var(--mono);font-size:9.5px;font-weight:700;line-height:1.45;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;border:1px solid transparent}
 .tg-busy{background:rgba(70,216,168,.14);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 30%,transparent)}
 .tg-busy.del{background:rgba(240,90,90,.15);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 38%,transparent)}
 .tg-busy.warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 38%,transparent)}
 .tg-ok{background:rgba(63,216,154,.16);color:var(--online);border-color:color-mix(in srgb,var(--online) 30%,transparent)}
 .tg-warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 35%,transparent)}
 .tg-del{background:rgba(242,107,130,.16);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 35%,transparent)}   /* interface being deleted */
-.tg-busy svg,.tg-ok svg,.tg-warn svg,.tg-del svg{width:11px;height:11px}
+.tg-off{background:rgba(98,116,139,.16);color:var(--unknown);border-color:color-mix(in srgb,var(--unknown) 30%,transparent)}   /* stopped / stale — a deliberate, non-error state */
+.tg-busy svg,.tg-ok svg,.tg-warn svg,.tg-del svg,.tg-off svg{width:11px;height:11px}
+.ifcard-top .tg-busy,.ifcard-top .tg-ok,.ifcard-top .tg-warn,.ifcard-top .tg-del,.ifcard-top .tg-off{flex:none}   /* status pills keep full width in a card header */
 .tg-iface{background:color-mix(in srgb,var(--tgc,var(--dim)) 14%,transparent);color:var(--tgc,var(--dim))}
 .tg-gen{background:var(--surface-2);color:var(--dim);box-shadow:inset 0 0 0 1px var(--line-solid)}
 /* inactive items (offline/dangling/disconnected): grey the tags out */
