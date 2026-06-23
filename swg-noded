@@ -632,6 +632,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
     interfaces = {}
+    stopped_set = _load_stopped_ifaces()   # interfaces the operator deliberately stopped → "stopped", not "down"
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         cmd = ic.get("cmd", ["awg"])
         try:                                        # one bad interface must never kill the whole snapshot
@@ -641,10 +642,13 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                     conf_text = open(ic["conf"]).read()
                 except OSError:
                     conf_text = ""
-                interfaces[iface] = {"peers": [],
-                    "meta": build_meta([], conf_text, ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
-                                       node_cfg.get("dns", []), cmd),
-                    "down": ((_r.stderr or "").strip() or "interface is not up")[:140]}
+                _meta = build_meta([], conf_text, ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
+                                   node_cfg.get("dns", []), cmd)
+                if iface in stopped_set:            # the operator stopped it — a choice, not a failure (no error)
+                    interfaces[iface] = {"peers": [], "meta": _meta, "stopped": True}
+                else:
+                    interfaces[iface] = {"peers": [], "meta": _meta,
+                        "down": ((_r.stderr or "").strip() or "interface is not up")[:140]}
                 ensure_iface_backup(iface, conf_text, cmd)
                 continue
             dump = _r.stdout
@@ -664,6 +668,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                                    ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
                                    node_cfg.get("dns", []), cmd),
             }
+            if iface in stopped_set:               # it's up again (e.g. brought up outside the panel) → clear the stopped mark
+                _set_iface_stopped(iface, False)
             ensure_iface_backup(iface, conf_text, cmd)
         except Exception as e:
             print(f"snapshot: skipping {iface}: {e}", flush=True)
@@ -848,10 +854,33 @@ def restart_ifaces(node_cfg, restart, agent, sudo):
             continue
         r = run_agent(agent, sudo, {"op": "restart-iface", "iface": iface})
         if r.get("ok"):
-            res["restarted"].append(iface)
+            res["restarted"].append(iface); _set_iface_stopped(iface, False)   # a restart brings it back up
         else:
             res["errors"].append(f"{iface}: {r.get('error')}")
     return res
+
+
+# interfaces the operator deliberately stopped from the panel → reported as "stopped" (not "down": it's a
+# choice, not a failure). Persisted so it survives a daemon restart. Cleared when the interface is started.
+IFACE_STOPPED_FILE = os.path.join(STATE_DIR, "iface-stopped.json")
+def _load_stopped_ifaces():
+    try:
+        with open(IFACE_STOPPED_FILE) as f:
+            v = json.load(f)
+        return set(v) if isinstance(v, list) else set()
+    except Exception:
+        return set()
+def _set_iface_stopped(iface, stopped):
+    s = _load_stopped_ifaces()
+    if (iface in s) == bool(stopped):
+        return
+    s.add(iface) if stopped else s.discard(iface)
+    with contextlib.suppress(Exception):
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = IFACE_STOPPED_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(sorted(s), f)
+        os.replace(tmp, IFACE_STOPPED_FILE)
 
 
 def stop_ifaces(node_cfg, stop, agent, sudo):
@@ -862,7 +891,7 @@ def stop_ifaces(node_cfg, stop, agent, sudo):
             continue
         r = run_agent(agent, sudo, {"op": "stop-iface", "iface": iface})
         if r.get("ok"):
-            res["stopped"].append(iface)
+            res["stopped"].append(iface); _set_iface_stopped(iface, True)   # mark as a deliberate stop, not a failure
         else:
             res["errors"].append(f"{iface}: {r.get('error')}")
     return res
@@ -876,7 +905,7 @@ def start_ifaces(node_cfg, start, agent, sudo):
             continue
         r = run_agent(agent, sudo, {"op": "start-iface", "iface": iface})
         if r.get("ok"):
-            res["started"].append(iface)
+            res["started"].append(iface); _set_iface_stopped(iface, False)   # no longer stopped
         else:
             res["errors"].append(f"{iface}: {r.get('error')}")
     return res
