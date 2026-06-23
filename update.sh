@@ -161,8 +161,11 @@ if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml"
     # prebuilt-image deployment (default) → just pull the newest image + recreate (no restaging)
     if confirm "Pull the latest image for $(col_l "docker ($prof)")?"; then
       info "pulling latest image + recreating ($DOCKER_DIR)"
-      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d)"; note "docker ($prof): would pull + recreate"
-      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" pull && $COMPOSE --profile "$prof" up -d ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
+      if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof pull && $COMPOSE --profile $prof up -d --force-recreate)"; note "docker ($prof): would pull + recreate"
+      # --force-recreate: after `pull` updates :latest, a plain `up -d` may just (re)start the EXISTING
+      # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old
+      # version until a 2nd run. Forcing recreation guarantees it runs the freshly-pulled image.
+      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" pull && $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
     else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi
   fi
 fi
