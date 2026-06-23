@@ -143,8 +143,8 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 .dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown)}
 .dot.live{background:var(--online);animation:pulse 2.6s infinite}
 .dot.stale{background:var(--unknown)}
-.tport{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line-solid);
-  border-radius:5px;padding:2px 6px;margin-left:2px}
+.tport{display:inline-flex;align-items:center;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line-solid);
+  border-radius:99px;padding:3px 9px;margin-left:2px}   /* pill, matching the "reporting" / issues badges in the header */
 /* https transport gets a thin light-blue accent */
 .tport.baremetal{color:#7DC4F0;border-color:rgba(125,196,240,.4);background:rgba(125,196,240,.08)}
 .tport.docker{color:#A974F2;border-color:rgba(169,116,242,.45);background:rgba(169,116,242,.1)}

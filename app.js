@@ -1519,7 +1519,6 @@ function trackIfaceOps() {
 }
 function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
 function EditIfaceSheet({ node, iface }) {
-  useStore();   // re-render on Store.apply so the footer can swap a clicked button for its live action tag
   const meta = Store.ifaceMeta(node, iface) || {};
   const ep = meta.endpoint || "";
   const epHost = ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep;
@@ -1542,7 +1541,6 @@ function EditIfaceSheet({ node, iface }) {
   const istopped = !!ist.stopped;            // operator stopped it (not a failure)
   const idown = !istopped && ist.down;       // genuinely down
   const notup = !!idown || istopped;         // either way: Save brings it up; footer offers Start
-  const op = Store.ifaceOp[node + "|" + iface];   // start/stop/restart in flight → the clicked button shows its action tag
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
     const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan };
@@ -1572,11 +1570,9 @@ function EditIfaceSheet({ node, iface }) {
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button>
-      ${op && op.phase === "busy"
-        ? html`<span class="tg-busy" style="margin-left:8px"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>`
-        : html`<${Fragment}>${op && op.phase === "ok" ? html`<span class="tg-ok" style="margin-left:8px"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${IFOP_FAIL[op.verb] || "failed"} msg=${op.err || "the action failed on the node"} title="Action failed on the node"/>` : null}${notup
-          ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> Start service</button>`
-          : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => startOrRestartIface(node, iface, "stop")}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => startOrRestartIface(node, iface, "restart")}><${Ic} i="refresh"/> Restart service</button><//>`}<//>`}
+      ${notup
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
+        : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
       <div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections.</div>
@@ -3515,17 +3511,12 @@ function EditPeerSheet({ peer, focus, done, flash }) {
       back: () => openEditPeer(peer, focus, done),   // cancel/esc returns to the edit modal
       body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
       onConfirm: () => {
-        const ekey = "peer:" + peer.id;
-        // open the edit modal RIGHT AWAY (replaces this confirm — go() sees the modal changed and
-        // won't close it, so no flicker) showing the orange "Rotating keys…" flash; rotate in the
-        // background, then replace it with the result.
-        openEditPeer(peer, focus, done, { k: "warn", t: "Rotating keys…" });
+        // the user did the action they came for → return to the previous screen; report the result via a toast.
+        done();
         rotatePeerKeys(peer).then(async () => {
           await Store.poll();
-          const fresh = Store.recon.peers.find(x => x.id === peer.id) || peer;
-          const re = Store.rowErrors[ekey];
-          openEditPeer(fresh, focus, done, re ? { k: "err", t: re.msg || "Rotate failed." }
-            : { k: "ok", t: "Keys rotated — send the user the new QR / config; the old one no longer works." });
+          const re = Store.rowErrors["peer:" + peer.id];
+          toast(re ? (re.msg || "Rotate failed.") : "Keys rotated — send the user the new QR / config; the old one no longer works.", re ? "err" : "ok");
         });
       } });
   };
