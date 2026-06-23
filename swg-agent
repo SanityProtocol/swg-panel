@@ -578,6 +578,33 @@ def op_restart_iface(cfg, req):
     return {"iface": iface, "restarted": True}
 
 
+def op_stop_iface(cfg, req):
+    """Stop a managed interface and keep it down: <tool>-quick down + disable its unit (so it doesn't
+    come back on reboot). The .conf is KEPT — op_start_iface brings it back. Best-effort down."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)             # raises if it isn't managed here
+    tool = (ic.get("cmd") or ["awg"])[0]
+    with contextlib.suppress(Exception):
+        run([tool + "-quick", "down", iface])
+    with contextlib.suppress(Exception):
+        run(["systemctl", "disable", f"{tool}-quick@{iface}"], check=False)
+    return {"iface": iface, "stopped": True}
+
+
+def op_start_iface(cfg, req):
+    """Start a stopped interface: <tool>-quick up + re-enable its unit. Re-raises an up failure."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)             # raises if it isn't managed here
+    tool = (ic.get("cmd") or ["awg"])[0]
+    try:
+        run([tool + "-quick", "up", iface])
+    except Exception as e:
+        raise AgentError("up_failed", f"{tool}-quick up {iface} failed: {e}")
+    with contextlib.suppress(Exception):
+        run(["systemctl", "enable", f"{tool}-quick@{iface}"], check=False)
+    return {"iface": iface, "started": True}
+
+
 def op_restore_iface_key(cfg, req):
     """Revert an interface to its blessed identity from the node's on-disk backup: rewrite the conf's
     [Interface] PrivateKey (+ Address + ListenPort), then bounce so the original server key is live."""
@@ -618,6 +645,7 @@ def respond(ok, op, data=None, error=None, code=None):
 READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
 WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface,
              "create-iface": op_create_iface, "delete-iface": op_delete_iface, "restart-iface": op_restart_iface,
+             "stop-iface": op_stop_iface, "start-iface": op_start_iface,
              "restore-iface-key": op_restore_iface_key}
 
 

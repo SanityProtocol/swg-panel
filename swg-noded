@@ -854,6 +854,34 @@ def restart_ifaces(node_cfg, restart, agent, sudo):
     return res
 
 
+def stop_ifaces(node_cfg, stop, agent, sudo):
+    """Stop panel-requested interfaces (down + disable, conf kept) — they stay down until started again."""
+    res = {"stopped": [], "errors": []}
+    for iface in (stop or []):
+        if iface not in (node_cfg.get("interfaces") or {}):
+            continue
+        r = run_agent(agent, sudo, {"op": "stop-iface", "iface": iface})
+        if r.get("ok"):
+            res["stopped"].append(iface)
+        else:
+            res["errors"].append(f"{iface}: {r.get('error')}")
+    return res
+
+
+def start_ifaces(node_cfg, start, agent, sudo):
+    """Start panel-requested interfaces (up + enable)."""
+    res = {"started": [], "errors": []}
+    for iface in (start or []):
+        if iface not in (node_cfg.get("interfaces") or {}):
+            continue
+        r = run_agent(agent, sudo, {"op": "start-iface", "iface": iface})
+        if r.get("ok"):
+            res["started"].append(iface)
+        else:
+            res["errors"].append(f"{iface}: {r.get('error')}")
+    return res
+
+
 def apply_iface_keys(node_cfg, iface_key, agent, sudo):
     """Panel keypair requests per interface: 'rebaseline' overwrites the on-disk backup from the live
     conf (after an Adopt); 'restore' re-keys the interface from that backup + bounces it (a Restore)."""
@@ -1208,14 +1236,19 @@ def _dturn_attach_running(tps):
         if t.get("service"):
             svc = t["service"]
             t["running"] = _turn_cname(svc) in _DTURN_RUN["set"]
-            failed = (svc in _TURN_FAILED) and not t["running"]
+            stopped = bool(t.get("stopped"))
+            failed = (svc in _TURN_FAILED) and not t["running"] and not stopped
             t["failed"] = failed
-            # docker: any not-running, not-failed proxy is mid/pending install → "installing" (never a bare "down")
-            t["installing"] = (svc in _TURN_INSTALLING) or (not t["running"] and not failed)
+            # docker: any not-running, not-failed proxy is mid/pending install → "installing" (never a bare "down");
+            # a 'stopped' one is intentionally down → neither installing nor failed.
+            t["installing"] = (not stopped) and ((svc in _TURN_INSTALLING) or (not t["running"] and not failed))
 
 def _dturn_ensure(tp):   # make the container match the record entry (download binary if missing, run if not up)
     svc = tp.get("service")
     if not svc:
+        return
+    if tp.get("stopped"):   # intentionally stopped from the panel → don't auto-(re)start it
+        _TURN_INSTALLING.discard(svc)
         return
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
     if (r.stdout or "").strip() == "true":
@@ -1442,6 +1475,25 @@ def apply_turn(turn, turn_onboard):
                         fail(svc, "turn-proxy not in the node record"); continue
                     tp["title"] = (req.get("title") or "").strip(); rec[svc] = tp; changed = True
                     good(svc, "title:" + svc); continue
+                if act == "stop":             # stop + remove the container; the 'stopped' flag keeps the bg reconcile from restarting it
+                    tp = rec.get(svc)
+                    if not tp:
+                        fail(svc, "turn-proxy not in the node record"); continue
+                    run(["docker", "rm", "-f", _turn_cname(svc)])
+                    tp["stopped"] = True; rec[svc] = tp; changed = True
+                    _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None); NODE_PROGRESS.pop(svc, None)
+                    good(svc, "stop:" + svc); continue
+                if act == "start":            # clear 'stopped' + (re)create the container
+                    tp = rec.get(svc)
+                    if not tp:
+                        fail(svc, "turn-proxy not in the node record"); continue
+                    tp.pop("stopped", None); rec[svc] = tp; changed = True
+                    r = _dturn_run(tp)
+                    if r.returncode != 0:
+                        _TURN_FAILED.add(svc); fail(svc, (r.stderr or "container start failed").strip()[:120]); continue
+                    verr = _dturn_verify(svc)
+                    fail(svc, verr) if verr else good(svc, "start:" + svc)
+                    continue
                 tp = rec.get(svc)
                 if not tp:
                     fail(svc, "turn-proxy not in the node record"); continue
@@ -1513,6 +1565,23 @@ def apply_turn(turn, turn_onboard):
                     fail(svc, "turn-proxy not in the node record"); continue
                 tp["title"] = (req.get("title") or "").strip(); rec[svc] = tp; changed = True
                 good(svc, "title:" + svc); continue
+            if act == "stop":                 # stop + disable the unit; 'stopped' flag distinguishes it from a crash
+                tp = rec.get(svc)
+                if not tp:
+                    fail(svc, "turn-proxy not in the node record"); continue
+                host_sh("systemctl disable --now " + shlex.quote(svc) + " >/dev/null 2>&1; systemctl stop " + shlex.quote(svc) + " >/dev/null 2>&1; true")
+                tp["stopped"] = True; rec[svc] = tp; changed = True; good(svc, "stop:" + svc); continue
+            if act == "start":                # re-enable + start the unit
+                tp = rec.get(svc)
+                if not tp:
+                    fail(svc, "turn-proxy not in the node record"); continue
+                w = host_sh("systemctl enable --now " + shlex.quote(svc))
+                if w.returncode != 0:
+                    fail(svc, (w.stderr or "start failed").strip()[:120]); continue
+                tp.pop("stopped", None); rec[svc] = tp; changed = True
+                verr = _turn_verify(svc)
+                fail(svc, verr) if verr else good(svc, "start:" + svc)
+                continue
             unit = host_sh("cat " + shlex.quote(up) + " 2>/dev/null").stdout
             if not unit:
                 fail(svc, "unit not found on the node"); continue
@@ -1633,18 +1702,22 @@ def main():
                 r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)   # set-iface: write the new listen-port to the conf FIRST
                 rs = restart_ifaces(node_cfg, reply.get("restart"), agent, sudo)   # THEN bounce — a restart picks up the just-written conf (e.g. a changed port)
+                sp = stop_ifaces(node_cfg, reply.get("iface_stop"), agent, sudo)    # stop (down + disable) / start (up + enable) on request
+                sa = start_ifaces(node_cfg, reply.get("iface_start"), agent, sudo)
                 ik = apply_iface_keys(node_cfg, reply.get("iface_key"), agent, sudo)   # keypair restore/rebaseline from the on-disk backup
                 eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name
-                for blk in (cr, dl, ob, rs):
+                for blk in (cr, dl, ob, rs, sp, sa):
                     for e in blk["errors"]:
                         k, _, m = e.partition(": ")
                         NODE_ERRORS[k] = m or e
-                for k in (cr.get("created", []) + dl.get("deleted", []) + ob.get("added", []) + rs.get("restarted", [])):
+                for k in (cr.get("created", []) + dl.get("deleted", []) + ob.get("added", [])
+                          + rs.get("restarted", []) + sp.get("stopped", []) + sa.get("started", [])):
                     NODE_ERRORS.pop(k, None)
                 # prune errors for requests the panel has since cleared (iface + turn)
                 active = (set(reply.get("create") or {}) | set(reply.get("onboard") or {})
                           | set(reply.get("delete") or []) | set(reply.get("restart") or []) | set(reply.get("turn") or {})
+                          | set(reply.get("iface_stop") or []) | set(reply.get("iface_start") or [])
                           | set(reply.get("turn_onboard") or []))
                 for k in list(NODE_ERRORS):
                     if k not in active:

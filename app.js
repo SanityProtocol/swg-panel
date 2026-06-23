@@ -136,6 +136,8 @@ const ICON = {
   refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>',
   err: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></svg>',
   download: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>',
+  play: '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M7 4l13 8-13 8z"/></svg>',
+  stop: '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
   plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
   server: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="7" rx="1.6"/><rect x="3" y="13" width="18" height="7" rx="1.6"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>',
   network: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="19" r="2.2"/><circle cx="19" cy="19" r="2.2"/><path d="M12 7.2v3.3M12 10.5 6.2 17M12 10.5 17.8 17"/></svg>',
@@ -311,6 +313,8 @@ const api = {
   ifaceCancel(b) { return this.post("/api/iface/cancel", b); },
   ifaceDelete(b) { return this.post("/api/iface/delete", b); },
   ifaceRestart(b) { return this.post("/api/iface/restart", b); },   // bounce the iface service on the node
+  ifaceStop(b) { return this.post("/api/iface/stop", b); },         // stop (down + disable) the iface
+  ifaceStart(b) { return this.post("/api/iface/start", b); },       // start (up + enable) the iface
   ifaceAdopt(b) { return this.post("/api/iface/adopt", b); },     // drift: pull the node's server-edited value
   ifaceRestore(b) { return this.post("/api/iface/restore", b); }, // drift: re-assert the panel's value
   turnManage(b) { return this.post("/api/turn/manage", b); },     // edit listen/connect (+ wrap key)
@@ -318,6 +322,8 @@ const api = {
   turnRotate(b) { return this.post("/api/turn/rotate", b); },     // regenerate the wrap key
   turnDelete(b) { return this.post("/api/turn/delete", b); },         // stop + remove the service
   turnRestart(b) { return this.post("/api/turn/restart", b); },       // restart the service
+  turnStop(b) { return this.post("/api/turn/stop", b); },             // stop the service (kept down, survives reconcile)
+  turnStart(b) { return this.post("/api/turn/start", b); },           // start a stopped service
   turnReinstall(b) { return this.post("/api/turn/reinstall", b); },   // re-download the binary (fix a failed install / update) + (re)start
   turnInstall(b) { return this.post("/api/turn/install", b); },       // install a new turn-proxy (download + unit)
   turnOnboard(b) { return this.post("/api/turn/onboard", b); },       // adopt a host .service by path
@@ -433,12 +439,13 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const prog = (nrec.cmd_progress || {})[tp.service];   // node "what's happening now" (slow GitHub download / retry) → yellow note
   const installing = !!tp.installing;
   const failed = !!tp.failed;
-  const down = tp.running === false && !installing && !failed;   // bare-metal not-running (docker not-running is always installing/failed)
+  const stopped = !!tp.stopped;   // intentionally stopped from the panel (kept down)
+  const down = tp.running === false && !installing && !failed && !stopped;   // bare-metal not-running (docker not-running is always installing/failed)
   const converting = (nrec.proc_status || "").startsWith("converting");   // node is mid bare↔docker convert → every card "converting"
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
-  const dim = converting || nodeStale(node) || (!justRestarted && (pend || installing || failed || down || err));   // attention / node gone dark → dim
+  const dim = converting || nodeStale(node) || (!justRestarted && (pend || installing || failed || down || stopped || err));   // attention / node gone dark → dim
   return html`<div class=${"ifcard tp" + (nrec.turn_manage && !converting ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage && !converting ? () => openTurnManage(node, tp) : null}>
     <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${converting
       ? html`<span class="tg tg-busy" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>`
@@ -447,6 +454,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
       : installing ? html`${prog ? html`<${CmdErr} err=${prog} cls="warn" title="Installing on the node"/>` : null}<span class=${"tg tg-busy" + (prog ? " warn" : "")} title=${prog || "Downloading the binary and starting the container on the node"}><${Ic} i="clock"/>installing</span>`
       : failed ? html`<${CmdErr} err=${err || "the install failed on the node"}/><span class="tg tg-busy del"><${Ic} i="warn"/>install failed</span>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
+      : stopped ? html`<span class="tg muted" title="Stopped from the panel — open to Start it"><${Ic} i="stop"/>stopped</span>`
       : html`${down ? html`<${CmdErr} err=${err || "service is not running on the node"}/><span class="tg tg-busy del">down</span>` : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}`}</div>
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">Binary (fork)</span><span class="r">${turnFork(tp.service)}</span></div>
@@ -1418,6 +1426,21 @@ async function restartIface(node, iface) {   // legacy callers (e.g. Save auto-r
   if (!r.ok) return toast(r.error || "Failed to request restart.", "err");
   await Store.poll();
 }
+async function stopIface(node, iface) {
+  const r = await api.ifaceStop({ node, iface });
+  if (!r.ok) return toast(r.error || "Failed to stop.", "err");
+  await Store.poll(); toast("Stop requested — applies on the node's next sync.", "ok");
+}
+async function startIface(node, iface) {
+  const r = await api.ifaceStart({ node, iface });
+  if (!r.ok) return toast(r.error || "Failed to start.", "err");
+  await Store.poll(); toast("Start requested — applies on the node's next sync.", "ok");
+}
+async function restartIfaceToast(node, iface) {
+  const r = await api.ifaceRestart({ node, iface });
+  if (!r.ok) return toast(r.error || "Failed to restart.", "err");
+  await Store.poll(); toast("Restart requested — applies on the node's next sync.", "ok");
+}
 // start/restart with an inline progress lifecycle on the interface card: busy tag (button hidden)
 // → green "started/restarted" 5s or red "failed" 10s (button back). verb = "start" (down) | "restart".
 async function startOrRestartIface(node, iface, verb) {
@@ -1511,7 +1534,12 @@ function EditIfaceSheet({ node, iface }) {
     doSave();
   };
   return html`<${Sheet} title=${"Edit interface · " + iface}
-    foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete interface</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button>
+      ${idown
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { startIface(node, iface); closeModal(); }}><${Ic} i="play"/> Start service</button>`
+        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { stopIface(node, iface); closeModal(); }}><${Ic} i="stop"/> Stop service</button>`}
+      <button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { restartIfaceToast(node, iface); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
       <div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections.</div>
       <div>You will need to re-distribute the configs / QR codes.</div>
@@ -1587,6 +1615,7 @@ function TurnManageSheet({ node, tp }) {
   const installed = tp.version || "";
   const installing = !!tp.installing;
   const failed = !!tp.failed;
+  const stopped = !!tp.stopped;
   const down = tp.running === false;
   const owner = turnOwner(svc);
   const [verChk, setVerChk] = useState(null);   // null | {checking} | {latest} | {err}
@@ -1640,9 +1669,16 @@ function TurnManageSheet({ node, tp }) {
   return html`<${Sheet} title=${turnSheetTitle(turnFork(svc), title)}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
-      ${tp.running !== false && !installing && !failed
-        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Restart the service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>`
-        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy || installing} title=${installing ? "Installing…" : "Re-download the binary and start the service on the node"} onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
+      ${stopped
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Start the service on the node" onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> Start service</button>`
+        : installing
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${true} title="Installing…"><${Ic} i="refresh"/> Reinstall service</button>`
+        : (tp.running !== false && !failed)
+        ? html`<${Fragment}>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Stop the service on the node (stays down until started)" onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> Stop service</button>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Restart the service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>
+          <//>`
+        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Re-download the binary and start the service on the node" onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
       <button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
     <div class="iface-intro">
@@ -1749,6 +1785,16 @@ async function restartTurn(node, service) {
   const r = await api.turnRestart({ node, service });
   if (!r.ok) return toast(r.error || "Failed to restart.", "err");
   await Store.poll(); toast("Restart requested — applies on the node's next sync.", "ok");
+}
+async function stopTurn(node, service) {
+  const r = await api.turnStop({ node, service });
+  if (!r.ok) return toast(r.error || "Failed to stop.", "err");
+  await Store.poll(); toast("Stop requested — applies on the node's next sync.", "ok");
+}
+async function startTurn(node, service) {
+  const r = await api.turnStart({ node, service });
+  if (!r.ok) return toast(r.error || "Failed to start.", "err");
+  await Store.poll(); toast("Start requested — applies on the node's next sync.", "ok");
 }
 function openSetupTurn(node) { openModal(html`<${SetupTurnSheet} node=${node}/>`); }
 function SetupTurnSheet({ node }) {

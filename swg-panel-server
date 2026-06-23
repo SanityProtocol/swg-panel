@@ -982,6 +982,8 @@ def api(method, path, qs, body, deps):
                                      for k, v in (c.get("create") or {}).items()},
                         "deleting": sorted((c.get("delete") or {}).keys()),         # ifaces being torn down
                         "restarting": sorted((c.get("restart") or {}).keys()),      # ifaces being bounced
+                        "stopping": sorted((c.get("iface_stop") or {}).keys()),     # ifaces being stopped (down + disable)
+                        "starting": sorted((c.get("iface_start") or {}).keys()),    # ifaces being started (up + enable)
                         "retiring": sorted({pk for ifa in (c.get("retire") or {}).values() for pk in ifa}),  # pubkeys being dropped (rotation/delete in flight)
                         "turn_pending": {k: (v.get("action") or "manage")           # turn service → pending action
                                          for k, v in (c.get("turn") or {}).items()},
@@ -1746,7 +1748,7 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Installing turn-proxy", svc)
         return 200, {"ok": True, "data": {"node": nid, "service": svc}}
 
-    if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete", "/api/turn/restart", "/api/turn/reinstall"):
+    if method == "POST" and path in ("/api/turn/manage", "/api/turn/rotate", "/api/turn/delete", "/api/turn/restart", "/api/turn/reinstall", "/api/turn/stop", "/api/turn/start"):
         # The node pulls these on its next sync, rewrites the unit's ExecStart / regenerates the wrap
         # key / removes it, restarts, and reports the new state (which clears the request).
         nid = body.get("node") or ""; svc = (body.get("service") or "").strip()
@@ -1768,6 +1770,10 @@ def api(method, path, qs, body, deps):
             req = {"action": "rotate", "at": now()}; verb = "Rotating turn-proxy key"
         elif path.endswith("/restart"):
             req = {"action": "restart", "at": now()}; verb = "Restarting turn-proxy"
+        elif path.endswith("/stop"):
+            req = {"action": "stop", "at": now()}; verb = "Stopping turn-proxy"
+        elif path.endswith("/start"):
+            req = {"action": "start", "at": now()}; verb = "Starting turn-proxy"
         elif path.endswith("/reinstall"):
             req = {"action": "reinstall", "at": now()}; verb = "Reinstalling turn-proxy"
             if (body.get("owner") or "").strip():   # repo to re-fetch the binary from (UI maps fork → owner)
@@ -1835,6 +1841,22 @@ def api(method, path, qs, body, deps):
         nodes[nid].setdefault("restart", {})[iface] = int(time.time())   # node bounces it on its next sync
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Restarting interface", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
+    if method == "POST" and path in ("/api/iface/stop", "/api/iface/start"):
+        # Stop (down + disable, conf kept) or start (up + enable) the interface's service on the node.
+        nid = body.get("node") or ""
+        iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        if not iface:
+            return 400, {"ok": False, "error": "interface name is required", "code": "bad_request"}
+        stopping = path.endswith("/stop")
+        key, other = ("iface_stop", "iface_start") if stopping else ("iface_start", "iface_stop")
+        (nodes[nid].get(other) or {}).pop(iface, None)        # a new stop cancels a pending start (and vice-versa)
+        nodes[nid].setdefault(key, {})[iface] = int(time.time())
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Stopping interface" if stopping else "Starting interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
     if method == "POST" and path == "/api/iface/delete":
@@ -2291,6 +2313,26 @@ class Handler(BaseHTTPRequestHandler):
                     node.pop("restart", None)
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
+        # close STOP / START requests once the snapshot reflects the new state (down / up), else after a grace
+        ifsnap = snap.get("interfaces") or {}
+        now_t = int(time.time())
+        for key, want_down in (("iface_stop", True), ("iface_start", False)):
+            reqd = node.get(key) or {}
+            if not reqd:
+                continue
+            kept = {}
+            for ifc, at in reqd.items():
+                e = ifsnap.get(ifc)
+                reflected = e is not None and bool(e.get("down")) == want_down
+                if not reflected and (now_t - (at or 0)) < 30:
+                    kept[ifc] = at
+            if kept != reqd:
+                if kept:
+                    node[key] = kept
+                else:
+                    node.pop(key, None)
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         # close IFACE_KEY requests after a grace — a rebaseline is a backup-file write (no snapshot effect)
         # and a restore re-keys + restarts within a sync cycle; the public_key drift clears on its own.
         ik = node.get("iface_key") or {}
@@ -2322,6 +2364,10 @@ class Handler(BaseHTTPRequestHandler):
                             and ("connect" not in req or tp.get("connect") == req["connect"]) and age > 5) or age > 60
                 elif act == "title":                # clears once the node's record shows the new title
                     done = (tp is not None and tp.get("title", "") == req.get("title", "")) or age > 30
+                elif act == "stop":                 # clears once the node reports it stopped (or it's gone)
+                    done = (tp is not None and tp.get("stopped")) or (svc not in tps) or age > 30
+                elif act == "start":                # clears once it's running again (not stopped)
+                    done = (tp is not None and tp.get("running") and not tp.get("stopped")) or age > 60
                 else:   # rotate — panel can't see the new key; give the node time to regen + restart
                     done = age > 12
                 if done:
@@ -2342,6 +2388,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
                                 "delete": list((node.get("delete") or {}).keys()),
                                 "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
+                                "iface_stop": list((node.get("iface_stop") or {}).keys()),    # interfaces to stop (down + disable)
+                                "iface_start": list((node.get("iface_start") or {}).keys()),  # interfaces to start (up + enable)
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
                                 "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
