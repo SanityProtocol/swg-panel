@@ -1015,6 +1015,7 @@ EOF
 # file. swg-update.path watches the trigger and starts swg-update.service, which runs in its OWN
 # cgroup so 'systemctl restart swg-panel-server' mid-update can't kill it. swg programs only.
 mk_update_unit(){
+  [ -n "${_UPDATE_UNIT_DONE:-}" ] && return 0; _UPDATE_UNIT_DONE=1   # write_panel_unit runs twice (placeholder→real cert); the TLS-independent self-update units only need writing once
   writef /usr/local/bin/swg-update 755 <<'WRAP'
 #!/usr/bin/env bash
 # swg-update — fixed root entrypoint for one-click in-place update (panel + co-located node).
