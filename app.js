@@ -1195,14 +1195,17 @@ function NodeDetail({ node: rawName }) {
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}
         actions=${html`<${Fragment}>${nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load new interface</button><//>`}>
       ${(() => {
-        // creating ifaces know their protocol → real wg/awg tag; onboarding doesn't yet → "load". `data`
-        // (client-optimistic) carries the values just entered, so the pending card shows them right away.
-        const pcard = (ifn, label, type, data) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
+        // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
+        const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
           <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-warn"><${Ic} i="clock"/>${label}</span></div>
+          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it…</span><button class="btn btn-mini warn" title="Drop this pending request" onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>Cancel</button></div><${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
+        // client-optimistic create: the FULL card with the values just entered, dimmed + "creating" + × in the
+        // header — identical layout to the turn-proxy optimistic card. Shown until the node reports the iface.
+        const optIfCard = (ifn, e) => html`<div class="ifcard down" key=${"new:" + ifn}>
+          <div class="ifcard-top"><span class=${"iftype " + (e.type || "turn")}>${e.type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><${StatusTag} cls="tg-busy" icon="clock" label=${e.type ? "creating" : "onboarding"} title="Creating on the node"/><button class="xbtn" title="Cancel this request" onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}><${Ic} i="x"/></button></div>
           <div class="ifcard-rows">
-            ${data && (data.endpoint || data.port) ? html`<div class="ifrow"><span class="l">Listen</span><span class="r addr">${(data.endpoint || "") + (data.port ? ":" + data.port : "") || "—"}</span></div>` : null}
-            ${data && data.subnet ? html`<div class="ifrow"><span class="l">Subnet</span><span class="r addr">${data.subnet}</span></div>` : null}
-            <div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it…</span><button class="btn btn-mini warn" title="Drop this pending request" onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}>Cancel</button></div>
+            ${(e.endpoint || e.port) ? html`<div class="ifrow"><span class="l">Listen</span><span class="r addr">${(e.endpoint || "") + (e.port ? ":" + e.port : "") || "—"}</span></div>` : null}
+            ${e.subnet ? html`<div class="ifrow"><span class="l">Subnet</span><span class="r addr">${e.subnet}</span></div>` : null}
             <${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
         const _pfx = name + "|";
         // drop a client-optimistic entry only once the node REPORTS the iface (meta), or it's gone stale —
@@ -1217,7 +1220,7 @@ function NodeDetail({ node: rawName }) {
         const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn));
         const cr = nrec.creating || {};   // { iface: "wg" | "awg" } — server-side, deduped against the client cards
         const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn));
-        const optCards = optNames.filter(ifn => !(meta && meta[ifn])).map(ifn => { const e = Store.ifaceNew[_pfx + ifn]; return pcard(ifn, e.type ? "creating" : "onboarding", e.type, e); });
+        const optCards = optNames.filter(ifn => !(meta && meta[ifn])).map(ifn => optIfCard(ifn, Store.ifaceNew[_pfx + ifn]));
         const pending = pendOn.concat(pendCr, optNames);
         const pcards = pendOn.map(ifn => pcard(ifn, "onboarding", null))
           .concat(pendCr.map(ifn => pcard(ifn, "creating", cr[ifn])))
