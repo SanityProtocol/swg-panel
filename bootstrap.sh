@@ -26,13 +26,13 @@ cd / 2>/dev/null || cd "${TMPDIR:-/tmp}" 2>/dev/null || true
 REPO="${SWG_REPO:-https://github.com/SanityProtocol/swg-panel}"
 REF="${SWG_REF:-main}"
 
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; else BOLD=""; RESET=""; C_BLUE=""; fi
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'; C_RED=$'\033[31m'; else BOLD=""; RESET=""; C_BLUE=""; C_BL=""; C_BROWN=""; C_RED=""; fi
 b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 col(){ local c="$1"; shift; printf '%s%s%s' "$c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
-die(){ echo "error: $*" >&2; exit 1; }
-warn(){ echo "$(b "! $*")" >&2; }
-info(){ echo ":: $*"; }
+die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }            # universal flags: :: blue, ! brown, ✗ red
+warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
+info(){ echo "${C_BL}::${RESET} $*"; }
 # ask_choice <prompt> <default> <var> "<opt…>" — accepts a full option OR its first-letter shortcut;
 # shows the default's letter as [x]; friendly re-prompt on bad input.
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr

@@ -69,9 +69,10 @@ ARGS=("$@"); for a in "${ARGS[@]+"${ARGS[@]}"}"; do [ "$a" = "--dry-run" ] && DR
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 
 c(){ printf '\033[%sm' "$1"; }
-info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }   # every ▸ line is bold (matches bare-metal)
+info(){ echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
+sub(){  echo "${C_BL}::${RESET} $*"; }                    # :: blue sub-item / progress detail
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
-warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
+warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
@@ -87,8 +88,8 @@ ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (de
 rand_pw(){ head -c12 /dev/urandom | base64 | tr -d '/+=' | head -c16; }
 
 # ── styling shared with the bare-metal installers (same palette + bold ▸ headers) ──
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_GREY=$'\033[90m'; C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'
-else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C_YEL=""; fi
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_BLUE=$'\033[38;5;39m'; C_GREEN=$'\033[32m'; C_GREY=$'\033[90m'; C_CYAN=$'\033[36m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'
+else BOLD=""; RESET=""; C_BLUE=""; C_GREEN=""; C_GREY=""; C_CYAN=""; C_RED=""; C_YEL=""; C_BL=""; C_BROWN=""; fi
 b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 bb(){ printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (handoff URL / login)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }

@@ -42,11 +42,12 @@ if ! $DRYRUN; then
   { [ -n "${LC_FILE:-}" ] || [ -n "${LC_TOKEN:-}" ]; } && lc_init update lc_emit_upd
 fi
 
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_CYAN=$'\033[36m'; C_GREEN=$'\033[32m'; C_YEL=$'\033[33m'; C_RED=$'\033[31m'; C_BLUE=$'\033[38;5;39m'
-else BOLD=""; RESET=""; C_CYAN=""; C_GREEN=""; C_YEL=""; C_RED=""; C_BLUE=""; fi
-info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_CYAN=$'\033[36m'; C_GREEN=$'\033[32m'; C_YEL=$'\033[33m'; C_RED=$'\033[31m'; C_BLUE=$'\033[38;5;39m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'
+else BOLD=""; RESET=""; C_CYAN=""; C_GREEN=""; C_YEL=""; C_RED=""; C_BLUE=""; C_BL=""; C_BROWN=""; fi
+info(){ echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
+sub(){  echo "${C_BL}::${RESET} $*"; }                    # :: blue sub-item / progress detail
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
-warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
+warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }

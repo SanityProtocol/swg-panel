@@ -12,9 +12,10 @@ DRYRUN=false; ASSUME_YES=false
 for a in "$@"; do case "$a" in --dry-run) DRYRUN=true;; -y|--yes) ASSUME_YES=true;; esac; done
 
 c(){ printf '\033[%sm' "$1"; }
-info(){ echo "$(c '0;36')▸$(c 0) $*"; }
+info(){ echo "$(c '38;5;39')▸$(c 0) $*"; }   # universal flags: ▸ light-blue, :: blue, ✓ green, ! brown, ✗ red
+sub(){  echo "$(c '38;5;33')::$(c 0) $*"; }
 ok(){   echo "$(c '0;32')✓$(c 0) $*"; }
-warn(){ echo "$(c '0;33')!$(c 0) $*" >&2; }
+warn(){ echo "$(c '38;5;130')!$(c 0) $*" >&2; }
 die(){  echo "$(c '0;31')✗ $*$(c 0)" >&2; exit 1; }
 b(){ printf '\033[1m%s\033[0m' "$*"; }
 run(){ if $DRYRUN; then echo "    [dry] $*"; else "$@"; fi; }

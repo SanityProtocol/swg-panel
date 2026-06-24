@@ -14,12 +14,15 @@ set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers (dl_turn_bin + validators)
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then C_BLUE=$'\033[38;5;39m'; C_YEL=$'\033[33m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; RESET=$'\033[0m'; BOLD=$'\033[1m'
-else C_BLUE=""; C_YEL=""; C_RED=""; C_GREEN=""; RESET=""; BOLD=""; fi
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then C_BLUE=$'\033[38;5;39m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; RESET=$'\033[0m'; BOLD=$'\033[1m'
+else C_BLUE=""; C_BL=""; C_BROWN=""; C_RED=""; C_GREEN=""; RESET=""; BOLD=""; fi
 b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
-info(){ echo "${C_BLUE}::${RESET} $*"; }
-warn(){ echo "${C_YEL}!${RESET} $*" >&2; }
-die(){  echo "${C_RED}error:${RESET} $*" >&2; exit 1; }
+# universal row flags (shared across every script): ▸ light-blue action, :: blue sub-item, ✓ green, ! brown, ✗ red
+info(){ echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # bold action/step line (matches the installers)
+sub(){  echo "${C_BL}::${RESET} $*"; }                    # indented sub-item / progress detail
+ok(){   echo "${C_GREEN}✓${RESET} $*"; }
+warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
+die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 # ── consistent list rows (green name + detail), matching the installers' summaries ──
 # iface_row <name> <proto> <conf> <endpoint> — green name, proto, endpoint:listenport, address (from the conf)
 iface_row(){ local n="$1" proto="$2" conf="$3" ep="$4" lp addr
@@ -133,7 +136,7 @@ EOF
     [ -n "$owner" ] || { warn "  $svc: no fork in the record — skipping"; continue; }
     docker rm -f "swg-turn-${svc#vk-turn-proxy-}" >/dev/null 2>&1 || true   # free the listen port BEFORE the host unit binds it
     if turn_install_host "$svc" "$owner" "$lis" "$con" "$params"; then
-      info "  migrated $(b "$svc") → host systemd"; MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"
+      sub "migrated $(b "$svc") → host systemd"; MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"
     else
       warn "  $svc: binary download failed — its unit + settings were kept, so it shows on the panel as failed; open it and press Reinstall (no re-entry needed)"
     fi
@@ -181,7 +184,7 @@ tps.append({"service": svc, "listen": lis, "connect": con, "params": (params or 
 json.dump({"turn_proxies": tps}, open(p, "w"))
 PY
     systemctl disable --now "$svc" 2>/dev/null || true; rm -f "$u"
-    info "  migrated $(b "$svc") → docker record (recreated as a container on the node's first run)"
+    sub "migrated $(b "$svc") → docker record (recreated as a container on the node's first run)"
   done
   systemctl daemon-reload 2>/dev/null || true
 }
@@ -306,7 +309,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       echo  "  Rename/remove them (or pick 'keep and re-install'), then retry." >&2
       exit 1
     fi
-    info "pre-flight OK"
+    sub "pre-flight OK"
     info "Interfaces to migrate:"; echo
     for s in $specs; do iface_row "${s%:*}" "${s#*:}" "$confd/${s%:*}.conf" "$NEP"; done
     echo
@@ -339,10 +342,10 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   for s in $specs; do nm="${s%:*}"; pr="${s#*:}"
     src="$confd/$nm.conf"
     if [ "$pr" = wg ]; then dest="/etc/wireguard/$nm.conf"; else dest="/etc/amnezia/amneziawg/$nm.conf"; fi
-    if [ -f "$dest" ]; then info "kept $(b "$nm") → $dest (already imported)"; names="${names:+$names }$nm"; continue; fi   # resume: don't re-import
+    if [ -f "$dest" ]; then sub "kept $(b "$nm") → $dest (already imported)"; names="${names:+$names }$nm"; continue; fi   # resume: don't re-import
     [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
     mkdir -p "$(dirname "$dest")"; import_bare_conf "$src" "$dest"   # adds host NAT (docker confs have none)
-    info "imported $(b "$nm") → $dest (host NAT added)"
+    sub "imported $(b "$nm") → $dest (host NAT added)"
     names="${names:+$names }$nm"
   done
   [ -n "$names" ] || die "no interface confs copied (looked in $confd)"
@@ -351,7 +354,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   if [ -d "$DOCKER_DIR/data/node/iface-keys" ]; then
     mkdir -p /var/lib/swg-noded/iface-keys
     cp -a "$DOCKER_DIR/data/node/iface-keys/." /var/lib/swg-noded/iface-keys/ 2>/dev/null || true
-    info "carried interface keypair backups → /var/lib/swg-noded/iface-keys"
+    sub "carried interface keypair backups → /var/lib/swg-noded/iface-keys"
   fi
 
   # 3) bring the node UP FIRST — hand wg/awg + the daemon to install-node.sh so it's reporting in seconds;
@@ -428,7 +431,7 @@ PY
       warn "a docker node (swg-node container) already exists here — remove it first, or pick 'keep and re-install'."; exit 1
     fi
     [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") from a previous run will be moved aside."
-    info "pre-flight OK"
+    sub "pre-flight OK"
     info "Interfaces to migrate:"; echo
     printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r _n _cf; do [ -n "$_n" ] || continue
       _pr=awg; case "$_cf" in */wireguard/*) _pr=wg;; esac; iface_row "$_n" "$_pr" "$_cf" "$NEP"; done
@@ -448,10 +451,10 @@ PY
   names=""
   while IFS="$(printf '\t')" read -r nm src; do
     [ -n "$nm" ] || continue
-    if [ -f "$confd/$nm.conf" ]; then info "kept $(b "$nm") → $confd/$nm.conf (already imported)"; names="${names:+$names }$nm"; continue; fi   # resume
+    if [ -f "$confd/$nm.conf" ]; then sub "kept $(b "$nm") → $confd/$nm.conf (already imported)"; names="${names:+$names }$nm"; continue; fi   # resume
     [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
     grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$confd/$nm.conf"; chmod 600 "$confd/$nm.conf"
-    info "imported $(b "$nm") → $confd/$nm.conf (key preserved)"
+    sub "imported $(b "$nm") → $confd/$nm.conf (key preserved)"
     names="${names:+$names }$nm"
   done <<EOF
 $ifaces
@@ -462,7 +465,7 @@ EOF
   if [ -d /var/lib/swg-noded/iface-keys ]; then
     mkdir -p "$DOCKER_DIR/data/node/iface-keys"
     cp -a /var/lib/swg-noded/iface-keys/. "$DOCKER_DIR/data/node/iface-keys/" 2>/dev/null || true
-    info "carried interface keypair backups → $DOCKER_DIR/data/node/iface-keys"
+    sub "carried interface keypair backups → $DOCKER_DIR/data/node/iface-keys"
   fi
 
   # 2) tear down the bare-metal datapath — free the wg ports + remove its units/files. NO panel
