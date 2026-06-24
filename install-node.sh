@@ -398,6 +398,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     echo "    Used $(bb "$_ep") endpoint IP for $(col "$C_GREEN" "$n")"; done
   [ "${#SELECTED[@]}" -gt 0 ] && echo
   # bring up any adopted interface whose conf is here but isn't running yet (transfer-from-docker / conversion)
+  info "Bringing up the node's interfaces (starting each one — this can take a moment for many)…"
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
     ip link show "$n" >/dev/null 2>&1 && continue          # already up → leave it
     _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools "$_c" || continue
