@@ -154,7 +154,7 @@ if [ -f /var/lib/swg-recovery ]; then
       info "resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
       exec bash "./convert.sh" "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
     fi
-    info "keeping the node on $(mlabel "$SWG_RV_FROM") — the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed on any re-install, conversion or update."
+    info "keeping the node on $(mlabel "$SWG_RV_FROM") — the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed."
     rm -f /var/lib/swg-recovery 2>/dev/null || true
   fi
 fi
