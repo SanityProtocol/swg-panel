@@ -639,6 +639,23 @@ if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
   info "Existing panel install detected — keeping your login, users, nodes + certs; your previous settings are the defaults below. To start fresh, run the uninstaller first."
 fi
 
+# RE-INSTALL: signal "re-installing" the MOMENT the script starts (before any prompt) and ARM the lifecycle
+# traps now, so an abort/failure at ANY point is reported. Emits to BOTH the panel header (host_proc file)
+# and — if this box has a local node (master) — that node's tile. A re-install always installs the latest, so
+# the terminal is "re-installed and updated".
+if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  LC_FILE="$STATE_DIR/host_proc"
+  if [ -f /etc/swg-agent/config.json ]; then   # a local node exists (master) → also drive its tile
+    LC_URL="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
+    LC_TOKEN="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
+    LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
+  fi
+  lc_emit_host(){ lc_emit_file "$1" "${2:-}"; lc_emit_post "$1" "${2:-}"; }   # host_proc + (master) the local node
+  lc_init reinstall lc_emit_host
+  LC_SUCCESS="reinstalled-updated"   # a re-install always installs the latest version
+fi
+
 # Server role — skipped when already chosen (e.g. by bootstrap.sh)
 ROLE_SEL=""
 case "$ROLE" in master|host+node) ROLE_SEL=master;; host) ROLE_SEL=host;; node) die "for a node-only box run install-node.sh, not this script";; esac
@@ -650,26 +667,6 @@ if [ -z "$ROLE_SEL" ]; then
 fi
 case "$ROLE_SEL" in master) ROLE="host+node";; host) ROLE="host";; esac
 HOST_HAS_WG=no; [ "$ROLE" = "host+node" ] && HOST_HAS_WG=yes
-
-# RE-INSTALL: signal "re-installing" NOW — right after the role step (the first prompt) — and ARM the
-# lifecycle traps here, so an abort (Ctrl-C) or failure during the REST of the prompts is reported too. Emits
-# to BOTH the panel header (host_proc file) and, for a master, the local node's tile (POST to its loopback
-# panel); lc_init's EXIT trap writes the terminal (reinstalled[-updated] / -aborted / -failed) to both.
-HOST_OLD_VER=""
-if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
-  HOST_OLD_VER="$(cat "$PANEL_DIR/VERSION" 2>/dev/null || true)"
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  LC_FILE="$STATE_DIR/host_proc"
-  if [ "$HOST_HAS_WG" = yes ] && [ -f /etc/swg-agent/config.json ]; then   # master → also drive the local node's tile
-    LC_URL="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
-    LC_TOKEN="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
-    LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
-  fi
-  lc_emit_host(){ lc_emit_file "$1" "${2:-}"; lc_emit_post "$1" "${2:-}"; }   # host_proc + (master) the local node
-  lc_init reinstall lc_emit_host
-  _nv="$(cat "$SRC/VERSION" 2>/dev/null || true)"
-  [ -n "$HOST_OLD_VER" ] && [ -n "$_nv" ] && [ "$HOST_OLD_VER" != "$_nv" ] && LC_SUCCESS="reinstalled-updated"   # version bumped → "re-installed and updated"
-fi
 
 # panel URL (may include a subpath, e.g. vpn.example.com/swg)
 step "Panel URL"
@@ -1036,8 +1033,10 @@ Unit=swg-update.service
 [Install]
 WantedBy=multi-user.target
 EOF
-  printf '' | writef "$STATE_DIR/.update-request" 660            # pre-create so PathModified arms cleanly
-  run chown "$PANEL_USER:swg" "$STATE_DIR/.update-request" 2>/dev/null || true
+  if [ ! -e "$PREFIX$STATE_DIR/.update-request" ]; then          # pre-create ONLY when missing — on a re-install
+    printf '' | writef "$STATE_DIR/.update-request" 660          # the swg-update.path unit is already watching,
+    run chown "$PANEL_USER:swg" "$STATE_DIR/.update-request" 2>/dev/null || true   # so re-touching it would fire a spurious self-update ("updated")
+  fi
   run systemctl daemon-reload
   run systemctl enable --now swg-update.path || warn "couldn't enable swg-update.path (one-click host update)"
 }

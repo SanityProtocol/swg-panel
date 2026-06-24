@@ -604,6 +604,17 @@ if [ "$EXISTING" = yes ]; then
   info "Existing node install detected — keeping your interfaces + data. Press $(b Enter) to keep each value (to start fresh, run the uninstaller first)."
 fi
 
+# RE-INSTALL: signal "re-installing" the MOMENT the script starts (before any prompt), using the stored panel
+# URL/token, and drop the keypair backups so swg-noded re-harvests. lc_init's traps emit the terminal on exit;
+# a re-install always installs the latest → "re-installed and updated". (convert.sh owns the signal mid-convert.)
+if [ "$EXISTING" = yes ] && ! $DRYRUN && [ "${SWG_CONVERT:-}" != 1 ] && [ -n "$EXIST_URL" ] && [ -n "$EXIST_TOKEN" ]; then
+  rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
+  LC_URL="$EXIST_URL"; LC_TOKEN="$EXIST_TOKEN"
+  LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
+  lc_init reinstall lc_emit_post
+  LC_SUCCESS="reinstalled-updated"
+fi
+
 # Panel connection — normally supplied by the install command's -host / -key flags; on a re-install
 # the current values are offered as defaults so you can just press Enter.
 if $DRYRUN; then ask "Panel URL (https://host[/subpath])" "$EXIST_URL" PANEL_URL
@@ -615,20 +626,8 @@ elif [ "$EXISTING" = yes ] && [ -n "$EXIST_TOKEN" ]; then NODE_TOKEN="$EXIST_TOK
 elif $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
 else ask_valid "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
 case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
-
-# RE-INSTALL: signal "re-installing" to the panel NOW — right after the connection step (the first prompt) —
-# so the node tile shows it immediately, not after all the later prompts. Also drop the keypair backups so
-# swg-noded re-harvests the current confs. lc_init's traps then emit re-installed / aborted / failed on exit.
-if [ "$EXISTING" = yes ] && ! $DRYRUN; then
-  rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
-  LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
-  if [ "${SWG_CONVERT:-}" != 1 ]; then   # convert.sh owns the signal during a conversion
-    _ov="$(cat "$NODED_DIR/VERSION" 2>/dev/null || true)"
-    lc_init reinstall lc_emit_post
-    _nv="$(cat "$SRC/VERSION" 2>/dev/null || true)"
-    [ -n "$_ov" ] && [ -n "$_nv" ] && [ "$_ov" != "$_nv" ] && LC_SUCCESS="reinstalled-updated"   # version bumped → "re-installed and updated"
-  fi
-fi
+# if the operator re-pointed the node at a different panel, the lc terminal should reach the NEW one
+[ "$EXISTING" = yes ] && [ -n "${LC_TOKEN:-}" ] && [ -n "$PANEL_URL" ] && LC_URL="$PANEL_URL"
 
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   ask_yn "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n TLS_VERIFY

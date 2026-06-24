@@ -377,6 +377,25 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   fi
 fi
 
+# RE-INSTALL: signal "re-installing" the MOMENT the script starts (before any prompt) + arm the traps. Node →
+# POST to the panel (+ re-baseline the server key); panel → flag the still-running container's host_proc. A
+# re-install installs the latest → terminal is "re-installed and updated" (a convert keeps its own op via
+# SWG_CONVERT_DIR). The box-name rename is pushed later, once ask_node_conn has it.
+if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYRUN; then
+  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
+    LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
+    case "$PANEL_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)
+      LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;; esac
+    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
+  fi
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null; LC_FILE="$INSTALL_DIR/data/lib/host_proc"
+  fi
+  _lcop="${SWG_CONVERT_DIR:-reinstall}"
+  { [ -n "${LC_TOKEN:-}" ] || [ -n "${LC_FILE:-}" ]; } && lc_init "$_lcop" lc_emit_docker
+  [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install → "re-installed and updated"
+fi
+
 # ───────────────────────── per-profile requirements ─────────────────────────
 # Compose interpolates the whole file (both services), so every referenced var must be
 # non-empty even when its service isn't in the active profile — fill sane placeholders.
@@ -803,26 +822,11 @@ esac
 TLS="${TLS:-selfsigned}"         # concrete value for .env (node profile never prompts for it)
 TLS_VERIFY="${TLS_VERIFY:-no}"   # concrete value for .env (host profile leaves it unset)
 
-# re-install: signal "re-installing" NOW — right after the connection step — so the node/panel tile shows it
-# immediately (not just before compose). Node → POST to the panel (+ re-baseline the server key); panel →
-# flag the still-running container's host_proc. lc_init's traps emit the terminal on exit; rename if changed.
-if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYRUN; then
-  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
-    LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
-    case "$PANEL_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)
-      LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;; esac
-    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
-  fi
-  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
-    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null; LC_FILE="$INSTALL_DIR/data/lib/host_proc"
-  fi
-  _lcop="${SWG_CONVERT_DIR:-reinstall}"
-  { [ -n "${LC_TOKEN:-}" ] || [ -n "${LC_FILE:-}" ]; } && lc_init "$_lcop" lc_emit_docker
-  if [ -n "$PUSH_NAME" ] && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
-    _rin=""; [ "${TLS_VERIFY:-no}" = yes ] || _rin="-k"
-    curl -fsS $_rin --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
-      --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
-  fi
+# push a box-name change once ask_node_conn has it (the signal + traps were armed at startup, above)
+if [ -n "$PUSH_NAME" ] && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ] && ! $DRYRUN; then
+  _rin=""; [ "${TLS_VERIFY:-no}" = yes ] || _rin="-k"
+  curl -fsS $_rin --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+    --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
 
 # ───────────────────────── ensure Docker ─────────────────────────
