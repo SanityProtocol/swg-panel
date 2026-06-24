@@ -650,6 +650,21 @@ fi
 case "$ROLE_SEL" in master) ROLE="host+node";; host) ROLE="host";; esac
 HOST_HAS_WG=no; [ "$ROLE" = "host+node" ] && HOST_HAS_WG=yes
 
+# RE-INSTALL: flag "re-installing" NOW — right after the role step (the first prompt) — so the panel header
+# and (for a master) the local-node tile show it during the rest of the prompts. The lc_init traps + the
+# terminal come later (at the execution boundary); this is just the early in-progress hint.
+if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
+  mkdir -p "$STATE_DIR" 2>/dev/null || true; printf 'reinstalling' > "$STATE_DIR/host_proc" 2>/dev/null || true
+  if [ "$HOST_HAS_WG" = yes ] && [ -f /etc/swg-agent/config.json ]; then
+    _eu="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
+    _et="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
+    _ev="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
+    if [ -n "$_eu" ] && [ -n "$_et" ]; then _ek=""; [ "$_ev" = yes ] || _ek="-k"
+      curl -fsS $_ek --max-time 8 -X POST -H "Authorization: Bearer $_et" -H "Content-Type: application/json" --data '{"state":"reinstalling"}' "${_eu%/}/api/node/proc-status" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
 # panel URL (may include a subpath, e.g. vpn.example.com/swg)
 step "Panel URL"
 echo

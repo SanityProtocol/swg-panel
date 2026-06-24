@@ -802,6 +802,28 @@ esac
 TLS="${TLS:-selfsigned}"         # concrete value for .env (node profile never prompts for it)
 TLS_VERIFY="${TLS_VERIFY:-no}"   # concrete value for .env (host profile leaves it unset)
 
+# re-install: signal "re-installing" NOW — right after the connection step — so the node/panel tile shows it
+# immediately (not just before compose). Node → POST to the panel (+ re-baseline the server key); panel →
+# flag the still-running container's host_proc. lc_init's traps emit the terminal on exit; rename if changed.
+if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYRUN; then
+  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
+    LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
+    case "$PANEL_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)
+      LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;; esac
+    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
+  fi
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null; LC_FILE="$INSTALL_DIR/data/lib/host_proc"
+  fi
+  _lcop="${SWG_CONVERT_DIR:-reinstall}"
+  { [ -n "${LC_TOKEN:-}" ] || [ -n "${LC_FILE:-}" ]; } && lc_init "$_lcop" lc_emit_docker
+  if [ -n "$PUSH_NAME" ] && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
+    _rin=""; [ "${TLS_VERIFY:-no}" = yes ] || _rin="-k"
+    curl -fsS $_rin --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+      --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
+  fi
+fi
+
 # ───────────────────────── ensure Docker ─────────────────────────
 info "Docker"
 if ! have docker; then
@@ -1035,31 +1057,6 @@ fi
 
 # ───────────────────────── bring it up ─────────────────────────
 # (port checks happen earlier: the panel port at the URL step, :80 at the TLS step for letsencrypt)
-# re-install: everything's staged — NOW signal, just before recreating containers (like convert.sh: when the
-# work starts, not at launch). Node → tell the panel ("re-installing" tag + server-key re-baseline) and drop
-# keypair backups so swg-noded re-harvests. Panel → flag the still-running container's host_proc so the header
-# shows it (the recreated panel clears it on boot).
-if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYRUN; then
-  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then           # node side (node + master local node)
-    LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
-    case "$PANEL_URL" in   # master: the compose name swg-panel isn't resolvable from the host — hit the published port on loopback
-      *//swg-panel|*//swg-panel/*|*//swg-panel:*)
-        LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;;
-    esac
-    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true       # re-harvest current confs / re-bless server key
-  fi
-  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then   # panel side (host + master)
-    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null; LC_FILE="$INSTALL_DIR/data/lib/host_proc"   # ./data/lib ↦ /var/lib/swg-panel
-  fi
-  # op = reinstall, OR the convert direction when convert.sh exec'd us (bare→docker) so we emit converted-docker
-  _lcop="${SWG_CONVERT_DIR:-reinstall}"
-  { [ -n "${LC_TOKEN:-}" ] || [ -n "${LC_FILE:-}" ]; } && lc_init "$_lcop" lc_emit_docker   # in-progress now; terminal on exit
-  if [ -n "$PUSH_NAME" ] && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then         # node profile: push the box-name change
-    _rin=""; [ "${TLS_VERIFY:-no}" = yes ] || _rin="-k"
-    curl -fsS $_rin --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
-      --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
-  fi
-fi
 info "Starting compose profile '$PROFILE'$($BUILD && echo ' (building from source)')"
 BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from GHCR
 # A re-install MUST refresh the prebuilt image first: compose's pull_policy is "missing", so a plain
