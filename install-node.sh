@@ -779,12 +779,11 @@ detect_turn
 if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
   for n in "${!TP_LISTEN[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"
     printf '    %s %s → %s%s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"
-    printf '        sudo nano /etc/systemd/system/%s.service\n\n' "$n"
   done
 fi
 echo
 echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)"
-echo "  Edit      interfaces in $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)  ·  daemon $(b /etc/swg-agent/config.json)"
+echo "  Edit      interfaces in $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)  ·  turn-proxies in $(b /etc/systemd/system/)  ·  daemon $(b /etc/swg-agent/config.json)"
 echo "  Logs      $(b 'journalctl -u swg-noded -f')  ·  turns green in the panel's Nodes screen in ~${INTERVAL}s"
 [ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       not verifying the panel cert (self-signed) — set TLS_FINGERPRINT to pin it"
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # NB: an `if` (not `$DRYRUN && {…}`) so a non-dry-run doesn't make the script's LAST command exit non-zero (convert.sh read that as "install-node.sh reported an error")

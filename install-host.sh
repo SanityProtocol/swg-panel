@@ -1363,7 +1363,6 @@ if [ "$HOST_HAS_WG" = yes ]; then
   if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
     for n in "${!TP_LISTEN[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"
       printf '    %s %s → %s%s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"
-      printf '        sudo nano /etc/systemd/system/%s.service\n\n' "$n"
     done
   fi
 fi
@@ -1372,7 +1371,7 @@ echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')  (gi
 if [ "$HOST_HAS_WG" = yes ]; then
   echo "  Firewall  open TCP $(b "$PORT")$([ "${#TP_LISTEN[@]}" -gt 0 ] && echo ' + the turn-proxy UDP ports') if not already"
   echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)"
-  echo "  Edit      panel $(b /etc/swg-panel/)  ·  interfaces $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)"
+  echo "  Edit      panel $(b /etc/swg-panel/)  ·  interfaces $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)  ·  turn-proxies $(b /etc/systemd/system/)"
 else
   echo "  Firewall  open TCP $(b "$PORT") if not already"
   echo "  Edit      panel $(b /etc/swg-panel/)"

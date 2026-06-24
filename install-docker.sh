@@ -1127,7 +1127,6 @@ case "$PROFILE" in node|master)
     done <<< "$_names"
   else _pr=amneziawg; [ "$NODE_PLAIN_WG" = yes ] && _pr=wireguard
     printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb "$NODE_ENDPOINT:$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
-    printf '        sudo nano %s\n' "$INSTALL_DIR/data/node-confs/$NODE_IFACE.conf"
   fi
   # docker turn-proxies are CONTAINERS, recorded in the node turn record (swg-noded creates them on first run) —
   # detect_turn (systemd) finds none, so read the record instead.
