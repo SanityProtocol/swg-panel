@@ -148,7 +148,7 @@ if [ -f /var/lib/swg-recovery ]; then
     echo
     warn "An unfinished $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion was found."
     info "  Resume → finish it on $(mlabel "$SWG_RV_TO"), keeping the same node, token and peers (safe even if the switch-over had already begun)."
-    info "  Skip   → leave the node on $(mlabel "$SWG_RV_FROM"); the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed on any re-install, conversion or update."
+    info "  Skip   → leave the node on $(mlabel "$SWG_RV_FROM"); the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed."
     _ans=yes; ask_yn "Resume the conversion now" y _ans
     if [ "$_ans" = yes ]; then
       info "resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
