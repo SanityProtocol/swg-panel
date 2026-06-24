@@ -105,6 +105,25 @@ lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), f
     [ -f "$d/docker-compose.yml" ] && ( cd "$d" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1 || true; } )
   fi; }
 
+# lc_clear_convert_leftover <baremetal|docker> [docker_dir] — on a plain (re-)install/update of one method,
+# delete the inert copy an ABORTED conversion to the OTHER method left behind (no prompt — just an old copy).
+# Guards keep it safe: a docker leftover is removed only when NO swg-node/swg-panel container exists; a
+# bare-metal leftover only the /etc confs that MATCH this docker node's confs and only when no swg-noded is
+# installed — never a live install or an unrelated WireGuard config. Needs the caller's info() for messaging.
+lc_clear_convert_leftover(){
+  local method="$1" dd="${2:-/opt/swg-panel-docker}" c n d cleared=
+  if [ "$method" = baremetal ] && [ -d "$dd" ] && command -v docker >/dev/null 2>&1 \
+       && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'swg-(node|panel)'; then
+    info "removing a stale docker leftover at $dd — no container present (likely a cancelled bare→docker convert); your live install is untouched"
+    rm -rf "$dd" 2>/dev/null || true
+  elif [ "$method" = docker ] && [ -d "$dd/data/node-confs" ] && command -v systemctl >/dev/null 2>&1 \
+       && ! systemctl list-unit-files swg-noded.service >/dev/null 2>&1; then
+    for c in "$dd/data/node-confs/"*.conf; do [ -f "$c" ] || continue; n="$(basename "$c" .conf)"
+      for d in "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf"; do [ -f "$d" ] && { rm -f "$d"; cleared=1; }; done
+    done
+    [ -n "$cleared" ] && info "removed stale bare-metal conf leftovers — no swg-noded service present (likely a cancelled docker→bare convert); your live install is untouched"
+  fi; }
+
 # ── turn-proxy: the 6 forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
 turn_repo_owner(){ case "$1" in
   WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;

@@ -147,6 +147,13 @@ _ncur="?"; if [ "$HAVE_BNODE" = yes ]; then _ncur="$(oldver "$NODED_DIR")"; elif
 [ "$_hasnode" = yes ]  && ver_line "swg-node" "$_ncur"
 true   # don't let the above &&-tests leave a non-zero status for `set -e`
 
+# Auto-clear an inert leftover that an aborted conversion to the OTHER method left behind (no prompt — it's
+# just an outdated copy). The helper's guards never touch a live install or an unrelated WireGuard config.
+if ! $DRYRUN; then
+  if   [ "$HAVE_DOCK" = yes ]; then                               lc_clear_convert_leftover docker    "$DOCKER_DIR"
+  elif [ "$HAVE_BNODE" = yes ] || [ "$HAVE_BPAN" = yes ]; then    lc_clear_convert_leftover baremetal "$DOCKER_DIR"; fi
+fi
+
 install_update_unit(){   # idempotent: wire one-click host self-update for an existing bare-metal panel
   local st="${STATE_DIR:-/var/lib/swg-panel}" usr="${PANEL_USER:-swgpanel}" trig
   trig="${st}/.update-request"

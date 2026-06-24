@@ -148,13 +148,13 @@ if [ -f /var/lib/swg-recovery ]; then
     echo
     warn "An unfinished $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion was found."
     info "  Resume → finish it on $(mlabel "$SWG_RV_TO"), keeping the same node, token and peers (safe even if the switch-over had already begun)."
-    info "  Skip   → leave the node on $(mlabel "$SWG_RV_FROM"); the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed on your next (re-)install or conversion."
+    info "  Skip   → leave the node on $(mlabel "$SWG_RV_FROM"); the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed on any re-install, conversion or update."
     _ans=yes; ask_yn "Resume the conversion now" y _ans
     if [ "$_ans" = yes ]; then
       info "resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
       exec bash "./convert.sh" "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
     fi
-    info "keeping the node on $(mlabel "$SWG_RV_FROM") — the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed on your next (re-)install or conversion."
+    info "keeping the node on $(mlabel "$SWG_RV_FROM") — the unfinished $(mlabel "$SWG_RV_TO") copy is inert and gets auto-removed on any re-install, conversion or update."
     rm -f /var/lib/swg-recovery 2>/dev/null || true
   fi
 fi
@@ -216,7 +216,7 @@ fi
 if [ "${CHOICE:-}" != convert ]; then
   if [ "$METHOD" = baremetal ] && [ -d "$DOCKER_DIR" ] && command -v docker >/dev/null 2>&1 \
        && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'swg-(node|panel)'; then
-    info "removing a stale docker leftover at $(b "$DOCKER_DIR") — no container present (likely a cancelled bare→docker convert); your live node is untouched"
+    info "removing a stale docker leftover at $(b "$DOCKER_DIR") — no container present (likely a cancelled bare→docker convert); your live install is untouched"
     rm -rf "$DOCKER_DIR" 2>/dev/null || true
   fi
   # docker (re-)install: drop ONLY the bare confs that match this docker node's confs (i.e. copies a docker→bare
@@ -227,7 +227,7 @@ if [ "${CHOICE:-}" != convert ]; then
     for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] || continue; _n="$(basename "$_c" .conf)"
       for _d in "/etc/amnezia/amneziawg/$_n.conf" "/etc/wireguard/$_n.conf"; do [ -f "$_d" ] && { rm -f "$_d"; _cleared=1; }; done
     done
-    [ -n "$_cleared" ] && info "removed stale bare-metal conf leftovers — no swg-noded service present (likely a cancelled docker→bare convert); your live node is untouched"
+    [ -n "$_cleared" ] && info "removed stale bare-metal conf leftovers — no swg-noded service present (likely a cancelled docker→bare convert); your live install is untouched"
   fi
 fi
 
