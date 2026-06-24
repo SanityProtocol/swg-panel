@@ -28,6 +28,20 @@ AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
 NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
 
+. "$SRC/lib/common.sh"   # lc_* lifecycle helpers (shared with the installers)
+# signal "updating" → updated / aborted / failed for whichever this box is: a node (POST via its agent
+# config) and/or a panel host (host_proc file). Best-effort; armed only when there's something to tell.
+lc_emit_upd(){ [ -n "${LC_FILE:-}" ] && lc_emit_file "$1" "${2:-}"; [ -n "${LC_TOKEN:-}" ] && [ -n "${LC_URL:-}" ] && lc_emit_post "$1" "${2:-}"; return 0; }
+if ! $DRYRUN; then
+  [ -f "$PANEL_DIR/swg-panel-server" ] && [ -d /var/lib/swg-panel ] && LC_FILE=/var/lib/swg-panel/host_proc
+  if [ -f /etc/swg-agent/config.json ]; then
+    LC_URL="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
+    LC_TOKEN="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
+    LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
+  fi
+  { [ -n "${LC_FILE:-}" ] || [ -n "${LC_TOKEN:-}" ]; } && lc_init update lc_emit_upd
+fi
+
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; C_CYAN=$'\033[36m'; C_GREEN=$'\033[32m'; C_YEL=$'\033[33m'; C_RED=$'\033[31m'; C_BLUE=$'\033[38;5;39m'
 else BOLD=""; RESET=""; C_CYAN=""; C_GREEN=""; C_YEL=""; C_RED=""; C_BLUE=""; fi
 info(){ echo "${C_CYAN}▸${RESET} ${BOLD}$*${RESET}"; }

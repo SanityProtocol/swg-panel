@@ -793,9 +793,27 @@ fi
 
 echo; info "Plan: method=$METHOD role=$ROLE serve=$SERVE_MODE tls=$TLS_MODE base=${PANEL_BASE:-/} store_configs=$STORE_CONFIGS"
 
-# all prompts answered — NOW flag the still-running panel as re-installing (header shows it; the new process
-# clears it on boot). Like convert.sh, signal only when the actual work starts, not when the script launches.
-[ "$EXISTING_HOST" = yes ] && ! $DRYRUN && { mkdir -p "$STATE_DIR" 2>/dev/null; printf 'reinstalling' > "$STATE_DIR/host_proc" 2>/dev/null || true; }
+# all prompts answered — NOW signal the work is starting (not at launch). The panel's own tag rides the
+# host_proc file (survives the panel's restart); lc_init's traps write re-installed / aborted / failed on exit
+# (a success tag fixes the "too fast to see" case since host_proc isn't cleared on boot).
+if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  LC_FILE="$STATE_DIR/host_proc"; lc_init reinstall lc_emit_file
+  # master: also flag the LOCAL NODE re-installing (so its tile shows it) and push a box-name change. The
+  # node's own loopback panel URL + token are in its agent config; the running panel updates nodes.json,
+  # which the restarted panel then loads. The node tag auto-clears when swg-noded syncs back.
+  if [ "$HOST_HAS_WG" = yes ] && [ -f /etc/swg-agent/config.json ]; then
+    _lu="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
+    _lt="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
+    _lv="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
+    if [ -n "$_lu" ] && [ -n "$_lt" ]; then
+      _lk=""; [ "$_lv" = yes ] || _lk="-k"
+      curl -fsS $_lk --max-time 8 -X POST -H "Authorization: Bearer $_lt" -H "Content-Type: application/json" --data '{"state":"reinstalling"}' "${_lu%/}/api/node/proc-status" >/dev/null 2>&1 || true
+      _cur="$(curl -fsS $_lk --max-time 8 -H "Authorization: Bearer $_lt" "${_lu%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+      [ -n "$HOST_NODE_NAME" ] && [ "$HOST_NODE_NAME" != "$_cur" ] && curl -fsS $_lk --max-time 8 -X POST -H "Authorization: Bearer $_lt" -H "Content-Type: application/json" --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$HOST_NODE_NAME")" "${_lu%/}/api/node/rename" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
 
 # ───────────────────────── users / dirs ─────────────────────────
 info "Users, groups, directories"

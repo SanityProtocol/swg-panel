@@ -618,22 +618,26 @@ if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   ask_yn "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n TLS_VERIFY
 fi
 
-# The node's panel name comes from Nodes → Add node (matched by the enrollment token),
-# NOT from here. NODE_NAME is only a local label for this box's systemd unit + final
-# message, so default it to the hostname and don't prompt for it.
-NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"
+NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"   # local label (systemd unit + final message)
+# Box name on the panel: on a re-install, offer to change it (default = the name the panel currently has for
+# this token). A fresh install's name comes from Nodes → Add node. PUSH_NAME != "" means push the change.
+PUSH_NAME=""
+if [ "$EXISTING" = yes ] && [ -n "$NODE_TOKEN" ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
+  _ins=""; [ "${TLS_VERIFY:-no}" = yes ] || _ins="-k"
+  _cur="$(curl -fsS $_ins --max-time 8 -H "Authorization: Bearer $NODE_TOKEN" "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+  step "Box name on the panel"
+  ask_valid "Node name (shown in the panel)" "${_cur:-$NODE_NAME}" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"
+  [ -n "$_cur" ] && [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""    # unchanged → nothing to push
+fi
 
-# all connection details entered — NOW signal the panel we're re-installing (UI tag) and drop the keypair
-# backups so swg-noded re-harvests the current confs. Like convert.sh, signal when the work starts (just
-# before the node is touched), not when the script is launched.
+# all data entered — NOW signal the panel + drop the keypair backups (so swg-noded re-harvests the current
+# confs), just before the node is touched. lc_init's traps emit re-installed / aborted / failed on exit.
 if [ "$EXISTING" = yes ] && ! $DRYRUN; then
-  if [ -n "$EXIST_TOKEN" ] && [ -n "$EXIST_URL" ]; then
-    _verify="$(python3 -c 'import json;print("yes" if json.load(open("/etc/swg-agent/config.json")).get("panel",{}).get("verify",True) else "no")' 2>/dev/null || echo no)"
-    _ins=""; [ "$_verify" = yes ] || _ins="-k"
-    curl -fsS $_ins --max-time 8 -X POST -H "Authorization: Bearer $EXIST_TOKEN" -H "Content-Type: application/json" \
-      --data '{"state":"reinstalling"}' "${EXIST_URL%/}/api/node/proc-status" >/dev/null 2>&1 || true
-  fi
   rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
+  LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
+  [ "${SWG_CONVERT:-}" = 1 ] || lc_init reinstall lc_emit_post   # convert.sh owns the signal during a conversion
+  [ -n "$PUSH_NAME" ] && curl -fsS ${_ins:-} --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+    --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
 
 step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"

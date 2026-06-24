@@ -50,6 +50,7 @@ PANEL_PORT="${PANEL_PORT:-}"           # host-published port; blank = derive fro
 PANEL_URL="${PANEL_URL:-}"
 NODE_TOKEN="${NODE_TOKEN:-}"
 NODE_NAME="${NODE_NAME:-}"             # local node's name in the panel (master); blank = this host's hostname
+PUSH_NAME=""                           # node-profile re-install: a changed box name to push via /api/node/rename
 NODE_COLOR="${NODE_COLOR:-#34d399}"   # local node's swatch in the panel (master); bare-metal's first palette colour
 NODE_ENDPOINT="${NODE_ENDPOINT:-${ENDPOINT_IP:-}}"
 NODE_IFACE="${NODE_IFACE:-awg0}"
@@ -347,6 +348,12 @@ case "$ROLE" in ""|master|host) ;; *) die "role must be master|host";; esac
 $DRYRUN && { info "DRY RUN — .env renders under ./dryrun, no Docker commands run."; rm -rf "$PREFIX"; }
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers: v_iface/v_subnet/v_hostport, next_free_port, turn_repo_owner, dl_turn_bin
+# docker re-install can be a node (POST to its panel), a host (host_proc file), or a master (BOTH) → one
+# emit backend that fans out to whichever LC_* vars are set.
+lc_emit_docker(){
+  [ -n "${LC_TOKEN:-}" ] && [ -n "${LC_URL:-}" ] && lc_emit_post "$1" "${2:-}"
+  [ -n "${LC_FILE:-}" ] && lc_emit_file "$1" "${2:-}"
+  return 0; }
 
 # Idempotent re-install: re-use the current .env's values (token, URL, login, interface defaults) so
 # re-running keeps everything and the ./data state is untouched. To start fresh, run the uninstaller.
@@ -488,6 +495,10 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
     ask_valid "Panel URL (https://host[/subpath])" "$_exurl" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
     case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
     TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" "$([ "$_extls" = yes ] && echo y || echo n)")"
+    # offer to change the box name shown in the panel (default = its current name); push via /api/node/rename
+    local _ins=""; [ "$TLS_VERIFY" = yes ] || _ins="-k"; local _cur
+    _cur="$(curl -fsS $_ins --max-time 8 -H "Authorization: Bearer ${NODE_TOKEN:-}" "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+    if [ -n "$_cur" ]; then step "Box name on the panel"; ask_valid "Node name (shown in the panel)" "$_cur" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"; [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""; fi
     return 0
   fi
   ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
@@ -1028,20 +1039,25 @@ fi
 # work starts, not at launch). Node → tell the panel ("re-installing" tag + server-key re-baseline) and drop
 # keypair backups so swg-noded re-harvests. Panel → flag the still-running container's host_proc so the header
 # shows it (the recreated panel clears it on boot).
-if [ "$EXISTING_DOCKER" = yes ] && ! $DRYRUN; then
-  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
-    _purl="$PANEL_URL"; _ins=""; [ "${TLS_VERIFY:-no}" = yes ] || _ins="-k"
+if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYRUN; then
+  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then           # node side (node + master local node)
+    LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
     case "$PANEL_URL" in   # master: the compose name swg-panel isn't resolvable from the host — hit the published port on loopback
       *//swg-panel|*//swg-panel/*|*//swg-panel:*)
-        _purl="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; _ins="-k" ;;
+        LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;;
     esac
-    curl -fsS $_ins --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
-      --data '{"state":"reinstalling"}' "${_purl%/}/api/node/proc-status" >/dev/null 2>&1 || true
-    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
+    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true       # re-harvest current confs / re-bless server key
   fi
-  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
-    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null
-    printf 'reinstalling' > "$INSTALL_DIR/data/lib/host_proc" 2>/dev/null || true
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then   # panel side (host + master)
+    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null; LC_FILE="$INSTALL_DIR/data/lib/host_proc"   # ./data/lib ↦ /var/lib/swg-panel
+  fi
+  # op = reinstall, OR the convert direction when convert.sh exec'd us (bare→docker) so we emit converted-docker
+  _lcop="${SWG_CONVERT_DIR:-reinstall}"
+  { [ -n "${LC_TOKEN:-}" ] || [ -n "${LC_FILE:-}" ]; } && lc_init "$_lcop" lc_emit_docker   # in-progress now; terminal on exit
+  if [ -n "$PUSH_NAME" ] && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then         # node profile: push the box-name change
+    _rin=""; [ "${TLS_VERIFY:-no}" = yes ] || _rin="-k"
+    curl -fsS $_rin --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+      --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
   fi
 fi
 info "Starting compose profile '$PROFILE'$($BUILD && echo ' (building from source)')"

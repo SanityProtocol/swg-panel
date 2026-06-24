@@ -52,7 +52,7 @@ _lc_prefix(){     case "$1" in convert-*) echo convert;; *) echo "$1";; esac; } 
 lc_emit(){ [ -n "${LC_EMIT:-}" ] && [ -n "${1:-}" ] && "$LC_EMIT" "$1" "${2:-}" || true; }
 lc_handoff(){ LC_HANDOFF=1; }                                  # another script now owns the terminal (convert→installer)
 lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
-  local ins=""; [ "${LC_VERIFY:-no}" = yes ] || ins="-k"; local data
+  local ins=""; [ "${LC_VERIFY:-no}" = yes ] || ins="-k"; local data=""
   if [ -n "${2:-}" ]; then data="$(python3 -c 'import json,sys;print(json.dumps({"state":sys.argv[1],"err":sys.argv[2]}))' "$1" "$2" 2>/dev/null)"; fi
   [ -n "$data" ] || data="{\"state\":\"$1\"}"
   curl -fsS $ins --max-time 8 -X POST -H "Authorization: Bearer $LC_TOKEN" -H "Content-Type: application/json" \

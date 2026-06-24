@@ -55,21 +55,10 @@ import_bare_conf(){ # <src> <dest>
 
 cyn(){ local a; printf '  %s (Y/n): ' "$1"; read -r a </dev/tty 2>/dev/null || a=y; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
 
-# tell the panel this node is about to go down for a conversion, so the UI shows it (best-effort)
-signal_status(){
-  [ -n "${NTOK:-}" ] && [ -n "${PURL:-}" ] || return 0
-  local ins=""; [ "${NVERIFY:-no}" = yes ] || ins="-k"
-  curl -fsS $ins --max-time 8 -X POST -H "Authorization: Bearer $NTOK" -H "Content-Type: application/json" \
-    --data "{\"state\":\"$1\"}" "${PURL%/}/api/node/proc-status" >/dev/null 2>&1 || true
-}
-# if the convert aborts (error / Ctrl-C) AFTER we told the panel "converting…" but BEFORE the installer handoff,
-# clear that marker so the node's real (down/stale) status shows instead of a stuck "converting…".
-CONVERT_SIGNALED=""; CONVERT_HANDOFF=""; _convert_aborted=""
-_convert_abort(){ local rc=$?                       # MUST preserve the exit status: an EXIT trap's last command
-  [ -n "$_convert_aborted" ] && return $rc; _convert_aborted=1   # would otherwise become the script's exit code (broke convert.sh --check)
-  [ -n "$CONVERT_SIGNALED" ] && [ -z "$CONVERT_HANDOFF" ] && signal_status ""
-  return $rc; }
-trap _convert_abort EXIT INT TERM
+# Lifecycle signalling is handled by lc_init (lib/common.sh): it's armed at the point we tell the panel
+# "converting…", and its EXIT/INT traps then emit converted-* (success) / convert-aborted / convert-failed.
+# docker→bare runs install-node.sh as a subprocess (this script stays in control → its trap fires); bare→docker
+# execs install-docker.sh, which carries SWG_CONVERT_DIR so IT emits the terminal.
 
 # install a HOST systemd turn-proxy (docker→bare): svc owner listen connect params
 turn_install_host(){
@@ -327,7 +316,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
 
   info "Converting the docker node → bare-metal — keeping its token, endpoint and interfaces."
   write_recovery "$(for s in $specs; do printf '%s ' "${s%:*}"; done)"   # persist identity BEFORE teardown so a dropped session can resume
-  signal_status converting-bare; CONVERT_SIGNALED=1     # tell the panel before the datapath goes down
+  LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; lc_init convert-bare lc_emit_post   # converting… now; converted-bare/aborted/failed on exit
   # 1) stop the docker datapath so it releases the wg UDP ports + /dev/net/tun
   if command -v docker >/dev/null 2>&1; then
     docker rm -f swg-node >/dev/null 2>&1 || true
@@ -376,7 +365,6 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
       SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh" \
     || warn "install-node.sh reported an error — continuing with the turn-proxy migration (check the interface(s) on the panel)."
-  CONVERT_HANDOFF=1   # node is up + reporting now → it owns the "converting…" clear (a later failure won't reset it)
 
   echo; info "Node is up — migrating its turn-proxies now (downloads can be slow; the node already serves peers)."
   turn_to_bare   # docker turn-proxies → host systemd units (reads the still-present $DOCKER_DIR turn record)
@@ -395,10 +383,8 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     else warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"; fi
   fi
   clear_recovery   # convert finished cleanly → drop the recovery marker
-  # backstop: the conversion is verified complete here, so clear "converting…" ourselves instead of waiting
-  # for the bare node's first snapshot (if swg-noded is slow/erroring to report, the node would stay stuck on
-  # "converting to bare-metal"). The bare node then just reports normally (online) on its next sync.
-  signal_status ""
+  # the conversion is verified complete here; the lc EXIT trap (clean exit below) emits "converted-bare", which
+  # the panel shows green for a few seconds, then the bare node reports normally (online) on its next sync.
   print_bare_summary "$names" "$NEP" "$PURL"   # complete summary: interfaces + the turn-proxies that migrated
   exit 0           # done (this block no longer execs install-node.sh, so end here, not the catch-all die)
 fi
@@ -483,7 +469,7 @@ EOF
   #    goodbye (the token is reused, so the panel keeps this node). Turn-proxies are offered for transfer below.
   info "Stopping the bare-metal node…"
   write_recovery "$names"   # persist identity BEFORE teardown so a dropped session can resume
-  signal_status converting-docker; CONVERT_SIGNALED=1   # tell the panel before the datapath goes down
+  LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; lc_init convert-docker lc_emit_post   # converting… now; install-docker.sh emits the terminal (see SWG_CONVERT_DIR on the exec)
   systemctl disable --now swg-noded 2>/dev/null || true
   while IFS="$(printf '\t')" read -r nm src; do
     [ -n "$nm" ] || continue
@@ -503,8 +489,8 @@ EOF
   #    stack up. Same token ⇒ the panel keeps one node.
   info "Running install-docker.sh (docker node) — adopt $(b "$names") and finish the setup…"
   echo
-  CONVERT_HANDOFF=1   # installer takes over the "converting…" marker (its node clears it once the docker node reports)
-  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" NODE_ENDPOINT="$NEP" TLS_VERIFY="$NVERIFY" \
+  lc_handoff   # exec replaces us → install-docker.sh owns the terminal; SWG_CONVERT_DIR makes it emit "converted-docker"
+  exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" NODE_ENDPOINT="$NEP" TLS_VERIFY="$NVERIFY" SWG_CONVERT_DIR=convert-docker \
        bash "$SRC/install-docker.sh" node
 fi
 
