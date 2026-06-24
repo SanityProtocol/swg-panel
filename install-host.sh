@@ -112,6 +112,11 @@ port_free(){ local p="$1" n   # UDP port not already bound AND not already taken
   for n in ${SPEC_ORDER[@]+"${SPEC_ORDER[@]}"}; do [ "${SPEC_PORT[$n]:-}" = "$p" ] && return 1; done
   have ss || return 0; [ -z "$(ss -lnuH "sport = :$p" 2>/dev/null)" ]; }
 v_freeport(){ v_port "$1" && port_free "$1"; }
+# host TCP port $1 is held by OUR panel's systemd service (a re-install) → not a real conflict. Identify it by
+# the listener PID's cgroup so it holds on any port, not just :443 (mirrors docker's panel_owns_port).
+panel_owns_port(){ have ss || return 1; local pid
+  pid="$(ss -lntpH "sport = :$1" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2 || true)"
+  [ -n "$pid" ] && grep -qs swg-panel-server "/proc/$pid/cgroup"; }
 # smart default ports: first install offers the base; later ones offer (highest used OF THAT KIND)+1, then the
 # next host-free port. turn = TP_LISTEN units; wg/awg = highest ListenPort across confs, never below 51820+queued.
 turn_default_port(){ detect_turn; local hi=0 lis p; if [ "${#TP_LISTEN[@]}" -gt 0 ]; then for lis in "${TP_LISTEN[@]}"; do p="${lis##*:}"; case "$p" in ''|*[!0-9]*) :;; *) [ "$p" -gt "$hi" ] && hi="$p";; esac; done; fi; [ "$hi" -gt 0 ] && next_free_port $((hi+1)) || next_free_port 56000; }
@@ -663,7 +668,9 @@ while :; do
   parse_panel_url "$PANEL_DOMAIN"
   # is the port the panel will use free on this host? (catches nginx/apache or a prior panel)
   _pp="${URL_PORT:-443}"
-  if [ "${_forced:-}" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ]; then
+  # block only on a REAL conflict — skip when our own panel already holds the port (a re-install; install
+  # stops/restarts it on the same port).
+  if [ "${_forced:-}" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ] && ! panel_owns_port "$_pp"; then
     _who="$(ss -lntpH "sport = :$_pp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
     echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))}"
     echo "    Running the panel $(b standalone)? Give it a free port, e.g. $(b "${PANEL_HOST_NOPORT}:8443")."
