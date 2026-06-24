@@ -604,7 +604,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
    right). Tags wrap to new lines when there are too many; the right-hand item stays pinned top-right. */
 .nmeta{display:grid;grid-template-columns:118px 1fr;gap:10px 18px;align-items:start}
 .nm-item{display:flex;align-items:baseline;gap:8px;min-width:0}
-.nm-rows{display:flex;flex-direction:column;gap:8px;min-width:0}
+.nm-rows{display:flex;flex-direction:column;gap:14px;min-width:0}   /* breathing room between the interfaces row and the turn-proxies row */
 .nm-row{display:flex;align-items:flex-start;gap:10px;min-width:0}
 .nm-row>.nm-l{flex:none;width:88px;padding-top:3px}
 .nm-row>.tags{flex:1;display:flex;flex-wrap:wrap;gap:5px;min-width:0;padding-top:1px}
