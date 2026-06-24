@@ -562,7 +562,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nodegrid{display:flex;flex-direction:column;gap:15px}
 /* grid: title row spans the full width (so CPU load can reach over the controls);
    data row (col 1) and controls (col 2) share the second row, so they line up. */
-.ncard{display:grid;grid-template-columns:1fr auto;align-items:center;column-gap:12px;cursor:pointer;
+.ncard{display:grid;grid-template-columns:1fr;align-items:center;column-gap:12px;cursor:pointer;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:background .15s;padding:16px}
 .ncard.removing{opacity:.82;border-style:dashed}
 .ncard:hover{background:var(--surface-2)}
@@ -600,29 +600,30 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* data row: four fixed-start columns so peers/interfaces/turn/throughput line up across
    cards regardless of content. Peers fits 555/999, interfaces ~two 8-char tags, turn takes
    the rest, throughput (no label) sits at the right with down/up each a fixed width. */
-.nmeta{display:grid;grid-template-columns:118px 1fr;gap:10px 18px;align-items:baseline}
+/* Peers on the left; to its right two rows — interfaces (+throughput, right) then turn-proxies (+controls,
+   right). Tags wrap to new lines when there are too many; the right-hand item stays pinned top-right. */
+.nmeta{display:grid;grid-template-columns:118px 1fr;gap:10px 18px;align-items:start}
 .nm-item{display:flex;align-items:baseline;gap:8px;min-width:0}
-.nm-ifaces{align-items:flex-start}   /* the interfaces+turns block is a vertical list, label stays top-aligned */
-.ifturns{display:flex;flex-direction:column;gap:4px;min-width:0}
-.ift-row{display:flex;align-items:center;flex-wrap:wrap;gap:5px;min-width:0}   /* one interface + the turn-proxies that forward to it */
-.ift-row .nm-l{opacity:.7}
+.nm-rows{display:flex;flex-direction:column;gap:8px;min-width:0}
+.nm-row{display:flex;align-items:flex-start;gap:10px;min-width:0}
+.nm-row>.nm-l{flex:none;width:88px;padding-top:3px}
+.nm-row>.tags{flex:1;display:flex;flex-wrap:wrap;gap:5px;min-width:0;padding-top:1px}
+.nm-row>.nm-thru,.nm-row>.nacts{flex:none;margin-left:8px}
 .nm-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}
 .nm-v{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
 .nm-v.nm-peers{font-size:15px;color:var(--ink)}
 .nm-v.nm-peers small{font-size:.72em;color:var(--faint)}
 .nm-v .down{color:var(--online)} .nm-v .up{color:var(--ready)}
-.nm-thru{align-items:baseline;gap:10px;justify-content:flex-end}   /* Throughput label + numbers, right-aligned */
+.nm-thru{display:flex;align-items:baseline}   /* throughput numbers, right-aligned on the interfaces line */
 .nm-thru .thru{display:flex;gap:16px}
-.nm-thru .down,.nm-thru .up{min-width:80px;white-space:nowrap;text-align:right}
+.nm-thru .down,.nm-thru .up{min-width:74px;white-space:nowrap;text-align:right}
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
 .nm-cpu .hm-bar{width:245px;flex:none}
 /* reserve room for up to 333.33 and right-align, so the bar->value gap shrinks as the number grows */
 .nm-cpu .nm-v{flex:none;min-width:50px;text-align:right}
-/* controls: horizontal row in the second grid row, so they line up with the data row */
-/* right column: action buttons on the turn-proxies (top) line, throughput right-aligned below */
-.nright{grid-column:2;align-self:stretch;display:flex;flex-direction:column;align-items:flex-end;justify-content:space-between;gap:12px;padding-left:6px}
+/* controls: pinned to the right of the turn-proxies row */
 .nacts{display:flex;align-items:center;gap:4px;background:transparent;cursor:default}
-@media(max-width:680px){.ncard .nmeta{grid-column:1 / -1}.nright{grid-column:1 / -1;align-items:stretch;border-top:1px solid var(--line);margin-top:10px;padding-top:10px}.nacts{justify-content:flex-end}}
+@media(max-width:680px){.nmeta{grid-template-columns:1fr}}
 .btn-danger{background:rgba(240,89,107,.1);color:var(--dangling);border:1px solid rgba(240,89,107,.32);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
 .btn-danger:hover{background:rgba(240,89,107,.2)}
 .btn-danger:disabled{opacity:.5;cursor:not-allowed}

@@ -2871,17 +2871,8 @@ function NodeCard({ n }) {
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
   const snap = Store.stats[n.id];
   const tps = (snap && snap.turn_proxies) || [];
-  // interfaces, each with the turn-proxies that forward to it nested under it (leftover turns → orphan row)
+  const ifTags = ifaceTags(n.id);   // every interface tag, one wrapping line
   const turnChip = tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(n.id) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`;
-  const dmeta = Store.describe[n.id] || {};
-  const usedTp = new Set();
-  const ifRows = Object.keys(dmeta).map(ifn => {
-    const itype = (dmeta[ifn].awg_params && Object.keys(dmeta[ifn].awg_params).length) ? "awg" : "wg";
-    const muted = nodeStale(n.id) || ifaceNotUp(n.id, ifn);
-    const its = turnProxiesFor(n.id, ifn); its.forEach(tp => usedTp.add(tp.service));
-    return { ifn, itype, muted, its };
-  });
-  const orphanTps = tps.filter(tp => !usedTp.has(tp.service));
   const h = n.health, hasCpu = h && Array.isArray(h.load);
   const l1 = hasCpu ? (h.load[0] || 0) : 0, cpct = Math.min(100, l1 / ((h && h.ncpu) || 1) * 100);
   const removing = n.removing;
@@ -2900,22 +2891,26 @@ function NodeCard({ n }) {
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style=${"color:" + htcolor(cpct)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
     <div class="nmeta">
-      <span class="nm-item">${here.length
+      <span class="nm-item nm-peersitem">${here.length
         ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
             trigger=${() => html`<span class="nm-l">Peers</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
         : html`<span class="nm-l">Peers</span><span class="nm-v nm-peers faint">none</span>`}</span>
-      <span class="nm-item nm-ifaces"><span class="nm-l">Interfaces</span>${ifRows.length || orphanTps.length
-        ? html`<span class="ifturns">${ifRows.map(r => html`<span class="ift-row">
-            <a class=${"tg tg-" + r.itype + (r.muted ? " muted" : "")} href=${"#/node/" + encodeURIComponent(n.id) + "/" + encodeURIComponent(r.ifn)} onClick=${e => e.stopPropagation()}>${r.ifn}</a>${r.its.map(turnChip)}</span>`)}${orphanTps.length ? html`<span class="ift-row ift-orphan"><span class="nm-l">turn</span>${orphanTps.map(turnChip)}</span>` : null}</span>`
-        : html`<span class="nm-v faint">—</span>`}</span>
-    </div>
-    <div class="nright">
-      <div class="nacts" onClick=${e => e.stopPropagation()}>
-        <button class="iconbtn" title="Edit node" onClick=${() => openNodeEdit(n)}><${Ic} i="pencil"/></button>
-        <button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(n)}><${Ic} i="key"/></button>
-        <button class="iconbtn danger" title=${removing ? "Force remove" : "Remove node"} onClick=${() => openNodeRemove(n)}><${Ic} i="trash"/></button>
+      <div class="nm-rows">
+        <div class="nm-row">
+          <span class="nm-l">Interfaces</span>
+          <span class="tags">${ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span>
+          <span class="nm-thru"><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
+        </div>
+        <div class="nm-row">
+          <span class="nm-l">Turn-proxies</span>
+          <span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span>
+          <div class="nacts" onClick=${e => e.stopPropagation()}>
+            <button class="iconbtn" title="Edit node" onClick=${() => openNodeEdit(n)}><${Ic} i="pencil"/></button>
+            <button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(n)}><${Ic} i="key"/></button>
+            <button class="iconbtn danger" title=${removing ? "Force remove" : "Remove node"} onClick=${() => openNodeRemove(n)}><${Ic} i="trash"/></button>
+          </div>
+        </div>
       </div>
-      <span class="nm-item nm-thru"><span class="nm-l">Throughput</span><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
     </div>
   </div>`;
 }
