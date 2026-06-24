@@ -2220,6 +2220,16 @@ class Handler(BaseHTTPRequestHandler):
         if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
             node["kind"] = snap["kind"]
             with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # A convert is DONE the moment the node reports on its TARGET method (kind), even if the script's
+        # terminal POST was lost (killed / power-cut / network) — otherwise "converting…" would hang until the
+        # 10-min grace flips it to "failed", while the node is already reporting green. Staging keeps reporting
+        # the OLD kind, so this never fires mid-convert; re-install/update don't change kind, so they're untouched.
+        _cv = {"converting-docker": ("docker", "converted-docker"),
+               "converting-bare":   ("baremetal", "converted-bare")}
+        _tgt = _cv.get((node.get("proc_status") or {}).get("state"))
+        if _tgt and snap.get("kind") == _tgt[0]:
+            node["proc_status"] = {"state": _tgt[1], "at": int(time.time())}   # green confirmation for ~8s, then clears
+            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
         # NB: an in-progress proc_status (reinstalling / updating / converting…) is NOT cleared by a sync —
         # swg-noded keeps syncing right through a re-install/update, so clearing here would hide the tag
         # immediately. The lifecycle script's TERMINAL (success/aborted/failed) replaces it; a stuck op with
