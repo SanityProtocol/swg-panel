@@ -277,30 +277,48 @@ if [ "$HAVE_DOCK" = yes ]; then
 fi
 
 # ───────────────────────── turn-proxy servers (vk-turn-proxy, ones we installed) ─────────────────────────
+# Current layout: ONE shared binary per fork in .bin/<fork>/ (server + version.txt + repo.txt); each instance
+# dir is just turn.env + a 'server' SYMLINK into it. Older installs instead carried a real binary + version.txt
+# in the instance dir itself. Check each shared fork once (restarting all its RUNNING instances) plus any legacy
+# standalone instance — so every turn-proxy is covered on both layouts (the old loop missed the shared ones).
 TURN_DIR="${TURN_DIR:-/opt/vk-turn-proxy}"
+turn_check_one(){   # <key> <dir/ holding server+version.txt+repo.txt> <fork|inst>
+  local key="$1" d="$2" mode="$3" owner cur latest arch url u svc any=no restart_ok=yes
+  owner="$(cat "${d}repo.txt" 2>/dev/null || echo '?')"; cur="$(cat "${d}version.txt" 2>/dev/null || echo '?')"
+  if $DRYRUN; then latest="v0.0.0-latest"
+  else sub "checking turn-proxy $(col_l "$key") ($owner) for a newer release on GitHub…"   # network call — say so (and cap it) so it never looks hung
+    latest="$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$owner/releases/latest" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)"; fi
+  [ -n "$latest" ] || { warn "turn-proxy $key ($owner): couldn't reach GitHub for the latest release — skipping"; return; }
+  if [ "$cur" = "$latest" ] && ! $FORCE; then ok "$(col_l "turn-proxy $key") ($owner): already up to date ($cur)"; return; fi
+  echo
+  if confirm "Upgrade $(col_l "turn-proxy $key") ($owner) $(col_v "$cur → $latest")?"; then
+    DID_UPDATE=yes
+    case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+    url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
+    info "updating turn-proxy $key ($owner)"
+    if run curl -fsSL "$url" -o "${d}server.new" && run chmod +x "${d}server.new" && run mv "${d}server.new" "${d}server"; then
+      $DRYRUN || printf '%s\n' "$latest" > "${d}version.txt"
+      # restart the RUNNING instance(s) to pick up the new binary — try-restart never STARTS a stopped one
+      if [ "$mode" = fork ]; then
+        for u in /etc/systemd/system/vk-turn-proxy-"$key"-*.service; do [ -e "$u" ] || continue; any=yes
+          svc="$(basename "$u" .service)"; run systemctl try-restart "$svc" || restart_ok=no; done
+      else any=yes; run systemctl try-restart "vk-turn-proxy-$key" || restart_ok=no; fi
+      if   [ "$any" = no ];          then ok "turn-proxy $key updated (no running instance to restart)"
+      elif [ "$restart_ok" = yes ];  then ok "turn-proxy $key updated + restarted"
+      else DID_FAIL=yes; warn "couldn't restart vk-turn-proxy-$key"; note "turn-proxy $key: updated but RESTART FAILED"; fi
+    else DID_FAIL=yes; warn "turn-proxy $key: download failed ($url)"; note "turn-proxy $key: download FAILED"; fi
+  else warn "turn-proxy $key: skipped (still $cur)"; fi
+}
 if $NO_COMPONENTS && [ -d "$TURN_DIR" ]; then
   info "skipping third-party components (turn-proxy servers) — --no-components"
 elif [ -d "$TURN_DIR" ]; then
-  for d in "$TURN_DIR"/*/; do
+  for d in "$TURN_DIR"/.bin/*/; do   # shared fork binaries (current layout) — restart all the fork's instances
     [ -f "${d}server" ] && [ -f "${d}version.txt" ] || continue
-    found=1
-    key="$(basename "$d")"; owner="$(cat "${d}repo.txt" 2>/dev/null || echo '?')"; cur="$(cat "${d}version.txt" 2>/dev/null || echo '?')"
-    if $DRYRUN; then latest="v0.0.0-latest"
-    else sub "checking turn-proxy $(col_l "$key") ($owner) for a newer release on GitHub…"   # network call — say so (and cap it) so it never looks hung
-      latest="$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$owner/releases/latest" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)"; fi
-    [ -n "$latest" ] || { warn "turn-proxy $key ($owner): couldn't reach GitHub for the latest release — skipping"; continue; }
-    if [ "$cur" = "$latest" ] && ! $FORCE; then ok "$(col_l "turn-proxy $key") ($owner): already up to date ($cur)"; continue; fi
-    echo
-    if confirm "Upgrade $(col_l "turn-proxy $key") ($owner) $(col_v "$cur → $latest")?"; then
-      DID_UPDATE=yes
-      case "$(uname -m)" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
-      url="https://github.com/$owner/releases/latest/download/server-linux-$arch"
-      info "updating turn-proxy $key ($owner)"
-      if run curl -fsSL "$url" -o "${d}server.new" && run chmod +x "${d}server.new" && run mv "${d}server.new" "${d}server"; then
-        $DRYRUN || printf '%s\n' "$latest" > "${d}version.txt"
-        run systemctl restart "vk-turn-proxy-$key" && ok "turn-proxy $key updated + restarted" || { DID_FAIL=yes; warn "couldn't restart vk-turn-proxy-$key"; note "turn-proxy $key: updated but RESTART FAILED"; }
-      else DID_FAIL=yes; warn "turn-proxy $key: download failed ($url)"; note "turn-proxy $key: download FAILED"; fi
-    else warn "turn-proxy $key: skipped (still $cur)"; fi
+    found=1; turn_check_one "$(basename "$d")" "$d" fork
+  done
+  for d in "$TURN_DIR"/*/; do        # legacy standalone instances (own REAL binary, not a symlink into .bin)
+    [ -f "${d}server" ] && [ ! -L "${d}server" ] && [ -f "${d}version.txt" ] || continue
+    found=1; turn_check_one "$(basename "$d")" "$d" inst
   done
 fi
 
