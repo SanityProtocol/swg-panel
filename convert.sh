@@ -193,6 +193,12 @@ CHECK=no; [ "${1:-}" = --check ] && { CHECK=yes; shift; }
 FROM="${1:-}"; TO="${2:-}"; ROLE="${3:-}"
 [ -n "$FROM" ] && [ -n "$TO" ] && [ -n "$ROLE" ] || die "usage: convert.sh [--check] <docker|baremetal> <docker|baremetal> <node|host|master>"
 
+# prominent title — same look as the installers / update.sh (only on the real run, not the --check pre-flight)
+if [ "$CHECK" != yes ]; then
+  _fl="$([ "$FROM" = docker ] && echo DOCKER || echo BARE-METAL)"; _tl="$([ "$TO" = docker ] && echo DOCKER || echo BARE-METAL)"
+  echo; info "SWG $_fl → $_tl CONVERSION ($ROLE)"; echo
+fi
+
 # ── crash/network-drop recovery ──────────────────────────────────────────────
 # A convert tears the old method down before the new one is finished. If the session drops in between,
 # the node's IDENTITY (token + panel URL) would be lost and the installer would start from scratch —
@@ -444,6 +450,9 @@ PY
   fi
 
   info "Converting the bare-metal node → docker — keeping its token, endpoint and interfaces."
+  # signal "converting" to the panel NOW — before the (non-destructive) import below — so the node tile shows
+  # it immediately, not after the per-interface import lines. install-docker.sh (exec'd later) emits the terminal.
+  LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; lc_init convert-docker lc_emit_post
   # 1) inject each interface's conf into the docker node's conf dir, stripping the host NAT hooks
   #    (the swg-node container does its own NAT). The private key is preserved, so the panel keeps
   #    the same node and peers keep working. The container uses a present conf as-is (no re-gen).
@@ -472,7 +481,6 @@ EOF
   #    goodbye (the token is reused, so the panel keeps this node). Turn-proxies are offered for transfer below.
   info "Stopping the bare-metal node…"
   write_recovery "$names"   # persist identity BEFORE teardown so a dropped session can resume
-  LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; lc_init convert-docker lc_emit_post   # converting… now; install-docker.sh emits the terminal (see SWG_CONVERT_DIR on the exec)
   systemctl disable --now swg-noded 2>/dev/null || true
   while IFS="$(printf '\t')" read -r nm src; do
     [ -n "$nm" ] || continue
