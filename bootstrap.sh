@@ -40,8 +40,8 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
   while :; do
-    printf '%s' "$pr" >/dev/tty 2>/dev/null   # read -p writes the prompt to stderr (lost if redirected) — print it to the tty ourselves
-    if read -r v </dev/tty 2>/dev/null; then rc=0; else rc=1; v=""; fi
+    printf '%s' "$pr" 2>/dev/null >/dev/tty   # read -p writes the prompt to stderr (lost if redirected) — print it to the tty ourselves
+    if read -r v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"
     case "$v" in ''|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] → the Nth option
     for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; return; }; done
@@ -53,8 +53,8 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
     fi
   done; }
 ask_yn(){ local p="$1" d="$2" var="$3" v   # ask_yn <prompt> <y|n default> <var>  → sets var to yes/no
-  printf '%s' "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " >/dev/tty 2>/dev/null
-  read -r v </dev/tty 2>/dev/null || v="$d"; v="${v:-$d}"
+  printf '%s' "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " 2>/dev/null >/dev/tty
+  read -r v 2>/dev/null </dev/tty || v="$d"; v="${v:-$d}"
   case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; }
 
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
@@ -331,7 +331,7 @@ PY
     while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); _salv_block "$_i" "$_t" "$_u" "$_s"; done <<EOF2
 $_uniq
 EOF2
-    printf '  Number to re-enroll with (or Enter to skip and set up a new node — you supply a token, panel → Nodes or -key): '; _pick=""; read -r _pick </dev/tty 2>/dev/null || _pick=""
+    printf '  Number to re-enroll with (or Enter to skip and set up a new node — you supply a token, panel → Nodes or -key): '; _pick=""; read -r _pick 2>/dev/null </dev/tty || _pick=""
     if printf '%s' "$_pick" | grep -qE '^[0-9]+$'; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
       salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"

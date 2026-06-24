@@ -357,7 +357,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
         [ -n "$dk" ] && echo "  Enter interface $(b names) to migrate one from the docker node"
         printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
       fi
-      if ! read -r pick </dev/tty; then echo; warn "no interactive input — keeping this node's interfaces"; sel=($mine $avail); break; fi
+      if ! read -r pick 2>/dev/null </dev/tty; then echo; warn "no interactive input — keeping this node's interfaces"; sel=($mine $avail); break; fi
       pick="$(echo $pick)"
       if [ -z "$pick" ]; then                                     # Enter → keep mine + onboard all orphans
         sel=($mine $avail)
@@ -374,7 +374,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
       [ -n "$bad" ] && { warn "not found:$bad — pick from the lists, or 'new'"; continue; }
       if [ -n "$xfer" ]; then
         printf "  Are you sure you want to transfer %s to this node? (y/N): " "$(col "$C_RED" "$(echo $xfer)")"
-        read -r yn </dev/tty || yn=n
+        read -r yn 2>/dev/null </dev/tty || yn=n
         case "$yn" in [Yy]*) for n in $xfer; do transfer_from_docker "$n" || true; done; detect_wg;; *) continue;; esac
       fi
       sel=($mine); for n in $pick; do _in "$n" "$mine" || sel+=("$n"); done; break   # keep mine + the chosen ones

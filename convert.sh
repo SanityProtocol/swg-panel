@@ -62,7 +62,7 @@ import_bare_conf(){ # <src> <dest>
   chmod 600 "$dest"
 }
 
-cyn(){ local a; printf '  %s (Y/n): ' "$1"; read -r a </dev/tty 2>/dev/null || a=y; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
+cyn(){ local a; printf '  %s (Y/n): ' "$1"; read -r a 2>/dev/null </dev/tty || a=y; case "$a" in [Nn]*) return 1;; *) return 0;; esac; }
 
 # Lifecycle signalling is handled by lc_init (lib/common.sh): it's armed at the point we tell the panel
 # "converting…", and its EXIT/INT traps then emit converted-* (success) / convert-aborted / convert-failed.
