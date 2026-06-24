@@ -14,8 +14,12 @@ set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers (dl_turn_bin + validators)
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then C_BLUE=$'\033[38;5;39m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; RESET=$'\033[0m'; BOLD=$'\033[1m'
+if { [ -t 1 ] || [ -n "${SWG_FORCE_COLOR:-}" ]; } && [ -z "${NO_COLOR:-}" ]; then C_BLUE=$'\033[38;5;39m'; C_BL=$'\033[38;5;33m'; C_BROWN=$'\033[38;5;130m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; RESET=$'\033[0m'; BOLD=$'\033[1m'
 else C_BLUE=""; C_BL=""; C_BROWN=""; C_RED=""; C_GREEN=""; RESET=""; BOLD=""; fi
+# we lc_init a tee (stdout → pipe) before exec'ing/running the installers, so THEIR [ -t 1 ] would be false
+# and they'd print uncoloured. Propagate our colour decision so they force colour (the codes reach the tty
+# through the tee). Only when we actually have colour (a tty / already forced; respects NO_COLOR).
+[ -n "$BOLD" ] && export SWG_FORCE_COLOR=1
 b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 # universal row flags (shared across every script): ▸ light-blue action, :: blue sub-item, ✓ green, ! brown, ✗ red
 info(){ echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # bold action/step line (matches the installers)
@@ -316,6 +320,10 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       exit 1
     fi
     sub "pre-flight OK"
+    # show "converting" on the panel NOW — the pre-flight runs the instant [c] is chosen, before the "proceed?"
+    # prompt. The real convert (lc_init) re-affirms it + owns the terminal; declining at the prompt leaves it
+    # to time out → failed (the designed fallback).
+    [ -n "$NTOK" ] && [ -n "$PURL" ] && { LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; LC_EMIT=lc_emit_post; lc_emit converting-bare; }
     info "Interfaces to migrate:"; echo
     for s in $specs; do iface_row "${s%:*}" "${s#*:}" "$confd/${s%:*}.conf" "$NEP"; done
     echo
@@ -438,6 +446,7 @@ PY
     fi
     [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") from a previous run will be moved aside."
     sub "pre-flight OK"
+    [ -n "$NTOK" ] && [ "$NTOK" != "-" ] && [ -n "$PURL" ] && { LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; LC_EMIT=lc_emit_post; lc_emit converting-docker; }   # show "converting" on the panel the moment [c] is chosen
     info "Interfaces to migrate:"; echo
     printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r _n _cf; do [ -n "$_n" ] || continue
       _pr=awg; case "$_cf" in */wireguard/*) _pr=wg;; esac; iface_row "$_n" "$_pr" "$_cf" "$NEP"; done
