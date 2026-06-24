@@ -80,6 +80,7 @@ pkg_update(){ local label="$1"; shift; local pkg cur cand
   pkg="$(first_pkg "$@")" || return 0                     # none installed → nothing to do
   cur="$(pkg_installed "$pkg")"
   have apt-get || { ok "$(col_l "$label") ($pkg): $cur — manage with your package manager"; return 0; }
+  [ "$APT_DONE" = yes ] || sub "refreshing the package index to check $(col_l "$label") ($pkg)…"   # apt-get update is slow + silent — say so
   apt_refresh; cand="$(pkg_candidate "$pkg")"
   if [ -z "$cand" ] || [ "$cand" = "$cur" ] || [ "$cand" = "(none)" ]; then ok "$(col_l "$label") ($pkg): already up to date ($cur)"; return 0; fi
   echo
