@@ -316,20 +316,22 @@ PY
   if [ "$_ntok" = 1 ]; then
     salv_tok="$(printf '%s' "$_uniq" | cut -f1)"; salv_url="$(printf '%s' "$_uniq" | cut -f2)"
     echo
-    warn "Found a leftover node identity on this box — a previous install/convert that did not finish. Re-using it re-enrolls this box as the SAME node (its peers re-sync):"
+    warn "Found a leftover identity for a node that used to live on this box — its live config is gone, but the token survives in a backup (an install or conversion that didn't finish)."
     echo
     _salv_block 1 "$salv_tok" "$salv_url" "$(printf '%s' "$_uniq" | cut -f3-)"
-    _sa=yes; ask_yn "Re-enroll with this token" y _sa
+    info "  Re-enroll → this box rejoins the panel as the SAME node: same token, and its existing peers re-sync onto it."
+    info "  Skip      → set this box up as a NEW node instead; you'll supply a token yourself (panel → Nodes, or pass -key)."
+    _sa=yes; ask_yn "Re-enroll as this node" y _sa
     [ "$_sa" = yes ] || salv_tok=""
   elif [ "$_ntok" != 0 ]; then
     echo
-    warn "Found $_ntok different leftover node identities here (multiple converts / re-installs) — pick which to re-enroll as:"
+    warn "Found $_ntok leftover node identities on this box (from past converts / re-installs) — their live configs are gone but the tokens survive in backups. Pick which to re-enroll as (or skip for a new node):"
     echo
     _i=0
     while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); _salv_block "$_i" "$_t" "$_u" "$_s"; done <<EOF2
 $_uniq
 EOF2
-    printf '  Number to re-enroll with (or press Enter to skip and pass NODE_TOKEN= yourself): '; _pick=""; read -r _pick </dev/tty 2>/dev/null || _pick=""
+    printf '  Number to re-enroll with (or Enter to skip and set up a new node — you supply a token, panel → Nodes or -key): '; _pick=""; read -r _pick </dev/tty 2>/dev/null || _pick=""
     if printf '%s' "$_pick" | grep -qE '^[0-9]+$'; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
       salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"
@@ -337,7 +339,7 @@ EOF2
   fi
   if [ -n "$salv_tok" ]; then
     NODE_TOKEN="$salv_tok"; export NODE_TOKEN; [ -n "$salv_url" ] && { PANEL_URL="$salv_url"; export PANEL_URL; }
-    info "re-enrolling this node with the recovered token."
+    info "re-enrolling this box as the recovered node (token reused — its peers re-sync onto it)."
   fi
 fi
 
