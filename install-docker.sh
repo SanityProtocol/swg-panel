@@ -461,19 +461,19 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
 ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE the container by acme.sh
   step "TLS certificate"
   echo
-  local _opts="l letsencrypt c cloudflare 15 cf15 s selfsigned n none" _def=l _le="$(keyd l 'etsencrypt (default)')"
+  local _opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n" _def=l _le="$(keyd l 'etsencrypt (default)')" _tn=0
   if [ "$EXISTING_DOCKER" = yes ] && [ -f "$INSTALL_DIR/data/etc/tls/fullchain.pem" ]; then
-    menu "$(keyd r 'euse (default)')"    "Keep the existing certificate and TLS mode from this install — no re-issue (recommended for a re-install)"
-    _opts="r reuse $_opts"; _def=r; _le="$(key l 'etsencrypt')"
+    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"    "Keep the existing certificate and TLS mode from this install — no re-issue (recommended for a re-install)"
+    _opts="reuse $_opts r"; _def=r; _le="$(key l 'etsencrypt')"
   fi
-  menu "$_le"                                "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
-  menu "$(key c 'loudflare') + letsencrypt"  "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
-  menu "$(key 15 'years cloudflare')"        "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
-  menu "$(key s 'elfsigned')"                "OK for testing"
-  menu "$(key n 'one')"                      "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
+  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_le"                                "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
+  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt"  "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"        "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
+  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"                "OK for testing"
+  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key n 'one')"                      "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
   local _w80 _ans80
   while :; do
-    ask_choice "Select TLS certificate" "$_def" TLS "$_opts"
+    ask_choice "Select TLS certificate (number, letter or name)" "$_def" TLS "$_opts"
     case "$TLS" in r) TLS=reuse;; l) TLS=letsencrypt;; c) TLS=cloudflare;; 15) TLS=cf15;; s) TLS=selfsigned;; n) TLS=none;; esac
     # letsencrypt's HTTP-01 needs host :80 — if it's taken (nginx/apache), make the user switch or force
     if [ "$TLS" = letsencrypt ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
@@ -559,9 +559,9 @@ ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirr
   echo
   local _proto def_if d_if d_port d_addr d_ep
   d_if="$NODE_IFACE"; d_port="$NODE_LISTEN_PORT"; d_addr="$NODE_ADDRESS"; d_ep="${NODE_ENDPOINT:-$(detect_public_ip)}"
-  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the userspace amneziawg-go datapath built into the swg-node container."
-  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off)."
-  ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
+  menu "$(col "$C_BLUE" '[1]') $(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the userspace amneziawg-go datapath built into the swg-node container."
+  menu "$(col "$C_BLUE" '[2]') $(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off)."
+  ask_choice "Select the protocol you want to create (number, letter or name)" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) NODE_PLAIN_WG=yes; def_if=wg0;; *) NODE_PLAIN_WG=no; def_if=awg0;; esac
   case "$d_if" in ""|awg0|wg0) d_if="$def_if";; esac        # default name follows the protocol
   NODE_IFACE="";       ask_valid "Interface name" "$d_if" NODE_IFACE v_iface "1–15 chars: letters, digits, - or _"
@@ -606,9 +606,9 @@ add_node_iface(){
     NODE_IFACES="${NODE_IFACE}:${NODE_LISTEN_PORT:-51820}:${NODE_ADDRESS:-10.8.0.1/24}:${pr}:${NODE_ENDPOINT}"
   fi
   nx=$(current_node_ifaces | grep -c . || true)                 # offset defaults so a 2nd/3rd iface doesn't collide (grep -c exits 1 on empty → guard set -e)
-  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the userspace amneziawg-go datapath built into the swg-node container."
-  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off)."
-  ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
+  menu "$(col "$C_BLUE" '[1]') $(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the userspace amneziawg-go datapath built into the swg-node container."
+  menu "$(col "$C_BLUE" '[2]') $(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Also runs via the container's amneziawg-go datapath (Amnezia params off)."
+  ask_choice "Select the protocol you want to create (number, letter or name)" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) plain=wg;; *) plain="";; esac
   taken="$(taken_iface_names)"   # all names already on the box (computed once)
   [ "$plain" = wg ] && base=wg || base=awg; i=$(iface_next_index); while printf '%s\n' "$taken" | grep -qx "$base$i"; do i=$((i+1)); done
@@ -780,9 +780,9 @@ manage_node_ifaces(){
 }
 ask_role(){          # role (panel entry) — master (panel + local node) or host (panel only); mirrors bare-metal
   step "Server role"
-  menu "$(keyd m 'aster (default)')" "Panel + this box also runs WG/AWG interfaces — a co-located, auto-enrolled node container"
-  menu "$(key h 'ost')"              "Panel only; WG/AWG nodes are deployed separately (run their command from the panel)"
-  ask_choice "Select role" "m" ROLE "m master h host"
+  menu "$(col "$C_BLUE" '[1]') $(keyd m 'aster (default)')" "Panel + this box also runs WG/AWG interfaces — a co-located, auto-enrolled node container"
+  menu "$(col "$C_BLUE" '[2]') $(key h 'ost')"              "Panel only; WG/AWG nodes are deployed separately (run their command from the panel)"
+  ask_choice "Select role (number, letter or name)" "m" ROLE "master host m h"
   case "$ROLE" in m) ROLE=master;; h) ROLE=host;; esac
 }
 case "$PROFILE" in
@@ -869,9 +869,9 @@ fi
 if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
   if [ -z "$NODE_NET" ]; then
     step "Networking mode"; echo
-    menu "$(keyd h 'ost (default)')" "Every interface port (incl. ones created from the panel) is reachable automatically, no publishing, best throughput. Recommended for a dedicated VPN box."
-    menu "$(key b 'ridge')"          "Isolated; you must publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml. Use only if host networking isn't an option."
-    ask_choice "Select networking" "h" NODE_NET "h host b bridge"
+    menu "$(col "$C_BLUE" '[1]') $(keyd h 'ost (default)')" "Every interface port (incl. ones created from the panel) is reachable automatically, no publishing, best throughput. Recommended for a dedicated VPN box."
+    menu "$(col "$C_BLUE" '[2]') $(key b 'ridge')"          "Isolated; you must publish each created interface's UDP port in $INSTALL_DIR/docker-compose.yml. Use only if host networking isn't an option."
+    ask_choice "Select networking (number, letter or name)" "h" NODE_NET "host bridge h b"
     case "$NODE_NET" in h) NODE_NET=host;; b) NODE_NET=bridge;; esac
   fi
   case "$NODE_NET" in host|bridge) ;; *) NODE_NET=host;; esac
@@ -911,11 +911,11 @@ PYHOST
   # ── turn-proxy management — how this node's host turn-proxy services are managed ──
   if [ -z "$TURN_MANAGE" ]; then
     step "Turn proxies management"; echo
-    menu "$(keyd p 'anel (default)')" "Manage turn-proxies (edit listen/connect/keys, restart) from the panel — they run as
+    menu "$(col "$C_BLUE" '[1]') $(keyd p 'anel (default)')" "Manage turn-proxies (edit listen/connect/keys, restart) from the panel — they run as
       sibling CONTAINERS (swg-turn-*), not host services. Mounts the Docker socket into the node container, which gives it
       ROOT-EQUIVALENT host access (it manages sibling containers). Only enable if you trust the panel and this box."
-    menu "$(key m 'anual')"           "Turn-proxies are managed on this server by hand — no socket is mounted."
-    ask_choice "Select turn-proxy management" "p" TURN_MANAGE "p panel m manual"
+    menu "$(col "$C_BLUE" '[2]') $(key m 'anual')"           "Turn-proxies are managed on this server by hand — no socket is mounted."
+    ask_choice "Select turn-proxy management (number, letter or name)" "p" TURN_MANAGE "panel manual p m"
     case "$TURN_MANAGE" in p) TURN_MANAGE=panel;; m) TURN_MANAGE=manual;; esac
   fi
   case "$TURN_MANAGE" in panel|manual) ;; *) TURN_MANAGE=panel;; esac

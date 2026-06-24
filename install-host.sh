@@ -731,19 +731,20 @@ PANEL_DOMAIN="$PANEL_HOST_NOPORT"
 step "TLS certificate"
 echo
 # re-install with a cert already in $TLS_DIR → offer to KEEP it (default), no re-issue.
-_tls_opts="l letsencrypt c cloudflare 15 cf15 s selfsigned sk skip"; _tls_def="${TLS_SAVED:-l}"; _le_lbl="$(keyd l 'etsencrypt (default)')"
+# canonicals first (so [N] maps to the displayed order), letter aliases after; _tn numbers the shown items
+_tls_opts="letsencrypt cloudflare cf15 selfsigned skip l c 15 s sk"; _tls_def="${TLS_SAVED:-l}"; _le_lbl="$(keyd l 'etsencrypt (default)')"; _tn=0
 if [ "$EXISTING_HOST" = yes ] && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
-  menu "$(keyd r 'euse (default)')"       "Keep the existing certificate + TLS mode from this install — no re-issue (recommended for a re-install)"
-  _tls_opts="r reuse $_tls_opts"; _tls_def=r; _le_lbl="$(key l 'etsencrypt')"
+  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"       "Keep the existing certificate + TLS mode from this install — no re-issue (recommended for a re-install)"
+  _tls_opts="reuse $_tls_opts r"; _tls_def=r; _le_lbl="$(key l 'etsencrypt')"
 fi
-menu "$_le_lbl"                           "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
-menu "$(key c 'loudflare') + letsencrypt" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
-menu "$(key 15 'years cloudflare')"       "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
-menu "$(key s 'elfsigned')"               "OK for testing"
-menu "$(key sk 'ip')"                     "If you are planning to use your own certificate (or terminate TLS elsewhere)"
+_tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_le_lbl"                           "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
+_tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+_tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"       "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
+_tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"               "OK for testing"
+_tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key sk 'ip')"                     "If you are planning to use your own certificate (or terminate TLS elsewhere)"
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
 case "$TLS_MODE" in manual|none) TLS_MODE=skip;; esac
-ask_choice "Select TLS certificate" "$_tls_def" TLS_MODE "$_tls_opts"
+ask_choice "Select TLS certificate (number, letter or name)" "$_tls_def" TLS_MODE "$_tls_opts"
 case "$TLS_MODE" in r) TLS_MODE=reuse;; l) TLS_MODE=letsencrypt;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; sk) TLS_MODE=skip;; esac
 # every public-CA / origin mode needs a real FQDN — check before asking for credentials
 case "$TLS_MODE" in letsencrypt|cloudflare|cf15)
@@ -772,17 +773,17 @@ step "Web server"
 echo
 # re-install → offer to KEEP the current web-server mode (default), same as the TLS step. Accept the first
 # letter OR the full word (both are listed as options).
-_srv_opts="i internal n nginx c caddy s skip"; _srv_def=i; _int_lbl="$(keyd i 'nternal (default)')"
+_srv_opts="internal nginx caddy skip i n c s"; _srv_def=i; _int_lbl="$(keyd i 'nternal (default)')"; _sn=0
 if [ "$EXISTING_HOST" = yes ] && [ -n "$SERVE_SAVED" ]; then
-  menu "$(keyd r 'euse (default)')"  "Keep the current web-server mode from this install ($(b "$SERVE_SAVED")) — recommended for a re-install"
-  _srv_opts="r reuse $_srv_opts"; _srv_def=r; _int_lbl="$(key i 'nternal')"
+  _sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $(keyd r 'euse (default)')"  "Keep the current web-server mode from this install ($(b "$SERVE_SAVED")) — recommended for a re-install"
+  _srv_opts="reuse $_srv_opts r"; _srv_def=r; _int_lbl="$(key i 'nternal')"
 fi
-menu "$_int_lbl"            "Self-contained, no separate web-server is required"
-menu "$(key n 'ginx')"     "Web content will be served via an Nginx reverse proxy"
-menu "$(key c 'addy')"     "Web content will be served via a Caddy reverse proxy"
-menu "$(key s 'kip')"      "If you are planning to configure the web server manually"
+_sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $_int_lbl"        "Self-contained, no separate web-server is required"
+_sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $(key n 'ginx')"  "Web content will be served via an Nginx reverse proxy"
+_sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $(key c 'addy')"  "Web content will be served via a Caddy reverse proxy"
+_sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $(key s 'kip')"   "If you are planning to configure the web server manually"
 case "$SERVE_MODE" in standalone) SERVE_MODE=internal;; esac
-ask_choice "Select web server" "$_srv_def" SERVE_MODE "$_srv_opts"
+ask_choice "Select web server (number, letter or name)" "$_srv_def" SERVE_MODE "$_srv_opts"
 case "$SERVE_MODE" in r) SERVE_MODE=reuse;; i) SERVE_MODE=internal;; n) SERVE_MODE=nginx;; c) SERVE_MODE=caddy;; s) SERVE_MODE=skip;; esac
 [ "$SERVE_MODE" = reuse ] && SERVE_MODE="${SERVE_SAVED:-internal}"
 
