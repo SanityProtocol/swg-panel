@@ -160,6 +160,7 @@ detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc
 ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools if missing (idempotent, non-fatal -> 0/1)
   local cmd="$1"
   have "$cmd" && return 0
+  info "installing $([ "$cmd" = wg ] && echo 'WireGuard' || echo 'AmneziaWG') tools via apt — this can take a minute…"
   if [ "$cmd" = wg ]; then run apt-get update -qq || true; run apt-get install -y wireguard || true
   else run apt-get update -qq || true; run apt-get install -y software-properties-common || true
        run add-apt-repository -y ppa:amnezia/ppa || true; run apt-get update -qq || true; run apt-get install -y amneziawg || true; fi

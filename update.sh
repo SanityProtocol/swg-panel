@@ -70,7 +70,7 @@ ver_line(){ local label="$1" cur="$2"
 confirm(){ # confirm <prompt> -> 0 yes / 1 no.  --yes or no terminal => yes (you ran update on purpose)
   $ASSUME_YES && return 0
   local v
-  if printf '%s %s: ' "$1" "[Y/n]" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then
+  if printf '  %s %s: ' "$1" "${C_BL}(Y/n)${RESET}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then
     case "$v" in [Nn]*) return 1;; *) return 0;; esac
   else return 0; fi
 }
