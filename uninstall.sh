@@ -301,9 +301,17 @@ turn_exec_env(){  # <unit> -> "<listen>\t<connect>", resolving the EnvironmentFi
       printf '%s\t%s' "$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')" "$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
   esac
 }
-turn_detail(){  # <unit> -> "(1.2.3.4:57000 → 127.0.0.1:51820)" — matches the (listen → connect) style used elsewhere
-  local lis con; IFS="$(printf '\t')" read -r lis con < <(turn_exec_env "$1")
-  printf '(%s%s)' "${lis:-?}" "${con:+ → $con}"
+turn_fwd_iface(){  # connect "ip:port" -> the wg/awg interface whose ListenPort matches the port (else empty)
+  local cp="${1##*:}" f lp
+  for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$f" ] || continue
+    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" 2>/dev/null | head -1)"
+    [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return; }
+  done
+}
+turn_detail(){  # <unit> -> "1.2.3.4:57000 → 127.0.0.1:51820 (wg7)" — the listen → connect (iface) style used elsewhere
+  local lis con fw; IFS="$(printf '\t')" read -r lis con < <(turn_exec_env "$1")
+  fw="$(turn_fwd_iface "$con")"
+  printf '%s%s%s' "${lis:-?}" "${con:+ → $con}" "${fw:+ ($fw)}"
 }
 add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); CHINT+=("${5:-}"); }
 turn_listen(){ local lis con; IFS="$(printf '\t')" read -r lis con < <(turn_exec_env "$1"); printf '%s' "$lis"; }
@@ -334,7 +342,7 @@ awg_present && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "kernel AmneziaW
 wg_present  && { _d="$(iface_list /etc/wireguard)";        add "kernel WireGuard" "$_d" rm_wg "" "$_d"; }
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
-  add "$(basename "$unit" .service)" "$(turn_detail "$unit")" rm_turn "$unit" "$(turn_listen "$unit")"   # green service name + (listen → connect)
+  add "$(basename "$unit" .service)" "$(turn_detail "$unit")" rm_turn "$unit" "$(turn_listen "$unit")"   # green service name + listen → connect (iface)
 done
 
 N=${#CLABEL[@]}
@@ -345,7 +353,7 @@ echo; info "Found these installed components:"; echo
 for i in $(seq 0 $((N-1))); do printf '    %s%s%s  %s\n' "$(c '0;32')" "${CLABEL[$i]}" "$(c 0)" "$(c '0;90')${CDETAIL[$i]}$(c 0)"; done
 echo
 $ASSUME_YES && info "--yes: every component will be uninstalled (you'll still be asked the destructive sub-questions)." \
-            || echo "  You will be prompted to uninstall or keep each component. Please pay attention."
+            || echo "  You'll be asked about each component one by one — nothing is removed without your yes."
 echo
 
 # Per component: ask "Uninstall X?"; if yes, the removal fn asks its own destructive sub-questions
