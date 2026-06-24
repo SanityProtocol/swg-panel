@@ -84,6 +84,12 @@ warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
+# bring an interface up QUIETLY — wg/awg-quick spew a "[#] ip link add…" trace; swallow it on success and
+# surface the captured output (indented) only on failure, so a real error still shows. bringup <tool> <iface>
+bringup(){ local tool="$1" ifn="$2" out
+  if $DRYRUN; then echo "    [skip] $tool up $ifn"; return 0; fi
+  if out="$("$tool" up "$ifn" 2>&1)"; then return 0
+  else [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/      /' >&2; return 1; fi; }
 writef(){ # writef <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"
   chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
@@ -591,8 +597,8 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
       if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
     # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)
     upok=yes
-    if [ "$cmd" = awg ]; then run awg-quick up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "awg-quick@$name" || true; }
-    else                     run wg-quick  up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "wg-quick@$name"  || true; }; fi
+    if [ "$cmd" = awg ]; then bringup awg-quick "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "awg-quick@$name" || true; }
+    else                     bringup wg-quick  "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "wg-quick@$name"  || true; }; fi
     if [ "$upok" = no ]; then
       warn "couldn't bring up '$name' (a port or subnet may already be in use) — removing its conf; try again with different values"
       run rm -f "$conf"; failed="$failed $name"; continue
