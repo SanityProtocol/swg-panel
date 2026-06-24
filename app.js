@@ -349,6 +349,7 @@ const Store = {
   rotating: {},              // peer id -> ts — key rotation in flight; grid shows "rotating" until the new key is live
   ifaceOp: {},               // "node|iface" -> { verb:start|restart, phase:busy|ok|fail, started, until, err }
   ifaceNew: {},              // "node|iface" -> { type } — optimistic "creating/onboarding" card shown the instant Create is clicked (until the server's own pending/meta picks it up)
+  turnNew: {},               // "node|service" -> { listen, connect, ... } — optimistic "installing" turn card (full entered data), shown until the node reports the real proxy
   pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
   rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
   async init() {
@@ -481,10 +482,25 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   const cards = iface ? turnProxiesFor(node, iface) : all;
   if (iface && !cards.length) return null;               // interface view: nothing forwards here → no block
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
-  return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length}
+  // client-optimistic installs: a FULL card with the entered data, dimmed + "installing", shown the instant
+  // Install is clicked — until the node reports the real proxy (in `all`) or it goes stale. Keyed by service.
+  const _tpfx = node + "|";
+  for (const k of Object.keys(Store.turnNew)) { if (!k.startsWith(_tpfx)) continue; const s = k.slice(_tpfx.length); if (all.some(t => t.service === s) || (Date.now() - (Store.turnNew[k].at || 0) > 900000)) delete Store.turnNew[k]; }
+  const optTurns = iface ? [] : Object.keys(Store.turnNew).filter(k => k.startsWith(_tpfx)).map(k => ({ svc: k.slice(_tpfx.length), d: Store.turnNew[k] })).filter(o => !all.some(t => t.service === o.svc));
+  const optSvcs = new Set(optTurns.map(o => o.svc));
+  const optCard = (svc, d) => { const lp = portOf(d.connect); const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp); const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
+    return html`<div class="ifcard tp down" key=${"new:" + svc}>
+      <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(svc)}>turn</span><span class="ifname">${d.title || turnFork(svc)}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[svc]}/><${StatusTag} cls="tg-busy" icon="clock" label="installing" title="Installing on the node"/><button class="xbtn" title="Cancel this request" onClick=${() => { delete Store.turnNew[node + "|" + svc]; cancelTurn(node, { service: svc }); }}><${Ic} i="x"/></button></div>
+      <div class="ifcard-rows">
+        <div class="ifrow"><span class="l">Turn-proxy fork</span><span class="r">${turnFork(svc)}</span></div>
+        <div class="ifrow"><span class="l">Listen</span><span class="r addr">${d.listen || "—"}</span></div>
+        <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
+      </div></div>`; };
+  return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length}
       actions=${(!iface && nrec.turn_manage) ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
     <div class="ifgrid">${cards.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface}/>`)}
-    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
+    ${optTurns.map(o => optCard(o.svc, o.d))}
+    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
     ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
     </div>
   <//>`;
@@ -1369,11 +1385,17 @@ function pendingIf(node) {
   for (const k of Object.keys(Store.ifaceNew)) if (k.startsWith(pfx)) { const e = Store.ifaceNew[k]; out.push({ name: k.slice(pfx.length), subnet: e.subnet || "", port: e.port || "", type: e.type }); }
   return out;
 }
+function pendingTurnPorts(node) {   // listen ports of turn-proxies still being installed (client-optimistic)
+  const pfx = node + "|", out = [];
+  for (const k of Object.keys(Store.turnNew)) if (k.startsWith(pfx)) { const p = Number(portOf(Store.turnNew[k].listen)); if (p) out.push(p); }
+  return out;
+}
 function suggestPort(node, kind) {
   const snap = Store.stats[node] || {};
   const ifacePorts = Object.values(snap.interfaces || {}).map(b => Number((b.meta || {}).listen_port)).filter(Boolean)
     .concat(pendingIf(node).map(p => Number(p.port)).filter(Boolean));   // include interfaces being created
-  const turnPorts = ((snap.turn_proxies) || []).map(t => Number(portOf(t.listen))).filter(Boolean);
+  const turnPorts = ((snap.turn_proxies) || []).map(t => Number(portOf(t.listen))).filter(Boolean)
+    .concat(pendingTurnPorts(node));   // include turn-proxies being installed
   const used = new Set([...ifacePorts, ...turnPorts]);
   const mine = kind === "turn" ? turnPorts : ifacePorts;
   let p = mine.length ? Math.max(...mine) + 1 : (kind === "turn" ? 56000 : 51820);
@@ -1961,7 +1983,11 @@ function SetupTurnSheet({ node }) {
     const r = await api.turnInstall({ node, fork: f.id, owner: f.owner, wrap_flags: f.wrap,
       listen: lhost + ":" + lport.trim(), connect, title: title.trim(), params: params.trim() });
     if (!r.ok) return fail(r.error || "Request failed.");
-    closeModal(); await Store.poll();
+    // optimistic: show the FULL card (entered data) dimmed + "installing" right away — keyed by the service
+    // the panel returns (vk-turn-proxy-<fork>-<port>), so it self-clears when the node reports the real proxy.
+    const svc = (r.data && r.data.service) || ("vk-turn-proxy-" + f.id + "-" + lport.trim());
+    Store.turnNew[node + "|" + svc] = { listen: lhost + ":" + lport.trim(), connect, title: title.trim(), at: Date.now() };
+    closeModal(); Store.apply(); await Store.poll();
     toast("Turn-proxy install requested — the node downloads + starts it on its next sync.", "ok");
   };
   return html`<${Sheet} title=${mode === "new" ? turnSheetTitle(f.label, title) : "Adopt turn-proxy"}
