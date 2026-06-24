@@ -151,7 +151,8 @@ $list
 EOF
 }
 
-# host systemd turn units → docker record, then tear the units down (swg-noded recreates them as containers)
+# host systemd turn units → docker record (COPY ONLY — the host units are torn down later, at the switch, so
+# an abort mid-copy never loses a turn-proxy). Records the migrated services in MIGRATED_TURNS for the teardown.
 turn_to_docker(){
   local units u svc exe lis con params owner envf _lis _con rec="$DOCKER_DIR/data/node/turn-proxy.json"
   command -v python3 >/dev/null 2>&1 || return 0
@@ -189,10 +190,9 @@ tps.append({"service": svc, "listen": lis, "connect": con, "params": (params or 
             "wrap_key": (m.group(1) if m else ""), "owner": owner})
 json.dump({"turn_proxies": tps}, open(p, "w"))
 PY
-    systemctl disable --now "$svc" 2>/dev/null || true; rm -f "$u"
-    sub "migrated $(b "$svc") → docker record (recreated as a container on the node's first run)"
+    MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"   # staged only — torn down at the switch (below)
+    sub "staged $(b "$svc") → docker record (recreated as a container on the node's first run)"
   done
-  systemctl daemon-reload 2>/dev/null || true
 }
 
 CHECK=no; [ "${1:-}" = --check ] && { CHECK=yes; shift; }
@@ -417,7 +417,9 @@ if [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   read -r NTOK PURL NVERIFY NEP <<EOF
 $(python3 - "$cfg" <<'PY'
 import json,sys
-c=json.load(open(sys.argv[1])); p=c.get("panel") or {}
+try: c=json.load(open(sys.argv[1]))   # on a RESUME the bare config is already gone → recovery state fills these in
+except Exception: c={}
+p=c.get("panel") or {}
 print(p.get("token","-"), p.get("url","-"), "yes" if p.get("verify",True) else "no", c.get("endpoint_host","") or "-")
 PY
 )
@@ -455,7 +457,9 @@ PY
     echo; exit 0
   fi
   if docker_node_present; then die "a docker node (swg-node container) already exists — remove it first (run with --check)"; fi
-  if [ -e "$DOCKER_DIR" ]; then   # stale leftover (no live container) → move aside so the fresh docker node can be created
+  # RESUME keeps the half-built $DOCKER_DIR (it holds the confs/turn records already staged before the interrupt).
+  # A FRESH convert clears any leftover from a previous FAILED attempt — it's just an outdated copy, no prompt.
+  if [ "$RESUMING" != yes ] && [ -e "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.pre-convert-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
     mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved a leftover $(b "$DOCKER_DIR") aside → $(b "$_bak") (backup — safe to delete)" || rm -rf "$DOCKER_DIR" 2>/dev/null || true
   fi
@@ -488,10 +492,15 @@ EOF
     sub "carried interface keypair backups → $DOCKER_DIR/data/node/iface-keys"
   fi
 
-  # 2) tear down the bare-metal datapath — free the wg ports + remove its units/files. NO panel
-  #    goodbye (the token is reused, so the panel keeps this node). Turn-proxies are offered for transfer below.
+  # 2) COPY-FIRST: stage the turn-proxies into the docker record too (interactive) while the bare node is
+  #    STILL UP — so an abort/failure here leaves the node fully intact (no recovery needed; just re-run).
+  turn_to_docker   # migrate this box's host turn-proxies → the docker node's record (→ containers)
+
+  # 3) everything is staged → NOW tear the bare datapath down (free the wg ports + remove its units/files).
+  #    NO panel goodbye (the token is reused, so the panel keeps this node). This is the point of no return,
+  #    so the recovery marker is written right here — an interrupt past this resumes instead of starting over.
   info "Stopping the bare-metal node…"
-  write_recovery "$names"   # persist identity BEFORE teardown so a dropped session can resume
+  write_recovery "$names"
   systemctl disable --now swg-noded 2>/dev/null || true
   while IFS="$(printf '\t')" read -r nm src; do
     [ -n "$nm" ] || continue
@@ -501,12 +510,12 @@ EOF
   done <<EOF
 $ifaces
 EOF
-  rm -f /etc/systemd/system/swg-noded.service; systemctl daemon-reload 2>/dev/null || true
+  rm -f /etc/systemd/system/swg-noded.service
+  for _svc in $MIGRATED_TURNS; do systemctl disable --now "$_svc" 2>/dev/null || true; rm -f "/etc/systemd/system/$_svc.service"; done   # now tear the staged host turn-proxies down
+  systemctl daemon-reload 2>/dev/null || true
   rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent
 
-  turn_to_docker   # offer to migrate this box's host turn-proxies → the docker node's record (→ containers)
-
-  # 3) hand off to install-docker.sh (docker node) with the SAME token. It detects the imported confs
+  # 4) hand off to install-docker.sh (docker node) with the SAME token. It detects the imported confs
   #    (picker shows them as "already on this node"; add more if you want), writes .env and brings the
   #    stack up. Same token ⇒ the panel keeps one node.
   info "Running install-docker.sh (docker node) — adopt $(b "$names") and finish the setup…"
