@@ -104,12 +104,12 @@ pkg_update(){ local label="$1"; shift; local pkg cur cand
   if confirm "Upgrade $(col_l "$label") ($pkg) $(col_v "$cur → $cand")?"; then
     info "updating $label ($pkg)"
     if run apt-get install -y --only-upgrade "$pkg"; then DID_UPDATE=yes; ok "$label updated ($cand)"; note "$label: ${cur} → ${cand}"
-    else warn "$label: upgrade failed"; note "$label: upgrade FAILED"; fi
+    else DID_FAIL=yes; warn "$label: upgrade failed"; note "$label: upgrade FAILED"; fi
   else warn "$label: skipped (still $cur)"; note "$label: unchanged ($cur)"; fi; }
 
 NEW_VER="$(cat "$SRC/VERSION" 2>/dev/null || echo unknown)"
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
-found=0; DID_UPDATE=no
+found=0; DID_UPDATE=no; DID_FAIL=no   # DID_FAIL flips to yes on ANY component failure → partial-failure status + exit 1
 # per-component outcome, printed as a summary at the end — so a multi-component box (e.g. a docker
 # master AND a bare-metal node on the same host) clearly shows EVERY component was considered.
 RESULTS=(); note(){ RESULTS+=("$*"); }
@@ -207,7 +207,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     run chmod 755 "$PANEL_DIR/swg-panel-server"; stamp "$PANEL_DIR"
     install_update_unit                              # ensure one-click host self-update is wired
     if run systemctl restart swg-panel-server; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
-    else warn "couldn't restart swg-panel-server"; note "bare-metal swg-panel: updated but RESTART FAILED"; fi
+    else DID_FAIL=yes; warn "couldn't restart swg-panel-server"; note "bare-metal swg-panel: updated but RESTART FAILED"; fi
   else note "bare-metal swg-panel: unchanged (${pold})"; fi
 fi
 
@@ -220,7 +220,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-noded" ] && { run cp "$SRC/swg-noded" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-noded"; }
     stamp "$NODED_DIR"
     if run systemctl restart swg-noded; then ok "swg-node updated + restarted"; note "bare-metal swg-node: ${nold} → ${NEW_VER}"
-    else warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
+    else DID_FAIL=yes; warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
   else note "bare-metal swg-node: unchanged (${nold})"; fi
 fi
 
@@ -246,7 +246,7 @@ if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml"
       [ -d "$SRC/vendor" ] && run cp -a "$SRC/vendor" "$DOCKER_DIR/"
       [ -d "$SRC/docker" ] && run cp -a "$SRC/docker" "$DOCKER_DIR/"; stamp "$DOCKER_DIR"
       if $DRYRUN; then echo "    [skip] (cd $DOCKER_DIR && $COMPOSE --profile $prof up -d --build)"; note "docker ($prof): would rebuild"
-      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" up -d --build ) >&"${LC_OUT:-1}" 2>&"${LC_OUT:-1}" && { ok "docker ($prof) rebuilt + restarted"; note "docker ($prof): rebuilt"; } || { warn "compose rebuild failed — check $DOCKER_DIR"; note "docker ($prof): rebuild FAILED"; }; fi
+      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" up -d --build ) >&"${LC_OUT:-1}" 2>&"${LC_OUT:-1}" && { ok "docker ($prof) rebuilt + restarted"; note "docker ($prof): rebuilt"; } || { DID_FAIL=yes; warn "compose rebuild failed — check $DOCKER_DIR"; note "docker ($prof): rebuild FAILED"; }; fi
     else note "docker ($prof): unchanged"; fi
   else
     # prebuilt-image deployment (default) → just pull the newest image + recreate (no restaging)
@@ -257,7 +257,7 @@ if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml"
       # --force-recreate: after `pull` updates :latest, a plain `up -d` may just (re)start the EXISTING
       # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old
       # version until a 2nd run. Forcing recreation guarantees it runs the freshly-pulled image.
-      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" pull && $COMPOSE --profile "$prof" up -d --force-recreate ) >&"${LC_OUT:-1}" 2>&"${LC_OUT:-1}" && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
+      else ( cd "$DOCKER_DIR" && $COMPOSE --profile "$prof" pull && $COMPOSE --profile "$prof" up -d --force-recreate ) >&"${LC_OUT:-1}" 2>&"${LC_OUT:-1}" && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
     else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi
   fi
 fi
@@ -298,8 +298,8 @@ elif [ -d "$TURN_DIR" ]; then
       info "updating turn-proxy $key ($owner)"
       if run curl -fsSL "$url" -o "${d}server.new" && run chmod +x "${d}server.new" && run mv "${d}server.new" "${d}server"; then
         $DRYRUN || printf '%s\n' "$latest" > "${d}version.txt"
-        run systemctl restart "vk-turn-proxy-$key" && ok "turn-proxy $key updated + restarted" || warn "couldn't restart vk-turn-proxy-$key"
-      else warn "turn-proxy $key: download failed ($url)"; fi
+        run systemctl restart "vk-turn-proxy-$key" && ok "turn-proxy $key updated + restarted" || { DID_FAIL=yes; warn "couldn't restart vk-turn-proxy-$key"; note "turn-proxy $key: updated but RESTART FAILED"; }
+      else DID_FAIL=yes; warn "turn-proxy $key: download failed ($url)"; note "turn-proxy $key: download FAILED"; fi
     else warn "turn-proxy $key: skipped (still $cur)"; fi
   done
 fi
@@ -309,11 +309,17 @@ fi
 [ "$pan_seen" = yes ] || note "bare-metal swg-panel: not installed ($PANEL_DIR)"
 [ "$nod_seen" = yes ] || note "bare-metal swg-node: not installed ($NODED_DIR)"
 [ "$doc_seen" = yes ] || note "docker: not installed ($DOCKER_DIR)"
-# lifecycle terminal: nothing changed → green "up to date" (5 s); else the lc EXIT trap emits "updated".
-if [ "$DID_UPDATE" = no ]; then lc_emit uptodate; lc_handoff; fi
+# lifecycle terminal:
+#  · a component FAILED → don't emit a success state; exit 1 below so the lc EXIT trap reports "update-failed"
+#    (with the captured log tail), even if other components updated fine (partial failure still = failure).
+#  · nothing changed + no failure → green "up to date" (5 s).
+#  · something updated, no failure → the lc EXIT trap emits "updated" on the clean exit 0.
+if [ "$DID_FAIL" = no ] && [ "$DID_UPDATE" = no ]; then lc_emit uptodate; lc_handoff; fi
 echo
-if [ "$DID_UPDATE" = no ]; then ok "Update finished — nothing changed."
-else                            ok "Update complete."; fi
+if   [ "$DID_FAIL" = yes ]; then echo "${C_RED}✗${RESET} Update finished with errors — some components FAILED (see the summary below)."
+elif [ "$DID_UPDATE" = no ]; then ok "Update finished — nothing changed."
+else                              ok "Update complete."; fi
 if [ "${#RESULTS[@]}" -gt 0 ]; then echo; info "Summary (every component on this host):"; for r in "${RESULTS[@]}"; do echo "    • $r"; done; fi
 if $DRYRUN; then ok "DRY RUN done — nothing changed."; fi
-exit 0   # success — keep the last status 0 so the lc EXIT trap reports "updated", not a false failure
+if [ "$DID_FAIL" = yes ]; then exit 1; fi   # non-zero → the lc EXIT trap reports "update-failed" with the log tail
+exit 0   # all good — status 0 so the trap reports "updated" (or the uptodate handoff above stands)
