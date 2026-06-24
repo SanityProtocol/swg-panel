@@ -263,8 +263,8 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
       if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
     # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)
     upok=yes
-    if [ "$cmd" = awg ]; then run awg-quick up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "awg-quick@$name" || true; }
-    else                     run wg-quick  up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "wg-quick@$name"  || true; }; fi
+    if [ "$cmd" = awg ]; then run awg-quick up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "awg-quick@$name" || true; }
+    else                     run wg-quick  up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "wg-quick@$name"  || true; }; fi
     if [ "$upok" = no ]; then
       warn "couldn't bring up '$name' (a port or subnet may already be in use) — removing its conf; try again with different values"
       run rm -f "$conf"; failed="$failed $name"; continue
@@ -395,8 +395,8 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -z "$n" ] && continue
     ip link show "$n" >/dev/null 2>&1 && continue          # already up → leave it
     _c="${IF_CMD[$n]:-awg}"; ensure_wg_tools "$_c" || continue
-    if [ "$_c" = awg ]; then run awg-quick up "$n" && { run systemctl enable "awg-quick@$n" || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"
-    else                     run wg-quick  up "$n" && { run systemctl enable "wg-quick@$n"  || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"; fi
+    if [ "$_c" = awg ]; then run awg-quick up "$n" && { run systemctl enable --quiet "awg-quick@$n" || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"
+    else                     run wg-quick  up "$n" && { run systemctl enable --quiet "wg-quick@$n"  || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"; fi
   done
   [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
   ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
@@ -497,7 +497,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-  run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
+  run systemctl daemon-reload; run systemctl enable --quiet --now "$svc" || warn "couldn't start $svc"
   ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"
 }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
@@ -737,7 +737,7 @@ EOF
 # ───────────────────────── enable ─────────────────────────
 info "Enable daemon"
 run systemctl daemon-reload
-run systemctl enable swg-noded
+run systemctl enable --quiet swg-noded
 # restart (not just enable --now): on a RE-RUN that added interfaces, swg-noded is already running and
 # reads config.json only at startup — so without a restart the new interfaces never reach the panel.
 run systemctl restart swg-noded || warn "couldn't start swg-noded"

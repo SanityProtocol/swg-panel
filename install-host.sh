@@ -401,7 +401,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-  run systemctl daemon-reload; run systemctl enable --now "$svc" || warn "couldn't start $svc"
+  run systemctl daemon-reload; run systemctl enable --quiet --now "$svc" || warn "couldn't start $svc"
   ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"
 }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
@@ -591,8 +591,8 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
       if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
     # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)
     upok=yes
-    if [ "$cmd" = awg ]; then run awg-quick up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "awg-quick@$name" || true; }
-    else                     run wg-quick  up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable "wg-quick@$name"  || true; }; fi
+    if [ "$cmd" = awg ]; then run awg-quick up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "awg-quick@$name" || true; }
+    else                     run wg-quick  up "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "wg-quick@$name"  || true; }; fi
     if [ "$upok" = no ]; then
       warn "couldn't bring up '$name' (a port or subnet may already be in use) — removing its conf; try again with different values"
       run rm -f "$conf"; failed="$failed $name"; continue
@@ -1039,7 +1039,7 @@ EOF
     run chown "$PANEL_USER:swg" "$STATE_DIR/.update-request" 2>/dev/null || true   # so re-touching it would fire a spurious self-update ("updated")
   fi
   run systemctl daemon-reload
-  run systemctl enable --now swg-update.path || warn "couldn't enable swg-update.path (one-click host update)"
+  run systemctl enable --quiet --now swg-update.path || warn "couldn't enable swg-update.path (one-click host update)"
 }
 
 # (no push receiver — nodes connect outbound over HTTPS; enroll them in the Nodes screen)
@@ -1171,7 +1171,7 @@ serve_internal(){
   # placeholder first, then rewrite with the real cert paths and restart for real.
   write_panel_unit
   run systemctl daemon-reload
-  run systemctl enable --now swg-panel-server
+  run systemctl enable --quiet --now swg-panel-server
   obtain_cert_internal
   write_panel_unit
   run systemctl daemon-reload
@@ -1261,7 +1261,7 @@ EOF
 serve_nginx(){
   mkdir -p "$PREFIX$ACME_WEBROOT"
   write_panel_unit
-  run systemctl daemon-reload; run systemctl enable --now swg-panel-server
+  run systemctl daemon-reload; run systemctl enable --quiet --now swg-panel-server
   write_vhost bootstrap
   run nginx -t && run systemctl reload nginx || warn "nginx -t failed (is nginx installed?) — fix, then: systemctl reload nginx"
   setup_tls_proxy
@@ -1297,7 +1297,7 @@ EOF
 serve_caddy(){
   have caddy || warn "caddy not found — install it (https://caddyserver.com), then re-run or 'systemctl reload caddy'"
   write_panel_unit
-  run systemctl daemon-reload; run systemctl enable --now swg-panel-server
+  run systemctl daemon-reload; run systemctl enable --quiet --now swg-panel-server
   setup_tls_proxy            # caddy isn't up yet, so acme standalone (:80) is free for letsencrypt
   write_caddy_site
   run systemctl reload caddy 2>/dev/null || run systemctl restart caddy 2>/dev/null || warn "couldn't (re)load caddy — start it after checking /etc/caddy/conf.d/swg-panel.caddy"
@@ -1307,7 +1307,7 @@ serve_caddy(){
 
 serve_skip(){
   write_panel_unit
-  run systemctl daemon-reload; run systemctl enable --now swg-panel-server
+  run systemctl daemon-reload; run systemctl enable --quiet --now swg-panel-server
   ok "Panel running on 127.0.0.1:${PORT}${PANEL_BASE} — configure your web server to proxy to it."
   echo "    nginx example:"
   echo "      location $(proxy_loc) { proxy_pass http://127.0.0.1:${PORT}; proxy_set_header Host \$host; }"
@@ -1325,8 +1325,8 @@ esac
 # ───────────────────────── enable ─────────────────────────
 info "Enable services"
 run systemctl daemon-reload
-[ "$HOST_HAS_WG" = yes ] && { run systemctl enable swg-noded; run systemctl restart swg-noded || warn "couldn't start swg-noded"; }   # restart so a re-run picks up newly-added interfaces (config.json is read only at startup)
-run systemctl enable --now swg-panel-server
+[ "$HOST_HAS_WG" = yes ] && { run systemctl enable --quiet swg-noded; run systemctl restart swg-noded || warn "couldn't start swg-noded"; }   # restart so a re-run picks up newly-added interfaces (config.json is read only at startup)
+run systemctl enable --quiet --now swg-panel-server
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
 
 # ───────────────────────── SUMMARY ─────────────────────────
