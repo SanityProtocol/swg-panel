@@ -257,7 +257,8 @@ elif [ -d "$TURN_DIR" ]; then
     found=1
     key="$(basename "$d")"; owner="$(cat "${d}repo.txt" 2>/dev/null || echo '?')"; cur="$(cat "${d}version.txt" 2>/dev/null || echo '?')"
     if $DRYRUN; then latest="v0.0.0-latest"
-    else latest="$(curl -fsSL "https://api.github.com/repos/$owner/releases/latest" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)"; fi
+    else sub "checking turn-proxy $(col_l "$key") ($owner) for a newer release on GitHub…"   # network call — say so (and cap it) so it never looks hung
+      latest="$(curl -fsSL --connect-timeout 10 --max-time 20 "https://api.github.com/repos/$owner/releases/latest" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)"; fi
     [ -n "$latest" ] || { warn "turn-proxy $key ($owner): couldn't reach GitHub for the latest release — skipping"; continue; }
     if [ "$cur" = "$latest" ] && ! $FORCE; then ok "$(col_l "turn-proxy $key") ($owner): already up to date ($cur)"; continue; fi
     echo

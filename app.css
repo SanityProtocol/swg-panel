@@ -608,7 +608,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-row{display:flex;align-items:flex-start;gap:10px;min-width:0}
 .nm-row>.nm-l{flex:none;width:88px;padding-top:3px}
 .nm-row>.tags{flex:1;display:flex;flex-wrap:wrap;gap:5px;min-width:0;padding-top:1px}
-.nm-row>.nm-thru,.nm-row>.nacts{flex:none;margin-left:8px}
+/* fixed-width right column (same on both rows) so the two tag lists are equal width and throughput lines up over the controls */
+.nm-row>.nm-thru,.nm-row>.nacts{flex:none;width:236px;margin-left:8px;justify-content:flex-end}
 .nm-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}
 .nm-v{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
 .nm-v.nm-peers{font-size:15px;color:var(--ink)}

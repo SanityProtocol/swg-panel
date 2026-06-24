@@ -2899,7 +2899,9 @@ function NodeCard({ n }) {
         <div class="nm-row">
           <span class="nm-l">Interfaces</span>
           <span class="tags">${ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span>
-          <span class="nm-thru"><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
+          <span class="nm-thru"><span class="nm-l">Throughput</span>${st === "online"
+            ? html`<span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span>`
+            : html`<span class="nm-v faint">—</span>`}</span>
         </div>
         <div class="nm-row">
           <span class="nm-l">Turn-proxies</span>
