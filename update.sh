@@ -268,7 +268,7 @@ fi
 if [ "$HAVE_BNODE" = yes ]; then
   pkg_update "WireGuard / AmneziaWG" amneziawg amneziawg-tools amneziawg-dkms wireguard wireguard-tools
 elif [ "$HAVE_DOCK" = yes ] && [ "$DOCK_PROF" != host ]; then
-  ok "$(col_l "WireGuard / AmneziaWG"): bundled in the swg-node image (refreshed with the image above)"
+  ok "$(col_l "WireGuard / AmneziaWG"): bundled in the swg-node image — no separate package to update (it tracks the image)"
 fi
 
 # ───────────────────────── Docker engine (docker scenario only) ─────────────────────────
@@ -311,7 +311,9 @@ fi
 [ "$doc_seen" = yes ] || note "docker: not installed ($DOCKER_DIR)"
 # lifecycle terminal: nothing changed → green "up to date" (5 s); else the lc EXIT trap emits "updated".
 if [ "$DID_UPDATE" = no ]; then lc_emit uptodate; lc_handoff; fi
-echo; ok "Update complete."
+echo
+if [ "$DID_UPDATE" = no ]; then ok "Update finished — nothing changed."
+else                            ok "Update complete."; fi
 if [ "${#RESULTS[@]}" -gt 0 ]; then echo; info "Summary (every component on this host):"; for r in "${RESULTS[@]}"; do echo "    • $r"; done; fi
 if $DRYRUN; then ok "DRY RUN done — nothing changed."; fi
 exit 0   # success — keep the last status 0 so the lc EXIT trap reports "updated", not a false failure
