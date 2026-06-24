@@ -2061,6 +2061,12 @@ def api(method, path, qs, body, deps):
 
 class Handler(BaseHTTPRequestHandler):
     deps = None
+    # HTTP/1.1 keep-alive: the SPA polls several endpoints every few seconds. Without this the server is
+    # HTTP/1.0, so EVERY request opens a fresh TLS connection + full handshake — over a network that churn
+    # intermittently fails the handshake (ERR_SSL_PROTOCOL_ERROR in the browser). Keep-alive reuses one
+    # connection. Safe because every response sets Content-Length (send_error does too); idle conns time out.
+    protocol_version = "HTTP/1.1"
+    timeout = 75
 
     def _send(self, code, obj):
         payload = json.dumps(obj).encode()
