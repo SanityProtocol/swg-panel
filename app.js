@@ -331,6 +331,8 @@ const api = {
   nodeSelfUpdate(b) { return this.post("/api/node/update", b); },   // flag a node to self-update (≠ nodeUpdate, which renames)
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
+  procClearNode(node) { return this.post("/api/node/proc-clear", { node }); },   // dismiss a stuck/failed re-install/convert/update tag
+  procClearHost() { return this.post("/api/host/proc-clear", {}); },
 };
 
 // ───────────────────────── store + reactive bus ─────────────────────────
@@ -477,7 +479,7 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   const all = snap.turn_proxies || [];
   const cards = iface ? turnProxiesFor(node, iface) : all;
   if (iface && !cards.length) return null;               // interface view: nothing forwards here → no block
-  const blocked = (Store.recon.nodeStatus[node] !== "live") || !!nrec.proc_status;
+  const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length}
       actions=${(!iface && nrec.turn_manage) ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
     <div class="ifgrid">${cards.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface}/>`)}
@@ -587,7 +589,18 @@ const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, rotating
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
 // a node/panel host that's mid re-install or method conversion (signalled before it goes down)
-const PROC_LABEL = { reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker" };
+const PROC_LABEL = { reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker",
+  "reinstall-failed": "re-install failed", "convert-failed": "convert failed", "update-failed": "update failed", failed: "failed" };
+// a proc tag that timed out / aborted (shown red for ~10s, then the panel clears it). inProc = actually running.
+const procFailed = s => !!s && /failed$/.test(s);
+const inProc = s => !!s && !procFailed(s);
+function procTag(state, onX) {   // in-progress → violet clock; timed-out/aborted → red warn that stays until
+  if (!procFailed(state))        // the node returns (auto-clears) or the operator dismisses it with the ×.
+    return html`<span class="nstat proc"><${Ic} i="clock"/> ${PROC_LABEL[state] || state}</span>`;
+  return html`<span class="nstat procfail"><${Ic} i="warn"/> ${PROC_LABEL[state] || state}${onX ? html`<button class="xbtn" title="Dismiss — show the node's actual status" onClick=${onX}><${Ic} i="x"/></button>` : null}</span>`;
+}
+async function dismissNodeProc(id) { const r = await api.procClearNode(id); if (r && r.ok === false) return toast(r.error || "Couldn't dismiss.", "err"); await Store.poll(); }
+async function dismissHostProc() { const r = await api.procClearHost(); if (r && r.ok === false) return toast(r.error || "Couldn't dismiss.", "err"); await Store.poll(); }
 function Badge({ s, title }) {
   const ic = STATUS_ICON[s];
   return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
@@ -1087,8 +1100,8 @@ function NodeDetail({ node: rawName }) {
   const dname = node.name || name;
 
   const live = Store.recon.nodeStatus[name] === "live";
-  const blocked = !live || !!nrec.proc_status;   // node down or mid convert/re-install → only recovery actions (rotate key, delete) stay enabled
-  const down = !live && !nrec.proc_status;        // genuinely not reporting (not just mid-convert) → offer one-click Recover in place of rotate-token
+  const blocked = !live || inProc(nrec.proc_status);   // node down or mid convert/re-install → only recovery actions (rotate key, delete) stay enabled (a timed-out/failed tag doesn't block)
+  const down = !live && !inProc(nrec.proc_status);      // genuinely not reporting (not just mid-convert) → offer one-click Recover in place of rotate-token
   const snap = Store.stats[name];
   // turn-proxies present (installed, a pending install, or onboarding) → show the Turn-proxies block;
   // none → hide that block and surface a "Setup turn-proxy" button in the Interfaces header instead.
@@ -1102,7 +1115,7 @@ function NodeDetail({ node: rawName }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${nrec.proc_status ? html`<span class="nstat proc"><${Ic} i="clock"/> ${PROC_LABEL[nrec.proc_status] || nrec.proc_status}</span>` : live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<${HealthDot} issues=${nrec.issues}/></div>
+      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${inProc(nrec.proc_status) ? procTag(nrec.proc_status) : html`<${Fragment}>${procFailed(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id)) : null}${live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<//>`}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? "Node is running a newer version than the panel — update the panel to catch up" : ""}>v${nrec.version}</span>` : null}
@@ -1205,7 +1218,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const dname = nrec.name || node;
   const meta = Store.ifaceMeta(node, iface);
   const live = Store.recon.nodeStatus[node] === "live";
-  const blocked = !live || !!nrec.proc_status;   // node down or mid convert/re-install → only the per-peer QR (view config) stays enabled
+  const blocked = !live || inProc(nrec.proc_status);   // node down or mid convert/re-install → only the per-peer QR (view config) stays enabled (a timed-out/failed tag doesn't block)
   // a pending listen-port change: desired (panel) != reported (node) until the node converges
   const updating = !!(meta && meta.desired_port && meta.listen_port && Number(meta.desired_port) !== Number(meta.listen_port));
   const type = (meta && meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
@@ -2763,6 +2776,8 @@ function NodeHealth({ health, node, compact, history }) {
 let hostUpdating = false;                 // once Update is clicked, lock the header pill into "updating"
 // the circular-arrow glyph (same as the check icon), spun in yellow while an update runs
 const UPD_SPIN_SVG = `<svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg>`;
+const WARN_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`;
+const X_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
 function setHostUpdating() {
   hostUpdating = true;
   const slot = $("#updslot");
@@ -2845,10 +2860,10 @@ function NodeCard({ n }) {
       ${n.outdated && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
-      ${n.proc_status ? html`<span class="nstat proc"><${Ic} i="clock"/> ${PROC_LABEL[n.proc_status] || n.proc_status}</span>`
-        : st === "online" ? html`<span class="reporting">reporting</span>`
+      ${inProc(n.proc_status) ? procTag(n.proc_status) : html`<${Fragment}>${procFailed(n.proc_status) ? procTag(n.proc_status, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }) : null}${
+          st === "online" ? html`<span class="reporting">reporting</span>`
         : st === "offline" ? html`<span class="badge b-unknown ic"><${Ic} i="info"/>offline</span>`
-        : html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>`}
+        : html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>`}<//>`}
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
       <span class="grow"></span>
@@ -3761,14 +3776,19 @@ function App() {
     const slot = $("#updslot");
     if (slot) {
       let body;
-      if (Store.hostProc) body = `<span class="hostproc-tag">${UPD_SPIN_SVG} ${esc(PROC_LABEL[Store.hostProc] || Store.hostProc)}</span>`;   // this panel host is mid re-install/convert
-      else if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
-      else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
-      else if (Store.updFlash && Date.now() < Store.updFlash) body = `<span class="livepill upd-uptodate" title="You're on the latest version"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> up to date</span>`;
-      else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
+      if (inProc(Store.hostProc)) body = `<span class="hostproc-tag">${UPD_SPIN_SVG} ${esc(PROC_LABEL[Store.hostProc] || Store.hostProc)}</span>`;   // mid re-install → replaces the slot
+      else {
+        if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
+        else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
+        else if (Store.updFlash && Date.now() < Store.updFlash) body = `<span class="livepill upd-uptodate" title="You're on the latest version"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> up to date</span>`;
+        else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
+        // re-install timed out / aborted → dismissable "failed" tag BEFORE the host's normal status
+        if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail">${WARN_SVG} ${esc(PROC_LABEL[Store.hostProc] || Store.hostProc)}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;
+      }
       slot.innerHTML = body;
       const b = $("#host-upd"); if (b) b.onclick = updateHost;
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
+      const hx = $("#hostproc-x"); if (hx) hx.onclick = dismissHostProc;
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = openAccount;

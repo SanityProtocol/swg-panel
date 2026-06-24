@@ -683,6 +683,19 @@ def _node_issues(c, snap):
             issues.append((tp.get("service") or "turn-proxy") + ": not running")
     return issues
 
+# proc-status timeout. A re-install / convert / update shows its in-progress tag for up to PROC_GRACE. If the
+# process aborts (the user or server loses connection) and never clears it, past PROC_GRACE we flip the tag to
+# "<op> failed" — which STAYS until either the node checks back in (auto-cleared on success) or the operator
+# dismisses it with the tag's × (the /api/*/proc-clear endpoints). `at` = unix time the state was set
+# (node proc_status; host_proc file mtime).
+PROC_GRACE = 600          # 10 min in-progress window before a stuck op is shown as failed
+_PROC_FAIL = {"reinstalling": "reinstall-failed", "converting-bare": "convert-failed",
+              "converting-docker": "convert-failed", "updating": "update-failed"}
+def _proc_view(state, at):
+    if not state:
+        return None
+    return state if time.time() - (at or 0) <= PROC_GRACE else _PROC_FAIL.get(state, "failed")
+
 def node_describe(snapshot):
     """Server/interface info from a node's pushed snapshot (config-building + UI)."""
     interfaces = {}
@@ -959,9 +972,12 @@ def api(method, path, qs, body, deps):
                         "transport": "https",
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
-                        # re-install / convert in progress — but drop a marker older than 30min (a hung/killed
-                        # convert that never reported back), so the node's real status surfaces again.
-                        "proc_status": (lambda p: p.get("state") if p.get("state") and time.time() - (p.get("at") or 0) <= 1800 else None)(c.get("proc_status") or {}),
+                        # re-install / convert in progress — times out via _proc_view: shows for PROC_GRACE,
+                        # then "<op> failed" for PROC_FAIL_SHOW, then clears (a hung/killed/aborted op that
+                        # never reported back no longer sticks forever). A lingered update flag past its grace
+                        # also surfaces a brief "update failed" here.
+                        "proc_status": (_proc_view((c.get("proc_status") or {}).get("state"), (c.get("proc_status") or {}).get("at"))
+                                        or (_proc_view("updating", (c.get("update") or {}).get("at")) if c.get("update") else None)),
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
@@ -979,7 +995,7 @@ def api(method, path, qs, body, deps):
                         "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
                         "outdated": _ver_behind(snap.get("noded_version"), VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
                         "ahead": _ver_ahead(snap.get("noded_version"), VERSIONS.get("panel")),        # node is NEWER than the panel
-                        "updating": bool(c.get("update")),                       # self-update in flight
+                        "updating": bool(c.get("update")) and (time.time() - ((c.get("update") or {}).get("at") or 0) <= PROC_GRACE),   # self-update in flight (times out → "update failed" via proc_status, then clears)
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
                         "creating": {k: ((v.get("cmd") or ["awg"])[0])               # iface → wg/awg (we know it)
                                      for k, v in (c.get("create") or {}).items()},
@@ -1018,12 +1034,14 @@ def api(method, path, qs, body, deps):
         # One consolidated read: everything the UI polls for, in a single round trip.
         # Status is NOT computed here — the browser derives it from roster + snapshots via
         # reconcile.js (the single source of truth), so this stays a raw-data bundle.
-        _hp = ""
+        _hp = ""; _hp_at = 0
         with contextlib.suppress(Exception):
-            with open(deps.get("host_proc_path") or "") as _f:
+            _hpf = deps.get("host_proc_path") or ""
+            with open(_hpf) as _f:
                 _hp = (_f.read() or "").strip()
+            _hp_at = os.path.getmtime(_hpf)              # no timestamp in the file → use its mtime for the timeout
         return 200, {"ok": True, "data": {
-            "host_proc": _hp or None,                    # this panel host is mid re-install/convert (UI tag)
+            "host_proc": _proc_view(_hp, _hp_at),        # this panel host is mid re-install (UI tag); times out → "failed" → clears
             "roster": roster_load(roster_path),          # {version, users, peers}
             "nodes": nodes_view(),                       # fleet metadata + live counters
             "describe": describe_view(),                 # per-node interface meta for config building
@@ -1904,10 +1922,24 @@ def api(method, path, qs, body, deps):
         # capture the node's current version — we clear the request once it reports ANYTHING different
         # (it updates to latest, which can move past a docker panel's lagging-CI image version)
         frm = ((deps.get("node_snaps") or {}).get(nid) or {}).get("noded_version")
-        nodes[nid]["update"] = {"to": VERSIONS.get("panel") or "", "from": frm}
+        nodes[nid]["update"] = {"to": VERSIONS.get("panel") or "", "from": frm, "at": int(time.time())}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Update requested", "")
         return 200, {"ok": True, "data": {"node": nid}}
+
+    if method == "POST" and path == "/api/node/proc-clear":
+        # operator dismisses a stuck/failed proc tag (re-install/convert/update that never reported back)
+        nid = body.get("node") or ""
+        if nid in nodes:
+            nodes[nid].pop("proc_status", None); nodes[nid].pop("update", None)
+            with contextlib.suppress(Exception): nodes_save(deps["nodes_path"], nodes)
+        return 200, {"ok": True, "data": {"node": nid}}
+
+    if method == "POST" and path == "/api/host/proc-clear":
+        # operator dismisses the panel host's own stuck re-install tag (removes the host_proc marker file)
+        with contextlib.suppress(Exception):
+            os.remove(deps.get("host_proc_path") or "")
+        return 200, {"ok": True, "data": {}}
 
     if method == "POST" and path == "/api/update/check":
         reached = _check_latest_remote()             # synchronous one-off poll (for the header "check" icon)
