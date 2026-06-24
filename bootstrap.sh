@@ -139,19 +139,22 @@ STEP=1
 step(){ echo; echo "$(b "Step $STEP. $1")"; echo; STEP=$((STEP+1)); }
 
 # ── resume an interrupted conversion ─────────────────────────────────────────
-# convert.sh persists the node's identity to /var/lib/swg-recovery before any teardown. If the session
-# dropped mid-convert, finish it with the SAME token instead of starting over (which would orphan the node).
+# convert.sh persists the node's identity to /var/lib/swg-recovery before the final switch-over. Conversions
+# are copy-first: the source node keeps running until everything is staged, so a dropped session usually left
+# the node fully up on its CURRENT method. Offer to finish the move (same token); declining just keeps it.
 if [ -f /var/lib/swg-recovery ]; then
   . /var/lib/swg-recovery 2>/dev/null || true
   if [ -n "${SWG_RV_FROM:-}" ] && [ -n "${SWG_RV_TO:-}" ] && [ -n "${SWG_RV_ROLE:-}" ]; then
     echo
-    warn "An interrupted conversion ($(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO")) was found — its node would be LOST if you start over."
-    _ans=yes; ask_yn "Resume it now and finish the conversion (keeps the same node)" y _ans
+    warn "An unfinished $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion was found."
+    info "  Resume → finish it on $(mlabel "$SWG_RV_TO"), keeping the same node, token and peers (safe even if the switch-over had already begun)."
+    info "  Skip   → keep the node on $(mlabel "$SWG_RV_FROM") as it is; the half-built $(mlabel "$SWG_RV_TO") copy is discarded and cleared on the next (re-)install or conversion."
+    _ans=yes; ask_yn "Resume the conversion now" y _ans
     if [ "$_ans" = yes ]; then
       info "resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
       exec bash "./convert.sh" "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
     fi
-    warn "not resuming — removing the recovery marker; the half-converted node may be orphaned on the panel until you re-add it."
+    info "keeping the node on $(mlabel "$SWG_RV_FROM") — the unfinished $(mlabel "$SWG_RV_TO") copy will be cleared on the next (re-)install or conversion."
     rm -f /var/lib/swg-recovery 2>/dev/null || true
   fi
 fi
