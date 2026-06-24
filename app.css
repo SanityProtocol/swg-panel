@@ -271,10 +271,10 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .ifcard-top .tg{flex:none}          /* status tags keep their full width — the name ellipsis-shrinks instead */
 .ifcard-top .onlinetag{flex:none}   /* connections count in a turn card header — don't stretch */
 /* a status tag carrying a node message is clickable (opens it) — pointer + hover highlight as the affordance */
-/* any error/detail tag that opens a popup on click — fill with its own colour + a ring on hover so it
-   clearly reads as clickable (no native title tooltip; the popup carries the details) */
-.tg-click{cursor:pointer;transition:filter .12s,background .12s,box-shadow .12s}
-.tg-click:hover{filter:brightness(1.12);background:color-mix(in srgb,currentColor 22%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,currentColor 55%,transparent)}
+/* any error/detail tag that opens a popup on click — on hover just brighten its text/icon colour so it
+   reads as clickable (no background box; the popup carries the details, so no native title tooltip) */
+.tg-click{cursor:pointer;transition:filter .12s}
+.tg-click:hover{filter:brightness(1.45)}
 /* the name truncates (…) so a long fork name never pushes the status tag + cancel × out of the card */
 .ifcard-top .ifname{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ifcard-top .iftype,.ifcard-top .tg-busy,.ifcard-top .tg-ok,.ifcard-top .tg-warn,.ifcard-top .tg-del,.ifcard-top .cmderr,.ifcard-top .xbtn{flex:none}
@@ -593,7 +593,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nstat.procok{color:var(--online)} .nstat.procok::before{display:none}        /* success: green ✓, auto-clears after ~5s (no ×) */
 .nstat.procaborted{color:var(--unknown)} .nstat.procaborted::before{display:none}   /* aborted: grey, dismissable via × */
 .nstat.procfail{color:var(--dangling)} .nstat.procfail::before{display:none}   /* failed: red, error popup + dismissable × */
-.nstat .xbtn{margin-left:5px} .nstat .errbtn{margin-right:5px}   /* error icon sits LEFT of the tag, × on the right — no mis-clicks */
+.nstat .xbtn{margin-left:1px;padding:1px}   /* × sits close to the tag text */
 .errbtn{display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;color:inherit;cursor:pointer;padding:1px;border-radius:5px;opacity:.85}
 .errbtn:hover{opacity:1;background:rgba(240,90,90,.14)}
 .b-removing{background:rgba(242,107,130,.13);color:var(--dangling)}
