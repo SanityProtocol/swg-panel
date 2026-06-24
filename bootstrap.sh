@@ -81,7 +81,7 @@ done
 # ── fetch the repo ──
 need(){ command -v "$1" >/dev/null 2>&1; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-echo ":: fetching $REPO @ $REF"
+info "fetching $REPO @ $REF"
 if need git; then
   git clone --depth 1 --branch "$REF" "$REPO" "$TMP/swg-panel"
 elif need curl && need tar; then
@@ -96,7 +96,7 @@ cd "$TMP/swg-panel"
 # ── update / uninstall: no method/role ──
 if [ -n "$ACTION" ]; then
   SCRIPT="update.sh"; [ "$ACTION" = uninstall ] && SCRIPT="uninstall.sh"
-  echo ":: running $SCRIPT"; exec bash "./$SCRIPT" ${PASS[@]+"${PASS[@]}"}
+  info "running $SCRIPT"; exec bash "./$SCRIPT" ${PASS[@]+"${PASS[@]}"}
 fi
 
 # only a node carries an enrollment key — infer the role from -key
@@ -122,7 +122,7 @@ if [ -z "$METHOD" ] && [ -z "$ROLE" ]; then
   { [ "$BARE_PANEL" = yes ] || [ "$BARE_NODE" = yes ]; } && _bare=yes
   { [ "$DOCK_PANEL" = yes ] || [ "$DOCK_NODE" = yes ]; } && _dock=yes
   if [ "$_bare" = yes ] && [ "$_dock" = yes ]; then
-    echo ":: both a bare-metal and a docker install are present — choose which to re-install:"   # mixed → fall through to the prompts
+    info "both a bare-metal and a docker install are present — choose which to re-install:"   # mixed → fall through to the prompts
   elif [ "$_bare" = yes ]; then METHOD=baremetal
     if   [ "$BARE_PANEL" = yes ] && [ "$BARE_NODE" = yes ]; then ROLE=master
     elif [ "$BARE_PANEL" = yes ]; then ROLE=host; else ROLE=node; fi
@@ -130,7 +130,7 @@ if [ -z "$METHOD" ] && [ -z "$ROLE" ]; then
     if   [ "$DOCK_PANEL" = yes ] && [ "$DOCK_NODE" = yes ]; then ROLE=master
     elif [ "$DOCK_PANEL" = yes ]; then ROLE=host; else ROLE=node; fi
   fi
-  { [ -n "$METHOD" ] && [ -n "$ROLE" ]; } && echo ":: existing $(mlabel "$METHOD") install detected — re-installing $(b "$ROLE") (your settings are the defaults)."
+  { [ -n "$METHOD" ] && [ -n "$ROLE" ]; } && info "existing $(mlabel "$METHOD") install detected — re-installing $(b "$ROLE") (your settings are the defaults)."
 fi
 
 # ── method + role (sequential step numbering — only steps actually shown here count) ──
@@ -147,7 +147,7 @@ if [ -f /var/lib/swg-recovery ]; then
     warn "An interrupted conversion ($(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO")) was found — its node would be LOST if you start over."
     _ans=yes; ask_yn "Resume it now and finish the conversion (keeps the same node)" y _ans
     if [ "$_ans" = yes ]; then
-      echo ":: resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
+      info "resuming the $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion…"; echo
       exec bash "./convert.sh" "$SWG_RV_FROM" "$SWG_RV_TO" "$SWG_RV_ROLE" ${PASS[@]+"${PASS[@]}"}
     fi
     warn "not resuming — removing the recovery marker; the half-converted node may be orphaned on the panel until you re-add it."
@@ -193,8 +193,8 @@ if [ -n "$CONFLICT" ]; then
     menu "$(col "$C_BLUE" '[a]bort')"               "Exit without changing anything."
     CHOICE=""; ask_choice "Convert, keep, or abort" "convert" CHOICE "convert keep abort"
     case "$CHOICE" in
-      abort) echo ":: aborted — nothing changed."; exit 0;;
-      keep)  METHOD="$OTHER"; echo ":: keeping the existing $(mlabel "$OTHER") install — re-installing it as-is."; break;;
+      abort) info "aborted — nothing changed."; exit 0;;
+      keep)  METHOD="$OTHER"; info "keeping the existing $(mlabel "$OTHER") install — re-installing it as-is."; break;;
       convert)
         # pre-flight (port/interface check) lives in convert.sh --check: exit 0 = clear, non-0 = printed conflicts
         if bash "./convert.sh" --check "$OTHER" "$METHOD" "$ROLE"; then
@@ -312,7 +312,7 @@ EOF2
   fi
   if [ -n "$salv_tok" ]; then
     NODE_TOKEN="$salv_tok"; export NODE_TOKEN; [ -n "$salv_url" ] && { PANEL_URL="$salv_url"; export PANEL_URL; }
-    echo ":: re-enrolling this node with the recovered token."
+    info "re-enrolling this node with the recovered token."
   fi
 fi
 
@@ -324,5 +324,5 @@ case "$METHOD-$ROLE" in
   docker-node)    unset ROLE;         SCRIPT="install-docker.sh"; PASS=(node   ${PASS[@]+"${PASS[@]}"}) ;;
   *) die "unknown method/role: '$METHOD' / '$ROLE'" ;;
 esac
-echo ":: running $SCRIPT"
+info "running $SCRIPT"
 exec bash "./$SCRIPT" ${PASS[@]+"${PASS[@]}"}

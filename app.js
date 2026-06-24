@@ -1179,28 +1179,33 @@ function NodeDetail({ node: rawName }) {
     <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}
         actions=${html`<${Fragment}>${nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Load new interface</button><//>`}>
       ${(() => {
-        // creating ifaces know their protocol → real wg/awg tag; onboarding doesn't yet → "load"
-        const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
+        // creating ifaces know their protocol → real wg/awg tag; onboarding doesn't yet → "load". `data`
+        // (client-optimistic) carries the values just entered, so the pending card shows them right away.
+        const pcard = (ifn, label, type, data) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
           <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-warn"><${Ic} i="clock"/>${label}</span></div>
-          <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it…</span><button class="btn btn-mini warn" title="Drop this pending request" onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>Cancel</button></div><${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
-        const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
-        const cr = nrec.creating || {};   // { iface: "wg" | "awg" }
-        const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]));
-        // optimistic client-side creates: shown the instant Create is clicked, until the node reports the
-        // iface (meta) or the panel's own pending (creating/onboarding) lands — then drop the client entry.
+          <div class="ifcard-rows">
+            ${data && (data.endpoint || data.port) ? html`<div class="ifrow"><span class="l">Listen</span><span class="r addr">${(data.endpoint || "") + (data.port ? ":" + data.port : "") || "—"}</span></div>` : null}
+            ${data && data.subnet ? html`<div class="ifrow"><span class="l">Subnet</span><span class="r addr">${data.subnet}</span></div>` : null}
+            <div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it…</span><button class="btn btn-mini warn" title="Drop this pending request" onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}>Cancel</button></div>
+            <${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
         const _pfx = name + "|";
+        // drop a client-optimistic entry only once the node REPORTS the iface (meta), or it's gone stale —
+        // keep it through the whole "creating" phase so its details stay on the card AND the next form's
+        // suggestions (name / subnet / port) account for it.
         for (const k of Object.keys(Store.ifaceNew)) {
           if (!k.startsWith(_pfx)) continue;
           const i = k.slice(_pfx.length);
-          if ((meta && meta[i]) || cr[i] || (nrec.onboarding || []).includes(i)) delete Store.ifaceNew[k];
+          if ((meta && meta[i]) || (Date.now() - (Store.ifaceNew[k].at || 0) > 900000)) delete Store.ifaceNew[k];
         }
-        const optNew = Object.keys(Store.ifaceNew).filter(k => k.startsWith(_pfx))
-          .map(k => ({ ifn: k.slice(_pfx.length), type: Store.ifaceNew[k].type }))
-          .filter(o => !(meta && meta[o.ifn]) && !pendOn.includes(o.ifn) && !pendCr.includes(o.ifn));
-        const pending = pendOn.concat(pendCr, optNew.map(o => o.ifn));
+        const optNames = Object.keys(Store.ifaceNew).filter(k => k.startsWith(_pfx)).map(k => k.slice(_pfx.length));
+        const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn));
+        const cr = nrec.creating || {};   // { iface: "wg" | "awg" } — server-side, deduped against the client cards
+        const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn));
+        const optCards = optNames.filter(ifn => !(meta && meta[ifn])).map(ifn => { const e = Store.ifaceNew[_pfx + ifn]; return pcard(ifn, e.type ? "creating" : "onboarding", e.type, e); });
+        const pending = pendOn.concat(pendCr, optNames);
         const pcards = pendOn.map(ifn => pcard(ifn, "onboarding", null))
           .concat(pendCr.map(ifn => pcard(ifn, "creating", cr[ifn])))
-          .concat(optNew.map(o => pcard(o.ifn, o.type ? "creating" : "onboarding", o.type)));
+          .concat(optCards);
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
           : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
@@ -1357,9 +1362,17 @@ function BridgePortSheet({ iface, port }) {   // shown after creating an iface o
 }
 // suggest the next listen port for a NEW interface ("iface") or turn-proxy ("turn") on a node: the highest
 // existing port OF THAT KIND + 1 (or the base default if none), skipping any port already used by either.
+// client-optimistic interfaces still being created on a node → [{name, subnet, port, type}]. Suggestions
+// fold these in so a 2nd "Load new interface" before the 1st is live picks the NEXT free name/subnet/port.
+function pendingIf(node) {
+  const pfx = node + "|", out = [];
+  for (const k of Object.keys(Store.ifaceNew)) if (k.startsWith(pfx)) { const e = Store.ifaceNew[k]; out.push({ name: k.slice(pfx.length), subnet: e.subnet || "", port: e.port || "", type: e.type }); }
+  return out;
+}
 function suggestPort(node, kind) {
   const snap = Store.stats[node] || {};
-  const ifacePorts = Object.values(snap.interfaces || {}).map(b => Number((b.meta || {}).listen_port)).filter(Boolean);
+  const ifacePorts = Object.values(snap.interfaces || {}).map(b => Number((b.meta || {}).listen_port)).filter(Boolean)
+    .concat(pendingIf(node).map(p => Number(p.port)).filter(Boolean));   // include interfaces being created
   const turnPorts = ((snap.turn_proxies) || []).map(t => Number(portOf(t.listen))).filter(Boolean);
   const used = new Set([...ifacePorts, ...turnPorts]);
   const mine = kind === "turn" ? turnPorts : ifacePorts;
@@ -1369,7 +1382,7 @@ function suggestPort(node, kind) {
 }
 // next free interface name (<base><n>): highest numeric suffix across ALL interfaces + 1, then skip any taken (mirrors install-node.sh iface_next_index)
 function suggestIface(node, proto) {
-  const names = Object.keys((Store.stats[node] || {}).interfaces || {});
+  const names = Object.keys((Store.stats[node] || {}).interfaces || {}).concat(pendingIf(node).map(p => p.name));   // include the ones being created
   const base = proto === "wg" ? "wg" : "awg";
   let hi = 0;
   for (const n of names) { const m = /(\d+)$/.exec(n); if (m) hi = Math.max(hi, Number(m[1])); }
@@ -1384,6 +1397,7 @@ function suggestSubnet(node) {
     const s = (b.meta || {}).subnet || (b.meta || {}).address || "";
     const m = /^10\.(\d{1,3})\./.exec(s); if (m) hi = Math.max(hi, Number(m[1]));
   }
+  for (const p of pendingIf(node)) { const m = /^10\.(\d{1,3})\./.exec(p.subnet || ""); if (m) hi = Math.max(hi, Number(m[1])); }   // include the ones being created
   return "10." + (hi + 1) + ".0.0/24";
 }
 function LoadIfaceSheet({ node }) {
@@ -1425,8 +1439,12 @@ function LoadIfaceSheet({ node }) {
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan });
     }
     if (!r.ok) return fail(r.error || "Request failed.");
-    const _newName = existing ? (conf.trim().split("/").pop() || "").replace(/\.conf$/i, "") : nm;
-    if (_newName) Store.ifaceNew[node + "|" + _newName] = { type: existing ? null : proto };   // optimistic: show the card the instant Create is clicked
+    // optimistic: show the card — WITH the details just entered — the instant Create is clicked (use the
+    // component-scoped state vars, not the else-block locals). Onboarding doesn't know subnet/port yet.
+    const _newName = existing ? (conf.trim().split("/").pop() || "").replace(/\.conf$/i, "") : iface.trim();
+    if (_newName) Store.ifaceNew[node + "|" + _newName] = existing
+      ? { type: null, at: Date.now() }
+      : { type: proto, subnet: subnet.trim(), port: port.trim(), endpoint: ipPickerVal(hostSel, hostCustom), at: Date.now() };
     closeModal(); Store.apply(); await Store.poll();
     if (!existing && isBridge) { openModal(html`<${BridgePortSheet} iface=${nm} port=${port.trim()}/>`); return; }
     toast(existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync.", "ok");
