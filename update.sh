@@ -39,6 +39,15 @@ if ! $DRYRUN; then
     LC_TOKEN="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
     LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
   fi
+  # docker deployment: the panel host_proc lives in ./data/lib, the node token/URL in .env (no bare-metal paths)
+  if [ -z "${LC_FILE:-}" ] && [ -z "${LC_TOKEN:-}" ] && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/.env" ]; then
+    command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel && [ -d "$DOCKER_DIR/data/lib" ] && LC_FILE="$DOCKER_DIR/data/lib/host_proc"
+    LC_TOKEN="$(sed -n 's/^NODE_TOKEN=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
+    LC_URL="$(sed -n 's/^PANEL_URL=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
+    LC_VERIFY="$(sed -n 's/^TLS_VERIFY=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"; LC_VERIFY="${LC_VERIFY:-no}"
+    case "$LC_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)   # master: swg-panel isn't resolvable from the host → loopback
+      LC_URL="$(printf '%s' "$LC_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:$(sed -n 's/^PANEL_PORT=//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 | tr -d '"')#")"; LC_VERIFY=no ;; esac
+  fi
   { [ -n "${LC_FILE:-}" ] || [ -n "${LC_TOKEN:-}" ]; } && lc_init update lc_emit_upd
 fi
 

@@ -348,6 +348,7 @@ const Store = {
   recentlyCreated: {},       // id -> ts (row flash)
   rotating: {},              // peer id -> ts — key rotation in flight; grid shows "rotating" until the new key is live
   ifaceOp: {},               // "node|iface" -> { verb:start|restart, phase:busy|ok|fail, started, until, err }
+  ifaceNew: {},              // "node|iface" -> { type } — optimistic "creating/onboarding" card shown the instant Create is clicked (until the server's own pending/meta picks it up)
   pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
   rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
   async init() {
@@ -1185,8 +1186,21 @@ function NodeDetail({ node: rawName }) {
         const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]));
         const cr = nrec.creating || {};   // { iface: "wg" | "awg" }
         const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]));
-        const pending = pendOn.concat(pendCr);
-        const pcards = pendOn.map(ifn => pcard(ifn, "onboarding", null)).concat(pendCr.map(ifn => pcard(ifn, "creating", cr[ifn])));
+        // optimistic client-side creates: shown the instant Create is clicked, until the node reports the
+        // iface (meta) or the panel's own pending (creating/onboarding) lands — then drop the client entry.
+        const _pfx = name + "|";
+        for (const k of Object.keys(Store.ifaceNew)) {
+          if (!k.startsWith(_pfx)) continue;
+          const i = k.slice(_pfx.length);
+          if ((meta && meta[i]) || cr[i] || (nrec.onboarding || []).includes(i)) delete Store.ifaceNew[k];
+        }
+        const optNew = Object.keys(Store.ifaceNew).filter(k => k.startsWith(_pfx))
+          .map(k => ({ ifn: k.slice(_pfx.length), type: Store.ifaceNew[k].type }))
+          .filter(o => !(meta && meta[o.ifn]) && !pendOn.includes(o.ifn) && !pendCr.includes(o.ifn));
+        const pending = pendOn.concat(pendCr, optNew.map(o => o.ifn));
+        const pcards = pendOn.map(ifn => pcard(ifn, "onboarding", null))
+          .concat(pendCr.map(ifn => pcard(ifn, "creating", cr[ifn])))
+          .concat(optNew.map(o => pcard(o.ifn, o.type ? "creating" : "onboarding", o.type)));
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
           : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
@@ -1411,7 +1425,9 @@ function LoadIfaceSheet({ node }) {
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan });
     }
     if (!r.ok) return fail(r.error || "Request failed.");
-    closeModal(); await Store.poll();
+    const _newName = existing ? (conf.trim().split("/").pop() || "").replace(/\.conf$/i, "") : nm;
+    if (_newName) Store.ifaceNew[node + "|" + _newName] = { type: existing ? null : proto };   // optimistic: show the card the instant Create is clicked
+    closeModal(); Store.apply(); await Store.poll();
     if (!existing && isBridge) { openModal(html`<${BridgePortSheet} iface=${nm} port=${port.trim()}/>`); return; }
     toast(existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync.", "ok");
   };
@@ -2683,6 +2699,8 @@ function UsageBar({ value, total, color }) {
 function ifaceTags(node) {
   const meta = Store.describe[node] || {};
   return Object.keys(meta).map(ifn => {
+    const op = Store.ifaceOp[node + "|" + ifn];   // start/stop/restart in flight → show it here too (optimistic, set on click)
+    if (op && op.phase === "busy") return html`<a class="tg tg-busy" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}><${Ic} i="clock"/>${ifn} ${IFOP_BUSY[op.verb] || op.verb}</a>`;
     const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
     const muted = nodeStale(node) || ifaceNotUp(node, ifn);
     return html`<a class=${"tg tg-" + type + (muted ? " muted" : "")} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}>${ifn}</a>`;
