@@ -600,8 +600,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* data row: four fixed-start columns so peers/interfaces/turn/throughput line up across
    cards regardless of content. Peers fits 555/999, interfaces ~two 8-char tags, turn takes
    the rest, throughput (no label) sits at the right with down/up each a fixed width. */
-.nmeta{display:grid;grid-template-columns:118px 210px 1fr 180px;gap:10px 18px;align-items:baseline}
+.nmeta{display:grid;grid-template-columns:118px 1fr 180px;gap:10px 18px;align-items:baseline}
 .nm-item{display:flex;align-items:baseline;gap:8px;min-width:0}
+.nm-ifaces{align-items:flex-start}   /* the interfaces+turns block is a vertical list, label stays top-aligned */
+.ifturns{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ift-row{display:flex;align-items:center;flex-wrap:wrap;gap:5px;min-width:0}   /* one interface + the turn-proxies that forward to it */
+.ift-row .nm-l{opacity:.7}
 .nm-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}
 .nm-v{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
 .nm-v.nm-peers{font-size:15px;color:var(--ink)}

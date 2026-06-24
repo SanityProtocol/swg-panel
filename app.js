@@ -611,8 +611,15 @@ function procTag(state, onX, err) {
   }
   return html`<span class="nstat proc"><${Ic} i="clock"/> ${lbl}</span>`;   // in-progress
 }
-async function dismissNodeProc(id) { const r = await api.procClearNode(id); if (r && r.ok === false) return toast(r.error || "Couldn't dismiss.", "err"); await Store.poll(); }
-async function dismissHostProc() { const r = await api.procClearHost(); if (r && r.ok === false) return toast(r.error || "Couldn't dismiss.", "err"); await Store.poll(); }
+function dismissNodeProc(id) {   // optimistic: drop the tag NOW, clear on the server in the background; re-poll only if it fails
+  const n = (Store.nodes || []).find(x => x.id === id);
+  if (n) { n.proc_status = null; n.proc_err = null; bus.emit(); }
+  api.procClearNode(id).then(r => { if (r && r.ok === false) { toast(r.error || "Couldn't dismiss.", "err"); Store.poll(); } });
+}
+function dismissHostProc() {   // optimistic
+  Store.hostProc = null; Store.hostProcErr = null; bus.emit();
+  api.procClearHost().then(r => { if (r && r.ok === false) { toast(r.error || "Couldn't dismiss.", "err"); Store.poll(); } });
+}
 function Badge({ s, title }) {
   const ic = STATUS_ICON[s];
   return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
@@ -2860,11 +2867,21 @@ async function checkForUpdate(e, nodeId) {
 }
 function NodeCard({ n }) {
   const st = n.status || "dangling";
-  const ifTags = ifaceTags(n.id);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
   const snap = Store.stats[n.id];
   const tps = (snap && snap.turn_proxies) || [];
+  // interfaces, each with the turn-proxies that forward to it nested under it (leftover turns → orphan row)
+  const turnChip = tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(n.id) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`;
+  const dmeta = Store.describe[n.id] || {};
+  const usedTp = new Set();
+  const ifRows = Object.keys(dmeta).map(ifn => {
+    const itype = (dmeta[ifn].awg_params && Object.keys(dmeta[ifn].awg_params).length) ? "awg" : "wg";
+    const muted = nodeStale(n.id) || ifaceNotUp(n.id, ifn);
+    const its = turnProxiesFor(n.id, ifn); its.forEach(tp => usedTp.add(tp.service));
+    return { ifn, itype, muted, its };
+  });
+  const orphanTps = tps.filter(tp => !usedTp.has(tp.service));
   const h = n.health, hasCpu = h && Array.isArray(h.load);
   const l1 = hasCpu ? (h.load[0] || 0) : 0, cpct = Math.min(100, l1 / ((h && h.ncpu) || 1) * 100);
   const removing = n.removing;
@@ -2887,8 +2904,10 @@ function NodeCard({ n }) {
         ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
             trigger=${() => html`<span class="nm-l">Peers</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
         : html`<span class="nm-l">Peers</span><span class="nm-v nm-peers faint">none</span>`}</span>
-      <span class="nm-item"><span class="nm-l">Interfaces</span>${ifTags.length ? html`<span class="tags">${ifTags}</span>` : html`<span class="nm-v faint">—</span>`}</span>
-      <span class="nm-item"><span class="nm-l">Turn-proxies</span>${tps.length ? html`<span class="tags">${tps.map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(n.id) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}</span>` : html`<span class="nm-v faint">—</span>`}</span>
+      <span class="nm-item nm-ifaces"><span class="nm-l">Interfaces</span>${ifRows.length || orphanTps.length
+        ? html`<span class="ifturns">${ifRows.map(r => html`<span class="ift-row">
+            <a class=${"tg tg-" + r.itype + (r.muted ? " muted" : "")} href=${"#/node/" + encodeURIComponent(n.id) + "/" + encodeURIComponent(r.ifn)} onClick=${e => e.stopPropagation()}>${r.ifn}</a>${r.its.map(turnChip)}</span>`)}${orphanTps.length ? html`<span class="ift-row ift-orphan"><span class="nm-l">turn</span>${orphanTps.map(turnChip)}</span>` : null}</span>`
+        : html`<span class="nm-v faint">—</span>`}</span>
       <span class="nm-item nm-thru"><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
     </div>
     <div class="nacts" onClick=${e => e.stopPropagation()}>
