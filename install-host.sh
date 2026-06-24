@@ -744,18 +744,20 @@ if [ "$TLS_MODE" = reuse ]; then REUSE_TLS=yes; TLS_MODE="${TLS_SAVED:-selfsigne
 # web server
 step "Web server"
 echo
-# re-install → offer to KEEP the current web-server mode (default), same as the TLS step.
-_srv_opts="internal nginx caddy skip"; _srv_def="${SERVE_SAVED:-internal}"; _int_lbl="$(b "$(col "$C_BLUE" 'internal (default)')")"
+# re-install → offer to KEEP the current web-server mode (default), same as the TLS step. Accept the first
+# letter OR the full word (both are listed as options).
+_srv_opts="i internal n nginx c caddy s skip"; _srv_def=i; _int_lbl="$(keyd i 'nternal (default)')"
 if [ "$EXISTING_HOST" = yes ] && [ -n "$SERVE_SAVED" ]; then
-  menu "$(b "$(col "$C_BLUE" 'reuse (default)')")"  "Keep the current web-server mode from this install ($(b "$SERVE_SAVED")) — recommended for a re-install"
-  _srv_opts="reuse $_srv_opts"; _srv_def=reuse; _int_lbl="$(col "$C_BLUE" internal)"
+  menu "$(keyd r 'euse (default)')"  "Keep the current web-server mode from this install ($(b "$SERVE_SAVED")) — recommended for a re-install"
+  _srv_opts="r reuse $_srv_opts"; _srv_def=r; _int_lbl="$(key i 'nternal')"
 fi
-menu "$_int_lbl"                                    "Self-contained, no separate web-server is required"
-menu "$(col "$C_BLUE" nginx)"                       "Web content will be served via an Nginx reverse proxy"
-menu "$(col "$C_BLUE" caddy)"                       "Web content will be served via a Caddy reverse proxy"
-menu "$(col "$C_GREY" skip)"                        "If you are planning to configure the web server manually"
+menu "$_int_lbl"            "Self-contained, no separate web-server is required"
+menu "$(key n 'ginx')"     "Web content will be served via an Nginx reverse proxy"
+menu "$(key c 'addy')"     "Web content will be served via a Caddy reverse proxy"
+menu "$(key s 'kip')"      "If you are planning to configure the web server manually"
 case "$SERVE_MODE" in standalone) SERVE_MODE=internal;; esac
 ask_choice "Select web server" "$_srv_def" SERVE_MODE "$_srv_opts"
+case "$SERVE_MODE" in r) SERVE_MODE=reuse;; i) SERVE_MODE=internal;; n) SERVE_MODE=nginx;; c) SERVE_MODE=caddy;; s) SERVE_MODE=skip;; esac
 [ "$SERVE_MODE" = reuse ] && SERVE_MODE="${SERVE_SAVED:-internal}"
 
 # port: internal serves the public port itself; proxy/manual modes keep the panel on a loopback port
