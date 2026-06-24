@@ -706,7 +706,9 @@ manage_node_ifaces(){
   local mine bm cand dock kern n pick xfer kpick dpick bad yn doit
   while :; do
     mine="$(current_node_ifaces | tr '\n' ' ')" || true   # under set -euo pipefail these subs can exit non-zero
-    bm="$(bm_node_ifaces)" || true
+    # interfaces a co-located bare node still lists, MINUS any already on this docker node (those aren't
+    # migration candidates — showing them in both "already on this node" and "bare-metal node" is confusing)
+    bm="$(for n in $(bm_node_ifaces); do _in "$n" "$mine" || printf '%s ' "$n"; done)" || true
     # candidates from EVERY source: live ifaces, our docker source-of-truth dir, AND the default
     # wg/awg dirs (any /etc/amnezia subdir + /etc/wireguard) so a pre-existing user install is found.
     cand="$( { host_wg_ifaces        # live iface NAMES (already bare)
