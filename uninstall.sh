@@ -213,6 +213,9 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
   docker_node_goodbye                 # sign off to the panel (token + URL from .env) before teardown
   run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'
   run sh -c 'ids=$(docker ps -aq --filter name=swg-turn- 2>/dev/null); [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1 || true'   # this node's turn-proxy containers
+  # a HOST-networking node creates its wg/awg netdevs in the HOST namespace; they survive `docker rm` → delete them
+  for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] || continue; _n="$(basename "$_c" .conf)"
+    command -v ip >/dev/null 2>&1 && ip link show "$_n" >/dev/null 2>&1 && { run ip link delete dev "$_n"; info "  removed leftover host interface $(b "$_n")"; }; done
   if docker_running swg-panel; then
     [ "$KNODE" = yes ] && info "  Kept $DOCKER_DIR/data/node-confs (peers re-onboardable); panel data untouched." \
                        || { _rm_node_data; info "  Removed the node's interface configs; panel data untouched."; }
