@@ -1338,7 +1338,6 @@ if [ "$HOST_HAS_WG" = yes ] && [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $
   for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
     printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \
       "$(bb "${IF_ENDPOINT[$n]:-$HOST_ENDPOINT_IP}:$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
-    [ -n "$c" ] && printf '        sudo nano %s\n' "$c"
   done
 fi
 # turn-proxy + interface info only matter when this box is also a node (master); a panel-only host has none

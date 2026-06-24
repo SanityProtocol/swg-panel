@@ -614,6 +614,16 @@ elif [ "$EXISTING" = yes ] && [ -n "$EXIST_TOKEN" ]; then NODE_TOKEN="$EXIST_TOK
 elif $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
 else ask_valid "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
 case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
+
+# RE-INSTALL: signal "re-installing" to the panel NOW — right after the connection step (the first prompt) —
+# so the node tile shows it immediately, not after all the later prompts. Also drop the keypair backups so
+# swg-noded re-harvests the current confs. lc_init's traps then emit re-installed / aborted / failed on exit.
+if [ "$EXISTING" = yes ] && ! $DRYRUN; then
+  rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
+  LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
+  [ "${SWG_CONVERT:-}" = 1 ] || lc_init reinstall lc_emit_post   # convert.sh owns the signal during a conversion
+fi
+
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   ask_yn "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n TLS_VERIFY
 fi
@@ -630,13 +640,9 @@ if [ "$EXISTING" = yes ] && [ -n "$NODE_TOKEN" ] && [ -n "$PANEL_URL" ] && ! $DR
   [ -n "$_cur" ] && [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""    # unchanged → nothing to push
 fi
 
-# all data entered — NOW signal the panel + drop the keypair backups (so swg-noded re-harvests the current
-# confs), just before the node is touched. lc_init's traps emit re-installed / aborted / failed on exit.
-if [ "$EXISTING" = yes ] && ! $DRYRUN; then
-  rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
-  LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
-  [ "${SWG_CONVERT:-}" = 1 ] || lc_init reinstall lc_emit_post   # convert.sh owns the signal during a conversion
-  [ -n "$PUSH_NAME" ] && curl -fsS ${_ins:-} --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+# push a box-name change (if the operator entered a new one above)
+if [ "$EXISTING" = yes ] && ! $DRYRUN && [ -n "$PUSH_NAME" ]; then
+  curl -fsS ${_ins:-} --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
     --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
 
@@ -744,7 +750,6 @@ if [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (manage pee
   for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
     printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \
       "$(bb "${IF_ENDPOINT[$n]:-$ENDPOINT_IP}:$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
-    [ -n "$c" ] && printf '        sudo nano %s\n' "$c"
   done
 fi
 detect_turn

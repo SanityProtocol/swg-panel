@@ -1067,15 +1067,17 @@ BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from
 # shipped in a newer image never reach a re-installed node (this is exactly how a stale entrypoint kept
 # silently dropping an interface added on re-install). Pull the profile's image(s) up front, like update.sh.
 # Skipped when --build (we're compiling locally) and non-fatal (offline → fall back to the local image).
+# compose runs on the REAL terminal (${LC_OUT:-1}) — under lc_init's log-capture pipe it'd otherwise see a
+# non-tty and drop its progress bar to plain line-by-line output. (LC_OUT unset on a fresh install → fd 1.)
 if ! $BUILD; then
   if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE pull)"
-  else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" pull ) \
+  else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" pull ) >&"${LC_OUT:-1}" 2>&"${LC_OUT:-1}" \
          && ok "pulled current image(s) for profile $(b "$PROFILE")" \
          || warn "image pull failed — recreating from the local image (run $(b 'bootstrap update') for the newest)"
   fi
 fi
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
-else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
+else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ) >&"${LC_OUT:-1}" 2>&"${LC_OUT:-1}"; fi
 $DRYRUN || rm -f /var/lib/swg-recovery 2>/dev/null || true   # stack is up → clear any convert-recovery marker
 
 # ── surface the cert outcome (don't let a silent self-signed fallback hide as a Cloudflare 526) ──
@@ -1114,7 +1116,7 @@ case "$PROFILE" in node|master)
   _names="$(node_iface_rows | cut -d' ' -f1)"   # ALL node interfaces — persisted node-confs ∪ this run's NODE_IFACES (not just the new one)
   if [ -n "$_names" ]; then
     while read -r _nm; do [ -n "$_nm" ] || continue
-      iface_row "$_nm"; printf '        sudo nano %s\n' "$INSTALL_DIR/data/node-confs/$_nm.conf"
+      iface_row "$_nm"
     done <<< "$_names"
   else _pr=amneziawg; [ "$NODE_PLAIN_WG" = yes ] && _pr=wireguard
     printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb "$NODE_ENDPOINT:$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
