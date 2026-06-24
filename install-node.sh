@@ -622,7 +622,12 @@ case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the ke
 if [ "$EXISTING" = yes ] && ! $DRYRUN; then
   rm -rf /var/lib/swg-noded/iface-keys 2>/dev/null || true
   LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
-  [ "${SWG_CONVERT:-}" = 1 ] || lc_init reinstall lc_emit_post   # convert.sh owns the signal during a conversion
+  if [ "${SWG_CONVERT:-}" != 1 ]; then   # convert.sh owns the signal during a conversion
+    _ov="$(cat "$NODED_DIR/VERSION" 2>/dev/null || true)"
+    lc_init reinstall lc_emit_post
+    _nv="$(cat "$SRC/VERSION" 2>/dev/null || true)"
+    [ -n "$_ov" ] && [ -n "$_nv" ] && [ "$_ov" != "$_nv" ] && LC_SUCCESS="reinstalled-updated"   # version bumped → "re-installed and updated"
+  fi
 fi
 
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then

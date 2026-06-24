@@ -722,7 +722,7 @@ def _node_issues(c, snap):
 PROC_GRACE = 600          # 10 min in-progress window; a stuck op (lost connection) then falls back to failed
 PROC_SUCCESS_SHOW = 8     # success tag lifetime (comfortably covers one ~5 s poll, then clears)
 PROC_INPROGRESS = ("reinstalling", "converting-bare", "converting-docker", "updating", "uninstalling")
-PROC_SUCCESS = ("reinstalled", "converted-bare", "converted-docker", "updated", "uptodate")
+PROC_SUCCESS = ("reinstalled", "reinstalled-updated", "converted-bare", "converted-docker", "updated", "uptodate")
 _PROC_FAIL = {"reinstalling": "reinstall-failed", "converting-bare": "convert-failed",
               "converting-docker": "convert-failed", "updating": "update-failed", "uninstalling": "uninstall-failed"}
 def _proc_inprogress(s): return s in PROC_INPROGRESS
@@ -2218,26 +2218,11 @@ class Handler(BaseHTTPRequestHandler):
         if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
             node["kind"] = snap["kind"]
             with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        if snap and node.get("proc_status") and _proc_inprogress((node.get("proc_status") or {}).get("state")):  # the node checked back in mid-op
-            cur_state = (node.get("proc_status") or {}).get("state")
-            tgt = {"converting-bare": "baremetal", "converting-docker": "docker"}.get(cur_state)
-            # a convert is only "done" when the TARGET method reports. A stray snapshot from the OLD method
-            # (the dying container / torn-down units) must NOT clear "converting…", or the UI flips to stale
-            # mid-convert. reinstall (tgt None) clears on any snapshot, as before. Terminal states
-            # (success/aborted/failed) are left for their own lifecycle (success times out; the rest persist).
-            if tgt and snap.get("kind") and snap.get("kind") != tgt:
-                pass
-            else:
-                ps = node.pop("proc_status", None)
-                if (ps or {}).get("state") == "reinstalling":  # a re-install blesses the CURRENT state → re-bless server keys
-                    for ov in (node.get("ifaces") or {}).values():
-                        ov.pop("public_key", None)
-                        if isinstance(ov.get("_drift"), dict):
-                            ov["_drift"].pop("public_key", None)
-                            if not ov["_drift"]:
-                                ov.pop("_drift", None)
-                with contextlib.suppress(Exception):
-                    nodes_save(Handler.deps["nodes_path"], nodes)
+        # NB: an in-progress proc_status (reinstalling / updating / converting…) is NOT cleared by a sync —
+        # swg-noded keeps syncing right through a re-install/update, so clearing here would hide the tag
+        # immediately. The lifecycle script's TERMINAL (success/aborted/failed) replaces it; a stuck op with
+        # no terminal falls back to "<op> failed" after PROC_GRACE (see _proc_view). The re-install key
+        # re-bless now happens when "reinstalling" is received (see _node_proc_status), not on sync.
         stats_dir = Handler.deps.get("stats_dir")
         if stats_dir and snap:
             sf = node.get("stats_file", f"stats-{nid}.json")
@@ -2519,6 +2504,13 @@ class Handler(BaseHTTPRequestHandler):
                 if err and (state.endswith("-failed") or state == "failed"):
                     ps["err"] = err
                 nodes[nid]["proc_status"] = ps
+                if state == "reinstalling":   # a re-install adopts the node's CURRENT server keys → drop pinned/drift pubkeys
+                    for ov in (nodes[nid].get("ifaces") or {}).values():
+                        ov.pop("public_key", None)
+                        if isinstance(ov.get("_drift"), dict):
+                            ov["_drift"].pop("public_key", None)
+                            if not ov["_drift"]:
+                                ov.pop("_drift", None)
             else:
                 nodes[nid].pop("proc_status", None)          # blank/unknown = clear it
             nodes_save(Handler.deps["nodes_path"], nodes)

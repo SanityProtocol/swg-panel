@@ -651,19 +651,24 @@ fi
 case "$ROLE_SEL" in master) ROLE="host+node";; host) ROLE="host";; esac
 HOST_HAS_WG=no; [ "$ROLE" = "host+node" ] && HOST_HAS_WG=yes
 
-# RE-INSTALL: flag "re-installing" NOW — right after the role step (the first prompt) — so the panel header
-# and (for a master) the local-node tile show it during the rest of the prompts. The lc_init traps + the
-# terminal come later (at the execution boundary); this is just the early in-progress hint.
+# RE-INSTALL: signal "re-installing" NOW — right after the role step (the first prompt) — and ARM the
+# lifecycle traps here, so an abort (Ctrl-C) or failure during the REST of the prompts is reported too. Emits
+# to BOTH the panel header (host_proc file) and, for a master, the local node's tile (POST to its loopback
+# panel); lc_init's EXIT trap writes the terminal (reinstalled[-updated] / -aborted / -failed) to both.
+HOST_OLD_VER=""
 if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
-  mkdir -p "$STATE_DIR" 2>/dev/null || true; printf 'reinstalling' > "$STATE_DIR/host_proc" 2>/dev/null || true
-  if [ "$HOST_HAS_WG" = yes ] && [ -f /etc/swg-agent/config.json ]; then
-    _eu="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
-    _et="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
-    _ev="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
-    if [ -n "$_eu" ] && [ -n "$_et" ]; then _ek=""; [ "$_ev" = yes ] || _ek="-k"
-      curl -fsS $_ek --max-time 8 -X POST -H "Authorization: Bearer $_et" -H "Content-Type: application/json" --data '{"state":"reinstalling"}' "${_eu%/}/api/node/proc-status" >/dev/null 2>&1 || true
-    fi
+  HOST_OLD_VER="$(cat "$PANEL_DIR/VERSION" 2>/dev/null || true)"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  LC_FILE="$STATE_DIR/host_proc"
+  if [ "$HOST_HAS_WG" = yes ] && [ -f /etc/swg-agent/config.json ]; then   # master → also drive the local node's tile
+    LC_URL="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
+    LC_TOKEN="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
+    LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
   fi
+  lc_emit_host(){ lc_emit_file "$1" "${2:-}"; lc_emit_post "$1" "${2:-}"; }   # host_proc + (master) the local node
+  lc_init reinstall lc_emit_host
+  _nv="$(cat "$SRC/VERSION" 2>/dev/null || true)"
+  [ -n "$HOST_OLD_VER" ] && [ -n "$_nv" ] && [ "$HOST_OLD_VER" != "$_nv" ] && LC_SUCCESS="reinstalled-updated"   # version bumped → "re-installed and updated"
 fi
 
 # panel URL (may include a subpath, e.g. vpn.example.com/swg)
@@ -809,26 +814,13 @@ fi
 
 echo; info "Plan: method=$METHOD role=$ROLE serve=$SERVE_MODE tls=$TLS_MODE base=${PANEL_BASE:-/} store_configs=$STORE_CONFIGS"
 
-# all prompts answered — NOW signal the work is starting (not at launch). The panel's own tag rides the
-# host_proc file (survives the panel's restart); lc_init's traps write re-installed / aborted / failed on exit
-# (a success tag fixes the "too fast to see" case since host_proc isn't cleared on boot).
-if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  LC_FILE="$STATE_DIR/host_proc"; lc_init reinstall lc_emit_file
-  # master: also flag the LOCAL NODE re-installing (so its tile shows it) and push a box-name change. The
-  # node's own loopback panel URL + token are in its agent config; the running panel updates nodes.json,
-  # which the restarted panel then loads. The node tag auto-clears when swg-noded syncs back.
-  if [ "$HOST_HAS_WG" = yes ] && [ -f /etc/swg-agent/config.json ]; then
-    _lu="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
-    _lt="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
-    _lv="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
-    if [ -n "$_lu" ] && [ -n "$_lt" ]; then
-      _lk=""; [ "$_lv" = yes ] || _lk="-k"
-      curl -fsS $_lk --max-time 8 -X POST -H "Authorization: Bearer $_lt" -H "Content-Type: application/json" --data '{"state":"reinstalling"}' "${_lu%/}/api/node/proc-status" >/dev/null 2>&1 || true
-      _cur="$(curl -fsS $_lk --max-time 8 -H "Authorization: Bearer $_lt" "${_lu%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
-      [ -n "$HOST_NODE_NAME" ] && [ "$HOST_NODE_NAME" != "$_cur" ] && curl -fsS $_lk --max-time 8 -X POST -H "Authorization: Bearer $_lt" -H "Content-Type: application/json" --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$HOST_NODE_NAME")" "${_lu%/}/api/node/rename" >/dev/null 2>&1 || true
-    fi
-  fi
+# master: push a box-name change to the local node (the name was entered above). The lc signal + traps were
+# armed right after the role step (LC_URL/LC_TOKEN point at the local node's loopback panel); here we only
+# push the rename, if it changed — the OLD panel is still running at this point and the restart loads it.
+if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN && [ "$HOST_HAS_WG" = yes ] && [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ]; then
+  _lk=""; [ "${LC_VERIFY:-no}" = yes ] || _lk="-k"
+  _cur="$(curl -fsS $_lk --max-time 8 -H "Authorization: Bearer $LC_TOKEN" "${LC_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+  [ -n "$HOST_NODE_NAME" ] && [ "$HOST_NODE_NAME" != "$_cur" ] && curl -fsS $_lk --max-time 8 -X POST -H "Authorization: Bearer $LC_TOKEN" -H "Content-Type: application/json" --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$HOST_NODE_NAME")" "${LC_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
 
 # ───────────────────────── users / dirs ─────────────────────────

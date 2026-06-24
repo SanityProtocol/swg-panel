@@ -591,14 +591,14 @@ const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending:
 // a node/panel host that's mid re-install or method conversion (signalled before it goes down)
 const PROC_LABEL = {
   reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker", updating: "updating", uninstalling: "uninstalling",
-  reinstalled: "re-installed", "converted-bare": "converted to bare-metal", "converted-docker": "converted to docker", updated: "updated", uptodate: "up to date",
+  reinstalled: "re-installed", "reinstalled-updated": "re-installed and updated", "converted-bare": "converted to bare-metal", "converted-docker": "converted to docker", updated: "updated", uptodate: "up to date",
   "reinstall-aborted": "re-install aborted", "convert-aborted": "convert aborted", "update-aborted": "update aborted", "uninstall-aborted": "uninstall aborted",
   "reinstall-failed": "re-install failed", "convert-failed": "convert failed", "update-failed": "update failed", "uninstall-failed": "uninstall failed", failed: "failed" };
 // Lifecycle tag categories. inProc = an op actually running (violet clock, blocks actions). Terminals:
 // success (green, ~5s, no ×), aborted (grey + ×), failed (red + error popup + ×) — all shown beside the real status.
 const procFailed  = s => !!s && /failed$/.test(s);
 const procAborted = s => !!s && /aborted$/.test(s);
-const procSuccess = s => s === "reinstalled" || s === "converted-bare" || s === "converted-docker" || s === "updated" || s === "uptodate";
+const procSuccess = s => s === "reinstalled" || s === "reinstalled-updated" || s === "converted-bare" || s === "converted-docker" || s === "updated" || s === "uptodate";
 const inProc      = s => !!s && !procFailed(s) && !procAborted(s) && !procSuccess(s);
 function procTag(state, onX, err) {
   const lbl = PROC_LABEL[state] || state;
@@ -3788,19 +3788,19 @@ function App() {
     }
     const slot = $("#updslot");
     if (slot) {
+      // a host lifecycle status (re-install / update) OWNS the slot — in-progress, then its terminal
+      // (success ~5s auto-clears, aborted/failed until ×) — so it never shows alongside the update-check
+      // "up to date"/button. With no lifecycle status, the slot is the normal update widget.
       let body;
-      if (inProc(Store.hostProc)) body = `<span class="hostproc-tag">${UPD_SPIN_SVG} ${esc(PROC_LABEL[Store.hostProc] || Store.hostProc)}</span>`;   // mid re-install → replaces the slot
-      else {
-        if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
-        else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
-        else if (Store.updFlash && Date.now() < Store.updFlash) body = `<span class="livepill upd-uptodate" title="You're on the latest version"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> up to date</span>`;
-        else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
-        // host re-install terminal (success / aborted / failed) shown BEFORE the host's normal status
-        const _hl = esc(PROC_LABEL[Store.hostProc] || Store.hostProc || "");
-        if (procSuccess(Store.hostProc)) body = `<span class="hostproc-tag ok">${CHECK_SVG} ${_hl}</span>` + body;   // green, auto-clears (no ×)
-        else if (procAborted(Store.hostProc)) body = `<span class="hostproc-tag aborted">${INFO_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;
-        else if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail${Store.hostProcErr ? ' tg-click' : ''}" id="hostproc-tag">${WARN_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;   // whole tag clickable → error popup
-      }
+      const _hl = esc(PROC_LABEL[Store.hostProc] || Store.hostProc || "");
+      if (inProc(Store.hostProc)) body = `<span class="hostproc-tag">${UPD_SPIN_SVG} ${_hl}</span>`;
+      else if (procSuccess(Store.hostProc)) body = `<span class="hostproc-tag ok">${CHECK_SVG} ${_hl}</span>`;   // green, auto-clears (no ×)
+      else if (procAborted(Store.hostProc)) body = `<span class="hostproc-tag aborted">${INFO_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>`;
+      else if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail${Store.hostProcErr ? ' tg-click' : ''}" id="hostproc-tag">${WARN_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>`;   // whole tag clickable → error popup
+      else if (hostUpdating) body = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
+      else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
+      else if (Store.updFlash && Date.now() < Store.updFlash) body = `<span class="livepill upd-uptodate" title="You're on the latest version"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> up to date</span>`;
+      else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
       slot.innerHTML = body;
       const b = $("#host-upd"); if (b) b.onclick = updateHost;
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
