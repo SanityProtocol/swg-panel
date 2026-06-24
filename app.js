@@ -1123,7 +1123,7 @@ function NodeDetail({ node: rawName }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${inProc(nrec.proc_status) ? procTag(nrec.proc_status) : html`<${Fragment}>${nrec.proc_status ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err) : null}${live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<//>`}<${HealthDot} issues=${nrec.issues}/></div>
+      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}${nrec.proc_status ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err) : null}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? "Node is running a newer version than the panel — update the panel to catch up" : ""}>v${nrec.version}</span>` : null}
@@ -1134,10 +1134,9 @@ function NodeDetail({ node: rawName }) {
           : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Check for updates"} onClick=${e => checkForUpdate(e, nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
         <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit node"} onClick=${() => openNodeEdit(nrec)}><${Ic} i="pencil"/></button>
-        ${down
-          ? html`<button class="iconbtn recover" title="Recover this node — rotate its token and get a fresh paste-on-the-server install command (the node keeps its peers)" onClick=${() => openNodeRecover(nrec)}><${Ic} i="key"/> recover</button>`
-          : html`<button class="iconbtn" title="Rotate token (re-enroll / re-install)" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>`}
+        ${down ? null : html`<button class="iconbtn" title="Rotate token (re-enroll / re-install)" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>`}
         <button class="iconbtn danger" title=${nrec.removing ? "Force remove node" : "Remove node"} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
+        ${down ? html`<button class="iconbtn recover" title="Recover this node — rotate its token and get a fresh paste-on-the-server install command (the node keeps its peers)" onClick=${() => openNodeRecover(nrec)}><${Ic} i="key"/> recover</button>` : null}
       </div>
     </div>
 
@@ -2870,10 +2869,9 @@ function NodeCard({ n }) {
       ${n.outdated && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
-      ${inProc(n.proc_status) ? procTag(n.proc_status) : html`<${Fragment}>${n.proc_status ? procTag(n.proc_status, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, n.proc_err) : null}${
-          st === "online" ? html`<span class="reporting">reporting</span>`
+      ${st === "online" ? html`<span class="reporting">reporting</span>`
         : st === "offline" ? html`<span class="badge b-unknown ic"><${Ic} i="info"/>offline</span>`
-        : html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>`}<//>`}
+        : html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>`}${n.proc_status ? procTag(n.proc_status, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, n.proc_err) : null}
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
       <span class="grow"></span>
