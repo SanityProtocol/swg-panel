@@ -617,8 +617,6 @@ DOM_SAVED=""; BASE_SAVED=""; PORT_SAVED=""; TLS_SAVED=""; SERVE_SAVED=""; ROLE_S
 _unit=/etc/systemd/system/swg-panel-server.service
 if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
   EXISTING_HOST=yes; KEEP_AUTH=yes
-  # flag the still-running panel as re-installing so the header shows it; the new process clears it on boot
-  $DRYRUN || { mkdir -p "$STATE_DIR" 2>/dev/null; printf 'reinstalling' > "$STATE_DIR/host_proc" 2>/dev/null || true; }
   [ "${BASIC_USER:-admin}" = admin ] && [ -f "$ETC_DIR/auth" ] && BASIC_USER="$(cut -d: -f1 "$ETC_DIR/auth" 2>/dev/null || echo admin)"
   if [ -f "$ETC_DIR/install.conf" ]; then                 # snapshot of the previous install's answers
     DOM_SAVED="$(sed -n 's/^PANEL_DOMAIN=//p'        "$ETC_DIR/install.conf" | head -1)"
@@ -706,15 +704,21 @@ PANEL_DOMAIN="$PANEL_HOST_NOPORT"
 # TLS certificate
 step "TLS certificate"
 echo
-menu "$(keyd l 'etsencrypt (default)')"   "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
+# re-install with a cert already in $TLS_DIR → offer to KEEP it (default), no re-issue.
+_tls_opts="l letsencrypt c cloudflare 15 cf15 s selfsigned sk skip"; _tls_def="${TLS_SAVED:-l}"; _le_lbl="$(keyd l 'etsencrypt (default)')"
+if [ "$EXISTING_HOST" = yes ] && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
+  menu "$(keyd r 'euse (default)')"       "Keep the existing certificate + TLS mode from this install — no re-issue (recommended for a re-install)"
+  _tls_opts="r reuse $_tls_opts"; _tls_def=r; _le_lbl="$(key l 'etsencrypt')"
+fi
+menu "$_le_lbl"                           "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
 menu "$(key c 'loudflare') + letsencrypt" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
 menu "$(key 15 'years cloudflare')"       "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
 menu "$(key s 'elfsigned')"               "OK for testing"
 menu "$(key sk 'ip')"                     "If you are planning to use your own certificate (or terminate TLS elsewhere)"
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
 case "$TLS_MODE" in manual|none) TLS_MODE=skip;; esac
-ask_choice "Select TLS certificate" "${TLS_SAVED:-l}" TLS_MODE "l letsencrypt c cloudflare 15 cf15 s selfsigned sk skip"
-case "$TLS_MODE" in l) TLS_MODE=letsencrypt;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; sk) TLS_MODE=skip;; esac
+ask_choice "Select TLS certificate" "$_tls_def" TLS_MODE "$_tls_opts"
+case "$TLS_MODE" in r) TLS_MODE=reuse;; l) TLS_MODE=letsencrypt;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; sk) TLS_MODE=skip;; esac
 # every public-CA / origin mode needs a real FQDN — check before asking for credentials
 case "$TLS_MODE" in letsencrypt|cloudflare|cf15)
   case "$PANEL_DOMAIN" in *.*) : ;; *) die "TLS=$TLS_MODE needs a domain (FQDN) in the panel URL, not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
@@ -732,16 +736,27 @@ case "$TLS_MODE" in
                fi
                ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "" CF_ORIGIN_TOKEN v_cforigin "paste an API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;   # pre-filled from the saved snapshot on re-install
 esac
+# reuse → keep the existing cert; carry the previous real mode forward (serve logic + install.conf) and flag
+# REUSE_TLS so the cert step skips re-issue. (reuse matched no case above, so no FQDN check / cred prompt ran.)
+REUSE_TLS=no
+if [ "$TLS_MODE" = reuse ]; then REUSE_TLS=yes; TLS_MODE="${TLS_SAVED:-selfsigned}"; ok "reusing the existing certificate in $TLS_DIR — no re-issue (TLS mode: $(b "$TLS_MODE"))"; fi
 
 # web server
 step "Web server"
 echo
-menu "$(b "$(col "$C_BLUE" 'internal (default)')")" "Self-contained, no separate web-server is required"
+# re-install → offer to KEEP the current web-server mode (default), same as the TLS step.
+_srv_opts="internal nginx caddy skip"; _srv_def="${SERVE_SAVED:-internal}"; _int_lbl="$(b "$(col "$C_BLUE" 'internal (default)')")"
+if [ "$EXISTING_HOST" = yes ] && [ -n "$SERVE_SAVED" ]; then
+  menu "$(b "$(col "$C_BLUE" 'reuse (default)')")"  "Keep the current web-server mode from this install ($(b "$SERVE_SAVED")) — recommended for a re-install"
+  _srv_opts="reuse $_srv_opts"; _srv_def=reuse; _int_lbl="$(col "$C_BLUE" internal)"
+fi
+menu "$_int_lbl"                                    "Self-contained, no separate web-server is required"
 menu "$(col "$C_BLUE" nginx)"                       "Web content will be served via an Nginx reverse proxy"
 menu "$(col "$C_BLUE" caddy)"                       "Web content will be served via a Caddy reverse proxy"
 menu "$(col "$C_GREY" skip)"                        "If you are planning to configure the web server manually"
 case "$SERVE_MODE" in standalone) SERVE_MODE=internal;; esac
-ask_choice "Select web server" "${SERVE_SAVED:-internal}" SERVE_MODE "internal nginx caddy skip"
+ask_choice "Select web server" "$_srv_def" SERVE_MODE "$_srv_opts"
+[ "$SERVE_MODE" = reuse ] && SERVE_MODE="${SERVE_SAVED:-internal}"
 
 # port: internal serves the public port itself; proxy/manual modes keep the panel on a loopback port
 if [ "$SERVE_MODE" = internal ]; then
@@ -762,7 +777,10 @@ declare -a SELECTED
 if [ "$HOST_HAS_WG" = yes ]; then
   echo; info "BARE-METAL SWG NODE SETUP"
   step "Node name for THIS box"
-  ask_valid "Node name for THIS box" "${NODENAME_SAVED:-$(hostname -s 2>/dev/null || hostname)}" HOST_NODE_NAME v_name "1–40 chars: letters, digits, - or _"
+  # default to the name the PANEL currently has for this box's local node (it may have been renamed in the
+  # UI) — matched by verifying the agent token against each nodes.json token_hash; else saved name, else host.
+  _pn="$(panel_node_name "$STATE_DIR/nodes.json" /etc/swg-agent/config.json)"
+  ask_valid "Node name for THIS box" "${_pn:-${NODENAME_SAVED:-$(hostname -s 2>/dev/null || hostname)}}" HOST_NODE_NAME v_name "1–40 chars: letters, digits, - or _"
   step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
   echo
   choose_ifaces
@@ -772,6 +790,10 @@ if [ "$HOST_HAS_WG" = yes ]; then
 fi
 
 echo; info "Plan: method=$METHOD role=$ROLE serve=$SERVE_MODE tls=$TLS_MODE base=${PANEL_BASE:-/} store_configs=$STORE_CONFIGS"
+
+# all prompts answered — NOW flag the still-running panel as re-installing (header shows it; the new process
+# clears it on boot). Like convert.sh, signal only when the actual work starts, not when the script launches.
+[ "$EXISTING_HOST" = yes ] && ! $DRYRUN && { mkdir -p "$STATE_DIR" 2>/dev/null; printf 'reinstalling' > "$STATE_DIR/host_proc" 2>/dev/null || true; }
 
 # ───────────────────────── users / dirs ─────────────────────────
 info "Users, groups, directories"
@@ -1026,6 +1048,10 @@ mk_selfsigned(){ CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key
   if $DRYRUN; then echo "    [skip] openssl self-signed -> $TLS_DIR (CN=$PANEL_DOMAIN)"; : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"
   else run openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$CERT_KEY" -out "$CERT_FULLCHAIN" -subj "/CN=${PANEL_DOMAIN}" -addext "subjectAltName=$(san_for "$PANEL_DOMAIN")"; fi
   cert_perms; ok "self-signed certificate for ${PANEL_DOMAIN} (10y)"; }
+reuse_cert(){   # re-install with REUSE_TLS=yes: keep the cert already in $TLS_DIR, no re-issue
+  if [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
+    CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; cert_perms; ok "keeping the existing certificate in $TLS_DIR"
+  else warn "no existing certificate in $TLS_DIR — generating a self-signed one"; mk_selfsigned; fi; }
 use_provided_certs(){   # skip-with-own-cert: copy caller-supplied cert into $TLS_DIR; 0 if used, 1 if none
   [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ] || return 1
   mkdir -p "$PREFIX$TLS_DIR"
@@ -1067,6 +1093,7 @@ PY
 # ---- internal: the panel serves its own TLS; cert lands in $TLS_DIR ----
 obtain_cert_internal(){
   mkdir -p "$PREFIX$TLS_DIR"
+  [ "${REUSE_TLS:-no}" = yes ] && { reuse_cert; return 0; }
   case "$TLS_MODE" in
     skip) use_provided_certs || { CERT_FULLCHAIN=""; CERT_KEY=""; ok "TLS skipped — panel will serve plain HTTP"; }; return 0;;
     selfsigned) mk_selfsigned;;
@@ -1129,6 +1156,7 @@ serve_internal(){
 
 # ---- reverse-proxy (nginx / caddy): panel on loopback, proxy terminates TLS ----
 setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to use
+  [ "${REUSE_TLS:-no}" = yes ] && { reuse_cert; return 0; }
   case "$TLS_MODE" in
     selfsigned) mk_selfsigned;;
     cf15) mk_cf_origin;;

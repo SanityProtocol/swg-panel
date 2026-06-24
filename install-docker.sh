@@ -367,24 +367,6 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   else
     info "Existing docker install detected in $INSTALL_DIR — keeping your .env + ./data (token, login, interfaces). To start fresh, uninstall first."
   fi
-  if ! $DRYRUN && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
-    # node re-install: flag the panel ("re-installing" tag + server-key re-baseline) and drop the
-    # keypair backups so swg-noded re-harvests the current confs on its next sync.
-    _purl="$PANEL_URL"; _ins=""; [ "${TLS_VERIFY:-no}" = yes ] || _ins="-k"
-    case "$PANEL_URL" in   # master: the compose name swg-panel isn't resolvable from the host — hit the published port on loopback
-      *//swg-panel|*//swg-panel/*|*//swg-panel:*)
-        _purl="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; _ins="-k" ;;
-    esac
-    curl -fsS $_ins --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
-      --data '{"state":"reinstalling"}' "${_purl%/}/api/node/proc-status" >/dev/null 2>&1 || true
-    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
-  fi
-  # panel re-install: if this deployment runs a panel, flag the still-running container's host_proc so
-  # the header shows "re-installing"; the recreated panel clears it on boot. ./data/lib ↦ /var/lib/swg-panel.
-  if ! $DRYRUN && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
-    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null
-    printf 'reinstalling' > "$INSTALL_DIR/data/lib/host_proc" 2>/dev/null || true
-  fi
 fi
 
 # ───────────────────────── per-profile requirements ─────────────────────────
@@ -781,7 +763,10 @@ case "$PROFILE" in
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
       echo; info "DOCKER SWG NODE SETUP"
       step "Node name for THIS box"
-      ask_valid "Node name for THIS box" "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)" NODE_NAME v_name "1–40 chars: letters, digits, - or _"
+      # default to the name the PANEL currently has for this box's local node (may have been renamed in the
+      # UI) — matched by verifying NODE_TOKEN against each nodes.json token_hash; else the hostname.
+      _pn="$(panel_node_name_tok "$INSTALL_DIR/data/lib/nodes.json" "${NODE_TOKEN:-}")"
+      ask_valid "Node name for THIS box" "${_pn:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)}" NODE_NAME v_name "1–40 chars: letters, digits, - or _"
       manage_node_ifaces
       # the node-level endpoint is required by compose; ensure it's set (kept existing interfaces only)
       [ -n "$NODE_ENDPOINT" ] || { NODE_ENDPOINT="$(detect_public_ip)"; echo "    Used $(bb "$NODE_ENDPOINT") as this node's endpoint (change it later in the panel)"; }
@@ -1039,6 +1024,26 @@ fi
 
 # ───────────────────────── bring it up ─────────────────────────
 # (port checks happen earlier: the panel port at the URL step, :80 at the TLS step for letsencrypt)
+# re-install: everything's staged — NOW signal, just before recreating containers (like convert.sh: when the
+# work starts, not at launch). Node → tell the panel ("re-installing" tag + server-key re-baseline) and drop
+# keypair backups so swg-noded re-harvests. Panel → flag the still-running container's host_proc so the header
+# shows it (the recreated panel clears it on boot).
+if [ "$EXISTING_DOCKER" = yes ] && ! $DRYRUN; then
+  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
+    _purl="$PANEL_URL"; _ins=""; [ "${TLS_VERIFY:-no}" = yes ] || _ins="-k"
+    case "$PANEL_URL" in   # master: the compose name swg-panel isn't resolvable from the host — hit the published port on loopback
+      *//swg-panel|*//swg-panel/*|*//swg-panel:*)
+        _purl="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; _ins="-k" ;;
+    esac
+    curl -fsS $_ins --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+      --data '{"state":"reinstalling"}' "${_purl%/}/api/node/proc-status" >/dev/null 2>&1 || true
+    rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
+  fi
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+    mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null
+    printf 'reinstalling' > "$INSTALL_DIR/data/lib/host_proc" 2>/dev/null || true
+  fi
+fi
 info "Starting compose profile '$PROFILE'$($BUILD && echo ' (building from source)')"
 BUILDFLAG=""; $BUILD && BUILDFLAG=--build   # default pulls prebuilt images from GHCR
 # A re-install MUST refresh the prebuilt image first: compose's pull_policy is "missing", so a plain
