@@ -2908,12 +2908,14 @@ function NodeCard({ n }) {
         ? html`<span class="ifturns">${ifRows.map(r => html`<span class="ift-row">
             <a class=${"tg tg-" + r.itype + (r.muted ? " muted" : "")} href=${"#/node/" + encodeURIComponent(n.id) + "/" + encodeURIComponent(r.ifn)} onClick=${e => e.stopPropagation()}>${r.ifn}</a>${r.its.map(turnChip)}</span>`)}${orphanTps.length ? html`<span class="ift-row ift-orphan"><span class="nm-l">turn</span>${orphanTps.map(turnChip)}</span>` : null}</span>`
         : html`<span class="nm-v faint">—</span>`}</span>
-      <span class="nm-item nm-thru"><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
     </div>
-    <div class="nacts" onClick=${e => e.stopPropagation()}>
-      <button class="iconbtn" title="Edit node" onClick=${() => openNodeEdit(n)}><${Ic} i="pencil"/></button>
-      <button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(n)}><${Ic} i="key"/></button>
-      <button class="iconbtn danger" title=${removing ? "Force remove" : "Remove node"} onClick=${() => openNodeRemove(n)}><${Ic} i="trash"/></button>
+    <div class="nright">
+      <div class="nacts" onClick=${e => e.stopPropagation()}>
+        <button class="iconbtn" title="Edit node" onClick=${() => openNodeEdit(n)}><${Ic} i="pencil"/></button>
+        <button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(n)}><${Ic} i="key"/></button>
+        <button class="iconbtn danger" title=${removing ? "Force remove" : "Remove node"} onClick=${() => openNodeRemove(n)}><${Ic} i="trash"/></button>
+      </div>
+      <span class="nm-item nm-thru"><span class="nm-l">Throughput</span><span class="nm-v thru"><span class="down">↓ ${rate(n.rx_speed)}</span><span class="up">↑ ${rate(n.tx_speed)}</span></span></span>
     </div>
   </div>`;
 }

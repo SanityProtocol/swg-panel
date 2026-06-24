@@ -600,7 +600,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* data row: four fixed-start columns so peers/interfaces/turn/throughput line up across
    cards regardless of content. Peers fits 555/999, interfaces ~two 8-char tags, turn takes
    the rest, throughput (no label) sits at the right with down/up each a fixed width. */
-.nmeta{display:grid;grid-template-columns:118px 1fr 180px;gap:10px 18px;align-items:baseline}
+.nmeta{display:grid;grid-template-columns:118px 1fr;gap:10px 18px;align-items:baseline}
 .nm-item{display:flex;align-items:baseline;gap:8px;min-width:0}
 .nm-ifaces{align-items:flex-start}   /* the interfaces+turns block is a vertical list, label stays top-aligned */
 .ifturns{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -611,15 +611,18 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-v.nm-peers{font-size:15px;color:var(--ink)}
 .nm-v.nm-peers small{font-size:.72em;color:var(--faint)}
 .nm-v .down{color:var(--online)} .nm-v .up{color:var(--ready)}
+.nm-thru{align-items:baseline;gap:10px;justify-content:flex-end}   /* Throughput label + numbers, right-aligned */
 .nm-thru .thru{display:flex;gap:16px}
-.nm-thru .down,.nm-thru .up{min-width:80px;white-space:nowrap}
+.nm-thru .down,.nm-thru .up{min-width:80px;white-space:nowrap;text-align:right}
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
 .nm-cpu .hm-bar{width:245px;flex:none}
 /* reserve room for up to 333.33 and right-align, so the bar->value gap shrinks as the number grows */
 .nm-cpu .nm-v{flex:none;min-width:50px;text-align:right}
 /* controls: horizontal row in the second grid row, so they line up with the data row */
-.nacts{grid-column:2;display:flex;align-items:center;gap:4px;padding-left:6px;background:transparent;cursor:default}
-@media(max-width:680px){.ncard .nmeta{grid-column:1 / -1}.nacts{grid-column:1 / -1;justify-content:flex-end;border-top:1px solid var(--line);margin-top:10px;padding-top:10px}}
+/* right column: action buttons on the turn-proxies (top) line, throughput right-aligned below */
+.nright{grid-column:2;align-self:stretch;display:flex;flex-direction:column;align-items:flex-end;justify-content:space-between;gap:12px;padding-left:6px}
+.nacts{display:flex;align-items:center;gap:4px;background:transparent;cursor:default}
+@media(max-width:680px){.ncard .nmeta{grid-column:1 / -1}.nright{grid-column:1 / -1;align-items:stretch;border-top:1px solid var(--line);margin-top:10px;padding-top:10px}.nacts{justify-content:flex-end}}
 .btn-danger{background:rgba(240,89,107,.1);color:var(--dangling);border:1px solid rgba(240,89,107,.32);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
 .btn-danger:hover{background:rgba(240,89,107,.2)}
 .btn-danger:disabled{opacity:.5;cursor:not-allowed}
