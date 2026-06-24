@@ -82,6 +82,29 @@ lc_init(){ LC_OP="$1"; LC_EMIT="$2"; LC_ABORT=""; LC_HANDOFF=""; LC_DONE=""; LC_
   trap '_lc_exit' EXIT
   lc_emit "$(_lc_inprogress "$LC_OP")"; }                      # step 1 done → signal in-progress now
 
+# ── convert switch helpers: tear the OLD method down ONLY at the final switch (after the new one is fully
+#    staged), so the node stays up the whole time. Generic (scan disk) → no per-name args needed. ───────────
+# lc_teardown_baremetal [migrated-turn-svcs…] — stop+remove a bare-metal node: daemon, every wg/awg iface,
+# files, and ONLY the host turn-proxies passed in (the ones being recreated on docker; ones the operator chose
+# to keep stay running). Generic for the wg/awg side (scan disk) → no per-iface args needed.
+lc_teardown_baremetal(){
+  systemctl disable --now swg-noded 2>/dev/null || true
+  local f n s
+  for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$f" ] || continue; n="$(basename "$f" .conf)"
+    awg-quick down "$n" 2>/dev/null || wg-quick down "$n" 2>/dev/null || true
+    systemctl disable "awg-quick@$n" 2>/dev/null || true; systemctl disable "wg-quick@$n" 2>/dev/null || true
+    rm -f "$f"; done
+  for s in "$@"; do [ -n "$s" ] || continue; systemctl disable --now "$s" 2>/dev/null || true; rm -f "/etc/systemd/system/$s.service"; done   # migrated host turn-proxies only
+  rm -f /etc/systemd/system/swg-noded.service; systemctl daemon-reload 2>/dev/null || true
+  rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent; }
+lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), freeing wg ports + host netdevs
+  local d="${1:-/opt/swg-panel-docker}"
+  command -v docker >/dev/null 2>&1 || return 0
+  docker rm -f swg-node >/dev/null 2>&1 || true
+  if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then   # node-only → take the stack down
+    [ -f "$d/docker-compose.yml" ] && ( cd "$d" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1 || true; } )
+  fi; }
+
 # ── turn-proxy: the 6 forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
 turn_repo_owner(){ case "$1" in
   WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;

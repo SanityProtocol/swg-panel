@@ -390,6 +390,15 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     done
     SELECTED=("${sel[@]}")
   fi
+  # CONVERT docker→bare: the docker node stayed UP through every prompt above. NOW — right before the bare
+  # interfaces come up — do the ATOMIC SWITCH: stop the docker datapath (frees the wg ports) + clear any host
+  # netdevs it left behind, so wg-quick can bind. The conf/key COPY already happened (convert.sh), so this is
+  # the only destructive step, and it's at the very end.
+  if [ "${SWG_CONVERT:-}" = 1 ] && ! $DRYRUN && command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
+    info "Switching over — stopping the docker node, then bringing the interfaces up bare-metal…"
+    lc_teardown_docker "${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
+    for _n in ${SELECTED[@]+"${SELECTED[@]}"}; do _n="${_n// /}"; [ -n "$_n" ] && command -v ip >/dev/null 2>&1 && ip link show "$_n" >/dev/null 2>&1 && ip link delete dev "$_n" 2>/dev/null || true; done
+  fi
   apply_specs   # install tools + write confs + bring up every queued interface now (after all prompts)
   detect_wg
   local _ep

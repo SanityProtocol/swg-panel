@@ -336,24 +336,10 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   info "Converting the docker node → bare-metal — keeping its token, endpoint and interfaces."
   write_recovery "$(for s in $specs; do printf '%s ' "${s%:*}"; done)"   # persist identity BEFORE teardown so a dropped session can resume
   LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; lc_init convert-bare lc_emit_post   # converting… now; converted-bare/aborted/failed on exit
-  # 1) stop the docker datapath so it releases the wg UDP ports + /dev/net/tun
-  if command -v docker >/dev/null 2>&1; then
-    docker rm -f swg-node >/dev/null 2>&1 || true
-    # node-only deployment (no panel container) → take the whole stack down to free its network
-    if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
-      [ -f "$DOCKER_DIR/docker-compose.yml" ] && ( cd "$DOCKER_DIR" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1 || true; } )
-    fi
-  fi
-  # host-net leftover: a swg-node container on HOST networking creates its wg/awg netdevs in the HOST
-  # kernel namespace; kernel-wireguard ones survive `docker rm`, so bare-metal wg-quick later fails with
-  # "wgN already exists". Remove any leftover netdev of a name we're about to migrate before bringing it up.
-  for s in $specs; do nm="${s%:*}"
-    if command -v ip >/dev/null 2>&1 && ip link show "$nm" >/dev/null 2>&1; then
-      ip link delete dev "$nm" 2>/dev/null || true
-      info "  removed a leftover $(b "$nm") interface (left in the host kernel by the docker container)"
-    fi
-  done
-  # 2) copy each interface's .conf into the bare-metal location (private key + Amnezia params carry over)
+  # NB: the DOCKER NODE STAYS UP + serving through the copy below AND install-node.sh's prompts. install-node
+  #     does the ATOMIC SWITCH (it runs with SWG_CONVERT=1): it stops the docker datapath + clears leftover
+  #     host netdevs ONLY right before it brings the bare interfaces up — never before.
+  # 1) copy each interface's .conf into the bare-metal location (private key + Amnezia params carry over)
   names=""
   for s in $specs; do nm="${s%:*}"; pr="${s#*:}"
     src="$confd/$nm.conf"
@@ -496,24 +482,10 @@ EOF
   #    STILL UP — so an abort/failure here leaves the node fully intact (no recovery needed; just re-run).
   turn_to_docker   # migrate this box's host turn-proxies → the docker node's record (→ containers)
 
-  # 3) everything is staged → NOW tear the bare datapath down (free the wg ports + remove its units/files).
-  #    NO panel goodbye (the token is reused, so the panel keeps this node). This is the point of no return,
-  #    so the recovery marker is written right here — an interrupt past this resumes instead of starting over.
-  info "Stopping the bare-metal node…"
+  # 3) everything is staged; the BARE NODE IS STILL UP + serving the whole time. Persist the identity (so an
+  #    interrupt during the final switch can resume), then hand off — install-docker.sh does the ATOMIC SWITCH:
+  #    it tears the bare node down ONLY right before bringing the container up (see SWG_CONVERT_DIR=convert-docker).
   write_recovery "$names"
-  systemctl disable --now swg-noded 2>/dev/null || true
-  while IFS="$(printf '\t')" read -r nm src; do
-    [ -n "$nm" ] || continue
-    awg-quick down "$nm" 2>/dev/null || wg-quick down "$nm" 2>/dev/null || true
-    systemctl disable "awg-quick@$nm" 2>/dev/null || true; systemctl disable "wg-quick@$nm" 2>/dev/null || true
-    rm -f "/etc/amnezia/amneziawg/$nm.conf" "/etc/wireguard/$nm.conf"
-  done <<EOF
-$ifaces
-EOF
-  rm -f /etc/systemd/system/swg-noded.service
-  for _svc in $MIGRATED_TURNS; do systemctl disable --now "$_svc" 2>/dev/null || true; rm -f "/etc/systemd/system/$_svc.service"; done   # now tear the staged host turn-proxies down
-  systemctl daemon-reload 2>/dev/null || true
-  rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent
 
   # 4) hand off to install-docker.sh (docker node) with the SAME token. It detects the imported confs
   #    (picker shows them as "already on this node"; add more if you want), writes .env and brings the
@@ -522,7 +494,7 @@ EOF
   echo
   lc_handoff   # exec replaces us → install-docker.sh owns the terminal; SWG_CONVERT_DIR makes it emit "converted-docker"
   exec env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" NODE_ENDPOINT="$NEP" TLS_VERIFY="$NVERIFY" SWG_CONVERT_DIR=convert-docker \
-       bash "$SRC/install-docker.sh" node
+       SWG_CONVERT_TURNS="$MIGRATED_TURNS" bash "$SRC/install-docker.sh" node
 fi
 
 die "unsupported conversion: $FROM → $TO ($ROLE)"

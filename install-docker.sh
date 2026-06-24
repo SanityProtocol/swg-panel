@@ -1080,6 +1080,9 @@ if ! $BUILD; then
          || warn "image pull failed — recreating from the local image (run $(b 'bootstrap update') for the newest)"
   fi
 fi
+# CONVERT bare→docker: the bare node stayed UP through every prompt + the image pull above. NOW — the last
+# moment before the container binds its ports — stop+remove it. This is the atomic switch (old down → new up).
+[ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN && { info "Switching over — stopping the bare-metal node, then starting the container…"; lc_teardown_baremetal ${SWG_CONVERT_TURNS:-}; }
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else ( cd "$INSTALL_DIR" && $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ) >&"${LC_OUT:-1}" 2>&"${LC_OUT:-1}"; fi
 $DRYRUN || rm -f /var/lib/swg-recovery 2>/dev/null || true   # stack is up → clear any convert-recovery marker
