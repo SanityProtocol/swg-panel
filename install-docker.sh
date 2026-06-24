@@ -128,7 +128,7 @@ parse_panel_url(){ local u="$1" hostport rest
     *:*) PANEL_HOST_NOPORT="${hostport%%:*}"; URL_PORT="${hostport##*:}";;
     *)   PANEL_HOST_NOPORT="$hostport"; URL_PORT="";;
   esac; }
-ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
+ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   while :; do
     if read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
@@ -205,6 +205,8 @@ PY
 # ListenPort) first, then this session's NODE_IFACES additions not already on disk. Drives the turn-proxy
 # forward-to picker so it lists ALL interfaces with their REAL ports — not just the bootstrap NODE_IFACE on a
 # stale .env port (which is why a re-install showed only awg0:51820 + the new iface, missing wg2/wg4).
+# the interface a turn-proxy forwards to: the node iface whose listen port matches the connect port (else empty)
+fwd_iface_for(){ local cp="${1##*:}" nm pt; while read -r nm pt _; do [ -n "$nm" ] && [ "$pt" = "$cp" ] && { printf '%s' "$nm"; return; }; done <<< "$(node_iface_rows)"; }
 node_iface_rows(){
   local seen=" " c n pt pr e _ifs
   if [ -d "$INSTALL_DIR/data/node-confs" ]; then
@@ -285,7 +287,7 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
     detect_turn; names=("${!TP_LISTEN[@]}")
     echo
     if [ "${#names[@]}" -gt 0 ]; then echo "  Installed turn-proxy servers:"; echo
-      for n in "${names[@]}"; do printf '    %s%s%s (%s → %s)\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}"; done
+      for n in "${names[@]}"; do _fw="$(fwd_iface_for "${TP_CONNECT[$n]}")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done
       echo
     else warn "No turn-proxy servers found on this box."; fi
     echo
@@ -1134,7 +1136,7 @@ except Exception: tps=[]
 for t in tps:
     if t.get("service"): print(t["service"]+"\t"+t.get("listen","")+"\t"+t.get("connect",""))' "$_trec" 2>/dev/null || true)"
     if [ -n "$_tlist" ]; then echo; echo "  $(b 'Turn-proxy') instances (sibling containers — swg-turn-*, managed from the panel):"; echo
-      while IFS="$(printf '\t')" read -r _svc _lis _con; do [ -n "$_svc" ] && printf '    %s%s%s (%s → %s)\n' "$C_GREEN" "$_svc" "$RESET" "${_lis:-?}" "${_con:-?}"; done <<< "$_tlist"
+      while IFS="$(printf '\t')" read -r _svc _lis _con; do [ -n "$_svc" ] || continue; _fw="$(fwd_iface_for "$_con")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$_svc" "$RESET" "${_lis:-?}" "${_con:-?}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done <<< "$_tlist"
     fi
   fi
   echo; echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)" ;;

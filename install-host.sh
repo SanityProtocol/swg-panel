@@ -137,13 +137,14 @@ v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;;
 # v_iface/v_subnet/v_hostport now in lib/common.sh
 
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
-ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc
+ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done
     warn "ignoring invalid $var='${!var}' (expected: $opts)"; fi
   while :; do
     if read -rp "  $p [$(col "$C_BLUE" "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no
     case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
+    case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option
     for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; return; }; done
     [ "$forced" = yes ] && { warn "forcing unrecognised value: $v"; printf -v "$var" '%s' "$v"; return; }
     [ $rc -ne 0 ] && die "‘$v’ is not one of: $opts (and no interactive input to re-prompt)"
@@ -458,7 +459,7 @@ choose_turn_proxy(){   # one looped step: list installed (if any) + available br
     echo
     if [ "${#names[@]}" -gt 0 ]; then
       echo "  Installed turn-proxy servers:"; echo
-      for n in "${names[@]}"; do printf '    %s%s%s (%s → %s)\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}"; done
+      for n in "${names[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done
       echo
     else
       warn "No turn-proxy servers found on this box."
@@ -547,9 +548,9 @@ v_subnet_free(){ v_subnet "$1" || return 1; subnet_used "$1" && return 1; return
 spec_iface(){ # prompt for one interface and queue it (no install yet)
   local _proto proto name port subnet addr cmd dir wan ep idx defname defport defsub
   idx=$(( ${#IF_CMD[@]} + ${#SPEC_ORDER[@]} ))   # offset defaults past existing + already-queued ifaces
-  menu "$(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the host's AmneziaWG kernel module."
-  menu "$(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Runs on the host's WireGuard kernel module."
-  ask_choice "Select the protocol you want to create" "a" _proto "a w awg wg amneziawg wireguard"
+  menu "$(col "$C_BLUE" '[1]') $(keyd a 'mneziawg (default)')" "WireGuard with AmneziaWG obfuscation. Runs on the host's AmneziaWG kernel module."
+  menu "$(col "$C_BLUE" '[2]') $(key w 'ireguard')"            "Plain WireGuard — no obfuscation, lowest overhead. Runs on the host's WireGuard kernel module."
+  ask_choice "Select the protocol you want to create (number, letter or name)" "a" _proto "a w awg wg amneziawg wireguard"
   case "$_proto" in w|wg|wireguard) proto=wg; cmd=wg;  dir=/etc/wireguard;;
                                  *) proto=awg; cmd=awg; dir=/etc/amnezia/amneziawg;; esac
   local nidx; nidx=$(iface_next_index)   # name = highest-suffix+1, bumped past any exact collision
@@ -668,9 +669,9 @@ ROLE_SEL=""
 case "$ROLE" in master|host+node) ROLE_SEL=master;; host) ROLE_SEL=host;; node) die "for a node-only box run install-node.sh, not this script";; esac
 if [ -z "$ROLE_SEL" ]; then
   step "Server role"
-  menu "$(b "$(col "$C_BLUE" 'master (default)')")" "Masternode — this server will host the panel and run WG/AWG interfaces"
-  menu "$(col "$C_BLUE" host)"                       "This server will host only the panel. WG/AWG nodes will be deployed separately"
-  ask_choice "Select role" "${ROLE_SAVED:-master}" ROLE_SEL "master host"
+  menu "$(b "$(col "$C_BLUE" '[1] master (default)')")" "Masternode — this server will host the panel and run WG/AWG interfaces"
+  menu "$(col "$C_BLUE" '[2] host')"                     "This server will host only the panel. WG/AWG nodes will be deployed separately"
+  ask_choice "Select role (number, letter or name)" "${ROLE_SAVED:-master}" ROLE_SEL "master host"
 fi
 case "$ROLE_SEL" in master) ROLE="host+node";; host) ROLE="host";; esac
 HOST_HAS_WG=no; [ "$ROLE" = "host+node" ] && HOST_HAS_WG=yes

@@ -35,7 +35,7 @@ warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 info(){ echo "${C_BL}::${RESET} $*"; }
 # ask_choice <prompt> <default> <var> "<opt…>" — accepts a full option OR its first-letter shortcut;
 # shows the default's letter as [x]; friendly re-prompt on bad input.
-ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr
+ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
   sc="${d:0:1}"
   if [ -n "${!var:-}" ]; then for o in $opts; do [ "${!var}" = "$o" ] && return; done; fi
   pr="  $p${d:+ [$(col "$C_BLUE" "$sc")]}: "
@@ -43,6 +43,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr
     printf '%s' "$pr" >/dev/tty 2>/dev/null   # read -p writes the prompt to stderr (lost if redirected) — print it to the tty ourselves
     if read -r v </dev/tty 2>/dev/null; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"
+    case "$v" in ''|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] → the Nth option
     for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; return; }; done
     [ "$rc" -ne 0 ] && die "no interactive input for '$p' — pass it as a flag (one of: $opts)"
     if [ -n "$v" ]; then
@@ -159,18 +160,18 @@ if [ -z "$METHOD" ]; then
   if [ "$ROLE_EXPLICIT" = yes ]; then METHOD=baremetal     # a bare role word (host/master/node) ⇒ bare-metal
   else
     step "Installation method"
-    menu "$(b "$(col "$C_BLUE" '[b]are-metal (default)')")" "Runs directly on this host (kernel datapath, best throughput). Recommended for a dedicated box."
-    menu "$(col "$C_BLUE" '[d]ocker')"                      "Runs in containers (userspace datapath, isolated). No kernel module needed."
-    ask_choice "Select the installation method" "bare-metal" METHOD "bare-metal baremetal docker"
+    menu "$(b "$(col "$C_BLUE" '[1] [b]are-metal (default)')")" "Runs directly on this host (kernel datapath, best throughput). Recommended for a dedicated box."
+    menu "$(col "$C_BLUE" '[2] [d]ocker')"                      "Runs in containers (userspace datapath, isolated). No kernel module needed."
+    ask_choice "Select the installation method (number, letter or name)" "bare-metal" METHOD "bare-metal docker baremetal"
     [ "$METHOD" = bare-metal ] && METHOD=baremetal
   fi
 fi
 if [ -z "$ROLE" ]; then
   step "Server role"
-  menu "$(b "$(col "$C_BLUE" '[m]aster (default)')")" "Panel + a local WireGuard/AmneziaWG node on this box (all-in-one)."
-  menu "$(col "$C_BLUE" '[h]ost')"                    "Panel only; entry-server nodes are deployed separately (run their command from the panel)."
-  menu "$(col "$C_BLUE" '[n]ode')"                    "An entry server that joins an existing panel."
-  ask_choice "Select the server role" "master" ROLE "master host node"
+  menu "$(b "$(col "$C_BLUE" '[1] [m]aster (default)')")" "Panel + a local WireGuard/AmneziaWG node on this box (all-in-one)."
+  menu "$(col "$C_BLUE" '[2] [h]ost')"                    "Panel only; entry-server nodes are deployed separately (run their command from the panel)."
+  menu "$(col "$C_BLUE" '[3] [n]ode')"                    "An entry server that joins an existing panel."
+  ask_choice "Select the server role (number, letter or name)" "master" ROLE "master host node"
 fi
 # ───────────────── cross-method conflict (requested method ≠ what's already installed) ─────────────────
 # For each component the requested role needs, if the OTHER method has it but THIS method doesn't,
@@ -188,10 +189,10 @@ if [ -n "$CONFLICT" ]; then
     echo "$(b "! A $(mlabel "$OTHER") $ROLE is already installed on this box.")"
     echo "  Convert it to a $(mlabel "$METHOD") $ROLE, or re-install it as it is?"
     echo
-    menu "$(b "$(col "$C_BLUE" '[c]onvert')")"      "Migrate it to $(mlabel "$METHOD") — all settings / users / peers are preserved. A port/interface pre-flight runs first."
-    menu "$(col "$C_BLUE" '[k]eep and re-install')" "Leave it on $(mlabel "$OTHER") and just re-install it (you didn't mean to switch methods)."
-    menu "$(col "$C_BLUE" '[a]bort')"               "Exit without changing anything."
-    CHOICE=""; ask_choice "Convert, keep, or abort" "convert" CHOICE "convert keep abort"
+    menu "$(b "$(col "$C_BLUE" '[1] [c]onvert')")"      "Migrate it to $(mlabel "$METHOD") — all settings / users / peers are preserved. A port/interface pre-flight runs first."
+    menu "$(col "$C_BLUE" '[2] [k]eep and re-install')" "Leave it on $(mlabel "$OTHER") and just re-install it (you didn't mean to switch methods)."
+    menu "$(col "$C_BLUE" '[3] [a]bort')"               "Exit without changing anything."
+    CHOICE=""; ask_choice "Convert, keep, or abort (number, letter or name)" "convert" CHOICE "convert keep abort"
     case "$CHOICE" in
       abort) info "aborted — nothing changed."; exit 0;;
       keep)  METHOD="$OTHER"; info "keeping the existing $(mlabel "$OTHER") install — re-installing it as-is."; break;;
