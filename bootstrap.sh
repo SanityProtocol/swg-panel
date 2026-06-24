@@ -207,6 +207,27 @@ if [ -n "$CONFLICT" ]; then
   done
 fi
 
+# A plain (re-)install clears a stale leftover from an ABORTED conversion — it's just an outdated copy, so no
+# prompt. The live node (still on its original method) is untouched: an ACTIVE other-method install would have
+# offered 'convert' above, so reaching here as a plain install means there's nothing live of the other method.
+if [ "${CHOICE:-}" != convert ]; then
+  if [ "$METHOD" = baremetal ] && [ -d "$DOCKER_DIR" ] && command -v docker >/dev/null 2>&1 \
+       && ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'swg-(node|panel)'; then
+    warn "clearing a stale docker leftover at $(b "$DOCKER_DIR") (no container — an aborted bare→docker convert)"
+    rm -rf "$DOCKER_DIR" 2>/dev/null || true
+  fi
+  # docker (re-)install: drop ONLY the bare confs that match this docker node's confs (i.e. copies a docker→bare
+  # convert left behind) and only when no swg-noded is installed — never an unrelated WireGuard config.
+  if [ "$METHOD" = docker ] && [ -d "$DOCKER_DIR/data/node-confs" ] && command -v systemctl >/dev/null 2>&1 \
+       && ! systemctl list-unit-files swg-noded.service >/dev/null 2>&1; then
+    _cleared=
+    for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] || continue; _n="$(basename "$_c" .conf)"
+      for _d in "/etc/amnezia/amneziawg/$_n.conf" "/etc/wireguard/$_n.conf"; do [ -f "$_d" ] && { rm -f "$_d"; _cleared=1; }; done
+    done
+    [ -n "$_cleared" ] && warn "cleared stale bare-metal conf leftovers from an aborted docker→bare convert (no swg-noded service)"
+  fi
+fi
+
 export STEP_BASE="$STEP"          # the installer numbers its steps from here
 
 # ── salvage a leftover node identity (NO recovery marker — e.g. an install/convert interrupted on an
