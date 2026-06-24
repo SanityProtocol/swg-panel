@@ -591,14 +591,14 @@ const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending:
 // a node/panel host that's mid re-install or method conversion (signalled before it goes down)
 const PROC_LABEL = {
   reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker", updating: "updating", uninstalling: "uninstalling",
-  reinstalled: "re-installed", "converted-bare": "converted to bare-metal", "converted-docker": "converted to docker", updated: "updated",
+  reinstalled: "re-installed", "converted-bare": "converted to bare-metal", "converted-docker": "converted to docker", updated: "updated", uptodate: "up to date",
   "reinstall-aborted": "re-install aborted", "convert-aborted": "convert aborted", "update-aborted": "update aborted", "uninstall-aborted": "uninstall aborted",
   "reinstall-failed": "re-install failed", "convert-failed": "convert failed", "update-failed": "update failed", "uninstall-failed": "uninstall failed", failed: "failed" };
 // Lifecycle tag categories. inProc = an op actually running (violet clock, blocks actions). Terminals:
 // success (green, ~5s, no ×), aborted (grey + ×), failed (red + error popup + ×) — all shown beside the real status.
 const procFailed  = s => !!s && /failed$/.test(s);
 const procAborted = s => !!s && /aborted$/.test(s);
-const procSuccess = s => s === "reinstalled" || s === "converted-bare" || s === "converted-docker" || s === "updated";
+const procSuccess = s => s === "reinstalled" || s === "converted-bare" || s === "converted-docker" || s === "updated" || s === "uptodate";
 const inProc      = s => !!s && !procFailed(s) && !procAborted(s) && !procSuccess(s);
 function procTag(state, onX, err) {
   const lbl = PROC_LABEL[state] || state;

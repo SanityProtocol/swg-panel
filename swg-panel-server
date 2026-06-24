@@ -722,7 +722,7 @@ def _node_issues(c, snap):
 PROC_GRACE = 600          # 10 min in-progress window; a stuck op (lost connection) then falls back to failed
 PROC_SUCCESS_SHOW = 8     # success tag lifetime (comfortably covers one ~5 s poll, then clears)
 PROC_INPROGRESS = ("reinstalling", "converting-bare", "converting-docker", "updating", "uninstalling")
-PROC_SUCCESS = ("reinstalled", "converted-bare", "converted-docker", "updated")
+PROC_SUCCESS = ("reinstalled", "converted-bare", "converted-docker", "updated", "uptodate")
 _PROC_FAIL = {"reinstalling": "reinstall-failed", "converting-bare": "convert-failed",
               "converting-docker": "convert-failed", "updating": "update-failed", "uninstalling": "uninstall-failed"}
 def _proc_inprogress(s): return s in PROC_INPROGRESS
