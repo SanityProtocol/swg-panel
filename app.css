@@ -615,7 +615,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-v.nm-peers{font-size:15px;color:var(--ink)}
 .nm-v.nm-peers small{font-size:.72em;color:var(--faint)}
 .nm-v .down{color:var(--online)} .nm-v .up{color:var(--ready)}
-.nm-thru{display:flex;align-items:baseline}   /* throughput numbers, right-aligned on the interfaces line */
+.nm-thru{display:flex;align-items:baseline;gap:8px}   /* throughput numbers, right-aligned; gap matches CPU load's label↔value spacing */
 .nm-thru .thru{display:flex;gap:16px}
 .nm-thru .down,.nm-thru .up{min-width:74px;white-space:nowrap;text-align:right}
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
