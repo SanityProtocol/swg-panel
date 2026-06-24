@@ -22,12 +22,12 @@ run(){ if $DRYRUN; then echo "    [dry] $*"; else "$@"; fi; }
 rmrf(){ local p; for p in "$@"; do if [ -e "$p" ] || [ -L "$p" ]; then run rm -rf "$p"; fi; done; }
 # ask_yn <prompt> <default> <outvar>  — preset outvar (env) or --yes skips the prompt
 ask_yn(){ local v p="$1" d="${2:-n}"; if [ -n "${!3:-}" ]; then return; fi
-  if [ ! -t 0 ] && [ ! -e /dev/tty ]; then printf -v "$3" '%s' "$d"; return; fi
+  if ! { true </dev/tty; } 2>/dev/null; then printf -v "$3" '%s' "$d"; return; fi   # /dev/tty not openable (no controlling terminal) → default, no leaked error
   read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
 ask_comp(){ local v; $ASSUME_YES && return 0
-  if [ ! -t 0 ] && [ ! -e /dev/tty ]; then return 1; fi   # no tty, not --yes => keep
+  if ! { true </dev/tty; } 2>/dev/null; then return 1; fi   # no usable tty, not --yes => keep
   read -rp "  Uninstall $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
   case "$v" in [Yy]*) return 0;; *) return 1;; esac; }
 
@@ -48,7 +48,11 @@ REMOVED_PANEL=false; REMOVED_NODE=false
 rm_panel(){
   info "Removing swg-panel (control panel)"
   if [ -e $SD/swg-panel-server.service ]; then run systemctl disable --now swg-panel-server; fi
-  rmrf $SD/swg-panel-server.service; run systemctl daemon-reload
+  # one-click self-update bits the panel installed (mk_update_unit): units, wrapper, and the env drop-in
+  if [ -e $SD/swg-update.path ]; then run systemctl disable --now swg-update.path 2>/dev/null || true; fi
+  rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d \
+       $SD/swg-update.service $SD/swg-update.path /usr/local/bin/swg-update
+  run systemctl daemon-reload
   rmrf /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf \
        /etc/nginx/conf.d/swg-panel.conf /etc/nginx/.htpasswd-swg
   command -v nginx >/dev/null 2>&1 && { run nginx -t && run systemctl reload nginx || warn "reload nginx manually if it's running"; }
@@ -260,7 +264,7 @@ rm_turn(){ local unit="$1" name fork
 }
 
 # ───────────────────────── detect installed components ─────────────────────────
-declare -a CLABEL CDETAIL CFN CARG CHINT
+declare -a CLABEL=() CDETAIL=() CFN=() CARG=() CHINT=()   # init empty (not just `declare -a`) — bash 5.2 + set -u treats a never-assigned array as unbound for ${#arr[@]}
 # ── richer component details: interface names+ports, node endpoints, turn-proxy ports ──
 iface_list(){  # <dir> -> "awg0:51820, awg505:51234" (interface name + ListenPort from each .conf)
   local dir="$1" out="" f n p
@@ -334,10 +338,14 @@ if ! $DPANEL && ! $DNODE && { [ -f "$DOCKER_DIR/docker-compose.yml" ] || [ -f "$
   add "Docker deployment (files)" "$DOCKER_DIR" rm_docker_files
 fi
 
+# NB: grep on a here-string, NOT 'dpkg -l | grep -q' — under pipefail, grep -q exits on first match and the
+# still-writing dpkg gets SIGPIPE (141), so the pipe reports failure even on a match (amneziawg sorts early in
+# dpkg -l, so it always tripped this; wireguard sorts late and usually slipped through).
+pkg_ii(){ grep -qE "$1" <<< "$(dpkg -l 2>/dev/null)"; }
 awg_present(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.service >/dev/null 2>&1 \
-  || { command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii +amneziawg(-tools| |$)'; }; }
+  || { command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +amneziawg(-tools| |$)'; }; }
 wg_present(){ ls /etc/wireguard/*.conf >/dev/null 2>&1 || ls $SD/wg-quick@*.service >/dev/null 2>&1 \
-  || { command -v dpkg >/dev/null 2>&1 && dpkg -l 2>/dev/null | grep -qE '^ii +wireguard '; }; }
+  || { command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +wireguard '; }; }
 awg_present && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "kernel AmneziaWG" "$_d" rm_awg "" "$_d"; }
 wg_present  && { _d="$(iface_list /etc/wireguard)";        add "kernel WireGuard" "$_d" rm_wg "" "$_d"; }
 
