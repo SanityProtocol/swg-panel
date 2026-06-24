@@ -603,8 +603,12 @@ const inProc      = s => !!s && !procFailed(s) && !procAborted(s) && !procSucces
 function procTag(state, onX, err) {
   const lbl = PROC_LABEL[state] || state;
   if (procSuccess(state)) return html`<span class="nstat procok"><${Ic} i="check"/> ${lbl}</span>`;   // green, auto-clears (no ×)
-  if (procAborted(state)) return html`<span class="nstat procaborted"><${Ic} i="info"/> ${lbl}${onX ? html`<button class="xbtn" title="Dismiss" onClick=${onX}><${Ic} i="x"/></button>` : null}</span>`;
-  if (procFailed(state))  return html`<span class="nstat procfail">${err ? html`<button class="errbtn" title=${err} onClick=${e => { e.stopPropagation(); e.preventDefault(); openConfirm({ title: lbl, body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></button>` : null}<${Ic} i="warn"/> ${lbl}${onX ? html`<button class="xbtn" title="Dismiss — show the node's actual status" onClick=${onX}><${Ic} i="x"/></button>` : null}</span>`;
+  const xbtn = onX ? html`<button class="xbtn" title="Dismiss — show the node's actual status" onClick=${e => { e.stopPropagation(); e.preventDefault(); onX(e); }}><${Ic} i="x"/></button>` : null;
+  if (procAborted(state)) return html`<span class="nstat procaborted"><${Ic} i="info"/> ${lbl}${xbtn}</span>`;
+  if (procFailed(state)) {   // whole tag clickable → details popup (when there's a log tail), distinct hover, no caption
+    const open = err ? (e => { e.stopPropagation(); e.preventDefault(); openConfirm({ title: lbl, body: err, confirmLabel: "Close" }); }) : null;
+    return html`<span class=${"nstat procfail" + (open ? " tg-click" : "")} onClick=${open}><${Ic} i="warn"/> ${lbl}${xbtn}</span>`;
+  }
   return html`<span class="nstat proc"><${Ic} i="clock"/> ${lbl}</span>`;   // in-progress
 }
 async function dismissNodeProc(id) { const r = await api.procClearNode(id); if (r && r.ok === false) return toast(r.error || "Couldn't dismiss.", "err"); await Store.poll(); }
@@ -1826,16 +1830,17 @@ function trackTurnRestarts() {
 // small ⓘ next to a pending/failed command — hover for the node's error, click to read it in full.
 // `cls` tones it (e.g. "warn" = yellow for a non-fatal in-progress note); `title` overrides the modal heading.
 function CmdErr({ err, cls, title }) {
-  if (!err) return null;
-  return html`<span class=${"cmderr" + (cls ? " " + cls : "")} title=${err} onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Command failed on the node", body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
+  if (!err) return null;   // clickable error icon → details popup (no native tooltip caption)
+  return html`<span class=${"cmderr" + (cls ? " " + cls : "")} onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Command failed on the node", body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
 }
 // a status tag that, when it carries a node `msg`, makes the WHOLE tag clickable (opens the message) with
 // a hover highlight + pointer — so the click target is the tag, not a tiny icon next to it.
 function StatusTag({ cls, icon, label, msg, title }) {
   const ic = icon ? html`<${Ic} i=${icon}/>` : null;
-  if (!msg) return html`<span class=${cls} title=${title || ""}>${ic}${label}</span>`;
-  return html`<span class=${cls + " tg-click"} title=${msg}
-    onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Node message", body: msg, confirmLabel: "Close" }); }}>${ic}${label}</span>`;
+  if (!msg) return html`<span class=${cls} title=${title || ""}>${ic}${label}</span>`;   // plain (non-error) tag keeps its hint
+  // an error/detail tag: the WHOLE tag is clickable (→ popup), distinct hover, no native caption
+  return html`<span class=${cls + " tg-click"}
+    onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Details", body: msg, confirmLabel: "Close" }); }}>${ic}${label}</span>`;
 }
 async function cancelTurn(node, body) {
   const r = await api.turnCancel({ node, ...body });
@@ -3794,13 +3799,13 @@ function App() {
         const _hl = esc(PROC_LABEL[Store.hostProc] || Store.hostProc || "");
         if (procSuccess(Store.hostProc)) body = `<span class="hostproc-tag ok">${CHECK_SVG} ${_hl}</span>` + body;   // green, auto-clears (no ×)
         else if (procAborted(Store.hostProc)) body = `<span class="hostproc-tag aborted">${INFO_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;
-        else if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail">${Store.hostProcErr ? `<button class="errbtn" id="hostproc-err" title="${esc(Store.hostProcErr)}">${INFO_SVG}</button>` : ""}${WARN_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;
+        else if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail${Store.hostProcErr ? ' tg-click' : ''}" id="hostproc-tag">${WARN_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;   // whole tag clickable → error popup
       }
       slot.innerHTML = body;
       const b = $("#host-upd"); if (b) b.onclick = updateHost;
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
-      const hx = $("#hostproc-x"); if (hx) hx.onclick = dismissHostProc;
-      const he = $("#hostproc-err"); if (he) he.onclick = () => openConfirm({ title: PROC_LABEL[Store.hostProc] || Store.hostProc, body: Store.hostProcErr || "", confirmLabel: "Close" });
+      const hx = $("#hostproc-x"); if (hx) hx.onclick = e => { e.stopPropagation(); dismissHostProc(); };
+      const htg = $("#hostproc-tag"); if (htg && Store.hostProcErr) htg.onclick = () => openConfirm({ title: PROC_LABEL[Store.hostProc] || Store.hostProc, body: Store.hostProcErr, confirmLabel: "Close" });
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = openAccount;
