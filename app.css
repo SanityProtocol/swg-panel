@@ -69,8 +69,10 @@ h1,h2,h3{font-family:var(--sans)}
 .livepill.off .dot{display:none}                 /* … and no glowing dot */
 /* this panel host is mid re-install/convert (header slot, holds through the panel's own downtime) */
 .hostproc-tag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--pending);border:1px solid var(--pending);border-radius:99px;padding:4px 11px;background:rgba(154,139,240,.1)}
-.hostproc-tag.fail{color:var(--dangling);border-color:var(--dangling);background:rgba(240,89,107,.1)}   /* host re-install timed out / aborted — red, dismissable via its × */
-.hostproc-tag.fail .xbtn{margin-left:4px;padding:1px}
+.hostproc-tag.ok{color:var(--online);border-color:var(--online);background:rgba(63,216,154,.1)}        /* host re-install succeeded — green, auto-clears */
+.hostproc-tag.aborted{color:var(--unknown);border-color:var(--unknown);background:rgba(98,116,139,.12)}  /* host re-install aborted — grey, dismissable */
+.hostproc-tag.fail{color:var(--dangling);border-color:var(--dangling);background:rgba(240,89,107,.1)}   /* host re-install failed — red, error popup + dismissable × */
+.hostproc-tag .xbtn{margin-left:4px;padding:1px} .hostproc-tag .errbtn{margin-right:4px;padding:1px}
 .updslot{display:inline-flex;align-items:center;gap:14px}   /* match .appbar-right gap so HC ↔ update spacing is even */
 .updpill{cursor:pointer;border-color:color-mix(in srgb,var(--ready) 42%,var(--line-solid))}
 .updpill b{color:var(--ready);font-size:11.5px}  /* online-count style, blue + a touch smaller */
@@ -586,8 +588,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nstat.offline{color:var(--unknown)}
 .nstat.dangling{color:var(--pending)}
 .nstat.proc{color:var(--pending)} .nstat.proc::before{display:none}   /* re-install/convert: clock icon instead of the dot */
-.nstat.procfail{color:var(--dangling)} .nstat.procfail::before{display:none}   /* timed-out / aborted op — red, dismissable via its × */
-.nstat.procfail .xbtn{margin-left:5px}
+.nstat.procok{color:var(--online)} .nstat.procok::before{display:none}        /* success: green ✓, auto-clears after ~5s (no ×) */
+.nstat.procaborted{color:var(--unknown)} .nstat.procaborted::before{display:none}   /* aborted: grey, dismissable via × */
+.nstat.procfail{color:var(--dangling)} .nstat.procfail::before{display:none}   /* failed: red, error popup + dismissable × */
+.nstat .xbtn{margin-left:5px} .nstat .errbtn{margin-right:5px}   /* error icon sits LEFT of the tag, × on the right — no mis-clicks */
+.errbtn{display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;color:inherit;cursor:pointer;padding:1px;border-radius:5px;opacity:.85}
+.errbtn:hover{opacity:1;background:rgba(240,90,90,.14)}
 .b-removing{background:rgba(242,107,130,.13);color:var(--dangling)}
 /* data row: four fixed-start columns so peers/interfaces/turn/throughput line up across
    cards regardless of content. Peers fits 555/999, interfaces ~two 8-char tags, turn takes

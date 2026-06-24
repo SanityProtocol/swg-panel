@@ -26,6 +26,7 @@ import hmac
 import ipaddress
 import json
 import os
+import shutil
 import signal
 import ssl
 import struct
@@ -590,18 +591,46 @@ def find_node_by_token(nodes, token):
     return None, None
 
 
+def _archive_node(deps, nid, nm, node_entry, peers, sf):
+    """Back a node up before it's purged → <state_dir>/archive/<name>-<nid>-<ts>/ with node.json,
+    peers.json (the peer entries that referenced it), and its MOVED stats + health files. Best-effort:
+    a backup must never block the delete."""
+    try:
+        state_dir = os.path.dirname(deps["nodes_path"]) or "."
+        safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(nm))[:40] or nid
+        dest = os.path.join(state_dir, "archive", f"{safe}-{nid}-{int(time.time())}")
+        os.makedirs(dest, exist_ok=True)
+        atomic_write(os.path.join(dest, "node.json"), json.dumps(node_entry, indent=2) + "\n", mode=0o600)
+        atomic_write(os.path.join(dest, "peers.json"), json.dumps(peers, indent=2) + "\n", mode=0o600)
+        sd = deps.get("stats_dir")
+        if sd:
+            for fn in (sf, f"health-{nid}.rrd"):
+                src = os.path.join(sd, fn)
+                if os.path.exists(src):
+                    with contextlib.suppress(Exception):
+                        shutil.move(src, os.path.join(dest, fn))   # cross-fs safe (state vs stats may differ)
+        return dest
+    except Exception:
+        return None
+
 def node_remove(deps, nid):
-    """Drop a node from the store and cascade: purge its peer targets (deleting peers whose only
-    deployment was here), forget its live snapshot, and delete its stats + health files. Returns
-    the removed node's display name, or None if it wasn't there. Shared by force-remove + goodbye."""
+    """Drop a node from the store and cascade: ARCHIVE its data (node + peer targets + stats/health) as a
+    recoverable backup, then purge its peer targets (deleting peers whose only deployment was here), forget
+    its live snapshot, and remove its stats + health files. Returns the removed node's display name, or None
+    if it wasn't there. Shared by force-remove + goodbye."""
     nodes = nodes_load(deps["nodes_path"])
     if nid not in nodes:
         return None
     nm = nodes[nid].get("name", nid)
     sf = nodes[nid].get("stats_file", f"stats-{nid}.json")
+    node_entry = dict(nodes[nid])
+    roster = roster_load(deps["roster_path"])
+    affected = {pid: p for pid, p in roster["peers"].items()
+                if any(t.get("node") == nid for t in p.get("targets", []))}
+    _archive_node(deps, nid, nm, node_entry, affected, sf)   # back up BEFORE purging (moves stats/health out)
     del nodes[nid]
     nodes_save(deps["nodes_path"], nodes)
-    roster = roster_load(deps["roster_path"]); changed = False
+    changed = False
     for pid in list(roster["peers"].keys()):
         p = roster["peers"][pid]
         kept = [t for t in p.get("targets", []) if t.get("node") != nid]
@@ -615,7 +644,7 @@ def node_remove(deps, nid):
         roster_save(deps["roster_path"], roster)
     (deps.get("node_snaps") or {}).pop(nid, None)
     (deps.get("node_seen") or {}).pop(nid, None)
-    sd = deps.get("stats_dir")
+    sd = deps.get("stats_dir")            # _archive_node moved these out; unlink any leftover
     if sd:
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(sd, sf))
@@ -683,18 +712,30 @@ def _node_issues(c, snap):
             issues.append((tp.get("service") or "turn-proxy") + ": not running")
     return issues
 
-# proc-status timeout. A re-install / convert / update shows its in-progress tag for up to PROC_GRACE. If the
-# process aborts (the user or server loses connection) and never clears it, past PROC_GRACE we flip the tag to
-# "<op> failed" — which STAYS until either the node checks back in (auto-cleared on success) or the operator
-# dismisses it with the tag's × (the /api/*/proc-clear endpoints). `at` = unix time the state was set
-# (node proc_status; host_proc file mtime).
-PROC_GRACE = 600          # 10 min in-progress window before a stuck op is shown as failed
+# Node lifecycle status. A script (install / convert / update / uninstall) signals the panel where it is:
+# an IN-PROGRESS state right after step 1, then a TERMINAL outcome (success / aborted / failed).
+#   in-progress : reinstalling, converting-bare, converting-docker, updating, uninstalling
+#   success     : reinstalled, converted-bare, converted-docker, updated   (green, ~5 s, then clears)
+#   aborted     : <op>-aborted   (grey, persists until the node returns or the operator dismisses it)
+#   failed      : <op>-failed  (+ err)  (red + error popup, persists likewise)
+# `at` = unix time the state was set (node proc_status; host_proc file mtime).
+PROC_GRACE = 600          # 10 min in-progress window; a stuck op (lost connection) then falls back to failed
+PROC_SUCCESS_SHOW = 8     # success tag lifetime (comfortably covers one ~5 s poll, then clears)
+PROC_INPROGRESS = ("reinstalling", "converting-bare", "converting-docker", "updating", "uninstalling")
+PROC_SUCCESS = ("reinstalled", "converted-bare", "converted-docker", "updated")
 _PROC_FAIL = {"reinstalling": "reinstall-failed", "converting-bare": "convert-failed",
-              "converting-docker": "convert-failed", "updating": "update-failed"}
+              "converting-docker": "convert-failed", "updating": "update-failed", "uninstalling": "uninstall-failed"}
+def _proc_inprogress(s): return s in PROC_INPROGRESS
+def _proc_terminal(s):   return bool(s) and (s in PROC_SUCCESS or s.endswith("-aborted") or s.endswith("-failed") or s == "failed")
 def _proc_view(state, at):
     if not state:
         return None
-    return state if time.time() - (at or 0) <= PROC_GRACE else _PROC_FAIL.get(state, "failed")
+    age = time.time() - (at or 0)
+    if state in PROC_SUCCESS:                     # green confirmation, then gone
+        return state if age <= PROC_SUCCESS_SHOW else None
+    if state in PROC_INPROGRESS:                  # running; a stuck one (no terminal ever arrived) → failed
+        return state if age <= PROC_GRACE else _PROC_FAIL.get(state, "failed")
+    return state                                  # explicit aborted/failed terminal → persists until dismissed
 
 def node_describe(snapshot):
     """Server/interface info from a node's pushed snapshot (config-building + UI)."""
@@ -972,12 +1013,12 @@ def api(method, path, qs, body, deps):
                         "transport": "https",
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
-                        # re-install / convert in progress — times out via _proc_view: shows for PROC_GRACE,
-                        # then "<op> failed" for PROC_FAIL_SHOW, then clears (a hung/killed/aborted op that
-                        # never reported back no longer sticks forever). A lingered update flag past its grace
-                        # also surfaces a brief "update failed" here.
+                        # node lifecycle tag via _proc_view: in-progress for PROC_GRACE then "<op> failed";
+                        # explicit success (~5 s) / aborted / failed terminals; a lingered update flag past its
+                        # grace also surfaces "update failed". proc_err carries the failed-state log tail.
                         "proc_status": (_proc_view((c.get("proc_status") or {}).get("state"), (c.get("proc_status") or {}).get("at"))
                                         or (_proc_view("updating", (c.get("update") or {}).get("at")) if c.get("update") else None)),
+                        "proc_err": (c.get("proc_status") or {}).get("err") or None,
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
@@ -1034,14 +1075,18 @@ def api(method, path, qs, body, deps):
         # One consolidated read: everything the UI polls for, in a single round trip.
         # Status is NOT computed here — the browser derives it from roster + snapshots via
         # reconcile.js (the single source of truth), so this stays a raw-data bundle.
-        _hp = ""; _hp_at = 0
+        _hp = ""; _hp_at = 0; _hp_err = None
         with contextlib.suppress(Exception):
             _hpf = deps.get("host_proc_path") or ""
             with open(_hpf) as _f:
-                _hp = (_f.read() or "").strip()
+                _raw = _f.read() or ""
+            _hp = (_raw.split("\n", 1)[0]).strip()       # line 1 = state; the rest (if any) = failed-state err
+            _rest = _raw.split("\n", 1)[1].strip() if "\n" in _raw else ""
+            if _rest and (_hp.endswith("-failed") or _hp == "failed"): _hp_err = _rest[:4000]
             _hp_at = os.path.getmtime(_hpf)              # no timestamp in the file → use its mtime for the timeout
         return 200, {"ok": True, "data": {
             "host_proc": _proc_view(_hp, _hp_at),        # this panel host is mid re-install (UI tag); times out → "failed" → clears
+            "host_proc_err": _hp_err,                    # failed-state log tail for the appbar error popup
             "roster": roster_load(roster_path),          # {version, users, peers}
             "nodes": nodes_view(),                       # fleet metadata + live counters
             "describe": describe_view(),                 # per-node interface meta for config building
@@ -2173,12 +2218,13 @@ class Handler(BaseHTTPRequestHandler):
         if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
             node["kind"] = snap["kind"]
             with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        if snap and node.get("proc_status"):              # the node checked back in
+        if snap and node.get("proc_status") and _proc_inprogress((node.get("proc_status") or {}).get("state")):  # the node checked back in mid-op
             cur_state = (node.get("proc_status") or {}).get("state")
             tgt = {"converting-bare": "baremetal", "converting-docker": "docker"}.get(cur_state)
             # a convert is only "done" when the TARGET method reports. A stray snapshot from the OLD method
             # (the dying container / torn-down units) must NOT clear "converting…", or the UI flips to stale
-            # mid-convert. reinstall (tgt None) clears on any snapshot, as before.
+            # mid-convert. reinstall (tgt None) clears on any snapshot, as before. Terminal states
+            # (success/aborted/failed) are left for their own lifecycle (success times out; the rest persist).
             if tgt and snap.get("kind") and snap.get("kind") != tgt:
                 pass
             else:
@@ -2466,9 +2512,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             body = {}
         state = (body.get("state") or "").strip()
+        err = (body.get("err") or "").strip()[:4000]   # failed-state log tail for the error popup
         with _api_lock:
-            if state in ("reinstalling", "converting-bare", "converting-docker"):
-                nodes[nid]["proc_status"] = {"state": state, "at": int(time.time())}
+            if _proc_inprogress(state) or _proc_terminal(state):
+                ps = {"state": state, "at": int(time.time())}
+                if err and (state.endswith("-failed") or state == "failed"):
+                    ps["err"] = err
+                nodes[nid]["proc_status"] = ps
             else:
                 nodes[nid].pop("proc_status", None)          # blank/unknown = clear it
             nodes_save(Handler.deps["nodes_path"], nodes)
@@ -2489,6 +2539,34 @@ class Handler(BaseHTTPRequestHandler):
             "kind": node.get("kind") or snap.get("kind") or "",
             "created": node.get("created"),
             "last_seen": (Handler.deps.get("node_seen") or {}).get(nid)}})
+
+    def _node_rename(self):
+        # A node renames ITSELF (node-token auth) — so a re-install/convert can push a box-name change the
+        # operator entered in the installer. name is a free display field (id-keyed store); no refs to migrate.
+        nodes = nodes_load(Handler.deps["nodes_path"])
+        hdr = self.headers.get("Authorization", "")
+        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
+        nid, _ = find_node_by_token(nodes, token)
+        if not nid:
+            return self._send(401, {"error": "invalid node token"})
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            length = 0
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception:
+            body = {}
+        name = (body.get("name") or "").strip()[:40]
+        if not name:
+            return self._send(400, {"ok": False, "error": "empty name"})
+        with _api_lock:
+            old = nodes[nid].get("name", nid)
+            nodes[nid]["name"] = name
+            nodes_save(Handler.deps["nodes_path"], nodes)
+        if name != old:
+            ev_append(Handler.deps["roster_path"], "node", nid, "Renamed node", name)
+        return self._send(200, {"ok": True, "data": {"id": nid, "name": name}})
 
     def do_GET(self):
         u = urlparse(self.path)
@@ -2524,6 +2602,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._node_goodbye()
         if path == "/api/node/proc-status":
             return self._node_proc_status()
+        if path == "/api/node/rename":     # node-token auth — installer pushes a box-name change
+            return self._node_rename()
         if path == "/api/login":
             return self._login()
         if path == "/api/logout":

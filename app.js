@@ -367,7 +367,7 @@ const Store = {
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
-    if (s && s.ok) this.hostProc = d.host_proc || null;   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime
+    if (s && s.ok) { this.hostProc = d.host_proc || null; this.hostProcErr = d.host_proc_err || null; }   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime
     if (ev && Array.isArray(ev.data)) this.events = ev.data;
     this.apply();
   },
@@ -589,15 +589,23 @@ const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, rotating
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
 // a node/panel host that's mid re-install or method conversion (signalled before it goes down)
-const PROC_LABEL = { reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker",
-  "reinstall-failed": "re-install failed", "convert-failed": "convert failed", "update-failed": "update failed", failed: "failed" };
-// a proc tag that timed out / aborted (shown red for ~10s, then the panel clears it). inProc = actually running.
-const procFailed = s => !!s && /failed$/.test(s);
-const inProc = s => !!s && !procFailed(s);
-function procTag(state, onX) {   // in-progress → violet clock; timed-out/aborted → red warn that stays until
-  if (!procFailed(state))        // the node returns (auto-clears) or the operator dismisses it with the ×.
-    return html`<span class="nstat proc"><${Ic} i="clock"/> ${PROC_LABEL[state] || state}</span>`;
-  return html`<span class="nstat procfail"><${Ic} i="warn"/> ${PROC_LABEL[state] || state}${onX ? html`<button class="xbtn" title="Dismiss — show the node's actual status" onClick=${onX}><${Ic} i="x"/></button>` : null}</span>`;
+const PROC_LABEL = {
+  reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker", updating: "updating", uninstalling: "uninstalling",
+  reinstalled: "re-installed", "converted-bare": "converted to bare-metal", "converted-docker": "converted to docker", updated: "updated",
+  "reinstall-aborted": "re-install aborted", "convert-aborted": "convert aborted", "update-aborted": "update aborted", "uninstall-aborted": "uninstall aborted",
+  "reinstall-failed": "re-install failed", "convert-failed": "convert failed", "update-failed": "update failed", "uninstall-failed": "uninstall failed", failed: "failed" };
+// Lifecycle tag categories. inProc = an op actually running (violet clock, blocks actions). Terminals:
+// success (green, ~5s, no ×), aborted (grey + ×), failed (red + error popup + ×) — all shown beside the real status.
+const procFailed  = s => !!s && /failed$/.test(s);
+const procAborted = s => !!s && /aborted$/.test(s);
+const procSuccess = s => s === "reinstalled" || s === "converted-bare" || s === "converted-docker" || s === "updated";
+const inProc      = s => !!s && !procFailed(s) && !procAborted(s) && !procSuccess(s);
+function procTag(state, onX, err) {
+  const lbl = PROC_LABEL[state] || state;
+  if (procSuccess(state)) return html`<span class="nstat procok"><${Ic} i="check"/> ${lbl}</span>`;   // green, auto-clears (no ×)
+  if (procAborted(state)) return html`<span class="nstat procaborted"><${Ic} i="info"/> ${lbl}${onX ? html`<button class="xbtn" title="Dismiss" onClick=${onX}><${Ic} i="x"/></button>` : null}</span>`;
+  if (procFailed(state))  return html`<span class="nstat procfail">${err ? html`<button class="errbtn" title=${err} onClick=${e => { e.stopPropagation(); e.preventDefault(); openConfirm({ title: lbl, body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></button>` : null}<${Ic} i="warn"/> ${lbl}${onX ? html`<button class="xbtn" title="Dismiss — show the node's actual status" onClick=${onX}><${Ic} i="x"/></button>` : null}</span>`;
+  return html`<span class="nstat proc"><${Ic} i="clock"/> ${lbl}</span>`;   // in-progress
 }
 async function dismissNodeProc(id) { const r = await api.procClearNode(id); if (r && r.ok === false) return toast(r.error || "Couldn't dismiss.", "err"); await Store.poll(); }
 async function dismissHostProc() { const r = await api.procClearHost(); if (r && r.ok === false) return toast(r.error || "Couldn't dismiss.", "err"); await Store.poll(); }
@@ -1115,7 +1123,7 @@ function NodeDetail({ node: rawName }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
-      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${inProc(nrec.proc_status) ? procTag(nrec.proc_status) : html`<${Fragment}>${procFailed(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id)) : null}${live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<//>`}<${HealthDot} issues=${nrec.issues}/></div>
+      <div class="title">${nrec.outdated && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${inProc(nrec.proc_status) ? procTag(nrec.proc_status) : html`<${Fragment}>${nrec.proc_status ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err) : null}${live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<//>`}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? "Node is running a newer version than the panel — update the panel to catch up" : ""}>v${nrec.version}</span>` : null}
@@ -2778,6 +2786,8 @@ let hostUpdating = false;                 // once Update is clicked, lock the he
 const UPD_SPIN_SVG = `<svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg>`;
 const WARN_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`;
 const X_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
+const CHECK_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
+const INFO_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`;
 function setHostUpdating() {
   hostUpdating = true;
   const slot = $("#updslot");
@@ -2860,7 +2870,7 @@ function NodeCard({ n }) {
       ${n.outdated && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
-      ${inProc(n.proc_status) ? procTag(n.proc_status) : html`<${Fragment}>${procFailed(n.proc_status) ? procTag(n.proc_status, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }) : null}${
+      ${inProc(n.proc_status) ? procTag(n.proc_status) : html`<${Fragment}>${n.proc_status ? procTag(n.proc_status, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, n.proc_err) : null}${
           st === "online" ? html`<span class="reporting">reporting</span>`
         : st === "offline" ? html`<span class="badge b-unknown ic"><${Ic} i="info"/>offline</span>`
         : html`<span class="nstat proc"><${Ic} i="clock"/> awaiting enroll</span>`}<//>`}
@@ -3782,13 +3792,17 @@ function App() {
         else if (Store.panelOutdated) body = `<button class="livepill updpill" id="host-upd" title="Update this server">update to <b>${esc(Store.latestRemote || "?")}</b></button>`;
         else if (Store.updFlash && Date.now() < Store.updFlash) body = `<span class="livepill upd-uptodate" title="You're on the latest version"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> up to date</span>`;
         else body = `<button class="iconbtn lg" id="upd-check" title="Check for updates"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`;
-        // re-install timed out / aborted → dismissable "failed" tag BEFORE the host's normal status
-        if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail">${WARN_SVG} ${esc(PROC_LABEL[Store.hostProc] || Store.hostProc)}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;
+        // host re-install terminal (success / aborted / failed) shown BEFORE the host's normal status
+        const _hl = esc(PROC_LABEL[Store.hostProc] || Store.hostProc || "");
+        if (procSuccess(Store.hostProc)) body = `<span class="hostproc-tag ok">${CHECK_SVG} ${_hl}</span>` + body;   // green, auto-clears (no ×)
+        else if (procAborted(Store.hostProc)) body = `<span class="hostproc-tag aborted">${INFO_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;
+        else if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail">${Store.hostProcErr ? `<button class="errbtn" id="hostproc-err" title="${esc(Store.hostProcErr)}">${INFO_SVG}</button>` : ""}${WARN_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>` + body;
       }
       slot.innerHTML = body;
       const b = $("#host-upd"); if (b) b.onclick = updateHost;
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
       const hx = $("#hostproc-x"); if (hx) hx.onclick = dismissHostProc;
+      const he = $("#hostproc-err"); if (he) he.onclick = () => openConfirm({ title: PROC_LABEL[Store.hostProc] || Store.hostProc, body: Store.hostProcErr || "", confirmLabel: "Close" });
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = openAccount;
