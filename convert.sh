@@ -398,6 +398,23 @@ PY
   [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$DOCKER_DIR/" 2>/dev/null || true
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$DOCKER_DIR/" 2>/dev/null || true
 
+  # MASTER: turn-proxies become SIBLING CONTAINERS (swg-turn-*) that swg-noded materialises via the Docker socket
+  # — mount it (like install-docker's TURN_MANAGE=panel), else the migrated turns sit forever in "pending".
+  _tman=manual
+  if [ "$ROLE" = master ]; then _tman=panel
+    python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYSOCK' 2>/dev/null || true
+import sys, re
+p = sys.argv[1]; lines = open(p).read().splitlines(); out = []; in_node = False
+for ln in lines:
+    if re.match(r'^  swg-node:\s*$', ln): in_node = True
+    elif in_node and re.match(r'^  \S', ln): in_node = False
+    out.append(ln)
+    if in_node and re.match(r'^      - \./data/node-confs:', ln):
+        out.append('      - /var/run/docker.sock:/var/run/docker.sock   # turn-proxy management (root-on-host)')
+open(p, 'w').write('\n'.join(out) + '\n')
+PYSOCK
+  fi
+
   # 3) .env — login (auth file) + cert are PRESERVED in data/etc so the entrypoint keeps them; PANEL_PASSWORD is
   #    an unused placeholder (compose requires it). For a master the node section carries the local node's token +
   #    endpoint and points it at the panel on the compose network. Same URL/port/TLS ⇒ nodes stay connected.
@@ -419,6 +436,9 @@ PANEL_PORT=$PPORT
 PANEL_URL=$_nurl
 NODE_TOKEN=$_ntok
 NODE_ENDPOINT=$_nep
+NODE_NET=host
+TURN_MANAGE=$_tman
+SWG_HOST_NODE_DIR=$DOCKER_DIR/data/node
 TLS_VERIFY=no
 EOF
   chmod 600 "$DOCKER_DIR/.env"
