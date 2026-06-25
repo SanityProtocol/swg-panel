@@ -224,7 +224,7 @@ PY
 # forward-to picker so it lists ALL interfaces with their REAL ports — not just the bootstrap NODE_IFACE on a
 # stale .env port (which is why a re-install showed only awg0:51820 + the new iface, missing wg2/wg4).
 # the interface a turn-proxy forwards to: the node iface whose listen port matches the connect port (else empty)
-fwd_iface_for(){ local cp="${1##*:}" nm pt; while read -r nm pt _; do [ -n "$nm" ] && [ "$pt" = "$cp" ] && { printf '%s' "$nm"; return; }; done <<< "$(node_iface_rows)"; }
+fwd_iface_for(){ local cp="${1##*:}" nm pt; while read -r nm pt _; do [ -n "$nm" ] && [ "$pt" = "$cp" ] && { printf '%s' "$nm"; return 0; }; done <<< "$(node_iface_rows)"; return 0; }   # no match → empty + success (non-zero would trip set -e)
 node_iface_rows(){
   local seen=" " c n pt pr e _ifs
   if [ -d "$INSTALL_DIR/data/node-confs" ]; then
