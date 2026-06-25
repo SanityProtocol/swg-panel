@@ -279,9 +279,8 @@ print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel 
   else
     echo; echo "  $(b 'Turn-proxies'): none."
   fi
-  echo; echo "  Manage    peers + per-interface egress in the panel → $(b 'Interfaces / Nodes')"
-  echo "  Edit      interfaces in $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)  ·  daemon $(b /etc/swg-agent/config.json)"
-  echo "  Logs      $(b 'journalctl -u swg-noded -f')  ·  the node turns green in ~5s"
+  echo; node_reconfig_block baremetal
+  echo; echo "  The node turns green in the panel's Nodes screen within ~5s."
 }
 # a LIVE docker node = an actual swg-node container (running or stopped). A bare $DOCKER_DIR with no
 # container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).

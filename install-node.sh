@@ -791,9 +791,8 @@ if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:
   done
 fi
 echo
-echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)"
-echo "  Edit      interfaces in $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)  ·  turn-proxies in $(b /etc/systemd/system/)  ·  daemon $(b /etc/swg-agent/config.json)"
-echo "  Logs      $(b 'journalctl -u swg-noded -f')  ·  turns green in the panel's Nodes screen in ~${INTERVAL}s"
+node_reconfig_block baremetal
+echo; echo "  The node turns green in the panel's Nodes screen within ~${INTERVAL}s."
 [ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       not verifying the panel cert (self-signed) — set TLS_FINGERPRINT to pin it"
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # NB: an `if` (not `$DRYRUN && {…}`) so a non-dry-run doesn't make the script's LAST command exit non-zero (convert.sh read that as "install-node.sh reported an error")
 exit 0   # reaching here = success (every fatal error die'd with exit 1 earlier; a single interface that couldn't come up is a non-fatal warning)

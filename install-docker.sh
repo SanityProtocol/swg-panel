@@ -1203,10 +1203,10 @@ for t in tps:
       while IFS="$(printf '\t')" read -r _svc _lis _con; do [ -n "$_svc" ] || continue; _fw="$(fwd_iface_for "$_con")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$_svc" "$RESET" "${_lis:-?}" "${_con:-?}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done <<< "$_tlist"
     fi
   fi
-  echo; echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)" ;;
+  echo; node_reconfig_block docker "$INSTALL_DIR" ;;
 esac
 echo
 echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile $PROFILE up -d")"
-echo "  Logs      $(b "cd $INSTALL_DIR && $COMPOSE logs -f")"
+case "$PROFILE" in host|master) echo "  Panel log $(b "cd $INSTALL_DIR && $COMPOSE logs -f swg-panel")";; esac   # node profiles get their Logs line from node_reconfig_block
 case "$PROFILE" in host|master) echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')";; esac
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun$INSTALL_DIR/.env"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command
