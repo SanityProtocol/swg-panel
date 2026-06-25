@@ -418,6 +418,15 @@ if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYR
   [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install → "re-installed and updated"
 fi
 
+# bare→docker CONVERT: the panel login (pbkdf2) is already staged in data/etc/auth — never regenerate or
+# overwrite it; show it as "unchanged" in the summary. (A fresh/re-install has no SWG_CONVERT_DIR.)
+KEEP_AUTH=no
+if [ -n "${SWG_CONVERT_DIR:-}" ] && [ -f "$PREFIX$INSTALL_DIR/data/etc/auth" ]; then
+  KEEP_AUTH=yes
+  _au="$(cut -d: -f1 "$PREFIX$INSTALL_DIR/data/etc/auth" 2>/dev/null | head -1)"; [ -n "$_au" ] && PANEL_USER="$_au"
+  PANEL_PASSWORD="(preserved)"
+fi
+
 # ───────────────────────── per-profile requirements ─────────────────────────
 # Compose interpolates the whole file (both services), so every referenced var must be
 # non-empty even when its service isn't in the active profile — fill sane placeholders.
@@ -1058,6 +1067,8 @@ RECREATE=""
 if [ "$PROFILE" != node ]; then
   if [ "${REUSE_TLS:-no}" = yes ]; then
     : # reuse: keep the existing login + certificate (entrypoint serves them as-is)
+  elif [ "${KEEP_AUTH:-no}" = yes ]; then
+    $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"   # convert: keep the staged login, but re-apply the chosen TLS
   else
     $DRYRUN || rm -f "$PREFIX$INSTALL_DIR/data/etc/auth" \
                      "$PREFIX$INSTALL_DIR/data/etc/tls/fullchain.pem" "$PREFIX$INSTALL_DIR/data/etc/tls/key.pem"
@@ -1136,7 +1147,11 @@ if ! $BUILD; then
 fi
 # CONVERT bare→docker: the bare node stayed UP through every prompt + the image pull above. NOW — the last
 # moment before the container binds its ports — stop+remove it. This is the atomic switch (old down → new up).
-[ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN && { info "Switching over — stopping the bare-metal node, then starting the container…"; lc_teardown_baremetal ${SWG_CONVERT_TURNS:-}; }
+if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
+  info "Switching over — stopping the bare-metal services, then starting the container(s)…"
+  [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && teardown_bare_panel   # host/master convert: stop+remove the bare panel (and move its state aside)
+  lc_teardown_baremetal ${SWG_CONVERT_TURNS:-}
+fi
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
 $DRYRUN || rm -f /var/lib/swg-recovery 2>/dev/null || true   # stack is up → clear any convert-recovery marker
@@ -1175,7 +1190,8 @@ case "$PROFILE" in host|master)
   SCH=https; [ "$TLS" = none ] && SCH=http
   PORTSUF=":${PANEL_PORT}"; if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
   echo "  Panel     $(bb "${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/")"
-  echo "  Login     $(bb "$PANEL_USER") / $(bb "$PANEL_PASSWORD")   (change later in the panel → Account)"
+  if [ "${KEEP_AUTH:-no}" = yes ]; then echo "  Login     unchanged — your existing $(bb "$PANEL_USER") login + password"
+  else echo "  Login     $(bb "$PANEL_USER") / $(bb "$PANEL_PASSWORD")   (change later in the panel → Account)"; fi
   echo "  TLS       $(b "$TLS")  ·  host port $(b "$PANEL_PORT")"
   echo "  Local     $(bb "${SCH}://127.0.0.1:${PANEL_PORT}${PANEL_BASE}/")   (on this box — reverse proxy / local checks)" ;;
 esac

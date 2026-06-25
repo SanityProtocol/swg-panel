@@ -298,16 +298,7 @@ docker_node_present(){ command -v docker >/dev/null 2>&1 && docker ps -a --forma
 # stays connected (nodes.json token hashes carry over). Master (panel + local node) conversion comes next.
 docker_panel_present(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; }
 bare_panel_present(){ [ -f /etc/systemd/system/swg-panel-server.service ] || [ -x /opt/swg-panel/swg-panel-server ]; }
-# stop + remove the bare-metal panel (units + proxy vhost) — KEEP the state dirs (they were already staged)
-teardown_bare_panel(){
-  systemctl disable --now swg-panel-server >/dev/null 2>&1 || true
-  systemctl disable --now swg-update.path  >/dev/null 2>&1 || true
-  rm -f /etc/systemd/system/swg-panel-server.service /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /usr/local/bin/swg-update
-  rm -rf /etc/systemd/system/swg-panel-server.service.d
-  rm -f /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf /etc/nginx/conf.d/swg-panel.conf
-  command -v nginx >/dev/null 2>&1 && { nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; } || true
-  rm -rf /opt/swg-panel /usr/local/bin/swg-panel-server   # remove the bare binary too, else the box still reads as a bare panel (bootstrap won't offer convert-back)
-  systemctl daemon-reload >/dev/null 2>&1 || true; }
+# teardown_bare_panel() now lives in lib/common.sh (so install-docker.sh can call it at the atomic switch).
 # master convert: emit the lifecycle status to BOTH the panel header (host_proc file) and the local node tile
 # (proc-status POST to the loopback panel), so "converting/converted" shows on the node too, not just the panel.
 lc_emit_hostnode(){ lc_emit_file "$1" "${2:-}"; lc_emit_post "$1" "${2:-}"; }
@@ -398,23 +389,6 @@ PY
   [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$DOCKER_DIR/" 2>/dev/null || true
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$DOCKER_DIR/" 2>/dev/null || true
 
-  # MASTER: turn-proxies become SIBLING CONTAINERS (swg-turn-*) that swg-noded materialises via the Docker socket
-  # — mount it (like install-docker's TURN_MANAGE=panel), else the migrated turns sit forever in "pending".
-  _tman=manual
-  if [ "$ROLE" = master ]; then _tman=panel
-    python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYSOCK' 2>/dev/null || true
-import sys, re
-p = sys.argv[1]; lines = open(p).read().splitlines(); out = []; in_node = False
-for ln in lines:
-    if re.match(r'^  swg-node:\s*$', ln): in_node = True
-    elif in_node and re.match(r'^  \S', ln): in_node = False
-    out.append(ln)
-    if in_node and re.match(r'^      - \./data/node-confs:', ln):
-        out.append('      - /var/run/docker.sock:/var/run/docker.sock   # turn-proxy management (root-on-host)')
-open(p, 'w').write('\n'.join(out) + '\n')
-PYSOCK
-  fi
-
   # 3) .env — login (auth file) + cert are PRESERVED in data/etc so the entrypoint keeps them; PANEL_PASSWORD is
   #    an unused placeholder (compose requires it). For a master the node section carries the local node's token +
   #    endpoint and points it at the panel on the compose network. Same URL/port/TLS ⇒ nodes stay connected.
@@ -436,39 +410,21 @@ PANEL_PORT=$PPORT
 PANEL_URL=$_nurl
 NODE_TOKEN=$_ntok
 NODE_ENDPOINT=$_nep
-NODE_NET=host
-TURN_MANAGE=$_tman
-SWG_HOST_NODE_DIR=$DOCKER_DIR/data/node
 TLS_VERIFY=no
 EOF
   chmod 600 "$DOCKER_DIR/.env"
 
-  # 4) ATOMIC SWITCH — pull first (slow) while the bare services still serve, THEN stop them + bring container(s) up
-  info "Pulling the $(b "$PROFILE") image(s)…"
-  ( cd "$DOCKER_DIR" && on_tty docker compose --profile "$PROFILE" pull ) || warn "image pull failed — will use the local image if present"
-  info "Switching over — stopping the bare-metal $(b "$ROLE"), then starting the container(s)…"
-  teardown_bare_panel
-  if [ "$ROLE" = master ]; then   # stop the co-located bare node too (swg-noded + interfaces + its turn units)
-    _turns="$(for _u in /etc/systemd/system/vk-turn-proxy-*.service; do [ -e "$_u" ] && basename "$_u" .service; done | tr '\n' ' ')"
-    lc_teardown_baremetal $_turns
-  fi
-  ( cd "$DOCKER_DIR" && on_tty docker compose --profile "$PROFILE" up -d ) || die "compose up failed — your state is safe in $DOCKER_DIR/data; check 'docker compose logs'"
-  LC_FILE="$DOCKER_DIR/data/lib/host_proc"   # the docker panel now owns host_proc → the EXIT trap writes converted-docker where IT reads it
-
-  # 5) move the old bare state aside (already copied) so a later convert-back restages from data/, then done
-  for _d in "$STATE" "$ETC"; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)" 2>/dev/null || true; done
-  clear_recovery
-  echo; ok "$(b "$ROLE") converted to docker — same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node"). Nodes reconnect on their next sync."
-  _sch=https; [ "$PTLS" = none ] && _sch=http
-  _psuf=":$PPORT"; if { [ "$_sch" = https ] && [ "$PPORT" = 443 ]; } || { [ "$_sch" = http ] && [ "$PPORT" = 80 ]; }; then _psuf=""; fi
-  echo; echo "──────────────── SUMMARY ────────────────"; echo
-  echo "  Panel     $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
-  echo "  Login     unchanged — your existing $(b "${PUSER:-admin}") login + password"
-  echo "  TLS       $(b "$PTLS")  ·  Method $(b docker) (was bare-metal)"
-  [ "$ROLE" = master ] && echo "  Node      local node preserved (token + interfaces + turn-proxies)"
-  echo "  Dir       $(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile $PROFILE up -d")"
-  echo "  Logs      $(b "cd $DOCKER_DIR && docker compose logs -f")"
-  exit 0
+  # 4) hand off to install-docker.sh — it imports the staged .env (EXISTING_DOCKER → URL/TLS/login/token
+  #    default to the preserved values), shows the PANEL + NODE setup (Step 1 interfaces, Step 2 turn-proxies),
+  #    then as its LAST step does the atomic switch: stop the bare panel (SWG_CONVERT_KILL_PANEL) + bare node +
+  #    migrated turn units, then compose up. KEEP_AUTH preserves the staged login. Mirrors the node convert.
+  write_recovery "$mifaces"
+  info "Running install-docker.sh ($(b "$PROFILE")) — review the panel + node setup; it switches over as the last step…"
+  echo
+  lc_handoff   # exec → install-docker.sh owns the lifecycle terminal (SWG_CONVERT_DIR ⇒ converted-docker)
+  exec env ROLE="$ROLE" SWG_CONVERT_DIR=convert-docker SWG_CONVERT_TURNS="$MIGRATED_TURNS" SWG_CONVERT_KILL_PANEL=1 \
+       NODE_TOKEN="${NTOK:-}" NODE_ENDPOINT="${NEP:-$PDOM}" PANEL_URL="https://swg-panel:8443" TLS_VERIFY=no \
+       bash "$SRC/install-docker.sh" "$PROFILE"
 fi
 
 # ── PANEL host/master: docker → bare-metal ── (mirror of the bare→docker block; reuses install-host.sh + install-node.sh)

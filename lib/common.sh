@@ -130,6 +130,19 @@ lc_teardown_baremetal(){
   for s in "$@"; do [ -n "$s" ] || continue; systemctl disable --now "$s" 2>/dev/null || true; rm -f "/etc/systemd/system/$s.service"; done   # migrated host turn-proxies only
   rm -f /etc/systemd/system/swg-noded.service; systemctl daemon-reload 2>/dev/null || true
   rm -rf /opt/swg-noded /opt/swg-agent /etc/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent; }
+# teardown_bare_panel — stop + remove the bare-metal panel (units + proxy vhost + binary), then move its STATE
+# dirs aside (already staged into data/) so the box no longer reads as a bare panel and a later convert-back
+# restages cleanly. Used by the bare→docker host/master convert (install-docker.sh, at the atomic switch).
+teardown_bare_panel(){
+  systemctl disable --now swg-panel-server >/dev/null 2>&1 || true
+  systemctl disable --now swg-update.path  >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/swg-panel-server.service /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /usr/local/bin/swg-update
+  rm -rf /etc/systemd/system/swg-panel-server.service.d
+  rm -f /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf /etc/nginx/conf.d/swg-panel.conf
+  command -v nginx >/dev/null 2>&1 && { nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; } || true
+  rm -rf /opt/swg-panel /usr/local/bin/swg-panel-server   # remove the bare binary too, else the box still reads as a bare panel (bootstrap won't offer convert-back)
+  for _d in /var/lib/swg-panel /etc/swg-panel; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)" 2>/dev/null || true; done
+  systemctl daemon-reload >/dev/null 2>&1 || true; }
 lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), freeing wg ports + host netdevs
   local d="${1:-/opt/swg-panel-docker}"
   command -v docker >/dev/null 2>&1 || return 0
