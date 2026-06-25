@@ -150,7 +150,7 @@ rm_node(){
   node_goodbye   # signal the panel before we tear down the config it needs
   if [ -e $SD/swg-noded.service ]; then run systemctl disable --now swg-noded; fi
   rmrf $SD/swg-noded.service; run systemctl daemon-reload
-  rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /etc/sudoers.d/swg-agent
+  rmrf /opt/swg-agent /opt/swg-noded /srv/swg-queue /var/log/swg-agent /var/lib/swg-noded /var/lib/swg-recovery /etc/sudoers.d/swg-agent
   rmrf /etc/swg-agent   # turn-proxy.json here is just a panel-facing record; a kept turn-proxy keeps running
   for u in swgpush swgagent; do if id "$u" >/dev/null 2>&1; then run userdel -r "$u"; fi; done
   REMOVED_NODE=true; ok "swg-node removed"
@@ -223,20 +223,30 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
                        || { _rm_node_data; info "  Removed the node's interface configs; panel data untouched."; }
   else docker_cleanup_if_last; fi     # applies the data-dir decision captured above
   ok "swg-node container removed"; }
-rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"; ask_full_data_fate; apply_full_data_fate; ok "Docker deployment files removed"; }
+rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"; ask_full_data_fate; apply_full_data_fate; rmrf /var/lib/swg-recovery; ok "Docker deployment files removed"; }
 
-down_ifaces(){ local dir="$1" tool="$2" f n
+down_ifaces(){ local dir="$1" tool="$2" f n              # quietly bring each interface down (wg/awg-quick is noisy)
   for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"
-    command -v "$tool" >/dev/null 2>&1 && run "$tool" down "$n"; done; }
+    $DRYRUN && { echo "    [dry] $tool down $n"; continue; }
+    { command -v "$tool" >/dev/null 2>&1 && "$tool" down "$n"; ip link delete "$n"; } >/dev/null 2>&1 || true; done; }
+# Down each interface + delete its .conf, printing ONE green ✓ line (name · address · port) — used by the
+# peer-removal components (down_ifaces above is the quiet, no-display version used before purging a package).
+remove_ifaces(){ local dir="$1" tool="$2" f n addr port
+  for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"
+    addr="$(awk -F= 'tolower($1)~/address/{gsub(/[ \t]/,"",$2);split($2,a,",");print a[1];exit}' "$f" 2>/dev/null)"
+    port="$(awk -F= 'tolower($1)~/listenport/{gsub(/[ \t]/,"",$2);print $2;exit}' "$f" 2>/dev/null)"
+    if $DRYRUN; then echo "    [dry] down + remove $n"
+    else { command -v "$tool" >/dev/null 2>&1 && "$tool" down "$n"; ip link delete "$n"; } >/dev/null 2>&1 || true; rm -f "$f"; fi
+    printf '    %s✓ %s%s%s%s\n' "$(c '0;32')" "$n" "$(c 0)" "${addr:+ · $addr}" "${port:+ · :$port}"
+  done; }
 
 # Peers (the interface .conf files) and the wg/awg PACKAGE are removed INDEPENDENTLY — so you can wipe the
 # panel + peers but KEEP the wg/awg service installed (or remove the package but keep the configs). Each is
 # its own component in the list, so the peer question is always asked regardless of the package answer.
 rm_awg_peers(){
   info "Removing AmneziaWG interface configs (peers)"
-  down_ifaces /etc/amnezia/amneziawg awg-quick
+  remove_ifaces /etc/amnezia/amneziawg awg-quick
   rmrf /etc/amnezia/amneziawg
-  ok "AmneziaWG interface configs removed (peers/keys erased)"
 }
 rm_awg_pkg(){
   info "Uninstalling the AmneziaWG package (kernel module + tools)"
@@ -249,9 +259,8 @@ rm_awg_pkg(){
 }
 rm_wg_peers(){
   info "Removing WireGuard interface configs (peers)"
-  down_ifaces /etc/wireguard wg-quick
+  remove_ifaces /etc/wireguard wg-quick
   rmrf /etc/wireguard
-  ok "WireGuard interface configs removed (peers/keys erased)"
 }
 rm_wg_pkg(){
   info "Uninstalling the WireGuard package"

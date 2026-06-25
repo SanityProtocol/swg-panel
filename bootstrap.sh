@@ -144,7 +144,12 @@ step(){ echo; echo "$(b "Step $STEP. $1")"; echo; STEP=$((STEP+1)); }
 # the node fully up on its CURRENT method. Offer to finish the move (same token); declining just keeps it.
 if [ -f /var/lib/swg-recovery ]; then
   . /var/lib/swg-recovery 2>/dev/null || true
-  if [ -n "${SWG_RV_FROM:-}" ] && [ -n "${SWG_RV_TO:-}" ] && [ -n "${SWG_RV_ROLE:-}" ]; then
+  # a complete uninstall can leave the marker behind; if NEITHER side of the convert is on the box any more,
+  # the marker is orphaned (nothing to resume) — drop it silently so a fresh install doesn't offer Resume.
+  if [ ! -e /etc/swg-agent ] && [ ! -e "$DOCKER_DIR" ] && [ ! -e "$SD/swg-noded.service" ] \
+     && ! { command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; }; then
+    rm -f /var/lib/swg-recovery 2>/dev/null || true
+  elif [ -n "${SWG_RV_FROM:-}" ] && [ -n "${SWG_RV_TO:-}" ] && [ -n "${SWG_RV_ROLE:-}" ]; then
     echo
     warn "An unfinished $(mlabel "$SWG_RV_FROM") → $(mlabel "$SWG_RV_TO") conversion was found."
     info "  Resume → finish it on $(mlabel "$SWG_RV_TO"), keeping the same node, token and peers (safe even if the switch-over had already begun)."
