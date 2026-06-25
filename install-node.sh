@@ -51,7 +51,7 @@ iface_row(){ local n="$1" conf proto ep lp addr   # set -e safe; prefer a just-q
   else conf="${IF_CONF[$n]:-}"; proto="${IF_CMD[$n]:-?}"; ep="${IF_ENDPOINT[$n]:-${ENDPOINT_IP:-}}"
     lp="$(conf_get "$conf" ListenPort || true)"; addr="$(conf_get "$conf" Address || true)"; fi
   [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
-  printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "${proto:-?}" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
+  printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "${proto:-?}")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 fwd_ifaces(){ local cp="${1##*:}" n lp out=""; for n in "${!IF_CONF[@]}"; do lp="$(conf_get "${IF_CONF[$n]}" ListenPort)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && out="${out:+$out }$n"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by ListenPort)
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
 # conf so swg-noded never wipes its peers. The marker rides along through re-installs and conversions.

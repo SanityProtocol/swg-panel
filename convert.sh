@@ -32,7 +32,7 @@ die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 iface_row(){ local n="$1" proto="$2" conf="$3" ep="$4" lp addr
   lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1)"
   addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1)"
-  printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
+  printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "$proto")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 # the interface a turn-proxy forwards to: the iface whose ListenPort matches the connect port (else empty)
 fwd_iface_for(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" | head -1)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return; }; done; }
 # turn_row <service> <listen> <connect> — green service + "listen → connect (iface)"

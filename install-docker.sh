@@ -264,7 +264,7 @@ iface_row(){ local n="$1" conf spec proto="" ep="" lp="" addr=""   # set -e safe
   fi
   [ -n "$proto" ] || proto=wg
   [ -n "$ep" ] || ep="${NODE_ENDPOINT:-}"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
-  printf '    %s%s%s  %-4s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$proto" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
+  printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "$proto")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
 v_fwd(){ local names; names=" $(node_iface_rows | cut -d' ' -f1 | tr '\n' ' ')${NODE_IFACE:+$NODE_IFACE }"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
 fwd_resolve(){ local n p x; while read -r n p x; do [ -n "$n" ] && [ "$n" = "$1" ] && { echo "127.0.0.1:$p"; return; }; done <<< "$(node_iface_rows)"

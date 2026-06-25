@@ -5,6 +5,9 @@
 #
 # NB: this file is sourced, not executed — no shebang, no `set`, no side effects at load time.
 
+# pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
+proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
+
 # ── validators ──
 v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
 v_subnet(){  have python3 || return 0; python3 -c "import ipaddress,sys;ipaddress.ip_network(sys.argv[1],strict=False)" "$1" >/dev/null 2>&1; }
