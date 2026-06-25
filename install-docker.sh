@@ -448,7 +448,7 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
     parse_panel_url "$PANEL_DOMAIN"
     # is the port the panel will publish actually free on this host? (catches nginx/apache or a prior panel)
     _pp="${URL_PORT:-443}"
-    if [ "$_forced" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ] && ! panel_owns_port "$_pp"; then
+    if [ "${SWG_CONVERT_KILL_PANEL:-}" != 1 ] && [ "$_forced" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ] && ! panel_owns_port "$_pp"; then
       _who="$(ss -lntpH "sport = :$_pp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
       echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))} — the panel can't bind it"
       echo "    Give the panel its own port (e.g. $(b "${PANEL_HOST_NOPORT}:8443")), or stop whatever holds it."
