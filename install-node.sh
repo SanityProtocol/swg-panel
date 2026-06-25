@@ -135,7 +135,8 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
 
 detect_public_ip(){ # best public IPv4: default-route source, then first hostname -I
   local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
-  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  case "$ip" in 127.*) ip="";; esac                                                   # never the loopback — clients can't reach it
+  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -vE '^127\.' | head -n1 || true)"
   printf '%s' "$ip"; }
 
 # ── idempotent re-install: read the current install's panel URL/token + per-interface endpoints, to

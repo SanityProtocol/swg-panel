@@ -77,7 +77,9 @@ die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
 detect_public_ip(){ local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1 || true)"
-  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"; printf '%s' "$ip"; }
+  case "$ip" in 127.*) ip="";; esac                                                   # never the loopback — it's not reachable by clients
+  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -vE '^127\.' | head -n1 || true)"
+  printf '%s' "$ip"; }
 ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps a tty); else use default
   printf '\n' >/dev/tty 2>/dev/null || true
   if printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then printf '%s' "${v:-$d}"
@@ -262,8 +264,8 @@ iface_row(){ local n="$1" conf spec proto="" ep="" lp="" addr=""   # set -e safe
       addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
     fi
   fi
-  [ -n "$proto" ] || proto=wg
-  [ -n "$ep" ] || ep="${NODE_ENDPOINT:-}"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
+  [ -n "$proto" ] || case "$n" in awg*) proto=awg;; *) proto=wg;; esac   # no conf/spec → infer from the name (awg0 ⇒ AmneziaWG), not a blind wg
+  [ -n "$ep" ] || ep="${NODE_ENDPOINT:-}"; case "$ep" in 127.*|"") ep="$(detect_public_ip 2>/dev/null || true)";; esac   # never show loopback as the public endpoint
   printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "$proto")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
 v_fwd(){ local names; names=" $(node_iface_rows | cut -d' ' -f1 | tr '\n' ' ')${NODE_IFACE:+$NODE_IFACE }"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
@@ -861,7 +863,7 @@ case "$PROFILE" in
       [ -n "$NODE_TOKEN" ] || NODE_TOKEN="$(head -c18 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
       AUTOENROLL=yes
     else
-      NODE_TOKEN="${NODE_TOKEN:-set-in-nodes-screen}"; PANEL_URL="${PANEL_URL:-https://swg-panel:8443}"; NODE_ENDPOINT="${NODE_ENDPOINT:-127.0.0.1}"
+      NODE_TOKEN="${NODE_TOKEN:-set-in-nodes-screen}"; PANEL_URL="${PANEL_URL:-https://swg-panel:8443}"; NODE_ENDPOINT="${NODE_ENDPOINT:-$(detect_public_ip)}"   # host (panel-only) placeholder — the real public IP, not loopback, in case a node ever inherits this .env
     fi
     ;;
   node)
