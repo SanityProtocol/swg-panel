@@ -327,7 +327,35 @@ transfer_from_docker(){ # import a docker node-conf to bare-metal: copy out, ADD
   run rm -f "$src"
   ok "imported $(col "$C_GREEN" "$n") from the docker node-confs (host NAT added)"
 }
+# A LIVE wg/awg interface with NO conf on disk is invisible to the conf-based scan below (e.g. a removed docker
+# node ran on the host netns and left its interface behind). Rebuild its conf from the live state — key, port,
+# Amnezia params, peers (awg/wg showconf) + Address (ip addr) + host NAT — so it's DETECTED and adopted (peers
+# kept), not silently colliding with a freshly-created same-named interface. Marked #swg:onboarded (add-only).
+reconstruct_live_orphans(){
+  $DRYRUN && return 0
+  command -v ip >/dev/null 2>&1 || return 0
+  local tool dir n sc addr sub wan up down
+  wan="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true)"; [ -n "$wan" ] || wan=eth0
+  for tool in awg wg; do
+    command -v "$tool" >/dev/null 2>&1 || continue
+    dir=/etc/amnezia/amneziawg; [ "$tool" = wg ] && dir=/etc/wireguard
+    for n in $("$tool" show interfaces 2>/dev/null || true); do
+      [ -n "$n" ] || continue
+      if [ -f "/etc/amnezia/amneziawg/$n.conf" ] || [ -f "/etc/wireguard/$n.conf" ]; then continue; fi   # already managed
+      sc="$("$tool" showconf "$n" 2>/dev/null || true)"; [ -n "$sc" ] || continue
+      addr="$(ip -o -4 addr show "$n" 2>/dev/null | awk '{print $4; exit}' || true)"; [ -n "$addr" ] || continue
+      sub="$(printf '%s' "${addr%/*}" | awk -F. '{print $1"."$2"."$3".0"}' || true)/${addr#*/}"
+      up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${sub} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+      down="iptables -t nat -D POSTROUTING -s ${sub} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
+      mkdir -p "$dir" 2>/dev/null || true
+      { echo '#swg:onboarded'; printf '%s\n' "$sc" | awk -v a="$addr" -v u="$up" -v d="$down" '/^\[Interface\]/ { print; print "Address = " a; print "MTU = 1420"; print "PostUp = " u; print "PostDown = " d; next } { print }'; } > "$dir/$n.conf" 2>/dev/null && chmod 600 "$dir/$n.conf" 2>/dev/null || true
+      info "  detected running interface $(b "$n") with no config on disk — rebuilt its conf so it's managed (peers kept)"
+    done
+  done
+  return 0
+}
 choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' creates more
+  reconstruct_live_orphans   # rebuild confs for running wg/awg ifaces that have none on disk → detected below
   detect_wg
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
