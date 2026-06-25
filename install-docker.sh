@@ -461,18 +461,28 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
 ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE the container by acme.sh
   step "TLS certificate"
   echo
-  local _opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n" _def=l _le="$(keyd l 'etsencrypt (default)')" _tn=0
+  # domain or IP? hide the domain-only CA certs (letsencrypt/cloudflare/cf15) when the URL is an IP / bare host
+  local _url_is_domain=no _opts _def _le _reuse_avail=no _w80 _ans80 _tn
+  case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *.*) _url_is_domain=yes;; esac;; esac
+  if [ "$_url_is_domain" = yes ]; then _opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n"; _def=l; _le="$(keyd l 'etsencrypt (default)')"
+  else                                 _opts="selfsigned none s n";                                  _def=selfsigned; fi
   if [ "$EXISTING_DOCKER" = yes ] && [ -f "$INSTALL_DIR/data/etc/tls/fullchain.pem" ]; then
-    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"    "Keep the existing certificate and TLS mode from this install — no re-issue (recommended for a re-install)"
-    _opts="reuse $_opts r"; _def=r; _le="$(key l 'etsencrypt')"
+    _reuse_avail=yes; _opts="reuse $_opts r"; _def=r
+    [ "$_url_is_domain" = yes ] && _le="$(key l 'etsencrypt')"
   fi
-  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_le"                                "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
-  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt"  "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
-  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"        "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
-  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"                "OK for testing"
-  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key n 'one')"                      "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
-  local _w80 _ans80
   while :; do
+    _tn=0
+    [ "$_reuse_avail" = yes ] && { _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"    "Keep the existing certificate and TLS mode from this install — no re-issue (recommended for a re-install)"; }
+    if [ "$_url_is_domain" = yes ]; then
+      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_le"                                "Let's Encrypt cert via acme.sh HTTP-01 (publish port 80: -p 80:80)"
+      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt"  "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
+      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"        "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
+      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"                "OK for testing"
+    else
+      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd s 'elfsigned (default)')"     "Self-signed cert — the browser warns once (the realistic choice for an IP)"
+    fi
+    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key n 'one')"                      "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
+    [ "$_url_is_domain" = yes ] || sub "Let's Encrypt / Cloudflare options need a domain — hidden because the panel URL ($(b "$PANEL_DOMAIN")) is an IP."
     ask_choice "Select TLS certificate (number, letter or name)" "$_def" TLS "$_opts"
     case "$TLS" in r) TLS=reuse;; l) TLS=letsencrypt;; c) TLS=cloudflare;; 15) TLS=cf15;; s) TLS=selfsigned;; n) TLS=none;; esac
     # letsencrypt's HTTP-01 needs host :80 — if it's taken (nginx/apache), make the user switch or force
@@ -481,19 +491,18 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
       echo; warn "letsencrypt needs host port $(col "$C_YEL" ':80') for HTTP-01, but it's in use${_w80:+ (by $(col "$C_YEL" "$_w80"))} — issuance will fail"
       echo "    :80 is fixed by ACME (independent of the panel's port). Pick $(key c 'loudflare') (DNS-01), $(key 15 'years cloudflare'), $(key s 'elfsigned'), or $(key n 'one') — or $(bb force) to keep letsencrypt."
       printf '  Select another certificate, or type %s: ' "$(bb force)"
-      read -r _ans80 </dev/tty || _ans80=force
+      read -r _ans80 2>/dev/null </dev/tty || _ans80=force
       _ans80="$(printf '%s' "$_ans80" | tr -d '[:space:]')"
       [ "$_ans80" = force ] && break
       case " $_opts " in *" $_ans80 "*) TLS="$_ans80";; *) TLS=""; warn "enter one of: $_opts — or 'force'";; esac
       continue
     fi
+    case "$TLS" in letsencrypt|cloudflare|cf15)   # only reachable via an env preset on an IP — warn + re-ask
+      if [ "$_url_is_domain" != yes ]; then echo; warn "$(b "$TLS") needs a real domain (FQDN), but the panel URL ($(b "$PANEL_DOMAIN")) is an IP. Pick selfsigned or none, or re-run with a domain URL."; echo; TLS=""; continue; fi ;;
+    esac
     break
   done
   if [ "$TLS" = reuse ]; then REUSE_TLS=yes; TLS="${EXIST_TLS:-selfsigned}"; ok "reusing the existing certificate (TLS mode: $(b "$TLS"))"; return 0; fi
-  case "$TLS" in letsencrypt|cloudflare|cf15)
-    case "$PANEL_DOMAIN" in *[a-zA-Z]*) : ;; *) die "TLS=$TLS needs a domain (FQDN), not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac
-    case "$PANEL_DOMAIN" in *.*) : ;; *) die "TLS=$TLS needs a domain (FQDN), not '$PANEL_DOMAIN' — re-run and pick selfsigned for an IP";; esac ;;
-  esac
   case "$TLS" in
     letsencrypt) ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com"
                  warn "letsencrypt validates over HTTP-01 — publish port 80 to the panel container (compose maps 80:80)";;
