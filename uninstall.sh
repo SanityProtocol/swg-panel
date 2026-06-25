@@ -62,12 +62,14 @@ rm_panel(){
     done
   fi
   rmrf /opt/swg-panel /etc/swg-panel /var/www/wgstats /var/www/acme
-  local KEEP_ROSTER="${KEEP_ROSTER:-}"
-  ask_yn "  Keep the peer list + node store (users.json, nodes.json) for a future reinstall?" n KEEP_ROSTER
-  if [ "$KEEP_ROSTER" = yes ] && [ -f /var/lib/swg-panel/users.json ]; then
-    rmrf /var/lib/swg-panel/.ssh /var/lib/swg-panel/configs
-    ok "Kept /var/lib/swg-panel/{users,nodes}.json"
-  else rmrf /var/lib/swg-panel; fi
+  # default NO = keep the roster for a future re-install (matches the docker data-dir prompt); yes = wipe it
+  local PANEL_DATA_DEL="${PANEL_DATA_DEL:-}"
+  ask_yn "  Delete the data dir /var/lib/swg-panel (users, peers, nodes)?" n PANEL_DATA_DEL
+  if [ "$PANEL_DATA_DEL" = yes ]; then rmrf /var/lib/swg-panel
+  elif [ -d /var/lib/swg-panel ]; then
+    rmrf /var/lib/swg-panel/.ssh /var/lib/swg-panel/configs            # keep the roster; never leave secrets at rest
+    ok "Kept /var/lib/swg-panel (users, peers, nodes) for a future re-install"
+  fi
   if id swgpanel >/dev/null 2>&1; then run userdel swgpanel; fi
   REMOVED_PANEL=true; ok "swg-panel removed"
 }
