@@ -736,7 +736,7 @@ echo
 # certs (letsencrypt / cloudflare / cf15) only work for a domain, so they're HIDDEN when the URL is an IP.
 _url_is_domain=no; case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *.*) _url_is_domain=yes;; esac;; esac
 if [ "$_url_is_domain" = yes ]; then _tls_opts="letsencrypt cloudflare cf15 selfsigned skip l c 15 s sk"; _tls_def="${TLS_SAVED:-l}"; _le_lbl="$(keyd l 'etsencrypt (default)')"
-else                                 _tls_opts="selfsigned skip s sk";                                  _tls_def=selfsigned; fi
+else                                 _tls_opts="selfsigned skip s sk";                                  _tls_def=s; fi
 _reuse_avail=no
 if [ "$EXISTING_HOST" = yes ] && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
   _reuse_avail=yes; _tls_opts="reuse $_tls_opts r"; _tls_def=r

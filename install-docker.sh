@@ -465,7 +465,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
   local _url_is_domain=no _opts _def _le _reuse_avail=no _w80 _ans80 _tn
   case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *.*) _url_is_domain=yes;; esac;; esac
   if [ "$_url_is_domain" = yes ]; then _opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n"; _def=l; _le="$(keyd l 'etsencrypt (default)')"
-  else                                 _opts="selfsigned none s n";                                  _def=selfsigned; fi
+  else                                 _opts="selfsigned none s n";                                  _def=s; fi
   if [ "$EXISTING_DOCKER" = yes ] && [ -f "$INSTALL_DIR/data/etc/tls/fullchain.pem" ]; then
     _reuse_avail=yes; _opts="reuse $_opts r"; _def=r
     [ "$_url_is_domain" = yes ] && _le="$(key l 'etsencrypt')"
