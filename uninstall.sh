@@ -229,32 +229,36 @@ down_ifaces(){ local dir="$1" tool="$2" f n
   for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"
     command -v "$tool" >/dev/null 2>&1 && run "$tool" down "$n"; done; }
 
-# Per-component (NOT shared): keep this datapath's interface .conf files so a future install can
-# re-onboard the peers? Default yes. $1 = label for the prompt, $2 = outvar (set to yes|no).
-ask_keep_peers(){ ask_yn "  Keep the $1 peers? Leaves the interface .conf files (keys + peers) so a future install can re-onboard them." y "$2"; }
-
-rm_awg(){
-  info "Removing kernel AmneziaWG"
+# Peers (the interface .conf files) and the wg/awg PACKAGE are removed INDEPENDENTLY — so you can wipe the
+# panel + peers but KEEP the wg/awg service installed (or remove the package but keep the configs). Each is
+# its own component in the list, so the peer question is always asked regardless of the package answer.
+rm_awg_peers(){
+  info "Removing AmneziaWG interface configs (peers)"
   down_ifaces /etc/amnezia/amneziawg awg-quick
-  local K=""; ask_keep_peers "kernel AmneziaWG" K
-  if [ "$K" = yes ]; then info "  Kept /etc/amnezia/amneziawg configs — peers can be re-onboarded on a future install."
-  else rmrf /etc/amnezia/amneziawg; info "  Deleted /etc/amnezia/amneziawg configs (peers/keys erased)."; fi
+  rmrf /etc/amnezia/amneziawg
+  ok "AmneziaWG interface configs removed (peers/keys erased)"
+}
+rm_awg_pkg(){
+  info "Uninstalling the AmneziaWG package (kernel module + tools)"
+  down_ifaces /etc/amnezia/amneziawg awg-quick      # if the configs were kept, bring the ifaces down before pulling the module
   if command -v apt-get >/dev/null 2>&1; then
     run apt-get purge -y amneziawg amneziawg-tools amneziawg-dkms
     run add-apt-repository -y --remove ppa:amnezia/ppa; run apt-get autoremove -y
   else warn "Non-apt system — remove the amneziawg packages with your package manager."; fi
-  ok "kernel AmneziaWG removed"
+  ok "AmneziaWG package removed"
 }
-
-rm_wg(){
-  info "Removing kernel WireGuard"
+rm_wg_peers(){
+  info "Removing WireGuard interface configs (peers)"
   down_ifaces /etc/wireguard wg-quick
-  local K=""; ask_keep_peers "kernel WireGuard" K
-  if [ "$K" = yes ]; then info "  Kept /etc/wireguard configs — peers can be re-onboarded on a future install."
-  else rmrf /etc/wireguard; info "  Deleted /etc/wireguard configs (peers/keys erased)."; fi
+  rmrf /etc/wireguard
+  ok "WireGuard interface configs removed (peers/keys erased)"
+}
+rm_wg_pkg(){
+  info "Uninstalling the WireGuard package"
+  down_ifaces /etc/wireguard wg-quick
   if command -v apt-get >/dev/null 2>&1; then run apt-get purge -y wireguard wireguard-tools; run apt-get autoremove -y
   else warn "Non-apt system — remove the wireguard packages with your package manager."; fi
-  ok "kernel WireGuard removed"
+  ok "WireGuard package removed"
 }
 
 rm_turn(){ local unit="$1" name fork
@@ -347,12 +351,16 @@ fi
 # still-writing dpkg gets SIGPIPE (141), so the pipe reports failure even on a match (amneziawg sorts early in
 # dpkg -l, so it always tripped this; wireguard sorts late and usually slipped through).
 pkg_ii(){ grep -qE "$1" <<< "$(dpkg -l 2>/dev/null)"; }
-awg_present(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.service >/dev/null 2>&1 \
-  || { command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +amneziawg(-tools| |$)'; }; }
-wg_present(){ ls /etc/wireguard/*.conf >/dev/null 2>&1 || ls $SD/wg-quick@*.service >/dev/null 2>&1 \
-  || { command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +wireguard '; }; }
-awg_present && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "kernel AmneziaWG" "$_d" rm_awg "" "$_d"; }
-wg_present  && { _d="$(iface_list /etc/wireguard)";        add "kernel WireGuard" "$_d" rm_wg "" "$_d"; }
+# interface configs (the PEERS) vs the system PACKAGE — detected + offered SEPARATELY
+awg_ifaces(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.service >/dev/null 2>&1; }
+wg_ifaces(){  ls /etc/wireguard/*.conf >/dev/null 2>&1 || ls $SD/wg-quick@*.service >/dev/null 2>&1; }
+awg_pkg(){ command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +amneziawg(-tools| |$)'; }
+wg_pkg(){  command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +wireguard '; }
+awg_ifaces && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "AmneziaWG interfaces (peers)" "$_d" rm_awg_peers "" "$_d"; }
+awg_pkg    &&   add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg
+wg_ifaces  && { _d="$(iface_list /etc/wireguard)";        add "WireGuard interfaces (peers)" "$_d" rm_wg_peers "" "$_d"; }
+wg_pkg     &&   add "WireGuard package" "wireguard · wireguard-tools" rm_wg_pkg
+true   # don't let the last &&-test leave a non-zero status
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do
   add "$(basename "$unit" .service)" "$(turn_detail "$unit")" rm_turn "$unit" "$(turn_listen "$unit")"   # green service name + listen → connect (iface)
