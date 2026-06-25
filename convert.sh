@@ -306,6 +306,7 @@ teardown_bare_panel(){
   rm -rf /etc/systemd/system/swg-panel-server.service.d
   rm -f /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf /etc/nginx/conf.d/swg-panel.conf
   command -v nginx >/dev/null 2>&1 && { nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; } || true
+  rm -rf /opt/swg-panel /usr/local/bin/swg-panel-server   # remove the bare binary too, else the box still reads as a bare panel (bootstrap won't offer convert-back)
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
 if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
@@ -428,8 +429,16 @@ EOF
   # 5) move the old bare state aside (already copied) so a later convert-back restages from data/, then done
   for _d in "$STATE" "$ETC"; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)" 2>/dev/null || true; done
   clear_recovery
-  echo; ok "$(b "$ROLE") converted to docker — $(b "https://$PDOM:$PPORT$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node"))."
-  echo "  Dir   $DOCKER_DIR  ·  docker compose --profile $PROFILE up -d   ·  logs: docker compose logs -f"
+  echo; ok "$(b "$ROLE") converted to docker — same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node"). Nodes reconnect on their next sync."
+  _sch=https; [ "$PTLS" = none ] && _sch=http
+  _psuf=":$PPORT"; if { [ "$_sch" = https ] && [ "$PPORT" = 443 ]; } || { [ "$_sch" = http ] && [ "$PPORT" = 80 ]; }; then _psuf=""; fi
+  echo; echo "──────────────── SUMMARY ────────────────"; echo
+  echo "  Panel     $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
+  echo "  Login     unchanged — your existing $(b "${PUSER:-admin}") login + password"
+  echo "  TLS       $(b "$PTLS")  ·  Method $(b docker) (was bare-metal)"
+  [ "$ROLE" = master ] && echo "  Node      local node preserved (token + interfaces + turn-proxies)"
+  echo "  Dir       $(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile $PROFILE up -d")"
+  echo "  Logs      $(b "cd $DOCKER_DIR && docker compose logs -f")"
   exit 0
 fi
 
