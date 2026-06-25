@@ -82,6 +82,12 @@ lc_init(){ LC_OP="$1"; LC_EMIT="$2"; LC_ABORT=""; LC_HANDOFF=""; LC_DONE=""; LC_
   trap '_lc_exit' EXIT
   lc_emit "$(_lc_inprogress "$LC_OP")"; }                      # step 1 done → signal in-progress now
 
+# Run "$@" with stdout+stderr on the CONTROLLING TERMINAL (/dev/tty) so `docker compose` renders its live
+# progress BAR. lc_init's capture pipe — and any `| tee` / `exec bash` chain that leaves fd 1 a non-tty —
+# makes compose fall back to plain line-by-line text; /dev/tty is the real terminal regardless of fd 1.
+# Falls back to the inherited fds when there's no tty (headless/cron). Returns the wrapped command's status.
+on_tty(){ if { true >/dev/tty; } 2>/dev/null; then "$@" >/dev/tty 2>/dev/tty; else "$@"; fi; }
+
 # ── convert switch helpers: tear the OLD method down ONLY at the final switch (after the new one is fully
 #    staged), so the node stays up the whole time. Generic (scan disk) → no per-name args needed. ───────────
 # lc_teardown_baremetal [migrated-turn-svcs…] — stop+remove a bare-metal node: daemon, every wg/awg iface,
