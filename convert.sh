@@ -308,6 +308,9 @@ teardown_bare_panel(){
   command -v nginx >/dev/null 2>&1 && { nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; } || true
   rm -rf /opt/swg-panel /usr/local/bin/swg-panel-server   # remove the bare binary too, else the box still reads as a bare panel (bootstrap won't offer convert-back)
   systemctl daemon-reload >/dev/null 2>&1 || true; }
+# master convert: emit the lifecycle status to BOTH the panel header (host_proc file) and the local node tile
+# (proc-status POST to the loopback panel), so "converting/converted" shows on the node too, not just the panel.
+lc_emit_hostnode(){ lc_emit_file "$1" "${2:-}"; lc_emit_post "$1" "${2:-}"; }
 
 if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; pconf="$ETC/install.conf"; PROFILE="$ROLE"
@@ -352,7 +355,13 @@ PY
   # panel HEADER status: converting → converted-docker (+ convert-aborted/-failed on a bad exit). The bare panel
   # serves /var/lib/swg-panel/host_proc now (and it gets staged into the container); we repoint LC_FILE at the
   # container's host_proc after the switch so the success/failure terminal lands where the docker panel reads it.
-  LC_FILE=/var/lib/swg-panel/host_proc; lc_init convert-docker lc_emit_file
+  LC_FILE=/var/lib/swg-panel/host_proc
+  if [ "$ROLE" = master ] && [ -n "$NTOK" ]; then   # MASTER: status on BOTH the panel header (file) AND the local node tile (POST to the loopback panel)
+    LC_URL="https://127.0.0.1:$PPORT"; LC_TOKEN="$NTOK"; LC_VERIFY=no
+    lc_init convert-docker lc_emit_hostnode
+  else
+    lc_init convert-docker lc_emit_file
+  fi
   if [ "$RESUMING" != yes ] && [ -e "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.pre-convert-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
     mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved a leftover $(b "$DOCKER_DIR") aside → $(b "$_bak")" || rm -rf "$DOCKER_DIR" 2>/dev/null || true

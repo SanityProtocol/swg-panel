@@ -191,26 +191,16 @@ CONFLICT=""
 for _c in $ROLE_COMPS; do
   if ! has_comp "$METHOD" "$_c" && has_comp "$OTHER" "$_c"; then CONFLICT="${CONFLICT:+$CONFLICT }$_c"; fi
 done
-# MASTER split-guard: this box is a MASTER on the OTHER method (a panel AND a node) but you asked to convert
-# only one part. Point that out and offer to convert the whole master (default) instead of splitting the box.
-if [ -n "$CONFLICT" ] && [ "$ROLE" != master ] && has_comp "$OTHER" panel && has_comp "$OTHER" node; then
-  echo
-  echo "$(b "! This box runs a $(mlabel "$OTHER") master — both a panel and a node.")"
-  echo "  You asked to convert only the $(b "$ROLE"). Convert the whole master, or just the $ROLE?"
-  echo
-  menu "$(b "$(col "$C_BLUE" '[1] [m]aster (default)')")"      "Convert BOTH the panel and the node to $(mlabel "$METHOD") — keep this box a single-method master (recommended)."
-  menu "$(col "$C_BLUE" "[2] [${ROLE:0:1}]${ROLE:1}")"         "Convert only the $ROLE to $(mlabel "$METHOD"); the rest stays on $(mlabel "$OTHER") — a mixed-method box you'd manage in two places."
-  _msel=""; ask_choice "Convert the whole master, or just the $ROLE (number, letter or name)" master _msel "master $ROLE"
-  if [ "$_msel" = master ]; then
-    ROLE=master; ROLE_COMPS="panel node"; CONFLICT=""
-    for _c in $ROLE_COMPS; do { ! has_comp "$METHOD" "$_c" && has_comp "$OTHER" "$_c"; } && CONFLICT="${CONFLICT:+$CONFLICT }$_c"; done
-  fi
-fi
+# the box's ACTUAL installed role on the OTHER method — so the convert prompt names what's really there (master
+# when both a panel + a node are present); the master split-question is then asked ONLY after you choose convert.
+if   has_comp "$OTHER" panel && has_comp "$OTHER" node; then OTHER_ROLE=master
+elif has_comp "$OTHER" panel; then OTHER_ROLE=host
+else OTHER_ROLE=node; fi
 if [ -n "$CONFLICT" ]; then
   while :; do
     echo
-    echo "$(b "! A $(mlabel "$OTHER") $ROLE is already installed on this box.")"
-    echo "  Convert it to a $(mlabel "$METHOD") $ROLE, or re-install it as it is?"
+    echo "$(b "! A $(mlabel "$OTHER") $OTHER_ROLE is already installed on this box.")"
+    echo "  Convert it to a $(mlabel "$METHOD") $OTHER_ROLE, or re-install it as it is?"
     echo
     menu "$(b "$(col "$C_BLUE" '[1] [c]onvert')")"      "Migrate it to $(mlabel "$METHOD") — all settings / users / peers are preserved. A port/interface pre-flight runs first."
     menu "$(col "$C_BLUE" '[2] [k]eep and re-install')" "Leave it on $(mlabel "$OTHER") and just re-install it (you didn't mean to switch methods)."
@@ -220,8 +210,21 @@ if [ -n "$CONFLICT" ]; then
       abort) info "aborted — nothing changed."; exit 0;;
       keep)  METHOD="$OTHER"; info "keeping the existing $(mlabel "$OTHER") install — re-installing it as-is."; break;;
       convert)
+        # MASTER split — ONLY after you chose convert: the box is a master but you named one part, so offer the
+        # whole master (default) or just that part, before the pre-flight.
+        if [ "$OTHER_ROLE" = master ] && [ "$ROLE" != master ]; then
+          echo
+          echo "$(b "  This box is a master — both a panel and a node.")"
+          echo "  Convert the whole master, or just the $(b "$ROLE")?"
+          echo
+          menu "$(b "$(col "$C_BLUE" '[1] [m]aster (default)')")"      "Convert BOTH the panel and the node to $(mlabel "$METHOD") — keep this box a single-method master (recommended)."
+          menu "$(col "$C_BLUE" "[2] [${ROLE:0:1}]${ROLE:1}")"         "Convert only the $ROLE to $(mlabel "$METHOD"); the rest stays on $(mlabel "$OTHER") — a mixed-method box you'd manage in two places."
+          _msel=""; ask_choice "Convert the whole master, or just the $ROLE (number, letter or name)" master _msel "master $ROLE"
+          [ "$_msel" = master ] && ROLE=master
+        fi
         # pre-flight (port/interface check) lives in convert.sh --check: exit 0 = clear, non-0 = printed conflicts
         if bash "./convert.sh" --check "$OTHER" "$METHOD" "$ROLE"; then
+          echo
           _ans=no; ask_yn "No conflicts found, do you want to proceed with the conversion" y _ans
           [ "$_ans" = yes ] && exec bash "./convert.sh" "$OTHER" "$METHOD" "$ROLE" ${PASS[@]+"${PASS[@]}"}
         fi
