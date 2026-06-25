@@ -94,6 +94,7 @@ writef(){ # writef <abs_path> <mode>   (content on stdin)
   local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"
   chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }   # menu <styled-label> <description>
+menug(){ printf '  %s\n      %s%s%s\n\n' "$1" "$C_GREY" "$2" "$RESET"; }   # like menu but greys the description too — for a fully de-emphasised entry (pass a grey-coloured label/number)
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  a 'mneziawg'           → [a]mneziawg
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)
 keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emphasised label grey:  keyg n 'one'                → [n]one
@@ -792,7 +793,7 @@ while :; do
   else
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_ss_lbl"                           "Self-signed cert — the browser warns once (the realistic choice for an IP)"
   fi
-  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyg n 'one')"                     "No certificate issued — bring your own / terminate TLS elsewhere (plain HTTP otherwise)"
+  _tn=$((_tn+1)); menug "$(col "$C_GREY" "[$_tn]") $(keyg n 'one')"                    "No certificate issued — bring your own / terminate TLS elsewhere (plain HTTP otherwise)"
   [ "$_url_is_domain" = yes ] || [ "$_ip_public" = yes ] || sub "Let's Encrypt needs a public domain or public IP — hidden because $(b "$PANEL_DOMAIN") is private / not routable."
   ask_choice "Select TLS certificate (number, letter or name)" "$_tls_def" TLS_MODE "$_tls_opts"
   # map the choice to a canonical TLS_MODE. On an IP menu every 'letsencrypt' alias (l / ip / letsencrypt)
