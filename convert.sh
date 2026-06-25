@@ -256,11 +256,108 @@ print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel 
 # container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).
 docker_node_present(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; }
 
-# ── Panel/host conversion isn't automated yet → non-zero so the caller loops back to keep/abort ──
-case "$ROLE" in host|master)
-  warn "Converting the PANEL between docker and bare-metal isn't automated yet (only nodes are)."
-  echo  "  Choose 'keep and re-install', or uninstall the existing panel first and install the other method." >&2
-  exit 1;;
+# ── PANEL host conversion ──────────────────────────────────────────────────────
+# The panel's state is the SAME JSON in both methods (one swg-panel-server binary); only the LOCATION differs:
+#   /var/lib/swg-panel ↔ $DOCKER_DIR/data/lib  (roster users.json, nodes.json + node token HASHES, configs/)
+#   /etc/swg-panel     ↔ $DOCKER_DIR/data/etc  (fleet.json, auth login, tls/ cert, acme/ renewal state)
+#   /var/www/wgstats   ↔ $DOCKER_DIR/data/stats(status snapshots)
+# So conversion is a copy-first state move + a port hand-off. URL/port/TLS/login are preserved so every node
+# stays connected (nodes.json token hashes carry over). Master (panel + local node) conversion comes next.
+docker_panel_present(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; }
+bare_panel_present(){ [ -f /etc/systemd/system/swg-panel-server.service ] || [ -x /opt/swg-panel/swg-panel-server ]; }
+# stop + remove the bare-metal panel (units + proxy vhost) — KEEP the state dirs (they were already staged)
+teardown_bare_panel(){
+  systemctl disable --now swg-panel-server >/dev/null 2>&1 || true
+  systemctl disable --now swg-update.path  >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/swg-panel-server.service /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /usr/local/bin/swg-update
+  rm -rf /etc/systemd/system/swg-panel-server.service.d
+  rm -f /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf /etc/nginx/conf.d/swg-panel.conf
+  command -v nginx >/dev/null 2>&1 && { nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; } || true
+  systemctl daemon-reload >/dev/null 2>&1 || true; }
+
+if [ "$ROLE" = host ] && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
+  ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; pconf="$ETC/install.conf"
+  bare_panel_present || [ -n "${SWG_RV_URL:-}" ] || die "no bare-metal panel found (swg-panel-server missing)"
+  gv(){ sed -n "s/^$1=//p" "$pconf" 2>/dev/null | head -1; }
+  PDOM="$(gv PANEL_DOMAIN)"; PPORT="$(gv PORT)"; PTLS="$(gv TLS_MODE)"; PEMAIL="$(gv ACME_EMAIL)"; PBASE="$(gv PANEL_BASE)"
+  PUSER="$(sed -n 's/^\([^:]*\):.*/\1/p' "$ETC/auth" 2>/dev/null | head -1)"
+  [ -n "${SWG_RV_URL:-}" ] && PDOM="${PDOM:-$SWG_RV_URL}"
+  [ -n "$PDOM" ] || die "couldn't read the panel domain ($pconf missing and no recovery state)"
+  case "$PTLS" in letsencrypt|letsencrypt-ip|cloudflare|cf15|selfsigned|none) :;; *) PTLS=selfsigned;; esac
+  [ -n "$PPORT" ] || PPORT=443
+  docker_panel_present && die "a docker panel (swg-panel container) already exists — remove it first"
+
+  if [ "$CHECK" = yes ]; then
+    [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") will be moved aside."
+    sub "pre-flight OK"
+    info "Panel → docker keeps: URL $(b "$PDOM"), login, roster, nodes + the $(b "$PTLS") cert. Brief panel downtime at the switch (nodes self-heal)."
+    exit 0
+  fi
+  command -v docker >/dev/null 2>&1 || die "docker is required"
+
+  info "Converting the bare-metal panel → docker — keeping its URL, login, roster, nodes and cert."
+  PURL="$PDOM"; NTOK=""; NEP=""; write_recovery ""   # persist FROM/TO/ROLE for resume BEFORE any teardown
+  if [ "$RESUMING" != yes ] && [ -e "$DOCKER_DIR" ]; then
+    _bak="$DOCKER_DIR.pre-convert-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
+    mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved a leftover $(b "$DOCKER_DIR") aside → $(b "$_bak")" || rm -rf "$DOCKER_DIR" 2>/dev/null || true
+  fi
+
+  # 1) COPY-FIRST: stage the panel state while the bare panel is STILL UP + serving every node
+  mkdir -p "$DOCKER_DIR"/data/lib "$DOCKER_DIR"/data/etc "$DOCKER_DIR"/data/stats
+  [ -d "$STATE" ] && cp -a "$STATE/." "$DOCKER_DIR/data/lib/"   2>/dev/null || true   # roster, nodes.json, configs
+  [ -d "$ETC" ]   && cp -a "$ETC/."   "$DOCKER_DIR/data/etc/"   2>/dev/null || true   # fleet.json, auth, tls/
+  [ -d "$STATS" ] && cp -a "$STATS/." "$DOCKER_DIR/data/stats/" 2>/dev/null || true
+  # carry the acme.sh renewal state (bare keeps it in /root/.acme.sh; the container reads data/etc/acme) and
+  # point its stored reload command at the container (kill -HUP 1) instead of the systemd unit, so renewals reload.
+  for _ah in /root/.acme.sh "${HOME:-/root}/.acme.sh"; do [ -d "$_ah" ] && { mkdir -p "$DOCKER_DIR/data/etc/acme"; cp -a "$_ah/." "$DOCKER_DIR/data/etc/acme/" 2>/dev/null || true; break; }; done
+  find "$DOCKER_DIR/data/etc/acme" -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='kill -HUP 1'#" {} + 2>/dev/null || true
+  sub "staged roster + nodes + login + $(b "$PTLS") cert (+ acme renewal) → $DOCKER_DIR/data"
+
+  # 2) stage the compose project (prebuilt image pulled from GHCR)
+  cp -a "$SRC/docker-compose.yml" "$DOCKER_DIR/" 2>/dev/null || true
+  for f in Dockerfile Dockerfile.node Dockerfile.turn .dockerignore VERSION swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
+    [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$DOCKER_DIR/" 2>/dev/null || true; done
+  [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$DOCKER_DIR/" 2>/dev/null || true
+  [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$DOCKER_DIR/" 2>/dev/null || true
+
+  # 3) .env — login (auth file) + cert are PRESERVED in data/etc so the entrypoint keeps them; PANEL_PASSWORD is
+  #    an unused placeholder (compose requires it). Same URL/port/TLS ⇒ nodes stay connected.
+  cat > "$DOCKER_DIR/.env" <<EOF
+# generated by convert.sh (bare-metal → docker) — profile: host
+PANEL_PASSWORD=converted-login-preserved
+PANEL_USER=${PUSER:-admin}
+PANEL_DOMAIN=$PDOM
+PANEL_BASE=$PBASE
+TLS=$PTLS
+ACME_EMAIL=$PEMAIL
+CF_TOKEN=
+CF_ORIGIN_TOKEN=
+PANEL_PORT=$PPORT
+PANEL_URL=
+NODE_TOKEN=
+NODE_ENDPOINT=
+EOF
+  chmod 600 "$DOCKER_DIR/.env"
+
+  # 4) ATOMIC SWITCH — pull first (slow) while the bare panel still serves, THEN stop it + bring the container up
+  info "Pulling the panel image…"
+  ( cd "$DOCKER_DIR" && on_tty docker compose --profile host pull ) || warn "image pull failed — will use the local image if present"
+  info "Switching over — stopping the bare-metal panel, then starting the container…"
+  teardown_bare_panel
+  ( cd "$DOCKER_DIR" && on_tty docker compose --profile host up -d ) || die "compose up failed — your panel state is safe in $DOCKER_DIR/data; check 'docker compose logs swg-panel'"
+
+  # 5) move the old bare state aside (already copied) so a later convert-back restages from data/, then done
+  for _d in "$STATE" "$ETC"; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)" 2>/dev/null || true; done
+  clear_recovery
+  echo; ok "Panel converted to docker — $(b "https://$PDOM:$PPORT$PBASE/") (same login, roster, nodes + cert). Nodes reconnect on their next sync."
+  echo "  Dir   $DOCKER_DIR  ·  docker compose --profile host up -d   ·  logs: docker compose logs -f swg-panel"
+  exit 0
+fi
+
+# ── remaining panel/master directions: implemented in the next stages ──
+case "$ROLE" in
+  host)   die "host docker→bare-metal conversion is coming next — for now 'keep and re-install', or uninstall + install bare-metal.";;
+  master) die "master (panel + node) conversion is coming next — convert the node, or 'keep and re-install'.";;
 esac
 
 # ── NODE: docker → bare-metal ──
