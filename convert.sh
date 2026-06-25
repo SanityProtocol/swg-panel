@@ -170,8 +170,9 @@ PY
 $list
 EOF
   echo
-  # A convert migrates everything (no prompt). Write each host unit NOW, enabled but NOT started, WHILE the
-  # docker turn containers still hold the listen ports — install-node starts them after the switch frees the ports.
+  cyn "Transfer these turn-proxies into the bare-metal node?" || { info "  leaving them on docker — they stop at the switch; you can add fresh ones in the next step"; return 0; }
+  # Write each host unit NOW, enabled but NOT started, WHILE the docker turn containers still hold the listen
+  # ports — install-node starts them after the switch frees the ports.
   while IFS="$(printf '\t')" read -r svc owner lis con params; do
     [ -n "$svc" ] || continue
     [ -n "$owner" ] || { warn "  $svc: no fork in the record — skipping"; continue; }

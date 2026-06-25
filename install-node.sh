@@ -394,10 +394,16 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     done
     SELECTED=("${sel[@]}")
   fi
-  # CONVERT docker→bare: the docker node stayed UP through every prompt above. NOW — right before the bare
-  # interfaces come up — do the ATOMIC SWITCH: stop the docker datapath (frees the wg ports) + clear any host
-  # netdevs it left behind, so wg-quick can bind. The conf/key COPY already happened (convert.sh), so this is
-  # the only destructive step, and it's at the very end.
+  # the CUTOVER + bringing every interface up is DEFERRED for a docker→bare convert: the turn-proxy step
+  # (Step 2) still has to run while the docker node serves, so the convert path calls apply_node_switch
+  # itself AFTER Step 2. A fresh install has nothing to tear down, so it switches right here.
+  [ "${SWG_CONVERT:-}" = 1 ] || apply_node_switch
+}
+# the ATOMIC SWITCH: stop the docker datapath (convert only — a no-op on a fresh install) + clear leftover host
+# netdevs so wg-quick can bind, then bring every selected interface up. The conf/key COPY already happened
+# (convert.sh), so this is the only destructive step — run as the very last thing before the daemon starts.
+apply_node_switch(){
+  local _n _ep n _c
   if [ "${SWG_CONVERT:-}" = 1 ] && ! $DRYRUN && command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
     info "Switching over — stopping the docker node, then bringing the interfaces up bare-metal…"
     lc_teardown_docker "${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
@@ -405,7 +411,6 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
   fi
   apply_specs   # install tools + write confs + bring up every queued interface now (after all prompts)
   detect_wg
-  local _ep
   for n in "${SELECTED[@]}"; do n="${n// /}"; [ -n "${IF_CMD[$n]:-}" ] || { [ -e "/etc/amnezia/amneziawg/$n.conf" ] && { IF_CMD[$n]=awg; IF_CONF[$n]="/etc/amnezia/amneziawg/$n.conf"; } || { IF_CMD[$n]=wg; IF_CONF[$n]="/etc/wireguard/$n.conf"; }; }
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
     _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
@@ -677,18 +682,20 @@ step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
 echo
 choose_ifaces
 
-# a docker→bare conversion already migrated the existing turn-proxies (convert.sh) — don't offer the fork menu,
-# but STILL record the migrated units (write_turn_record), or the panel would show no turn-proxies after the convert.
+# Step 2: TURN-PROXY setup. Runs for a fresh install AND a docker→bare convert — the convert shows its already
+# migrated turn-proxies (written by convert.sh, not yet started) as "installed" and lets you add more, all
+# WHILE the docker node still serves. choose_turn_proxy (re)writes the turn record incl. the migrated units.
+step "TURN-PROXY setup"
+echo
+choose_turn_proxy
+
+# CONVERT: the turn-proxy step is done → NOW do the deferred cutover as the very last step (mirror bare→docker):
+# stop the docker datapath (+ its turn containers) → bring the bare interfaces up → start the migrated turn
+# units (their ports are free now). The node goes down + comes back ONCE, fully converted; the daemon (below)
+# is its first report, already carrying interfaces + turn-proxies.
 if [ "${SWG_CONVERT:-}" = 1 ]; then
-  # the switch above freed the ports → start the turn-proxy units convert.sh prepared (written enabled but
-  # NOT started, while docker still held the ports). The daemon starts below, so the node's first report
-  # already carries its turn-proxies — the panel never sees a half-converted node.
+  apply_node_switch
   for _u in /etc/systemd/system/vk-turn-proxy-*.service; do [ -e "$_u" ] || continue; run systemctl enable --now "$(basename "$_u")" || true; done
-  write_turn_record
-else
-  step "TURN-PROXY setup"
-  echo
-  choose_turn_proxy
 fi
 
 # ───────────────────────── install binaries ─────────────────────────
