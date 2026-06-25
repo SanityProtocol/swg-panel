@@ -348,6 +348,10 @@ PY
 
   info "Converting the bare-metal $(b "$ROLE") → docker — keeping the panel's URL/login/roster/nodes/cert$([ "$ROLE" = master ] && echo " and the local node")."
   PURL="$PDOM"; write_recovery ""   # persist FROM/TO/ROLE for resume BEFORE any teardown
+  # panel HEADER status: converting → converted-docker (+ convert-aborted/-failed on a bad exit). The bare panel
+  # serves /var/lib/swg-panel/host_proc now (and it gets staged into the container); we repoint LC_FILE at the
+  # container's host_proc after the switch so the success/failure terminal lands where the docker panel reads it.
+  LC_FILE=/var/lib/swg-panel/host_proc; lc_init convert-docker lc_emit_file
   if [ "$RESUMING" != yes ] && [ -e "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.pre-convert-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
     mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved a leftover $(b "$DOCKER_DIR") aside → $(b "$_bak")" || rm -rf "$DOCKER_DIR" 2>/dev/null || true
@@ -416,6 +420,7 @@ EOF
     lc_teardown_baremetal $_turns
   fi
   ( cd "$DOCKER_DIR" && on_tty docker compose --profile "$PROFILE" up -d ) || die "compose up failed — your state is safe in $DOCKER_DIR/data; check 'docker compose logs'"
+  LC_FILE="$DOCKER_DIR/data/lib/host_proc"   # the docker panel now owns host_proc → the EXIT trap writes converted-docker where IT reads it
 
   # 5) move the old bare state aside (already copied) so a later convert-back restages from data/, then done
   for _d in "$STATE" "$ETC"; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)" 2>/dev/null || true; done
@@ -448,6 +453,9 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
 
   info "Converting the docker $(b "$ROLE") → bare-metal — keeping the panel's URL/login/roster/nodes/cert$([ "$ROLE" = master ] && echo " and the local node")."
   PURL="$PDOM"; write_recovery ""
+  # panel HEADER status during the convert: show "converting to bare-metal" on the still-running docker panel
+  # (install-host then continues it on the bare panel as converting-bare → converted-bare / convert-aborted/-failed).
+  docker exec swg-panel sh -c 'printf "%s" converting-bare > /var/lib/swg-panel/host_proc' >/dev/null 2>&1 || true
 
   # 1) COPY-FIRST: stage the panel state to the bare locations while the container is STILL UP + serving
   mkdir -p "$STATE" "$ETC" "$STATS"
