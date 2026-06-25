@@ -94,7 +94,6 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 bb(){ printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (handoff URL / login)
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
-menug(){ printf '  %s\n      %s%s%s\n\n' "$1" "$C_GREY" "$2" "$RESET"; }   # like menu but greys the description too — for a fully de-emphasised entry (pass a grey-coloured label/number)
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  l 'etsencrypt'           → [l]etsencrypt
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd l 'etsencrypt (default)'  → [l]etsencrypt (default)
 keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emphasised label grey:  keyg n 'one'                → [n]one
@@ -512,7 +511,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
     else
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_ss"                                "Self-signed cert — the browser warns once (the realistic choice for an IP)"
     fi
-    _tn=$((_tn+1)); menug "$(col "$C_GREY" "[$_tn]") $(keyg n 'one')"                    "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
+    _tn=$((_tn+1)); menu "$(col "$C_GREY" "[$_tn]") $(keyg n 'one')"                     "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
     [ "$_url_is_domain" = yes ] || [ "$_ip_public" = yes ] || sub "Let's Encrypt needs a public domain or public IP — hidden because $(b "$PANEL_DOMAIN") is private / not routable."
     ask_choice "Select TLS certificate (number, letter or name)" "$_def" TLS "$_opts"
     if [ "$_ip_public" = yes ]; then   # on an IP menu every letsencrypt alias means the IP cert
