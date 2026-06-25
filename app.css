@@ -471,6 +471,11 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .notice:last-child{margin-bottom:0}
 .notice.warn{background:rgba(232,192,75,.08);border:1px solid rgba(232,192,75,.25);color:var(--pending)}
 .notice svg{flex:none;margin-top:1px}
+/* error/log modal body — captured installer output / command errors, shown line-by-line, scrollable */
+.logview{font-family:var(--mono);font-size:12.5px;line-height:1.55;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-solid);border-radius:var(--r-sm);padding:10px 12px;max-height:48vh;overflow:auto}
+.logline{white-space:pre-wrap;word-break:break-word;min-height:1.55em}
+.logview.raw{color:var(--dim)}
+.btn.logtoggle{margin-right:auto}   /* pin the raw/rendered toggle to the left of the footer */
 /* full-width attention banner (e.g. store_configs off) — sits at the top of a screen */
 .banner{display:flex;gap:11px;align-items:flex-start;margin-bottom:16px;padding:12px 15px;border-radius:var(--r-sm);font-size:13px;line-height:1.5}
 .banner svg{flex:none;margin-top:2px}

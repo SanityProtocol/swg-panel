@@ -623,7 +623,7 @@ function procTag(state, onX, err) {
   const xbtn = onX ? html`<button class="xbtn" title="Dismiss — show the node's actual status" onClick=${e => { e.stopPropagation(); e.preventDefault(); onX(e); }}><${Ic} i="x"/></button>` : null;
   if (procAborted(state)) return html`<span class="nstat procaborted"><${Ic} i="info"/> ${lbl}${xbtn}</span>`;
   if (procFailed(state)) {   // whole tag clickable → details popup (when there's a log tail), distinct hover, no caption
-    const open = err ? (e => { e.stopPropagation(); e.preventDefault(); openConfirm({ title: lbl, body: err, confirmLabel: "Close" }); }) : null;
+    const open = err ? (e => { e.stopPropagation(); e.preventDefault(); openConfirm({ title: lbl, log: err, confirmLabel: "Close" }); }) : null;
     return html`<span class=${"nstat procfail" + (open ? " tg-click" : "")} onClick=${open}><${Ic} i="warn"/> ${lbl}${xbtn}</span>`;
   }
   return html`<span class="nstat proc"><${Ic} i="clock"/> ${lbl}</span>`;   // in-progress
@@ -1306,7 +1306,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${istopped ? html`<span class="badge b-unknown ic" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/>stopped</span>` : idown ? html`<span class="badge b-dangling ic" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", body: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/>down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${istopped ? html`<span class="badge b-unknown ic" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/>stopped</span>` : idown ? html`<span class="badge b-dangling ic" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/>down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
@@ -1897,7 +1897,7 @@ function trackTurnRestarts() {
 // `cls` tones it (e.g. "warn" = yellow for a non-fatal in-progress note); `title` overrides the modal heading.
 function CmdErr({ err, cls, title }) {
   if (!err) return null;   // clickable error icon → details popup (no native tooltip caption)
-  return html`<span class=${"cmderr" + (cls ? " " + cls : "")} onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Command failed on the node", body: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
+  return html`<span class=${"cmderr" + (cls ? " " + cls : "")} onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Command failed on the node", log: err, confirmLabel: "Close" }); }}><${Ic} i="info"/></span>`;
 }
 // a status tag that, when it carries a node `msg`, makes the WHOLE tag clickable (opens the message) with
 // a hover highlight + pointer — so the click target is the tag, not a tiny icon next to it.
@@ -1906,7 +1906,7 @@ function StatusTag({ cls, icon, label, msg, title }) {
   if (!msg) return html`<span class=${cls} title=${title || ""}>${ic}${label}</span>`;   // plain (non-error) tag keeps its hint
   // an error/detail tag: the WHOLE tag is clickable (→ popup), distinct hover, no native caption
   return html`<span class=${cls + " tg-click"}
-    onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Details", body: msg, confirmLabel: "Close" }); }}>${ic}${label}</span>`;
+    onClick=${e => { e.stopPropagation(); openConfirm({ title: title || "Details", log: msg, confirmLabel: "Close" }); }}>${ic}${label}</span>`;
 }
 async function cancelTurn(node, body) {
   const r = await api.turnCancel({ node, ...body });
@@ -3116,17 +3116,34 @@ function Sheet({ title, children, foot, onClose, width }) {
 // action button red; `danger`/`warn` give the notice a warn tint + icon (else a neutral info note).
 // `back` (optional) = where Cancel / Esc returns to (e.g. reopen the peer view it was launched from);
 // default just closes. After a confirmed action we always close, since the action changed the state.
+// Error/log bodies (captured installer output, command errors) carry ANSI colour codes + newlines that read
+// as one mashed line. `log:` renders them line-by-line, ANSI stripped for humans ("rendered"), with a toggle
+// to the unprocessed log ("raw", ESC shown as ␛, still line-by-line). Used by every error/detail modal.
+function logRendered(s) { return String(s == null ? "" : s).replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/\r/g, "").replace(/[ \t]+$/gm, ""); }
+function logRaw(s) { return String(s == null ? "" : s).replace(/\x1b/g, "␛").replace(/\r/g, ""); }
+function LogBody({ text, raw }) {
+  const t = (raw ? logRaw(text) : logRendered(text)).replace(/\n+$/, "");
+  return html`<div class=${"logview" + (raw ? " raw" : "")}>${t.split("\n").map(l => html`<div class="logline">${l === "" ? " " : l}</div>`)}</div>`;
+}
 function openConfirm(opts) { openModal(html`<${ConfirmSheet} ...${opts}/>`); }
-function ConfirmSheet({ title, body, confirmLabel, danger, warn, onConfirm, back }) {
+function ConfirmSheet({ title, body, log, confirmLabel, danger, warn, onConfirm, back }) {
   back = back || closeModal;
   const [busy, setBusy] = useState(false);
-  const go = async () => { if (busy) return; setBusy(true); const seq = _modalSeq;
+  const [raw, setRaw] = useState(false);
+  const isLog = log != null && String(log) !== "";
+  const canToggle = isLog && logRaw(log) !== logRendered(log);   // only offer raw/rendered when they differ (ANSI present)
+  const go = async () => { if (busy) return; if (!onConfirm) return back(); setBusy(true); const seq = _modalSeq;
     try { await onConfirm(); } finally { if (_modalSeq === seq) closeModal(); } };   // skip close if onConfirm opened another modal (no flicker)
   const tone = danger || warn;
   return html`<${Sheet} title=${title} onClose=${back}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button>
-      <button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy} onClick=${go}>${confirmLabel || "Confirm"}</button></>`}>
-    <div class=${"notice" + (tone ? " warn" : "")}><${Ic} i=${tone ? "warn" : "info"}/><span>${body}</span></div>
+    foot=${html`<${Fragment}>
+      ${canToggle ? html`<button class="btn btn-ghost logtoggle" onClick=${() => setRaw(r => !r)}>${raw ? "Display rendered" : "Display raw"}</button>` : null}
+      <span class="grow"></span>
+      <button class=${"btn " + (onConfirm ? "btn-ghost" : "btn-primary")} onClick=${back}>${onConfirm ? "Cancel" : (confirmLabel || "Close")}</button>
+      ${onConfirm ? html`<button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy} onClick=${go}>${confirmLabel || "Confirm"}</button>` : null}</>`}>
+    ${isLog
+      ? html`<${LogBody} text=${log} raw=${raw}/>`
+      : html`<div class=${"notice" + (tone ? " warn" : "")}><${Ic} i=${tone ? "warn" : "info"}/><span>${body}</span></div>`}
   <//>`;
 }
 
@@ -3888,7 +3905,7 @@ function App() {
       const b = $("#host-upd"); if (b) b.onclick = updateHost;
       const c = $("#upd-check"); if (c) c.onclick = checkForUpdate;
       const hx = $("#hostproc-x"); if (hx) hx.onclick = e => { e.stopPropagation(); dismissHostProc(); };
-      const htg = $("#hostproc-tag"); if (htg && Store.hostProcErr) htg.onclick = () => openConfirm({ title: PROC_LABEL[Store.hostProc] || Store.hostProc, body: Store.hostProcErr, confirmLabel: "Close" });
+      const htg = $("#hostproc-tag"); if (htg && Store.hostProcErr) htg.onclick = () => openConfirm({ title: PROC_LABEL[Store.hostProc] || Store.hostProc, log: Store.hostProcErr, confirmLabel: "Close" });
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = openAccount;
