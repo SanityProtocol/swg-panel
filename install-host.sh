@@ -359,6 +359,7 @@ turn_wg_ports(){   # echo "<iface>:<ListenPort>" for every interface managed in 
     p="$(grep -iE '^[[:space:]]*ListenPort[[:space:]]*=' "${IF_CONF[$n]}" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[^0-9].*//')"
     [ -n "$p" ] && printf '%s:%s\n' "$n" "$p"
   done
+  return 0   # a final iface with no ListenPort would otherwise leave the loop non-zero → trips set -e at ports="$(turn_wg_ports)"
 }
 detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -connect is a turn-proxy
   TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con wk envf params

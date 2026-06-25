@@ -151,6 +151,7 @@ import json
 for n,ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).items():
     e=ic.get("endpoint_host","")
     if e: print("%s|%s"%(n,e))' 2>/dev/null || true)
+  return 0   # the while-loop falls through non-zero if the last iface's endpoint was already set; bare-called at NODE SETUP start
 }
 detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
 
@@ -445,6 +446,7 @@ turn_wg_ports(){   # echo "<iface>:<ListenPort>" for every interface managed in 
     p="$(grep -iE '^[[:space:]]*ListenPort[[:space:]]*=' "${IF_CONF[$n]}" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[^0-9].*//')"
     [ -n "$p" ] && printf '%s:%s\n' "$n" "$p"
   done
+  return 0   # a final iface with no ListenPort would otherwise leave the loop non-zero → trips set -e at ports="$(turn_wg_ports)"
 }
 detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -connect is a turn-proxy
   TP_LISTEN=(); TP_CONNECT=(); TP_WRAP=(); local u name exe lis con wk envf params

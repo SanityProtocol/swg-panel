@@ -193,7 +193,7 @@ except Exception: tps = []
 for t in (tps if isinstance(tps, list) else []):
     print("\t".join([str(t.get("service", "")), str(t.get("listen", "")), str(t.get("connect", "")), str(t.get("wrap_key", ""))]))
 PY
-) ; }
+) ; return 0; }   # a record line with an empty service would leave the loop non-zero → trips set -e at the bare callers
 # One instance == one container (swg-turn-<fork>-<port>) so the SAME fork can run many times
 # (2× wings, 3× samosvalishe, …) — each on its own port with its own wrap key.
 install_turn_binary(){ local fork="$1" owner="$2" listen="$3" connect="$4" extra="$5" port inst svc
@@ -687,6 +687,7 @@ find_iface_conf(){  # echo the .conf path for an interface (docker data dir + th
   [ -f "$INSTALL_DIR/data/node-confs/$n.conf" ] && { echo "$INSTALL_DIR/data/node-confs/$n.conf"; return 0; }
   p="$(etc_awg_conf "$n")"; [ -n "$p" ] && { echo "$p"; return 0; }
   p="$(etc_wg_conf "$n")";  [ -n "$p" ] && { echo "$p"; return 0; }
+  return 0   # no conf found → empty output + success (the trailing test would otherwise return non-zero)
 }
 is_kernel_iface(){  # true if backed by a kernel/host unit or an /etc conf (NOT just a docker-data conf) —
   [ -n "$(etc_awg_conf "$1")" ] && return 0   # i.e. it runs on the kernel here, not in a container

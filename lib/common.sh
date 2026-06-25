@@ -112,7 +112,8 @@ lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), f
   docker rm -f swg-node >/dev/null 2>&1 || true
   if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then   # node-only → take the stack down
     [ -f "$d/docker-compose.yml" ] && ( cd "$d" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1 || true; } )
-  fi; }
+  fi
+  return 0; }   # always succeed — a missing compose file (node-only box) must not return non-zero mid-switch and trip set -e
 
 # lc_clear_convert_leftover <baremetal|docker> [docker_dir] — on a plain (re-)install/update of one method,
 # delete the inert copy an ABORTED conversion to the OTHER method left behind (no prompt — just an old copy).
