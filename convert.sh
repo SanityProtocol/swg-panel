@@ -112,7 +112,9 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload 2>/dev/null || true
-  systemctl enable --now "$svc" 2>/dev/null || true   # without the binary the unit just stays down (panel shows it, Reinstall re-fetches)
+  # TURN_DEFER_START: write+enable but DON'T start (docker still holds the listen port) — the switch starts it later.
+  if [ -n "${TURN_DEFER_START:-}" ]; then systemctl enable "$svc" 2>/dev/null || true
+  else systemctl enable --now "$svc" 2>/dev/null || true; fi   # without the binary the unit just stays down (panel shows it, Reinstall re-fetches)
   rm -f "$mk" 2>/dev/null || true   # done → the node reports the real unit now (up, or down if the download failed)
   [ "$ok" = 1 ]
 }
@@ -163,18 +165,18 @@ for t in (tps if isinstance(tps, list) else []):
 PY
 )"
   [ -n "$list" ] || return 0
-  echo; info "Turn-proxy services to migrate:"; echo
+  echo; info "Turn-proxy services to migrate (host systemd units written now; brought up at the switch):"; echo
   while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && turn_row "$svc" "$lis" "$con"; done <<EOF
 $list
 EOF
   echo
-  cyn "Transfer these turn-proxies to bare-metal (host systemd)?" || { info "  left them on docker (they stop when the swg-turn containers go)"; return 0; }
+  # A convert migrates everything (no prompt). Write each host unit NOW, enabled but NOT started, WHILE the
+  # docker turn containers still hold the listen ports — install-node starts them after the switch frees the ports.
   while IFS="$(printf '\t')" read -r svc owner lis con params; do
     [ -n "$svc" ] || continue
     [ -n "$owner" ] || { warn "  $svc: no fork in the record — skipping"; continue; }
-    docker rm -f "swg-turn-${svc#vk-turn-proxy-}" >/dev/null 2>&1 || true   # free the listen port BEFORE the host unit binds it
-    if turn_install_host "$svc" "$owner" "$lis" "$con" "$params"; then
-      sub "migrated $(b "$svc") → host systemd"; MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"
+    if TURN_DEFER_START=1 turn_install_host "$svc" "$owner" "$lis" "$con" "$params"; then
+      sub "prepared $(b "$svc") → host systemd (starts at the switch)"; MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"
     else
       warn "  $svc: binary download failed — its unit + settings were kept, so it shows on the panel as failed; open it and press Reinstall (no re-entry needed)"
     fi
@@ -553,38 +555,25 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     sub "carried interface keypair backups → /var/lib/swg-noded/iface-keys"
   fi
 
-  # 2b) COMPLETE-BEFORE-SWITCH: download every turn-proxy binary into the shared cache while the docker node is
-  #     STILL UP + serving. The slow part is done before the cutover, so the migration after it is instant.
+  # 2b) PREP EVERYTHING WHILE THE DOCKER NODE STILL SERVES — nothing here touches the live datapath:
+  #     download the turn-proxy binaries into the shared cache, then write each host turn-proxy unit
+  #     (enabled, NOT started — the docker containers still hold the ports). install-node.sh then does the
+  #     ONE destructive step (the switch) at the very end, exactly like bare→docker's compose-up.
   turn_predownload
+  turn_to_bare   # docker turn record → host systemd units (written + enabled, deferred start)
 
-  # 3) ATOMIC, COMPLETE SWITCH — install-node.sh brings wg/awg up + wires the daemon but, under SWG_CONVERT=1,
-  #    DEFERS starting swg-noded. So the node's datapath is up + serving peers, yet the panel still sees
-  #    "converting" — we migrate the turn-proxies FIRST, then start the daemon, so the node only ever reports
-  #    once the WHOLE conversion (interfaces + turn-proxies) is done. (NOT exec — we return to finish + tidy up.)
-  #    ADOPTED_IFACES marks the migrated interfaces as "already on this node"; same token ⇒ one panel node.
-  info "Running install-node.sh — adopt $(b "$names") (and add more if you want); the daemon start is deferred…"
+  # 3) THE SWITCH — install-node.sh runs all its prompts (interfaces) WHILE docker is still up, then as its
+  #    LAST step does the atomic cutover: stop the docker datapath + turn containers → bring up the bare
+  #    interfaces → start the prepared turn-proxy units → start swg-noded. So the node goes down + comes back
+  #    ONCE, fully converted (interfaces + turn-proxies), in a single non-interactive step.
+  info "Running install-node.sh — adopt $(b "$names") (add more if you want); then it does the switch as the last step…"
   echo
-  # NB: '|| warn' — a non-zero exit (e.g. one interface failed to come up) must NOT abort the convert under
-  # set -e, or the turn-proxy migration + dir cleanup below would be skipped (the node would lose its proxies).
+  # NB: '|| warn' — a non-zero exit (e.g. one interface failed to come up) must NOT abort the convert under set -e.
   env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
       SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh" \
-    || warn "install-node.sh reported an error — continuing with the turn-proxy migration (check the interface(s) on the panel)."
+    || warn "install-node.sh reported an error — check the node on the panel."
 
-  echo; info "Interfaces up + serving peers — migrating turn-proxies BEFORE the node reports to the panel (binaries are pre-cached, so this is quick)."
-  turn_to_bare   # docker turn-proxies → host systemd units (reads the still-present $DOCKER_DIR turn record)
-
-  # offer the SAME "add more?" step interfaces got — re-enter install-node.sh's turn menu now that the
-  # existing proxies are migrated and listed (it also (re)writes the bare turn record incl. the migrated
-  # units). Non-fatal: a failure here must not skip the daemon start + dir cleanup + final summary below.
-  env SWG_TURN_ADD=1 bash "$SRC/install-node.sh" \
-    || warn "turn-proxy add step reported an error — continuing (check the panel)."
-
-  # 4) NOW everything (interfaces + turn-proxies) is in place → start the daemon. This is the node's FIRST
-  #    report as bare-metal, so the panel sees a fully-converted node (never "converted" mid-migration).
-  echo; info "Starting the node daemon — it now reports the fully-converted node (interfaces + turn-proxies) to the panel…"
-  systemctl restart swg-noded 2>/dev/null || warn "couldn't start swg-noded — start it with: systemctl restart swg-noded"
-
-  # finally move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker
+  # move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker
   # convert isn't blocked by the leftover .env.
   if [ -d "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S)"

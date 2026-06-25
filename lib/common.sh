@@ -134,6 +134,7 @@ lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), f
   local d="${1:-/opt/swg-panel-docker}"
   command -v docker >/dev/null 2>&1 || return 0
   docker rm -f swg-node >/dev/null 2>&1 || true
+  for _c in $(docker ps -aq --filter name=swg-turn- 2>/dev/null || true); do docker rm -f "$_c" >/dev/null 2>&1 || true; done   # turn-proxy containers hold the listen ports the migrated bare units need
   if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then   # node-only → take the stack down
     [ -f "$d/docker-compose.yml" ] && ( cd "$d" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1 || true; } )
   fi

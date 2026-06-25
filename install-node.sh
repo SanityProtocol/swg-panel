@@ -680,6 +680,10 @@ choose_ifaces
 # a docker→bare conversion already migrated the existing turn-proxies (convert.sh) — don't offer the fork menu,
 # but STILL record the migrated units (write_turn_record), or the panel would show no turn-proxies after the convert.
 if [ "${SWG_CONVERT:-}" = 1 ]; then
+  # the switch above freed the ports → start the turn-proxy units convert.sh prepared (written enabled but
+  # NOT started, while docker still held the ports). The daemon starts below, so the node's first report
+  # already carries its turn-proxies — the panel never sees a half-converted node.
+  for _u in /etc/systemd/system/vk-turn-proxy-*.service; do [ -e "$_u" ] || continue; run systemctl enable --now "$(basename "$_u")" || true; done
   write_turn_record
 else
   step "TURN-PROXY setup"
@@ -761,8 +765,7 @@ run systemctl daemon-reload
 run systemctl enable --quiet swg-noded
 # restart (not just enable --now): on a RE-RUN that added interfaces, swg-noded is already running and
 # reads config.json only at startup — so without a restart the new interfaces never reach the panel.
-if [ "${SWG_CONVERT:-}" = 1 ]; then info "deferring the daemon start — the converter migrates turn-proxies FIRST, then starts swg-noded, so the panel only sees the node once the WHOLE conversion is done"
-else run systemctl restart swg-noded || warn "couldn't start swg-noded"; fi
+run systemctl restart swg-noded || warn "couldn't start swg-noded"   # turn-proxies already up (convert) → first report carries them
 # Clear a stale convert-recovery marker now that the node is wired — but NOT when we're a STEP inside a
 # docker→bare convert (SWG_CONVERT / SWG_TURN_ADD). convert.sh still has to migrate the turn-proxies and move
 # the old docker dir aside after we return; it owns the marker and clears it (clear_recovery) only when the
@@ -770,9 +773,9 @@ else run systemctl restart swg-noded || warn "couldn't start swg-noded"; fi
 $DRYRUN || [ -n "${SWG_CONVERT:-}${SWG_TURN_ADD:-}" ] || rm -f /var/lib/swg-recovery 2>/dev/null || true
 
 # during a convert, skip this summary entirely — convert.sh prints ONE final combined summary (interfaces +
-# migrated turn-proxies) after. The "node is up — migrating turn-proxies next" line is enough here.
+# turn-proxies) after. The switch is done here (interfaces + turn-proxies + daemon all up).
 if [ "${SWG_CONVERT:-}" = 1 ]; then
-  echo; ok "Node '$(bb "$NODE_NAME")' is up — migrating turn-proxies next…"
+  echo; ok "Node '$(bb "$NODE_NAME")' is up — fully converted to bare-metal (interfaces + turn-proxies)."
   exit 0
 fi
 echo; ok "Node '$(bb "$NODE_NAME")' install complete."
