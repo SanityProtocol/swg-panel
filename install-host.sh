@@ -96,6 +96,7 @@ writef(){ # writef <abs_path> <mode>   (content on stdin)
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }   # menu <styled-label> <description>
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  a 'mneziawg'           → [a]mneziawg
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd a 'mneziawg (default)'  → [a]mneziawg (default)
+keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emphasised label grey:  keyg n 'one'                → [n]one
 STEP="${STEP_BASE:-1}"; step(){ echo; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # sequential, continues bootstrap's numbering
 
 ask(){ local v p="$1" d="${2:-}"; if [ -n "${!3:-}" ]; then return; fi
@@ -146,6 +147,13 @@ ip_public(){ case "$1" in *[!0-9.]*|*.*.*.*.*|*..*) return 1;; *.*.*.*) ;; *) re
     100) case "$b" in 6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]) return 1;; esac;;
   esac
   return 0; }
+# 0 iff the cert file $1 is valid for host $2 — i.e. $2 appears as a SAN (DNS/IP) or the CN. Used to decide
+# whether a re-install can REUSE the existing cert: a cert issued for a different host/IP can't be reused here.
+cert_covers_host(){ local cert="$1" host="$2" txt
+  [ -s "$cert" ] && command -v openssl >/dev/null 2>&1 || return 1
+  txt="$( { openssl x509 -in "$cert" -noout -ext subjectAltName; openssl x509 -in "$cert" -noout -subject; } 2>/dev/null || true)"
+  if printf '%s' "$txt" | grep -qE "(DNS:|IP Address:|CN ?= ?)${host//./\\.}(\$|[^0-9A-Za-z.-])"; then return 0; fi
+  return 1; }
 # v_iface/v_subnet/v_hostport now in lib/common.sh
 
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
@@ -750,43 +758,57 @@ echo
 #   private / bare  → none of the above                (no CA will issue → selfsigned/skip only)
 _url_is_domain=no; case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *.*) _url_is_domain=yes;; esac;; esac
 _ip_public=no; [ "$_url_is_domain" = yes ] || { ip_public "$PANEL_DOMAIN" && _ip_public=yes; }
-if   [ "$_url_is_domain" = yes ]; then _tls_opts="letsencrypt cloudflare cf15 selfsigned skip l c 15 s sk"; _tls_def="${TLS_SAVED:-l}"; _le_lbl="$(keyd l 'etsencrypt (default)')"
-elif [ "$_ip_public" = yes ];     then _tls_opts="letsencrypt-ip selfsigned skip lip s sk";                 _tls_def="${TLS_SAVED:-letsencrypt-ip}"
-else                                   _tls_opts="selfsigned skip s sk";                                    _tls_def=s; fi
+# default = each branch's recommended primary (NOT the saved mode — a saved letsencrypt-ip is meaningless on a
+# domain URL, etc.; 'reuse' below is the real "keep what you had" and wins as default when the cert still fits).
+if   [ "$_url_is_domain" = yes ]; then _tls_opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n skip sk"; _tls_def=l
+elif [ "$_ip_public" = yes ];     then _tls_opts="letsencrypt-ip selfsigned none lip ip letsencrypt l s n skip sk"; _tls_def=letsencrypt-ip
+else                                   _tls_opts="selfsigned none s n skip sk";                                    _tls_def=s; fi
+# Offer 'reuse' ONLY if the existing cert actually covers this URL (host in its SAN/CN). A cert issued for a
+# different host/IP (e.g. a letsencrypt-ip cert when you now type a private IP) would be wrong here, so hide
+# reuse and let the working default win — that also avoids showing two "(default)" options.
 _reuse_avail=no
-if [ "$EXISTING_HOST" = yes ] && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
+if [ "$EXISTING_HOST" = yes ] && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ] \
+   && cert_covers_host "$PREFIX$TLS_DIR/fullchain.pem" "$PANEL_DOMAIN"; then
   _reuse_avail=yes; _tls_opts="reuse $_tls_opts r"; _tls_def=r
-  [ "$_url_is_domain" = yes ] && _le_lbl="$(key l 'etsencrypt')"
 fi
+# exactly ONE "(default)" marker: reuse when offered, otherwise each branch's primary option carries it
+if [ "$_reuse_avail" = yes ]; then _le_lbl="$(key l 'etsencrypt')";            _lip_lbl="$(key l 'etsencrypt-ip')";            _ss_lbl="$(key s 'elfsigned')"
+else                               _le_lbl="$(keyd l 'etsencrypt (default)')"; _lip_lbl="$(keyd l 'etsencrypt-ip (default)')"; _ss_lbl="$(keyd s 'elfsigned (default)')"; fi
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
 case "$TLS_MODE" in manual|none) TLS_MODE=skip;; esac
 # the loop re-asks (warn) instead of aborting if a cert is chosen that doesn't match the URL (e.g. env preset)
 while :; do
   _tn=0
-  [ "$_reuse_avail" = yes ] && { _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"       "Keep the existing certificate + TLS mode from this install — no re-issue (recommended for a re-install)"; }
+  [ "$_reuse_avail" = yes ] && { _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"       "Keep the existing $(b "${TLS_SAVED:-cert}") certificate — it already covers $(b "$PANEL_DOMAIN"), no re-issue (recommended for a re-install)"; }
   if [ "$_url_is_domain" = yes ]; then
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_le_lbl"                           "Let's Encrypt cert via acme.sh HTTP-01 (needs port 80 reachable)"
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"       "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"               "OK for testing"
   elif [ "$_ip_public" = yes ]; then
-    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(b 'letsencrypt-ip') (default)"    "Trusted Let's Encrypt cert for this IP — short-lived (~6 days), auto-renews daily via acme.sh (needs :80 reachable + a direct/grey-cloud IP)"
+    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_lip_lbl"                          "Trusted Let's Encrypt cert for this IP — short-lived (~6 days), auto-renews daily via acme.sh (needs :80 reachable + a direct/grey-cloud IP)"
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"               "Self-signed — the browser warns once (zero-maintenance, no port 80)"
   else
-    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd s 'elfsigned (default)')"    "Self-signed cert — the browser warns once (the realistic choice for an IP)"
+    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $_ss_lbl"                           "Self-signed cert — the browser warns once (the realistic choice for an IP)"
   fi
-  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key sk 'ip')"                     "If you are planning to use your own certificate (or terminate TLS elsewhere)"
+  _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyg n 'one')"                     "No certificate issued — bring your own / terminate TLS elsewhere (plain HTTP otherwise)"
   [ "$_url_is_domain" = yes ] || [ "$_ip_public" = yes ] || sub "Let's Encrypt needs a public domain or public IP — hidden because $(b "$PANEL_DOMAIN") is private / not routable."
   ask_choice "Select TLS certificate (number, letter or name)" "$_tls_def" TLS_MODE "$_tls_opts"
-  case "$TLS_MODE" in r) TLS_MODE=reuse;; l) TLS_MODE=letsencrypt;; lip) TLS_MODE=letsencrypt-ip;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; sk) TLS_MODE=skip;; esac
+  # map the choice to a canonical TLS_MODE. On an IP menu every 'letsencrypt' alias (l / ip / letsencrypt)
+  # means the IP cert; 'none'/'n' is the display name for the no-cert mode (kept internally as 'skip').
+  if [ "$_ip_public" = yes ]; then
+    case "$TLS_MODE" in r) TLS_MODE=reuse;; l|ip|lip|letsencrypt|letsencrypt-ip) TLS_MODE=letsencrypt-ip;; s|selfsigned) TLS_MODE=selfsigned;; n|none|sk|skip) TLS_MODE=skip;; esac
+  else
+    case "$TLS_MODE" in r) TLS_MODE=reuse;; l) TLS_MODE=letsencrypt;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; n|none|sk|skip) TLS_MODE=skip;; esac
+  fi
   case "$TLS_MODE" in
     letsencrypt|cloudflare|cf15)   # domain-only — warn + re-ask if the URL isn't a domain
       if [ "$_url_is_domain" != yes ]; then
-        echo; warn "$(b "$TLS_MODE") needs a domain (FQDN), but the panel URL ($(b "$PANEL_DOMAIN")) is an IP. Pick $([ "$_ip_public" = yes ] && printf 'letsencrypt-ip, ')selfsigned or skip, or re-run with a domain URL."
+        echo; warn "$(b "$TLS_MODE") needs a domain (FQDN), but the panel URL ($(b "$PANEL_DOMAIN")) is an IP. Pick $([ "$_ip_public" = yes ] && printf 'letsencrypt-ip, ')selfsigned or none, or re-run with a domain URL."
         echo; TLS_MODE=""; continue; fi ;;
     letsencrypt-ip)                # public-IP-only — warn + re-ask otherwise
       if [ "$_ip_public" != yes ]; then
-        echo; warn "$(b letsencrypt-ip) needs a public IP, but the panel URL is $(b "$PANEL_DOMAIN"). Pick $([ "$_url_is_domain" = yes ] && printf 'letsencrypt, ')selfsigned or skip."
+        echo; warn "$(b letsencrypt-ip) needs a public IP, but the panel URL is $(b "$PANEL_DOMAIN"). Pick $([ "$_url_is_domain" = yes ] && printf 'letsencrypt, ')selfsigned or none."
         echo; TLS_MODE=""; continue; fi ;;
   esac
   break
