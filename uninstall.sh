@@ -26,9 +26,9 @@ ask_yn(){ local v p="$1" d="${2:-n}"; if [ -n "${!3:-}" ]; then return; fi
   read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
   v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
-ask_comp(){ local v; $ASSUME_YES && return 0
+ask_comp(){ local v verb="${3:-Uninstall}"; $ASSUME_YES && return 0
   if ! { true </dev/tty; } 2>/dev/null; then return 1; fi   # no usable tty, not --yes => keep
-  read -rp "  Uninstall $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
+  read -rp "  $verb $(b "$1")${2:+  ($(c '0;90')$2$(c 0))}? (y/N): " v </dev/tty || true
   case "$v" in [Yy]*) return 0;; *) return 1;; esac; }
 
 [ "$(id -u)" = 0 ] || $DRYRUN || die "run as root (or use --dry-run)"
@@ -282,7 +282,7 @@ rm_turn(){ local unit="$1" name fork
 }
 
 # ───────────────────────── detect installed components ─────────────────────────
-declare -a CLABEL=() CDETAIL=() CFN=() CARG=() CHINT=()   # init empty (not just `declare -a`) — bash 5.2 + set -u treats a never-assigned array as unbound for ${#arr[@]}
+declare -a CLABEL=() CDETAIL=() CFN=() CARG=() CHINT=() CVERB=()   # init empty (not just `declare -a`) — bash 5.2 + set -u treats a never-assigned array as unbound for ${#arr[@]}
 # ── richer component details: interface names+ports, node endpoints, turn-proxy ports ──
 iface_list(){  # <dir> -> "awg0:51820, awg505:51234" (interface name + ListenPort from each .conf)
   local dir="$1" out="" f n p
@@ -335,7 +335,7 @@ turn_detail(){  # <unit> -> "1.2.3.4:57000 → 127.0.0.1:51820 (wg7)" — the li
   fw="$(turn_fwd_iface "$con")"
   printf '%s%s%s' "${lis:-?}" "${con:+ → $con}" "${fw:+ ($fw)}"
 }
-add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); CHINT+=("${5:-}"); }
+add(){ CLABEL+=("$1"); CDETAIL+=("$2"); CFN+=("$3"); CARG+=("${4:-}"); CHINT+=("${5:-}"); CVERB+=("${6:-Uninstall}"); }   # $6 = question verb (default Uninstall)
 turn_listen(){ local lis con; IFS="$(printf '\t')" read -r lis con < <(turn_exec_env "$1"); printf '%s' "$lis"; }
 
 [ -d /opt/swg-panel ] || [ -f $SD/swg-panel-server.service ] && \
@@ -365,9 +365,9 @@ awg_ifaces(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.se
 wg_ifaces(){  ls /etc/wireguard/*.conf >/dev/null 2>&1 || ls $SD/wg-quick@*.service >/dev/null 2>&1; }
 awg_pkg(){ command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +amneziawg(-tools| |$)'; }
 wg_pkg(){  command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +wireguard '; }
-awg_ifaces && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "AmneziaWG interfaces (peers)" "$_d" rm_awg_peers "" "$_d"; }
+awg_ifaces && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "AmneziaWG interface peers" "$_d" rm_awg_peers "" "$_d" Remove; }
 awg_pkg    &&   add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg
-wg_ifaces  && { _d="$(iface_list /etc/wireguard)";        add "WireGuard interfaces (peers)" "$_d" rm_wg_peers "" "$_d"; }
+wg_ifaces  && { _d="$(iface_list /etc/wireguard)";        add "WireGuard interface peers" "$_d" rm_wg_peers "" "$_d" Remove; }
 wg_pkg     &&   add "WireGuard package" "wireguard · wireguard-tools" rm_wg_pkg
 true   # don't let the last &&-test leave a non-zero status
 
@@ -390,7 +390,7 @@ echo
 # (keep peers / delete data dir) so the peers' fate is decided in context, not up front.
 DID_REMOVE=(); DID_KEEP=()
 for i in $(seq 0 $((N-1))); do
-  if ask_comp "${CLABEL[$i]}" "${CHINT[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
+  if ask_comp "${CLABEL[$i]}" "${CHINT[$i]}" "${CVERB[$i]}"; then "${CFN[$i]}" "${CARG[$i]}"; DID_REMOVE+=("${CLABEL[$i]}")
   else info "Kept ${CLABEL[$i]}."; DID_KEEP+=("${CLABEL[$i]}"); fi
   echo
 done
