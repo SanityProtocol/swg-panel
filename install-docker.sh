@@ -113,6 +113,17 @@ v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cftoken(){ [ -n "$1" ]; }
 v_cforigin(){ [ -n "$1" ]; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
+# 0 iff $1 is a public, routable IPv4 literal (excludes RFC1918 / loopback / link-local / CGNAT) — gates letsencrypt-ip
+ip_public(){ case "$1" in *[!0-9.]*|*.*.*.*.*|*..*) return 1;; *.*.*.*) ;; *) return 1;; esac
+  local a b; a="${1%%.*}"; b="${1#*.}"; b="${b%%.*}"
+  case "$a" in
+    0|10|127) return 1;;
+    172) case "$b" in 1[6-9]|2[0-9]|3[01]) return 1;; esac;;
+    192) case "$b" in 168) return 1;; esac;;
+    169) case "$b" in 254) return 1;; esac;;
+    100) case "$b" in 6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]) return 1;; esac;;
+  esac
+  return 0; }
 v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40 ]; }   # panel node name for this box (mirrors bare-metal)
 # v_iface/v_subnet/v_hostport + next_free_port now in lib/common.sh
 v_url(){     case "$1" in ""|*" "*) return 1;; esac
@@ -461,11 +472,14 @@ ask_panel_login(){   # Panel URL (identical look + parsing to bare-metal); login
 ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE the container by acme.sh
   step "TLS certificate"
   echo
-  # domain or IP? hide the domain-only CA certs (letsencrypt/cloudflare/cf15) when the URL is an IP / bare host
-  local _url_is_domain=no _opts _def _le _reuse_avail=no _w80 _ans80 _tn
+  # Panel URL shape decides the certs offered: domain → letsencrypt/cloudflare/cf15; public IP → letsencrypt-ip
+  # (LE short-lived IP cert); private/bare → selfsigned/none only.
+  local _url_is_domain=no _ip_public=no _opts _def _le _reuse_avail=no _w80 _ans80 _tn
   case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *.*) _url_is_domain=yes;; esac;; esac
-  if [ "$_url_is_domain" = yes ]; then _opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n"; _def=l; _le="$(keyd l 'etsencrypt (default)')"
-  else                                 _opts="selfsigned none s n";                                  _def=s; fi
+  [ "$_url_is_domain" = yes ] || { ip_public "$PANEL_DOMAIN" && _ip_public=yes; }
+  if   [ "$_url_is_domain" = yes ]; then _opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n"; _def=l; _le="$(keyd l 'etsencrypt (default)')"
+  elif [ "$_ip_public" = yes ];     then _opts="letsencrypt-ip selfsigned none lip s n";                 _def=letsencrypt-ip
+  else                                   _opts="selfsigned none s n";                                    _def=s; fi
   if [ "$EXISTING_DOCKER" = yes ] && [ -f "$INSTALL_DIR/data/etc/tls/fullchain.pem" ]; then
     _reuse_avail=yes; _opts="reuse $_opts r"; _def=r
     [ "$_url_is_domain" = yes ] && _le="$(key l 'etsencrypt')"
@@ -478,15 +492,18 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt"  "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"        "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"                "OK for testing"
+    elif [ "$_ip_public" = yes ]; then
+      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(b 'letsencrypt-ip') (default)"     "Trusted Let's Encrypt cert for this IP — short-lived (~6 days), auto-renews every 12h (publish :80 -p 80:80, direct/grey-cloud IP)"
+      _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"                "Self-signed — the browser warns once (zero-maintenance, no port 80)"
     else
       _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd s 'elfsigned (default)')"     "Self-signed cert — the browser warns once (the realistic choice for an IP)"
     fi
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key n 'one')"                      "plain HTTP — only behind a tunnel/reverse-proxy that terminates TLS"
-    [ "$_url_is_domain" = yes ] || sub "Let's Encrypt / Cloudflare options need a domain — hidden because the panel URL ($(b "$PANEL_DOMAIN")) is an IP."
+    [ "$_url_is_domain" = yes ] || [ "$_ip_public" = yes ] || sub "Let's Encrypt needs a public domain or public IP — hidden because $(b "$PANEL_DOMAIN") is private / not routable."
     ask_choice "Select TLS certificate (number, letter or name)" "$_def" TLS "$_opts"
-    case "$TLS" in r) TLS=reuse;; l) TLS=letsencrypt;; c) TLS=cloudflare;; 15) TLS=cf15;; s) TLS=selfsigned;; n) TLS=none;; esac
-    # letsencrypt's HTTP-01 needs host :80 — if it's taken (nginx/apache), make the user switch or force
-    if [ "$TLS" = letsencrypt ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
+    case "$TLS" in r) TLS=reuse;; l) TLS=letsencrypt;; lip) TLS=letsencrypt-ip;; c) TLS=cloudflare;; 15) TLS=cf15;; s) TLS=selfsigned;; n) TLS=none;; esac
+    # letsencrypt('-ip') HTTP-01 needs host :80 — if it's taken (nginx/apache), make the user switch or force
+    if { [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; } && ! $DRYRUN && have ss && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
       _w80="$(ss -lntpH 'sport = :80' 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
       echo; warn "letsencrypt needs host port $(col "$C_YEL" ':80') for HTTP-01, but it's in use${_w80:+ (by $(col "$C_YEL" "$_w80"))} — issuance will fail"
       echo "    :80 is fixed by ACME (independent of the panel's port). Pick $(key c 'loudflare') (DNS-01), $(key 15 'years cloudflare'), $(key s 'elfsigned'), or $(key n 'one') — or $(bb force) to keep letsencrypt."
@@ -497,8 +514,11 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
       case " $_opts " in *" $_ans80 "*) TLS="$_ans80";; *) TLS=""; warn "enter one of: $_opts — or 'force'";; esac
       continue
     fi
-    case "$TLS" in letsencrypt|cloudflare|cf15)   # only reachable via an env preset on an IP — warn + re-ask
-      if [ "$_url_is_domain" != yes ]; then echo; warn "$(b "$TLS") needs a real domain (FQDN), but the panel URL ($(b "$PANEL_DOMAIN")) is an IP. Pick selfsigned or none, or re-run with a domain URL."; echo; TLS=""; continue; fi ;;
+    case "$TLS" in
+      letsencrypt|cloudflare|cf15)   # domain-only — warn + re-ask if the URL isn't a domain
+        if [ "$_url_is_domain" != yes ]; then echo; warn "$(b "$TLS") needs a domain (FQDN), but the panel URL ($(b "$PANEL_DOMAIN")) is an IP. Pick $([ "$_ip_public" = yes ] && printf 'letsencrypt-ip, ')selfsigned or none, or re-run with a domain URL."; echo; TLS=""; continue; fi ;;
+      letsencrypt-ip)                # public-IP-only — warn + re-ask otherwise
+        if [ "$_ip_public" != yes ]; then echo; warn "$(b letsencrypt-ip) needs a public IP, but the panel URL is $(b "$PANEL_DOMAIN"). Pick $([ "$_url_is_domain" = yes ] && printf 'letsencrypt, ')selfsigned or none."; echo; TLS=""; continue; fi ;;
     esac
     break
   done
@@ -506,6 +526,9 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
   case "$TLS" in
     letsencrypt) ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com"
                  warn "letsencrypt validates over HTTP-01 — publish port 80 to the panel container (compose maps 80:80)";;
+    letsencrypt-ip) warn "letsencrypt-ip issues a $(b 'short-lived (~6 day)') cert for the IP $(b "$PANEL_DOMAIN") — the container renews it every 12h; if renewal is down ~6 days the cert expires."
+                 warn "Needs host port 80 published (the installer maps 80:80) and the IP reachable directly (grey-cloud / no proxy)."
+                 ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
     cloudflare)  ask_valid "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "$CF_TOKEN" CF_TOKEN v_cftoken "the API token can't be empty"
                  ask_valid "ACME account email" "$ACME_EMAIL" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
     cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy (orange cloud)."
@@ -984,10 +1007,10 @@ EOF
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
 ok "wrote $INSTALL_DIR/.env (profile $PROFILE)"
 
-# Let's Encrypt HTTP-01 needs host port 80 — publish it via an override ONLY for letsencrypt, so the
+# Let's Encrypt HTTP-01 needs host port 80 — publish it via an override ONLY for letsencrypt(-ip), so the
 # other TLS methods (cloudflare/cf15/selfsigned/none) leave :80 free for an existing nginx/apache.
 OVERRIDE="$PREFIX$INSTALL_DIR/docker-compose.override.yml"
-if [ "$TLS" = letsencrypt ]; then
+if [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; then
   if $DRYRUN; then echo "    [skip] write $INSTALL_DIR/docker-compose.override.yml (publish :80 for HTTP-01)"
   else
     cat > "$OVERRIDE" <<'YAML'
@@ -998,7 +1021,7 @@ services:
     ports:
       - "80:80"
 YAML
-    ok "letsencrypt: publishing host port 80 for HTTP-01 (docker-compose.override.yml)"
+    ok "$TLS: publishing host port 80 for HTTP-01 (docker-compose.override.yml)"
   fi
 elif [ -f "$OVERRIDE" ]; then
   $DRYRUN || rm -f "$OVERRIDE"

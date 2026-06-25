@@ -24,13 +24,13 @@ services:
     ports:
       - "${PANEL_PORT:-443}:8443"         # host-published port → container's 8443
       # host port 80 (Let's Encrypt HTTP-01) is added by docker-compose.override.yml, which the
-      # installer writes ONLY for TLS=letsencrypt — so other TLS methods don't clash with nginx/apache on :80.
+      # installer writes ONLY for TLS=letsencrypt(-ip) — so other TLS methods don't clash with nginx/apache on :80.
     environment:
       PANEL_USER: "${PANEL_USER:-admin}"
       PANEL_PASSWORD: "${PANEL_PASSWORD:?set PANEL_PASSWORD in .env}"
       PANEL_DOMAIN: "${PANEL_DOMAIN:-localhost}"
       # TLS is issued INSIDE the container by the bundled acme.sh — same options as bare-metal:
-      #   letsencrypt | cloudflare | cf15 | selfsigned | none   (or mount a real cert below)
+      #   letsencrypt | letsencrypt-ip | cloudflare | cf15 | selfsigned | none   (or mount a real cert below)
       TLS: "${TLS:-selfsigned}"
       ACME_EMAIL: "${ACME_EMAIL:-}"       # letsencrypt/cloudflare account email
       CF_TOKEN: "${CF_TOKEN:-}"           # cloudflare DNS-01: token with Zone:DNS:Edit + Zone:Read

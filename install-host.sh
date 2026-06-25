@@ -134,6 +134,18 @@ v_email(){   case "$1" in ?*@?*.?*) return 0;; *) return 1;; esac; }
 v_cftoken(){ [ -n "$1" ] && [ "${#1}" -ge 10 ]; }
 v_cforigin(){ [ -n "$1" ] && [ "${#1}" -ge 20 ]; }
 v_cfport(){  case "$1" in 443|2053|2083|2087|2096|8443) return 0;; *) return 1;; esac; }  # ports Cloudflare's proxy forwards (HTTPS)
+# 0 iff $1 is a public, routable IPv4 literal — excludes RFC1918 / loopback / link-local / CGNAT.
+# Let's Encrypt only issues IP certs for public IPs, so this gates the letsencrypt-ip TLS option.
+ip_public(){ case "$1" in *[!0-9.]*|*.*.*.*.*|*..*) return 1;; *.*.*.*) ;; *) return 1;; esac
+  local a b; a="${1%%.*}"; b="${1#*.}"; b="${b%%.*}"
+  case "$a" in
+    0|10|127) return 1;;
+    172) case "$b" in 1[6-9]|2[0-9]|3[01]) return 1;; esac;;
+    192) case "$b" in 168) return 1;; esac;;
+    169) case "$b" in 254) return 1;; esac;;
+    100) case "$b" in 6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7]) return 1;; esac;;
+  esac
+  return 0; }
 # v_iface/v_subnet/v_hostport now in lib/common.sh
 
 # ask_choice <prompt> <default> <var> "<opt…>"  — re-prompts on bad input; ' --force' overrides
@@ -732,11 +744,15 @@ step "TLS certificate"
 echo
 # re-install with a cert already in $TLS_DIR → offer to KEEP it (default), no re-issue.
 # canonicals first (so [N] maps to the displayed order), letter aliases after; _tn numbers the shown items
-# is the panel URL a real domain (FQDN: a letter AND a dot) or an IP / bare host? The domain-validated CA
-# certs (letsencrypt / cloudflare / cf15) only work for a domain, so they're HIDDEN when the URL is an IP.
+# Panel URL shape decides which certs are offered:
+#   domain (FQDN)   → letsencrypt / cloudflare / cf15  (the CA validates a domain)
+#   public IP       → letsencrypt-ip                   (LE short-lived IP cert, ~6d, auto-renews)
+#   private / bare  → none of the above                (no CA will issue → selfsigned/skip only)
 _url_is_domain=no; case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *.*) _url_is_domain=yes;; esac;; esac
-if [ "$_url_is_domain" = yes ]; then _tls_opts="letsencrypt cloudflare cf15 selfsigned skip l c 15 s sk"; _tls_def="${TLS_SAVED:-l}"; _le_lbl="$(keyd l 'etsencrypt (default)')"
-else                                 _tls_opts="selfsigned skip s sk";                                  _tls_def=s; fi
+_ip_public=no; [ "$_url_is_domain" = yes ] || { ip_public "$PANEL_DOMAIN" && _ip_public=yes; }
+if   [ "$_url_is_domain" = yes ]; then _tls_opts="letsencrypt cloudflare cf15 selfsigned skip l c 15 s sk"; _tls_def="${TLS_SAVED:-l}"; _le_lbl="$(keyd l 'etsencrypt (default)')"
+elif [ "$_ip_public" = yes ];     then _tls_opts="letsencrypt-ip selfsigned skip lip s sk";                 _tls_def="${TLS_SAVED:-letsencrypt-ip}"
+else                                   _tls_opts="selfsigned skip s sk";                                    _tls_def=s; fi
 _reuse_avail=no
 if [ "$EXISTING_HOST" = yes ] && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ]; then
   _reuse_avail=yes; _tls_opts="reuse $_tls_opts r"; _tls_def=r
@@ -744,7 +760,7 @@ if [ "$EXISTING_HOST" = yes ] && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f 
 fi
 [ -z "$TLS_MODE" ] && [ -n "$CERT_FULLCHAIN" ] && [ -n "$CERT_KEY" ] && TLS_MODE=skip
 case "$TLS_MODE" in manual|none) TLS_MODE=skip;; esac
-# the loop is only a safety net (e.g. TLS_MODE preset via env to a domain-only cert on an IP) — warn + re-ask
+# the loop re-asks (warn) instead of aborting if a cert is chosen that doesn't match the URL (e.g. env preset)
 while :; do
   _tn=0
   [ "$_reuse_avail" = yes ] && { _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd r 'euse (default)')"       "Keep the existing certificate + TLS mode from this install — no re-issue (recommended for a re-install)"; }
@@ -753,23 +769,33 @@ while :; do
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key c 'loudflare') + letsencrypt" "Let's Encrypt cert, validated via Cloudflare DNS-01 (no port 80) — needs a Zone:DNS:Edit+Read token + email"
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key 15 'years cloudflare')"       "Cloudflare Origin certificate, 15 years — ONLY valid behind Cloudflare's proxy (orange cloud); needs an API token (Zone → SSL and Certificates → Edit)"
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"               "OK for testing"
+  elif [ "$_ip_public" = yes ]; then
+    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(b 'letsencrypt-ip') (default)"    "Trusted Let's Encrypt cert for this IP — short-lived (~6 days), auto-renews daily via acme.sh (needs :80 reachable + a direct/grey-cloud IP)"
+    _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key s 'elfsigned')"               "Self-signed — the browser warns once (zero-maintenance, no port 80)"
   else
     _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(keyd s 'elfsigned (default)')"    "Self-signed cert — the browser warns once (the realistic choice for an IP)"
   fi
   _tn=$((_tn+1)); menu "$(col "$C_BLUE" "[$_tn]") $(key sk 'ip')"                     "If you are planning to use your own certificate (or terminate TLS elsewhere)"
-  [ "$_url_is_domain" = yes ] || sub "Let's Encrypt / Cloudflare options need a domain — hidden because the panel URL ($(b "$PANEL_DOMAIN")) is an IP."
+  [ "$_url_is_domain" = yes ] || [ "$_ip_public" = yes ] || sub "Let's Encrypt needs a public domain or public IP — hidden because $(b "$PANEL_DOMAIN") is private / not routable."
   ask_choice "Select TLS certificate (number, letter or name)" "$_tls_def" TLS_MODE "$_tls_opts"
-  case "$TLS_MODE" in r) TLS_MODE=reuse;; l) TLS_MODE=letsencrypt;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; sk) TLS_MODE=skip;; esac
-  case "$TLS_MODE" in letsencrypt|cloudflare|cf15)   # only reachable via an env preset on an IP — warn + re-ask
-    if [ "$_url_is_domain" != yes ]; then
-      echo; warn "$(b "$TLS_MODE") needs a real domain (FQDN), but the panel URL ($(b "$PANEL_DOMAIN")) is an IP. Pick selfsigned or skip, or re-run with a domain URL."
-      echo; TLS_MODE=""; continue
-    fi ;;
+  case "$TLS_MODE" in r) TLS_MODE=reuse;; l) TLS_MODE=letsencrypt;; lip) TLS_MODE=letsencrypt-ip;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; sk) TLS_MODE=skip;; esac
+  case "$TLS_MODE" in
+    letsencrypt|cloudflare|cf15)   # domain-only — warn + re-ask if the URL isn't a domain
+      if [ "$_url_is_domain" != yes ]; then
+        echo; warn "$(b "$TLS_MODE") needs a domain (FQDN), but the panel URL ($(b "$PANEL_DOMAIN")) is an IP. Pick $([ "$_ip_public" = yes ] && printf 'letsencrypt-ip, ')selfsigned or skip, or re-run with a domain URL."
+        echo; TLS_MODE=""; continue; fi ;;
+    letsencrypt-ip)                # public-IP-only — warn + re-ask otherwise
+      if [ "$_ip_public" != yes ]; then
+        echo; warn "$(b letsencrypt-ip) needs a public IP, but the panel URL is $(b "$PANEL_DOMAIN"). Pick $([ "$_url_is_domain" = yes ] && printf 'letsencrypt, ')selfsigned or skip."
+        echo; TLS_MODE=""; continue; fi ;;
   esac
   break
 done
 case "$TLS_MODE" in
   letsencrypt) ask_valid "ACME account email"                                     "${ACME_EMAIL:-$EMAIL_SAVED}" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
+  letsencrypt-ip) warn "letsencrypt-ip issues a $(b 'short-lived (~6 day)') cert for $(b "$PANEL_DOMAIN") — acme.sh renews it daily; if renewal is down for ~6 days the cert expires."
+               warn "Needs host port $(col "$C_YEL" ':80') reachable for HTTP-01 and the IP hit directly (grey-cloud / no proxy)."
+               ask_valid "ACME account email"                                     "${ACME_EMAIL:-$EMAIL_SAVED}" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
   cloudflare)  ask_valid "Cloudflare API token (needs Zone:DNS:Edit + Zone:Read)" "" CF_TOKEN  v_cftoken "the API token can't be empty"   # pre-filled from the saved snapshot on re-install
                ask_valid "ACME account email"                                     "${ACME_EMAIL:-$EMAIL_SAVED}" ACME_EMAIL v_email "enter a valid email, e.g. you@example.com";;
   cf15)        warn "cf15 issues a Cloudflare Origin cert — it is ONLY trusted behind Cloudflare's proxy."
@@ -1152,9 +1178,11 @@ obtain_cert_internal(){
     skip) use_provided_certs || { CERT_FULLCHAIN=""; CERT_KEY=""; ok "TLS skipped — panel will serve plain HTTP"; }; return 0;;
     selfsigned) mk_selfsigned;;
     cf15) mk_cf_origin;;
-    letsencrypt|cloudflare)
+    letsencrypt|letsencrypt-ip|cloudflare)
       ensure_acme
       local args=(--issue -d "$PANEL_DOMAIN" --server letsencrypt --keylength ec-256)
+      # IP certs MUST be short-lived (~6 days); --days 3 makes acme.sh's daily cron renew ~2 days in (≈4-day buffer)
+      [ "$TLS_MODE" = letsencrypt-ip ] && args+=(--certificate-profile shortlived --days 3)
       if [ "$TLS_MODE" = cloudflare ]; then [ -n "$CF_TOKEN" ] || die "cloudflare needs a CF token (re-run Step 3, or set CF_TOKEN)"
         export CF_Token="$CF_TOKEN"; [ -n "$CF_ACCOUNT_ID" ] && export CF_Account_ID="$CF_ACCOUNT_ID"; args+=(--dns dns_cf)
         info "Issuing $PANEL_DOMAIN via Let's Encrypt — DNS-01 challenge through Cloudflare (can take ~30–60s while DNS propagates)…"
@@ -1188,7 +1216,7 @@ obtain_cert_internal(){
       run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
           --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl restart swg-panel-server"
       cert_perms; ok "issued + installed certificate via $TLS_MODE (auto-renews)";;
-    *) die "TLS must be cloudflare|letsencrypt|selfsigned|skip";;
+    *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;
   esac
 }
 serve_internal(){
@@ -1215,9 +1243,10 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
     selfsigned) mk_selfsigned;;
     cf15) mk_cf_origin;;
     skip) use_provided_certs || { CERT_FULLCHAIN=""; CERT_KEY=""; ok "TLS skipped — proxy will serve plain HTTP (or add your own cert)"; }; return 0;;
-    letsencrypt|cloudflare)
+    letsencrypt|letsencrypt-ip|cloudflare)
       mkdir -p "$PREFIX$TLS_DIR"; ensure_acme
       local args=(--issue -d "$PANEL_DOMAIN" --server letsencrypt --keylength ec-256)
+      [ "$TLS_MODE" = letsencrypt-ip ] && args+=(--certificate-profile shortlived --days 3)   # short-lived IP cert
       if [ "$TLS_MODE" = cloudflare ]; then [ -n "$CF_TOKEN" ] || die "cloudflare needs a CF token (re-run Step 3, or set CF_TOKEN)"
         export CF_Token="$CF_TOKEN"; [ -n "$CF_ACCOUNT_ID" ] && export CF_Account_ID="$CF_ACCOUNT_ID"; args+=(--dns dns_cf)
         info "Issuing $PANEL_DOMAIN via Let's Encrypt — DNS-01 challenge through Cloudflare (can take ~30–60s while DNS propagates)…"
@@ -1237,7 +1266,7 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
       run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"
       cert_perms; ok "issued + installed certificate via $TLS_MODE";;
-    *) die "TLS must be cloudflare|letsencrypt|selfsigned|skip";;
+    *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;
   esac
 }
 proxy_loc(){ [ -n "$PANEL_BASE" ] && printf '%s/' "$PANEL_BASE" || printf '/'; }   # nginx location path

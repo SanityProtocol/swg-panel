@@ -31,7 +31,7 @@ fi
 
 # 2) TLS — same options as bare-metal, issued inside the container via bundled acme.sh.
 #    A mounted cert at $SWG_PANEL_TLS_CERT always wins (skips everything below).
-#    selfsigned (default) | none | letsencrypt | cloudflare | cf15.  acme.sh state persists
+#    selfsigned (default) | none | letsencrypt | letsencrypt-ip | cloudflare | cf15.  acme.sh state persists
 #    under /etc/swg-panel/acme (mounted volume), so a restart renews/reuses rather than re-issues.
 ACME="/opt/acme.sh/acme.sh"; ACME_CFG="${ACME_CONFIG:-/etc/swg-panel/acme}"
 acme(){ "$ACME" --config-home "$ACME_CFG" "$@"; }
@@ -73,6 +73,17 @@ elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
       else
         printf '%s\n' "$_out" | sed 's/^/[acme] /'
         log "WARNING: letsencrypt issuance FAILED (see [acme] lines above). HTTP-01 needs port 80 reachable from the internet and breaks behind Cloudflare's proxy — use TLS=cloudflare (DNS-01) or cf15. Falling back to self-signed."
+        acme_hint "$_out"; selfsigned
+      fi ;;
+    letsencrypt-ip)
+      [ -n "${ACME_EMAIL:-}" ] && acme --register-account -m "$ACME_EMAIL" --server letsencrypt >/dev/null 2>&1 || true
+      log "issuing a short-lived (~6 day) Let's Encrypt IP certificate for $PANEL_DOMAIN (HTTP-01 standalone on :80)…"
+      # IP certs must use the shortlived profile; --days 3 → the 12h renew loop re-issues ~2 days in (≈4-day buffer)
+      if _out="$(acme --issue -d "$PANEL_DOMAIN" --standalone --server letsencrypt --keylength ec-256 --certificate-profile shortlived --days 3 2>&1)" || acme_has_cert; then
+        acme_install; log "Let's Encrypt IP cert installed (short-lived; auto-renews every 12h)"
+      else
+        printf '%s\n' "$_out" | sed 's/^/[acme] /'
+        log "WARNING: letsencrypt-ip issuance FAILED (see [acme] lines above). Needs port 80 reachable, a PUBLIC IP, and a direct hit (not behind Cloudflare's proxy). Falling back to self-signed."
         acme_hint "$_out"; selfsigned
       fi ;;
     cloudflare)
@@ -137,7 +148,7 @@ mkdir -p "$STATS_DIR" /var/lib/swg-panel
 #    so the panel reloads the fresh cert without a restart. cf15/selfsigned (long-lived) and
 #    none/mounted certs aren't acme-managed, so no loop is started for them.
 case "${TLS:-selfsigned}" in
-  letsencrypt|cloudflare)
+  letsencrypt|letsencrypt-ip|cloudflare)
     ( while sleep 43200; do acme --cron >/dev/null 2>&1 || true; done ) &
     log "TLS auto-renewal enabled (acme.sh --cron every 12h; reload via SIGHUP, no downtime)" ;;
 esac
