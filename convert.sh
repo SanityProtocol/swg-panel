@@ -489,9 +489,12 @@ EOF
 
   # 2) ATOMIC SWITCH — stop the docker stack (panel + a master's node + turns), then install-host.sh brings the
   #    bare panel up reusing the staged login (KEEP_AUTH) + cert (TLS_MODE=reuse). Same URL/port ⇒ nodes stay connected.
-  info "Switching over — stopping the docker $(b "$ROLE"), then installing bare-metal…"
-  ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true   # project-wide: stops the panel (+ a master's node) regardless of profile
-  docker rm -f swg-panel >/dev/null 2>&1 || true
+  info "Switching over — stopping the docker panel, then installing the bare-metal panel…"
+  if [ "$ROLE" = master ]; then
+    docker rm -f swg-panel >/dev/null 2>&1 || true   # stop ONLY the panel — the docker NODE keeps serving through install-node's prompts (copy-first); install-node tears it down at its OWN switch (the last step)
+  else
+    ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true; docker rm -f swg-panel >/dev/null 2>&1 || true
+  fi
   env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" TLS_MODE=reuse ACME_EMAIL="$PEMAIL" \
       CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare \
       bash "$SRC/install-host.sh" \
@@ -501,7 +504,7 @@ EOF
   # just-installed local panel (loopback). SWG_CONVERT=1 reuses install-node's switch path: the docker node is
   # already gone so the teardown is a no-op, but it still starts the deferred turn units + reports once, fully up.
   if [ "$ROLE" = master ] && [ -n "$mnames" ]; then
-    echo; info "Bringing the local node up on bare-metal (adopting $(b "$mnames"))…"
+    echo; info "Local node → bare-metal: it runs its prompts while the docker node still serves, then switches over as its last step (adopting $(b "$mnames"))…"
     env NODE_TOKEN="$NTOK" PANEL_URL="https://127.0.0.1:$PPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
         SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
       || warn "the local node setup reported an error — check it on the panel."
