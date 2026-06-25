@@ -310,6 +310,7 @@ if [ "$ROLE" = host ] && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   bare_panel_present || [ -n "${SWG_RV_URL:-}" ] || die "no bare-metal panel found (swg-panel-server missing)"
   gv(){ sed -n "s/^$1=//p" "$pconf" 2>/dev/null | head -1; }
   PDOM="$(gv PANEL_DOMAIN)"; PPORT="$(gv PORT)"; PTLS="$(gv TLS_MODE)"; PEMAIL="$(gv ACME_EMAIL)"; PBASE="$(gv PANEL_BASE)"
+  PCFTOKEN="$(gv CF_TOKEN)"; PCFORIGIN="$(gv CF_ORIGIN_TOKEN)"   # carry CF creds so cloudflare/cf15 renewal works in the container
   PUSER="$(sed -n 's/^\([^:]*\):.*/\1/p' "$ETC/auth" 2>/dev/null | head -1)"
   [ -n "${SWG_RV_URL:-}" ] && PDOM="${PDOM:-$SWG_RV_URL}"
   [ -n "$PDOM" ] || die "couldn't read the panel domain ($pconf missing and no recovery state)"
@@ -360,8 +361,8 @@ PANEL_DOMAIN=$PDOM
 PANEL_BASE=$PBASE
 TLS=$PTLS
 ACME_EMAIL=$PEMAIL
-CF_TOKEN=
-CF_ORIGIN_TOKEN=
+CF_TOKEN=$PCFTOKEN
+CF_ORIGIN_TOKEN=$PCFORIGIN
 PANEL_PORT=$PPORT
 PANEL_URL=
 NODE_TOKEN=
@@ -384,9 +385,74 @@ EOF
   exit 0
 fi
 
-# ── remaining panel/master directions: implemented in the next stages ──
+# ── PANEL host: docker → bare-metal ── (mirror of the bare→docker block; reuses install-host.sh for the bring-up)
+if [ "$ROLE" = host ] && [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
+  ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; envf="$DOCKER_DIR/.env"
+  [ -f "$envf" ] || [ -n "${SWG_RV_URL:-}" ] || die "no docker panel settings found at $envf"
+  getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//'; }
+  PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"
+  PBASE="$(getv PANEL_BASE)"; PUSER="$(getv PANEL_USER)"; PCFT="$(getv CF_TOKEN)"; PCFO="$(getv CF_ORIGIN_TOKEN)"
+  [ -n "${SWG_RV_URL:-}" ] && PDOM="${PDOM:-$SWG_RV_URL}"
+  [ -n "$PDOM" ] || die "couldn't read the panel domain (docker .env missing and no recovery state)"
+  case "$PTLS" in letsencrypt|letsencrypt-ip|cloudflare|cf15|selfsigned|none) :;; *) PTLS=selfsigned;; esac
+  [ -n "$PPORT" ] || PPORT=443
+  [ "$RESUMING" != yes ] && bare_panel_present && die "a bare-metal panel (swg-panel-server) already exists — remove it first"
+
+  if [ "$CHECK" = yes ]; then
+    sub "pre-flight OK"
+    info "Panel → bare-metal keeps: URL $(b "$PDOM"), login, roster, nodes + the $(b "$PTLS") cert. Brief panel downtime at the switch (nodes self-heal)."
+    exit 0
+  fi
+
+  info "Converting the docker panel → bare-metal — keeping its URL, login, roster, nodes and cert."
+  PURL="$PDOM"; NTOK=""; NEP=""; write_recovery ""
+
+  # 1) COPY-FIRST: stage the panel state to the bare locations while the container is STILL UP + serving
+  mkdir -p "$STATE" "$ETC" "$STATS"
+  [ -d "$DOCKER_DIR/data/lib" ]   && cp -a "$DOCKER_DIR/data/lib/."   "$STATE/" 2>/dev/null || true   # roster, nodes.json, configs
+  [ -d "$DOCKER_DIR/data/etc" ]   && cp -a "$DOCKER_DIR/data/etc/."   "$ETC/"   2>/dev/null || true   # fleet.json, auth, tls/, acme/
+  [ -d "$DOCKER_DIR/data/stats" ] && cp -a "$DOCKER_DIR/data/stats/." "$STATS/" 2>/dev/null || true
+  # carry the acme renewal state back to the host (/root/.acme.sh) + repoint its reload cmd at the systemd unit
+  if [ -d "$ETC/acme" ]; then
+    mkdir -p /root/.acme.sh; cp -a "$ETC/acme/." /root/.acme.sh/ 2>/dev/null || true
+    find /root/.acme.sh -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='systemctl restart swg-panel-server'#" {} + 2>/dev/null || true
+  fi
+  # write the bare install.conf so install-host.sh's prompts DEFAULT to the preserved settings (Enter accepts)
+  cat > "$ETC/install.conf" <<EOF
+ROLE_SEL=host
+PANEL_DOMAIN=$PDOM
+PANEL_BASE=$PBASE
+PORT=$PPORT
+TLS_MODE=$PTLS
+SERVE_MODE=internal
+ACME_EMAIL=$PEMAIL
+CF_TOKEN=$PCFT
+CF_ORIGIN_TOKEN=$PCFO
+EOF
+  sub "staged roster + nodes + login + $(b "$PTLS") cert (+ acme renewal) → $STATE + $ETC"
+
+  # 2) ATOMIC SWITCH — stop the docker panel (frees the port), then install-host.sh brings the bare panel up,
+  #    reusing the staged login (KEEP_AUTH) + cert (TLS_MODE=reuse). Same URL/port ⇒ nodes stay connected.
+  info "Switching over — stopping the docker panel, then installing the bare-metal panel…"
+  ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true   # project-wide: stops the panel (+ a master's node) regardless of profile
+  docker rm -f swg-panel >/dev/null 2>&1 || true
+  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" TLS_MODE=reuse ACME_EMAIL="$PEMAIL" \
+      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare \
+      bash "$SRC/install-host.sh" \
+    || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
+
+  # 3) move the old docker dir aside so a later convert-back isn't blocked by the leftover .env, then done
+  if [ -d "$DOCKER_DIR" ]; then
+    _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
+    mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)" || warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"
+  fi
+  clear_recovery
+  echo; ok "Panel converted to bare-metal — $(b "https://$PDOM:$PPORT$PBASE/") (same login, roster, nodes + cert). Nodes reconnect on their next sync."
+  exit 0
+fi
+
+# ── remaining master directions: implemented in the next stage ──
 case "$ROLE" in
-  host)   die "host docker→bare-metal conversion is coming next — for now 'keep and re-install', or uninstall + install bare-metal.";;
   master) die "master (panel + node) conversion is coming next — convert the node, or 'keep and re-install'.";;
 esac
 
