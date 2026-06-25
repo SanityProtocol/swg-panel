@@ -272,6 +272,10 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
     { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\nMTU = %s\n' "$priv" "$addr" "$port" "$WG_MTU"
       printf 'PostUp = %s\nPostDown = %s\n' "$up" "$down"
       if [ "$cmd" = awg ]; then awg_obfuscation; fi; } | writef "$conf" 600
+    # drop a STALE live interface of the same name first — a removed docker node that ran on the host netns
+    # leaves its awg/wg interfaces on the host ('docker rm' can't take them down), which would block this
+    # fresh bring-up with "already exists". We hold a brand-new conf, so replacing it is safe.
+    $DRYRUN || { ip link show "$name" >/dev/null 2>&1 && { awg-quick down "$name" 2>/dev/null || wg-quick down "$name" 2>/dev/null || ip link delete dev "$name" 2>/dev/null || true; }; } || true
     # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)
     upok=yes
     if [ "$cmd" = awg ]; then bringup awg-quick "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "awg-quick@$name" || true; }

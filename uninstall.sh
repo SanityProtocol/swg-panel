@@ -213,11 +213,17 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
     ask_yn "  Keep the node's interface configs (peers)? Leaves data/node-confs so a future install can re-onboard them." y KNODE
   else ask_full_data_fate; fi         # node is the last container → the whole data dir
   docker_node_goodbye                 # sign off to the panel (token + URL from .env) before teardown
+  # capture the node's interface names FROM THE CONTAINER first — the ./data/node-confs bind mount can be empty,
+  # and a host-networking node creates its wg/awg netdevs in the HOST namespace (they survive `docker rm`), so we
+  # need the names to delete the leftover host interfaces below (else the next install hits "awg0 already exists").
+  local _ifn _n _c
+  _ifn="$(docker exec swg-node sh -c 'for d in /etc/amnezia/amneziawg /etc/wireguard; do ls "$d"/*.conf 2>/dev/null; done' 2>/dev/null | sed 's#.*/##; s#\.conf$##' | tr '\n' ' ')"
+  [ -n "$_ifn" ] || _ifn="$(for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] && basename "$_c" .conf; done | tr '\n' ' ')"
   run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'
   run sh -c 'ids=$(docker ps -aq --filter name=swg-turn- 2>/dev/null); [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1 || true'   # this node's turn-proxy containers
-  # a HOST-networking node creates its wg/awg netdevs in the HOST namespace; they survive `docker rm` → delete them
-  for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] || continue; _n="$(basename "$_c" .conf)"
-    command -v ip >/dev/null 2>&1 && ip link show "$_n" >/dev/null 2>&1 && { run ip link delete dev "$_n"; info "  removed leftover host interface $(b "$_n")"; }; done
+  # delete the leftover HOST-namespace wg/awg netdevs the (host-networking) node created
+  for _n in $_ifn; do [ -n "$_n" ] || continue
+    command -v ip >/dev/null 2>&1 && ip link show "$_n" >/dev/null 2>&1 && { awg-quick down "$_n" 2>/dev/null || wg-quick down "$_n" 2>/dev/null || run ip link delete dev "$_n"; info "  removed leftover host interface $(b "$_n")"; }; done
   if docker_running swg-panel; then
     [ "$KNODE" = yes ] && info "  Kept $DOCKER_DIR/data/node-confs (peers re-onboardable); panel data untouched." \
                        || { _rm_node_data; info "  Removed the node's interface configs; panel data untouched."; }
