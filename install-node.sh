@@ -560,8 +560,48 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-  run systemctl daemon-reload; run systemctl enable --quiet --now "$svc" || warn "couldn't start $svc"
-  ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"
+  run systemctl daemon-reload
+  if [ -n "${TURN_DEFER_START:-}" ]; then   # docker→bare convert: the docker turn-proxy still holds the port → enable now, start at the switch
+    run systemctl enable --quiet "$svc" || true
+    ok "prepared turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect (starts at the switch)"
+  else
+    run systemctl enable --quiet --now "$svc" || warn "couldn't start $svc"
+    ok "installed turn-proxy $(col "$C_GREEN" "$inst") ($owner ${ver:-?}) — $listen → $connect"
+  fi
+}
+# docker→bare convert: recreate the docker node's turn-proxies as bare systemd units (deferred — started at the
+# switch), as the FIRST thing in Step 2 (so it reads interfaces-then-turns); the fork menu below then adds more.
+migrate_docker_turns(){
+  [ "${SWG_CONVERT:-}" = 1 ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  local rec="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}/data/node/turn-proxy.json" list svc owner lis con params fork _yn
+  if [ ! -f "$rec" ] && command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
+    mkdir -p "$(dirname "$rec")"; docker cp swg-node:/var/lib/swg-noded/turn-proxy.json "$rec" 2>/dev/null || true   # robust vs an empty ./data bind mount
+  fi
+  [ -f "$rec" ] || return 0
+  list="$(python3 - "$rec" <<'PY' 2>/dev/null
+import json, sys
+try: d=json.load(open(sys.argv[1])); tps=d.get("turn_proxies") or []
+except Exception: tps=[]
+for t in (tps if isinstance(tps,list) else []):
+    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), (t.get("params") or "")]))
+PY
+)"
+  [ -n "$list" ] || return 0
+  echo; info "Turn-proxies to migrate from the docker node:"; echo
+  while IFS="$(printf '\t')" read -r svc owner lis con params; do [ -n "$svc" ] && printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done <<EOF
+$list
+EOF
+  echo
+  ask_yn "Transfer these turn-proxies into the bare-metal node?" y _yn
+  [ "$_yn" = yes ] || { info "  left on docker — they stop at the switch; add fresh ones below if you want"; return 0; }
+  while IFS="$(printf '\t')" read -r svc owner lis con params; do
+    [ -n "$svc" ] && [ -n "$owner" ] || continue
+    fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"
+    TURN_DEFER_START=1 install_turn_binary "$fork" "$owner" "$lis" "$con" "$params"
+  done <<EOF
+$list
+EOF
 }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
 v_fwd(){ local names; names=" $(turn_wg_ports | cut -d: -f1 | tr '\n' ' ')"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
@@ -718,11 +758,12 @@ step "WireGuard / AmneziaWG setup" "(each interface has its own endpoint IP)"
 echo
 choose_ifaces
 
-# Step 2: TURN-PROXY setup. Runs for a fresh install AND a docker→bare convert — the convert shows its already
-# migrated turn-proxies (written by convert.sh, not yet started) as "installed" and lets you add more, all
-# WHILE the docker node still serves. choose_turn_proxy (re)writes the turn record incl. the migrated units.
+# Step 2: TURN-PROXY setup. Runs for a fresh install AND a docker→bare convert. For a convert it migrates the
+# docker node's turn-proxies FIRST (deferred units), then the fork menu shows them as "installed" + lets you add
+# more — all WHILE the docker node still serves. choose_turn_proxy (re)writes the turn record incl. the migrated.
 step "TURN-PROXY setup"
 echo
+migrate_docker_turns
 choose_turn_proxy
 
 # CONVERT: the turn-proxy step is done → NOW do the deferred cutover as the very last step (mirror bare→docker):

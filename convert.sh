@@ -566,8 +566,7 @@ EOF
       sub "imported local-node interface $(b "$nm") → $dest (host NAT added)"; mnames="${mnames:+$mnames }$nm"
     done
     if [ -d "$DOCKER_DIR/data/node/iface-keys" ]; then mkdir -p /var/lib/swg-noded/iface-keys; cp -a "$DOCKER_DIR/data/node/iface-keys/." /var/lib/swg-noded/iface-keys/ 2>/dev/null || true; fi
-    turn_predownload; turn_to_bare   # docker turn record → host units (deferred; install-node starts them at its switch)
-    if [ -n "$mnames" ]; then
+    if [ -n "$mnames" ]; then   # install-node migrates the docker turns itself (Step 2), so no separate turn step here
       env NODE_TOKEN="$NTOK" PANEL_URL="https://127.0.0.1:$PPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
           SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
         || warn "the local node setup reported an error — check it on the panel."
@@ -680,22 +679,15 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     sub "carried interface keypair backups → /var/lib/swg-noded/iface-keys"
   fi
 
-  # 2b) PREP EVERYTHING WHILE THE DOCKER NODE STILL SERVES — nothing here touches the live datapath:
-  #     download the turn-proxy binaries into the shared cache, then write each host turn-proxy unit
-  #     (enabled, NOT started — the docker containers still hold the ports). install-node.sh then does the
-  #     ONE destructive step (the switch) at the very end, exactly like bare→docker's compose-up.
-  turn_predownload
-  turn_to_bare   # docker turn record → host systemd units (written + enabled, deferred start)
-
-  # 3) THE SWITCH — install-node.sh runs all its prompts (interfaces) WHILE docker is still up, then as its
-  #    LAST step does the atomic cutover: stop the docker datapath + turn containers → bring up the bare
-  #    interfaces → start the prepared turn-proxy units → start swg-noded. So the node goes down + comes back
-  #    ONCE, fully converted (interfaces + turn-proxies), in a single non-interactive step.
+  # 3) THE SWITCH — install-node.sh runs all its prompts WHILE docker still serves: Step 1 interfaces, then
+  #    Step 2 migrates the docker turn-proxies (deferred) + adds more. Then, as its LAST step, the atomic cutover:
+  #    stop the docker datapath + turn containers → bring up bare interfaces → start the turn units → start
+  #    swg-noded. So the node goes down + comes back ONCE, fully converted, in a single non-interactive step.
   info "Running install-node.sh — adopt $(b "$names") (add more if you want); then it does the switch as the last step…"
   echo
   # NB: '|| warn' — a non-zero exit (e.g. one interface failed to come up) must NOT abort the convert under set -e.
   env NODE_TOKEN="$NTOK" PANEL_URL="$PURL" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$names" \
-      SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh" \
+      SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
     || warn "install-node.sh reported an error — check the node on the panel."
 
   # move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker
