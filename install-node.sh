@@ -275,7 +275,11 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
     # drop a STALE live interface of the same name first — a removed docker node that ran on the host netns
     # leaves its awg/wg interfaces on the host ('docker rm' can't take them down), which would block this
     # fresh bring-up with "already exists". We hold a brand-new conf, so replacing it is safe.
-    $DRYRUN || { ip link show "$name" >/dev/null 2>&1 && { awg-quick down "$name" 2>/dev/null || wg-quick down "$name" 2>/dev/null || ip link delete dev "$name" 2>/dev/null || true; }; } || true
+    if ! $DRYRUN && ip link show "$name" >/dev/null 2>&1; then
+      warn "interface '$name' already exists as a leftover (e.g. a removed docker node left its host-netns iface) — replacing it with the new one"
+      awg-quick down "$name" >/dev/null 2>&1 || wg-quick down "$name" >/dev/null 2>&1 || true   # clean teardown if it can
+      ip link delete dev "$name" >/dev/null 2>&1 || true                                        # ALWAYS force-delete the netdev (down may exit 0 without removing it)
+    fi
     # bring up — NON-FATAL: a port/subnet clash must not abort the whole install (set -e)
     upok=yes
     if [ "$cmd" = awg ]; then bringup awg-quick "$name" || upok=no; [ "$upok" = yes ] && { run systemctl enable --quiet "awg-quick@$name" || true; }
