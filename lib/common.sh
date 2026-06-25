@@ -131,7 +131,8 @@ lc_clear_convert_leftover(){
       for d in "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf"; do [ -f "$d" ] && { rm -f "$d"; cleared=1; }; done
     done
     [ -n "$cleared" ] && info "removed stale bare-metal conf leftovers — no swg-noded service present (likely a cancelled docker→bare convert); your live install is untouched"
-  fi; }
+  fi
+  return 0; }   # always succeed — best-effort cleanup; "nothing to clear" must not return non-zero and trip set -e in callers
 
 # ── turn-proxy: the 6 forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
 turn_repo_owner(){ case "$1" in
