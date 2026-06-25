@@ -533,12 +533,27 @@ CF_ORIGIN_TOKEN=$PCFO
 EOF
   sub "staged roster + nodes + login + $(b "$PTLS") cert (+ acme renewal) → $STATE + $ETC"
 
-  # MASTER: stage the local node too — import its confs to the bare locations (host NAT added), carry the keypair
-  # backups, and write the bare turn units (deferred). All before the switch; install-node brings it up after.
+  # 2) HOST FIRST — the ATOMIC PANEL SWITCH: stop the docker PANEL (a master keeps its NODE running for the node
+  #    phase below), then install-host.sh brings the bare panel up reusing the staged login (KEEP_AUTH). TLS is NOT
+  #    forced to 'reuse' — install-host's menu defaults to reuse when the staged cert still covers the host, and
+  #    prompts for a fresh one when it can't (e.g. domain → IP). Same URL/port ⇒ nodes stay connected.
+  info "Switching over — stopping the docker panel, then installing the bare-metal panel…"
+  if [ "$ROLE" = master ]; then
+    docker rm -f swg-panel >/dev/null 2>&1 || true   # stop ONLY the panel — the docker NODE keeps serving through the node phase below (copy-first); install-node tears it down at its OWN switch (the last step)
+  else
+    ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true; docker rm -f swg-panel >/dev/null 2>&1 || true
+  fi
+  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" \
+      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare \
+      bash "$SRC/install-host.sh" \
+    || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
+
+  # THEN THE NODE — only after the panel is up (host first, then node). Stage the local node straight from the
+  # still-running swg-node container (confs → bare locations + host NAT, keypairs, turn units deferred), then
+  # install-node adopts it: Step 1 interfaces → Step 2 turn-proxies → its own switch (docker node stays up till then).
   mnames=""
   if [ "$ROLE" = master ]; then
-    # refresh the node confs + turn record/keypairs straight from the RUNNING swg-node container (robust vs an
-    # empty/broken ./data bind mount — same fix as the panel above; the node container stays up till its switch).
+    echo; info "Panel is up on bare-metal — now the local node (the docker node keeps serving until its own switch)."
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
       mkdir -p "$DOCKER_DIR/data/node-confs" "$DOCKER_DIR/data/node"
       docker cp swg-node:/etc/amnezia/amneziawg/. "$DOCKER_DIR/data/node-confs/" 2>/dev/null || true
@@ -551,32 +566,12 @@ EOF
       sub "imported local-node interface $(b "$nm") → $dest (host NAT added)"; mnames="${mnames:+$mnames }$nm"
     done
     if [ -d "$DOCKER_DIR/data/node/iface-keys" ]; then mkdir -p /var/lib/swg-noded/iface-keys; cp -a "$DOCKER_DIR/data/node/iface-keys/." /var/lib/swg-noded/iface-keys/ 2>/dev/null || true; fi
-    turn_predownload; turn_to_bare   # docker turn record → host units (deferred; install-node starts them after the switch)
-  fi
-
-  # 2) ATOMIC SWITCH — stop the docker stack (panel + a master's node + turns), then install-host.sh brings the
-  #    bare panel up reusing the staged login (KEEP_AUTH). TLS is NOT forced to 'reuse' — install-host's menu
-  #    defaults to reuse when the staged cert still covers the host, and prompts for a fresh one when it can't
-  #    (e.g. you changed the URL or switched a domain → IP). Same URL/port ⇒ nodes stay connected.
-  info "Switching over — stopping the docker panel, then installing the bare-metal panel…"
-  if [ "$ROLE" = master ]; then
-    docker rm -f swg-panel >/dev/null 2>&1 || true   # stop ONLY the panel — the docker NODE keeps serving through install-node's prompts (copy-first); install-node tears it down at its OWN switch (the last step)
-  else
-    ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true; docker rm -f swg-panel >/dev/null 2>&1 || true
-  fi
-  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" \
-      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare \
-      bash "$SRC/install-host.sh" \
-    || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
-
-  # MASTER: now bring the local node up bare — adopt the imported confs + its preserved token, pointing at the
-  # just-installed local panel (loopback). SWG_CONVERT=1 reuses install-node's switch path: the docker node is
-  # already gone so the teardown is a no-op, but it still starts the deferred turn units + reports once, fully up.
-  if [ "$ROLE" = master ] && [ -n "$mnames" ]; then
-    echo; info "Local node → bare-metal: it runs its prompts while the docker node still serves, then switches over as its last step (adopting $(b "$mnames"))…"
-    env NODE_TOKEN="$NTOK" PANEL_URL="https://127.0.0.1:$PPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
-        SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
-      || warn "the local node setup reported an error — check it on the panel."
+    turn_predownload; turn_to_bare   # docker turn record → host units (deferred; install-node starts them at its switch)
+    if [ -n "$mnames" ]; then
+      env NODE_TOKEN="$NTOK" PANEL_URL="https://127.0.0.1:$PPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
+          SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
+        || warn "the local node setup reported an error — check it on the panel."
+    fi
   fi
 
   # 3) move the old docker dir aside so a later convert-back isn't blocked by the leftover .env, then done
