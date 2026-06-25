@@ -368,7 +368,7 @@ wg_pkg(){  command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +wireguard '; }
 awg_ifaces && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "AmneziaWG interface peers" "$_d" rm_awg_peers "" "$_d" Remove; }
 awg_pkg    &&   add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg
 wg_ifaces  && { _d="$(iface_list /etc/wireguard)";        add "WireGuard interface peers" "$_d" rm_wg_peers "" "$_d" Remove; }
-wg_pkg     &&   add "WireGuard package" "wireguard · wireguard-tools" rm_wg_pkg
+wg_pkg     &&   add "WireGuard package (kernel module + tools)" "wireguard · wireguard-tools" rm_wg_pkg
 true   # don't let the last &&-test leave a non-zero status
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do

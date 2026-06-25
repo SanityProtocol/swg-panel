@@ -762,7 +762,7 @@ _url_is_domain=no; case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *
 _ip_public=no; [ "$_url_is_domain" = yes ] || { ip_public "$PANEL_DOMAIN" && _ip_public=yes; }
 # default = each branch's recommended primary (NOT the saved mode — a saved letsencrypt-ip is meaningless on a
 # domain URL, etc.; 'reuse' below is the real "keep what you had" and wins as default when the cert still fits).
-if   [ "$_url_is_domain" = yes ]; then _tls_opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n skip sk"; _tls_def=l
+if   [ "$_url_is_domain" = yes ]; then _tls_opts="letsencrypt cloudflare cf15 selfsigned none l c cf 15 15years 15cf s self n skip sk"; _tls_def=l
 elif [ "$_ip_public" = yes ];     then _tls_opts="letsencrypt-ip selfsigned none lip ip letsencrypt l s n skip sk"; _tls_def=letsencrypt-ip
 else                                   _tls_opts="selfsigned none s n skip sk";                                    _tls_def=s; fi
 # Offer 'reuse' ONLY if the existing cert actually covers this URL (host in its SAN/CN). A cert issued for a
@@ -801,7 +801,7 @@ while :; do
   if [ "$_ip_public" = yes ]; then
     case "$TLS_MODE" in r) TLS_MODE=reuse;; l|ip|lip|letsencrypt|letsencrypt-ip) TLS_MODE=letsencrypt-ip;; s|selfsigned) TLS_MODE=selfsigned;; n|none|sk|skip) TLS_MODE=skip;; esac
   else
-    case "$TLS_MODE" in r) TLS_MODE=reuse;; l) TLS_MODE=letsencrypt;; c) TLS_MODE=cloudflare;; 15) TLS_MODE=cf15;; s) TLS_MODE=selfsigned;; n|none|sk|skip) TLS_MODE=skip;; esac
+    case "$TLS_MODE" in r) TLS_MODE=reuse;; l) TLS_MODE=letsencrypt;; c|cf) TLS_MODE=cloudflare;; 15|15years|15cf) TLS_MODE=cf15;; s|self) TLS_MODE=selfsigned;; n|none|sk|skip) TLS_MODE=skip;; esac
   fi
   case "$TLS_MODE" in
     letsencrypt|cloudflare|cf15)   # domain-only — warn + re-ask if the URL isn't a domain

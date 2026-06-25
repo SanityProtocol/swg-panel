@@ -137,7 +137,7 @@ v_name(){    case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 40
 # v_iface/v_subnet/v_hostport + next_free_port now in lib/common.sh
 v_url(){     case "$1" in ""|*" "*) return 1;; esac
              local h="${1#http://}"; h="${h#https://}"; h="${h%%/*}"; h="${h%%:*}"; v_host "$h"; }
-v_httpsurl(){ case "$1" in https://*|http://*) v_host "$(x="${1#http://}"; x="${x#https://}"; x="${x%%/*}"; printf '%s' "${x%%:*}")";; *) return 1;; esac; }
+v_httpsurl(){ case "$1" in https://*|http://*) v_host "$(x="${1#http://}"; x="${x#https://}"; x="${x%%/*}"; printf '%s' "${x%%:*}")";; *) v_host "$(x="${1%%/*}"; printf '%s' "${x%%:*}")";; esac; }   # no scheme ok → https:// is prepended after the prompt
 v_token(){   [ -n "$1" ] && [ "${#1}" -ge 8 ]; }
 # parse_panel_url <input> -> PANEL_HOST_NOPORT, PANEL_BASE (subpath), URL_PORT  (same logic as bare-metal)
 parse_panel_url(){ local u="$1" hostport rest
@@ -153,6 +153,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
   while :; do
     if read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
+    case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option (1-indexed menus)
     for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; return; }; done
     [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
     [ $rc -ne 0 ] && die "‘$v’ is not one of: $opts"
@@ -308,7 +309,6 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
     echo
     if [ "${#names[@]}" -gt 0 ]; then echo "  Installed turn-proxy servers:"; echo
       for n in "${names[@]}"; do _fw="$(fwd_iface_for "${TP_CONNECT[$n]}")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$n" "$RESET" "${TP_LISTEN[$n]}" "${TP_CONNECT[$n]}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done
-      echo
     else warn "No turn-proxy servers found on this box."; fi
     echo
     echo "  Here is a list of turn-proxy branches available for installation:"; echo
@@ -487,7 +487,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
   case "$PANEL_DOMAIN" in *[a-zA-Z]*) case "$PANEL_DOMAIN" in *.*) _url_is_domain=yes;; esac;; esac
   [ "$_url_is_domain" = yes ] || { ip_public "$PANEL_DOMAIN" && _ip_public=yes; }
   local _lip _ss
-  if   [ "$_url_is_domain" = yes ]; then _opts="letsencrypt cloudflare cf15 selfsigned none l c 15 s n"; _def=l
+  if   [ "$_url_is_domain" = yes ]; then _opts="letsencrypt cloudflare cf15 selfsigned none l c cf 15 15years 15cf s self n"; _def=l
   elif [ "$_ip_public" = yes ];     then _opts="letsencrypt-ip selfsigned none lip ip letsencrypt l s n"; _def=letsencrypt-ip
   else                                   _opts="selfsigned none s n";                                    _def=s; fi
   # offer 'reuse' ONLY if the existing cert actually covers this URL (host in its SAN/CN); a cert for a
@@ -519,7 +519,7 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
     if [ "$_ip_public" = yes ]; then   # on an IP menu every letsencrypt alias means the IP cert
       case "$TLS" in r) TLS=reuse;; l|ip|lip|letsencrypt|letsencrypt-ip) TLS=letsencrypt-ip;; s|selfsigned) TLS=selfsigned;; n|none) TLS=none;; esac
     else
-      case "$TLS" in r) TLS=reuse;; l) TLS=letsencrypt;; c) TLS=cloudflare;; 15) TLS=cf15;; s) TLS=selfsigned;; n|none) TLS=none;; esac
+      case "$TLS" in r) TLS=reuse;; l) TLS=letsencrypt;; c|cf) TLS=cloudflare;; 15|15years|15cf) TLS=cf15;; s|self) TLS=selfsigned;; n|none) TLS=none;; esac
     fi
     # letsencrypt('-ip') HTTP-01 needs host :80 — if it's taken (nginx/apache), make the user switch or force
     if { [ "$TLS" = letsencrypt ] || [ "$TLS" = letsencrypt-ip ]; } && ! $DRYRUN && have ss && [ -n "$(ss -lntH 'sport = :80' 2>/dev/null)" ]; then
@@ -566,7 +566,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   if [ "$EXISTING_DOCKER" = yes ]; then
     local _exurl="$PANEL_URL" _extls="$TLS_VERIFY"; PANEL_URL=""; TLS_VERIFY=""
     ask_valid "Panel URL (https://host[/subpath])" "$_exurl" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
-    case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
+    case "$PANEL_URL" in https://*) ;; http://*) warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
     TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" "$([ "$_extls" = yes ] && echo y || echo n)")"
     # offer to change the box name shown in the panel (default = its current name); push via /api/node/rename
     local _ins=""; [ "$TLS_VERIFY" = yes ] || _ins="-k"; local _cur
