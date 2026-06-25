@@ -284,7 +284,6 @@ print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel 
     echo; echo "  $(b 'Turn-proxies'): none."
   fi
   echo; node_reconfig_block baremetal
-  echo; echo "  The node turns green in the panel's Nodes screen within ~5s."
 }
 # a LIVE docker node = an actual swg-node container (running or stopped). A bare $DOCKER_DIR with no
 # container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).
