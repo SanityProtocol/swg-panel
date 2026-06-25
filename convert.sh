@@ -451,9 +451,20 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
 
   # 1) COPY-FIRST: stage the panel state to the bare locations while the container is STILL UP + serving
   mkdir -p "$STATE" "$ETC" "$STATS"
-  [ -d "$DOCKER_DIR/data/lib" ]   && cp -a "$DOCKER_DIR/data/lib/."   "$STATE/" 2>/dev/null || true   # roster, nodes.json, configs
-  [ -d "$DOCKER_DIR/data/etc" ]   && cp -a "$DOCKER_DIR/data/etc/."   "$ETC/"   2>/dev/null || true   # fleet.json, auth, tls/, acme/
-  [ -d "$DOCKER_DIR/data/stats" ] && cp -a "$DOCKER_DIR/data/stats/." "$STATS/" 2>/dev/null || true
+  # Copy the panel state straight OUT of the RUNNING container — robust no matter how its data volume is wired
+  # (a broken/empty ./data bind mount was silently losing the roster, login + nodes). Fall back to ./data only
+  # when the container isn't found (e.g. a resume after it's already gone).
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+    docker cp swg-panel:/var/lib/swg-panel/. "$STATE/" 2>/dev/null || true   # roster (users.json), nodes.json, configs
+    docker cp swg-panel:/etc/swg-panel/.     "$ETC/"   2>/dev/null || true   # fleet.json, auth, tls/, acme/
+    docker cp swg-panel:/var/www/wgstats/.   "$STATS/" 2>/dev/null || true
+  else
+    [ -d "$DOCKER_DIR/data/lib" ]   && cp -a "$DOCKER_DIR/data/lib/."   "$STATE/" 2>/dev/null || true
+    [ -d "$DOCKER_DIR/data/etc" ]   && cp -a "$DOCKER_DIR/data/etc/."   "$ETC/"   2>/dev/null || true
+    [ -d "$DOCKER_DIR/data/stats" ] && cp -a "$DOCKER_DIR/data/stats/." "$STATS/" 2>/dev/null || true
+  fi
+  # GUARD: never proceed (and let install-host seed a blank panel) if the login + node store didn't come across.
+  { [ -s "$ETC/auth" ] && [ -f "$STATE/nodes.json" ]; } || die "couldn't stage the panel state (login/nodes missing) — aborting to avoid data loss. The docker panel is untouched; check 'docker exec swg-panel ls -la /var/lib/swg-panel /etc/swg-panel'."
   # carry the acme renewal state back to the host (/root/.acme.sh) + repoint its reload cmd at the systemd unit
   if [ -d "$ETC/acme" ]; then
     mkdir -p /root/.acme.sh; cp -a "$ETC/acme/." /root/.acme.sh/ 2>/dev/null || true
@@ -477,6 +488,13 @@ EOF
   # backups, and write the bare turn units (deferred). All before the switch; install-node brings it up after.
   mnames=""
   if [ "$ROLE" = master ]; then
+    # refresh the node confs + turn record/keypairs straight from the RUNNING swg-node container (robust vs an
+    # empty/broken ./data bind mount — same fix as the panel above; the node container stays up till its switch).
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
+      mkdir -p "$DOCKER_DIR/data/node-confs" "$DOCKER_DIR/data/node"
+      docker cp swg-node:/etc/amnezia/amneziawg/. "$DOCKER_DIR/data/node-confs/" 2>/dev/null || true
+      docker cp swg-node:/var/lib/swg-noded/.      "$DOCKER_DIR/data/node/"       2>/dev/null || true
+    fi
     for f in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue
       nm="$(basename "$f" .conf)"
       if grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I1)[[:space:]]*=' "$f"; then dest="/etc/amnezia/amneziawg/$nm.conf"; else dest="/etc/wireguard/$nm.conf"; fi
@@ -488,14 +506,16 @@ EOF
   fi
 
   # 2) ATOMIC SWITCH — stop the docker stack (panel + a master's node + turns), then install-host.sh brings the
-  #    bare panel up reusing the staged login (KEEP_AUTH) + cert (TLS_MODE=reuse). Same URL/port ⇒ nodes stay connected.
+  #    bare panel up reusing the staged login (KEEP_AUTH). TLS is NOT forced to 'reuse' — install-host's menu
+  #    defaults to reuse when the staged cert still covers the host, and prompts for a fresh one when it can't
+  #    (e.g. you changed the URL or switched a domain → IP). Same URL/port ⇒ nodes stay connected.
   info "Switching over — stopping the docker panel, then installing the bare-metal panel…"
   if [ "$ROLE" = master ]; then
     docker rm -f swg-panel >/dev/null 2>&1 || true   # stop ONLY the panel — the docker NODE keeps serving through install-node's prompts (copy-first); install-node tears it down at its OWN switch (the last step)
   else
     ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true; docker rm -f swg-panel >/dev/null 2>&1 || true
   fi
-  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" TLS_MODE=reuse ACME_EMAIL="$PEMAIL" \
+  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" \
       CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare \
       bash "$SRC/install-host.sh" \
     || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
