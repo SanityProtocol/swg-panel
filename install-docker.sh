@@ -1175,7 +1175,8 @@ case "$PROFILE" in host|master)
   PORTSUF=":${PANEL_PORT}"; if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
   echo "  Panel     $(bb "${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/")"
   echo "  Login     $(bb "$PANEL_USER") / $(bb "$PANEL_PASSWORD")   (change later in the panel → Account)"
-  echo "  TLS       $(b "$TLS")  ·  host port $(b "$PANEL_PORT")" ;;
+  echo "  TLS       $(b "$TLS")  ·  host port $(b "$PANEL_PORT")"
+  echo "  Local     $(bb "${SCH}://127.0.0.1:${PANEL_PORT}${PANEL_BASE}/")   (on this box — reverse proxy / local checks)" ;;
 esac
 case "$PROFILE" in node|master)
   echo "  Node      → syncs to $(bb "$PANEL_URL")   ·  $(bb "$NODE_ENDPOINT")"

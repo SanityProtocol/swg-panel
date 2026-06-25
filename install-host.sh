@@ -1421,6 +1421,8 @@ echo "  Panel     $(bb "$UI")"
 if [ "$KEEP_AUTH" = yes ]; then echo "  Login     $(bb "$BASIC_USER") / $(bb "(unchanged — your existing password)")"
 else echo "  Login     $(bb "$BASIC_USER") / $(bb "$BASIC_PASS")   (change later in the panel → Account)"; fi
 echo "  TLS       $(b "$TLS_MODE")  ·  Web server $(b "$SERVE_MODE") (port $(b "$PORT"))"
+LOCAL_SCHEME=http; [ "$SERVE_MODE" = internal ] && [ "$TLS_MODE" != skip ] && LOCAL_SCHEME=https
+echo "  Local     $(bb "${LOCAL_SCHEME}://127.0.0.1:${PORT}${PANEL_BASE}/")   (on this box — reverse proxy / local checks)"
 if [ "$HOST_HAS_WG" = yes ] && [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (this box, node '$(b "$HOST_NODE_NAME")'):"
   for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
     printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \
