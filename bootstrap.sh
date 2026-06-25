@@ -191,6 +191,21 @@ CONFLICT=""
 for _c in $ROLE_COMPS; do
   if ! has_comp "$METHOD" "$_c" && has_comp "$OTHER" "$_c"; then CONFLICT="${CONFLICT:+$CONFLICT }$_c"; fi
 done
+# MASTER split-guard: this box is a MASTER on the OTHER method (a panel AND a node) but you asked to convert
+# only one part. Point that out and offer to convert the whole master (default) instead of splitting the box.
+if [ -n "$CONFLICT" ] && [ "$ROLE" != master ] && has_comp "$OTHER" panel && has_comp "$OTHER" node; then
+  echo
+  echo "$(b "! This box runs a $(mlabel "$OTHER") master — both a panel and a node.")"
+  echo "  You asked to convert only the $(b "$ROLE"). Convert the whole master, or just the $ROLE?"
+  echo
+  menu "$(b "$(col "$C_BLUE" '[1] [m]aster (default)')")"      "Convert BOTH the panel and the node to $(mlabel "$METHOD") — keep this box a single-method master (recommended)."
+  menu "$(col "$C_BLUE" "[2] [${ROLE:0:1}]${ROLE:1}")"         "Convert only the $ROLE to $(mlabel "$METHOD"); the rest stays on $(mlabel "$OTHER") — a mixed-method box you'd manage in two places."
+  _msel=""; ask_choice "Convert the whole master, or just the $ROLE (number, letter or name)" master _msel "master $ROLE"
+  if [ "$_msel" = master ]; then
+    ROLE=master; ROLE_COMPS="panel node"; CONFLICT=""
+    for _c in $ROLE_COMPS; do { ! has_comp "$METHOD" "$_c" && has_comp "$OTHER" "$_c"; } && CONFLICT="${CONFLICT:+$CONFLICT }$_c"; done
+  fi
+fi
 if [ -n "$CONFLICT" ]; then
   while :; do
     echo

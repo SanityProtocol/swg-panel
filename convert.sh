@@ -308,8 +308,8 @@ teardown_bare_panel(){
   command -v nginx >/dev/null 2>&1 && { nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1; } || true
   systemctl daemon-reload >/dev/null 2>&1 || true; }
 
-if [ "$ROLE" = host ] && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
-  ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; pconf="$ETC/install.conf"
+if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
+  ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; pconf="$ETC/install.conf"; PROFILE="$ROLE"
   bare_panel_present || [ -n "${SWG_RV_URL:-}" ] || die "no bare-metal panel found (swg-panel-server missing)"
   gv(){ sed -n "s/^$1=//p" "$pconf" 2>/dev/null | head -1; }
   PDOM="$(gv PANEL_DOMAIN)"; PPORT="$(gv PORT)"; PTLS="$(gv TLS_MODE)"; PEMAIL="$(gv ACME_EMAIL)"; PBASE="$(gv PANEL_BASE)"
@@ -321,16 +321,33 @@ if [ "$ROLE" = host ] && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   [ -n "$PPORT" ] || PPORT=443
   docker_panel_present && die "a docker panel (swg-panel container) already exists — remove it first"
 
+  # MASTER: also read the co-located node's identity (preserve its token so the panel keeps the same node) +
+  # its interface confs (imported below). The local node reaches the panel on the compose net (swg-panel:8443).
+  NTOK=""; NEP=""; mifaces=""
+  if [ "$ROLE" = master ] && command -v python3 >/dev/null 2>&1 && [ -f /etc/swg-agent/config.json ]; then
+    NTOK="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token","") or "")' 2>/dev/null || true)"
+    NEP="$(python3 -c 'import json;print(json.load(open("/etc/swg-agent/config.json")).get("endpoint_host","") or "")' 2>/dev/null || true)"
+    mifaces="$(python3 - <<'PY' 2>/dev/null
+import json
+try: c=json.load(open("/etc/swg-agent/config.json"))
+except Exception: c={}
+for n,ic in (c.get("interfaces") or {}).items():
+    if (ic.get("conf") or ""): print(n+"\t"+ic["conf"])
+PY
+)"
+  fi
+
   if [ "$CHECK" = yes ]; then
     [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") will be moved aside."
     sub "pre-flight OK"
-    info "Panel → docker keeps: URL $(b "$PDOM"), login, roster, nodes + the $(b "$PTLS") cert. Brief panel downtime at the switch (nodes self-heal)."
+    if [ "$ROLE" = master ]; then info "Master → docker keeps: URL $(b "$PDOM"), login, roster, nodes, the $(b "$PTLS") cert AND the local node (token + interfaces + turn-proxies). Brief downtime at the switch."
+    else info "Panel → docker keeps: URL $(b "$PDOM"), login, roster, nodes + the $(b "$PTLS") cert. Brief panel downtime at the switch (nodes self-heal)."; fi
     exit 0
   fi
   command -v docker >/dev/null 2>&1 || die "docker is required"
 
-  info "Converting the bare-metal panel → docker — keeping its URL, login, roster, nodes and cert."
-  PURL="$PDOM"; NTOK=""; NEP=""; write_recovery ""   # persist FROM/TO/ROLE for resume BEFORE any teardown
+  info "Converting the bare-metal $(b "$ROLE") → docker — keeping the panel's URL/login/roster/nodes/cert$([ "$ROLE" = master ] && echo " and the local node")."
+  PURL="$PDOM"; write_recovery ""   # persist FROM/TO/ROLE for resume BEFORE any teardown
   if [ "$RESUMING" != yes ] && [ -e "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.pre-convert-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
     mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved a leftover $(b "$DOCKER_DIR") aside → $(b "$_bak")" || rm -rf "$DOCKER_DIR" 2>/dev/null || true
@@ -347,6 +364,19 @@ if [ "$ROLE" = host ] && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   find "$DOCKER_DIR/data/etc/acme" -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='kill -HUP 1'#" {} + 2>/dev/null || true
   sub "staged roster + nodes + login + $(b "$PTLS") cert (+ acme renewal) → $DOCKER_DIR/data"
 
+  # MASTER: stage the local node too — import its confs (strip host NAT; the container does its own), carry the
+  # keypair backups, and write the docker turn record from the bare turn units (the swg-node container materialises
+  # them on first run). All non-destructive — the bare node keeps serving until the switch below.
+  if [ "$ROLE" = master ]; then
+    confd="$DOCKER_DIR/data/node-confs"; mkdir -p "$confd"
+    printf '%s\n' "$mifaces" | while IFS="$(printf '\t')" read -r _nm _src; do [ -n "$_nm" ] || continue
+      [ -f "$_src" ] || continue
+      grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$_src" > "$confd/$_nm.conf" 2>/dev/null && chmod 600 "$confd/$_nm.conf" 2>/dev/null || true
+      sub "staged local-node interface $(b "$_nm") → data/node-confs (key preserved)"; done
+    if [ -d /var/lib/swg-noded/iface-keys ]; then mkdir -p "$DOCKER_DIR/data/node/iface-keys"; cp -a /var/lib/swg-noded/iface-keys/. "$DOCKER_DIR/data/node/iface-keys/" 2>/dev/null || true; fi
+    turn_to_docker   # bare turn units → docker turn record (asks to transfer; container materialises them)
+  fi
+
   # 2) stage the compose project (prebuilt image pulled from GHCR)
   cp -a "$SRC/docker-compose.yml" "$DOCKER_DIR/" 2>/dev/null || true
   for f in Dockerfile Dockerfile.node Dockerfile.turn .dockerignore VERSION swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
@@ -355,9 +385,11 @@ if [ "$ROLE" = host ] && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$DOCKER_DIR/" 2>/dev/null || true
 
   # 3) .env — login (auth file) + cert are PRESERVED in data/etc so the entrypoint keeps them; PANEL_PASSWORD is
-  #    an unused placeholder (compose requires it). Same URL/port/TLS ⇒ nodes stay connected.
+  #    an unused placeholder (compose requires it). For a master the node section carries the local node's token +
+  #    endpoint and points it at the panel on the compose network. Same URL/port/TLS ⇒ nodes stay connected.
+  _nurl=""; [ "$ROLE" = master ] && _nurl="https://swg-panel:8443"
   cat > "$DOCKER_DIR/.env" <<EOF
-# generated by convert.sh (bare-metal → docker) — profile: host
+# generated by convert.sh (bare-metal → docker) — profile: $PROFILE
 PANEL_PASSWORD=converted-login-preserved
 PANEL_USER=${PUSER:-admin}
 PANEL_DOMAIN=$PDOM
@@ -367,34 +399,40 @@ ACME_EMAIL=$PEMAIL
 CF_TOKEN=$PCFTOKEN
 CF_ORIGIN_TOKEN=$PCFORIGIN
 PANEL_PORT=$PPORT
-PANEL_URL=
-NODE_TOKEN=
-NODE_ENDPOINT=
+PANEL_URL=$_nurl
+NODE_TOKEN=$NTOK
+NODE_ENDPOINT=$NEP
+TLS_VERIFY=no
 EOF
   chmod 600 "$DOCKER_DIR/.env"
 
-  # 4) ATOMIC SWITCH — pull first (slow) while the bare panel still serves, THEN stop it + bring the container up
-  info "Pulling the panel image…"
-  ( cd "$DOCKER_DIR" && on_tty docker compose --profile host pull ) || warn "image pull failed — will use the local image if present"
-  info "Switching over — stopping the bare-metal panel, then starting the container…"
+  # 4) ATOMIC SWITCH — pull first (slow) while the bare services still serve, THEN stop them + bring container(s) up
+  info "Pulling the $(b "$PROFILE") image(s)…"
+  ( cd "$DOCKER_DIR" && on_tty docker compose --profile "$PROFILE" pull ) || warn "image pull failed — will use the local image if present"
+  info "Switching over — stopping the bare-metal $(b "$ROLE"), then starting the container(s)…"
   teardown_bare_panel
-  ( cd "$DOCKER_DIR" && on_tty docker compose --profile host up -d ) || die "compose up failed — your panel state is safe in $DOCKER_DIR/data; check 'docker compose logs swg-panel'"
+  if [ "$ROLE" = master ]; then   # stop the co-located bare node too (swg-noded + interfaces + its turn units)
+    _turns="$(for _u in /etc/systemd/system/vk-turn-proxy-*.service; do [ -e "$_u" ] && basename "$_u" .service; done | tr '\n' ' ')"
+    lc_teardown_baremetal $_turns
+  fi
+  ( cd "$DOCKER_DIR" && on_tty docker compose --profile "$PROFILE" up -d ) || die "compose up failed — your state is safe in $DOCKER_DIR/data; check 'docker compose logs'"
 
   # 5) move the old bare state aside (already copied) so a later convert-back restages from data/, then done
   for _d in "$STATE" "$ETC"; do [ -d "$_d" ] && mv "$_d" "$_d.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)" 2>/dev/null || true; done
   clear_recovery
-  echo; ok "Panel converted to docker — $(b "https://$PDOM:$PPORT$PBASE/") (same login, roster, nodes + cert). Nodes reconnect on their next sync."
-  echo "  Dir   $DOCKER_DIR  ·  docker compose --profile host up -d   ·  logs: docker compose logs -f swg-panel"
+  echo; ok "$(b "$ROLE") converted to docker — $(b "https://$PDOM:$PPORT$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node"))."
+  echo "  Dir   $DOCKER_DIR  ·  docker compose --profile $PROFILE up -d   ·  logs: docker compose logs -f"
   exit 0
 fi
 
-# ── PANEL host: docker → bare-metal ── (mirror of the bare→docker block; reuses install-host.sh for the bring-up)
-if [ "$ROLE" = host ] && [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
+# ── PANEL host/master: docker → bare-metal ── (mirror of the bare→docker block; reuses install-host.sh + install-node.sh)
+if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; envf="$DOCKER_DIR/.env"
   [ -f "$envf" ] || [ -n "${SWG_RV_URL:-}" ] || die "no docker panel settings found at $envf"
   getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//'; }
   PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"
   PBASE="$(getv PANEL_BASE)"; PUSER="$(getv PANEL_USER)"; PCFT="$(getv CF_TOKEN)"; PCFO="$(getv CF_ORIGIN_TOKEN)"
+  NTOK="$(getv NODE_TOKEN)"; NEP="$(getv NODE_ENDPOINT)"   # master: the local node's preserved identity
   [ -n "${SWG_RV_URL:-}" ] && PDOM="${PDOM:-$SWG_RV_URL}"
   [ -n "$PDOM" ] || die "couldn't read the panel domain (docker .env missing and no recovery state)"
   case "$PTLS" in letsencrypt|letsencrypt-ip|cloudflare|cf15|selfsigned|none) :;; *) PTLS=selfsigned;; esac
@@ -403,12 +441,13 @@ if [ "$ROLE" = host ] && [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
 
   if [ "$CHECK" = yes ]; then
     sub "pre-flight OK"
-    info "Panel → bare-metal keeps: URL $(b "$PDOM"), login, roster, nodes + the $(b "$PTLS") cert. Brief panel downtime at the switch (nodes self-heal)."
+    if [ "$ROLE" = master ]; then info "Master → bare-metal keeps: URL $(b "$PDOM"), login, roster, nodes, the $(b "$PTLS") cert AND the local node (token + interfaces + turn-proxies). Brief downtime at the switch."
+    else info "Panel → bare-metal keeps: URL $(b "$PDOM"), login, roster, nodes + the $(b "$PTLS") cert. Brief panel downtime at the switch (nodes self-heal)."; fi
     exit 0
   fi
 
-  info "Converting the docker panel → bare-metal — keeping its URL, login, roster, nodes and cert."
-  PURL="$PDOM"; NTOK=""; NEP=""; write_recovery ""
+  info "Converting the docker $(b "$ROLE") → bare-metal — keeping the panel's URL/login/roster/nodes/cert$([ "$ROLE" = master ] && echo " and the local node")."
+  PURL="$PDOM"; write_recovery ""
 
   # 1) COPY-FIRST: stage the panel state to the bare locations while the container is STILL UP + serving
   mkdir -p "$STATE" "$ETC" "$STATS"
@@ -434,9 +473,23 @@ CF_ORIGIN_TOKEN=$PCFO
 EOF
   sub "staged roster + nodes + login + $(b "$PTLS") cert (+ acme renewal) → $STATE + $ETC"
 
-  # 2) ATOMIC SWITCH — stop the docker panel (frees the port), then install-host.sh brings the bare panel up,
-  #    reusing the staged login (KEEP_AUTH) + cert (TLS_MODE=reuse). Same URL/port ⇒ nodes stay connected.
-  info "Switching over — stopping the docker panel, then installing the bare-metal panel…"
+  # MASTER: stage the local node too — import its confs to the bare locations (host NAT added), carry the keypair
+  # backups, and write the bare turn units (deferred). All before the switch; install-node brings it up after.
+  mnames=""
+  if [ "$ROLE" = master ]; then
+    for f in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue
+      nm="$(basename "$f" .conf)"
+      if grep -qiE '^[[:space:]]*(Jc|Jmin|Jmax|S1|S2|H1|H2|H3|H4|I1)[[:space:]]*=' "$f"; then dest="/etc/amnezia/amneziawg/$nm.conf"; else dest="/etc/wireguard/$nm.conf"; fi
+      mkdir -p "$(dirname "$dest")"; import_bare_conf "$f" "$dest"
+      sub "imported local-node interface $(b "$nm") → $dest (host NAT added)"; mnames="${mnames:+$mnames }$nm"
+    done
+    if [ -d "$DOCKER_DIR/data/node/iface-keys" ]; then mkdir -p /var/lib/swg-noded/iface-keys; cp -a "$DOCKER_DIR/data/node/iface-keys/." /var/lib/swg-noded/iface-keys/ 2>/dev/null || true; fi
+    turn_predownload; turn_to_bare   # docker turn record → host units (deferred; install-node starts them after the switch)
+  fi
+
+  # 2) ATOMIC SWITCH — stop the docker stack (panel + a master's node + turns), then install-host.sh brings the
+  #    bare panel up reusing the staged login (KEEP_AUTH) + cert (TLS_MODE=reuse). Same URL/port ⇒ nodes stay connected.
+  info "Switching over — stopping the docker $(b "$ROLE"), then installing bare-metal…"
   ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true   # project-wide: stops the panel (+ a master's node) regardless of profile
   docker rm -f swg-panel >/dev/null 2>&1 || true
   env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" TLS_MODE=reuse ACME_EMAIL="$PEMAIL" \
@@ -444,20 +497,25 @@ EOF
       bash "$SRC/install-host.sh" \
     || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
 
+  # MASTER: now bring the local node up bare — adopt the imported confs + its preserved token, pointing at the
+  # just-installed local panel (loopback). SWG_CONVERT=1 reuses install-node's switch path: the docker node is
+  # already gone so the teardown is a no-op, but it still starts the deferred turn units + reports once, fully up.
+  if [ "$ROLE" = master ] && [ -n "$mnames" ]; then
+    echo; info "Bringing the local node up on bare-metal (adopting $(b "$mnames"))…"
+    env NODE_TOKEN="$NTOK" PANEL_URL="https://127.0.0.1:$PPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
+        SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
+      || warn "the local node setup reported an error — check it on the panel."
+  fi
+
   # 3) move the old docker dir aside so a later convert-back isn't blocked by the leftover .env, then done
   if [ -d "$DOCKER_DIR" ]; then
     _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
     mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)" || warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"
   fi
   clear_recovery
-  echo; ok "Panel converted to bare-metal — $(b "https://$PDOM:$PPORT$PBASE/") (same login, roster, nodes + cert). Nodes reconnect on their next sync."
+  echo; ok "$(b "$ROLE") converted to bare-metal — $(b "https://$PDOM:$PPORT$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node")). Nodes reconnect on their next sync."
   exit 0
 fi
-
-# ── remaining master directions: implemented in the next stage ──
-case "$ROLE" in
-  master) die "master (panel + node) conversion is coming next — convert the node, or 'keep and re-install'.";;
-esac
 
 # ── NODE: docker → bare-metal ──
 if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
