@@ -65,6 +65,12 @@ have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
 stamp(){ $DRYRUN || printf '%s\n' "$NEW_VER" > "$1/VERSION" 2>/dev/null || true; }
 oldver(){ cat "$1/VERSION" 2>/dev/null || echo '?'; }
+# current version of a docker component — read from the RUNNING container (the live image actually serving now),
+# falling back to the staged $DOCKER_DIR/VERSION, then '?'. $1 = container name, $2 = VERSION path in the image.
+docker_ver(){ local c="$1" path="$2" v=""
+  have docker && v="$(docker exec "$c" cat "$path" 2>/dev/null | head -1 | tr -d '[:space:]')"
+  [ -n "$v" ] || v="$(oldver "$DOCKER_DIR")"
+  printf '%s' "${v:-?}"; }
 # header line showing the installed version vs the latest, so it's clear whether an update is needed
 ver_line(){ local label="$1" cur="$2"
   if [ -z "$cur" ] || [ "$cur" = "?" ]; then info "$label — latest is version $(col_v "$NEW_VER")"
@@ -141,8 +147,8 @@ if $DRYRUN; then info "DRY RUN — nothing will change."; fi
 echo
 # current installed version per component (bare-metal reads its VERSION file; docker falls back to the staged
 # $DOCKER_DIR/VERSION, '?' when unknown → just shows the latest)
-_pcur="?"; if [ "$HAVE_BPAN" = yes ]; then _pcur="$(oldver "$PANEL_DIR")"; elif [ "$HAVE_DOCK" = yes ]; then _pcur="$(oldver "$DOCKER_DIR")"; fi
-_ncur="?"; if [ "$HAVE_BNODE" = yes ]; then _ncur="$(oldver "$NODED_DIR")"; elif [ "$HAVE_DOCK" = yes ]; then _ncur="$(oldver "$DOCKER_DIR")"; fi
+_pcur="?"; if [ "$HAVE_BPAN" = yes ]; then _pcur="$(oldver "$PANEL_DIR")"; elif [ "$HAVE_DOCK" = yes ]; then _pcur="$(docker_ver swg-panel /opt/swg-panel/VERSION)"; fi
+_ncur="?"; if [ "$HAVE_BNODE" = yes ]; then _ncur="$(oldver "$NODED_DIR")"; elif [ "$HAVE_DOCK" = yes ]; then _ncur="$(docker_ver swg-node /opt/swg-noded/VERSION)"; fi
 [ "$_haspanel" = yes ] && ver_line "swg-panel" "$_pcur"
 [ "$_hasnode" = yes ]  && ver_line "swg-node" "$_ncur"
 true   # don't let the above &&-tests leave a non-zero status for `set -e`
