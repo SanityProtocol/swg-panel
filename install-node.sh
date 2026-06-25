@@ -46,11 +46,13 @@ bb(){  printf '%s%s%s%s' "$BOLD" "$C_BLUE" "$*" "$RESET"; }   # bold + blue (sum
 col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
 # one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
-iface_row(){ local n="$1" conf proto ep lp addr   # set -e safe; prefer a just-queued spec (no conf yet), else the conf
+iface_row(){ local n="$1" conf proto ep lp addr _c   # set -e safe; prefer a just-queued spec (no conf yet), else the conf
   if [ -n "${SPEC_CMD[$n]:-}" ]; then proto="${SPEC_CMD[$n]}"; lp="${SPEC_PORT[$n]:-}"; addr="${SPEC_ADDR[$n]:-}"; ep="${SPEC_EP[$n]:-}"
   else conf="${IF_CONF[$n]:-}"; proto="${IF_CMD[$n]:-?}"; ep="${IF_ENDPOINT[$n]:-${ENDPOINT_IP:-}}"
+    { [ -n "$conf" ] && [ -f "$conf" ]; } || for _c in "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf"; do [ -f "$_c" ] && { conf="$_c"; break; }; done   # IF_CONF missed it (e.g. an adopted iface) → find the on-disk conf by name so port/addr aren't '?'
     lp="$(conf_get "$conf" ListenPort || true)"; addr="$(conf_get "$conf" Address || true)"; fi
   [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"
+  case "${proto:-?}" in ''|'?') case "$n" in awg*) proto=awg;; wg*) proto=wg;; esac;; esac   # unknown proto → infer from the name (awg0 ⇒ AmneziaWG)
   printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "${proto:-?}")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 fwd_ifaces(){ local cp="${1##*:}" n lp out=""; for n in "${!IF_CONF[@]}"; do lp="$(conf_get "${IF_CONF[$n]}" ListenPort)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && out="${out:+$out }$n"; done; printf '%s' "$out"; }   # interface(s) a turn-proxy's ip:port forwards to (matched by ListenPort)
 # add-only marker: an interface ADOPTED from outside (existing peers) carries '#swg:onboarded' in its
@@ -759,7 +761,8 @@ run systemctl daemon-reload
 run systemctl enable --quiet swg-noded
 # restart (not just enable --now): on a RE-RUN that added interfaces, swg-noded is already running and
 # reads config.json only at startup — so without a restart the new interfaces never reach the panel.
-run systemctl restart swg-noded || warn "couldn't start swg-noded"
+if [ "${SWG_CONVERT:-}" = 1 ]; then info "deferring the daemon start — the converter migrates turn-proxies FIRST, then starts swg-noded, so the panel only sees the node once the WHOLE conversion is done"
+else run systemctl restart swg-noded || warn "couldn't start swg-noded"; fi
 # Clear a stale convert-recovery marker now that the node is wired — but NOT when we're a STEP inside a
 # docker→bare convert (SWG_CONVERT / SWG_TURN_ADD). convert.sh still has to migrate the turn-proxies and move
 # the old docker dir aside after we return; it owns the marker and clears it (clear_recovery) only when the

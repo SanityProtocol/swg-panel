@@ -117,6 +117,37 @@ EOF
   [ "$ok" = 1 ]
 }
 
+# pre-download every fork's turn binary into the shared cache (/opt/vk-turn-proxy/.bin/<fork>/server) WHILE the
+# docker node is still up + serving — so the post-switch turn_to_bare reuses them (no slow download after the cutover).
+turn_predownload(){
+  local rec="$DOCKER_DIR/data/node/turn-proxy.json" list svc owner lis con params arch fork fdir sbin n=0
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$rec" ] || return 0
+  case "$(uname -m)" in aarch64|arm64) arch=arm64;; *) arch=amd64;; esac
+  list="$(python3 - "$rec" <<'PY' 2>/dev/null
+import json, sys
+try: d = json.load(open(sys.argv[1])); tps = d.get("turn_proxies") or []
+except Exception: tps = []
+for t in (tps if isinstance(tps, list) else []):
+    if t.get("service"): print("\t".join([t.get("service",""), t.get("owner",""), t.get("listen",""), t.get("connect",""), (t.get("params") or "")]))
+PY
+)"
+  [ -n "$list" ] || return 0
+  info "Pre-downloading turn-proxy binaries while the docker node still serves (keeps the cutover quick)…"
+  while IFS="$(printf '\t')" read -r svc owner lis con params; do
+    [ -n "$svc" ] && [ -n "$owner" ] || continue
+    fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"; fdir="/opt/vk-turn-proxy/.bin/$fork"; sbin="$fdir/server"
+    [ -x "$sbin" ] && { sub "$(b "$fork") binary already present"; continue; }
+    mkdir -p "$fdir"
+    if dl_turn_bin "$owner" "$arch" "$sbin"; then chmod +x "$sbin" 2>/dev/null || true; sub "downloaded $(b "$fork") binary"; n=$((n+1))
+    else warn "  $fork: pre-download failed — turn_to_bare will retry it after the switch"; rm -f "$sbin" 2>/dev/null || true; fi
+  done <<EOF
+$list
+EOF
+  [ "$n" -gt 0 ] && sub "cached $n turn-proxy binary(ies) — the switch + migration will be fast"
+  return 0
+}
+
 # docker turn record → host systemd units, then drop the swg-turn containers
 turn_to_bare(){
   local rec="$DOCKER_DIR/data/node/turn-proxy.json" list svc owner lis con params
@@ -456,11 +487,16 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     sub "carried interface keypair backups → /var/lib/swg-noded/iface-keys"
   fi
 
-  # 3) bring the node UP FIRST — hand wg/awg + the daemon to install-node.sh so it's reporting in seconds;
-  #    only THEN migrate the turn-proxies (their binary downloads are slow and must not hold the node back).
+  # 2b) COMPLETE-BEFORE-SWITCH: download every turn-proxy binary into the shared cache while the docker node is
+  #     STILL UP + serving. The slow part is done before the cutover, so the migration after it is instant.
+  turn_predownload
+
+  # 3) ATOMIC, COMPLETE SWITCH — install-node.sh brings wg/awg up + wires the daemon but, under SWG_CONVERT=1,
+  #    DEFERS starting swg-noded. So the node's datapath is up + serving peers, yet the panel still sees
+  #    "converting" — we migrate the turn-proxies FIRST, then start the daemon, so the node only ever reports
+  #    once the WHOLE conversion (interfaces + turn-proxies) is done. (NOT exec — we return to finish + tidy up.)
   #    ADOPTED_IFACES marks the migrated interfaces as "already on this node"; same token ⇒ one panel node.
-  #    NB: NOT exec — we return to migrate turn-proxies + tidy up once the node is live.
-  info "Running install-node.sh — adopt $(b "$names") (and add more if you want), then it wires the daemon…"
+  info "Running install-node.sh — adopt $(b "$names") (and add more if you want); the daemon start is deferred…"
   echo
   # NB: '|| warn' — a non-zero exit (e.g. one interface failed to come up) must NOT abort the convert under
   # set -e, or the turn-proxy migration + dir cleanup below would be skipped (the node would lose its proxies).
@@ -468,14 +504,19 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" bash "$SRC/install-node.sh" \
     || warn "install-node.sh reported an error — continuing with the turn-proxy migration (check the interface(s) on the panel)."
 
-  echo; info "Node is up — migrating its turn-proxies now (downloads can be slow; the node already serves peers)."
+  echo; info "Interfaces up + serving peers — migrating turn-proxies BEFORE the node reports to the panel (binaries are pre-cached, so this is quick)."
   turn_to_bare   # docker turn-proxies → host systemd units (reads the still-present $DOCKER_DIR turn record)
 
   # offer the SAME "add more?" step interfaces got — re-enter install-node.sh's turn menu now that the
   # existing proxies are migrated and listed (it also (re)writes the bare turn record incl. the migrated
-  # units). Non-fatal: a failure here must not skip the dir cleanup + final summary below.
+  # units). Non-fatal: a failure here must not skip the daemon start + dir cleanup + final summary below.
   env SWG_TURN_ADD=1 bash "$SRC/install-node.sh" \
     || warn "turn-proxy add step reported an error — continuing (check the panel)."
+
+  # 4) NOW everything (interfaces + turn-proxies) is in place → start the daemon. This is the node's FIRST
+  #    report as bare-metal, so the panel sees a fully-converted node (never "converted" mid-migration).
+  echo; info "Starting the node daemon — it now reports the fully-converted node (interfaces + turn-proxies) to the panel…"
+  systemctl restart swg-noded 2>/dev/null || warn "couldn't start swg-noded — start it with: systemctl restart swg-noded"
 
   # finally move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker
   # convert isn't blocked by the leftover .env.
