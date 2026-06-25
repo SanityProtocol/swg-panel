@@ -1140,6 +1140,13 @@ if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFIL
 else ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
 $DRYRUN || rm -f /var/lib/swg-recovery 2>/dev/null || true   # stack is up → clear any convert-recovery marker
 
+# After compose's "✔ Container … Started" lines the container(s) initialise silently (panel: start the server +
+# issue TLS; node: bring up the datapath + first sync) — say what's happening so the wait below doesn't look hung.
+if ! $DRYRUN; then
+  case "$PROFILE" in host|master) info "Panel container started — waiting for the server to come up$([ "$TLS" != none ] && echo " + issue its $(b "$TLS") certificate")…";; esac
+  case "$PROFILE" in node|master) info "Node container started — bringing up its datapath; it reports to the panel within a couple of syncs.";; esac
+fi
+
 # ── surface the cert outcome (don't let a silent self-signed fallback hide as a Cloudflare 526) ──
 if [ "$PROFILE" != node ] && [ "$TLS" != none ] && ! $DRYRUN && have openssl; then
   iss=""; for _i in 1 2 3 4 5 6; do
