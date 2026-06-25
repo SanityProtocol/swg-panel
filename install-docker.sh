@@ -1203,10 +1203,10 @@ for t in tps:
       while IFS="$(printf '\t')" read -r _svc _lis _con; do [ -n "$_svc" ] || continue; _fw="$(fwd_iface_for "$_con")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$_svc" "$RESET" "${_lis:-?}" "${_con:-?}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done <<< "$_tlist"
     fi
   fi
-  echo; node_reconfig_block docker "$INSTALL_DIR" ;;
+  echo; node_reconfig_block docker "$INSTALL_DIR" "$PROFILE" ;;
 esac
 echo
-echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile $PROFILE up -d")"
-case "$PROFILE" in host|master) echo "  Panel log $(b "cd $INSTALL_DIR && $COMPOSE logs -f swg-panel")";; esac   # node profiles get their Logs line from node_reconfig_block
+case "$PROFILE" in host) echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile host up -d")";; esac   # node/master get Directory+Config from node_reconfig_block
+case "$PROFILE" in host|master) echo "  Panel log $(b "cd $INSTALL_DIR && $COMPOSE logs -f swg-panel")";; esac
 case "$PROFILE" in host|master) echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')";; esac
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun$INSTALL_DIR/.env"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command

@@ -722,6 +722,7 @@ def _node_issues(c, snap):
 #   failed      : <op>-failed  (+ err)  (red + error popup, persists likewise)
 # `at` = unix time the state was set (node proc_status; host_proc file mtime).
 PROC_GRACE = 600          # 10 min in-progress window; a stuck op (lost connection) then falls back to failed
+CONVERT_GRACE = 300       # 5 min for a conversion (both directions) — a convert that stalls longer is treated as failed
 PROC_SUCCESS_SHOW = 8     # success tag lifetime (comfortably covers one ~5 s poll, then clears)
 PROC_INPROGRESS = ("reinstalling", "converting-bare", "converting-docker", "updating", "uninstalling")
 PROC_SUCCESS = ("reinstalled", "reinstalled-updated", "converted-bare", "converted-docker", "updated", "uptodate")
@@ -736,7 +737,8 @@ def _proc_view(state, at):
     if state in PROC_SUCCESS:                     # green confirmation, then gone
         return state if age <= PROC_SUCCESS_SHOW else None
     if state in PROC_INPROGRESS:                  # running; a stuck one (no terminal ever arrived) → failed
-        return state if age <= PROC_GRACE else _PROC_FAIL.get(state, "failed")
+        grace = CONVERT_GRACE if state in ("converting-bare", "converting-docker") else PROC_GRACE
+        return state if age <= grace else _PROC_FAIL.get(state, "failed")
     return state                                  # explicit aborted/failed terminal → persists until dismissed
 
 def node_describe(snapshot):

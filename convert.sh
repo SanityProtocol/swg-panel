@@ -139,6 +139,7 @@ PY
     fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"; fdir="/opt/vk-turn-proxy/.bin/$fork"; sbin="$fdir/server"
     [ -x "$sbin" ] && { sub "$(b "$fork") binary already present"; continue; }
     mkdir -p "$fdir"
+    info "Downloading $(b "$fork") turn-proxy binary…"
     if dl_turn_bin "$owner" "$arch" "$sbin"; then chmod +x "$sbin" 2>/dev/null || true; sub "downloaded $(b "$fork") binary"; n=$((n+1))
     else warn "  $fork: pre-download failed — turn_to_bare will retry it after the switch"; rm -f "$sbin" 2>/dev/null || true; fi
   done <<EOF

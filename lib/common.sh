@@ -11,15 +11,16 @@ proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *
 # node summary footer: "reconfigure in the panel, or directly on the server", with the method's real paths +
 # commands. <baremetal|docker> [docker_install_dir]. b()/COMPOSE come from the sourcing script (installers/convert).
 node_reconfig_block(){
-  local method="$1" dir="${2:-/opt/swg-panel-docker}" C="${COMPOSE:-docker compose}"
+  local method="$1" dir="${2:-/opt/swg-panel-docker}" prof="${3:-node}" C="${COMPOSE:-docker compose}"
   echo "  Interfaces and turn-proxies can be re-configured in the web panel, or directly on the server:"; echo
   if [ "$method" = docker ]; then
     printf '    %-13s %s\n' "Interfaces"   "$(b "ls $dir/data/node-confs/*.conf")"
     printf '    %-13s %s\n' "Turn-proxies" "$(b 'docker ps --filter name=swg-turn')"
     echo
-    printf '    %-13s %s\n' "Config"       "$(b "nano $dir/.env")"
+    printf '    %-13s %s\n' "Directory"    "$(b "cd $dir")"
     printf '    %-13s %s\n' "Restart"      "$(b "cd $dir && $C restart swg-node")"
     printf '    %-13s %s\n' "Logs"         "$(b "cd $dir && $C logs -f swg-node")"
+    printf '    %-13s %s\n' "Config"       "$(b "nano $dir/.env") (after edit run $(b "$C --profile $prof up -d"))"
   else
     printf '    %-13s %s\n' "AmneziaWG"    "$(b 'ls /etc/amnezia/amneziawg/*.conf')"
     printf '    %-13s %s\n' "WireGuard"    "$(b 'ls /etc/wireguard/*.conf')"
