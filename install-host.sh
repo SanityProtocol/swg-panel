@@ -1409,6 +1409,9 @@ run systemctl enable --quiet --now swg-panel-server
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
 
 # ───────────────────────── SUMMARY ─────────────────────────
+# A convert (SWG_CONVERT_DIR set) prints ONE unified summary at the very end in convert.sh — suppress this
+# mid-flow panel summary so the converted box doesn't show two (matches bare→docker's single end summary).
+if [ -z "${SWG_CONVERT_DIR:-}" ]; then
 echo; ok "Host install complete."
 case "$SERVE_MODE" in
   internal) SCH=https; [ -n "${CERT_FULLCHAIN:-}" ] || SCH=http
@@ -1449,4 +1452,5 @@ else
   echo "  Edit      panel $(b /etc/swg-panel/)"
 fi
 [ "$TLS_MODE" = selfsigned ] && echo "  Note      self-signed cert — the browser warns once, that's expected"
+else ok "panel installed on bare-metal — continuing…"; fi   # convert: brief line; convert.sh prints the unified summary
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command

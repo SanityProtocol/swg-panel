@@ -579,7 +579,15 @@ EOF
     mv "$DOCKER_DIR" "$_bak" 2>/dev/null && info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)" || warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"
   fi
   clear_recovery
-  echo; ok "$(b "$ROLE") converted to bare-metal — $(b "https://$PDOM:$PPORT$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node")). Nodes reconnect on their next sync."
+  _psuf=""; case "$PPORT" in 443|80|"") :;; *) _psuf=":$PPORT";; esac
+  echo; ok "$(b "$ROLE") converted to bare-metal — $(b "https://$PDOM$_psuf$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node")). Nodes reconnect on their next sync."
+  echo; echo "──────────────── SUMMARY ────────────────"; echo
+  echo "  Panel     $(b "https://$PDOM$_psuf$PBASE/")"
+  echo "  Login     unchanged — your existing $(b "${PUSER:-admin}") login + password"
+  echo "  TLS       $(b "$PTLS")  ·  Method $(b bare-metal) (was docker)"
+  [ "$ROLE" = master ] && echo "  Node      local node preserved (token + interfaces + turn-proxies)"
+  echo "  Edit      panel $(b /etc/swg-panel/)$([ "$ROLE" = master ] && echo "  ·  node confs $(b /etc/amnezia/amneziawg/) + $(b /etc/wireguard/)")"
+  echo "  Logs      $(b "journalctl -u swg-panel-server -f")$([ "$ROLE" = master ] && echo "  ·  $(b "journalctl -u swg-noded -f")")"
   exit 0
 fi
 
