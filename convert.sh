@@ -462,17 +462,7 @@ EOF
     || warn "the local node convert reported an error — check it on the panel."
   clear_recovery
   echo; ok "$(b master) converted to docker — panel + local node (host convert + node convert). Same login, roster, nodes + cert + local node. Nodes reconnect on their next sync."
-  _sch=https; [ "$PTLS" = none ] && _sch=http
-  _psuf=":$PPORT"; if { [ "$_sch" = https ] && [ "$PPORT" = 443 ]; } || { [ "$_sch" = http ] && [ "$PPORT" = 80 ]; }; then _psuf=""; fi
-  summary_title "CONVERSION COMPLETE"
-  echo "  Master    $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b docker), panel at $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
-  echo; echo "  $(b 'Panel') (login + the $(b "$PTLS") cert preserved):"; echo
-  printf '    %-12s %s\n' "Login" "$(b "${PUSER:-admin}")  (unchanged)"
-  printf '    %-12s %s\n' "TLS"   "$(b "$PTLS")"
-  printf '    %-12s %s\n' "Dir"   "$(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile master up -d")"
-  printf '    %-12s %s\n' "Logs"  "$(b "cd $DOCKER_DIR && docker compose logs -f swg-panel")"
-  print_node_sections docker "$DOCKER_DIR" "$NEP"
-  summary_end
+  print_summary CONVERSION both   # bare→docker master: both the panel + the local node converted
   exit 0
 fi
 
@@ -629,15 +619,7 @@ EOF
   clear_recovery
   _psuf=""; case "$PPORT" in 443|80|"") :;; *) _psuf=":$PPORT";; esac
   echo; ok "$(b "$ROLE") converted to bare-metal — $(b "https://$PDOM$_psuf$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node")). Nodes reconnect on their next sync."
-  summary_title "CONVERSION COMPLETE"
-  echo "  $([ "$ROLE" = master ] && echo 'Master    ' || echo 'Host      ')$(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), panel at $(b "https://$PDOM$_psuf$PBASE/")"
-  echo; echo "  $(b 'Panel') (login + the $(b "$PTLS") cert preserved):"; echo
-  printf '    %-12s %s\n' "Login" "$(b "${PUSER:-admin}")  (unchanged)"
-  printf '    %-12s %s\n' "TLS"   "$(b "$PTLS")"
-  printf '    %-12s %s\n' "Config" "$(b /etc/swg-panel/)"
-  printf '    %-12s %s\n' "Logs"  "$(b 'journalctl -u swg-panel-server -f')"
-  [ "$ROLE" = master ] && print_node_sections baremetal "" "$NEP"
-  summary_end
+  print_summary CONVERSION "$([ "$ROLE" = master ] && echo both || echo host)"   # docker→bare: the panel (+ the local node for a master) converted
   exit 0
 fi
 
@@ -769,7 +751,7 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   clear_recovery   # convert finished cleanly → drop the recovery marker
   # the conversion is verified complete here; the lc EXIT trap (clean exit below) emits "converted-bare", which
   # the panel shows green for a few seconds, then the bare node reports normally (online) on its next sync.
-  print_bare_summary "$names" "$NEP" "$PURL"   # complete summary: interfaces + the turn-proxies that migrated
+  print_summary CONVERSION node   # unified per-server summary; detects the box + flags the converted node
   exit 0           # done (this block no longer execs install-node.sh, so end here, not the catch-all die)
 fi
 
