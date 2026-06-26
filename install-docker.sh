@@ -609,6 +609,14 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   # Panel connection — normally supplied by the install command's -host / -key flags.
   # On a re-install, ALWAYS re-prompt the URL + TLS (the panel may have moved / changed cert) with the
   # current value as the default; the TOKEN is reused silently (re-typing it is useless). Mirrors bare-metal.
+  # CONVERT (the master's node step, or a standalone node convert): convert.sh passes the panel URL/token/verify
+  # already — use them as-is, no prompts (a convert isn't a re-install; the operator confirmed at the convert's
+  # proceed step). Keeps the master's node step identical to a standalone node convert (no extra re-install prompts).
+  if [ -n "${SWG_CONVERT_DIR:-}" ] && [ -n "${PANEL_URL:-}" ]; then
+    case "$PANEL_URL" in https://*|http://*) ;; *) PANEL_URL="https://$PANEL_URL";; esac
+    [ -z "${TLS_VERIFY:-}" ] && TLS_VERIFY=no
+    return 0
+  fi
   if [ "$EXISTING_DOCKER" = yes ]; then
     local _exurl="$PANEL_URL" _extls="$TLS_VERIFY"; PANEL_URL=""; TLS_VERIFY=""
     ask_valid "Panel URL (https://host[/subpath])" "$_exurl" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
