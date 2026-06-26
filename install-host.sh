@@ -691,6 +691,10 @@ if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
   [ "${SWG_LC_PARENT:-}" = 1 ] || lc_init "${SWG_CONVERT_DIR:-reinstall}" lc_emit_host   # convert.sh passes convert-bare → "converting/converted to bare-metal"
   [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install installs the latest; a convert keeps its converted-bare success
 fi
+# deferred-start convert (SWG_DEFER_START=1): install + enable the panel but DON'T start it here — the docker panel
+# still holds :443 and keeps serving the UI; convert.sh stops docker + starts it at the switch. _NOW = "--now"
+# normally, empty when deferred, applied to every `systemctl enable … swg-panel-server`.
+_NOW="--now"; [ "${SWG_DEFER_START:-}" = 1 ] && _NOW=""
 
 # Server role — skipped when already chosen (e.g. by bootstrap.sh)
 ROLE_SEL=""
@@ -721,8 +725,9 @@ while :; do
   # is the port the panel will use free on this host? (catches nginx/apache or a prior panel)
   _pp="${URL_PORT:-443}"
   # block only on a REAL conflict — skip when our own panel already holds the port (a re-install; install
-  # stops/restarts it on the same port).
-  if [ "${_forced:-}" != "$_pp" ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ] && ! panel_owns_port "$_pp"; then
+  # stops/restarts it on the same port), and skip during a deferred-start convert (the docker panel is holding the
+  # port and is torn down at the switch, just before we start the bare panel — see convert.sh).
+  if [ "${_forced:-}" != "$_pp" ] && [ "${SWG_DEFER_START:-}" != 1 ] && ! $DRYRUN && have ss && [ -n "$(ss -lntH "sport = :$_pp" 2>/dev/null)" ] && ! panel_owns_port "$_pp"; then
     _who="$(ss -lntpH "sport = :$_pp" 2>/dev/null | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)"
     echo; warn "port $(col "$C_YEL" ":$_pp") is already in use${_who:+ (by $(col "$C_YEL" "$_who"))}"
     echo "    Running the panel $(b standalone)? Give it a free port, e.g. $(b "${PANEL_HOST_NOPORT}:8443")."
@@ -1255,7 +1260,7 @@ serve_internal(){
   # placeholder first, then rewrite with the real cert paths and restart for real.
   write_panel_unit
   run systemctl daemon-reload
-  run systemctl enable --quiet --now swg-panel-server
+  run systemctl enable --quiet $_NOW swg-panel-server
   obtain_cert_internal
   write_panel_unit
   run systemctl daemon-reload
@@ -1346,7 +1351,7 @@ EOF
 serve_nginx(){
   mkdir -p "$PREFIX$ACME_WEBROOT"
   write_panel_unit
-  run systemctl daemon-reload; run systemctl enable --quiet --now swg-panel-server
+  run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-panel-server
   write_vhost bootstrap
   run nginx -t && run systemctl reload nginx || warn "nginx -t failed (is nginx installed?) — fix, then: systemctl reload nginx"
   setup_tls_proxy
@@ -1382,7 +1387,7 @@ EOF
 serve_caddy(){
   have caddy || warn "caddy not found — install it (https://caddyserver.com), then re-run or 'systemctl reload caddy'"
   write_panel_unit
-  run systemctl daemon-reload; run systemctl enable --quiet --now swg-panel-server
+  run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-panel-server
   setup_tls_proxy            # caddy isn't up yet, so acme standalone (:80) is free for letsencrypt
   write_caddy_site
   run systemctl reload caddy 2>/dev/null || run systemctl restart caddy 2>/dev/null || warn "couldn't (re)load caddy — start it after checking /etc/caddy/conf.d/swg-panel.caddy"
@@ -1392,7 +1397,7 @@ serve_caddy(){
 
 serve_skip(){
   write_panel_unit
-  run systemctl daemon-reload; run systemctl enable --quiet --now swg-panel-server
+  run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-panel-server
   ok "Panel running on 127.0.0.1:${PORT}${PANEL_BASE} — configure your web server to proxy to it."
   echo "    nginx example:"
   echo "      location $(proxy_loc) { proxy_pass http://127.0.0.1:${PORT}; proxy_set_header Host \$host; }"
@@ -1411,7 +1416,7 @@ esac
 info "Enable services"
 run systemctl daemon-reload
 [ "$HOST_HAS_WG" = yes ] && { run systemctl enable --quiet swg-noded; run systemctl restart swg-noded || warn "couldn't start swg-noded"; }   # restart so a re-run picks up newly-added interfaces (config.json is read only at startup)
-run systemctl enable --quiet --now swg-panel-server
+run systemctl enable --quiet $_NOW swg-panel-server
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
 
 # ───────────────────────── SUMMARY ─────────────────────────

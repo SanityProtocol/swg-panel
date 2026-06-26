@@ -523,20 +523,27 @@ CF_ORIGIN_TOKEN=$PCFO
 EOF
   sub "staged roster + nodes + login + $(b "$PTLS") cert (+ acme renewal) → $STATE + $ETC"
 
-  # 2) HOST FIRST — the ATOMIC PANEL SWITCH: stop the docker PANEL (a master keeps its NODE running for the node
-  #    phase below), then install-host.sh brings the bare panel up reusing the staged login (KEEP_AUTH). TLS is NOT
-  #    forced to 'reuse' — install-host's menu defaults to reuse when the staged cert still covers the host, and
-  #    prompts for a fresh one when it can't (e.g. domain → IP). Same URL/port ⇒ nodes stay connected.
-  info "Switching over — stopping the docker panel, then installing the bare-metal panel…"
+  # 2) INSTALL the bare panel WHILE the docker panel is STILL UP and serving the UI. SWG_DEFER_START=1 ⇒ install-host
+  #    installs + enables the panel but does NOT start it (so it doesn't fight docker for :443) — the docker panel
+  #    keeps the port and keeps showing "converting" (header + node tile) through this whole step. It reuses the
+  #    staged login (KEEP_AUTH); TLS defaults to reuse when the staged cert still covers the host (else it prompts).
+  info "Installing the bare-metal panel — the docker panel keeps serving until the switch…"
+  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" \
+      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 SWG_DEFER_START=1 \
+      bash "$SRC/install-host.sh" \
+    || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
+
+  # 3) THE ATOMIC SWITCH — only NOW stop the docker panel and start the bare one. Downtime is just this stop+start
+  #    (~1-3s), not the whole install above. Same URL/port ⇒ nodes stay connected. A master keeps its docker NODE
+  #    running for the node phase below (copy-first); install-node tears it down at its OWN switch (the last step).
+  info "Switching over — stopping the docker panel, starting the bare-metal panel…"
   if [ "$ROLE" = master ]; then
-    docker rm -f swg-panel >/dev/null 2>&1 || true   # stop ONLY the panel — the docker NODE keeps serving through the node phase below (copy-first); install-node tears it down at its OWN switch (the last step)
+    docker rm -f swg-panel >/dev/null 2>&1 || true   # stop ONLY the panel — the docker NODE keeps serving (copy-first)
   else
     ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true; docker rm -f swg-panel >/dev/null 2>&1 || true
   fi
-  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" \
-      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 \
-      bash "$SRC/install-host.sh" \
-    || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
+  _pu=no; for _i in 1 2 3; do if systemctl start swg-panel-server 2>/dev/null; then _pu=yes; break; fi; sleep 1; done   # bind :443 now that docker released it (brief retry for the handoff)
+  [ "$_pu" = yes ] || die "couldn't start the bare-metal panel after stopping the docker panel — check 'systemctl status swg-panel-server'; your panel state is safe in $STATE + $ETC"
 
   # THEN THE NODE — only after the panel is up (host first, then node). Stage the local node straight from the
   # still-running swg-node container (confs → bare locations + host NAT, keypairs, turn units deferred), then
