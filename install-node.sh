@@ -622,9 +622,11 @@ migrate_docker_ifaces(){
     printf '    %s%-10s%s %s  :%s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${lp:-?}"; done
   echo
   ask_yn "Transfer these interfaces into the bare-metal node?" y _yn
-  [ "$_yn" = yes ] && return 0
-  info "  left on docker — they come down at the switch; create fresh ones below if you want"
-  for n in $ifs; do rm -f "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf" 2>/dev/null; done
+  if [ "$_yn" != yes ]; then
+    info "  left on docker — they come down at the switch; create fresh ones below if you want"
+    for n in $ifs; do rm -f "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf" 2>/dev/null; done
+  fi
+  echo
 }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
 v_fwd(){ local names; names=" $(turn_wg_ports | cut -d: -f1 | tr '\n' ' ')"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }

@@ -457,6 +457,9 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"
   PBASE="$(getv PANEL_BASE)"; PUSER="$(getv PANEL_USER)"; PCFT="$(getv CF_TOKEN)"; PCFO="$(getv CF_ORIGIN_TOKEN)"
   NTOK="$(getv NODE_TOKEN)"; NEP="$(getv NODE_ENDPOINT)"   # master: the local node's preserved identity
+  # fallback: a docker master's node token should be in .env, but if it's blank/placeholder read it straight from
+  # the running node container so the local-node tile reliably gets "converting" at the START (matches bare→docker).
+  case "${NTOK:-}" in ""|set-in-nodes-screen) NTOK="$(docker exec swg-node sh -c 'cat /etc/swg-agent/config.json' 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("panel") or {}).get("token","") or "")' 2>/dev/null || true)";; esac
   [ -n "${SWG_RV_URL:-}" ] && PDOM="${PDOM:-$SWG_RV_URL}"
   [ -n "$PDOM" ] || die "couldn't read the panel domain (docker .env missing and no recovery state)"
   case "$PTLS" in letsencrypt|letsencrypt-ip|cloudflare|cf15|selfsigned|none) :;; *) PTLS=selfsigned;; esac

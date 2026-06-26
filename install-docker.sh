@@ -808,6 +808,9 @@ PY
 # (lc_teardown_baremetal) brings them down. Decline ⇒ left on bare-metal (start empty / add fresh in the loop).
 migrate_baremetal_ifaces(){
   [ "${SWG_CONVERT_DIR:-}" = convert-docker ] || return 0
+  # a CONVERT's docker conf dir must hold ONLY this run's migrated set — wipe stale confs a previous convert
+  # left in a reused dir, else current_node_ifaces resurrects them as a ghost "already on this node" entry.
+  [ -d "$INSTALL_DIR/data/node-confs" ] && rm -f "$INSTALL_DIR/data/node-confs/"*.conf 2>/dev/null || true
   local ifs n c pr lp src dest
   ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u || true)" || true; ifs="$(echo $ifs)"
   [ -n "$ifs" ] || return 0
@@ -818,7 +821,7 @@ migrate_baremetal_ifaces(){
     printf '    %s%-10s%s %s  :%s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${lp:-?}"
   done
   echo
-  [ "$(ask_yn_tty "Transfer these interfaces into the docker node?" y)" = yes ] || { info "  left on bare-metal — they come down at the switch; create fresh ones below if you want"; return 0; }
+  [ "$(ask_yn_tty "Transfer these interfaces into the docker node?" y)" = yes ] || { info "  left on bare-metal — they come down at the switch; create fresh ones below if you want"; echo; return 0; }
   mkdir -p "$INSTALL_DIR/data/node-confs"
   for n in $ifs; do
     src="/etc/amnezia/amneziawg/$n.conf"; [ -f "$src" ] || src="/etc/wireguard/$n.conf"; [ -f "$src" ] || continue
@@ -827,6 +830,7 @@ migrate_baremetal_ifaces(){
     echo "    $(b "$n") → data/node-confs (key preserved; bare interface comes down at the switch)"
   done
   if [ -d /var/lib/swg-noded/iface-keys ]; then mkdir -p "$INSTALL_DIR/data/node/iface-keys"; cp -a /var/lib/swg-noded/iface-keys/. "$INSTALL_DIR/data/node/iface-keys/" 2>/dev/null || true; fi
+  echo
 }
 # wg/awg step: pick from the host's interfaces (available / used-by-another-node) or create new
 manage_node_ifaces(){

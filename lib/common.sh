@@ -79,11 +79,19 @@ _lc_prefix(){     case "$1" in convert-*) echo convert;; *) echo "$1";; esac; } 
 lc_emit(){ [ -n "${LC_EMIT:-}" ] && [ -n "${1:-}" ] && "$LC_EMIT" "$1" "${2:-}" || true; }
 lc_handoff(){ LC_HANDOFF=1; }                                  # another script now owns the terminal (convert→installer)
 lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
-  local ins=""; [ "${LC_VERIFY:-no}" = yes ] || ins="-k"; local data=""
+  local ins=""; [ "${LC_VERIFY:-no}" = yes ] || ins="-k"; local data="" _i
   if [ -n "${2:-}" ]; then data="$(python3 -c 'import json,sys;print(json.dumps({"state":sys.argv[1],"err":sys.argv[2]}))' "$1" "$2" 2>/dev/null)"; fi
   [ -n "$data" ] || data="{\"state\":\"$1\"}"
-  curl -fsS $ins --max-time 8 -X POST -H "Authorization: Bearer $LC_TOKEN" -H "Content-Type: application/json" \
-    --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 || true; }
+  # RETRY: a single best-effort POST silently drops the status when the panel is briefly unreachable mid-convert
+  # (just restarted / settling, or an opposite convert fired the instant the new panel came up) — exactly why
+  # "converting" sometimes never showed and a stale "converted" wouldn't flip to "converting". A few quick retries
+  # make converting/converted reliably land. Still best-effort overall (never trips set -e).
+  for _i in 1 2 3 4; do
+    curl -fsS $ins --max-time 6 -X POST -H "Authorization: Bearer $LC_TOKEN" -H "Content-Type: application/json" \
+      --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 0; }
 lc_emit_file(){ local f="${LC_FILE:-}"; [ -n "$f" ] || return 0; mkdir -p "$(dirname "$f")" 2>/dev/null || true
   if [ -n "${2:-}" ]; then printf '%s\n%s\n' "$1" "$2" > "$f" 2>/dev/null || true
   else printf '%s' "$1" > "$f" 2>/dev/null || true; fi; }
