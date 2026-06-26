@@ -890,22 +890,7 @@ if [ "${SWG_CONVERT:-}" = 1 ]; then
   exit 0
 fi
 echo; ok "Node '$(bb "$NODE_NAME")' install complete."
-summary_title "$([ "$EXISTING" = yes ] && echo 'RE-INSTALL COMPLETE' || echo 'INSTALL COMPLETE')"
-echo "  Node      $(bb "$NODE_NAME")  →  now $(b bare-metal), syncs to $(bb "$PANEL_URL") every ${INTERVAL}s"
-if [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (manage peers in the panel):"
-  for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
-    printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \
-      "$(bb "${IF_ENDPOINT[$n]:-$ENDPOINT_IP}:$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
-  done
-fi
-detect_turn
-if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
-  for n in "${!TP_LISTEN[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"
-    printf '    %s %s → %s%s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"
-  done
-fi
-echo
-node_reconfig_block baremetal
+print_summary "$([ "$EXISTING" = yes ] && echo RE-INSTALL || echo INSTALL)"
 [ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       not verifying the panel cert (self-signed) — set TLS_FINGERPRINT to pin it"
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # NB: an `if` (not `$DRYRUN && {…}`) so a non-dry-run doesn't make the script's LAST command exit non-zero (convert.sh read that as "install-node.sh reported an error")
 echo     # one blank line after the summary block (consistency)

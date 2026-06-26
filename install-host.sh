@@ -1433,45 +1433,6 @@ run systemctl enable --quiet $_NOW swg-panel-server
 # mid-flow panel summary so the converted box doesn't show two (matches bare→docker's single end summary).
 if [ -z "${SWG_CONVERT_DIR:-}" ]; then
 echo; ok "Host install complete."
-case "$SERVE_MODE" in
-  internal) SCH=https; [ -n "${CERT_FULLCHAIN:-}" ] || SCH=http
-            PORTSUF=""; [ "$PORT" != 443 ] && PORTSUF=":${PORT}"; UI="${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/";;
-  nginx|caddy) SCH=https; { [ "$TLS_MODE" = skip ] && [ -z "${CERT_FULLCHAIN:-}" ]; } && SCH=http; UI="${SCH}://${PANEL_DOMAIN}${PANEL_BASE}/";;
-  skip) UI="http://127.0.0.1:${PORT}${PANEL_BASE}/";;
-esac
-summary_title "$([ "$EXISTING_HOST" = yes ] && echo 'RE-INSTALL COMPLETE' || echo 'INSTALL COMPLETE')"
-echo "  $([ "$HOST_HAS_WG" = yes ] && echo 'Master  ' || echo 'Host    ')  $(bb "$UI")"
-if [ "$KEEP_AUTH" = yes ]; then echo "  Login     $(bb "$BASIC_USER") / $(bb "(unchanged — your existing password)")"
-else echo "  Login     $(bb "$BASIC_USER") / $(bb "$BASIC_PASS")   (change later in the panel → Account)"; fi
-echo "  TLS       $(b "$TLS_MODE")  ·  Web server $(b "$SERVE_MODE") (port $(b "$PORT"))"
-LOCAL_SCHEME=http; [ "$SERVE_MODE" = internal ] && [ "$TLS_MODE" != skip ] && LOCAL_SCHEME=https
-echo "  Local     $(bb "${LOCAL_SCHEME}://127.0.0.1:${PORT}${PANEL_BASE}/")   (on this box — reverse proxy / local checks)"
-if [ "$HOST_HAS_WG" = yes ] && [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (this box, node '$(b "$HOST_NODE_NAME")'):"
-  for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
-    printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \
-      "$(bb "${IF_ENDPOINT[$n]:-$HOST_ENDPOINT_IP}:$(conf_get "$c" ListenPort)")" "$(b "$(conf_get "$c" Address)")" "$(conf_get "$c" MTU)"
-  done
-fi
-# turn-proxy + interface info only matter when this box is also a node (master); a panel-only host has none
-if [ "$HOST_HAS_WG" = yes ]; then
-  detect_turn 2>/dev/null || true
-  if [ "${#TP_LISTEN[@]}" -gt 0 ]; then echo; echo "  $(b 'Turn-proxy') instances:"
-    for n in "${!TP_LISTEN[@]}"; do _fw="$(fwd_ifaces "${TP_CONNECT[$n]}")"
-      printf '    %s %s → %s%s\n' "$(col "$C_GREEN" "$(printf '%-22s' "$n")")" "$(bb "${TP_LISTEN[$n]}")" "$(b "${TP_CONNECT[$n]}")" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"
-    done
-  fi
-fi
-echo
-echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')  (gives a one-time key + one-liner)"
-if [ "$HOST_HAS_WG" = yes ]; then
-  echo "  Firewall  open TCP $(b "$PORT")$([ "${#TP_LISTEN[@]}" -gt 0 ] && echo ' + the turn-proxy UDP ports') if not already"
-  echo "  Manage    each interface's ingress/egress IPs + egress NIC anytime in the panel → $(b Interfaces)"
-  echo "  Edit      panel $(b /etc/swg-panel/)  ·  interfaces $(b /etc/amnezia/amneziawg/) / $(b /etc/wireguard/)  ·  turn-proxies $(b /etc/systemd/system/)"
-else
-  echo "  Firewall  open TCP $(b "$PORT") if not already"
-  echo "  Edit      panel $(b /etc/swg-panel/)"
-fi
-[ "$TLS_MODE" = selfsigned ] && echo "  Note      self-signed cert — the browser warns once, that's expected"
-echo     # one blank line after the summary block (consistency)
+print_summary "$([ "$EXISTING_HOST" = yes ] && echo RE-INSTALL || echo INSTALL)"
 else ok "panel installed on bare-metal — continuing…"; fi   # convert: brief line; convert.sh prints the unified summary
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command

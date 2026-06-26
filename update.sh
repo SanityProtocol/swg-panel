@@ -344,7 +344,8 @@ echo
 if   [ "$DID_FAIL" = yes ]; then echo "${C_RED}✗${RESET} Update finished with errors — some components FAILED (see the summary below)."
 elif [ "$DID_UPDATE" = no ]; then ok "Update finished — nothing changed."
 else                              ok "Update complete."; fi
-if [ "${#RESULTS[@]}" -gt 0 ]; then echo; info "Summary (every component on this host):"; for r in "${RESULTS[@]}"; do echo "    • $r"; done; fi
+if [ "${#RESULTS[@]}" -gt 0 ]; then echo; info "Components changed this run:"; for r in "${RESULTS[@]}"; do echo "    • $r"; done; fi
+[ "$DID_FAIL" = no ] && ! $DRYRUN && print_summary UPDATE   # then the unified per-server summary (same shape as install / convert)
 if $DRYRUN; then ok "DRY RUN done — nothing changed."; fi
 if [ "$DID_FAIL" = yes ]; then exit 1; fi   # non-zero → the lc EXIT trap reports "update-failed" with the log tail
 exit 0   # all good — status 0 so the trap reports "updated" (or the uptodate handoff above stands)

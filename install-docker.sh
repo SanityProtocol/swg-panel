@@ -1285,46 +1285,6 @@ fi
 if [ "${SWG_LC_PARENT:-}" = 1 ]; then echo; ok "$PROFILE → docker done — continuing the master convert…"
 else
 echo; ok "Docker install complete (profile: $PROFILE)."
-summary_title "$([ -n "${SWG_CONVERT_DIR:-}" ] && echo 'CONVERSION COMPLETE' || { [ "$EXISTING_DOCKER" = yes ] && echo 'RE-INSTALL COMPLETE' || echo 'INSTALL COMPLETE'; })"
-case "$PROFILE" in host|master)
-  SCH=https; [ "$TLS" = none ] && SCH=http
-  PORTSUF=":${PANEL_PORT}"; if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
-  echo "  Panel     $(bb "${SCH}://${PANEL_DOMAIN}${PORTSUF}${PANEL_BASE}/")"
-  if [ "${KEEP_AUTH:-no}" = yes ]; then echo "  Login     unchanged — your existing $(bb "$PANEL_USER") login + password"
-  else echo "  Login     $(bb "$PANEL_USER") / $(bb "$PANEL_PASSWORD")   (change later in the panel → Account)"; fi
-  echo "  TLS       $(b "$TLS")  ·  host port $(b "$PANEL_PORT")"
-  echo "  Local     $(bb "${SCH}://127.0.0.1:${PANEL_PORT}${PANEL_BASE}/")   (on this box — reverse proxy / local checks)" ;;
-esac
-case "$PROFILE" in node|master)
-  echo "  Node      → syncs to $(bb "$PANEL_URL")   ·  $(bb "$NODE_ENDPOINT")"
-  echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
-  _names="$(node_iface_rows | cut -d' ' -f1)"   # ALL node interfaces — persisted node-confs ∪ this run's NODE_IFACES (not just the new one)
-  if [ -n "$_names" ]; then
-    while read -r _nm; do [ -n "$_nm" ] || continue
-      iface_row "$_nm"
-    done <<< "$_names"
-  else _pr=amneziawg; [ "$NODE_PLAIN_WG" = yes ] && _pr=wireguard
-    printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$NODE_IFACE")")" "$_pr" "$(bb "$NODE_ENDPOINT:$NODE_LISTEN_PORT")" "$(b "$NODE_ADDRESS")" "$(b "$NODE_MTU")"
-  fi
-  # docker turn-proxies are CONTAINERS, recorded in the node turn record (swg-noded creates them on first run) —
-  # detect_turn (systemd) finds none, so read the record instead.
-  _trec="$INSTALL_DIR/data/node/turn-proxy.json"
-  if [ -f "$_trec" ] && have python3; then
-    _tlist="$(python3 -c 'import json,sys
-try: tps=(json.load(open(sys.argv[1])).get("turn_proxies") or [])
-except Exception: tps=[]
-for t in tps:
-    if t.get("service"): print(t["service"]+"\t"+t.get("listen","")+"\t"+t.get("connect",""))' "$_trec" 2>/dev/null || true)"
-    if [ -n "$_tlist" ]; then echo; echo "  $(b 'Turn-proxy') instances (sibling containers — swg-turn-*, managed from the panel):"; echo
-      while IFS="$(printf '\t')" read -r _svc _lis _con; do [ -n "$_svc" ] || continue; _fw="$(fwd_iface_for "$_con")"; printf '    %s%s%s %s → %s%s\n' "$C_GREEN" "$_svc" "$RESET" "${_lis:-?}" "${_con:-?}" "${_fw:+ $(col "$C_GREEN" "($_fw)")}"; done <<< "$_tlist"
-    fi
-  fi
-  echo; node_reconfig_block docker "$INSTALL_DIR" "$PROFILE" ;;
-esac
-echo
-case "$PROFILE" in host) echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile host up -d")";; esac   # node/master get Directory+Config from node_reconfig_block
-case "$PROFILE" in host|master) echo "  Panel log $(b "cd $INSTALL_DIR && $COMPOSE logs -f swg-panel")";; esac
-case "$PROFILE" in host|master) echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')";; esac
-echo     # one blank line after the summary block (consistency)
+print_summary "$([ -n "${SWG_CONVERT_DIR:-}" ] && echo CONVERSION || { [ "$EXISTING_DOCKER" = yes ] && echo RE-INSTALL || echo INSTALL; })" "$([ -n "${SWG_CONVERT_DIR:-}" ] && { [ "$PROFILE" = node ] && echo node || echo host; } || true)"
 fi   # end of the full summary (suppressed for a master sub-step)
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun$INSTALL_DIR/.env"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command
