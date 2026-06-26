@@ -588,12 +588,31 @@ EOF
   _psuf=""; case "$PPORT" in 443|80|"") :;; *) _psuf=":$PPORT";; esac
   echo; ok "$(b "$ROLE") converted to bare-metal — $(b "https://$PDOM$_psuf$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node")). Nodes reconnect on their next sync."
   echo; echo "──────────────── SUMMARY ────────────────"; echo
-  echo "  Panel     $(b "https://$PDOM$_psuf$PBASE/")"
-  echo "  Login     unchanged — your existing $(b "${PUSER:-admin}") login + password"
-  echo "  TLS       $(b "$PTLS")  ·  Method $(b bare-metal) (was docker)"
-  [ "$ROLE" = master ] && echo "  Node      local node preserved (token + interfaces + turn-proxies)"
-  echo "  Edit      panel $(b /etc/swg-panel/)$([ "$ROLE" = master ] && echo "  ·  node confs $(b /etc/amnezia/amneziawg/) + $(b /etc/wireguard/)")"
-  echo "  Logs      $(b "journalctl -u swg-panel-server -f")$([ "$ROLE" = master ] && echo "  ·  $(b "journalctl -u swg-noded -f")")"
+  # ── PANEL (the host) — its own group ──
+  echo "  $(b PANEL)  ·  bare-metal (was docker)"
+  echo "    URL      $(b "https://$PDOM$_psuf$PBASE/")"
+  echo "    Login    unchanged — your existing $(b "${PUSER:-admin}") login + password"
+  echo "    TLS      $(b "$PTLS")"
+  echo "    Config   $(b /etc/swg-panel/)"
+  echo "    Logs     $(b "journalctl -u swg-panel-server -f")"
+  if [ "$ROLE" = master ]; then
+    # ── LOCAL NODE — its own group (this master is also an entry server) ──
+    echo
+    echo "  $(b "LOCAL NODE")  ·  token + keys preserved, reports to the panel above"
+    if [ -n "${mnames:-}" ]; then
+      echo "    Interfaces"
+      for _n in $mnames; do
+        _c="/etc/amnezia/amneziawg/$_n.conf"; _pr=AmneziaWG; [ -f "$_c" ] || { _c="/etc/wireguard/$_n.conf"; _pr=WireGuard; }
+        _lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$_c" 2>/dev/null | head -1)"
+        _ad="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$_c" 2>/dev/null | head -1)"
+        printf '      %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$_n" "$RESET" "$_pr" "${NEP:-?}" "${_lp:-?}" "${_ad:-?}"
+      done
+    fi
+    _turns="$(ls /etc/systemd/system/ 2>/dev/null | sed -n 's/\(.*turn-proxy.*\)\.service$/\1/p' | tr '\n' ' ')"
+    [ -n "$_turns" ] && echo "    Turn     $(b "$_turns")"
+    echo "    Config   $(b /etc/amnezia/amneziawg/) + $(b /etc/wireguard/)"
+    echo "    Logs     $(b "journalctl -u swg-noded -f")"
+  fi
   echo
   exit 0
 fi
