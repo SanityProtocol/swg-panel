@@ -191,7 +191,8 @@ Unit=swg-update.service
 [Install]
 WantedBy=multi-user.target
 EOF
-  [ -e "$trig" ] || { : > "$trig"; chown "$usr:swg" "$trig" 2>/dev/null || true; chmod 660 "$trig"; }
+  [ -e "$trig" ] || : > "$trig"   # create when MISSING — re-writing content would fire a spurious self-update
+  chown "$usr:swg" "$trig" 2>/dev/null || true; chmod 660 "$trig" 2>/dev/null || true   # ALWAYS re-assert ownership so the panel can write it even if a convert/older root process left it root-owned
   # point the (already-installed) panel at the trigger via a drop-in — don't edit the main unit
   install -d /etc/systemd/system/swg-panel-server.service.d
   printf '[Service]\nEnvironment=SWG_UPDATE_TRIGGER=%s\n' "$trig" \

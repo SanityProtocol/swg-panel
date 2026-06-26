@@ -1129,10 +1129,11 @@ Unit=swg-update.service
 [Install]
 WantedBy=multi-user.target
 EOF
-  if [ ! -e "$PREFIX$STATE_DIR/.update-request" ]; then          # pre-create ONLY when missing — on a re-install
-    printf '' | writef "$STATE_DIR/.update-request" 660          # the swg-update.path unit is already watching,
-    run chown "$PANEL_USER:swg" "$STATE_DIR/.update-request" 2>/dev/null || true   # so re-touching it would fire a spurious self-update ("updated")
-  fi
+  if [ ! -e "$PREFIX$STATE_DIR/.update-request" ]; then printf '' | writef "$STATE_DIR/.update-request" 660; fi   # pre-create ONLY when missing — re-writing CONTENT would fire a spurious self-update (the swg-update.path is watching)
+  # but ALWAYS re-assert ownership/mode so the panel (PANEL_USER) can write the trigger even if a convert staged it
+  # — or an older root updater left it — root-owned. chown/chmod don't change content, so they won't trip the watcher.
+  run chown "$PANEL_USER:swg" "$STATE_DIR/.update-request" 2>/dev/null || true
+  run chmod 660 "$STATE_DIR/.update-request" 2>/dev/null || true
   run systemctl daemon-reload
   run systemctl enable --quiet --now swg-update.path || warn "couldn't enable swg-update.path (one-click host update)"
 }

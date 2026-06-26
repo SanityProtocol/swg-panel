@@ -2008,8 +2008,16 @@ def api(method, path, qs, body, deps):
         if not IN_DOCKER and UPDATE_TRIGGER:
             try:
                 os.makedirs(os.path.dirname(UPDATE_TRIGGER) or ".", exist_ok=True)
-                with open(UPDATE_TRIGGER, "w") as f:
-                    f.write(str(int(time.time())) + "\n")    # swg-update.path fires swg-update.service
+                try:
+                    with open(UPDATE_TRIGGER, "w") as f:
+                        f.write(str(int(time.time())) + "\n")    # swg-update.path fires swg-update.service
+                except PermissionError:
+                    # the trigger may have been left root-owned (a convert staged it, or an older root updater
+                    # touched it); the panel owns the dir, so drop the stale file and recreate it panel-owned.
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(UPDATE_TRIGGER)
+                    with open(UPDATE_TRIGGER, "w") as f:
+                        f.write(str(int(time.time())) + "\n")
                 ev_append(roster_path, "node", "host", "Host update started", "")
                 return 200, {"ok": True, "data": {"started": True}}
             except Exception as e:
