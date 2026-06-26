@@ -220,9 +220,13 @@ detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc
   for f in /etc/wireguard/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
 }
 # ── interface picker helpers (bare-metal master) ──
-node_ifaces(){ # interfaces this node already manages (keys in its config.json) — the "already on this node" set
+node_ifaces(){ # interfaces this node already manages — config.json keys WHOSE CONF STILL EXISTS. A dangling entry
+  # (conf file gone, no live device — e.g. a docker host-net interface orphaned by teardown) is a GHOST: skip it
+  # so it's never shown as "already on this node" and re-adopted with blank fields (which then re-writes the ghost).
   { [ -f /etc/swg-agent/config.json ] && have python3; } || return 0
-  python3 -c 'import json;print("\n".join((json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).keys()))' 2>/dev/null || true
+  python3 -c 'import json, os
+for n, ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).items():
+    if isinstance(ic, dict) and os.path.exists(ic.get("conf", "")): print(n)' 2>/dev/null || true
 }
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 docker_node_ifaces(){   # interfaces managed by a co-located DOCKER node (its ./data/node-confs)

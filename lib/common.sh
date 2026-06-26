@@ -148,6 +148,11 @@ lc_teardown_docker(){   # stop+remove the docker datapath (container + stack), f
   command -v docker >/dev/null 2>&1 || return 0
   docker rm -f swg-node >/dev/null 2>&1 || true
   for _c in $(docker ps -aq --filter name=swg-turn- 2>/dev/null || true); do docker rm -f "$_c" >/dev/null 2>&1 || true; done   # turn-proxy containers hold the listen ports the migrated bare units need
+  # docker host networking leaves the node's wg/awg interfaces in the HOST netns — `docker rm` can't remove them.
+  # Delete the ones it managed (names from data/node-confs) so they don't linger as confless orphans (a later
+  # install would adopt one as a ghost) or collide with a fresh bring-up; whatever's still wanted is recreated after.
+  if command -v ip >/dev/null 2>&1; then for _c in "$d/data/node-confs/"*.conf; do [ -f "$_c" ] || continue
+    ip link delete dev "$(basename "$_c" .conf)" >/dev/null 2>&1 || true; done; fi
   if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then   # node-only → take the stack down
     [ -f "$d/docker-compose.yml" ] && ( cd "$d" && { docker compose down >/dev/null 2>&1 || docker-compose down >/dev/null 2>&1 || true; } )
   fi
