@@ -441,7 +441,11 @@ if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYR
       LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;; esac
     rm -rf "$INSTALL_DIR/data/node/iface-keys" 2>/dev/null || true
   fi
-  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+  # set the panel header file when a swg-panel container exists (re-install) OR will be created by THIS run
+  # (a bare→docker host/master convert — the container reads data/lib/host_proc once compose brings it up, so the
+  # 'converted-docker' terminal lands on the new panel's header). A node convert has no panel → no host_proc.
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel \
+     || { [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && [ "$PROFILE" != node ]; }; then
     mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null; LC_FILE="$INSTALL_DIR/data/lib/host_proc"
   fi
   _lcop="${SWG_CONVERT_DIR:-reinstall}"
