@@ -2655,7 +2655,13 @@ def main():
     migrate_node_ids(nodes_path, _rp, _sc, _cd)        # legacy name-keyed -> stable id-keyed (one-time)
     _hpp = os.path.join(os.path.dirname(nodes_path) or ".", "host_proc")   # this host's re-install/convert flag
     with contextlib.suppress(Exception):
-        os.remove(_hpp)                                # a fresh panel process == any in-flight re-install is done
+        # a fresh panel process means an in-flight RE-INSTALL is done → drop its tag. A CONVERT, though, writes its
+        # terminal (converted/aborted/failed) AFTER the new panel is up, so KEEP a "converting-*" tag in place —
+        # dropping it here blanks the header between "converting" and "converted" (the visible gap on switch-over).
+        with open(_hpp) as _f:
+            _hpfirst = (_f.readline() or "").strip()
+        if not _hpfirst.startswith("converting"):
+            os.remove(_hpp)
     Handler.deps = {"fleet": fleet, "host_proc_path": _hpp,
                     "roster_path": fleet.get("roster_path", "/var/lib/swg-panel/users.json"),
                     "stats_dir": fleet.get("stats_dir", "/var/www/wgstats"),
@@ -2664,6 +2670,15 @@ def main():
                     "auth": load_auth(),
                     "session_secret": load_session_secret(fleet.get("roster_path", "/var/lib/swg-panel/users.json")),
                     "now": lambda: int(time.time())}
+    # warm-start: seed the in-memory snapshot cache from the mirrored stats files so a fresh panel process (a
+    # restart, or the switch-over of a docker↔bare convert) shows each node's LAST-KNOWN state immediately, instead
+    # of "awaiting enroll" + dashes until the next sync (~node_interval). Staleness still rides on each snapshot's
+    # generated_at, so a node that was genuinely down reads as stale, not falsely online.
+    for _nid, _c in Handler.deps["nodes"].items():
+        _snap = load_json(os.path.join(Handler.deps["stats_dir"], _c.get("stats_file", f"stats-{_nid}.json")), None)
+        if isinstance(_snap, dict) and _snap:
+            Handler.deps["node_snaps"][_nid] = _snap
+            Handler.deps["node_seen"][_nid] = int(_snap.get("generated_at") or 0) or int(time.time())
     # TLS is wrapped PER CONNECTION in the worker thread (not on the listening socket): wrapping
     # the listener does the handshake inside accept(), so one stalled/half-open client (a scanner,
     # a Cloudflare probe, a dropped packet) wedges the accept loop and the whole panel stops

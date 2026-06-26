@@ -613,14 +613,15 @@ EOF
 # ask "Transfer? (Y/n)"; declined ⇒ drop the confs so detect_wg finds none (node starts empty / add fresh in loop).
 migrate_docker_ifaces(){
   [ "${SWG_CONVERT:-}" = 1 ] || return 0
-  local ifs n c pr lp addr _yn
+  local ifs n c pr lp addr _yn _mep
   ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u || true)" || true; ifs="$(echo $ifs)"
   [ -n "$ifs" ] || return 0
   echo; info "Interfaces to migrate from the docker node:"; echo
+  _mep="${ENDPOINT_IP:-}"; case "$_mep" in 127.*|"") _mep="$(detect_public_ip 2>/dev/null || true)";; esac   # public endpoint clients dial (this box) — show it like the node's own interface list
   for n in $ifs; do c="/etc/amnezia/amneziawg/$n.conf"; pr=AmneziaWG; [ -f "$c" ] || { c="/etc/wireguard/$n.conf"; pr=WireGuard; }
     lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$c" | head -1)"
     addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$c" | head -1)"
-    printf '    %s%-10s%s %-9s  :%-6s %s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${lp:-?}" "${addr:-?}"; done
+    printf '    %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${_mep:-?}" "${lp:-?}" "${addr:-?}"; done
   echo
   ask_yn "Transfer these interfaces into the bare-metal node?" y _yn
   if [ "$_yn" != yes ]; then
