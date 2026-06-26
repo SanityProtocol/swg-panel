@@ -518,6 +518,10 @@ EOF
   mnames=""
   if [ "$ROLE" = master ]; then
     echo; info "Panel is up on bare-metal — now the local node (the docker node keeps serving until its own switch)."
+    # the HOST (panel) is fully up NOW → flip its header tile to "converted" immediately; don't make it wait for
+    # the node phase. The node tile stays "converting" until install-node finishes — convert.sh's EXIT trap emits
+    # the node's terminal WITH the final summary. Repoint LC_EMIT to node-only so that trap won't re-touch the host.
+    lc_emit_file converted-bare; LC_EMIT=lc_emit_post
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then
       mkdir -p "$DOCKER_DIR/data/node-confs" "$DOCKER_DIR/data/node"
       docker cp swg-node:/etc/amnezia/amneziawg/. "$DOCKER_DIR/data/node-confs/" 2>/dev/null || true
