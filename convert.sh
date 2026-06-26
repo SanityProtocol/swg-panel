@@ -705,9 +705,10 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       SWG_CONVERT=1 TLS_VERIFY="$NVERIFY" SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
     || warn "install-node.sh reported an error — check the node on the panel."
 
-  # move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker
-  # convert isn't blocked by the leftover .env.
-  if [ -d "$DOCKER_DIR" ]; then
+  # move the old docker dir aside (turn_to_bare needed its turn record) so a later bare→docker convert isn't
+  # blocked by the leftover .env — UNLESS the docker PANEL is still running from this dir (a co-located master-split:
+  # only the node converted, the panel stays on docker and needs the dir + its compose/.env + bind mounts).
+  if [ -d "$DOCKER_DIR" ] && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
     _bak="$DOCKER_DIR.converted-$(date +%Y%m%d-%H%M%S)"
     if mv "$DOCKER_DIR" "$_bak" 2>/dev/null; then info "moved the old docker dir aside → $(b "$_bak") (backup — safe to delete)"
     else warn "couldn't move $DOCKER_DIR aside — remove it manually before converting back to docker"; fi
