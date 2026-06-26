@@ -356,6 +356,7 @@ reconstruct_live_orphans(){
 }
 choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' creates more
   reconstruct_live_orphans   # rebuild confs for running wg/awg ifaces that have none on disk → detected below
+  migrate_docker_ifaces      # docker→bare convert: list the migrated interfaces + "Transfer? (Y/n)"; declined ⇒ drop them (must run AFTER reconstruct, before detect_wg, so a drop sticks)
   detect_wg
   if [ -n "$MANAGE_IFACES" ]; then
     IFS=',' read -ra SELECTED <<< "$MANAGE_IFACES"
@@ -602,6 +603,24 @@ EOF
   done <<EOF
 $list
 EOF
+}
+# docker→bare convert: the docker node's interfaces were imported to the bare conf dirs (host NAT added) by
+# convert.sh's node phase. The mirror of migrate_docker_turns + bare→docker's migrate_baremetal_ifaces: list them,
+# ask "Transfer? (Y/n)"; declined ⇒ drop the confs so detect_wg finds none (node starts empty / add fresh in loop).
+migrate_docker_ifaces(){
+  [ "${SWG_CONVERT:-}" = 1 ] || return 0
+  local ifs n c pr lp _yn
+  ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u || true)" || true; ifs="$(echo $ifs)"
+  [ -n "$ifs" ] || return 0
+  echo; info "Interfaces to migrate from the docker node:"; echo
+  for n in $ifs; do c="/etc/amnezia/amneziawg/$n.conf"; pr=AmneziaWG; [ -f "$c" ] || { c="/etc/wireguard/$n.conf"; pr=WireGuard; }
+    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$c" | head -1)"
+    printf '    %s%-10s%s %s  :%s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${lp:-?}"; done
+  echo
+  ask_yn "Transfer these interfaces into the bare-metal node?" y _yn
+  [ "$_yn" = yes ] && return 0
+  info "  left on docker — they come down at the switch; create fresh ones below if you want"
+  for n in $ifs; do rm -f "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf" 2>/dev/null; done
 }
 # turn-proxy forward-to value: accept an interface NAME (resolved to 127.0.0.1:<its listen port>) or a custom ip:port.
 v_fwd(){ local names; names=" $(turn_wg_ports | cut -d: -f1 | tr '\n' ' ')"; case "$names" in *" $1 "*) return 0;; esac; v_hostport "$1"; }
