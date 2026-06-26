@@ -26,6 +26,7 @@ Built for small, trusted deployments — tens of users, a handful of servers —
 - [Adding a node](#adding-a-node)
 - [Managing peers](#managing-peers)
 - [Docker](#docker)
+- [Converting between bare-metal and Docker](#converting-between-bare-metal-and-docker)
 - [Configuration reference](#configuration-reference)
 - [Operations](#operations)
 - [Security](#security)
@@ -211,6 +212,26 @@ Configure via `.env` (copied from `.env.example`):
 **Two images** (pulled prebuilt from GHCR by default; `--build` builds them locally). `swg-panel` is pure Python + the bundled `acme.sh`. `swg-node` carries the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It manages one interface by default (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), several via `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`), or any confs you mount under `/etc/swg-node/*.conf`. Panel-created interfaces persist across `up -d` (the conf dir is a volume). Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module. With turn-proxy management enabled, `swg-noded` runs each proxy as a sibling `swg-turn-*` container (host network, `--restart unless-stopped`) over the mounted Docker socket — editing one just recreates the container, no host systemd.
 
 **Re-running an installer is safe** — it detects an existing install, keeps your `.env` + `./data` (token, login, certificate, interfaces), and offers the current values as defaults; the wg/awg and turn-proxy steps show what's already there and let you add more. To start fresh, run the uninstaller first. (Docker: re-apply with `PULL_POLICY=always … bootstrap.sh docker host|node` so the new image + compose land.)
+
+## Converting between bare-metal and Docker
+
+Switch a box's **method** in place: re-run the installer asking for the *other* method, and it offers **convert · keep · abort**.
+
+```bash
+# the same one-liner with the other method — e.g. a Docker master ⇆ bare-metal:
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master         # → bare-metal (a bare role word means bare-metal)
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master  # → Docker
+```
+
+A convert **keeps everything** — the panel's URL, login, roster, nodes and TLS cert, and (for a `master`) the local node's token, interfaces and turn-proxies. It is **copy-first**: the new method is staged in full *before* the old one is torn down, so the only downtime is the few seconds of the atomic switch — nodes self-heal on their next sync.
+
+**Roles convert independently.** Converting a `master` first asks whether to move the whole box or just one half — **whole master** (panel + node, the default), **just the host** (only the panel), or **just the node** (only the node). A split leaves a **mixed-method box** (e.g. a Docker panel with a bare-metal node) that you manage in two places — handy for moving a node onto the kernel datapath while the panel stays on Docker.
+
+**Interfaces and turn-proxies migrate in the node stage.** As the node converts it lists the wg/awg interfaces and turn-proxy servers it manages and asks **“Transfer these … into the … node? (Y/n)”** for each set; keys, ports and endpoints carry over (copy-first), and the originals keep serving until the switch. Decline to leave them on the old method and start the new node empty. Both directions behave the same.
+
+**Live status.** The panel header — and the node tile, for a node or master — shows **converting → converted** as it runs (the *converting* tag the moment you confirm, *converted* with the final summary), so you can watch a convert from the console.
+
+> For nodes, **docker → bare-metal** is preferred — the host kernel module out-performs the container's userspace `amneziawg-go`. A node split off a co-located Docker master is automatically pointed at the panel's loopback port, since the compose DNS name isn't reachable from outside the container network.
 
 ## Configuration reference
 
