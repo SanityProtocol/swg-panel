@@ -623,6 +623,13 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   if [ -n "${SWG_CONVERT_DIR:-}" ] && [ -n "${PANEL_URL:-}" ]; then
     case "$PANEL_URL" in https://*|http://*) ;; *) PANEL_URL="https://$PANEL_URL";; esac
     [ -z "${TLS_VERIFY:-}" ] && TLS_VERIFY=no
+    # a convert should STILL let you set this box's name in the panel (mirrors bare-metal install-host/master) —
+    # fetch its current name + offer to change it; the rename is pushed via /api/node/rename below if changed.
+    local _ins=""; [ "$TLS_VERIFY" = yes ] || _ins="-k"; local _cur
+    _cur="$(curl -fsS $_ins --max-time 8 -H "Authorization: Bearer ${NODE_TOKEN:-}" "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+    step "Node name for THIS box"
+    ask_valid "Node name for THIS box" "${_cur:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)}" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"
+    [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""
     return 0
   fi
   if [ "$EXISTING_DOCKER" = yes ]; then

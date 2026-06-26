@@ -767,16 +767,16 @@ NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"   # local label
 # Box name on the panel: on a re-install, offer to change it (default = the name the panel currently has for
 # this token). A fresh install's name comes from Nodes → Add node. PUSH_NAME != "" means push the change.
 PUSH_NAME=""
-if [ "$EXISTING" = yes ] && [ -n "$NODE_TOKEN" ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
+if { [ "$EXISTING" = yes ] || [ "${SWG_CONVERT:-}" = 1 ]; } && [ -n "$NODE_TOKEN" ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
   _ins=""; [ "${TLS_VERIFY:-no}" = yes ] || _ins="-k"
   _cur="$(curl -fsS $_ins --max-time 8 -H "Authorization: Bearer $NODE_TOKEN" "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
-  step "Box name on the panel"
-  ask_valid "Node name (shown in the panel)" "${_cur:-$NODE_NAME}" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"
+  step "Node name for THIS box"
+  ask_valid "Node name for THIS box" "${_cur:-$NODE_NAME}" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"
   [ -n "$_cur" ] && [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""    # unchanged → nothing to push
 fi
 
 # push a box-name change (if the operator entered a new one above)
-if [ "$EXISTING" = yes ] && ! $DRYRUN && [ -n "$PUSH_NAME" ]; then
+if { [ "$EXISTING" = yes ] || [ "${SWG_CONVERT:-}" = 1 ]; } && ! $DRYRUN && [ -n "$PUSH_NAME" ]; then
   curl -fsS ${_ins:-} --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
     --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
