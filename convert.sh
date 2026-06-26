@@ -464,6 +464,16 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   [ -n "${SWG_RV_URL:-}" ] && PDOM="${PDOM:-$SWG_RV_URL}"
   [ -n "$PDOM" ] || die "couldn't read the panel domain (docker .env missing and no recovery state)"
   case "$PTLS" in letsencrypt|letsencrypt-ip|cloudflare|cf15|selfsigned|none) :;; *) PTLS=selfsigned;; esac
+  # the .env's TLS can be blank/stale (it just defaulted to "selfsigned") — when it claims no real CA, look at the
+  # cert ACTUALLY in use (the container's openssl) so we report the truth: a real Let's Encrypt cert must not show
+  # as "selfsigned" (and $PTLS also drives install-host's renewal setup). A valid CA value in .env is trusted as-is.
+  case "$PTLS" in
+    selfsigned|none)
+      case "$(docker exec swg-panel sh -c 'openssl x509 -in /etc/swg-panel/tls/fullchain.pem -noout -issuer 2>/dev/null' 2>/dev/null || true)" in
+        *"Let's Encrypt"*)          PTLS=letsencrypt ;;
+        *Cloudflare*|*CloudFlare*)  PTLS=cf15 ;;
+      esac ;;
+  esac
   [ -n "$PPORT" ] || PPORT=443
   [ "$RESUMING" != yes ] && bare_panel_present && die "a bare-metal panel (swg-panel-server) already exists — remove it first"
 
