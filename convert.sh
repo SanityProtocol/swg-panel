@@ -763,7 +763,7 @@ PY
   # interfaces + turn-proxies are migrated in install-docker's NODE STAGE now — migrate_baremetal_ifaces +
   # migrate_baremetal_turns each ask "Transfer? (Y/n)" and copy-first (keys preserved, bare side comes down at the
   # switch). convert.sh no longer pre-stages node items before handing off. Just collect the names for recovery.
-  names="$(printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r nm _; do [ -n "$nm" ] && printf '%s ' "$nm"; done)"; names="$(echo $names)"
+  names="$(printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r nm _; do [ -n "$nm" ] && printf '%s ' "$nm"; done || true)"; names="$(echo $names)"
   [ -n "$names" ] || die "the bare-metal node has no interfaces"
 
   # 3) everything is staged; the BARE NODE IS STILL UP + serving the whole time. Persist the identity (so an
