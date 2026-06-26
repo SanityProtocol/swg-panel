@@ -261,7 +261,7 @@ MIGRATED_TURNS=""   # turn-proxy services turn_to_bare moved onto host systemd (
 # final summary after a docker→bare convert: interfaces (now bare) + turn-proxies that migrated.
 print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel url>
   local ifn="$1" nep="$2" purl="$3" n conf proto svc inst lis con u units
-  echo; echo "$(b '──────────────── CONVERSION COMPLETE ────────────────')"; echo
+  summary_title "CONVERSION COMPLETE"
   echo "  Node      $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), syncs to $(b "$purl")"
   echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
   # ALL bare interfaces on disk (migrated $ifn PLUS any created during the install-node.sh step), not just $ifn.
@@ -283,7 +283,7 @@ print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel 
   else
     echo; echo "  $(b 'Turn-proxies'): none."
   fi
-  echo; node_reconfig_block baremetal
+  echo; node_reconfig_block baremetal; summary_end
 }
 # a LIVE docker node = an actual swg-node container (running or stopped). A bare $DOCKER_DIR with no
 # container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).
@@ -444,7 +444,7 @@ EOF
   echo; ok "$(b master) converted to docker — panel + local node (host convert + node convert). Same login, roster, nodes + cert + local node. Nodes reconnect on their next sync."
   _sch=https; [ "$PTLS" = none ] && _sch=http
   _psuf=":$PPORT"; if { [ "$_sch" = https ] && [ "$PPORT" = 443 ]; } || { [ "$_sch" = http ] && [ "$PPORT" = 80 ]; }; then _psuf=""; fi
-  echo; echo "──────────────── SUMMARY ────────────────"; echo
+  summary_title "CONVERSION COMPLETE"
   echo "  Panel     $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
   echo "  Login     unchanged — your existing $(b "${PUSER:-admin}") login + password"
   echo "  TLS       $(b "$PTLS")  ·  Method $(b docker) (was bare-metal)"
@@ -608,7 +608,7 @@ EOF
   clear_recovery
   _psuf=""; case "$PPORT" in 443|80|"") :;; *) _psuf=":$PPORT";; esac
   echo; ok "$(b "$ROLE") converted to bare-metal — $(b "https://$PDOM$_psuf$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node")). Nodes reconnect on their next sync."
-  echo; echo "──────────────── SUMMARY ────────────────"; echo
+  summary_title "CONVERSION COMPLETE"
   # ── PANEL (the host) — its own group ──
   echo "  $(b PANEL)  ·  bare-metal (was docker)"
   echo "    URL      $(b "https://$PDOM$_psuf$PBASE/")"

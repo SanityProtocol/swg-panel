@@ -890,8 +890,8 @@ if [ "${SWG_CONVERT:-}" = 1 ]; then
   exit 0
 fi
 echo; ok "Node '$(bb "$NODE_NAME")' install complete."
-echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
-echo "  Node      $(bb "$NODE_NAME")  →  syncs to $(bb "$PANEL_URL") every ${INTERVAL}s"
+summary_title "$([ "$EXISTING" = yes ] && echo 'RE-INSTALL COMPLETE' || echo 'INSTALL COMPLETE')"
+echo "  Node      $(bb "$NODE_NAME")  →  now $(b bare-metal), syncs to $(bb "$PANEL_URL") every ${INTERVAL}s"
 if [ "${#SELECTED[@]}" -gt 0 ]; then echo; echo "  $(b 'Interfaces') (manage peers in the panel):"
   for n in "${SELECTED[@]}"; do c="${IF_CONF[$n]:-}"
     printf '    %s %-9s %s  %s  mtu %s\n' "$(col "$C_GREEN" "$(printf '%-10s' "$n")")" "${IF_CMD[$n]:-?}" \

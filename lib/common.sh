@@ -8,6 +8,13 @@
 # pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
 proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
 
+# the bordered, bold title every summary opens with — keeps one style across install / re-install / convert /
+# update for node / host / master. Pass the operation phrase, e.g. "CONVERSION COMPLETE", "INSTALL COMPLETE".
+# Leading blank above, blank below — callers add their final trailing blank with summary_end.
+summary_title(){ echo; echo "$(b "──────────────── $1 ────────────────")"; echo; }
+# the single trailing blank line every summary must end with (consistency across all scripts).
+summary_end(){ echo; }
+
 # node summary footer: "reconfigure in the panel, or directly on the server", with the method's real paths +
 # commands. <baremetal|docker> [docker_install_dir]. b()/COMPOSE come from the sourcing script (installers/convert).
 node_reconfig_block(){

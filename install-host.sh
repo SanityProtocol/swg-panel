@@ -1433,8 +1433,8 @@ case "$SERVE_MODE" in
   nginx|caddy) SCH=https; { [ "$TLS_MODE" = skip ] && [ -z "${CERT_FULLCHAIN:-}" ]; } && SCH=http; UI="${SCH}://${PANEL_DOMAIN}${PANEL_BASE}/";;
   skip) UI="http://127.0.0.1:${PORT}${PANEL_BASE}/";;
 esac
-echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
-echo "  Panel     $(bb "$UI")"
+summary_title "$([ "$EXISTING_HOST" = yes ] && echo 'RE-INSTALL COMPLETE' || echo 'INSTALL COMPLETE')"
+echo "  $([ "$HOST_HAS_WG" = yes ] && echo 'Master  ' || echo 'Host    ')  $(bb "$UI")"
 if [ "$KEEP_AUTH" = yes ]; then echo "  Login     $(bb "$BASIC_USER") / $(bb "(unchanged — your existing password)")"
 else echo "  Login     $(bb "$BASIC_USER") / $(bb "$BASIC_PASS")   (change later in the panel → Account)"; fi
 echo "  TLS       $(b "$TLS_MODE")  ·  Web server $(b "$SERVE_MODE") (port $(b "$PORT"))"

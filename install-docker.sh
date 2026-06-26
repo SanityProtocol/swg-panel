@@ -1278,7 +1278,7 @@ fi
 if [ "${SWG_LC_PARENT:-}" = 1 ]; then echo; ok "$PROFILE → docker done — continuing the master convert…"
 else
 echo; ok "Docker install complete (profile: $PROFILE)."
-echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
+summary_title "$([ -n "${SWG_CONVERT_DIR:-}" ] && echo 'CONVERSION COMPLETE' || { [ "$EXISTING_DOCKER" = yes ] && echo 'RE-INSTALL COMPLETE' || echo 'INSTALL COMPLETE'; })"
 case "$PROFILE" in host|master)
   SCH=https; [ "$TLS" = none ] && SCH=http
   PORTSUF=":${PANEL_PORT}"; if { [ "$SCH" = https ] && [ "$PANEL_PORT" = 443 ]; } || { [ "$SCH" = http ] && [ "$PANEL_PORT" = 80 ]; }; then PORTSUF=""; fi
