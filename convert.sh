@@ -660,10 +660,8 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
     fi
     sub "pre-flight OK"
     # "converting" is emitted ONLY after the user confirms "proceed?" (real run, lc_init below) — never in this
-    # pre-flight — so declining the prompt leaves no stale converting status on the panel.
-    info "Interfaces to migrate:"; echo
-    for s in $specs; do iface_row "${s%:*}" "${s#*:}" "$confd/${s%:*}.conf" "$NEP"; done
-    echo
+    # pre-flight — so declining the prompt leaves no stale converting status on the panel. The interface list is
+    # shown once, in install-node's "Transfer?" step below — no need to duplicate it here in the pre-flight.
     exit 0
   fi
   [ -n "$conflicts" ] && die "interface name clash: $conflicts (run with --check first)"
@@ -763,10 +761,8 @@ PY
     [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") from a previous run will be moved aside."
     sub "pre-flight OK"
     # "converting" is emitted ONLY after "proceed?" is confirmed (real run, lc_init below) — not in this pre-flight.
-    info "Interfaces to migrate:"; echo
-    printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r _n _cf; do [ -n "$_n" ] || continue
-      _pr=awg; case "$_cf" in */wireguard/*) _pr=wg;; esac; iface_row "$_n" "$_pr" "$_cf" "$NEP"; done
-    echo; exit 0
+    # The interface list is shown once, in install-docker's "Transfer?" step below — no duplicate here.
+    exit 0
   fi
   if docker_node_present; then die "a docker node (swg-node container) already exists — remove it first (run with --check)"; fi
   # RESUME keeps the half-built $DOCKER_DIR (it holds the confs/turn records already staged before the interrupt).

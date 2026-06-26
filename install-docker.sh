@@ -692,7 +692,7 @@ current_node_ifaces(){
   if [ -n "$NODE_IFACES" ]; then OIFS="$IFS"; IFS=','      # a real .env spec, or interfaces added this run
     for e in $NODE_IFACES; do IFS="$OIFS"; n="${e%%:*}"
       case "$seen" in *" $n "*) : ;; *) [ -n "$n" ] && { echo "$n"; seen="$seen$n "; };; esac; IFS=','; done; IFS="$OIFS"
-  elif [ "$EXISTING_DOCKER" = yes ] && [ -n "$NODE_IFACE" ]; then   # a real single bootstrap (on a FRESH install NODE_IFACE is just a default, not a real interface)
+  elif [ "$EXISTING_DOCKER" = yes ] && [ -n "$NODE_IFACE" ] && [ "$seen" = " " ]; then   # only when NO real conf is on disk — else NODE_IFACE is just the install default (a convert/master with migrated confs would otherwise list a ghost awg0)
     case "$seen" in *" $NODE_IFACE "*) : ;; *) echo "$NODE_IFACE";; esac; fi
 }
 # EVERY interface NAME already present or queued on this box: node confs + queued spec (current_node_ifaces),
@@ -711,7 +711,7 @@ v_iface_free(){ v_iface "$1" || return 1; if taken_iface_names | grep -qx "$1"; 
 # — which ignores NODE_IFACE once NODE_IFACES is set — doesn't drop it).
 add_node_iface(){
   local _proto plain base i name port addr ep nx taken
-  if [ "$EXISTING_DOCKER" = yes ] && [ -z "$NODE_IFACES" ] && [ -n "$NODE_IFACE" ]; then   # promote an existing single bootstrap into the list so it isn't dropped
+  if [ "$EXISTING_DOCKER" = yes ] && [ -z "$NODE_IFACES" ] && [ -n "$NODE_IFACE" ] && ! ls "$INSTALL_DIR/data/node-confs/"*.conf >/dev/null 2>&1; then   # promote an existing single bootstrap into the list — but only if there are NO migrated confs (else NODE_IFACE is just the default → a ghost)
     local pr=""; [ "${NODE_PLAIN_WG:-}" = yes ] && pr=wg
     NODE_IFACES="${NODE_IFACE}:${NODE_LISTEN_PORT:-51820}:${NODE_ADDRESS:-10.8.0.1/24}:${pr}:${NODE_ENDPOINT}"
   fi
@@ -816,14 +816,15 @@ migrate_baremetal_ifaces(){
   # a CONVERT's docker conf dir must hold ONLY this run's migrated set — wipe stale confs a previous convert
   # left in a reused dir, else current_node_ifaces resurrects them as a ghost "already on this node" entry.
   [ -d "$INSTALL_DIR/data/node-confs" ] && rm -f "$INSTALL_DIR/data/node-confs/"*.conf 2>/dev/null || true
-  local ifs n c pr lp src dest
+  local ifs n c pr lp addr src dest
   ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u || true)" || true; ifs="$(echo $ifs)"
   [ -n "$ifs" ] || return 0
   echo; info "Interfaces to migrate from the bare-metal node:"; echo
   for n in $ifs; do
     c="/etc/amnezia/amneziawg/$n.conf"; pr=AmneziaWG; [ -f "$c" ] || { c="/etc/wireguard/$n.conf"; pr=WireGuard; }
     lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$c" | head -1)"
-    printf '    %s%-10s%s %s  :%s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${lp:-?}"
+    addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$c" | head -1)"
+    printf '    %s%-10s%s %-9s  :%-6s %s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${lp:-?}" "${addr:-?}"
   done
   echo
   [ "$(ask_yn_tty "Transfer these interfaces into the docker node?" y)" = yes ] || { info "  left on bare-metal — they come down at the switch; create fresh ones below if you want"; echo; return 0; }
