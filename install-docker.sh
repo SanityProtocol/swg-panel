@@ -1150,7 +1150,9 @@ fi
 if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   info "Switching over — stopping the bare-metal services, then starting the container(s)…"
   [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && teardown_bare_panel   # host/master convert: stop+remove the bare panel (and move its state aside)
-  lc_teardown_baremetal ${SWG_CONVERT_TURNS:-}
+  # ONLY tear the bare NODE down when its datapath is actually being converted (master/node). A HOST-only
+  # convert moves just the panel → docker; the co-located bare node must stay UP + keep serving its peers.
+  [ "$PROFILE" != host ] && lc_teardown_baremetal ${SWG_CONVERT_TURNS:-}
 fi
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
