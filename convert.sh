@@ -259,31 +259,51 @@ write_recovery(){   # write_recovery <space-separated interface names>
 clear_recovery(){ rm -f "$RECOVERY" 2>/dev/null || true; }
 MIGRATED_TURNS=""   # turn-proxy services turn_to_bare moved onto host systemd (for the final summary)
 # final summary after a docker→bare convert: interfaces (now bare) + turn-proxies that migrated.
-print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel url>
-  local ifn="$1" nep="$2" purl="$3" n conf proto svc inst lis con u units
-  summary_title "CONVERSION COMPLETE"
-  echo "  Node      $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), syncs to $(b "$purl")"
-  echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
-  # ALL bare interfaces on disk (migrated $ifn PLUS any created during the install-node.sh step), not just $ifn.
-  for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do
-    [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
-    case "$conf" in */wireguard/*) proto=wg;; *) proto=awg;; esac
-    iface_row "$n" "$proto" "$conf" "$nep"
-  done
-  # ALL host turn-proxies on the box (migrated PLUS any added in the turn-add step), not just $MIGRATED_TURNS —
-  # mirrors the interface loop above which scans disk, not just the migrated set.
-  units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
-  if [ -n "$units" ]; then
-    echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
-    for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"
-      lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
-      con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
-      turn_row "$svc" "$lis" "$con"
+# the Interfaces + Turn-proxies + reconfig sections in the reference style — a bold section header with a
+# descriptive parenthetical, one row per line (green name + proto + endpoint:port + address), a blank line
+# between sections, then the shared reconfig block. <baremetal|docker> [docker_dir] [endpoint-ip]. Used by node
+# converts AND the master summaries (a master is a panel + this same local node) so every node block reads alike.
+print_node_sections(){
+  local method="$1" dir="${2:-$DOCKER_DIR}" nep="${3:-}" n conf proto svc inst lis con u units _trec
+  if [ "$method" = docker ]; then
+    echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
+    for conf in "$dir"/data/node-confs/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
+      grep -qiE '^[[:space:]]*(Jc|Jmin|S1|H1)[[:space:]]*=' "$conf" && proto=awg || proto=wg
+      iface_row "$n" "$proto" "$conf" "$nep"
     done
+    units="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^swg-turn-' || true)"; _trec="$dir/data/node/turn-proxy.json"
+    if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (sibling containers — swg-turn-*, managed from the panel):"; echo
+      if [ -f "$_trec" ] && command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json,sys
+try: tps=(json.load(open(sys.argv[1])).get("turn_proxies") or [])
+except Exception: tps=[]
+for t in tps:
+    if t.get("service"): print(t["service"]+"\t"+t.get("listen","")+"\t"+t.get("connect",""))' "$_trec" 2>/dev/null \
+          | while IFS="$(printf '\t')" read -r svc lis con; do [ -n "$svc" ] && turn_row "$svc" "$lis" "$con"; done
+      else for svc in $units; do turn_row "$svc" "" ""; done; fi
+    fi
   else
-    echo; echo "  $(b 'Turn-proxies'): none."
+    echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
+    for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
+      case "$conf" in */wireguard/*) proto=wg;; *) proto=awg;; esac
+      iface_row "$n" "$proto" "$conf" "$nep"
+    done
+    units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
+    if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
+      for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"
+        lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
+        con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
+        turn_row "$svc" "$lis" "$con"
+      done
+    fi
   fi
-  echo; node_reconfig_block baremetal; summary_end
+  echo; node_reconfig_block "$method" "$dir"
+}
+print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel url>
+  summary_title "CONVERSION COMPLETE"
+  echo "  Node      $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), syncs to $(b "$3")"
+  print_node_sections baremetal "" "$2"
+  summary_end
 }
 # a LIVE docker node = an actual swg-node container (running or stopped). A bare $DOCKER_DIR with no
 # container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).
@@ -445,30 +465,13 @@ EOF
   _sch=https; [ "$PTLS" = none ] && _sch=http
   _psuf=":$PPORT"; if { [ "$_sch" = https ] && [ "$PPORT" = 443 ]; } || { [ "$_sch" = http ] && [ "$PPORT" = 80 ]; }; then _psuf=""; fi
   summary_title "CONVERSION COMPLETE"
-  # ── PANEL (the host) — its own group ──
-  echo "  $(b PANEL)  ·  docker (was bare-metal)"
-  echo "    URL      $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
-  echo "    Login    unchanged — your existing $(b "${PUSER:-admin}") login + password"
-  echo "    TLS      $(b "$PTLS")"
-  echo "    Dir      $(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile master up -d")"
-  echo "    Logs     $(b "cd $DOCKER_DIR && docker compose logs -f swg-panel")"
-  # ── LOCAL NODE — its own group (this master is also an entry server, the swg-node container) ──
-  echo
-  echo "  $(b "LOCAL NODE")  ·  token + keys preserved, runs as the swg-node container"
-  _ncd="$DOCKER_DIR/data/node-confs"
-  if ls "$_ncd"/*.conf >/dev/null 2>&1; then
-    echo "    Interfaces"
-    for _c in "$_ncd"/*.conf; do [ -f "$_c" ] || continue; _n="$(basename "$_c" .conf)"
-      grep -qiE '^[[:space:]]*(Jc|Jmin|S1|H1)[[:space:]]*=' "$_c" && _pr=AmneziaWG || _pr=WireGuard
-      _lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$_c" 2>/dev/null | head -1)"
-      _ad="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$_c" 2>/dev/null | head -1)"
-      printf '      %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$_n" "$RESET" "$_pr" "${NEP:-?}" "${_lp:-?}" "${_ad:-?}"
-    done
-  fi
-  _turns="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^swg-turn-' | tr '\n' ' ' || true)"
-  [ -n "$_turns" ] && echo "    Turn     $(b "$_turns")"
-  echo "    Config   $(b "ls $DOCKER_DIR/data/node-confs/*.conf")"
-  echo "    Logs     $(b "cd $DOCKER_DIR && docker compose logs -f swg-node")"
+  echo "  Master    $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b docker), panel at $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
+  echo; echo "  $(b 'Panel') (login + the $(b "$PTLS") cert preserved):"; echo
+  printf '    %-12s %s\n' "Login" "$(b "${PUSER:-admin}")  (unchanged)"
+  printf '    %-12s %s\n' "TLS"   "$(b "$PTLS")"
+  printf '    %-12s %s\n' "Dir"   "$(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile master up -d")"
+  printf '    %-12s %s\n' "Logs"  "$(b "cd $DOCKER_DIR && docker compose logs -f swg-panel")"
+  print_node_sections docker "$DOCKER_DIR" "$NEP"
   summary_end
   exit 0
 fi
@@ -627,32 +630,14 @@ EOF
   _psuf=""; case "$PPORT" in 443|80|"") :;; *) _psuf=":$PPORT";; esac
   echo; ok "$(b "$ROLE") converted to bare-metal — $(b "https://$PDOM$_psuf$PBASE/") (same login, roster, nodes + cert$([ "$ROLE" = master ] && echo " + local node")). Nodes reconnect on their next sync."
   summary_title "CONVERSION COMPLETE"
-  # ── PANEL (the host) — its own group ──
-  echo "  $(b PANEL)  ·  bare-metal (was docker)"
-  echo "    URL      $(b "https://$PDOM$_psuf$PBASE/")"
-  echo "    Login    unchanged — your existing $(b "${PUSER:-admin}") login + password"
-  echo "    TLS      $(b "$PTLS")"
-  echo "    Config   $(b /etc/swg-panel/)"
-  echo "    Logs     $(b "journalctl -u swg-panel-server -f")"
-  if [ "$ROLE" = master ]; then
-    # ── LOCAL NODE — its own group (this master is also an entry server) ──
-    echo
-    echo "  $(b "LOCAL NODE")  ·  token + keys preserved, reports to the panel above"
-    if [ -n "${mnames:-}" ]; then
-      echo "    Interfaces"
-      for _n in $mnames; do
-        _c="/etc/amnezia/amneziawg/$_n.conf"; _pr=AmneziaWG; [ -f "$_c" ] || { _c="/etc/wireguard/$_n.conf"; _pr=WireGuard; }
-        _lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$_c" 2>/dev/null | head -1)"
-        _ad="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$_c" 2>/dev/null | head -1)"
-        printf '      %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$_n" "$RESET" "$_pr" "${NEP:-?}" "${_lp:-?}" "${_ad:-?}"
-      done
-    fi
-    _turns="$(ls /etc/systemd/system/ 2>/dev/null | sed -n 's/\(.*turn-proxy.*\)\.service$/\1/p' | tr '\n' ' ')"
-    [ -n "$_turns" ] && echo "    Turn     $(b "$_turns")"
-    echo "    Config   $(b /etc/amnezia/amneziawg/) + $(b /etc/wireguard/)"
-    echo "    Logs     $(b "journalctl -u swg-noded -f")"
-  fi
-  echo
+  echo "  $([ "$ROLE" = master ] && echo 'Master    ' || echo 'Host      ')$(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), panel at $(b "https://$PDOM$_psuf$PBASE/")"
+  echo; echo "  $(b 'Panel') (login + the $(b "$PTLS") cert preserved):"; echo
+  printf '    %-12s %s\n' "Login" "$(b "${PUSER:-admin}")  (unchanged)"
+  printf '    %-12s %s\n' "TLS"   "$(b "$PTLS")"
+  printf '    %-12s %s\n' "Config" "$(b /etc/swg-panel/)"
+  printf '    %-12s %s\n' "Logs"  "$(b 'journalctl -u swg-panel-server -f')"
+  [ "$ROLE" = master ] && print_node_sections baremetal "" "$NEP"
+  summary_end
   exit 0
 fi
 
