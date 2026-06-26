@@ -445,13 +445,31 @@ EOF
   _sch=https; [ "$PTLS" = none ] && _sch=http
   _psuf=":$PPORT"; if { [ "$_sch" = https ] && [ "$PPORT" = 443 ]; } || { [ "$_sch" = http ] && [ "$PPORT" = 80 ]; }; then _psuf=""; fi
   summary_title "CONVERSION COMPLETE"
-  echo "  Panel     $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
-  echo "  Login     unchanged — your existing $(b "${PUSER:-admin}") login + password"
-  echo "  TLS       $(b "$PTLS")  ·  Method $(b docker) (was bare-metal)"
-  echo "  Node      local node preserved (token + interfaces + turn-proxies)"
-  echo "  Dir       $(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile master up -d")"
-  echo "  Logs      $(b "cd $DOCKER_DIR && docker compose logs -f")"
+  # ── PANEL (the host) — its own group ──
+  echo "  $(b PANEL)  ·  docker (was bare-metal)"
+  echo "    URL      $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
+  echo "    Login    unchanged — your existing $(b "${PUSER:-admin}") login + password"
+  echo "    TLS      $(b "$PTLS")"
+  echo "    Dir      $(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile master up -d")"
+  echo "    Logs     $(b "cd $DOCKER_DIR && docker compose logs -f swg-panel")"
+  # ── LOCAL NODE — its own group (this master is also an entry server, the swg-node container) ──
   echo
+  echo "  $(b "LOCAL NODE")  ·  token + keys preserved, runs as the swg-node container"
+  _ncd="$DOCKER_DIR/data/node-confs"
+  if ls "$_ncd"/*.conf >/dev/null 2>&1; then
+    echo "    Interfaces"
+    for _c in "$_ncd"/*.conf; do [ -f "$_c" ] || continue; _n="$(basename "$_c" .conf)"
+      grep -qiE '^[[:space:]]*(Jc|Jmin|S1|H1)[[:space:]]*=' "$_c" && _pr=AmneziaWG || _pr=WireGuard
+      _lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$_c" 2>/dev/null | head -1)"
+      _ad="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$_c" 2>/dev/null | head -1)"
+      printf '      %s%-10s%s %-9s  %s:%-6s %s\n' "$C_GREEN" "$_n" "$RESET" "$_pr" "${NEP:-?}" "${_lp:-?}" "${_ad:-?}"
+    done
+  fi
+  _turns="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^swg-turn-' | tr '\n' ' ' || true)"
+  [ -n "$_turns" ] && echo "    Turn     $(b "$_turns")"
+  echo "    Config   $(b "ls $DOCKER_DIR/data/node-confs/*.conf")"
+  echo "    Logs     $(b "cd $DOCKER_DIR && docker compose logs -f swg-node")"
+  summary_end
   exit 0
 fi
 
