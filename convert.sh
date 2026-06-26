@@ -369,18 +369,9 @@ PY
   find "$DOCKER_DIR/data/etc/acme" -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='kill -HUP 1'#" {} + 2>/dev/null || true
   sub "staged roster + nodes + login + $(b "$PTLS") cert (+ acme renewal) → $DOCKER_DIR/data"
 
-  # MASTER: stage the local node too — import its confs (strip host NAT; the container does its own), carry the
-  # keypair backups, and write the docker turn record from the bare turn units (the swg-node container materialises
-  # them on first run). All non-destructive — the bare node keeps serving until the switch below.
-  if [ "$ROLE" = master ]; then
-    confd="$DOCKER_DIR/data/node-confs"; mkdir -p "$confd"
-    printf '%s\n' "$mifaces" | while IFS="$(printf '\t')" read -r _nm _src; do [ -n "$_nm" ] || continue
-      [ -f "$_src" ] || continue
-      grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$_src" > "$confd/$_nm.conf" 2>/dev/null && chmod 600 "$confd/$_nm.conf" 2>/dev/null || true
-      sub "staged local-node interface $(b "$_nm") → data/node-confs (key preserved)"; done
-    if [ -d /var/lib/swg-noded/iface-keys ]; then mkdir -p "$DOCKER_DIR/data/node/iface-keys"; cp -a /var/lib/swg-noded/iface-keys/. "$DOCKER_DIR/data/node/iface-keys/" 2>/dev/null || true; fi
-    # turn-proxies are migrated in the NODE STAGE now (install-docker's migrate_baremetal_turns asks "Transfer?"
-  fi
+  # MASTER: the local node's interfaces + turn-proxies are migrated in the NODE STAGE (the install-docker node
+  # sub-step below): migrate_baremetal_ifaces + migrate_baremetal_turns each ask "Transfer? (Y/n)" and copy-first.
+  # So convert.sh stages ONLY the panel here — no node items before the host (nothing to orphan if interrupted).
 
   # 2) stage the compose project (prebuilt image pulled from GHCR)
   cp -a "$SRC/docker-compose.yml" "$DOCKER_DIR/" 2>/dev/null || true
@@ -769,34 +760,11 @@ PY
   # signal "converting" to the panel NOW — before the (non-destructive) import below — so the node tile shows
   # it immediately, not after the per-interface import lines. install-docker.sh (exec'd later) emits the terminal.
   LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; lc_init convert-docker lc_emit_post
-  # 1) inject each interface's conf into the docker node's conf dir, stripping the host NAT hooks
-  #    (the swg-node container does its own NAT). The private key is preserved, so the panel keeps
-  #    the same node and peers keep working. The container uses a present conf as-is (no re-gen).
-  confd="$DOCKER_DIR/data/node-confs"; mkdir -p "$confd"
-  names=""
-  while IFS="$(printf '\t')" read -r nm src; do
-    [ -n "$nm" ] || continue
-    if [ -f "$confd/$nm.conf" ]; then sub "kept $(b "$nm") → $confd/$nm.conf (already imported)"; names="${names:+$names }$nm"; continue; fi   # resume
-    [ -f "$src" ] || { warn "missing $src — skipping interface '$nm'"; continue; }
-    grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$confd/$nm.conf"; chmod 600 "$confd/$nm.conf"
-    sub "imported $(b "$nm") → $confd/$nm.conf (key preserved)"
-    names="${names:+$names }$nm"
-  done <<EOF
-$ifaces
-EOF
-  [ -n "$names" ] || die "no interface confs imported"
-
-  # carry the per-interface keypair backups across so the server-key revert baseline survives the move
-  if [ -d /var/lib/swg-noded/iface-keys ]; then
-    mkdir -p "$DOCKER_DIR/data/node/iface-keys"
-    cp -a /var/lib/swg-noded/iface-keys/. "$DOCKER_DIR/data/node/iface-keys/" 2>/dev/null || true
-    sub "carried interface keypair backups → $DOCKER_DIR/data/node/iface-keys"
-  fi
-
-  # 2) COPY-FIRST: stage the turn-proxies into the docker record too (interactive) while the bare node is
-  #    STILL UP — so an abort/failure here leaves the node fully intact (no recovery needed; just re-run).
-  # turn-proxies are migrated in the NODE STAGE now — install-docker's migrate_baremetal_turns (turn step) asks
-  # "Transfer these turn-proxies into the docker node?" and copy-firsts them, mirroring migrate_docker_turns.
+  # interfaces + turn-proxies are migrated in install-docker's NODE STAGE now — migrate_baremetal_ifaces +
+  # migrate_baremetal_turns each ask "Transfer? (Y/n)" and copy-first (keys preserved, bare side comes down at the
+  # switch). convert.sh no longer pre-stages node items before handing off. Just collect the names for recovery.
+  names="$(printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r nm _; do [ -n "$nm" ] && printf '%s ' "$nm"; done)"; names="$(echo $names)"
+  [ -n "$names" ] || die "the bare-metal node has no interfaces"
 
   # 3) everything is staged; the BARE NODE IS STILL UP + serving the whole time. Persist the identity (so an
   #    interrupt during the final switch can resume), then hand off — install-docker.sh does the ATOMIC SWITCH:

@@ -802,6 +802,32 @@ PY
   fi
   ok "onboarded $(col "$C_GREEN" "$n")"
 }
+# bare→docker CONVERT: migrate THIS box's bare interfaces (kernel awg/wg) into the docker node's conf dir, in the
+# NODE STAGE — the mirror of migrate_baremetal_turns. Lists them, asks "Transfer? (Y/n)", copy-firsts (strips host
+# NAT — the container does its own; keys preserved). The bare interfaces keep serving until the atomic switch
+# (lc_teardown_baremetal) brings them down. Decline ⇒ left on bare-metal (start empty / add fresh in the loop).
+migrate_baremetal_ifaces(){
+  [ "${SWG_CONVERT_DIR:-}" = convert-docker ] || return 0
+  local ifs n c pr lp src dest
+  ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u)"; ifs="$(echo $ifs)"
+  [ -n "$ifs" ] || return 0
+  echo; info "Interfaces to migrate from the bare-metal node:"; echo
+  for n in $ifs; do
+    c="/etc/amnezia/amneziawg/$n.conf"; pr=AmneziaWG; [ -f "$c" ] || { c="/etc/wireguard/$n.conf"; pr=WireGuard; }
+    lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$c" | head -1)"
+    printf '    %s%-10s%s %s  :%s\n' "$C_GREEN" "$n" "$RESET" "$pr" "${lp:-?}"
+  done
+  echo
+  [ "$(ask_yn_tty "Transfer these interfaces into the docker node?" y)" = yes ] || { info "  left on bare-metal — they come down at the switch; create fresh ones below if you want"; return 0; }
+  mkdir -p "$INSTALL_DIR/data/node-confs"
+  for n in $ifs; do
+    src="/etc/amnezia/amneziawg/$n.conf"; [ -f "$src" ] || src="/etc/wireguard/$n.conf"; [ -f "$src" ] || continue
+    dest="$INSTALL_DIR/data/node-confs/$n.conf"
+    grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$dest" 2>/dev/null && chmod 600 "$dest"   # strip host NAT (container NATs); keys preserved
+    echo "    $(b "$n") → data/node-confs (key preserved; bare interface comes down at the switch)"
+  done
+  [ -d /var/lib/swg-noded/iface-keys ] && { mkdir -p "$INSTALL_DIR/data/node/iface-keys"; cp -a /var/lib/swg-noded/iface-keys/. "$INSTALL_DIR/data/node/iface-keys/" 2>/dev/null || true; }
+}
 # wg/awg step: pick from the host's interfaces (available / used-by-another-node) or create new
 manage_node_ifaces(){
   step "WireGuard / AmneziaWG setup"
@@ -809,6 +835,7 @@ manage_node_ifaces(){
   echo "      Interfaces run inside the swg-node container; add as many as you need now, or add more"
   echo "      later from the panel (Interfaces → Load new interface). Existing ones are KEPT."
   echo
+  migrate_baremetal_ifaces   # convert: Transfer? + copy-first the bare interfaces, then the loop shows them + adds more
   local mine bm cand dock kern n pick xfer kpick dpick bad yn doit
   while :; do
     mine="$(current_node_ifaces | tr '\n' ' ')" || true   # under set -euo pipefail these subs can exit non-zero
