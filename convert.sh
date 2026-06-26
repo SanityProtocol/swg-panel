@@ -419,12 +419,31 @@ EOF
   #    then as its LAST step does the atomic switch: stop the bare panel (SWG_CONVERT_KILL_PANEL) + bare node +
   #    migrated turn units, then compose up. KEEP_AUTH preserves the staged login. Mirrors the node convert.
   write_recovery "$mifaces"
-  info "Running install-docker.sh ($(b "$PROFILE")) — review the panel + node setup; it switches over as the last step…"
-  echo
-  lc_handoff   # exec → install-docker.sh owns the lifecycle terminal (SWG_CONVERT_DIR ⇒ converted-docker)
-  exec env ROLE="$ROLE" SWG_CONVERT_DIR=convert-docker SWG_CONVERT_TURNS="$MIGRATED_TURNS" SWG_CONVERT_KILL_PANEL=1 \
-       NODE_TOKEN="${NTOK:-}" NODE_ENDPOINT="${NEP:-$PDOM}" PANEL_URL="https://swg-panel:8443" TLS_VERIFY=no \
-       bash "$SRC/install-docker.sh" "$PROFILE"
+  # ── HOST convert: exec install-docker host (panel only) — it owns the lifecycle terminal. ──
+  if [ "$ROLE" = host ]; then
+    info "Running install-docker.sh (host) — the panel setup; it switches over as the last step…"; echo
+    lc_handoff
+    exec env ROLE=host SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 TLS_VERIFY=no bash "$SRC/install-docker.sh" host
+  fi
+  # ── MASTER convert = the HOST converter + the NODE converter, run in sequence ───────────────────────────────
+  # The master's host-part IS install-docker host and its node-part IS install-docker node — guaranteed identical
+  # to the individual converters, no bespoke master path. install-docker host brings up swg-panel + tears down the
+  # bare panel; install-docker node then ADDS swg-node to the SAME compose project (EXISTING_DOCKER reads the .env)
+  # and migrates this box's interfaces + turn-proxies in its own node stage. convert.sh owns the lifecycle terminal
+  # (SWG_LC_PARENT=1 ⇒ neither sub-step emits its own), writing 'converted-docker' with the final line below.
+  echo; info "HOST → docker — converting the panel (the local node keeps serving until the node step below)…"; echo
+  env ROLE=host SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 SWG_LC_PARENT=1 TLS_VERIFY=no \
+      bash "$SRC/install-docker.sh" host \
+    || die "the panel (host) convert failed — your state is safe in $DOCKER_DIR/data; check 'docker compose logs'"
+  LC_FILE="$DOCKER_DIR/data/lib/host_proc"   # docker panel now owns host_proc → convert.sh's EXIT terminal lands there
+  echo; info "NODE → docker — converting this box's local node (adds swg-node to the panel's compose project)…"; echo
+  env SWG_CONVERT_DIR=convert-docker NODE_TOKEN="${NTOK:-}" NODE_ENDPOINT="${NEP:-$PDOM}" \
+      PANEL_URL="https://swg-panel:8443" SWG_LC_PARENT=1 TLS_VERIFY=no \
+      bash "$SRC/install-docker.sh" node \
+    || warn "the local node convert reported an error — check it on the panel."
+  clear_recovery
+  echo; ok "$(b master) converted to docker — panel + local node (host convert + node convert). Same login, roster, nodes + cert + local node. Nodes reconnect on their next sync."
+  exit 0
 fi
 
 # ── PANEL host/master: docker → bare-metal ── (mirror of the bare→docker block; reuses install-host.sh + install-node.sh)

@@ -449,7 +449,9 @@ if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYR
     mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null; LC_FILE="$INSTALL_DIR/data/lib/host_proc"
   fi
   _lcop="${SWG_CONVERT_DIR:-reinstall}"
-  { [ -n "${LC_TOKEN:-}" ] || [ -n "${LC_FILE:-}" ]; } && lc_init "$_lcop" lc_emit_docker
+  # SWG_LC_PARENT=1 ⇒ a parent convert (master = host+node) owns the lifecycle terminal, so don't lc_init here
+  # (we'd emit a premature 'converted' when THIS sub-step exits, before the other half + the final summary).
+  { [ "${SWG_LC_PARENT:-}" != 1 ] && { [ -n "${LC_TOKEN:-}" ] || [ -n "${LC_FILE:-}" ]; }; } && lc_init "$_lcop" lc_emit_docker
   [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install → "re-installed and updated"
 fi
 
