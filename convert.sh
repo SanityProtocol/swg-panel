@@ -27,12 +27,7 @@ sub(){  echo "${C_BL}::${RESET} $*"; }                    # indented sub-item / 
 ok(){   echo "${C_GREEN}✓${RESET} $*"; }
 warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
-# ── consistent list rows (green name + detail), matching the installers' summaries ──
-# iface_row <name> <proto> <conf> <endpoint> — green name, proto, endpoint:listenport, address (from the conf)
-iface_row(){ local n="$1" proto="$2" conf="$3" ep="$4" lp addr   # set -e safe: a missing/empty conf renders "?" — without the || true a sed file-not-found (rc 2) trips pipefail+set -e, and the bootstrap then LOOPS on the failed --check
-  lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
-  addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
-  printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "$proto")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
+# ── turn-proxy list rows for the migration prompts (the per-server summary's rows live in lib/common.sh now) ──
 # the interface a turn-proxy forwards to: the iface whose ListenPort matches the connect port (else empty)
 fwd_iface_for(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" | head -1)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return 0; }; done; return 0; }   # no match → empty + success (a non-zero here would trip set -e in callers)
 # turn_row <service> <listen> <connect> — green service + "listen → connect (iface)"
@@ -258,53 +253,7 @@ write_recovery(){   # write_recovery <space-separated interface names>
 }
 clear_recovery(){ rm -f "$RECOVERY" 2>/dev/null || true; }
 MIGRATED_TURNS=""   # turn-proxy services turn_to_bare moved onto host systemd (for the final summary)
-# final summary after a docker→bare convert: interfaces (now bare) + turn-proxies that migrated.
-# the Interfaces + Turn-proxies + reconfig sections in the reference style — a bold section header with a
-# descriptive parenthetical, one row per line (green name + proto + endpoint:port + address), a blank line
-# between sections, then the shared reconfig block. <baremetal|docker> [docker_dir] [endpoint-ip]. Used by node
-# converts AND the master summaries (a master is a panel + this same local node) so every node block reads alike.
-print_node_sections(){
-  local method="$1" dir="${2:-$DOCKER_DIR}" nep="${3:-}" n conf proto svc inst lis con u units _trec
-  if [ "$method" = docker ]; then
-    echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
-    for conf in "$dir"/data/node-confs/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
-      grep -qiE '^[[:space:]]*(Jc|Jmin|S1|H1)[[:space:]]*=' "$conf" && proto=awg || proto=wg
-      iface_row "$n" "$proto" "$conf" "$nep"
-    done
-    units="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^swg-turn-' || true)"; _trec="$dir/data/node/turn-proxy.json"
-    if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (sibling containers — swg-turn-*, managed from the panel):"; echo
-      if [ -f "$_trec" ] && command -v python3 >/dev/null 2>&1; then
-        python3 -c 'import json,sys
-try: tps=(json.load(open(sys.argv[1])).get("turn_proxies") or [])
-except Exception: tps=[]
-for t in tps:
-    if t.get("service"): print(t["service"]+"\t"+t.get("listen","")+"\t"+t.get("connect",""))' "$_trec" 2>/dev/null \
-          | while IFS="$(printf '\t')" read -r svc lis con; do [ -n "$svc" ] && turn_row "$svc" "$lis" "$con"; done
-      else for svc in $units; do turn_row "$svc" "" ""; done; fi
-    fi
-  else
-    echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
-    for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
-      case "$conf" in */wireguard/*) proto=wg;; *) proto=awg;; esac
-      iface_row "$n" "$proto" "$conf" "$nep"
-    done
-    units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
-    if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
-      for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"
-        lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
-        con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
-        turn_row "$svc" "$lis" "$con"
-      done
-    fi
-  fi
-  echo; node_reconfig_block "$method" "$dir"
-}
-print_bare_summary(){   # print_bare_summary <iface names> <endpoint ip> <panel url>
-  summary_title "CONVERSION COMPLETE"
-  echo "  Node      $(b "$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)")  →  now $(b bare-metal), syncs to $(b "$3")"
-  print_node_sections baremetal "" "$2"
-  summary_end
-}
+# the per-server summary now lives in lib/common.sh (print_summary) — shared by every install / convert / update.
 # a LIVE docker node = an actual swg-node container (running or stopped). A bare $DOCKER_DIR with no
 # container is just a stale leftover (e.g. a previous convert that didn't finish moving it aside).
 docker_node_present(){ command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; }
