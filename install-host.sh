@@ -780,7 +780,10 @@ else                                   _tls_opts="selfsigned none s n skip sk"; 
 # different host/IP (e.g. a letsencrypt-ip cert when you now type a private IP) would be wrong here, so hide
 # reuse and let the working default win — that also avoids showing two "(default)" options.
 _reuse_avail=no
-if [ "$EXISTING_HOST" = yes ] && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ] \
+# ...offer it for a re-install (existing host) AND for a convert (SWG_CONVERT_DIR): the convert STAGES the panel's
+# real cert into $TLS_DIR before running us, so it's just as reusable — without this a docker→bare convert would
+# never reuse a Let's Encrypt cert and would silently re-issue (→ selfsigned on a localhost/IP).
+if { [ "$EXISTING_HOST" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && [ -f "$PREFIX$TLS_DIR/fullchain.pem" ] && [ -f "$PREFIX$TLS_DIR/key.pem" ] \
    && cert_covers_host "$PREFIX$TLS_DIR/fullchain.pem" "$PANEL_DOMAIN"; then
   _reuse_avail=yes; _tls_opts="reuse $_tls_opts r"; _tls_def=r
 fi

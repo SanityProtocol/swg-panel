@@ -505,13 +505,15 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
 
   # 1) COPY-FIRST: stage the panel state to the bare locations while the container is STILL UP + serving
   mkdir -p "$STATE" "$ETC" "$STATS"
-  # Copy the panel state straight OUT of the RUNNING container — robust no matter how its data volume is wired
-  # (a broken/empty ./data bind mount was silently losing the roster, login + nodes). Fall back to ./data only
-  # when the container isn't found (e.g. a resume after it's already gone).
+  # Read the panel state straight OUT of the RUNNING container via tar — NOT `docker cp`. docker cp resolves a
+  # bind-mounted path to its HOST source, which a prior back-and-forth convert may have moved aside (mv of the docker
+  # dir while the container runs) — leaving the host source EMPTY while the container still serves the data by inode.
+  # tar runs inside the container's mount namespace, so it always reads the LIVE data the panel is actually using.
+  # Fall back to ./data on disk only when the container isn't found (e.g. a resume after it's already gone).
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
-    docker cp swg-panel:/var/lib/swg-panel/. "$STATE/" 2>/dev/null || true   # roster (users.json), nodes.json, configs
-    docker cp swg-panel:/etc/swg-panel/.     "$ETC/"   2>/dev/null || true   # fleet.json, auth, tls/, acme/
-    docker cp swg-panel:/var/www/wgstats/.   "$STATS/" 2>/dev/null || true
+    docker exec swg-panel tar c -C /var/lib/swg-panel . 2>/dev/null | tar x -C "$STATE" 2>/dev/null || true   # roster (users.json), nodes.json, configs
+    docker exec swg-panel tar c -C /etc/swg-panel   . 2>/dev/null | tar x -C "$ETC"   2>/dev/null || true   # fleet.json, auth, tls/, acme/
+    docker exec swg-panel tar c -C /var/www/wgstats . 2>/dev/null | tar x -C "$STATS" 2>/dev/null || true
   else
     [ -d "$DOCKER_DIR/data/lib" ]   && cp -a "$DOCKER_DIR/data/lib/."   "$STATE/" 2>/dev/null || true
     [ -d "$DOCKER_DIR/data/etc" ]   && cp -a "$DOCKER_DIR/data/etc/."   "$ETC/"   2>/dev/null || true
