@@ -29,9 +29,9 @@ warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 # ── consistent list rows (green name + detail), matching the installers' summaries ──
 # iface_row <name> <proto> <conf> <endpoint> — green name, proto, endpoint:listenport, address (from the conf)
-iface_row(){ local n="$1" proto="$2" conf="$3" ep="$4" lp addr
-  lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1)"
-  addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1)"
+iface_row(){ local n="$1" proto="$2" conf="$3" ep="$4" lp addr   # set -e safe: a missing/empty conf renders "?" — without the || true a sed file-not-found (rc 2) trips pipefail+set -e, and the bootstrap then LOOPS on the failed --check
+  lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+  addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
   printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "$C_GREEN" "$(printf '%-10s' "$n")" "$RESET" "$BOLD" "$(proto_label "$proto")" "$RESET" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
 # the interface a turn-proxy forwards to: the iface whose ListenPort matches the connect port (else empty)
 fwd_iface_for(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" | head -1)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return 0; }; done; return 0; }   # no match → empty + success (a non-zero here would trip set -e in callers)
@@ -626,6 +626,11 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       elif [ -e "/etc/amnezia/amneziawg/$nm.conf" ];  then specs="${specs:+$specs }$nm:awg"; fi
     done
   fi
+  # keep only specs whose conf is actually on disk — a bare .env NODE_IFACE default (no conf), or confs lost from
+  # data/node-confs, would otherwise be "migrated" as a ghost (and trip the pre-flight). You can't migrate a conf-less iface.
+  _sp=""; for s in $specs; do nm="${s%:*}"
+    { [ -e "$confd/$nm.conf" ] || [ -e "/etc/amnezia/amneziawg/$nm.conf" ] || [ -e "/etc/wireguard/$nm.conf" ]; } && _sp="${_sp:+$_sp }$s"
+  done; specs="$_sp"
   [ -n "$specs" ] || die "no interfaces found (looked in $confd and the docker node's .env)"
 
   # pre-flight: a bare-metal conf of the same NAME already present is a real clash (the docker
