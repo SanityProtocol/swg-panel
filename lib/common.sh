@@ -39,6 +39,99 @@ node_reconfig_block(){
   fi
 }
 
+# ── unified per-server summary ────────────────────────────────────────────────
+# print_summary <OP> [converted-parts] — ONE summary for ANY operation. Builds up to two blocks from what's
+# actually on this box: a HOST block (iff a panel is installed) and a NODE block (iff a local node is installed),
+# each tagged with its OWN method + version + an optional "newly converted" note. Only the title (+ that note)
+# differ between install / re-install / update / convert; absent blocks are omitted; a blank line separates the
+# two when both exist. Self-contained — DETECTS the methods and reads the live config, so every caller is just
+# `print_summary <OP> [host|node|both]`.   <OP> ∈ INSTALL | RE-INSTALL | UPDATE | CONVERSION.
+_SUM_DDIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
+_sum_get(){ sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1 | sed 's/^"//; s/"$//' || true; }   # || true: pipefail+set -e safe when the file is missing
+_sum_proto_label(){ case "$1" in wg|wireguard|WireGuard) echo WireGuard;; *) echo AmneziaWG;; esac; }
+_sum_fwd_iface(){ local cp="${1##*:}" f lp; for f in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$f" ] || continue; lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" 2>/dev/null | head -1)"; [ -n "$lp" ] && [ "$lp" = "$cp" ] && { basename "$f" .conf; return 0; }; done; return 0; }
+_sum_iface_row(){ local n="$1" proto="$2" conf="$3" ep="$4" lp addr
+  lp="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+  addr="$(sed -n 's/^[[:space:]]*Address[[:space:]]*=[[:space:]]*\([0-9./]*\).*/\1/p' "$conf" 2>/dev/null | head -1 || true)"
+  printf '    %s%s%s  %s%-10s%s  %s:%s  %s\n' "${C_GREEN:-}" "$(printf '%-10s' "$n")" "${RESET:-}" "${BOLD:-}" "$(_sum_proto_label "$proto")" "${RESET:-}" "${ep:-?}" "${lp:-?}" "${addr:-?}"; }
+_sum_turn_row(){ local fw; fw="$(_sum_fwd_iface "${3:-}")"; printf '    %s%s%s %s → %s%s\n' "${C_GREEN:-}" "$1" "${RESET:-}" "${2:-?}" "${3:-?}" "${fw:+ ($fw)}"; }
+_sum_node_ep(){ local ep; ep="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("endpoint_host") or ""))' 2>/dev/null || true)"; [ -n "$ep" ] || ep="$(_sum_get "$_SUM_DDIR/.env" NODE_ENDPOINT)"; [ -n "$ep" ] || ep="$(detect_public_ip 2>/dev/null || true)"; printf '%s' "$ep"; }
+# the host:port the NODE actually dials for the panel — its agent's panel.url (127.0.0.1:443 for a local node,
+# the public URL for a remote one). Distinct from the panel's own public URL.
+_sum_node_purl(){ local u; u="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url") or "")' 2>/dev/null || true)"; [ -n "$u" ] || u="$(_sum_get "$_SUM_DDIR/.env" PANEL_URL)"; printf '%s' "$u"; }
+_sum_detect(){ local hm="" nm=""   # echoes "<host_method> <node_method>", each ∈ baremetal|docker|"" (none)
+  if have docker && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then hm=docker
+  elif [ -f /etc/systemd/system/swg-panel-server.service ] || [ -x /opt/swg-panel/swg-panel-server ]; then hm=baremetal; fi
+  if have docker && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-node; then nm=docker
+  elif [ -f /etc/systemd/system/swg-noded.service ] || [ -f /etc/swg-agent/config.json ]; then nm=baremetal; fi
+  printf '%s %s' "$hm" "$nm"; }
+_sum_note(){ case "$1" in docker) echo "$(b 'newly converted') (was bare-metal)";; *) echo "$(b 'newly converted') (was docker)";; esac; }
+
+summary_host_block(){   # <method> <converted?yes|no>
+  local m="$1" conv="$2" url login tls ver mlabel note="" e dom port base sch ps
+  if [ "$m" = docker ]; then e="$_SUM_DDIR/.env"; mlabel=Docker
+    dom="$(_sum_get "$e" PANEL_DOMAIN)"; port="$(_sum_get "$e" PANEL_PORT)"; base="$(_sum_get "$e" PANEL_BASE)"; tls="$(_sum_get "$e" TLS)"
+    login="$(_sum_get "$e" PANEL_USER)"; ver="$(docker exec swg-panel cat /opt/swg-panel/VERSION 2>/dev/null | head -1 || true)"
+  else mlabel=Bare-metal
+    dom="$(_sum_get /etc/swg-panel/install.conf PANEL_DOMAIN)"; port="$(_sum_get /etc/swg-panel/install.conf PORT)"; base="$(_sum_get /etc/swg-panel/install.conf PANEL_BASE)"; tls="$(_sum_get /etc/swg-panel/install.conf TLS_MODE)"
+    login="$(sed -n 's/^\([^:]*\):.*/\1/p' /etc/swg-panel/auth 2>/dev/null | head -1 || true)"; ver="$(cat /opt/swg-panel/VERSION 2>/dev/null | head -1 || true)"
+  fi
+  sch=https; [ "$tls" = none ] && sch=http; ps=":$port"; case "$port" in 443|80|"") ps="";; esac; url="${sch}://${dom}${ps}${base}/"
+  [ "$conv" = yes ] && note="  ·  $(_sum_note "$m")"
+  echo "  $(b "$mlabel SWG Host")${ver:+ $(b "v$ver")}$note"
+  echo; echo "  $(b 'Panel') (login + the $(b "${tls:-?}") cert preserved):"; echo
+  printf '    %-9s%s\n' "URL"     "$(bb "$url")"
+  printf '    %-9s%s\n' "Login"   "$(b "${login:-admin}")  (unchanged)"
+  printf '    %-9s%s\n' "TLS"     "$(b "${tls:-?}")"
+  if [ "$m" = docker ]; then
+    printf '    %-9s%s\n' "Config"  "$(b "nano $_SUM_DDIR/.env")"
+    printf '    %-9s%s\n' "Restart" "$(b "cd $_SUM_DDIR && docker compose restart swg-panel")"
+    printf '    %-9s%s\n' "Logs"    "$(b "cd $_SUM_DDIR && docker compose logs -f swg-panel")"
+  else
+    printf '    %-9s%s\n' "Config"  "$(b /etc/swg-panel/)  (change URL/TLS by re-running the installer)"
+    printf '    %-9s%s\n' "Restart" "$(b 'systemctl restart swg-panel-server')"
+    printf '    %-9s%s\n' "Logs"    "$(b 'journalctl -u swg-panel-server -f')"
+  fi
+}
+summary_node_block(){   # <method> <converted?yes|no>
+  local m="$1" conv="$2" ver mlabel note="" nep purl conf n proto units svc inst lis con u
+  nep="$(_sum_node_ep)"; purl="$(_sum_node_purl)"
+  if [ "$m" = docker ]; then mlabel=Docker; ver="$(docker exec swg-node cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"
+  else mlabel=Bare-metal; ver="$(cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"; fi
+  [ "$conv" = yes ] && note="  ·  $(_sum_note "$m")"
+  echo "  $(b "$mlabel SWG Node")${ver:+ $(b "v$ver")}${purl:+  ·  syncs to $(bb "$purl")}$note"
+  if [ "$m" = docker ]; then
+    echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
+    for conf in "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
+      grep -qiE '^[[:space:]]*(Jc|Jmin|S1|H1)[[:space:]]*=' "$conf" && proto=awg || proto=wg; _sum_iface_row "$n" "$proto" "$conf" "$nep"; done
+    units="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^swg-turn-' || true)"
+    if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (sibling containers — swg-turn-*, managed from the panel):"; echo
+      for svc in $units; do _sum_turn_row "$svc" "" ""; done; fi
+  else
+    echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
+    for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
+      case "$conf" in */wireguard/*) proto=wg;; *) proto=awg;; esac; _sum_iface_row "$n" "$proto" "$conf" "$nep"; done
+    units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
+    if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
+      for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"
+        lis="$(sed -n 's/^SWG_LISTEN=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
+        con="$(sed -n 's/^SWG_CONNECT=//p' "/opt/vk-turn-proxy/$inst/turn.env" 2>/dev/null | head -1 || true)"
+        _sum_turn_row "$svc" "$lis" "$con"; done; fi
+  fi
+  echo; node_reconfig_block "$([ "$m" = docker ] && echo docker || echo baremetal)" "$_SUM_DDIR"
+}
+print_summary(){   # <OP> [converted-parts: host|node|both]
+  local op="$1" conv="${2:-}" det hm nm title hc=no nc=no printed=""
+  det="$(_sum_detect)"; hm="${det%% *}"; nm="${det##* }"
+  case "$op" in INSTALL) title="INSTALL COMPLETE";; RE-INSTALL) title="RE-INSTALL COMPLETE";; UPDATE) title="UPDATE COMPLETE";; CONVERSION) title="CONVERSION COMPLETE";; *) title="$op COMPLETE";; esac
+  case " $conv " in *" host "*|*" both "*) hc=yes;; esac
+  case " $conv " in *" node "*|*" both "*) nc=yes;; esac
+  summary_title "$title"
+  [ -n "$hm" ] && { summary_host_block "$hm" "$hc"; printed=1; }
+  [ -n "$nm" ] && { [ -n "$printed" ] && echo; summary_node_block "$nm" "$nc"; }
+  summary_end
+}
+
 # ── validators ──
 v_iface(){   case "$1" in ""|*[!a-zA-Z0-9_-]*) return 1;; esac; [ "${#1}" -le 15 ]; }
 v_subnet(){  have python3 || return 0; python3 -c "import ipaddress,sys;ipaddress.ip_network(sys.argv[1],strict=False)" "$1" >/dev/null 2>&1; }
