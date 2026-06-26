@@ -722,7 +722,9 @@ def _node_issues(c, snap):
 #   failed      : <op>-failed  (+ err)  (red + error popup, persists likewise)
 # `at` = unix time the state was set (node proc_status; host_proc file mtime).
 PROC_GRACE = 300          # 5 min in-progress window; a stuck op (lost connection) then falls back to failed
-PROC_SUCCESS_SHOW = 8     # success tag lifetime (comfortably covers one ~5 s poll, then clears)
+PROC_SUCCESS_SHOW = 20    # success tag lifetime — long enough to ride through a master convert's node phase (so the
+                          # host "converted" stays put instead of blanking between the panel-up stamp and the node
+                          # stage), still short enough to clear shortly after the operator has seen it
 PROC_INPROGRESS = ("reinstalling", "converting-bare", "converting-docker", "updating", "uninstalling")
 PROC_SUCCESS = ("reinstalled", "reinstalled-updated", "converted-bare", "converted-docker", "updated", "uptodate")
 _PROC_FAIL = {"reinstalling": "reinstall-failed", "converting-bare": "convert-failed",

@@ -554,6 +554,10 @@ EOF
   fi
   _pu=no; for _i in 1 2 3; do if systemctl start swg-panel-server 2>/dev/null; then _pu=yes; break; fi; sleep 1; done   # bind :443 now that docker released it (brief retry for the handoff)
   [ "$_pu" = yes ] || die "couldn't start the bare-metal panel after stopping the docker panel — check 'systemctl status swg-panel-server'; your panel state is safe in $STATE + $ETC"
+  # wait until the bare panel actually ANSWERS (not just "systemctl start" returned) before stamping "converted"
+  # below — an early stamp ages out of the success-show window before the panel can serve the console's first poll,
+  # so the header would blank instead of flipping converting→converted the moment the bare panel is reachable.
+  for _i in $(seq 1 30); do curl -sk -o /dev/null --max-time 2 "https://127.0.0.1:${PPORT}${PBASE}/" 2>/dev/null && break; sleep 1; done
 
   # THEN THE NODE — only after the panel is up (host first, then node). Stage the local node straight from the
   # still-running swg-node container (confs → bare locations + host NAT, keypairs, turn units deferred), then
