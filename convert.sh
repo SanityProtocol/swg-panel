@@ -572,6 +572,11 @@ EOF
           SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
         || warn "the local node setup reported an error — check it on the panel."
     fi
+  else
+    # host-only (no node phase): the bare panel is up → flip the header tile to "converted" NOW, mirroring the
+    # master's tile-split above. Otherwise only the end-of-run EXIT trap emits it (after the dir-move + summary),
+    # which can land after the console's brief success-show window — so "converted" never appears on the header.
+    lc_emit_file converted-bare
   fi
 
   # 3) move the old docker dir aside so a later convert-back isn't blocked by the leftover .env, then done
