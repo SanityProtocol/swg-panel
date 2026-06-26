@@ -714,11 +714,16 @@ echo
 echo "      Where the panel is reached — an IP, a host, or a host with a subpath to"
 echo "      live under an existing site (e.g. $(b 'vpn.example.com/swg'))."
 echo
-DEF_URL="$(detect_public_ip)"; [ -z "$DEF_URL" ] && DEF_URL=localhost
-if [ -n "$DOM_SAVED" ]; then DEF_URL="$DOM_SAVED"          # re-install: rebuild the saved host[:port][/subpath]
+# default to what we ALREADY know, in order: the URL passed in (a CONVERT carries the real PANEL_DOMAIN, a -domain
+# flag sets it), then the saved re-install URL (host[:port][/subpath]), then the detected public IP, then localhost.
+# Without the first item a convert/re-install wrongly defaulted to the box's IP — or localhost — instead of its
+# real domain, which also broke Let's Encrypt cert reuse (a domain cert doesn't cover localhost).
+DEF_URL="${PANEL_DOMAIN:-}"
+if [ -z "$DEF_URL" ] && [ -n "$DOM_SAVED" ]; then DEF_URL="$DOM_SAVED"          # re-install: rebuild the saved host[:port][/subpath]
   { [ -n "$PORT_SAVED" ] && [ "$PORT_SAVED" != 443 ]; } && DEF_URL="$DEF_URL:$PORT_SAVED"
   [ -n "$BASE_SAVED" ] && DEF_URL="$DEF_URL$BASE_SAVED"
 fi
+[ -z "$DEF_URL" ] && { DEF_URL="$(detect_public_ip)"; [ -z "$DEF_URL" ] && DEF_URL=localhost; }
 PANEL_DOMAIN=""; ask_valid "Enter panel URL (https://…)" "$DEF_URL" PANEL_DOMAIN v_url "enter a host or IP, optionally with a /subpath (e.g. vpn.example.com/swg)"
 while :; do
   parse_panel_url "$PANEL_DOMAIN"
