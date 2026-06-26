@@ -437,8 +437,11 @@ EOF
     || die "the panel (host) convert failed — your state is safe in $DOCKER_DIR/data; check 'docker compose logs'"
   LC_FILE="$DOCKER_DIR/data/lib/host_proc"   # docker panel now owns host_proc → convert.sh's EXIT terminal lands there
   echo; info "NODE → docker — converting this box's local node (adds swg-node to the panel's compose project)…"; echo
+  # CO-LOCATED node specifics (a standalone node doesn't need these): reach the LOCAL panel on the host-published
+  # port (host networking can't resolve the compose name swg-panel), and manage turns via the panel (socket) so the
+  # migrated turn-proxies materialise as containers. NODE_TOKEN/ENDPOINT are the preserved local-node identity.
   env SWG_CONVERT_DIR=convert-docker NODE_TOKEN="${NTOK:-}" NODE_ENDPOINT="${NEP:-$PDOM}" \
-      PANEL_URL="https://swg-panel:8443" SWG_LC_PARENT=1 TLS_VERIFY=no \
+      PANEL_URL="https://127.0.0.1:$PPORT" TURN_MANAGE=panel SWG_LC_PARENT=1 TLS_VERIFY=no \
       bash "$SRC/install-docker.sh" node \
     || warn "the local node convert reported an error — check it on the panel."
   clear_recovery
