@@ -595,6 +595,15 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   NIFS="$(getv NODE_IFACES)"; NIF="$(getv NODE_IFACE)"; NPLAIN="$(getv NODE_PLAIN_WG)"; NVERIFY="$(getv TLS_VERIFY)"
   [ -n "${SWG_RV_TOKEN:-}" ] && { NTOK="$SWG_RV_TOKEN"; PURL="$SWG_RV_URL"; NEP="$SWG_RV_EP"; NVERIFY="${SWG_RV_VERIFY:-no}"; }   # resume: saved identity wins
   [ "$NVERIFY" = yes ] || NVERIFY=no
+  # co-located master-split (the panel STAYS on docker, only the local node converts to bare): the node's PANEL_URL
+  # is the compose DNS name (swg-panel:PORT), unreachable outside the compose network. Point the bare node at the
+  # panel's published loopback port instead, and don't verify the cert (it's for the domain, not 127.0.0.1).
+  case "$PURL" in *://swg-panel:*|*://swg-panel/*|*://swg-panel)
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+      _pp="$(getv PANEL_PORT)"; PURL="https://127.0.0.1:${_pp:-443}"; NVERIFY=no
+      sub "co-located split → bare node will sync to the local docker panel at $PURL"
+    fi ;;
+  esac
   [ -n "$NTOK" ] && [ -n "$PURL" ] || die "couldn't read the node token / panel URL (docker .env missing and no recovery state)"
 
   # interface specs as "name:proto" (proto = awg|wg). The PERSISTED confs in data/node-confs are the
