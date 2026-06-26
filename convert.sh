@@ -446,6 +446,7 @@ EOF
   echo "  Node      local node preserved (token + interfaces + turn-proxies)"
   echo "  Dir       $(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile master up -d")"
   echo "  Logs      $(b "cd $DOCKER_DIR && docker compose logs -f")"
+  echo
   exit 0
 fi
 
@@ -581,6 +582,7 @@ EOF
   [ "$ROLE" = master ] && echo "  Node      local node preserved (token + interfaces + turn-proxies)"
   echo "  Edit      panel $(b /etc/swg-panel/)$([ "$ROLE" = master ] && echo "  ·  node confs $(b /etc/amnezia/amneziawg/) + $(b /etc/wireguard/)")"
   echo "  Logs      $(b "journalctl -u swg-panel-server -f")$([ "$ROLE" = master ] && echo "  ·  $(b "journalctl -u swg-noded -f")")"
+  echo
   exit 0
 fi
 

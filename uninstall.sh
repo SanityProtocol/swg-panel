@@ -419,3 +419,4 @@ if [ "${#DID_KEEP[@]}" -gt 0 ]; then echo "  $(b Kept):"
 echo
 $DRYRUN && ok "DRY RUN — nothing was actually removed; re-run without --dry-run to apply." \
         || ok "Uninstall complete."
+echo     # one blank line after the summary block (consistency)

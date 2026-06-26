@@ -1308,5 +1308,6 @@ echo
 case "$PROFILE" in host) echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile host up -d")";; esac   # node/master get Directory+Config from node_reconfig_block
 case "$PROFILE" in host|master) echo "  Panel log $(b "cd $INSTALL_DIR && $COMPOSE logs -f swg-panel")";; esac
 case "$PROFILE" in host|master) echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')";; esac
+echo     # one blank line after the summary block (consistency)
 fi   # end of the full summary (suppressed for a master sub-step)
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun$INSTALL_DIR/.env"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command

@@ -906,4 +906,5 @@ echo
 node_reconfig_block baremetal
 [ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       not verifying the panel cert (self-signed) — set TLS_FINGERPRINT to pin it"
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # NB: an `if` (not `$DRYRUN && {…}`) so a non-dry-run doesn't make the script's LAST command exit non-zero (convert.sh read that as "install-node.sh reported an error")
+echo     # one blank line after the summary block (consistency)
 exit 0   # reaching here = success (every fatal error die'd with exit 1 earlier; a single interface that couldn't come up is a non-fatal warning)

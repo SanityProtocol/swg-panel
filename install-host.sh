@@ -1458,5 +1458,6 @@ else
   echo "  Edit      panel $(b /etc/swg-panel/)"
 fi
 [ "$TLS_MODE" = selfsigned ] && echo "  Note      self-signed cert — the browser warns once, that's expected"
+echo     # one blank line after the summary block (consistency)
 else ok "panel installed on bare-metal — continuing…"; fi   # convert: brief line; convert.sh prints the unified summary
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command
