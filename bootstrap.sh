@@ -31,8 +31,11 @@ b(){ printf '%s%s%s' "$BOLD" "$*" "$RESET"; }
 col(){ local c="$1"; shift; printf '%s%s%s' "$c" "$*" "$RESET"; }
 menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }            # universal flags: :: blue, ! brown, ✗ red
-warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
-info(){ echo "${C_BL}::${RESET} $*"; }
+# data-entry spacing: a prompt ends with _pnl (one trailing blank + mark); step() skips its leading blank while the
+# mark is up; warn/info clear it. (bootstrap doesn't source lib/common.sh, so these live here.)
+_SWG_NL=""; _pnl(){ printf '\n' >/dev/tty 2>/dev/null || echo; _SWG_NL=1; }; _nlguard(){ _SWG_NL=""; }
+warn(){ _nlguard; echo "${C_BROWN}!${RESET} $*" >&2; }
+info(){ _nlguard; echo "${C_BL}::${RESET} $*"; }
 # ask_choice <prompt> <default> <var> "<opt…>" — accepts a full option OR its first-letter shortcut;
 # shows the default's letter as [x]; friendly re-prompt on bad input.
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
@@ -44,7 +47,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
     if read -r v 2>/dev/null </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"
     case "$v" in ''|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] → the Nth option
-    for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; return; }; done
+    for o in $opts; do [ "$v" = "$o" ] || { [ -n "$v" ] && [ "$v" = "${o:0:1}" ]; } && { printf -v "$var" '%s' "$o"; _pnl; return; }; done
     [ "$rc" -ne 0 ] && die "no interactive input for '$p' — pass it as a flag (one of: $opts)"
     if [ -n "$v" ]; then
       pr="  Can't understand \"$v\". $p${d:+ or press Enter to use the default [$(col "$C_BLUE" "$sc")]}: "
@@ -55,7 +58,7 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
 ask_yn(){ local p="$1" d="$2" var="$3" v   # ask_yn <prompt> <y|n default> <var>  → sets var to yes/no
   printf '%s' "  $p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " 2>/dev/null >/dev/tty
   read -r v 2>/dev/null </dev/tty || v="$d"; v="${v:-$d}"
-  case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; }
+  case "$v" in [Yy]*) printf -v "$var" yes;; *) printf -v "$var" no;; esac; _pnl; }
 
 ACTION=""; METHOD="${METHOD:-}"; ROLE="${ROLE:-}"; ROLE_EXPLICIT=no; HAVE_KEY=no
 PASS=()
@@ -136,7 +139,7 @@ fi
 
 # ── method + role (sequential step numbering — only steps actually shown here count) ──
 STEP=1
-step(){ echo; echo "$(b "Step $STEP. $1")"; echo; STEP=$((STEP+1)); }
+step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "$(b "Step $STEP. $1")"; echo; STEP=$((STEP+1)); }
 
 # ── resume an interrupted conversion ─────────────────────────────────────────
 # convert.sh persists the node's identity to /var/lib/swg-recovery before the final switch-over. Conversions

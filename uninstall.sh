@@ -24,7 +24,7 @@ rmrf(){ local p; for p in "$@"; do if [ -e "$p" ] || [ -L "$p" ]; then run rm -r
 ask_yn(){ local v p="$1" d="${2:-n}"; if [ -n "${!3:-}" ]; then return; fi
   if ! { true </dev/tty; } 2>/dev/null; then printf -v "$3" '%s' "$d"; return; fi   # /dev/tty not openable (no controlling terminal) → default, no leaked error
   read -rp "$p ($([ "$d" = y ] && echo 'Y/n' || echo 'y/N')): " v </dev/tty || true
-  v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; }
+  v="${v:-$d}"; case "$v" in [Yy]*) printf -v "$3" yes;; *) printf -v "$3" no;; esac; echo; }   # one trailing blank after the prompt
 # ask_comp <label> — the per-component yes/no (honours --yes); returns 0 = uninstall
 ask_comp(){ local v verb="${3:-Uninstall}"; $ASSUME_YES && return 0
   if ! { true </dev/tty; } 2>/dev/null; then return 1; fi   # no usable tty, not --yes => keep
