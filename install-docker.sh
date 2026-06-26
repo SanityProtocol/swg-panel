@@ -449,8 +449,11 @@ if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYR
   # set the panel header file when a swg-panel container exists (re-install) OR will be created by THIS run
   # (a bare→docker host/master convert — the container reads data/lib/host_proc once compose brings it up, so the
   # 'converted-docker' terminal lands on the new panel's header). A node convert has no panel → no host_proc.
-  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel \
-     || { [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && [ "$PROFILE" != node ]; }; then
+  # ...but NEVER for a node-profile op — a node's status belongs on its node tile (the POST above), not the panel
+  # header. On a master box a swg-panel container exists, so guard the WHOLE condition with PROFILE != node (else a
+  # plain `docker node` re-install would write "reinstalling" onto the panel header).
+  if [ "$PROFILE" != node ] \
+     && { docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel || [ "${SWG_CONVERT_DIR:-}" = convert-docker ]; }; then
     mkdir -p "$INSTALL_DIR/data/lib" 2>/dev/null; LC_FILE="$INSTALL_DIR/data/lib/host_proc"
   fi
   _lcop="${SWG_CONVERT_DIR:-reinstall}"
