@@ -440,9 +440,6 @@ EOF
       PANEL_URL="https://127.0.0.1:$PPORT" TURN_MANAGE=panel SWG_LC_PARENT=1 TLS_VERIFY=no \
       bash "$SRC/install-docker.sh" node \
     || warn "the local node convert reported an error — check it on the panel."
-  # node part done → re-stamp the host's "converted-docker" (its panel-up stamp may have aged out during the node
-  # step) so the header reliably shows "converted" at the end — same as docker→bare.
-  lc_emit_file converted-docker
   clear_recovery
   echo; ok "$(b master) converted to docker — panel + local node (host convert + node convert). Same login, roster, nodes + cert + local node. Nodes reconnect on their next sync."
   _sch=https; [ "$PTLS" = none ] && _sch=http
@@ -594,9 +591,6 @@ EOF
           SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
         || warn "the local node setup reported an error — check it on the panel."
     fi
-    # the node phase ran for a while → the host's "converted-bare" from the tile-split above has aged past the
-    # console's success-show window; re-stamp it (fresh mtime) so the header reliably shows "converted" at the end.
-    lc_emit_file converted-bare
   else
     # host-only (no node phase): the bare panel is up → flip the header tile to "converted" NOW, mirroring the
     # master's tile-split above. Otherwise only the end-of-run EXIT trap emits it (after the dir-move + summary),
