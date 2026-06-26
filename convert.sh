@@ -453,6 +453,14 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   # panel HEADER status during the convert: show "converting to bare-metal" on the still-running docker panel
   # (install-host then continues it on the bare panel as converting-bare → converted-bare / convert-aborted/-failed).
   docker exec swg-panel sh -c 'printf "%s" converting-bare > /var/lib/swg-panel/host_proc' >/dev/null 2>&1 || true
+  # convert.sh OWNS the lifecycle terminal so "converted-bare" lands WITH the final summary below — NOT when
+  # install-host exits mid-flow (esp. a master, where the node phase still follows). Emit "converting" to the bare
+  # host_proc (the docker panel header already shows it above; install-host serves this file after the switch) AND,
+  # for a master, the local-node tile — NOW, right after the proceed-confirm. install-host runs with SWG_LC_PARENT=1
+  # so it does NOT emit its own terminal; convert.sh's EXIT trap emits converted/aborted/failed at the very end.
+  LC_FILE="$STATE/host_proc"
+  if [ "$ROLE" = master ] && [ -n "$NTOK" ]; then LC_URL="https://127.0.0.1:$PPORT"; LC_TOKEN="$NTOK"; LC_VERIFY=no; lc_init convert-bare lc_emit_hostnode
+  else lc_init convert-bare lc_emit_file; fi
 
   # 1) COPY-FIRST: stage the panel state to the bare locations while the container is STILL UP + serving
   mkdir -p "$STATE" "$ETC" "$STATS"
@@ -500,7 +508,7 @@ EOF
     ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true; docker rm -f swg-panel >/dev/null 2>&1 || true
   fi
   env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" \
-      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare \
+      CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 \
       bash "$SRC/install-host.sh" \
     || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
 
@@ -606,10 +614,8 @@ if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
       exit 1
     fi
     sub "pre-flight OK"
-    # show "converting" on the panel NOW — the pre-flight runs the instant [c] is chosen, before the "proceed?"
-    # prompt. The real convert (lc_init) re-affirms it + owns the terminal; declining at the prompt leaves it
-    # to time out → failed (the designed fallback).
-    [ -n "$NTOK" ] && [ -n "$PURL" ] && { LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; LC_EMIT=lc_emit_post; lc_emit converting-bare; }
+    # "converting" is emitted ONLY after the user confirms "proceed?" (real run, lc_init below) — never in this
+    # pre-flight — so declining the prompt leaves no stale converting status on the panel.
     info "Interfaces to migrate:"; echo
     for s in $specs; do iface_row "${s%:*}" "${s#*:}" "$confd/${s%:*}.conf" "$NEP"; done
     echo
@@ -710,7 +716,7 @@ PY
     fi
     [ -e "$DOCKER_DIR" ] && info "note: a leftover $(b "$DOCKER_DIR") from a previous run will be moved aside."
     sub "pre-flight OK"
-    [ -n "$NTOK" ] && [ "$NTOK" != "-" ] && [ -n "$PURL" ] && { LC_URL="$PURL"; LC_TOKEN="$NTOK"; LC_VERIFY="${NVERIFY:-no}"; LC_EMIT=lc_emit_post; lc_emit converting-docker; }   # show "converting" on the panel the moment [c] is chosen
+    # "converting" is emitted ONLY after "proceed?" is confirmed (real run, lc_init below) — not in this pre-flight.
     info "Interfaces to migrate:"; echo
     printf '%s\n' "$ifaces" | while IFS="$(printf '\t')" read -r _n _cf; do [ -n "$_n" ] || continue
       _pr=awg; case "$_cf" in */wireguard/*) _pr=wg;; esac; iface_row "$_n" "$_pr" "$_cf" "$NEP"; done

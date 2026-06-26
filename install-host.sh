@@ -682,7 +682,9 @@ if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN; then
     LC_VERIFY="$(python3 -c 'import json;print("yes" if (json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("verify",True) else "no")' 2>/dev/null || echo no)"
   fi
   lc_emit_host(){ lc_emit_file "$1" "${2:-}"; lc_emit_post "$1" "${2:-}"; }   # host_proc + (master) the local node
-  lc_init "${SWG_CONVERT_DIR:-reinstall}" lc_emit_host   # convert.sh passes convert-bare → "converting/converted to bare-metal"
+  # SWG_LC_PARENT=1 ⇒ convert.sh (a docker→bare host/master convert) owns the lifecycle terminal, so it can emit
+  # "converted" WITH its final summary instead of us firing it mid-flow before the node phase. Skip our own lc_init.
+  [ "${SWG_LC_PARENT:-}" = 1 ] || lc_init "${SWG_CONVERT_DIR:-reinstall}" lc_emit_host   # convert.sh passes convert-bare → "converting/converted to bare-metal"
   [ -z "${SWG_CONVERT_DIR:-}" ] && LC_SUCCESS="reinstalled-updated"   # plain re-install installs the latest; a convert keeps its converted-bare success
 fi
 
