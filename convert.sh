@@ -487,7 +487,6 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   LC_FILE="$STATE/host_proc"
   if [ "$ROLE" = master ] && [ -n "$NTOK" ]; then LC_URL="https://127.0.0.1:$PPORT"; LC_TOKEN="$NTOK"; LC_VERIFY=no; lc_init convert-bare lc_emit_hostnode
   else lc_init convert-bare lc_emit_file; fi
-  _cvt0="$(date +%s 2>/dev/null || echo 0)"   # when "converting" went live — used to keep the docker panel up long enough for the console to poll it (pad before the switch)
 
   # 1) COPY-FIRST: stage the panel state to the bare locations while the container is STILL UP + serving
   mkdir -p "$STATE" "$ETC" "$STATS"
@@ -528,10 +527,6 @@ EOF
   #    phase below), then install-host.sh brings the bare panel up reusing the staged login (KEEP_AUTH). TLS is NOT
   #    forced to 'reuse' — install-host's menu defaults to reuse when the staged cert still covers the host, and
   #    prompts for a fresh one when it can't (e.g. domain → IP). Same URL/port ⇒ nodes stay connected.
-  # the docker panel must keep serving "converting" (header + node tile) long enough for the console — which polls
-  # /api/state every 5s — to catch it before we tear it down; otherwise it flashes by unseen on a fast convert and
-  # only re-appears once the bare panel is up (≈ the node stage). Hold ≥7s since "converting" went live.
-  if [ "${_cvt0:-0}" != 0 ]; then _el=$(( $(date +%s) - _cvt0 )); [ "$_el" -lt 7 ] && sleep $(( 7 - _el )) || :; fi
   info "Switching over — stopping the docker panel, then installing the bare-metal panel…"
   if [ "$ROLE" = master ]; then
     docker rm -f swg-panel >/dev/null 2>&1 || true   # stop ONLY the panel — the docker NODE keeps serving through the node phase below (copy-first); install-node tears it down at its OWN switch (the last step)
