@@ -1232,6 +1232,10 @@ if [ "$PROFILE" != node ] && [ "$TLS" != none ] && ! $DRYRUN && have openssl; th
 fi
 
 # ───────────────────────── SUMMARY ─────────────────────────
+# A master sub-step (SWG_LC_PARENT=1) prints just a one-liner — convert.sh emits ONE unified summary at the very
+# end of the master convert. An individual host/node convert (not a sub-step) prints its full summary here.
+if [ "${SWG_LC_PARENT:-}" = 1 ]; then echo; ok "$PROFILE → docker done — continuing the master convert…"
+else
 echo; ok "Docker install complete (profile: $PROFILE)."
 echo; echo "$(b '──────────────── SUMMARY ────────────────')"; echo
 case "$PROFILE" in host|master)
@@ -1273,4 +1277,5 @@ echo
 case "$PROFILE" in host) echo "  Dir       $(b "$INSTALL_DIR")  ·  edit $(b .env), then $(b "$COMPOSE --profile host up -d")";; esac   # node/master get Directory+Config from node_reconfig_block
 case "$PROFILE" in host|master) echo "  Panel log $(b "cd $INSTALL_DIR && $COMPOSE logs -f swg-panel")";; esac
 case "$PROFILE" in host|master) echo "  Next      add entry servers in the panel: $(b 'Nodes → Add node')";; esac
+fi   # end of the full summary (suppressed for a master sub-step)
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun$INSTALL_DIR/.env"; fi   # `if` (not `&&`) so a real run doesn't exit the script non-zero on its last command

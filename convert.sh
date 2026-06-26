@@ -446,6 +446,15 @@ EOF
     || warn "the local node convert reported an error — check it on the panel."
   clear_recovery
   echo; ok "$(b master) converted to docker — panel + local node (host convert + node convert). Same login, roster, nodes + cert + local node. Nodes reconnect on their next sync."
+  _sch=https; [ "$PTLS" = none ] && _sch=http
+  _psuf=":$PPORT"; if { [ "$_sch" = https ] && [ "$PPORT" = 443 ]; } || { [ "$_sch" = http ] && [ "$PPORT" = 80 ]; }; then _psuf=""; fi
+  echo; echo "──────────────── SUMMARY ────────────────"; echo
+  echo "  Panel     $(b "${_sch}://${PDOM}${_psuf}${PBASE}/")"
+  echo "  Login     unchanged — your existing $(b "${PUSER:-admin}") login + password"
+  echo "  TLS       $(b "$PTLS")  ·  Method $(b docker) (was bare-metal)"
+  echo "  Node      local node preserved (token + interfaces + turn-proxies)"
+  echo "  Dir       $(b "$DOCKER_DIR")  ·  edit $(b .env), then $(b "docker compose --profile master up -d")"
+  echo "  Logs      $(b "cd $DOCKER_DIR && docker compose logs -f")"
   exit 0
 fi
 
