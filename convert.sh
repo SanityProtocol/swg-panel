@@ -427,6 +427,11 @@ EOF
       bash "$SRC/install-docker.sh" host \
     || die "the panel (host) convert failed — your state is safe in $DOCKER_DIR/data; check 'docker compose logs'"
   LC_FILE="$DOCKER_DIR/data/lib/host_proc"   # docker panel now owns host_proc → convert.sh's EXIT terminal lands there
+  # MIRRORS docker→bare: the panel (host) is converted the moment the docker panel ANSWERS — wait for it to actually
+  # serve (so the stamp doesn't age out before the console's first poll), flip the header tile to "converted" NOW,
+  # and repoint the lifecycle emit to the node tile so the EXIT trap finishes the NODE's terminal after the step below.
+  for _i in $(seq 1 30); do curl -sk -o /dev/null --max-time 2 "https://127.0.0.1:${PPORT}${PBASE}/" 2>/dev/null && break; sleep 1; done
+  lc_emit_file converted-docker; LC_EMIT=lc_emit_post
   echo; info "NODE → docker — converting this box's local node (adds swg-node to the panel's compose project)…"; echo
   # CO-LOCATED node specifics (a standalone node doesn't need these): reach the LOCAL panel on the host-published
   # port (host networking can't resolve the compose name swg-panel), and manage turns via the panel (socket) so the
@@ -435,6 +440,9 @@ EOF
       PANEL_URL="https://127.0.0.1:$PPORT" TURN_MANAGE=panel SWG_LC_PARENT=1 TLS_VERIFY=no \
       bash "$SRC/install-docker.sh" node \
     || warn "the local node convert reported an error — check it on the panel."
+  # node part done → re-stamp the host's "converted-docker" (its panel-up stamp may have aged out during the node
+  # step) so the header reliably shows "converted" at the end — same as docker→bare.
+  lc_emit_file converted-docker
   clear_recovery
   echo; ok "$(b master) converted to docker — panel + local node (host convert + node convert). Same login, roster, nodes + cert + local node. Nodes reconnect on their next sync."
   _sch=https; [ "$PTLS" = none ] && _sch=http
