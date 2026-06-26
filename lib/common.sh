@@ -72,6 +72,13 @@ panel_node_name(){ [ -f "$2" ] || return 0
 # the EXIT decides the terminal: Ctrl-C/SIGTERM → "<op> aborted"; any non-zero exit → "<op> failed" + log
 # tail; clean exit → the success state (uninstall has none — the goodbye removes the node). Backends read the
 # conventional vars the caller sets first: LC_URL/LC_TOKEN/LC_VERIFY (post) or LC_FILE (host_proc path).
+# Data-entry spacing: a prompt helper ends with _pnl — ONE trailing blank line + a mark. The next step() skips its
+# own leading blank while that mark is up (so prompt→step shows ONE blank, not two); any real output (info/ok/warn/
+# sub, or another step) lowers the mark so content→step still gets its separating blank. Net: exactly one blank line
+# after every data-entry prompt, everywhere, without doubling.
+_SWG_NL=""
+_pnl(){ echo; _SWG_NL=1; }                     # call at the end of a prompt helper (interactive path only)
+_nlguard(){ _SWG_NL=""; }                      # call from real-output helpers so they don't get swallowed
 LC_OP=""; LC_EMIT=""; LC_LOG=""; LC_ABORT=""; LC_HANDOFF=""; LC_DONE=""; LC_SUCCESS=""
 _lc_inprogress(){ case "$1" in reinstall) echo reinstalling;; convert-bare) echo converting-bare;; convert-docker) echo converting-docker;; update) echo updating;; uninstall) echo uninstalling;; esac; }
 _lc_success(){    case "$1" in reinstall) echo reinstalled;; convert-bare) echo converted-bare;; convert-docker) echo converted-docker;; update) echo updated;; uninstall) echo "";; esac; }

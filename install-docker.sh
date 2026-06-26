@@ -69,10 +69,13 @@ ARGS=("$@"); for a in "${ARGS[@]+"${ARGS[@]}"}"; do [ "$a" = "--dry-run" ] && DR
 PREFIX=""; $DRYRUN && PREFIX="$(pwd)/dryrun"
 
 c(){ printf '\033[%sm' "$1"; }
-info(){ echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
-sub(){  echo "${C_BL}::${RESET} $*"; }                    # :: blue sub-item / progress detail
-ok(){   echo "${C_GREEN}✓${RESET} $*"; }
-warn(){ echo "${C_BROWN}!${RESET} $*" >&2; }
+# data-entry spacing primitives (lib/common.sh is sourced later in this script, but info/warn above use these) —
+# redefined identically when common.sh loads. See common.sh for the model.
+_SWG_NL=""; _pnl(){ echo; _SWG_NL=1; }; _nlguard(){ _SWG_NL=""; }
+info(){ _nlguard; echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
+sub(){  _nlguard; echo "${C_BL}::${RESET} $*"; }                    # :: blue sub-item / progress detail
+ok(){   _nlguard; echo "${C_GREEN}✓${RESET} $*"; }
+warn(){ _nlguard; echo "${C_BROWN}!${RESET} $*" >&2; }
 die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 run(){ if $DRYRUN; then echo "    [skip] $*"; else "$@"; fi; }
@@ -81,7 +84,9 @@ detect_public_ip(){ local ip; ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n
   [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -vE '^127\.' | head -n1 || true)"
   printf '%s' "$ip"; }
 ask_tty(){ local v p="$1" d="${2:-}"   # prompt on the terminal (curl|bash keeps a tty); else use default
-  printf '\n' >/dev/tty 2>/dev/null || true
+  # NB: this runs in a $() subshell (ask_yn_tty captures it), so it can only READ _SWG_NL, not set it — hence just
+  # a flag-aware LEADING blank; the following step/helper supplies the trailing blank (its own leading, flag clear).
+  [ -n "${_SWG_NL:-}" ] || printf '\n' >/dev/tty 2>/dev/null || true
   if printf '  %s%s: ' "$p" "${d:+ [$d]}" 2>/dev/null >/dev/tty && IFS= read -r v 2>/dev/null </dev/tty; then printf '%s' "${v:-$d}"
   else printf '%s' "$d"; fi; }
 ask_yn_tty(){ local v p="$1" d="${2:-n}"   # y/n on the tty -> echoes yes|no (default when blank / no tty)
@@ -99,7 +104,7 @@ menu(){ printf '  %s\n      %s\n\n' "$1" "$2"; }
 key(){  printf '%s[%s]%s%s'   "$C_BLUE"        "$1" "$2" "$RESET"; }   # whole label blue:        key  l 'etsencrypt'           → [l]etsencrypt
 keyd(){ printf '%s%s[%s]%s%s' "$BOLD" "$C_BLUE" "$1" "$2" "$RESET"; }   # default label bold+blue: keyd l 'etsencrypt (default)'  → [l]etsencrypt (default)
 keyg(){ printf '%s[%s]%s%s'   "$C_GREY"        "$1" "$2" "$RESET"; }   # de-emphasised label grey:  keyg n 'one'                → [n]one
-STEP="${STEP_BASE:-1}"; step(){ echo; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # sequential, continues bootstrap's numbering
+STEP="${STEP_BASE:-1}"; step(){ [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""; echo "$(b "Step $STEP. $1")${2:+   $2}"; STEP=$((STEP+1)); }   # skip the leading blank when a prompt already printed one
 writef(){ local p="$1" m="${2:-644}" full="$PREFIX$1"; mkdir -p "$(dirname "$full")"; cat > "$full"; chmod "$m" "$full" 2>/dev/null || true; ok "wrote $p ($m)"; }
 ask(){ local v p="$1" d="${2:-}"; echo; read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty || v=""; printf -v "$3" '%s' "${v:-$d}"; }
 v_ip(){ printf '%s' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1; local o; for o in ${1//./ }; do [ "$o" -le 255 ] 2>/dev/null || return 1; done; }
@@ -154,19 +159,19 @@ ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o forced rc i
     if read -rp "  $p [$(bb "$d")]: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
     case "$v" in ""|*[!0-9]*) :;; *) i=1; for o in $opts; do [ "$i" = "$v" ] && { v="$o"; break; }; i=$((i+1)); done;; esac   # [N] -> the Nth option (1-indexed menus)
-    for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; return; }; done
-    [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
+    for o in $opts; do [ "$v" = "$o" ] && { printf -v "$var" '%s' "$v"; _pnl; return; }; done
+    [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; _pnl; return; }
     [ $rc -ne 0 ] && die "‘$v’ is not one of: $opts"
     warn "‘$v’ isn't one of: $opts"; echo "  re-enter, or append ' --force' to use it anyway"
   done; }
 ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
   if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return; fi
-  echo
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
   while :; do
     if read -rp "  $p${d:+ [$(col "$C_BLUE" "$d")]}: " v </dev/tty; then rc=0; else rc=1; v=""; fi
     v="${v:-$d}"; forced=no; case "$v" in *' --force') v="${v% --force}"; v="${v%"${v##*[![:space:]]}"}"; forced=yes;; esac
-    if "$fn" "$v"; then printf -v "$var" '%s' "$v"; return; fi
-    [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; return; }
+    if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
+    [ "$forced" = yes ] && { warn "forcing: $v"; printf -v "$var" '%s' "$v"; _pnl; return; }
     [ $rc -ne 0 ] && die "no valid value for ‘$p’"
     warn "$hint"; echo "  re-enter, or append ' --force' to use it anyway"
   done; }
