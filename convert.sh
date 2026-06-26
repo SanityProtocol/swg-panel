@@ -379,7 +379,7 @@ PY
       grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$_src" > "$confd/$_nm.conf" 2>/dev/null && chmod 600 "$confd/$_nm.conf" 2>/dev/null || true
       sub "staged local-node interface $(b "$_nm") → data/node-confs (key preserved)"; done
     if [ -d /var/lib/swg-noded/iface-keys ]; then mkdir -p "$DOCKER_DIR/data/node/iface-keys"; cp -a /var/lib/swg-noded/iface-keys/. "$DOCKER_DIR/data/node/iface-keys/" 2>/dev/null || true; fi
-    turn_to_docker   # bare turn units → docker turn record (asks to transfer; container materialises them)
+    # turn-proxies are migrated in the NODE STAGE now (install-docker's migrate_baremetal_turns asks "Transfer?"
   fi
 
   # 2) stage the compose project (prebuilt image pulled from GHCR)
@@ -764,7 +764,8 @@ EOF
 
   # 2) COPY-FIRST: stage the turn-proxies into the docker record too (interactive) while the bare node is
   #    STILL UP — so an abort/failure here leaves the node fully intact (no recovery needed; just re-run).
-  turn_to_docker   # migrate this box's host turn-proxies → the docker node's record (→ containers)
+  # turn-proxies are migrated in the NODE STAGE now — install-docker's migrate_baremetal_turns (turn step) asks
+  # "Transfer these turn-proxies into the docker node?" and copy-firsts them, mirroring migrate_docker_turns.
 
   # 3) everything is staged; the BARE NODE IS STILL UP + serving the whole time. Persist the identity (so an
   #    interrupt during the final switch can resume), then hand off — install-docker.sh does the ATOMIC SWITCH:

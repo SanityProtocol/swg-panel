@@ -176,6 +176,7 @@ ask_valid(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v forced rc
 # ./data/node, which is bind-mounted into swg-node at /var/lib/swg-noded. swg-noded (SWG_TURN_RECORD)
 # materialises it into containers on its first run and reports them to the panel.
 TURN_RECORD="${TURN_RECORD:-$INSTALL_DIR/data/node/turn-proxy.json}"
+MIGRATED_TURNS=""   # bare turn-proxy units migrate_baremetal_turns brought into the docker record → torn down at the switch
 declare -A TP_LISTEN TP_CONNECT TP_WRAP
 gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }
   openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -331,6 +332,36 @@ choose_turn_proxy(){ info "Checking for turn-proxy servers on this host…"; loc
       5|a|anton|anton48)           install_turn_proxy anton48; continue;;
       *) warn "enter 0–5, a letter (c/w/s/k/m/a) or a name (or press Enter to skip)";; esac
   done; }
+# bare→docker convert: migrate THIS box's host turn-proxy systemd units → the docker turn RECORD (swg-noded
+# materialises them as sibling containers). The exact mirror of install-node's migrate_docker_turns: runs in the
+# turn step (node stage), lists them, asks "Transfer? (Y/n)", and copy-firsts — the bare units keep serving until
+# the atomic switch tears them down (recorded in MIGRATED_TURNS). Decline ⇒ left on bare-metal (stopped at switch).
+migrate_baremetal_turns(){
+  [ "${SWG_CONVERT_DIR:-}" = convert-docker ] || return 0
+  local units u svc owner lis con params envf exe inst
+  units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null)" || true
+  [ -n "$units" ] || return 0
+  echo; info "Turn-proxies to migrate from the bare-metal node:"; echo
+  for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
+    lis=""; con=""; [ -f "$envf" ] && { lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | head -1)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | head -1)"; }
+    printf '    %s%s%s  %s → %s\n' "$C_GREEN" "$svc" "$RESET" "${lis:-?}" "${con:-?}"; done
+  echo
+  [ "$(ask_yn_tty "Transfer these turn-proxies into the docker node?" y)" = yes ] || { info "  left on bare-metal — they stop at the switch; add fresh ones below if you want"; return 0; }
+  for u in $units; do
+    svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"; envf="/opt/vk-turn-proxy/$inst/turn.env"
+    if [ -f "$envf" ]; then
+      lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" | head -1)"; con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" | head -1)"; params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" | head -1)"
+    else
+      exe="$(sed -n 's/^ExecStart=//p' "$u" | head -1)"
+      lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"; con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
+      params="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}[^ ]*[[:space:]]*\(.*\)$/\1/p')"
+    fi
+    owner="$(sed -n 's/.*vk-turn-proxy (\([^)]*\)).*/\1/p' "$u" | head -1)"
+    fork="${svc#vk-turn-proxy-}"; fork="${fork%-*}"
+    install_turn_binary "$fork" "$owner" "$lis" "$con" "$params"     # writes the docker turn RECORD (no host unit)
+    MIGRATED_TURNS="${MIGRATED_TURNS:+$MIGRATED_TURNS }$svc"          # tear the bare unit down at the atomic switch
+  done
+}
 
 # ───────────────────────── flags ─────────────────────────
 while [ $# -gt 0 ]; do
@@ -998,6 +1029,7 @@ PYSOCK
   else
     [ "$TURN_MANAGE" = manual ] && ok "turn-proxy management: manual (managed on this server)"
   fi
+  migrate_baremetal_turns   # convert: bring the bare-metal turn-proxies into the record FIRST, then the fork menu adds more
   choose_turn_proxy   # install/onboard host turn-proxy servers as part of this step (unit retries until compose publishes the wg port)
 fi
 NODE_NET="${NODE_NET:-host}"; TURN_MANAGE="${TURN_MANAGE:-manual}"   # concrete values for .env
@@ -1152,7 +1184,7 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   [ "${SWG_CONVERT_KILL_PANEL:-}" = 1 ] && teardown_bare_panel   # host/master convert: stop+remove the bare panel (and move its state aside)
   # ONLY tear the bare NODE down when its datapath is actually being converted (master/node). A HOST-only
   # convert moves just the panel → docker; the co-located bare node must stay UP + keep serving its peers.
-  [ "$PROFILE" != host ] && lc_teardown_baremetal ${SWG_CONVERT_TURNS:-}
+  [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-${SWG_CONVERT_TURNS:-}}
 fi
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
