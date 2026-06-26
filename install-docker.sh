@@ -809,7 +809,7 @@ PY
 migrate_baremetal_ifaces(){
   [ "${SWG_CONVERT_DIR:-}" = convert-docker ] || return 0
   local ifs n c pr lp src dest
-  ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u)"; ifs="$(echo $ifs)"
+  ifs="$(for c in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$c" ] && basename "$c" .conf; done 2>/dev/null | sort -u || true)" || true; ifs="$(echo $ifs)"
   [ -n "$ifs" ] || return 0
   echo; info "Interfaces to migrate from the bare-metal node:"; echo
   for n in $ifs; do
@@ -826,7 +826,7 @@ migrate_baremetal_ifaces(){
     grep -viE '^[[:space:]]*Post(Up|Down)[[:space:]]*=' "$src" > "$dest" 2>/dev/null && chmod 600 "$dest"   # strip host NAT (container NATs); keys preserved
     echo "    $(b "$n") → data/node-confs (key preserved; bare interface comes down at the switch)"
   done
-  [ -d /var/lib/swg-noded/iface-keys ] && { mkdir -p "$INSTALL_DIR/data/node/iface-keys"; cp -a /var/lib/swg-noded/iface-keys/. "$INSTALL_DIR/data/node/iface-keys/" 2>/dev/null || true; }
+  if [ -d /var/lib/swg-noded/iface-keys ]; then mkdir -p "$INSTALL_DIR/data/node/iface-keys"; cp -a /var/lib/swg-noded/iface-keys/. "$INSTALL_DIR/data/node/iface-keys/" 2>/dev/null || true; fi
 }
 # wg/awg step: pick from the host's interfaces (available / used-by-another-node) or create new
 manage_node_ifaces(){
