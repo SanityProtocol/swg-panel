@@ -2020,6 +2020,18 @@ def api(method, path, qs, body, deps):
                         os.unlink(UPDATE_TRIGGER)
                     with open(UPDATE_TRIGGER, "w") as f:
                         f.write(str(int(time.time())) + "\n")
+                # MASTER: also flag the co-located node "updating" right now, so its tile shows the status for the
+                # WHOLE update — like the header. update.sh's own proc_status POST lands a few seconds in and the
+                # update can finish before the ~5s poll catches that brief window, so the node would otherwise jump
+                # straight to "updated". Local node = the one sharing this panel host's hostname. (We set proc_status
+                # directly, NOT the `update` flag — the flag would trigger a SECOND, redundant node self-update.)
+                with contextlib.suppress(Exception):
+                    _hn = os.uname().nodename; _snaps = deps.get("node_snaps") or {}; _hit = False
+                    for _nid, _c in nodes.items():
+                        if (_snaps.get(_nid) or {}).get("hostname") == _hn:
+                            _c["proc_status"] = {"state": "updating", "at": int(time.time())}; _hit = True
+                    if _hit:
+                        nodes_save(deps["nodes_path"], nodes)
                 ev_append(roster_path, "node", "host", "Host update started", "")
                 return 200, {"ok": True, "data": {"started": True}}
             except Exception as e:
