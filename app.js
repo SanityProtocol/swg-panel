@@ -2861,6 +2861,7 @@ function NodeHealth({ health, node, compact, history }) {
 }
 
 let hostUpdating = false;                 // once Update is clicked, lock the header pill into "updating"
+let pendingUpdateDone = null;             // [from,to] of a panel version bump, held until the WHOLE host update finishes (a master's panel restarts mid-update, before the node phase — don't pop the "updated" dialog yet)
 // the circular-arrow glyph (same as the check icon), spun in yellow while an update runs
 const UPD_SPIN_SVG = `<svg class="updspin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg>`;
 const WARN_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`;
@@ -3876,9 +3877,14 @@ function App() {
     }
     const v = Store.versions || {}, el = $("#appver");
     if (v.panel) {            // panel came back on a different version → it was updated; prompt a hard reload
-      if (seenPanelVer && seenPanelVer !== v.panel) { hostUpdating = false; openUpdateDone(seenPanelVer, v.panel); }
+      if (seenPanelVer && seenPanelVer !== v.panel) { hostUpdating = false; pendingUpdateDone = [seenPanelVer, v.panel]; }
       seenPanelVer = v.panel;
     }
+    // Pop the "Panel updated — reload" prompt only once the host lifecycle has FINISHED (host_proc no longer
+    // in-progress). On a master the panel restarts after its own phase while the node phase is still running, so
+    // firing on the version bump alone would show "updated" once now and again when host_proc lands its terminal —
+    // i.e. twice on the header. Holding it until host_proc settles makes that a single "updated".
+    if (pendingUpdateDone && !inProc(Store.hostProc)) { const _u = pendingUpdateDone; pendingUpdateDone = null; openUpdateDone(_u[0], _u[1]); }
     if (el && v.panel) {        // panel version only — the host's awg/wg/docker versions aren't shown
       el.innerHTML = `<b>${esc(v.panel)}</b>`;
     }
