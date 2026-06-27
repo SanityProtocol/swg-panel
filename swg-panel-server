@@ -1097,8 +1097,7 @@ def api(method, path, qs, body, deps):
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
-            "panel_outdated": bool(LATEST_REMOTE.get("version") and VERSIONS.get("panel")
-                                   and LATEST_REMOTE["version"] != VERSIONS.get("panel")),
+            "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
         }}
 
