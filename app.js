@@ -1175,7 +1175,7 @@ function NodeDetail({ node: rawName }) {
       </div>
     </div>
 
-    <div class="noderibbon">
+    ${!snap ? html`<div class="node-nodata"><${Ic} i="activity"/><p>This node isn't sending any data right now</p></div>` : html`<div class="noderibbon">
       <div class="nr-tags">
         ${(meta ? Object.keys(meta) : []).map(ifn => {
           const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
@@ -1266,6 +1266,7 @@ function NodeDetail({ node: rawName }) {
     <//>
 
     ${hasTurns ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title="Turn proxies"/>` : null}
+    `}
   </div>`;
 }
 
