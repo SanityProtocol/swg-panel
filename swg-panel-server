@@ -2360,12 +2360,14 @@ class Handler(BaseHTTPRequestHandler):
         if ifaces_dirty:
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
-        # clear a pending self-update once the node reports a version different from when it was
-        # requested — robust to the node landing past a lagging docker-panel image version. Docker
-        # nodes can't self-update (a container can't recreate its image), so never let one hang.
+        # clear a pending self-update once the node reports a version different from when it was requested
+        # (robust to the node landing past a lagging docker-panel image version). DON'T clear docker nodes
+        # early any more: they DO self-update now via the host updater (swg-noded writes a trigger → the host
+        # runs `compose pull && up`), so popping the flag on first sight meant swg-noded usually never received
+        # it. A docker node with no host updater wired reports `update-failed` itself, so it won't hang silently.
         upd = node.get("update")
         rv = snap.get("noded_version")
-        if upd and ((rv and rv != upd.get("from")) or snap.get("kind") == "docker"):
+        if upd and rv and rv != upd.get("from"):
             node.pop("update", None)
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
