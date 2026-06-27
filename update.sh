@@ -243,6 +243,21 @@ if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml"
   fi
   prof="${prof:-host}"   # older installs may carry a host-node marker — compose keeps it as a master alias
   if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
+  # migrate existing docker panels: the panel matches a master's co-located node by the HOST hostname, which it
+  # only learns via SWG_HOST_HOSTNAME — older .env/compose lack it (an update doesn't restage the compose), so add it.
+  case "$prof" in host|master|host-node)
+    if ! $DRYRUN && ! grep -q '^SWG_HOST_HOSTNAME=' "$DOCKER_DIR/.env" 2>/dev/null; then printf 'SWG_HOST_HOSTNAME=%s\n' "$(hostname 2>/dev/null)" >> "$DOCKER_DIR/.env"; fi
+    if ! $DRYRUN && ! grep -q 'SWG_HOST_HOSTNAME' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
+      python3 - "$DOCKER_DIR/docker-compose.yml" <<'PYHN' && note "docker-compose.yml: added SWG_HOST_HOSTNAME (co-located node detection)"
+import sys
+f=sys.argv[1]; o=[]
+for l in open(f).read().split("\n"):
+    o.append(l)
+    if "SWG_UPDATE_TRIGGER:" in l and "${SWG_UPDATE_TRIGGER" in l: o.append('      SWG_HOST_HOSTNAME: "${SWG_HOST_HOSTNAME:-}"')
+open(f,"w").write("\n".join(o))
+PYHN
+    fi ;;
+  esac
   if grep -qE '^[[:space:]]*build:' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
     # build-from-source deployment → restage the source and rebuild (don't touch the user's compose/.env)
     if should_update "docker ($prof, source build)" "$DOCKER_DIR"; then
