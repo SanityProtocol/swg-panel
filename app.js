@@ -461,14 +461,15 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   turnWasBusy[k] = _busy;
   const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
   const conn = fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : [];   // online peers via this proxy → header count
-  return html`<div class=${"ifcard tp" + (nrec.turn_manage && !converting ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage && !converting ? () => openTurnManage(node, tp) : null}>
+  const canOpen = nrec.turn_manage && !converting && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting (don't open a half-created proxy)
+  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null}>
     <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
       : pend === "delete"
       ? html`<${StatusTag} cls="tg-busy del" label="deleting…" msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
       : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label="creating" msg=${prog} title="The node is setting it up right now"/>`
       : turnReadyNow ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>`
-      : (pend || queued) ? html`<${StatusTag} cls="tg-pending" icon="clock" label="pending" msg=${err} title=${pend ? "Assigned — waiting for the node to pick it up and install it" : "Queued — the node installs these one at a time"}/>${pend ? html`<button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>` : null}`
+      : (pend || queued) ? html`<${StatusTag} cls="tg-busy" icon="clock" label="creating" msg=${err} title=${pend ? "The node is setting it up" : "Queued — the node creates these one at a time"}/>${pend ? html`<button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>` : null}`
       : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="install failed" msg=${err || "the install failed on the node"} title="Command failed on the node"/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : stopped ? html`<span class="tg-off" title="Stopped from the panel — open to Start it"><${Ic} i="stop"/>stopped</span>`
