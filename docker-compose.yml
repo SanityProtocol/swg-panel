@@ -88,6 +88,7 @@ services:
       NODE_PLAIN_WG: "${NODE_PLAIN_WG:-}"  # yes = plain WireGuard; blank/no = AmneziaWG v2
       TLS_VERIFY: "${TLS_VERIFY:-no}"     # yes to verify the panel's cert (real CA)
       DNS: "${DNS:-1.1.1.1}"
+      SWG_UPDATE_TRIGGER: "${NODE_UPDATE_TRIGGER:-}"   # set by install-docker (node/master) when it wires the host one-click updater; swg-noded touches this on an Update request and the host swg-update.path runs `compose pull && up`. blank = manual update only
       # turn-proxies run as SIBLING CONTAINERS (swg-turn-*, via the mounted docker.sock) — NOT host
       # systemd. swg-noded keeps their config in this record under ./data/node (mounted below).
       SWG_TURN_RECORD: "/var/lib/swg-noded/turn-proxy.json"

@@ -2884,36 +2884,31 @@ function openUpdateDone(from, to) {
     </div>
   <//>`);
 }
+// One consistent update modal for both a node and the panel header: the full (third-party-included) command to
+// run by hand, plus an "Update now" button that kicks off the automatic swg-only update.
+function openUpdateModal({ title, side, onConfirm }) {
+  const full = "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update";
+  const go = async () => { closeModal(); await onConfirm(); };
+  openModal(html`<${Sheet} title=${title}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${go}>Update now</button></>`}>
+    <div class="iface-intro"><div>For a <b>full, controlled update</b> — including third-party components (docker / wg-awg / turn-proxies) — run this on the ${side} box:</div></div>
+    <div class="field"><div class="ipk-field"><span class="ipk-val" style="text-align:left">${full}</span><button class="copybtn" onClick=${() => copy(full, "Command copied")}><${Ic} i="copy"/></button></div></div>
+    <div class="iface-intro"><div>For an <b>automatic update of SWG components only</b>, press <b>Update now</b> below.</div></div>
+  <//>`);
+}
 function updateNode(n) {
-  if (n.kind === "docker") {   // a container can't recreate its own image — update via the host
-    const cmd = "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update -y --no-components";
-    return openModal(html`<${Sheet} title=${"Update " + n.name}>
-      <div class="iface-intro big"><div>This is a <b>Docker</b> node — it can't self-update (a container can't recreate its own image). Update it by pulling the new image on <b>its host</b>:</div></div>
-      <div class="field"><label>Run on the node's host</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${cmd}</span><button class="copybtn" onClick=${() => copy(cmd, "Command copied")}><${Ic} i="copy"/></button></div><div class="hint">It detects the compose install and runs <span class="mono">docker compose pull && up -d</span>.</div></div>
-    <//>`);
-  }
-  openConfirm({
-    title: "Update node", confirmLabel: "Update " + n.name, warn: true,
-    body: "The node pulls the swg-only updater on its next sync and self-updates (swg-noded restarts; "
-      + "wg/awg/turn-proxies and your peers are left running). It'll report the new version when done. "
-      + "Currently v" + (n.version || "?") + " → v" + (n.latest || "?") + ".",
+  openUpdateModal({
+    title: "Update " + n.name, side: "node's",
     onConfirm: async () => { const r = await api.nodeSelfUpdate({ node: n.id }); if (r.ok) { await Store.poll(); toast("Update requested — applies on the node's next sync.", "ok"); } else toast(r.error || "Failed to request update.", "err"); },
   });
 }
 function updateHost() {
-  openConfirm({
-    title: "Update this server", confirmLabel: "Update now", warn: true,
-    body: "Updates the panel (and a co-located node) in place to the latest release — swg programs only, "
-      + "leaving wg/awg/turn-proxies untouched. The panel restarts, so the UI will briefly drop. Needs root "
-      + "(or passwordless sudo) on the host.",
+  openUpdateModal({
+    title: "Update this server", side: "panel's",
     onConfirm: async () => {
       const r = await api.hostUpdate();
       if (!r.ok) return toast(r.error || "Failed to start update.", "err");
-      if (r.data && r.data.manual) {
-        const d = r.data;   // defer past the confirm's own closeModal(), or it'd close this one too
-        setTimeout(() => openModal(html`<${Sheet} title="Update this server"><div class="iface-intro"><div>Can't self-update — ${d.reason || "run it on the host"}. Run this on the host:</div></div><div class="field"><label>Command</label><div class="ipk-field"><span class="ipk-val" style="text-align:left">${d.cmd}</span><button class="copybtn" onClick=${() => copy(d.cmd, "Command copied")}><${Ic} i="copy"/></button></div></div><//>`), 0);
-        return;
-      }
+      if (r.data && r.data.manual) return toast("Automatic update isn't wired on this install — run the command shown in the dialog on the host.", "err");
       setHostUpdating(); toast("Update started — the panel will restart shortly.", "ok");
     },
   });

@@ -1725,7 +1725,15 @@ def main():
             status, reply = post_json(url, token, {"snapshot": snap}, panel)
             if status == 200 and isinstance(reply.get("desired"), dict):
                 if reply.get("update") and not update_started:        # panel asked us to self-update
-                    update_started = run_self_update(node_cfg, reply["update"])
+                    _trig = os.environ.get("SWG_UPDATE_TRIGGER")
+                    if _trig:   # docker node: a container can't recreate its own image — touch the HOST trigger
+                        try:    # instead; its swg-update.path runs `compose pull && up` on the host (swg images only)
+                            with open(_trig, "w") as _f: _f.write(str(int(time.time())) + "\n")
+                            update_started = True; print(f"update trigger written → {_trig}", flush=True)
+                        except Exception as _e:
+                            print("update trigger failed:", _e, flush=True)
+                    else:
+                        update_started = run_self_update(node_cfg, reply["update"])
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
