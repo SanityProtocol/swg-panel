@@ -3919,7 +3919,7 @@ function App() {
       // "up to date"/button. With no lifecycle status, the slot is the normal update widget.
       let body;
       const _hl = esc(PROC_LABEL[Store.hostProc] || Store.hostProc || "");
-      if (inProc(Store.hostProc)) body = `<span class="hostproc-tag">${UPD_SPIN_SVG} ${_hl}</span>`;
+      if (inProc(Store.hostProc)) body = `<span class="hostproc-tag ${procInClass(Store.hostProc)}">${UPD_SPIN_SVG} ${_hl}</span>`;
       else if (procSuccess(Store.hostProc)) body = `<span class="hostproc-tag ok">${CHECK_SVG} ${_hl}</span>`;   // green, auto-clears (no ×)
       else if (procAborted(Store.hostProc)) body = `<span class="hostproc-tag aborted">${INFO_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>`;
       else if (procFailed(Store.hostProc)) body = `<span class="hostproc-tag fail${Store.hostProcErr ? ' tg-click' : ''}" id="hostproc-tag">${WARN_SVG} ${_hl}<button class="xbtn" id="hostproc-x" title="Dismiss">${X_SVG}</button></span>`;   // whole tag clickable → error popup

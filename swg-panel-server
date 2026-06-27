@@ -2537,6 +2537,7 @@ class Handler(BaseHTTPRequestHandler):
             # "Uninstalled" tag (recoverable by re-installing with the same token). Drop the live snapshot/seen
             # so it reads offline at once. The flag clears the instant the node syncs again (see _node_sync).
             nodes[nid]["uninstalled"] = int(time.time())
+            nodes[nid].pop("proc_status", None)   # the node is gone now — supersede any "uninstalling" tag
             nodes_save(Handler.deps["nodes_path"], nodes)
             (Handler.deps.get("node_snaps") or {}).pop(nid, None)
             (Handler.deps.get("node_seen") or {}).pop(nid, None)

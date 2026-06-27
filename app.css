@@ -71,7 +71,8 @@ h1,h2,h3{font-family:var(--sans)}
 .hostproc-tag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--partial);border:1px solid var(--partial);border-radius:99px;padding:4px 11px;background:rgba(226,200,74,.1)}   /* in-progress = YELLOW (matches the .upd-busy pill, so the header tag doesn't flip yellow→purple mid-update) */
 .hostproc-tag.ok{color:var(--online);border-color:var(--online);background:rgba(63,216,154,.1)}        /* host re-install succeeded — green, auto-clears */
 .hostproc-tag.aborted{color:var(--unknown);border-color:var(--unknown);background:rgba(98,116,139,.12)}  /* host re-install aborted — grey, dismissable */
-.hostproc-tag.fail{color:var(--dangling);border-color:var(--dangling);background:rgba(240,89,107,.1)}   /* host re-install failed — red, error popup + dismissable × */
+.hostproc-tag.fail,.hostproc-tag.procuninstall{color:var(--dangling);border-color:var(--dangling);background:rgba(240,89,107,.1)}   /* failed / uninstalling — RED (error popup + × on fail) */
+.hostproc-tag.procconvert{color:var(--pending);border-color:var(--pending);background:rgba(154,139,240,.1)}   /* converting — PURPLE */
 .hostproc-tag .xbtn{margin-left:4px;padding:1px} .hostproc-tag .errbtn{margin-right:4px;padding:1px}
 .updslot{display:inline-flex;align-items:center;gap:14px}   /* match .appbar-right gap so HC ↔ update spacing is even */
 .updpill{cursor:pointer;border-color:color-mix(in srgb,var(--ready) 42%,var(--line-solid))}

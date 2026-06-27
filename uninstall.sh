@@ -144,6 +144,29 @@ docker_node_goodbye(){
   esac
   _goodbye_post "$url" "$tok" "$verify"
 }
+# POST proc-status (best-effort) — flashes a red "uninstalling" tag on the panel the moment teardown starts.
+_proc_post(){  # <url> <token> <verify> <state>
+  local url="$1" tok="$2" verify="$3" state="$4"
+  { [ -n "$url" ] && [ -n "$tok" ] && command -v python3 >/dev/null 2>&1; } || return 0
+  python3 - "$url" "$tok" "$verify" "$state" <<'PY' 2>/dev/null || true
+import ssl, sys, json, urllib.request
+url = sys.argv[1].rstrip("/") + "/api/node/proc-status"; tok = sys.argv[2]; verify = sys.argv[3] == "yes"; state = sys.argv[4]
+ctx = ssl.create_default_context()
+if not verify: ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+req = urllib.request.Request(url, data=json.dumps({"state": state}).encode(), method="POST",
+                             headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json", "User-Agent": "swg-noded"})
+try: urllib.request.urlopen(req, timeout=6, context=ctx).read()
+except Exception: pass
+PY
+}
+docker_node_uninstalling(){   # red "uninstalling" tag while a docker node tears down (token/URL from the .env)
+  local env="$DOCKER_DIR/.env"; [ -f "$env" ] || return 0
+  local url tok verify
+  url="$(sed -n 's/^PANEL_URL=//p' "$env" | head -1)"; url="${url%\"}"; url="${url#\"}"
+  tok="$(sed -n 's/^NODE_TOKEN=//p' "$env" | head -1)"; tok="${tok%\"}"; tok="${tok#\"}"
+  verify="$(sed -n 's/^TLS_VERIFY=//p' "$env" | head -1)"; verify="${verify%\"}"; verify="${verify#\"}"; [ "$verify" = yes ] || verify=no
+  _proc_post "$url" "$tok" "$verify" uninstalling
+}
 
 rm_node(){
   info "Removing swg-node (bare-metal entry server)"
@@ -234,6 +257,7 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
   else docker_cleanup_if_last; fi     # applies the data-dir decision captured above
   ok "swg-panel container removed"; }
 rm_docker_node(){  info "Removing Docker node container (swg-node)"
+  docker_node_uninstalling   # flash a red "uninstalling" tag on the panel before we tear down
   local KNODE=""
   if docker_running swg-panel; then   # master/panel stays → only the NODE's own data is in play (decide now)
     ask_yn "  Keep the node's interface configs (peers)? Leaves data/node-confs so a future install can re-onboard them." y KNODE
