@@ -2509,8 +2509,12 @@ class Handler(BaseHTTPRequestHandler):
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):
-        # The node's uninstaller signs off here (its bearer token) so the panel can cleanly drop
-        # it — the "astalavista" signal that completes a soft removal without operator action.
+        # The node's uninstaller signs off here (its bearer token). We ONLY complete a full removal (archive +
+        # cascade-delete its peers) when the OPERATOR asked for it — i.e. they hit Nodes → remove, which set the
+        # `removing` flag. An UNSOLICITED uninstall (someone ran the uninstaller on the box) must NOT delete the
+        # node or its peers: peers whose only deployment is here would silently vanish — a destructive surprise.
+        # In that case we keep everything; the node just goes stale/offline, and a re-install with the same token
+        # re-syncs its peers. The operator can still Nodes → remove afterwards to purge it for good.
         nodes = nodes_load(Handler.deps["nodes_path"])
         hdr = self.headers.get("Authorization", "")
         token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
@@ -2518,8 +2522,12 @@ class Handler(BaseHTTPRequestHandler):
         if not nid:
             return self._send(401, {"error": "invalid node token"})
         with _api_lock:
-            nm = node_remove(Handler.deps, nid)
-        return self._send(200, {"ok": True, "removed": nm or nid})
+            if (nodes.get(nid) or {}).get("removing"):
+                nm = node_remove(Handler.deps, nid)
+                return self._send(200, {"ok": True, "removed": nm or nid})
+            ev_append(Handler.deps["roster_path"], "node", nid, "Node uninstalled — kept for re-install",
+                      (nodes.get(nid) or {}).get("name", nid))
+        return self._send(200, {"ok": True, "kept": nid})
 
     def _node_proc_status(self):
         # An installer/converter (its bearer token) flags that the node is about to go down for a

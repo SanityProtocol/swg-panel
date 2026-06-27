@@ -108,9 +108,9 @@ except Exception as e:
     sys.stderr.write(str(e) + "\n"); sys.exit(1)
 PY
   case $? in
-    0) ok "Panel notified — the node will drop itself.";;
-    2) warn "Panel returned a gateway error but the node was likely dropped — check the Nodes screen (Force-remove if it's still listed).";;
-    *) warn "Couldn't reach the panel; Force-remove the node from the Nodes screen instead.";;
+    0) ok "Panel notified — your peers are KEPT for a re-install (re-enroll with the same token to restore them). To purge for good, use Nodes → remove in the panel.";;
+    2) warn "Panel returned a gateway error — check the Nodes screen.";;
+    *) warn "Couldn't reach the panel; the node will just go offline there (your peers are kept). Remove it from the Nodes screen if you want it gone.";;
   esac
 }
 # bare-metal node — read the panel URL + token from its config.json
