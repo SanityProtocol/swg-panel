@@ -1040,6 +1040,7 @@ def api(method, path, qs, body, deps):
                         "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
                         "outdated": _ver_behind(snap.get("noded_version"), VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
                         "ahead": _ver_ahead(snap.get("noded_version"), VERSIONS.get("panel")),        # node is NEWER than the panel
+                        "local": bool(snap and snap.get("hostname") and snap.get("hostname") == os.uname().nodename),   # co-located with THIS panel (a master's own node): it updates WITH the panel, so the UI ties its update to the panel's remote-version check, not a node-vs-panel compare (which is always "up to date")
                         "updating": bool(c.get("update")) and (time.time() - ((c.get("update") or {}).get("at") or 0) <= PROC_GRACE),   # self-update in flight (times out → "update failed" via proc_status, then clears)
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
                         "creating": {k: ((v.get("cmd") or ["awg"])[0])               # iface → wg/awg (we know it)
