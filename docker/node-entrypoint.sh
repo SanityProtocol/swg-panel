@@ -124,7 +124,7 @@ for _c in "$AWG_DIR"/*.conf; do
   case " $MANAGED " in *" $_n "*) : ;; *) add_iface "$_n" "$NODE_ENDPOINT"; log "interface $_n from persisted conf (panel-created)";; esac
 done
 
-[ -n "$MANAGED" ] || { log "no interfaces to manage"; exit 1; }
+[ -n "$MANAGED" ] || log "no interfaces yet — syncing anyway so the node still reports (add one from the panel: Interfaces → Load new interface)"   # do NOT exit: exiting makes the container restart-loop whenever the panel has removed every interface
 
 # ───────── 2) bring each up (userspace; no kernel module in a container) + NAT its subnet ─────────
 export WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
