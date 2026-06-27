@@ -144,7 +144,7 @@ def _check_latest_remote():
 def _remote_version_loop():
     while True:
         _check_latest_remote()
-        time.sleep(6 * 3600)
+        time.sleep(30 * 60)   # every 30 min — the header reflects a freshly-published release within half an hour (the "check" icon is still there for an instant, on-demand refresh)
 
 STATIC = {
     "/": "index.html", "/index.html": "index.html",
