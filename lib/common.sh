@@ -13,6 +13,9 @@ proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *
 # keeps it, in any source order. Colours are read at call time, so they need not be set when this file is sourced.
 command -v b  >/dev/null 2>&1 || b(){  printf '%s%s%s'   "${BOLD:-}" "$*" "${RESET:-}"; }
 command -v bb >/dev/null 2>&1 || bb(){ printf '%s%s%s%s' "${BOLD:-}" "${C_BLUE:-}" "$*" "${RESET:-}"; }
+# `have` is used by print_summary's detection (and v_subnet) but is normally a per-script helper — convert.sh
+# doesn't define it, so _sum_detect printed "have: command not found" and returned no methods → an empty summary.
+command -v have >/dev/null 2>&1 || have(){ command -v "$1" >/dev/null 2>&1; }
 
 # the bordered, bold title every summary opens with — keeps one style across install / re-install / convert /
 # update for node / host / master. Pass the operation phrase, e.g. "CONVERSION COMPLETE", "INSTALL COMPLETE".
