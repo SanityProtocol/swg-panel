@@ -409,7 +409,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .dh-sep{width:1px;height:18px;background:var(--line-solid);margin:0 3px}
 .dh-ver .nm-ver{margin-left:0}
 .upd-busy{pointer-events:none;cursor:default;color:var(--partial);border-color:color-mix(in srgb,var(--partial) 45%,var(--line-solid))}
-.upd-busy .updspin{animation:spin .8s linear infinite;transform-box:fill-box;transform-origin:center;margin-left:1px}
+.updspin{animation:spin .8s linear infinite;transform-box:fill-box;transform-origin:center;margin-left:1px}   /* any updspin arrow animates — header upd-busy AND .hostproc-tag (so the panel 'updating' arrow circles like the node's) */
 /* "panel updated — hard reload" modal */
 .updone p{margin:0 0 18px;line-height:1.6;color:var(--ink-2);font-size:13.5px}
 .updone p:last-child{margin-bottom:0}

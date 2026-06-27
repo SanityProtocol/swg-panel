@@ -2873,6 +2873,7 @@ function setHostUpdating() {
   hostUpdating = true;
   const slot = $("#updslot");
   if (slot) slot.innerHTML = `<span class="livepill upd-busy">updating… ${UPD_SPIN_SVG}</span>`;
+  Store.apply();   // re-render the whole SPA so a co-located (local) node tile flips to "updating…" at the SAME instant, not on the next poll
 }
 let seenPanelVer = null;   // detect the panel coming back on a new version (after an update), to prompt a hard reload
 function openUpdateDone(from, to) {
