@@ -194,13 +194,14 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
     run mkdir -p "$_bak/data"
     run cp -a "$DOCKER_DIR/.env" "$_bak/.env"
     [ -d "$DOCKER_DIR/data/node-confs" ] && run cp -a "$DOCKER_DIR/data/node-confs" "$_bak/data/node-confs"
+    [ -d "$DOCKER_DIR/data/node" ] && run cp -a "$DOCKER_DIR/data/node" "$_bak/data/node"   # swg-noded state incl. turn-proxy.json → turn-proxies re-create on recovery
     run sed -i -E '/^(PANEL_PASSWORD|CF_TOKEN|CF_ORIGIN_TOKEN|ACME_EMAIL)=/d' "$_bak/.env"
-    info "  saved a recovery copy (node token + interface keys) to $(b "$_bak") — re-install and pick it from the recovery list"
+    info "  saved a recovery copy (node token + interface keys + turn-proxies) to $(b "$_bak") — re-install and pick it from the recovery list"
   fi
   if [ "$DOCKER_KEEP_CONFS" = yes ]; then
     # CASE 2 — keep the peers (interface server keys) LIVE so existing client configs keep working
-    run sh -c "find '$DOCKER_DIR' -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} + 2>/dev/null; find '$DOCKER_DIR/data' -mindepth 1 -maxdepth 1 ! -name node-confs -exec rm -rf {} + 2>/dev/null"
-    ok "Kept $DOCKER_DIR/data/node-confs (peers) live; token recoverable from the backup"
+    run sh -c "find '$DOCKER_DIR' -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} + 2>/dev/null; find '$DOCKER_DIR/data' -mindepth 1 -maxdepth 1 ! -name node-confs ! -name node -exec rm -rf {} + 2>/dev/null"
+    ok "Kept $DOCKER_DIR/data/node-confs (peers) + node (turn-proxies) live; token recoverable from the backup"
   else
     # CASE 3 — wipe everything live; full recovery (token + interface keys) is in the backup
     rmrf "$DOCKER_DIR"
@@ -233,7 +234,6 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
   if docker_running swg-panel; then   # master/panel stays → only the NODE's own data is in play (decide now)
     ask_yn "  Keep the node's interface configs (peers)? Leaves data/node-confs so a future install can re-onboard them." y KNODE
   else ask_full_data_fate; fi         # node is the last container → the whole data dir
-  docker_node_goodbye                 # sign off to the panel (token + URL from .env) before teardown
   # capture the node's interface names FROM THE CONTAINER first — the ./data/node-confs bind mount can be empty,
   # and a host-networking node creates its wg/awg netdevs in the HOST namespace (they survive `docker rm`), so we
   # need the names to delete the leftover host interfaces below (else the next install hits "awg0 already exists").
@@ -242,6 +242,7 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
   [ -n "$_ifn" ] || _ifn="$(for _c in "$DOCKER_DIR/data/node-confs/"*.conf; do [ -f "$_c" ] && basename "$_c" .conf; done | tr '\n' ' ')"
   run sh -c 'docker rm -f swg-node >/dev/null 2>&1 || true'
   run sh -c 'ids=$(docker ps -aq --filter name=swg-turn- 2>/dev/null); [ -n "$ids" ] && docker rm -f $ids >/dev/null 2>&1 || true'   # this node's turn-proxy containers
+  docker_node_goodbye                 # sign off AFTER the container is stopped — else its next 5s sync re-reports and clears the panel's "Uninstalled" tag (leaving it merely "offline")
   # delete the leftover HOST-namespace wg/awg netdevs the (host-networking) node created
   for _n in $_ifn; do [ -n "$_n" ] || continue
     command -v ip >/dev/null 2>&1 && ip link show "$_n" >/dev/null 2>&1 || continue

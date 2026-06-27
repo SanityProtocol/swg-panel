@@ -375,6 +375,11 @@ EOF2
       cp -a "$_rdir/data/node-confs/." /opt/swg-panel-docker/data/node-confs/ 2>/dev/null \
         && info "restored the node's interface keys from the recovery copy — peers keep their existing configs."
     fi
+    if [ "$METHOD" = docker ] && [ -f "$_rdir/data/node/turn-proxy.json" ] && [ ! -f /opt/swg-panel-docker/data/node/turn-proxy.json ]; then
+      mkdir -p /opt/swg-panel-docker/data/node                                       # bring back the turn-proxies too
+      cp -a "$_rdir/data/node/turn-proxy.json" /opt/swg-panel-docker/data/node/turn-proxy.json 2>/dev/null \
+        && info "restored the node's turn-proxies from the recovery copy."
+    fi
     info "re-enrolling this box as the recovered node (token reused — its peers re-sync onto it)."
   fi
 fi
