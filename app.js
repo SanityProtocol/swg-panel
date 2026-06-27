@@ -451,7 +451,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
-  const dim = converting || nodeStale(node) || (!justRestarted && (installing || failed || down || stopped || err || pend === "delete"));   // attention / node gone dark → dim (NOT a 'pending' assignment/queue — only actively-installing / failed / deleting)
+  const dim = converting || nodeStale(node) || (!justRestarted && (installing || queued || pend || failed || down || stopped || err));   // dim through the WHOLE 'creating' phase (installing/queued/assigned) like the pending card + attention states (failed/down/stopped/deleting) — only a settled/ready card is full-bright
   const _busy = !!(queued || installing || (pend && pend !== "delete"));   // any in-flight create / install / op
   const _bad = !!(failed || down || converting || stopped);
   const _settled = !!fronted && !_bad && !_busy;                           // up + healthy
