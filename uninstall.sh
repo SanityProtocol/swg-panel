@@ -282,7 +282,13 @@ rm_docker_node(){  info "Removing Docker node container (swg-node)"
                        || { _rm_node_data; info "  Removed the node's interface configs; panel data untouched."; }
   else docker_cleanup_if_last; fi     # applies the data-dir decision captured above
   ok "swg-node container removed"; }
-rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"; ask_full_data_fate; apply_full_data_fate; rmrf /var/lib/swg-recovery; ok "Docker deployment files removed"; }
+rm_docker_files(){ info "Removing the Docker deployment files ($DOCKER_DIR)"
+  # The dir-based component doesn't go through rm_docker_node/panel, so tear down ANY swg container here too
+  # (incl. compose's "<id>_swg-node" recreate-backups, which is why the node sometimes isn't detected by name).
+  ( cd "$DOCKER_DIR" 2>/dev/null && { docker compose down --remove-orphans >/dev/null 2>&1 || docker-compose down --remove-orphans >/dev/null 2>&1; } ) || true
+  for _p in swg-node swg-panel swg-turn-; do docker ps -aq -f "name=$_p" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done
+  docker_node_goodbye   # sign off AFTER the container is gone (no further sync clears the panel's "Uninstalled")
+  ask_full_data_fate; apply_full_data_fate; rmrf /var/lib/swg-recovery; ok "Docker deployment files removed"; }
 
 down_ifaces(){ local dir="$1" tool="$2" f n              # quietly bring each interface down (wg/awg-quick is noisy)
   for f in "$dir"/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"

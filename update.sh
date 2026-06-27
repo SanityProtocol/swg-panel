@@ -265,7 +265,9 @@ if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml"
       # --force-recreate: after `pull` updates :latest, a plain `up -d` may just (re)start the EXISTING
       # container on the OLD image (log shows "Started", not "Recreated") — so the node keeps the old
       # version until a 2nd run. Forcing recreation guarantees it runs the freshly-pulled image.
-      else ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" pull && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
+      else
+        for _c in $(case "$prof" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
+        ( cd "$DOCKER_DIR" && on_tty $COMPOSE --profile "$prof" pull && on_tty $COMPOSE --profile "$prof" up -d --force-recreate ) && { ok "docker ($prof) image pulled + recreated"; note "docker ($prof): image pulled + recreated"; } || { DID_FAIL=yes; warn "compose pull/up failed — check $DOCKER_DIR"; note "docker ($prof): pull/up FAILED"; }; fi
     else warn "docker ($prof): skipped"; note "docker ($prof): skipped"; fi
   fi
 fi

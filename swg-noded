@@ -1735,11 +1735,20 @@ def main():
             snap = build_snapshot(node_cfg, online_max, last_samples)
             status, reply = post_json(url, token, {"snapshot": snap}, panel)
             if status == 200 and isinstance(reply.get("desired"), dict):
-                if reply.get("update") and not update_started:        # panel asked us to self-update
+                _upd0 = reply.get("update")
+                if _upd0 and not update_started:   # already fired THIS exact request (a recreate restarted us)? then DON'T re-fire — else the update loops forever (recreate → restart → re-trigger → recreate …)
+                    _at = str((_upd0 or {}).get("at") or "")
+                    _marker = os.path.join(STATE_DIR, ".update-done")   # persists across the container recreate (bind-mounted to data/node)
+                    try: _prev = open(_marker).read().strip()
+                    except Exception: _prev = ""
+                    if _at and _at == _prev: update_started = True
+                if reply.get("update") and not update_started:        # panel asked us to self-update (and we haven't fired this one yet)
                     _trig = os.environ.get("SWG_UPDATE_TRIGGER")
                     if _trig:   # docker node: a container can't recreate its own image — touch the HOST trigger
                         try:    # instead; its swg-update.path runs `compose pull && up` on the host (swg images only)
                             with open(_trig, "w") as _f: _f.write(str(int(time.time())) + "\n")
+                            try: open(_marker, "w").write(_at)   # remember the request we fired so a recreate-restart won't re-fire it
+                            except Exception: pass
                             update_started = True; print(f"update trigger written → {_trig}", flush=True)
                         except Exception as _e:
                             print("update trigger failed:", _e, flush=True)

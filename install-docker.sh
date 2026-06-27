@@ -1257,7 +1257,9 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-${SWG_CONVERT_TURNS:-}}
 fi
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
-else ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
+else
+  for _c in $(case "$PROFILE" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
+  ( cd "$INSTALL_DIR" && on_tty $COMPOSE --profile "$PROFILE" up -d $RECREATE $BUILDFLAG ); fi
 $DRYRUN || rm -f /var/lib/swg-recovery 2>/dev/null || true   # stack is up → clear any convert-recovery marker
 
 # After compose's "✔ Container … Started" lines the container(s) initialise silently (panel: start the server +
