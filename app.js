@@ -2969,6 +2969,10 @@ function NodeCard({ n }) {
   const removing = n.removing;
   const ndown = st !== "online" && !inProc(n.proc_status);    // genuinely not reporting (recover state) → mirror the detail: disable card actions
   const nblocked = st !== "online" || inProc(n.proc_status);  // down OR mid convert/re-install
+  // list-card update tag: a co-located node updates WITH the panel (its "updating" comes from hostUpdating, not
+  // its own proc_status) — mirror the detail's dh-ver so the LIST shows "updating" too, while a terminal wins.
+  const nUpdating = n.updating || (n.local && (hostUpdating || inProc(Store.hostProc)));
+  const procEff = (n.proc_status && !inProc(n.proc_status)) ? n.proc_status : (nUpdating ? "updating" : n.proc_status);
   const nav = () => go("#/node/" + encodeURIComponent(n.id));
   return html`<div class=${"ncard clk" + (removing ? " removing" : "")} onClick=${nav}>
     <div class="ntop">
@@ -2978,7 +2982,7 @@ function NodeCard({ n }) {
       ${n.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> uninstalled</span>`
         : st === "online" ? html`<span class="reporting">reporting</span>`
         : st === "offline" ? html`<span class="badge b-unknown ic"><${Ic} i="info"/>offline</span>`
-        : html`<span class="nstat enroll"><${Ic} i="clock"/> awaiting enroll</span>`}${n.proc_status ? procTag(n.proc_status, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, n.proc_err, st !== "online" && st !== "offline") : null}
+        : html`<span class="nstat enroll"><${Ic} i="clock"/> awaiting enroll</span>`}${procEff ? procTag(procEff, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, n.proc_err, st !== "online" && st !== "offline") : null}
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
       <span class="grow"></span>
@@ -3815,6 +3819,35 @@ function unflagNode(n) {   // cancel a pending soft removal — keep the node
     call: () => api.nodeUnflagRemove({ id: n.id }),
   });
 }
+// Force-remove a node — destructive (cuts it off immediately + drops peers that live only here), so gated behind typing "DELETE <name>" (case-sensitive), like deleting an interface/turn-proxy.
+function ForceRemoveNodeSheet({ node }) {
+  const [txt, setTxt] = useState(""); const [busy, setBusy] = useState(false);
+  const phrase = "DELETE " + node.name;
+  const ok = txt === phrase;
+  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.id));
+  const onlyHere = here.filter(p => new Set(p.targets.map(t => t.node)).size === 1).length;
+  const del = () => {
+    if (!ok || busy) return;
+    setBusy(true); closeAllModals();
+    mutate({
+      key: "node:" + node.id,
+      patch: s => {                                  // optimistic: drop the node + purge its targets (mirrors the cascade)
+        s.nodes = s.nodes.filter(x => x.id !== node.id);
+        for (const id of Object.keys(s.roster.peers)) {
+          const p = s.roster.peers[id]; p.targets = p.targets.filter(t => t.node !== node.id);
+          if (!p.targets.length) delete s.roster.peers[id];
+        }
+      },
+      call: () => api.nodeDelete({ id: node.id }),
+    });
+    toast("Node force-removed.", "ok");
+  };
+  return html`<${Sheet} title=${"Force remove · " + node.name}
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" disabled=${!ok || busy} onClick=${del}>Force remove</button></>`}>
+    <div class="notice warn"><${Ic} i="warn"/><span>This cuts <b>${node.name}</b> off <b>immediately</b> without waiting for it to confirm — ${onlyHere ? html`<b>${onlyHere}</b> peer${onlyHere === 1 ? "" : "s"} that live only here ${onlyHere === 1 ? "is" : "are"} dropped` : "peers that live only here are dropped"}. Use this only when the server is unreachable. This can't be undone.</span></div>
+    <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
+  <//>`;
+}
 function NodeRemoveSheet({ node }) {
   const [flagged, setFlagged] = useState(!!node.removing);
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === node.id));
@@ -3826,19 +3859,7 @@ function NodeRemoveSheet({ node }) {
     patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) n.removing = true; },
     call: () => api.nodeFlagRemove({ id: node.id }),
   }); };
-  const force = () => { openConfirm({ title: "Force remove · " + node.name, confirmLabel: "Force remove", danger: true, back: () => openNodeRemove(node),
-    body: "This cuts the node off immediately without waiting for it to confirm. Peers that live only here are dropped. Use this only when the server is unreachable.",
-    onConfirm: () => mutate({
-      key: "node:" + node.id,
-      patch: s => {                                  // optimistic: drop the node + purge its targets (mirrors the cascade)
-        s.nodes = s.nodes.filter(x => x.id !== node.id);
-        for (const id of Object.keys(s.roster.peers)) {
-          const p = s.roster.peers[id]; p.targets = p.targets.filter(t => t.node !== node.id);
-          if (!p.targets.length) delete s.roster.peers[id];
-        }
-      },
-      call: () => api.nodeDelete({ id: node.id }),
-    }) }); };
+  const force = () => pushModal(html`<${ForceRemoveNodeSheet} node=${node}/>`);   // typed "DELETE <name>" confirmation (matches interface/turn-proxy deletes)
   return html`<${Sheet} title=${"Remove " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Close</button>
       ${flagged ? null : html`<button class="btn btn-primary" onClick=${flag}>Flag for removal</button>`}
