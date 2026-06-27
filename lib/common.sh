@@ -87,7 +87,7 @@ summary_host_block(){   # <method> <converted?yes|no>
   fi
   sch=https; [ "$tls" = none ] && sch=http; ps=":$port"; case "$port" in 443|80|"") ps="";; esac; url="${sch}://${dom}${ps}${base}/"
   [ "$conv" = yes ] && note="  ·  $(_sum_note "$m")"
-  echo "  $(b "$mlabel SWG Host")${ver:+ $(b "v$ver")}$note"
+  echo "${C_BLUE:-}▸${RESET:-} $(b "$mlabel SWG Host")${ver:+ $(b "v$ver")}$note"
   echo; echo "  $(b 'Panel') (login + the $(b "${tls:-?}") cert preserved):"; echo
   printf '    %-9s%s\n' "URL"     "$(bb "$url")"
   printf '    %-9s%s\n' "Login"   "$(b "${login:-admin}")  (unchanged)"
@@ -108,7 +108,7 @@ summary_node_block(){   # <method> <converted?yes|no>
   if [ "$m" = docker ]; then mlabel=Docker; ver="$(docker exec swg-node cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"
   else mlabel=Bare-metal; ver="$(cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"; fi
   [ "$conv" = yes ] && note="  ·  $(_sum_note "$m")"
-  echo "  $(b "$mlabel SWG Node")${ver:+ $(b "v$ver")}${purl:+  ·  syncs to $(bb "$purl")}$note"
+  echo "${C_BLUE:-}▸${RESET:-} $(b "$mlabel SWG Node")${ver:+ $(b "v$ver")}${purl:+  ·  syncs to $(bb "$purl")}$note"
   if [ "$m" = docker ]; then
     echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
     for conf in "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
