@@ -2570,6 +2570,7 @@ class Handler(BaseHTTPRequestHandler):
                 if err and (state.endswith("-failed") or state == "failed"):
                     ps["err"] = err
                 nodes[nid]["proc_status"] = ps
+                nodes[nid].pop("uninstalled", None)   # any active lifecycle (re-installing / updating / …) means the node is BACK → drop the grey "Uninstalled" tag so its real status (reinstalling → reinstalled-updated / failed) shows through
                 if state == "reinstalling":   # a re-install adopts the node's CURRENT server keys → drop pinned/drift pubkeys
                     for ov in (nodes[nid].get("ifaces") or {}).values():
                         ov.pop("public_key", None)
