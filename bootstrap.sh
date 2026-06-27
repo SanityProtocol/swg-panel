@@ -65,6 +65,7 @@ PASS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     update|uninstall)            ACTION="$1"; shift;;
+    recovery)                    ROLE=node; ROLE_EXPLICIT=yes; export SWG_RECOVER_MENU=1; shift;;   # open the leftover-identity menu directly (even on a box that still has a live node)
     docker)                      METHOD=docker; shift;;
     bare-metal|baremetal)        METHOD=baremetal; shift;;
     master|host|node)            ROLE="$1"; ROLE_EXPLICIT=yes; shift;;
@@ -276,7 +277,7 @@ if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ]; then
       _lt="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("token",""))' 2>/dev/null || true)"
       [ -n "$_lt" ] && _have_live_token=yes; fi
   fi
-  [ "$_have_live_token" = yes ] && info "re-installing the existing $(mlabel "$METHOD") node (its token is reused — to recover/rotate instead, use the panel's Recover button or pass -key)."
+  [ "$_have_live_token" = yes ] && [ "${SWG_RECOVER_MENU:-}" != 1 ] && info "re-installing the existing $(mlabel "$METHOD") node (its token is reused — to recover/rotate instead, use the panel's Recover button or pass -key)."
 fi
 # Render a leftover identity as a readable block: method, panel URL, token, where its configs live, the
 # interfaces + turn-proxies it had, when it was created, and (best-effort, via the panel) its name + last-online.
@@ -312,7 +313,7 @@ _salv_block(){ local idx="$1" tok="$2" url="$3" src="$4" method dir ifaces turns
   echo "           Last online:   ${last:-unknown (no answer from panel)}"
   echo
 }
-if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ] && [ "$_have_live_token" = no ]; then
+if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ] && { [ "$_have_live_token" = no ] || [ "${SWG_RECOVER_MENU:-}" = 1 ]; }; then
   _salvf="$(mktemp 2>/dev/null || echo "/tmp/swg-salv.$$")"; : > "$_salvf"
   # collect every candidate identity as "<token>\t<url>\t<source>" — most authoritative first: a leftover
   # swg-node container, then docker .env (live + moved backups, NEWEST first), then the bare agent config.
@@ -365,6 +366,7 @@ EOF2
   fi
   if [ -n "$salv_tok" ]; then
     NODE_TOKEN="$salv_tok"; export NODE_TOKEN; [ -n "$salv_url" ] && { PANEL_URL="$salv_url"; export PANEL_URL; }
+    case "${salv_src:-}" in *config.json) METHOD=baremetal;; *) METHOD=docker;; esac   # route to the installer matching the RECOVERED identity (docker vs bare), so recovery works regardless of the command used
     # If the live interface keys are gone (data dir was deleted on uninstall — case 3), restore them from the
     # chosen recovery copy so the node's peers keep their existing client configs (same server keys). Gated on the
     # live dir being empty, so a keep-peers (case 2) re-install never clobbers its live keys.

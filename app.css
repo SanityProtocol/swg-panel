@@ -425,7 +425,8 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 /* "check for updates": cyan + spinning while polling, back to grey when done. The extra
    .appbar-right selector beats `.appbar-right .iconbtn{color:--dim}` (same specificity, later). */
 .iconbtn.checking, .appbar-right .iconbtn.checking{color:var(--brand);pointer-events:none}
-.iconbtn.checking svg{animation:spin .8s linear infinite;transform-box:fill-box;transform-origin:center}   /* transform-box pins the pivot to the icon's box centre so it never spins off-axis on the first start */
+.iconbtn svg{transform-box:fill-box;transform-origin:center}   /* pin the pivot ALWAYS (not on .checking), so it's already resolved when the spin starts — else frame 1 rotates around the default 0,0 (off-centre on the first press) */
+.iconbtn.checking svg{animation:spin .8s linear infinite}
 .detail-head .title h1{margin:0;font-family:var(--mono);font-size:22px;line-height:1;font-weight:600;color:var(--ink)}
 .detail-head .grow{flex:1}
 .bigdots{display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap}
