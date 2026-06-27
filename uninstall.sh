@@ -184,11 +184,28 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
          "$DOCKER_DIR/swg-panel-server" "$DOCKER_DIR/swg-agent" "$DOCKER_DIR/swg-noded" \
          "$DOCKER_DIR/index.html" "$DOCKER_DIR/app.css" "$DOCKER_DIR/app.js" "$DOCKER_DIR/reconcile.js"
     ok "Kept $DOCKER_DIR/data + .env (node token) for a future reinstall"
-  elif [ "$DOCKER_KEEP_CONFS" = yes ]; then
-    # keep ONLY the interface confs (the peers) — drop everything else
+    return
+  fi
+  # CASES 2 & 3 — wiping the live data dir: first stash a recovery copy (node token + interface keys) under
+  # $DOCKER_DIR.uninstalled-<ts> so a future re-install can recover this node from the leftover-identity list
+  # (its peers re-sync from the panel). Panel / TLS secrets are stripped from the copy.
+  if [ -f "$DOCKER_DIR/.env" ]; then
+    _bak="$DOCKER_DIR.uninstalled-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo bak)"
+    run mkdir -p "$_bak/data"
+    run cp -a "$DOCKER_DIR/.env" "$_bak/.env"
+    [ -d "$DOCKER_DIR/data/node-confs" ] && run cp -a "$DOCKER_DIR/data/node-confs" "$_bak/data/node-confs"
+    run sed -i -E '/^(PANEL_PASSWORD|CF_TOKEN|CF_ORIGIN_TOKEN|ACME_EMAIL)=/d' "$_bak/.env"
+    info "  saved a recovery copy (node token + interface keys) to $(b "$_bak") — re-install and pick it from the recovery list"
+  fi
+  if [ "$DOCKER_KEEP_CONFS" = yes ]; then
+    # CASE 2 — keep the peers (interface server keys) LIVE so existing client configs keep working
     run sh -c "find '$DOCKER_DIR' -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} + 2>/dev/null; find '$DOCKER_DIR/data' -mindepth 1 -maxdepth 1 ! -name node-confs -exec rm -rf {} + 2>/dev/null"
-    ok "Kept $DOCKER_DIR/data/node-confs — peers re-onboardable; everything else removed"
-  else rmrf "$DOCKER_DIR"; fi
+    ok "Kept $DOCKER_DIR/data/node-confs (peers) live; token recoverable from the backup"
+  else
+    # CASE 3 — wipe everything live; full recovery (token + interface keys) is in the backup
+    rmrf "$DOCKER_DIR"
+    ok "Removed $DOCKER_DIR — a recovery copy (token + interface keys) is kept for re-install"
+  fi
 }
 docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only once NO swg container remains
   if docker_running swg-panel || docker_running swg-node; then return 0; fi

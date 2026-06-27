@@ -282,7 +282,7 @@ fi
 # interfaces + turn-proxies it had, when it was created, and (best-effort, via the panel) its name + last-online.
 _fmt_epoch(){ [ -n "${1:-}" ] && date -d "@$1" '+%d.%m.%Y %H:%M:%S' 2>/dev/null || echo "unknown"; }
 _salv_created(){ local s="$1" ts
-  case "$s" in *.converted-*) ts="$(printf '%s' "$s" | sed -n 's/.*\.converted-\([0-9]\{8\}\)-\([0-9]\{6\}\).*/\1\2/p')"
+  case "$s" in *.converted-*|*.uninstalled-*) ts="$(printf '%s' "$s" | sed -n 's/.*\.\(converted\|uninstalled\)-\([0-9]\{8\}\)-\([0-9]\{6\}\).*/\2\3/p')"
     [ -n "$ts" ] && { printf '%s.%s.%s %s:%s:%s\n' "${ts:6:2}" "${ts:4:2}" "${ts:0:4}" "${ts:8:2}" "${ts:10:2}" "${ts:12:2}"; return; };; esac
   [ -f "$s" ] && _fmt_epoch "$(stat -c %Y "$s" 2>/dev/null)" || echo "unknown"; }
 _salv_block(){ local idx="$1" tok="$2" url="$3" src="$4" method dir ifaces turns name last wj ls
@@ -321,7 +321,7 @@ if [ "$ROLE" = node ] && [ -z "${NODE_TOKEN:-}" ] && [ "$_have_live_token" = no 
     _t="$(printf '%s\n' "$_env" | sed -n 's/^NODE_TOKEN=//p' | head -1)"
     [ -n "$_t" ] && printf '%s\t%s\t%s\n' "$_t" "$(printf '%s\n' "$_env" | sed -n 's/^PANEL_URL=//p' | head -1)" "the swg-node container" >> "$_salvf"
   fi
-  for _f in /opt/swg-panel-docker/.env $(ls -dt /opt/swg-panel-docker.converted-*/.env 2>/dev/null || true); do
+  for _f in /opt/swg-panel-docker/.env $(ls -dt /opt/swg-panel-docker.converted-*/.env /opt/swg-panel-docker.uninstalled-*/.env 2>/dev/null || true); do
     [ -f "$_f" ] || continue
     _t="$(sed -n 's/^NODE_TOKEN=//p' "$_f" | head -1 | tr -d '"')"
     [ -n "$_t" ] && [ "$_t" != "set-in-nodes-screen" ] && printf '%s\t%s\t%s\n' "$_t" "$(sed -n 's/^PANEL_URL=//p' "$_f" | head -1 | tr -d '"')" "$_f" >> "$_salvf"
@@ -338,9 +338,9 @@ PY
   # dedup by token (a node keeps its token across converts, so repeated backups collapse to ONE identity)
   _uniq="$(awk -F'\t' '$1 && !seen[$1]++' "$_salvf" 2>/dev/null || true)"; rm -f "$_salvf"
   _ntok="$(printf '%s\n' "$_uniq" | grep -c . 2>/dev/null || true)"; _ntok="${_ntok:-0}"
-  salv_tok=""; salv_url=""
+  salv_tok=""; salv_url=""; salv_src=""
   if [ "$_ntok" = 1 ]; then
-    salv_tok="$(printf '%s' "$_uniq" | cut -f1)"; salv_url="$(printf '%s' "$_uniq" | cut -f2)"
+    salv_tok="$(printf '%s' "$_uniq" | cut -f1)"; salv_url="$(printf '%s' "$_uniq" | cut -f2)"; salv_src="$(printf '%s' "$_uniq" | cut -f3-)"
     echo
     warn "Found a leftover identity for a node that used to live on this box — its live config is gone, but the token survives in a backup (an install or conversion that didn't finish)."
     echo
@@ -360,11 +360,21 @@ EOF2
     printf '  Number to re-enroll with (or Enter to skip and set up a new node — you supply a token, panel → Nodes or -key): '; _pick=""; read -r _pick 2>/dev/null </dev/tty || _pick=""
     if printf '%s' "$_pick" | grep -qE '^[0-9]+$'; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
-      salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"
+      salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"; salv_src="$(printf '%s' "$_line" | cut -f3-)"
     fi
   fi
   if [ -n "$salv_tok" ]; then
     NODE_TOKEN="$salv_tok"; export NODE_TOKEN; [ -n "$salv_url" ] && { PANEL_URL="$salv_url"; export PANEL_URL; }
+    # If the live interface keys are gone (data dir was deleted on uninstall — case 3), restore them from the
+    # chosen recovery copy so the node's peers keep their existing client configs (same server keys). Gated on the
+    # live dir being empty, so a keep-peers (case 2) re-install never clobbers its live keys.
+    _rdir="$(dirname "${salv_src:-/dev/null}" 2>/dev/null)"
+    if [ "$METHOD" = docker ] && [ -d "$_rdir/data/node-confs" ] \
+       && ! ls /opt/swg-panel-docker/data/node-confs/*.conf >/dev/null 2>&1; then
+      mkdir -p /opt/swg-panel-docker/data/node-confs
+      cp -a "$_rdir/data/node-confs/." /opt/swg-panel-docker/data/node-confs/ 2>/dev/null \
+        && info "restored the node's interface keys from the recovery copy — peers keep their existing configs."
+    fi
     info "re-enrolling this box as the recovered node (token reused — its peers re-sync onto it)."
   fi
 fi
