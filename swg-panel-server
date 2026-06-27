@@ -1040,9 +1040,9 @@ def api(method, path, qs, body, deps):
                         "wan_ifaces": snap.get("node_ifaces") or [],   # the node's NICs — candidates for the egress WAN interface
                         "ip_ifaces": snap.get("node_ip_ifaces") or [], # (ip, iface) pairs — for the merged egress picker
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
-                        "latest": VERSIONS.get("panel"),        # the fleet reference (panel's own version)
-                        "outdated": _ver_behind(snap.get("noded_version"), VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
-                        "ahead": _ver_ahead(snap.get("noded_version"), VERSIONS.get("panel")),        # node is NEWER than the panel
+                        "latest": LATEST_REMOTE.get("version") or VERSIONS.get("panel"),   # track the LATEST release, not the panel — a node shows its real upgrade even when the panel itself is still behind (falls back to the panel's version until the remote check has run)
+                        "outdated": _ver_behind(snap.get("noded_version"), LATEST_REMOTE.get("version") or VERSIONS.get("panel")),   # strictly older only — never offer a downgrade
+                        "ahead": _ver_ahead(snap.get("noded_version"), LATEST_REMOTE.get("version") or VERSIONS.get("panel")),        # node is NEWER than the latest release (e.g. a dev build)
                         "local": bool(snap and snap.get("hostname") and snap.get("hostname") == os.uname().nodename),   # co-located with THIS panel (a master's own node): it updates WITH the panel, so the UI ties its update to the panel's remote-version check, not a node-vs-panel compare (which is always "up to date")
                         "updating": bool(c.get("update")) and (time.time() - ((c.get("update") or {}).get("at") or 0) <= PROC_GRACE),   # self-update in flight (times out → "update failed" via proc_status, then clears)
                         "onboarding": sorted((c.get("onboard") or {}).keys()),   # ifaces pending onboard
