@@ -596,6 +596,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nstat.dangling{color:var(--pending)}
 .nstat.proc{color:var(--partial)} .nstat.proc::before{display:none}   /* in-progress (updating / re-install / convert): YELLOW clock */
 .nstat.enroll{color:#F0913C} .nstat.enroll::before{display:none}   /* awaiting enroll: ORANGE clock (node hasn't checked in yet) */
+.nstat.uninst{color:var(--unknown)} .nstat.uninst::before{display:none}   /* uninstalled: GREY (kept for re-install; recover with the same token) */
 .nstat.procok{color:var(--online)} .nstat.procok::before{display:none}        /* success: green ✓, auto-clears after ~5s (no ×) */
 .nstat.procaborted{color:var(--unknown)} .nstat.procaborted::before{display:none}   /* aborted: grey, dismissable via × */
 .nstat.procfail{color:var(--dangling)} .nstat.procfail::before{display:none}   /* failed: red, error popup + dismissable × */

@@ -1017,6 +1017,7 @@ def api(method, path, qs, body, deps):
                         "transport": "https",
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
+                        "uninstalled": c.get("uninstalled"),   # unsolicited uninstall → grey "Uninstalled" tag; recover by re-installing with the same token
                         # node lifecycle tag via _proc_view: in-progress for PROC_GRACE then "<op> failed";
                         # explicit success (~5 s) / aborted / failed terminals; a lingered update flag past its
                         # grace also surfaces "update failed". proc_err carries the failed-state log tail.
@@ -2248,6 +2249,8 @@ class Handler(BaseHTTPRequestHandler):
         snap = body.get("snapshot") or {}
         Handler.deps.setdefault("node_snaps", {})[nid] = snap
         Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
+        if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
+            nodes_save(Handler.deps["nodes_path"], nodes)
         if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
             node["kind"] = snap["kind"]
             with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
@@ -2522,11 +2525,21 @@ class Handler(BaseHTTPRequestHandler):
         if not nid:
             return self._send(401, {"error": "invalid node token"})
         with _api_lock:
-            if (nodes.get(nid) or {}).get("removing"):
+            nodes = nodes_load(Handler.deps["nodes_path"])   # re-read under the lock
+            if nid not in nodes:
+                return self._send(200, {"ok": True, "kept": nid})
+            if nodes[nid].get("removing"):
                 nm = node_remove(Handler.deps, nid)
                 return self._send(200, {"ok": True, "removed": nm or nid})
+            # UNSOLICITED uninstall: keep the node + peers, but flag it 'uninstalled' so the UI shows a grey
+            # "Uninstalled" tag (recoverable by re-installing with the same token). Drop the live snapshot/seen
+            # so it reads offline at once. The flag clears the instant the node syncs again (see _node_sync).
+            nodes[nid]["uninstalled"] = int(time.time())
+            nodes_save(Handler.deps["nodes_path"], nodes)
+            (Handler.deps.get("node_snaps") or {}).pop(nid, None)
+            (Handler.deps.get("node_seen") or {}).pop(nid, None)
             ev_append(Handler.deps["roster_path"], "node", nid, "Node uninstalled — kept for re-install",
-                      (nodes.get(nid) or {}).get("name", nid))
+                      nodes[nid].get("name", nid))
         return self._send(200, {"ok": True, "kept": nid})
 
     def _node_proc_status(self):
