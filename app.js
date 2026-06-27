@@ -1666,7 +1666,7 @@ function EditIfaceSheet({ node, iface }) {
     }
     doSave();
   };
-  return html`<${Sheet} title=${"Edit interface · " + iface}
+  return html`<${Sheet} title=${"Edit interface · " + iface} width=${720}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button>
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
