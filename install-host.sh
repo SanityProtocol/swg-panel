@@ -1104,38 +1104,55 @@ mk_update_unit(){
   [ -n "${_UPDATE_UNIT_DONE:-}" ] && return 0; _UPDATE_UNIT_DONE=1   # write_panel_unit runs twice (placeholder→real cert); the TLS-independent self-update units only need writing once
   writef /usr/local/bin/swg-update 755 <<'WRAP'
 #!/usr/bin/env bash
-# swg-update — fixed root entrypoint for one-click in-place update (panel + co-located node).
-# swg programs only (panel/noded/agent); never wg/awg/turn-proxies. Logs to the journal.
+# swg-update — fixed root entrypoint for one-click in-place update of EVERY swg component on this box (a bare
+# panel, a docker node, or both). swg programs only (panel/noded/agent); never wg/awg/turn-proxies. Logs to journal.
 set -euo pipefail
 URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
 curl -fsSL "$URL" | bash -s update -y --no-components
 WRAP
+  # A docker container's write to a bind-mounted trigger does NOT cross to a host .path/inotify watch, so we POLL.
+  # FIXED unit names + a COMPREHENSIVE trigger list mean a bare panel and a docker node on the SAME box write
+  # IDENTICAL units — no collision, no runaway. (install-docker writes the exact same files.)
+  writef /usr/local/bin/swg-update-check 755 <<'WRAP2'
+#!/usr/bin/env bash
+set -euo pipefail
+STAMP=/var/lib/swg-update.stamp
+_run=no
+for _t in /var/lib/swg-panel/.update-request /var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/lib/.update-request /opt/swg-panel-docker/data/node/.update-request; do
+  [ -f "$_t" ] || continue
+  { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; } && _run=yes
+done
+[ "$_run" = yes ] || exit 0
+touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
+exec /usr/local/bin/swg-update
+WRAP2
   writef /etc/systemd/system/swg-update.service 644 <<EOF
 [Unit]
 Description=swg-panel one-click self-update (swg programs only)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/swg-update
+ExecStart=/usr/local/bin/swg-update-check
 EOF
-  writef /etc/systemd/system/swg-update.path 644 <<EOF
+  writef /etc/systemd/system/swg-update.timer 644 <<EOF
 [Unit]
-Description=watch for a swg-panel update request
+Description=poll for a swg one-click update request
 
-[Path]
-PathModified=${STATE_DIR}/.update-request
-Unit=swg-update.service
+[Timer]
+OnActiveSec=20s
+OnUnitActiveSec=20s
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=timers.target
 EOF
-  if [ ! -e "$PREFIX$STATE_DIR/.update-request" ]; then printf '' | writef "$STATE_DIR/.update-request" 660; fi   # pre-create ONLY when missing — re-writing CONTENT would fire a spurious self-update (the swg-update.path is watching)
-  # but ALWAYS re-assert ownership/mode so the panel (PANEL_USER) can write the trigger even if a convert staged it
-  # — or an older root updater left it — root-owned. chown/chmod don't change content, so they won't trip the watcher.
+  run rm -f /etc/systemd/system/swg-update.path   # retire the old inotify watch (it never saw a docker container's write)
+  if [ ! -e "$PREFIX$STATE_DIR/.update-request" ]; then printf '' | writef "$STATE_DIR/.update-request" 660; fi   # pre-create ONLY when missing
   run chown "$PANEL_USER:swg" "$STATE_DIR/.update-request" 2>/dev/null || true
   run chmod 660 "$STATE_DIR/.update-request" 2>/dev/null || true
+  run touch /var/lib/swg-update.stamp   # stamp AFTER the trigger so the pre-created trigger doesn't fire a spurious first update
   run systemctl daemon-reload
-  run systemctl enable --quiet --now swg-update.path || warn "couldn't enable swg-update.path (one-click host update)"
+  run systemctl disable --now swg-update.path >/dev/null 2>&1 || true
+  run systemctl enable --quiet --now swg-update.timer || warn "couldn't enable swg-update.timer (one-click host update)"
 }
 
 # (no push receiver — nodes connect outbound over HTTPS; enroll them in the Nodes screen)

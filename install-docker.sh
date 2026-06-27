@@ -1313,17 +1313,17 @@ WRAP
   # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
   # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
   # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 20s.
-  cat > /usr/local/bin/swg-update-check <<WRAP2
+  cat > /usr/local/bin/swg-update-check <<'WRAP2'
 #!/usr/bin/env bash
 set -euo pipefail
 STAMP=/var/lib/swg-update.stamp
 _run=no
-for _t in $paths; do
-  [ -f "\$_t" ] || continue
-  { [ ! -e "\$STAMP" ] || [ "\$_t" -nt "\$STAMP" ]; } && _run=yes
+for _t in /var/lib/swg-panel/.update-request /var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/lib/.update-request /opt/swg-panel-docker/data/node/.update-request; do
+  [ -f "$_t" ] || continue
+  { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; } && _run=yes
 done
-[ "\$_run" = yes ] || exit 0
-touch "\$STAMP"            # mark this batch handled BEFORE updating, so we don't loop
+[ "$_run" = yes ] || exit 0
+touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
 exec /usr/local/bin/swg-update
 WRAP2
   chmod 755 /usr/local/bin/swg-update-check
