@@ -175,11 +175,15 @@ ask_full_data_fate(){   # the LAST swg container is going → decide the WHOLE d
 }
 apply_full_data_fate(){   # run AFTER teardown, using the decision captured by ask_full_data_fate
   if [ "$DOCKER_DATA_DEL" != yes ]; then
-    rmrf "$DOCKER_DIR/.env" "$DOCKER_DIR/docker-compose.yml" "$DOCKER_DIR/Dockerfile" "$DOCKER_DIR/Dockerfile.node" \
+    # KEEP .env so a plain `docker node` re-install recovers NODE_TOKEN / PANEL_URL on its own (peers re-sync
+    # and the re-install lifecycle shows) — without it the box has no key and stays stuck "Uninstalled". Strip
+    # panel secrets so no plain password is left at rest; compose + binaries are re-staged by the installer anyway.
+    [ -f "$DOCKER_DIR/.env" ] && run sed -i -E '/^(PANEL_PASSWORD|CF_TOKEN|CF_ORIGIN_TOKEN|ACME_EMAIL)=/d' "$DOCKER_DIR/.env"
+    rmrf "$DOCKER_DIR/docker-compose.yml" "$DOCKER_DIR/Dockerfile" "$DOCKER_DIR/Dockerfile.node" \
          "$DOCKER_DIR/.dockerignore" "$DOCKER_DIR/VERSION" "$DOCKER_DIR/docker" "$DOCKER_DIR/vendor" \
          "$DOCKER_DIR/swg-panel-server" "$DOCKER_DIR/swg-agent" "$DOCKER_DIR/swg-noded" \
          "$DOCKER_DIR/index.html" "$DOCKER_DIR/app.css" "$DOCKER_DIR/app.js" "$DOCKER_DIR/reconcile.js"
-    ok "Kept $DOCKER_DIR/data for a future reinstall"
+    ok "Kept $DOCKER_DIR/data + .env (node token) for a future reinstall"
   elif [ "$DOCKER_KEEP_CONFS" = yes ]; then
     # keep ONLY the interface confs (the peers) — drop everything else
     run sh -c "find '$DOCKER_DIR' -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf {} + 2>/dev/null; find '$DOCKER_DIR/data' -mindepth 1 -maxdepth 1 ! -name node-confs -exec rm -rf {} + 2>/dev/null"

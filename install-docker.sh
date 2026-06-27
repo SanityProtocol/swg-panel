@@ -439,8 +439,8 @@ fi
 # POST to the panel (+ re-baseline the server key); panel → flag the still-running container's host_proc. A
 # re-install installs the latest → terminal is "re-installed and updated" (a convert keeps its own op via
 # SWG_CONVERT_DIR). The box-name rename is pushed later, once ask_node_conn has it.
-if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ]; } && ! $DRYRUN; then
-  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then
+if { [ "$EXISTING_DOCKER" = yes ] || [ -n "${SWG_CONVERT_DIR:-}" ] || ls "$INSTALL_DIR/data/node-confs/"*.conf >/dev/null 2>&1; } && ! $DRYRUN; then
+  if [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ]; then   # token from kept .env, -key recovery, or convert — any re-enroll posts the lifecycle
     LC_URL="$PANEL_URL"; LC_TOKEN="$NODE_TOKEN"; LC_VERIFY="${TLS_VERIFY:-no}"
     case "$PANEL_URL" in *//swg-panel|*//swg-panel/*|*//swg-panel:*)
       LC_URL="$(printf '%s' "$PANEL_URL" | sed -E "s#^(https?://)[^/]+#\1127.0.0.1:${PANEL_PORT:-443}#")"; LC_VERIFY=no ;; esac
