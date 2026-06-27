@@ -85,7 +85,7 @@ function reconcile(roster, stats, now, cfg) {
       let st;
       if (nodeStatus[t.node] !== "live") st = "unknown";
       else if (obs) st = obs.online ? "online" : "ready";
-      else st = (now - createdMs) <= cfg.graceMs ? "pending" : "dangling";
+      else st = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
       const via = (obs && obs.endpoint)
         ? ((turnIp[t.node] && turnIp[t.node].has(ipOf(obs.endpoint))) ? "turn" : "direct") : null;
       return { node: t.node, iface: t.iface, ip: t.ip, type: t.type,
@@ -99,15 +99,15 @@ function reconcile(roster, stats, now, cfg) {
     let status;
     if (p._creating) status = "creating";          // optimistic: the create POST is still in flight
     else if (targets.length === 0 || live.length === 0) status = "unknown";
-    else if (present.length === 0) status = (now - createdMs) <= cfg.graceMs ? "pending" : "dangling";
+    else if (present.length === 0) status = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
     else if (present.length < live.length) status = "partial";
     else status = onlineAny ? "online" : "ready";
 
     // a key rotation in flight: the new key isn't on the wire yet — show "rotating", not dangling
-    if (cfg.rotating && cfg.rotating.has(pid) && (status === "dangling" || status === "pending" || status === "unknown")) status = "rotating";
+    if (cfg.rotating && cfg.rotating.has(pid) && (status === "dangling" || status === "creating" || status === "unknown")) status = "rotating";
 
     let reason = null;   // why a peer isn't healthy — surfaced on the status badge (incl. a DOWN interface)
-    if (status === "dangling" || status === "partial" || status === "pending") {
+    if (status === "dangling" || status === "partial" || status === "creating") {
       const dt = targets.find(d => d.down);
       reason = dt ? ("interface " + dt.iface + " is down — " + dt.down)
                   : (status === "dangling" ? "missing on every server"

@@ -220,14 +220,14 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .badge.ic svg{width:11px;height:11px}
 .b-online{background:rgba(70,216,168,.13);color:var(--online)} .b-online::before{animation:blink 2.6s infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
-.b-ready{background:rgba(34,211,238,.12);color:var(--ready)}
-.b-partial{background:rgba(240,145,60,.14);color:var(--partial)}
+.b-ready{background:rgba(79,168,240,.12);color:var(--ready)}   /* blue — deployed everywhere, awaiting first connection */
+.b-partial{background:rgba(243,160,168,.14);color:#F19AA4}   /* LIGHT RED — a problem that isn't a stopper (present on some targets, missing on others) */
 .b-pending{background:rgba(154,139,240,.14);color:var(--pending)}   /* violet — bg matches the --pending text/border (awaiting-enroll); was a mismatched yellow bg */
 .b-removing{background:rgba(242,107,130,.14);color:var(--dangling)}
 .b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
-.b-orphan{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — matches the unmanaged/warn theme */
-.b-creating{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — optimistic "creating" (POST in flight) */
-.b-rotating{background:rgba(240,145,60,.16);color:#F0913C}   /* orange — key rotation in flight */
+.b-orphan{background:rgba(95,117,105,.16);color:var(--unknown)}   /* GREY — unmanaged/external peer, informational */
+.b-creating{background:rgba(232,192,75,.16);color:var(--partial)}   /* YELLOW — being created (POST in flight or within the grace window) */
+.b-rotating{background:rgba(232,192,75,.16);color:var(--partial)}   /* YELLOW — key rotation in flight (active) */
 .ifc-orph{color:#F0913C;font-weight:600}   /* orange orphan (unmanaged) peer count on the interface card */
 .b-unknown{background:rgba(95,117,105,.16);color:var(--unknown)}
 .b-issue{background:rgba(226,200,74,.15);color:var(--partial)}
@@ -597,7 +597,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nstat.online{color:var(--online)} .nstat.online::before{animation:pulse 2.6s infinite}
 .nstat.offline{color:var(--unknown)}
 .nstat.dangling{color:var(--pending)}
-.nstat.proc{color:var(--partial)} .nstat.proc::before{display:none}   /* in-progress (updating / re-install / convert): YELLOW clock */
+.nstat.proc{color:var(--partial)} .nstat.proc::before{display:none}   /* legacy in-progress fallback: YELLOW */
+.nstat.procbusy{color:var(--partial)} .nstat.procbusy::before{display:none}        /* active work (re-installing / updating / installing): YELLOW */
+.nstat.procconvert{color:var(--pending)} .nstat.procconvert::before{display:none}  /* converting: PURPLE */
+.nstat.procuninstall{color:var(--dangling)} .nstat.procuninstall::before{display:none}  /* uninstalling: RED */
 .nstat.enroll{color:#F0913C} .nstat.enroll::before{display:none}   /* awaiting enroll: ORANGE clock (node hasn't checked in yet) */
 .nstat.uninst{color:var(--unknown)} .nstat.uninst::before{display:none}   /* uninstalled: GREY (kept for re-install; recover with the same token) */
 .nstat.procok{color:var(--online)} .nstat.procok::before{display:none}        /* success: green ✓, auto-clears after ~5s (no ×) */
@@ -732,8 +735,11 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* status pills (busy/ok/warn/del) — ONE uniform shape; colour per state. Defined after .tg so the
    pill shape wins even when written as "tg tg-busy" on cards (the type tags .tg-wg/.tg-awg stay small). */
 /* status pills — ONE shape/size/font for all; only colour differs (busy=cyan, ok=green, warn=yellow, del=red, off=grey) */
-.tg-busy,.tg-ok,.tg-warn,.tg-del,.tg-off{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:1px 8px;font-family:var(--mono);font-size:9.5px;font-weight:700;line-height:1.45;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;border:1px solid transparent}
-.tg-busy{background:rgba(70,216,168,.14);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 30%,transparent)}
+.tg-busy,.tg-ok,.tg-warn,.tg-del,.tg-off,.tg-pending,.tg-convert,.tg-ready{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:1px 8px;font-family:var(--mono);font-size:9.5px;font-weight:700;line-height:1.45;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;border:1px solid transparent}
+.tg-busy{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 32%,transparent)}   /* active work: installing / creating — YELLOW */
+.tg-pending{background:rgba(240,145,60,.13);color:#F0913C;border-color:color-mix(in srgb,#F0913C 30%,transparent)}   /* queued / awaiting the node — ORANGE */
+.tg-convert{background:rgba(154,139,240,.16);color:var(--pending);border-color:color-mix(in srgb,var(--pending) 32%,transparent)}   /* converting bare↔docker — PURPLE */
+.tg-ready{background:rgba(79,168,240,.13);color:var(--ready);border-color:color-mix(in srgb,var(--ready) 30%,transparent)}   /* just came up — BLUE (5s flash, then no tag) */
 .tg-busy.del{background:rgba(240,90,90,.15);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 38%,transparent)}
 .tg-busy.warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 38%,transparent)}
 .tg-ok{background:rgba(63,216,154,.16);color:var(--online);border-color:color-mix(in srgb,var(--online) 30%,transparent)}
