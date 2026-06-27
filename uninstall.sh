@@ -213,7 +213,7 @@ docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only onc
   if command -v docker >/dev/null 2>&1; then
     local DC=""; if docker compose version >/dev/null 2>&1; then DC="docker compose"; elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
     [ -n "$DC" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] && run sh -c "cd '$DOCKER_DIR' && $DC down --remove-orphans >/dev/null 2>&1 || true"   # drop the network
-    local RMI="${REMOVE_DOCKER_IMAGES:-}"; ask_yn "  Remove the pulled swg-panel / swg-node images too?" n RMI
+    local RMI="${REMOVE_DOCKER_IMAGES:-}"; echo; ask_yn "  Remove the pulled swg-panel / swg-node images too?" n RMI
     [ "$RMI" = yes ] && run sh -c 'docker rmi ghcr.io/sanityprotocol/swg-panel:latest ghcr.io/sanityprotocol/swg-node:latest swg-panel-docker-swg-panel swg-panel-docker-swg-node >/dev/null 2>&1 || true'
   fi
   apply_full_data_fate
