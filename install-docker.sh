@@ -1310,31 +1310,51 @@ URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-p
 curl -fsSL "$URL" | bash -s update -y --no-components
 WRAP
   chmod 755 /usr/local/bin/swg-update
+  # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
+  # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
+  # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 20s.
+  cat > /usr/local/bin/swg-update-check <<WRAP2
+#!/usr/bin/env bash
+set -euo pipefail
+STAMP=/var/lib/swg-update.stamp
+_run=no
+for _t in $paths; do
+  [ -f "\$_t" ] || continue
+  { [ ! -e "\$STAMP" ] || [ "\$_t" -nt "\$STAMP" ]; } && _run=yes
+done
+[ "\$_run" = yes ] || exit 0
+touch "\$STAMP"            # mark this batch handled BEFORE updating, so we don't loop
+exec /usr/local/bin/swg-update
+WRAP2
+  chmod 755 /usr/local/bin/swg-update-check
   cat > /etc/systemd/system/swg-update.service <<EOF
 [Unit]
 Description=swg-panel one-click self-update (swg programs only)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/swg-update
+ExecStart=/usr/local/bin/swg-update-check
 EOF
-  for _p in $paths; do line="${line}PathModified=$_p"$'\n'; done   # one watch line per trigger (master watches both)
-  cat > /etc/systemd/system/swg-update.path <<EOF
+  cat > /etc/systemd/system/swg-update.timer <<EOF
 [Unit]
-Description=watch for a swg-panel update request (docker)
+Description=poll for a swg-panel one-click update request (docker)
 
-[Path]
-${line}Unit=swg-update.service
+[Timer]
+OnActiveSec=20s
+OnUnitActiveSec=20s
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=timers.target
 EOF
+  systemctl disable --now swg-update.path >/dev/null 2>&1 || true   # retire the old inotify watch from a pre-poll install
+  rm -f /etc/systemd/system/swg-update.path
   # pre-create each trigger INSIDE its container (right owner — a root-created host file would be unwritable by the
   # unprivileged container user). Only when missing (re-touch a live one = a spurious update run).
   case "$PROFILE" in host|master) [ -e "$INSTALL_DIR/data/lib/.update-request" ]  || docker exec swg-panel sh -c ': > /var/lib/swg-panel/.update-request'  2>/dev/null || true;; esac
   case "$PROFILE" in node|master) [ -e "$INSTALL_DIR/data/node/.update-request" ] || docker exec swg-node  sh -c ': > /var/lib/swg-noded/.update-request' 2>/dev/null || true;; esac
+  touch /var/lib/swg-update.stamp   # stamp NOW (newer than the just-created triggers) so the first poll doesn't fire a spurious update
   systemctl daemon-reload 2>/dev/null || true
-  systemctl enable --now swg-update.path >/dev/null 2>&1 || warn "couldn't enable swg-update.path"
+  systemctl enable --now swg-update.timer >/dev/null 2>&1 || warn "couldn't enable swg-update.timer"
   ok "one-click update wired — the $(b Update) button runs a swg-only update on the host"
 }
 wire_host_updater

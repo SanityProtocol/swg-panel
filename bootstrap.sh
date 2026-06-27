@@ -373,28 +373,29 @@ EOF2
       _lc=/opt/swg-panel-docker/data/node-confs
       _npr="$(grep -ch '^\[Peer\]' "$_rdir/data/node-confs/"*.conf 2>/dev/null | awk '{s+=$1} END{print s+0}')"
       if ls "$_lc"/*.conf >/dev/null 2>&1; then
-        # the box ALREADY has interface configs with peers AND the chosen recovery copy has its own — let the
-        # operator pick which set to keep (default: keep what's already here).
+        # the box ALREADY has interface configs with peers AND the chosen recovery snapshot has its own — these are
+        # two INDEPENDENT peer sets (the snapshot's are not a subset of the live ones); let the operator pick which
+        # set this node keeps (default: leave the box's own peers untouched).
         _npl="$(grep -ch '^\[Peer\]' "$_lc/"*.conf 2>/dev/null | awk '{s+=$1} END{print s+0}')"
         echo
-        info "Found $(b "$_npl peer(s)") here from a previous installation, and $(b "$_npr peer(s)") in the recovery copy you picked."
-        _ovw=no; ask_yn "  Overwrite the existing peers with the recovery copy's? (No re-uses the $_npl already here)" n _ovw
+        info "This box already has $(b "$_npl peer(s)") from a previous install. The recovery snapshot you picked has $(b "$_npr peer(s)")."
+        _ovw=no; ask_yn "  Replace this box's $_npl peer(s) with the $_npr from the snapshot?" n _ovw
         echo
         if [ "$_ovw" = yes ]; then
-          rm -rf "$_lc"; mkdir -p "$_lc"; cp -a "$_rdir/data/node-confs/." "$_lc/" 2>/dev/null && info "using the $_npr peer(s) from the recovery copy."
+          rm -rf "$_lc"; mkdir -p "$_lc"; cp -a "$_rdir/data/node-confs/." "$_lc/" 2>/dev/null && info "using the $_npr peer(s) from the snapshot."
         else
-          info "keeping the $_npl peer(s) already on this box."
+          info "keeping this box's $_npl peer(s)."
         fi
       else
         # nothing live (data dir was deleted on uninstall — case 3): restore the keys so peers keep their configs
         mkdir -p "$_lc"; cp -a "$_rdir/data/node-confs/." "$_lc/" 2>/dev/null \
-          && info "restored the node's interface keys from the recovery copy — peers keep their existing configs."
+          && info "restored the node's interface keys from the recovery snapshot — peers keep their existing configs."
       fi
     fi
     if [ "$METHOD" = docker ] && [ -f "$_rdir/data/node/turn-proxy.json" ] && [ ! -f /opt/swg-panel-docker/data/node/turn-proxy.json ]; then
       mkdir -p /opt/swg-panel-docker/data/node                                       # bring back the turn-proxies too
       cp -a "$_rdir/data/node/turn-proxy.json" /opt/swg-panel-docker/data/node/turn-proxy.json 2>/dev/null \
-        && info "restored the node's turn-proxies from the recovery copy."
+        && info "restored the node's turn-proxies from the recovery snapshot."
     fi
     info "re-enrolling this box as the recovered node (token reused — its peers re-sync onto it)."
   fi

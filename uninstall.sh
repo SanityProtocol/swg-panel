@@ -49,9 +49,9 @@ rm_panel(){
   info "Removing swg-panel (control panel)"
   if [ -e $SD/swg-panel-server.service ]; then run systemctl disable --now swg-panel-server; fi
   # one-click self-update bits the panel installed (mk_update_unit): units, wrapper, and the env drop-in
-  if [ -e $SD/swg-update.path ]; then run systemctl disable --now swg-update.path 2>/dev/null || true; fi
+  for _su in swg-update.timer swg-update.path; do [ -e "$SD/$_su" ] && run systemctl disable --now "$_su" 2>/dev/null || true; done
   rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d \
-       $SD/swg-update.service $SD/swg-update.path /usr/local/bin/swg-update
+       $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
   run systemctl daemon-reload
   rmrf /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf \
        /etc/nginx/conf.d/swg-panel.conf /etc/nginx/.htpasswd-swg
@@ -210,6 +210,10 @@ apply_full_data_fate(){   # run AFTER teardown, using the decision captured by a
 }
 docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only once NO swg container remains
   if docker_running swg-panel || docker_running swg-node; then return 0; fi
+  # host one-click updater units (install-docker's wire_host_updater) — remove now that no swg container remains
+  for _su in swg-update.timer swg-update.path; do [ -e "/etc/systemd/system/$_su" ] && run systemctl disable --now "$_su" 2>/dev/null || true; done
+  rmrf /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /etc/systemd/system/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
+  run systemctl daemon-reload 2>/dev/null || true
   if command -v docker >/dev/null 2>&1; then
     local DC=""; if docker compose version >/dev/null 2>&1; then DC="docker compose"; elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
     [ -n "$DC" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] && run sh -c "cd '$DOCKER_DIR' && $DC down --remove-orphans >/dev/null 2>&1 || true"   # drop the network
