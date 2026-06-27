@@ -452,10 +452,14 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
   const dim = converting || nodeStale(node) || (!justRestarted && (pend || installing || failed || down || stopped || err));   // attention / node gone dark → dim (NOT mere 'pending' queue)
-  const upNow = fronted && !converting && !pend && !installing && !queued && !failed && !down && !stopped;
-  if (upNow && turnWasBusy[k]) turnReady[k] = Date.now() + 5000;   // finished installing → flash green "ready" for 5s, then no tag
-  turnWasBusy[k] = !!(queued || installing || (pend && pend !== "delete"));
-  const turnReadyNow = upNow && turnReady[k] && Date.now() < turnReady[k];
+  const _busy = !!(queued || installing || (pend && pend !== "delete"));   // any in-flight create / install / op
+  const _bad = !!(failed || down || converting || stopped);
+  const _settled = !!fronted && !_bad && !_busy;                           // up + healthy
+  if (turnWasInstalling[k] && !installing && !_bad) turnReady[k] = Date.now() + 5000;   // OPTIMISTIC: install just ended without failing → "ready" NOW (don't fall back to pending)
+  if (turnWasBusy[k] && _settled) turnReady[k] = Date.now() + 5000;        // settled to up after any in-flight state (covers no-install reuse: pending → up)
+  turnWasInstalling[k] = !!installing;
+  turnWasBusy[k] = _busy;
+  const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
   const conn = fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : [];   // online peers via this proxy → header count
   return html`<div class=${"ifcard tp" + (nrec.turn_manage && !converting ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage && !converting ? () => openTurnManage(node, tp) : null}>
     <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
@@ -463,12 +467,12 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
       : pend
       ? html`<${StatusTag} cls=${"tg-busy" + (pend === "delete" ? " del" : "")} label=${(updating ? "updating" : (TURN_PEND[pend] || pend)) + "…"} msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
       : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label="installing" msg=${prog} title="Installing on the node"/>`
+      : turnReadyNow ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>`
       : queued ? html`<${StatusTag} cls="tg-pending" icon="clock" label="pending" title="Queued — the node brings these up one at a time"/>`
       : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="install failed" msg=${err || "the install failed on the node"} title="Command failed on the node"/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : stopped ? html`<span class="tg-off" title="Stopped from the panel — open to Start it"><${Ic} i="stop"/>stopped</span>`
       : down ? html`<${StatusTag} cls="tg-busy del" label="down" msg=${err || "service is not running on the node"} title="Service down on the node"/>`
-      : turnReadyNow ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>`
       : (!fronted ? html`<span class="tg tg-warn" title="Forwards to a port with no managed interface behind it — likely a misconfiguration.">unbound</span>` : null)}</div>
     <div class="ifcard-rows">
       <div class="ifrow"><span class="l">Turn-proxy fork</span><span class="r">${turnFork(tp.service)}</span></div>
@@ -1898,8 +1902,9 @@ const TURN_PEND = { install: "installing", manage: "updating", rotate: "rotating
 const _turnRestartPend = {};   // "node|service" currently mid-restart (last poll)
 const turnRestarted = {};      // "node|service" -> expiry ts for the green flash
 const turnUpdating = {};        // "node|service" -> expiry ts; set on an "Update" click so the pending tag reads "updating" (not "installing")
-const turnReady = {};          // "node|service" -> expiry ts for the green "ready" flash (5s after it finishes installing → then no tag)
-const turnWasBusy = {};        // "node|service" -> was it pending/installing last render (to detect the finish → ready)
+const turnReady = {};          // "node|service" -> expiry ts for the blue "ready" flash (5s after it settles → then no tag)
+const turnWasBusy = {};        // "node|service" -> was it pending/installing/op last render (settle → ready)
+const turnWasInstalling = {};  // "node|service" -> was it INSTALLING last render (install end → "ready" optimistically, never bounce to pending)
 const ifaceReady = {};         // "node|iface"   -> expiry ts for the green "ready" flash (5s after an interface comes up)
 const ifaceWasBusy = {};       // "node|iface"   -> was it pending/creating last render
 function trackTurnRestarts() {
