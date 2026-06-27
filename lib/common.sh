@@ -94,7 +94,7 @@ summary_host_block(){   # <method> <converted?yes|no>
   fi
 }
 summary_node_block(){   # <method> <converted?yes|no>
-  local m="$1" conv="$2" ver mlabel note="" nep purl conf n proto units svc inst lis con u
+  local m="$1" conv="$2" ver mlabel note="" nep purl conf n proto units svc inst lis con u _trec
   nep="$(_sum_node_ep)"; purl="$(_sum_node_purl)"
   if [ "$m" = docker ]; then mlabel=Docker; ver="$(docker exec swg-node cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"
   else mlabel=Bare-metal; ver="$(cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"; fi
@@ -104,9 +104,17 @@ summary_node_block(){   # <method> <converted?yes|no>
     echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
     for conf in "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
       grep -qiE '^[[:space:]]*(Jc|Jmin|S1|H1)[[:space:]]*=' "$conf" && proto=awg || proto=wg; _sum_iface_row "$n" "$proto" "$conf" "$nep"; done
-    units="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^swg-turn-' || true)"
+    units="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^swg-turn-' || true)"; _trec="$_SUM_DDIR/data/node/turn-proxy.json"
     if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (sibling containers — swg-turn-*, managed from the panel):"; echo
-      for svc in $units; do _sum_turn_row "$svc" "" ""; done; fi
+      if [ -f "$_trec" ] && have python3; then   # docker turns are containers — listen/connect live in the node turn record, not a unit file
+        python3 -c 'import json,sys
+try: tps=(json.load(open(sys.argv[1])).get("turn_proxies") or [])
+except Exception: tps=[]
+for t in tps:
+    if t.get("service"): print(t["service"]+"\t"+t.get("listen","")+"\t"+t.get("connect",""))' "$_trec" 2>/dev/null \
+          | while IFS="$(printf '\t')" read -r svc lis con; do [ -n "$svc" ] && _sum_turn_row "$svc" "$lis" "$con"; done
+      else for svc in $units; do _sum_turn_row "$svc" "" ""; done; fi
+    fi
   else
     echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
     for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
