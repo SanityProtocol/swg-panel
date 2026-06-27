@@ -413,7 +413,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .dh-sep{width:1px;height:18px;background:var(--line-solid);margin:0 3px}
 .dh-ver .nm-ver{margin-left:0}
 .upd-busy{pointer-events:none;cursor:default;color:var(--partial);border-color:color-mix(in srgb,var(--partial) 45%,var(--line-solid))}
-.updspin{animation:spin .8s linear infinite;transform-box:fill-box;transform-origin:center;margin-left:1px}   /* any updspin arrow animates — header upd-busy AND .hostproc-tag (so the panel 'updating' arrow circles like the node's) */
+.updspin{animation:spin .8s linear infinite;transform-box:view-box;transform-origin:center;margin-left:1px}   /* any updspin arrow animates — header upd-busy AND .hostproc-tag. view-box (not fill-box): the viewBox centre is known at parse time, so it spins perfectly centred even on a fresh load (fill-box needs the SVG laid out first → off-centre after Ctrl+Shift+R) */
 /* "panel updated — hard reload" modal */
 .updone p{margin:0 0 18px;line-height:1.6;color:var(--ink-2);font-size:13.5px}
 .updone p:last-child{margin-bottom:0}
@@ -425,7 +425,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 /* "check for updates": cyan + spinning while polling, back to grey when done. The extra
    .appbar-right selector beats `.appbar-right .iconbtn{color:--dim}` (same specificity, later). */
 .iconbtn.checking, .appbar-right .iconbtn.checking{color:var(--brand);pointer-events:none}
-.iconbtn svg{transform-box:fill-box;transform-origin:center}   /* pin the pivot ALWAYS (not on .checking), so it's already resolved when the spin starts — else frame 1 rotates around the default 0,0 (off-centre on the first press) */
+.iconbtn svg{transform-box:view-box;transform-origin:center}   /* pin the pivot to the viewBox centre (known at parse time) so the check spin is centred from frame 1 AND on a fresh load — fill-box needs the SVG laid out first, so it span off-centre after Ctrl+Shift+R */
 .iconbtn.checking svg{animation:spin .8s linear infinite}
 .detail-head .title h1{margin:0;font-family:var(--mono);font-size:22px;line-height:1;font-weight:600;color:var(--ink)}
 .detail-head .grow{flex:1}
