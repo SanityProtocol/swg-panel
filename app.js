@@ -451,7 +451,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
-  const dim = converting || nodeStale(node) || (!justRestarted && (pend || installing || failed || down || stopped || err));   // attention / node gone dark → dim (NOT mere 'pending' queue)
+  const dim = converting || nodeStale(node) || (!justRestarted && (installing || failed || down || stopped || err || pend === "delete"));   // attention / node gone dark → dim (NOT a 'pending' assignment/queue — only actively-installing / failed / deleting)
   const _busy = !!(queued || installing || (pend && pend !== "delete"));   // any in-flight create / install / op
   const _bad = !!(failed || down || converting || stopped);
   const _settled = !!fronted && !_bad && !_busy;                           // up + healthy
@@ -464,11 +464,11 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   return html`<div class=${"ifcard tp" + (nrec.turn_manage && !converting ? " clickable" : "") + (dim ? " down" : "")} onClick=${nrec.turn_manage && !converting ? () => openTurnManage(node, tp) : null}>
     <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
-      : pend
-      ? html`<${StatusTag} cls=${"tg-busy" + (pend === "delete" ? " del" : "")} label=${(updating ? "updating" : (TURN_PEND[pend] || pend)) + "…"} msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
-      : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label="installing" msg=${prog} title="Installing on the node"/>`
+      : pend === "delete"
+      ? html`<${StatusTag} cls="tg-busy del" label="deleting…" msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
+      : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label="installing" msg=${prog} title="Installing on the node right now"/>`
       : turnReadyNow ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>`
-      : queued ? html`<${StatusTag} cls="tg-pending" icon="clock" label="pending" title="Queued — the node brings these up one at a time"/>`
+      : (pend || queued) ? html`<${StatusTag} cls="tg-pending" icon="clock" label="pending" msg=${err} title=${pend ? "Assigned — waiting for the node to pick it up and install it" : "Queued — the node installs these one at a time"}/>${pend ? html`<button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>` : null}`
       : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="install failed" msg=${err || "the install failed on the node"} title="Command failed on the node"/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : stopped ? html`<span class="tg-off" title="Stopped from the panel — open to Start it"><${Ic} i="stop"/>stopped</span>`
@@ -499,7 +499,7 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   const optSvcs = new Set(optTurns.map(o => o.svc));
   const optCard = (svc, d) => { const lp = portOf(d.connect); const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp); const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
     return html`<div class="ifcard tp down" key=${"new:" + svc}>
-      <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(svc)}>turn</span><span class="ifname">${d.title || turnFork(svc)}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[svc]}/><${StatusTag} cls="tg-busy" icon="clock" label="installing" title="Installing on the node"/><button class="xbtn" title="Cancel this request" onClick=${() => { delete Store.turnNew[node + "|" + svc]; cancelTurn(node, { service: svc }); }}><${Ic} i="x"/></button></div>
+      <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(svc)}>turn</span><span class="ifname">${d.title || turnFork(svc)}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[svc]}/><${StatusTag} cls="tg-pending" icon="clock" label="pending" title="Assigned — waiting for the node to pick it up and install it"/><button class="xbtn" title="Cancel this request" onClick=${() => { delete Store.turnNew[node + "|" + svc]; cancelTurn(node, { service: svc }); }}><${Ic} i="x"/></button></div>
       <div class="ifcard-rows">
         <div class="ifrow"><span class="l">Turn-proxy fork</span><span class="r">${turnFork(svc)}</span></div>
         <div class="ifrow"><span class="l">Listen</span><span class="r addr">${d.listen || "—"}</span></div>
@@ -510,7 +510,7 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>Turn-proxy management is <b>off</b> on this node — no Docker socket was mounted at install (<b>TURN_MANAGE=manual</b>), so these are read-only here. Add, edit or restart them on the box directly.</span></div>` : null}
     <div class="ifgrid">${cards.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface}/>`)}
     ${optTurns.map(o => optCard(o.svc, o.d))}
-    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/><span class=${"tg-busy" + (act === "delete" ? " del" : "")}>${TURN_PEND[act] || act}…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
+    ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">deleting…</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>pending</span>`}<button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
     ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
     </div>
   <//>`;
@@ -1217,12 +1217,12 @@ function NodeDetail({ node: rawName }) {
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
-          <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><span class="tg tg-pending"><${Ic} i="clock"/>pending</span></div>
+          <div class="ifcard-top"><span class=${"iftype " + (type || "turn")}>${type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/>${(nrec.cmd_progress || {})[ifn] ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${label} title="The node is creating it right now"/>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>pending</span>`}</div>
           <div class="ifcard-rows"><div class="ifrow"><span class="l faint">waiting for the node to ${label === "creating" ? "create" : "add"} it…</span><button class="btn btn-mini warn" title="Drop this pending request" onClick=${() => mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) })}>Cancel</button></div><${RowError} k=${"ifcancel:" + name + "|" + ifn}/></div></div>`;
         // client-optimistic create: the FULL card with the values just entered, dimmed + "creating" + × in the
         // header — identical layout to the turn-proxy optimistic card. Shown until the node reports the iface.
         const optIfCard = (ifn, e) => html`<div class="ifcard down" key=${"new:" + ifn}>
-          <div class="ifcard-top"><span class=${"iftype " + (e.type || "turn")}>${e.type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/><${StatusTag} cls="tg-busy" icon="clock" label=${e.type ? "creating" : "onboarding"} title="Creating on the node"/><button class="xbtn" title="Cancel this request" onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}><${Ic} i="x"/></button></div>
+          <div class="ifcard-top"><span class=${"iftype " + (e.type || "turn")}>${e.type || "load"}</span><span class="ifname">${ifn}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[ifn]}/>${(nrec.cmd_progress || {})[ifn] ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${e.type ? "creating" : "onboarding"} title="The node is creating it right now"/>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>pending</span>`}<button class="xbtn" title="Cancel this request" onClick=${() => { delete Store.ifaceNew[name + "|" + ifn]; mutate({ key: "ifcancel:" + name + "|" + ifn, call: () => api.ifaceCancel({ node: name, iface: ifn }) }); }}><${Ic} i="x"/></button></div>
           <div class="ifcard-rows">
             ${(e.endpoint || e.port) ? html`<div class="ifrow"><span class="l">Listen</span><span class="r addr">${(e.endpoint || "") + (e.port ? ":" + e.port : "") || "—"}</span></div>` : null}
             ${e.subnet ? html`<div class="ifrow"><span class="l">Subnet</span><span class="r addr">${e.subnet}</span></div>` : null}
