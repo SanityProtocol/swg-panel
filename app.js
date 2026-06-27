@@ -1242,6 +1242,7 @@ function NodeDetail({ node: rawName }) {
         const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn));
         const optCards = optNames.filter(ifn => !(meta && meta[ifn])).map(ifn => optIfCard(ifn, Store.ifaceNew[_pfx + ifn]));
         const pending = pendOn.concat(pendCr, optNames);
+        pending.forEach(ifn => { ifaceWasBusy[name + "|" + ifn] = true; });   // any in-flight iface (create / onboard / server) → flash "ready" once it appears in meta
         const pcards = pendOn.map(ifn => pcard(ifn, "onboarding", null))
           .concat(pendCr.map(ifn => pcard(ifn, "creating", cr[ifn])))
           .concat(optCards);
@@ -1250,6 +1251,7 @@ function NodeDetail({ node: rawName }) {
           : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
           : html`<div class="ifgrid">${Object.keys(meta).map(ifn => {
               const m = meta[ifn];
+              if (ifaceWasBusy[name + "|" + ifn]) { ifaceReady[name + "|" + ifn] = Date.now() + 5000; ifaceWasBusy[name + "|" + ifn] = false; }   // just came up after being pending/creating → "ready" 5s
               const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
               const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
               const onlc = ps.filter(p => p.targets.some(t => t.node === name && t.iface === ifn && t.online)).length;
