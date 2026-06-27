@@ -1763,6 +1763,8 @@ function TurnManageSheet({ node, tp }) {
   const [title, setTitle] = useState(tp.title || "");
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
+  const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);   // node down / mid re-install / convert / update → disable every action here, same as the node-detail buttons
+  const dis = busy || blocked;
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
   const lhost = ipPickerVal(lsel, lcustom);
@@ -1822,19 +1824,20 @@ function TurnManageSheet({ node, tp }) {
   };
   return html`<${Sheet} title=${turnSheetTitle(turnFork(svc), title)}
     foot=${html`<${Fragment}>
-      <button class="btn btn-ghost danger" onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
+      <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
       ${stopped
-        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Start the service on the node" onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> Start service</button>`
+        ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title="Start the service on the node" onClick=${() => { startTurn(node, svc); closeModal(); }}><${Ic} i="play"/> Start service</button>`
         : installing
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${true} title="Installing…"><${Ic} i="refresh"/> Reinstall service</button>`
         : (tp.running !== false && !failed)
         ? html`<${Fragment}>
-            <button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Stop the service on the node (stays down until started)" onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> Stop service</button>
-            <button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Restart the service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title="Stop the service on the node (stays down until started)" onClick=${() => { stopTurn(node, svc); closeModal(); }}><${Ic} i="stop"/> Stop service</button>
+            <button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title="Restart the service on the node" onClick=${() => { restartTurn(node, svc); closeModal(); }}><${Ic} i="refresh"/> Restart service</button>
           <//>`
-        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Re-download the binary and start the service on the node" onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
+        : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title="Re-download the binary and start the service on the node" onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
-      <button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+      <button class="btn btn-primary" disabled=${dis} onClick=${save}>Save</button></>`}>
+    ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>This node is busy or offline${nrec.proc_status ? html` (${PROC_LABEL[nrec.proc_status] || nrec.proc_status})` : ""} — turn-proxy actions are disabled until it's reporting again.</span></div>` : null}
     <div class="iface-intro">
       <div>Changing any field rewrites the unit's ExecStart on the node and restarts it.</div>
       <div>The parameters below are placed verbatim after <span class="mono">-connect</span> — wrap key, wrap mode, any flags the fork supports.</div>
@@ -1866,9 +1869,9 @@ function TurnManageSheet({ node, tp }) {
         ${verChk && verChk.checking ? html`<span class="faint">checking…</span>`
           : verChk && verChk.err ? html`<span class="tg tg-busy del" title=${verChk.err}><${Ic} i="warn"/>no connection</span>`
           : verChk && verChk.latest ? (updateAvail
-              ? html`<button class="btn btn-mini btn-upd" disabled=${busy} onClick=${() => doReinstall("Update")}><${Ic} i="download"/> update to ${verChk.latest}</button>`
+              ? html`<button class="btn btn-mini btn-upd" disabled=${dis} onClick=${() => doReinstall("Update")}><${Ic} i="download"/> update to ${verChk.latest}</button>`
               : html`<span class="tg tg-ok"><${Ic} i="check"/> up to date</span>`)
-          : html`<button class="btn btn-mini" disabled=${busy || !owner} onClick=${checkUpdate}>Check for update</button>`}
+          : html`<button class="btn btn-mini" disabled=${dis || !owner} onClick=${checkUpdate}>Check for update</button>`}
       </div>
     </div>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
