@@ -2004,7 +2004,10 @@ def api(method, path, qs, body, deps):
         # or Docker), hand back the exact command to run on the host instead of failing silently.
         manual_cmd = ("curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/"
                       "bootstrap.sh | sudo bash -s update -y --no-components")
-        if not IN_DOCKER and UPDATE_TRIGGER:
+        # write the trigger whenever one is configured — bare-metal (root systemd swg-update.path) OR Docker
+        # (install-docker wires the SAME host-side path-unit, watching the panel's data/lib/.update-request, since a
+        # container can't recreate itself). No trigger configured → hand back the manual command below.
+        if UPDATE_TRIGGER:
             try:
                 os.makedirs(os.path.dirname(UPDATE_TRIGGER) or ".", exist_ok=True)
                 try:

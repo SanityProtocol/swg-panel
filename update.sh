@@ -12,7 +12,8 @@
 # Flags:  --dry-run       show what it would do, change nothing
 #         -y|--yes        upgrade everything available without prompting
 #         -f|--force      re-apply even components already on the latest version
-#         --no-components  swg only (panel/noded/agent) — skip third-party turn-proxy servers
+#         --no-components  swg only (panel/noded/agent + swg images) — skip ALL third-party: wg/awg datapath,
+#                          docker engine AND turn-proxy servers (this is what the one-click panel update uses)
 set -euo pipefail
 
 DRYRUN=false; ASSUME_YES=false; FORCE=false; NO_COMPONENTS=false; NODE_ONLY=false
@@ -272,14 +273,18 @@ fi
 # ───────────────────────── WireGuard / AmneziaWG datapath ─────────────────────────
 # bare-metal node → the system package (amneziawg via the amnezia PPA, or wireguard). docker node → the
 # datapath (amneziawg-go) lives in the swg-node image and refreshes with the image pull above.
-if [ "$HAVE_BNODE" = yes ]; then
+if $NO_COMPONENTS && [ "$HAVE_BNODE" = yes ]; then
+  ok "$(col_l "WireGuard / AmneziaWG"): skipped — third-party datapath (--no-components: swg programs only)"
+elif [ "$HAVE_BNODE" = yes ]; then
   pkg_update "WireGuard / AmneziaWG" amneziawg amneziawg-tools amneziawg-dkms wireguard wireguard-tools
 elif [ "$HAVE_DOCK" = yes ] && [ "$DOCK_PROF" != host ]; then
   ok "$(col_l "WireGuard / AmneziaWG"): bundled in the swg-node image — no separate package to update (it tracks the image)"
 fi
 
 # ───────────────────────── Docker engine (docker scenario only) ─────────────────────────
-if [ "$HAVE_DOCK" = yes ]; then
+if [ "$HAVE_DOCK" = yes ] && $NO_COMPONENTS; then
+  ok "$(col_l "Docker engine"): skipped — third-party (--no-components: swg programs only)"
+elif [ "$HAVE_DOCK" = yes ]; then
   pkg_update "Docker engine" docker-ce docker.io
 fi
 

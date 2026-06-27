@@ -36,6 +36,7 @@ services:
       CF_TOKEN: "${CF_TOKEN:-}"           # cloudflare DNS-01: token with Zone:DNS:Edit + Zone:Read
       CF_ORIGIN_TOKEN: "${CF_ORIGIN_TOKEN:-}"  # cf15: token with Zone:SSL and Certificates:Edit
       SWG_PANEL_BASE: "${PANEL_BASE:-}"   # optional subpath mount, e.g. /swg (blank = root)
+      SWG_UPDATE_TRIGGER: "${SWG_UPDATE_TRIGGER:-}"   # set by install-docker when it wires the host one-click updater (swg-update.path watches data/lib/.update-request); blank = manual update only
     volumes:
       - ./data/etc:/etc/swg-panel         # fleet.json + nodes.json + auth + tls/ + acme/ persist here
       - ./data/lib:/var/lib/swg-panel     # roster (users.json), node store, stored configs
