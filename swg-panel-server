@@ -127,9 +127,11 @@ UPDATE_TRIGGER = os.environ.get("SWG_UPDATE_TRIGGER")
 def _check_latest_remote():
     ok = False                                       # True only if we actually reached the repo
     try:
-        # bypass any CDN cache so a just-published release is seen promptly
-        req = urllib.request.Request(REMOTE_VERSION_URL,
-                                     headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
+        # Bypass the CDN cache so a just-published release is seen promptly. A no-cache HEADER alone is NOT enough
+        # — raw.githubusercontent's Fastly edges can still serve a stale copy to a long-lived process — so append a
+        # unique ?cb= query: a distinct cache key forces a fresh origin fetch every time.
+        url = REMOTE_VERSION_URL + (("&" if "?" in REMOTE_VERSION_URL else "?") + "cb=" + str(int(time.time())))
+        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=8) as r:
             v = _short_ver(r.read(64).decode("utf-8", "replace").strip())
             if v:
