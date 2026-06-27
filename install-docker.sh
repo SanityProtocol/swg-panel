@@ -1118,6 +1118,7 @@ CF_ORIGIN_TOKEN=$CF_ORIGIN_TOKEN
 PANEL_PORT=$PANEL_PORT
 SWG_UPDATE_TRIGGER=$_UPD_TRIG
 NODE_UPDATE_TRIGGER=$_NODE_UPD_TRIG
+SWG_HOST_HOSTNAME=$(hostname 2>/dev/null)   # host hostname → lets the panel recognise a master's co-located node (which reports the host hostname via host-networking)
 
 # ───────── Node (profiles: node, master) ─────────
 PANEL_URL=$PANEL_URL

@@ -37,6 +37,7 @@ services:
       CF_ORIGIN_TOKEN: "${CF_ORIGIN_TOKEN:-}"  # cf15: token with Zone:SSL and Certificates:Edit
       SWG_PANEL_BASE: "${PANEL_BASE:-}"   # optional subpath mount, e.g. /swg (blank = root)
       SWG_UPDATE_TRIGGER: "${SWG_UPDATE_TRIGGER:-}"   # set by install-docker when it wires the host one-click updater (swg-update.path watches data/lib/.update-request); blank = manual update only
+      SWG_HOST_HOSTNAME: "${SWG_HOST_HOSTNAME:-}"     # the HOST's hostname (install-docker sets it) — lets the panel recognise a master's co-located node, which reports the host hostname via host-networking (the panel container's own hostname is a random id)
     volumes:
       - ./data/etc:/etc/swg-panel         # fleet.json + nodes.json + auth + tls/ + acme/ persist here
       - ./data/lib:/var/lib/swg-panel     # roster (users.json), node store, stored configs
