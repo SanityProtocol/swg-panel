@@ -1697,6 +1697,17 @@ def run_self_update(node_cfg, want):
         return False
 
 
+def report_proc(panel, state, err=None):
+    """Best-effort POST of a lifecycle proc-status (e.g. 'update-failed' + reason) to the panel, so a failure
+    that never reaches the normal script-side lifecycle reporting still surfaces as a red tag on the node."""
+    try:
+        u = panel["url"].rstrip("/") + "/api/node/proc-status"
+        post_json(u, panel["token"], {"state": state, "err": (err or "")[:2000]}, panel)
+        print(f"proc-status → {state}", flush=True)
+    except Exception as e:
+        print("proc-status report failed:", e, flush=True)
+
+
 # ───────────────────────── main loop ─────────────────────────
 
 def main():
@@ -1732,6 +1743,17 @@ def main():
                             update_started = True; print(f"update trigger written → {_trig}", flush=True)
                         except Exception as _e:
                             print("update trigger failed:", _e, flush=True)
+                            report_proc(panel, "update-failed", f"swg-noded could not write the update trigger {_trig}: {_e}")
+                            update_started = True   # reported the failure — don't retry the bad write every sync
+                    elif NODE_KIND == "docker":
+                        # docker node with NO host updater wired: a container can't recreate its own image, so
+                        # run_self_update can do nothing. Report a clear failure instead of silently no-op'ing.
+                        print("update requested but no host updater is wired (docker)", flush=True)
+                        report_proc(panel, "update-failed",
+                                    "This docker node has no one-click host updater wired. Re-install it "
+                                    "(bootstrap docker node) to enable the panel's Update button, or update on the box: "
+                                    "cd /opt/swg-panel-docker && docker compose --profile node pull && docker compose --profile node up -d")
+                        update_started = True
                     else:
                         update_started = run_self_update(node_cfg, reply["update"])
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
