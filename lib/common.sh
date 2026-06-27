@@ -8,6 +8,12 @@
 # pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
 proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
 
+# bold (b) + bold-blue link (bb) text — print_summary uses both, but convert.sh / update.sh don't define bb
+# themselves, so provide them here. The guard only FILLS A GAP: a script that defines its own (identical) b/bb
+# keeps it, in any source order. Colours are read at call time, so they need not be set when this file is sourced.
+command -v b  >/dev/null 2>&1 || b(){  printf '%s%s%s'   "${BOLD:-}" "$*" "${RESET:-}"; }
+command -v bb >/dev/null 2>&1 || bb(){ printf '%s%s%s%s' "${BOLD:-}" "${C_BLUE:-}" "$*" "${RESET:-}"; }
+
 # the bordered, bold title every summary opens with — keeps one style across install / re-install / convert /
 # update for node / host / master. Pass the operation phrase, e.g. "CONVERSION COMPLETE", "INSTALL COMPLETE".
 # Leading blank above, blank below — callers add their final trailing blank with summary_end.
