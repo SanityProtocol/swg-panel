@@ -2024,6 +2024,14 @@ def api(method, path, qs, body, deps):
                         os.unlink(UPDATE_TRIGGER)
                     with open(UPDATE_TRIGGER, "w") as f:
                         f.write(str(int(time.time())) + "\n")
+                # Flag THIS panel host "updating" right now so the header survives a hard reload (the client-only
+                # `hostUpdating` var is wiped by Ctrl+Shift+R). update.sh re-affirms it and writes the terminal
+                # ("updated"); the post-update restart drops a stale non-converting tag (see startup, ~2716).
+                with contextlib.suppress(Exception):
+                    _hpp = deps.get("host_proc_path")
+                    if _hpp:
+                        with open(_hpp, "w") as _hf:
+                            _hf.write("updating\n")
                 # MASTER: also flag the co-located node "updating" right now, so its tile shows the status for the
                 # WHOLE update — like the header. update.sh's own proc_status POST lands a few seconds in and the
                 # update can finish before the ~5s poll catches that brief window, so the node would otherwise jump
