@@ -357,7 +357,7 @@ PY
     while IFS="$(printf '\t')" read -r _t _u _s; do [ -n "$_t" ] || continue; _i=$((_i+1)); _salv_block "$_i" "$_t" "$_u" "$_s"; done <<EOF2
 $_uniq
 EOF2
-    printf '  Number to re-enroll with (or Enter to skip and set up a new node — you supply a token, panel → Nodes or -key): '; _pick=""; read -r _pick 2>/dev/null </dev/tty || _pick=""
+    printf "  Number to re-enroll with (or $(b Enter) to skip and set up a new node — you supply a token, panel → Nodes or -key): "; _pick=""; read -r _pick 2>/dev/null </dev/tty || _pick=""
     if printf '%s' "$_pick" | grep -qE '^[0-9]+$'; then
       _line="$(printf '%s\n' "$_uniq" | sed -n "${_pick}p" 2>/dev/null || true)"
       salv_tok="$(printf '%s' "$_line" | cut -f1)"; salv_url="$(printf '%s' "$_line" | cut -f2)"; salv_src="$(printf '%s' "$_line" | cut -f3-)"
