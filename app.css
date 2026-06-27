@@ -68,7 +68,7 @@ h1,h2,h3{font-family:var(--sans)}
 .livepill.off b{color:var(--dim)}                /* no peers online → grey count … */
 .livepill.off .dot{display:none}                 /* … and no glowing dot */
 /* this panel host is mid re-install/convert (header slot, holds through the panel's own downtime) */
-.hostproc-tag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--pending);border:1px solid var(--pending);border-radius:99px;padding:4px 11px;background:rgba(154,139,240,.1)}
+.hostproc-tag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--partial);border:1px solid var(--partial);border-radius:99px;padding:4px 11px;background:rgba(226,200,74,.1)}   /* in-progress = YELLOW (matches the .upd-busy pill, so the header tag doesn't flip yellow→purple mid-update) */
 .hostproc-tag.ok{color:var(--online);border-color:var(--online);background:rgba(63,216,154,.1)}        /* host re-install succeeded — green, auto-clears */
 .hostproc-tag.aborted{color:var(--unknown);border-color:var(--unknown);background:rgba(98,116,139,.12)}  /* host re-install aborted — grey, dismissable */
 .hostproc-tag.fail{color:var(--dangling);border-color:var(--dangling);background:rgba(240,89,107,.1)}   /* host re-install failed — red, error popup + dismissable × */
@@ -594,7 +594,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nstat.online{color:var(--online)} .nstat.online::before{animation:pulse 2.6s infinite}
 .nstat.offline{color:var(--unknown)}
 .nstat.dangling{color:var(--pending)}
-.nstat.proc{color:var(--pending)} .nstat.proc::before{display:none}   /* re-install/convert: clock icon instead of the dot */
+.nstat.proc{color:var(--partial)} .nstat.proc::before{display:none}   /* in-progress (updating / re-install / convert): YELLOW clock */
+.nstat.enroll{color:#F0913C} .nstat.enroll::before{display:none}   /* awaiting enroll: ORANGE clock (node hasn't checked in yet) */
 .nstat.procok{color:var(--online)} .nstat.procok::before{display:none}        /* success: green ✓, auto-clears after ~5s (no ×) */
 .nstat.procaborted{color:var(--unknown)} .nstat.procaborted::before{display:none}   /* aborted: grey, dismissable via × */
 .nstat.procfail{color:var(--dangling)} .nstat.procfail::before{display:none}   /* failed: red, error popup + dismissable × */
