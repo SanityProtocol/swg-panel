@@ -2755,11 +2755,15 @@ class Handler(BaseHTTPRequestHandler):
             rx, tx = snap_traffic(snap)              # append one point to the per-node RRD ring
             with contextlib.suppress(Exception):
                 hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), cpu, mem, disk, rx, tx)
-            # also keep a short in-memory raw buffer (one sample per sync) for a 5s-granular LIVE view
+            # also keep a short raw buffer (one sample per sync) for a 5s-granular LIVE view. Mirrored to
+            # disk so it survives a panel restart/update — otherwise LIVE appears to "reset to scratch"
+            # after every update (the RRD-backed ranges already persist; this makes LIVE persist too).
             buf = Handler.deps.setdefault("live_samples", {}).setdefault(nid, [])
             buf.append((int(time.time()), cpu, mem, disk, rx, tx))
             if len(buf) > LIVE_MAX:
                 del buf[:len(buf) - LIVE_MAX]
+            with contextlib.suppress(Exception):
+                atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o644)
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.
@@ -3225,7 +3229,7 @@ def main():
                     "roster_path": fleet.get("roster_path", "/var/lib/swg-panel/users.json"),
                     "stats_dir": fleet.get("stats_dir", "/var/www/wgstats"),
                     "nodes_path": nodes_path, "nodes": nodes_load(nodes_path),
-                    "node_snaps": {}, "node_seen": {},
+                    "node_snaps": {}, "node_seen": {}, "live_samples": {},
                     "auth": load_auth(),
                     "session_secret": load_session_secret(fleet.get("roster_path", "/var/lib/swg-panel/users.json")),
                     "now": lambda: int(time.time())}
@@ -3238,6 +3242,10 @@ def main():
         if isinstance(_snap, dict) and _snap:
             Handler.deps["node_snaps"][_nid] = _snap
             Handler.deps["node_seen"][_nid] = int(_snap.get("generated_at") or 0) or int(time.time())
+        # restore the LIVE 5s buffer so the LIVE chart survives a restart/update (mirrors live-<id>.json)
+        _lb = load_json(os.path.join(Handler.deps["stats_dir"], f"live-{_nid}.json"), None)
+        if isinstance(_lb, list) and _lb:
+            Handler.deps["live_samples"][_nid] = [tuple(s) for s in _lb if isinstance(s, (list, tuple)) and len(s) >= 6][-LIVE_MAX:]
     # TLS is wrapped PER CONNECTION in the worker thread (not on the listening socket): wrapping
     # the listener does the handshake inside accept(), so one stalled/half-open client (a scanner,
     # a Cloudflare probe, a dropped packet) wedges the accept loop and the whole panel stops

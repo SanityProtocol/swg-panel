@@ -3036,8 +3036,8 @@ function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
           <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
         </linearGradient></defs>
         ${n >= 2 ? html`<polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
-        <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
-        <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>` : null}
+        <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.3" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>
+        <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.3" vector-effect="non-scaling-stroke"/>` : null}
       </svg>
       ${n === 1 ? html`<div class="ch-dot" style=${"left:" + xAt(0) + "%;top:" + (Y(R[0]) / h * 100) + "%;background:var(--brand)"}></div>
         <div class="ch-dot" style=${"left:" + xAt(0) + "%;top:" + (Y(T[0]) / h * 100) + "%;background:var(--tp-tx)"}></div>` : null}
