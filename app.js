@@ -1424,7 +1424,7 @@ function NodeDetail({ node: rawName }) {
               const iopBusy = iop && iop.phase === "busy";
               const idim = iconverting || deleting || idown || istopped || irestarting || iopBusy || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / stopped / in-flight / node gone dark → dim
               return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
-                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
+                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${m.egress_mode === "forward" && m.egress_node ? html`<span class="tg tg-fwd" title=${"Traffic exits via " + Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "")}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>` : null}${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1443,10 +1443,13 @@ function NodeDetail({ node: rawName }) {
         const col = Store.nodeColor(peer);
         const up = m.handshake_age != null && m.handshake_age < 180;   // a recent handshake → link is live
         const muted = nodeStale(name) || !up;
+        const carried = userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
+          .map(k => meta[k].subnet).filter(Boolean);   // local user subnets forwarded out through THIS link
         return html`<div key=${ifn} class=${"ifcard tp clickable" + (muted ? " down" : "")} onClick=${() => openConnectionEdit(name, ifn)}>
-          <div class="ifcard-top"><span class="iftype turn" style=${"color:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${up ? html`<span class="tg tg-ok"><${Ic} i="check"/>up</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${m.handshake_age == null ? "connecting" : "idle"}</span>`}</div>
+          <div class="ifcard-top"><span class="iftype turn" style=${"color:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}${up ? html`<span class="tg tg-ok"><${Ic} i="check"/>up</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${m.handshake_age == null ? "connecting" : "idle"}</span>`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${m.subnet || "—"}</span></div>
+            ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r addr">${carried.join(", ")}</span></div>` : null}
             <div class="ifrow"><span class="l">Throughput</span><span class="r">↓ ${rate(m.rx_speed || 0)} · ↑ ${rate(m.tx_speed || 0)}</span></div>
           </div></div>`;
       })}</div>
@@ -1845,6 +1848,11 @@ function ConnectionEditSheet({ node, iface }) {
   const peer = meta.link_node;
   const up = meta.handshake_age != null && meta.handshake_age < 180;
   const Row = (l, v) => html`<div class="row"><span class="k">${l}</span><span class="vv">${v}</span></div>`;
+  // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
+  const allMeta = Store.describe[node] || {};
+  const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
+    && allMeta[k].egress_mode === "forward" && allMeta[k].egress_node === peer)
+    .map(k => ({ iface: k, subnet: allMeta[k].subnet, ip: allMeta[k].egress_ip }));
   return html`<${Sheet} title=${"Connection to " + Store.nodeName(peer)} onClose=${closeModal}
       foot=${html`<button class="btn" onClick=${closeModal}>Close</button>`}>
     <div class="dmeta">
@@ -1856,6 +1864,11 @@ function ConnectionEditSheet({ node, iface }) {
       ${Row("Listen", meta.endpoint || "—")}
       ${Row("Throughput", html`↓ ${rate(meta.rx_speed || 0)} · ↑ ${rate(meta.tx_speed || 0)}`)}
     </div>
+    ${carried.length ? html`<div style="margin-top:16px">
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;font-size:12px;font-weight:600;color:var(--ink)"><${Ic} i="activity"/>Forwarding <span class="tg tg-fwd">cascade</span></div>
+      <div class="dmeta">${carried.map(c => Row(c.iface, html`<span class="addr">${c.subnet || "?"}</span> → ${Store.nodeName(peer)}${c.ip ? html` <span class="faint">as ${c.ip}</span>` : ""}`))}</div>
+      <div class="hint" style="margin-top:8px">These interfaces' client traffic exits the fleet through <b>${Store.nodeName(peer)}</b>.</div>
+    </div>` : null}
     <div class="hint" style="margin-top:14px">This is a panel-managed mesh link to <b>${Store.nodeName(peer)}</b>. It's created and torn down automatically as nodes are added or removed. To route a user interface's traffic out through this node, set that interface's egress to <b>Forward to ${Store.nodeName(peer)}</b>.</div>
   <//>`;
 }

@@ -257,6 +257,38 @@ def set_iface_fields_in_conf(path, fields):
     write_conf_atomic(path, "\n".join(out).rstrip("\n") + "\n")
 
 
+def ensure_table_off_in_conf(path):
+    """Idempotently ensure `Table = off` in [Interface] — for a mesh link that carries a 0.0.0.0/0 peer,
+    so wg/awg-quick never installs a default route from AllowedIPs (which would hijack the box's egress).
+    Self-heals Phase-1 link confs created before Table=off existed. No-op if already present."""
+    try:
+        info = parse_interface_section(read_conf(path))
+    except Exception:
+        return
+    if str(info.get("Table", "")).strip().lower() == "off":
+        return
+    set_iface_fields_in_conf(path, {"Table": "off"})
+
+
+def rewrite_peer_allowed_in_conf(path, pub, allowed):
+    """Replace the AllowedIPs line of the [Peer] block matching `pub` (reuses the block scan from
+    remove_peer_from_conf). Inserts an AllowedIPs line if the block somehow lacks one. Atomic, 0600."""
+    lines = read_conf(path).splitlines()
+    starts = [i for i, l in enumerate(lines) if l.strip().lower() == "[peer]"]
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        if any(re.match(rf"\s*PublicKey\s*=\s*{re.escape(pub)}\s*$", b) for b in lines[start:end]):
+            done = False
+            for i in range(start, end):
+                if re.match(r"(?i)\s*AllowedIPs\s*=", lines[i]):
+                    lines[i] = f"AllowedIPs = {allowed}"; done = True; break
+            if not done:
+                lines.insert(start + 1, f"AllowedIPs = {allowed}")
+            write_conf_atomic(path, "\n".join(lines).rstrip("\n") + "\n")
+            return
+    # peer block not found in conf (live-only) — nothing to rewrite
+
+
 @contextlib.contextmanager
 def locked():
     os.makedirs(os.path.dirname(LOCK_PATH) or "/run", exist_ok=True)
@@ -383,6 +415,8 @@ def op_add_peer(cfg, req):
 
     # 2) persist to the conf
     append_peer_to_conf(ic["conf"], pub, psk, allowed, name, endpoint=endpoint, keepalive=ka)
+    if endpoint:                        # a mesh/link peer (dials out) → keep its conf reboot-safe for the cascade
+        ensure_table_off_in_conf(ic["conf"])
 
     port = int(iface_line[2]) if len(iface_line) > 2 and iface_line[2].isdigit() else None
     return {
@@ -394,6 +428,27 @@ def op_add_peer(cfg, req):
         "awg_params": awg_params(info),
         "dns": cfg.get("dns", []),
     }
+
+
+def op_set_peer_allowed(cfg, req):
+    """Replace an EXISTING peer's AllowedIPs (live + conf). Used by the cascade to flip a mesh peer
+    between the link /32 and 0.0.0.0/0 (entry) or to add forwarded subnets (exit). `awg set ... allowed-ips`
+    is surgical and does NOT touch routing tables, so applying 0.0.0.0/0 live is safe; when the peer carries
+    a default route we also ensure `Table = off` in the conf first, so the next bring-up won't hijack egress."""
+    iface = req["iface"]
+    ic = iface_cfg(cfg, iface)
+    pub = req.get("public_key", "")
+    if not PUBKEY_RE.match(pub):
+        raise AgentError("bad_pubkey", "public_key is not a valid WireGuard key")
+    allowed = (req.get("allowed_ips") or "").strip()
+    if not allowed or "/" not in allowed.split(",")[0]:
+        raise AgentError("bad_request", "allowed_ips must be CIDR(s), e.g. 0.0.0.0/0 or 10.8.0.0/24")
+    is_default = any(c.strip() in ("0.0.0.0/0", "::/0") for c in allowed.split(","))
+    if is_default:                                  # persist Table=off BEFORE any future bring-up sees the /0
+        ensure_table_off_in_conf(ic["conf"])
+    run(ic["cmd"] + ["set", iface, "peer", pub, "allowed-ips", allowed])   # surgical live replace (no routing change)
+    rewrite_peer_allowed_in_conf(ic["conf"], pub, allowed)
+    return {"iface": iface, "public_key": pub, "allowed_ips": allowed}
 
 
 def op_remove_peer(cfg, req):
@@ -556,6 +611,8 @@ def op_create_iface(cfg, req):
             f"iptables -D FORWARD -i {wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT || true")
     body = (f"[Interface]\nPrivateKey = {priv}\nAddress = {addr}\nListenPort = {port}\nMTU = {mtu}\n"
             f"PostUp = {up}\nPostDown = {down}\n")
+    if (req.get("table") or "").strip().lower() == "off":   # mesh link: cascade manages routing — wg-quick must
+        body += "Table = off\n"                              # NOT install AllowedIPs routes (a /0 would hijack default)
     if tool == "awg" and add_obf:               # only genuine AmneziaWG gets obfuscation params
         body += _awg_obfuscation()
     write_conf_atomic(conf, body)
@@ -667,6 +724,7 @@ def respond(ok, op, data=None, error=None, code=None):
 
 READ_OPS = {"describe": op_describe, "list-peers": op_list_peers, "next-ip": op_next_ip}
 WRITE_OPS = {"add-peer": op_add_peer, "remove-peer": op_remove_peer, "set-iface": op_set_iface,
+             "set-peer-allowed": op_set_peer_allowed,
              "create-iface": op_create_iface, "delete-iface": op_delete_iface, "restart-iface": op_restart_iface,
              "stop-iface": op_stop_iface, "start-iface": op_start_iface,
              "restore-iface-key": op_restore_iface_key}

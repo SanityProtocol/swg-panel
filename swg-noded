@@ -580,6 +580,31 @@ def _iface_subnet(node_cfg, iface):
         return ""
 
 
+def _snat_reconcile_rule(tag, subnet, des, rules):
+    """Ensure exactly one tagged SNAT/MASQUERADE POSTROUTING rule for `subnet`, inserted at the head
+    (ahead of any default MASQUERADE). des = ("SNAT", wan, ip) | ("MASQUERADE", wan, "") | None (no rule).
+    `rules` = current `iptables -t nat -S POSTROUTING` lines. Returns (changed: bool, error: str|None).
+    Shared by reconcile_egress (local-iface SNAT) and reconcile_cascade (exit forwarded-subnet SNAT)."""
+    existing = [ln for ln in rules if ("--comment " + tag) in ln]
+    cur = None
+    if existing:
+        o = re.search(r"-o (\S+)", existing[0]); src = re.search(r"--to-source (\S+)", existing[0])
+        cur = ("SNAT" if "SNAT" in existing[0] else "MASQUERADE", o.group(1) if o else "", src.group(1) if src else "")
+    if cur == des:
+        return (False, None)
+    for ln in existing:                                   # drop stale rule(s)
+        run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)])
+    if des:
+        args = ["iptables", "-t", "nat", "-I", "POSTROUTING", "-s", subnet, "-o", des[1],
+                "-m", "comment", "--comment", tag, "-j", des[0]]
+        if des[0] == "SNAT":
+            args += ["--to-source", des[2]]
+        r = run(args)
+        if r.returncode != 0:
+            return (False, (r.stderr or "").strip()[:120])
+    return (True, None)
+
+
 def reconcile_egress(node_cfg, desired_ifaces):
     """Option-I source-NAT: per interface, ensure an SNAT rule to its chosen egress_ip (tagged with a
     'swg-egress:<iface>' comment, inserted ahead of the default MASQUERADE), replace it on change, and
@@ -600,31 +625,178 @@ def reconcile_egress(node_cfg, desired_ifaces):
         subnet = _iface_subnet(node_cfg, iface)
         if not subnet:
             continue
-        tag = "swg-egress:" + iface
         if egress:                                            # SNAT to a chosen source IP, out a chosen/auto WAN
             des = ("SNAT", wan_ov or default_wan, egress)
         elif wan_ov:                                          # just pin the WAN egress interface
             des = ("MASQUERADE", wan_ov, "")
         else:
             des = None
-        existing = [ln for ln in rules if ("--comment " + tag) in ln]
-        cur = None
-        if existing:
-            o = re.search(r"-o (\S+)", existing[0]); src = re.search(r"--to-source (\S+)", existing[0])
-            cur = ("SNAT" if "SNAT" in existing[0] else "MASQUERADE", o.group(1) if o else "", src.group(1) if src else "")
-        if cur == des:
-            continue
-        for ln in existing:                                   # drop stale rule(s)
-            run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)])
-        if des:
-            args = ["iptables", "-t", "nat", "-I", "POSTROUTING", "-s", subnet, "-o", des[1],
-                    "-m", "comment", "--comment", tag, "-j", des[0]]
-            if des[0] == "SNAT":
-                args += ["--to-source", des[2]]
-            r = run(args)
-            if r.returncode != 0:
-                res["errors"].append("egress " + iface + ": " + (r.stderr or "").strip()[:120]); continue
-        res["changed"] += 1
+        changed, err = _snat_reconcile_rule("swg-egress:" + iface, subnet, des, rules)
+        if err:
+            res["errors"].append("egress " + iface + ": " + err); continue
+        if changed:
+            res["changed"] += 1
+    return res
+
+
+# ───────────────────────── Phase 2: traffic cascade ─────────────────────────
+SWG_RT_BASE = 7000          # swg-owned policy-routing table id / ip-rule priority band [BASE, MAX]
+SWG_RT_MAX = 7099           # (priority == table number; one table per egress target per node)
+
+
+def _cascade_want_sig(fwd, exit_):
+    """Canonical signature of the policy rules+routes a plan wants — same token shape as the live
+    reader below, so an exact-match means 'no drift' and we skip the (gap-inducing) flush+rebuild."""
+    sig = set()
+    for e in fwd:
+        T = str(e["table"]); sig.add(f"R|from|{e['subnet']}|{T}"); sig.add(f"T|{T}|default|{e['via_iface']}")
+    for e in exit_:
+        T = str(e["table"]); sig.add(f"R|to|{e['subnet']}|{T}"); sig.add(f"T|{T}|{e['subnet']}|{e['via_iface']}")
+    return sig
+
+
+def _cascade_live_sig(tables):
+    """Canonical signature of our LIVE policy rules (band priorities) + routes in the given tables —
+    parsed from `ip rule show` / `ip route show table T` so it's robust to iproute2's output wording."""
+    sig = set()
+    try:
+        for line in run(["ip", "rule", "show"]).stdout.splitlines():
+            mp = re.match(r"^\s*(\d+):\s+(.*)$", line)
+            if not mp:
+                continue
+            pri = int(mp.group(1))
+            if not (SWG_RT_BASE <= pri <= SWG_RT_MAX):
+                continue
+            body = mp.group(2)
+            lk = re.search(r"lookup (\S+)", body); T = lk.group(1) if lk else str(pri)
+            mto = re.search(r"\bto (\S+)", body); mfrom = re.search(r"\bfrom (\S+)", body)
+            if mto:
+                sig.add(f"R|to|{mto.group(1)}|{T}")
+            elif mfrom and mfrom.group(1) != "all":
+                sig.add(f"R|from|{mfrom.group(1)}|{T}")
+    except Exception:
+        pass
+    for T in tables:
+        try:
+            for line in run(["ip", "route", "show", "table", str(T)]).stdout.splitlines():
+                toks = line.split()
+                if not toks:
+                    continue
+                dev = toks[toks.index("dev") + 1] if "dev" in toks else ""
+                sig.add(f"T|{T}|{toks[0]}|{dev}")
+        except Exception:
+            pass
+    return sig
+
+
+def _live_band_prios():
+    out = []
+    with contextlib.suppress(Exception):
+        for line in run(["ip", "rule", "show"]).stdout.splitlines():
+            mp = re.match(r"^\s*(\d+):", line)
+            if mp and SWG_RT_BASE <= int(mp.group(1)) <= SWG_RT_MAX:
+                out.append(int(mp.group(1)))
+    return sorted(set(out))
+
+
+def _ensure_fwd_iptables(fwd, exit_, default_wan, res):
+    """Idempotent (no-churn) exit SNAT + FORWARD-accept + MSS-clamp for the link devices, tagged
+    swg-fwd-{snat,acl,mss}:* so stale entries (after a forward→direct switch) are cleaned up."""
+    link_devs = sorted({e["via_iface"] for e in (fwd + exit_)})
+    # 1) exit SNAT per forwarded subnet (diff via the shared helper) + drop stale tags
+    try:
+        nat = run(["iptables", "-t", "nat", "-S", "POSTROUTING"]).stdout.splitlines()
+    except Exception as e:
+        res["errors"].append("cascade nat list: " + str(e)); nat = []
+    want_snat = set()
+    for e in exit_:
+        S = e["subnet"]; tag = "swg-fwd-snat:" + S; want_snat.add(tag)
+        W = (e.get("wan_iface") or "").strip() or default_wan; X = (e.get("egress_ip") or "").strip()
+        des = ("SNAT", W, X) if X else ("MASQUERADE", W, "")
+        _ch, err = _snat_reconcile_rule(tag, S, des, nat)
+        if err:
+            res["errors"].append("cascade snat " + S + ": " + err)
+        elif _ch:
+            res["changed"] += 1
+    for ln in nat:                                              # remove SNAT tags no longer wanted
+        mt = re.search(r"--comment (swg-fwd-snat:\S+)", ln)
+        if mt and mt.group(1) not in want_snat and ln.startswith("-A POSTROUTING"):
+            run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)]); res["changed"] += 1
+    # 2) FORWARD accept (filter) + 3) MSS clamp (mangle), present-or-absent per link dev
+    _ensure_dev_rules("filter", "FORWARD", "swg-fwd-acl:", link_devs, res,
+                      lambda d, direction: ["iptables", "-I", "FORWARD", direction, d,
+                                            "-m", "comment", "--comment", "swg-fwd-acl:" + d, "-j", "ACCEPT"])
+    _ensure_dev_rules("mangle", "FORWARD", "swg-fwd-mss:", link_devs, res,
+                      lambda d, direction: (["iptables", "-t", "mangle", "-I", "FORWARD", "-o", d,
+                                             "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
+                                             "-m", "comment", "--comment", "swg-fwd-mss:" + d,
+                                             "-j", "TCPMSS", "--clamp-mss-to-pmtu"] if direction == "-o" else None))
+
+
+def _ensure_dev_rules(table, chain, prefix, link_devs, res, mk):
+    """Ensure the tagged per-device rules built by mk(dev, '-i'/'-o') exist (skip if present), and drop
+    any tagged rule for a device no longer in link_devs. mk may return None for a direction to skip it."""
+    targs = ["-t", table] if table != "filter" else []
+    try:
+        lines = run(["iptables"] + targs + ["-S", chain]).stdout.splitlines()
+    except Exception as e:
+        res["errors"].append(f"cascade {table} list: " + str(e)); return
+    want = {prefix + d for d in link_devs}
+    for d in link_devs:
+        tag = prefix + d
+        for direction in ("-i", "-o"):
+            add = mk(d, direction)
+            if add is None:
+                continue
+            if not any((tag in ln and f"{direction} {d}" in ln) for ln in lines):
+                run(add)
+                res["changed"] += 1
+    for ln in lines:                                            # drop stale device tags
+        mt = re.search(r"--comment (" + re.escape(prefix) + r"\S+)", ln)
+        if mt and mt.group(1) not in want and ln.startswith("-A " + chain):
+            run(["sh", "-c", "iptables " + " ".join(targs) + " " + ln.replace("-A " + chain, "-D " + chain, 1)]); res["changed"] += 1
+
+
+def reconcile_cascade(node_cfg, plan):
+    """Phase 2 traffic cascade. ENTRY: policy-route a forwarded user subnet S into its mesh link
+    (`ip rule from S lookup T` + `default dev <link> table T`). EXIT: route returns back into the link
+    (`ip rule to S lookup T` + `S dev <link> table T`) and SNAT S out the WAN to the chosen egress_ip.
+    Idempotent: the policy rules/routes are rebuilt only when they DRIFT from the plan (a signature
+    compare — never churn the rules each sync, which would leak a packet to direct egress mid-gap);
+    the iptables side is diffed by tag. Runtime routing is lost on reboot, so this re-applies on the
+    first sync after a reboot. Returns {changed, errors}."""
+    res = {"changed": 0, "errors": []}
+    plan = plan or {}
+    fwd = plan.get("forward") or []
+    exit_ = plan.get("exit") or []
+    band = _live_band_prios()
+    want_tables = {str(e["table"]) for e in (fwd + exit_)}
+    want_sig = _cascade_want_sig(fwd, exit_)
+    live_sig = _cascade_live_sig({str(p) for p in band} | want_tables)
+    # POLICY RULES/ROUTES — only touch them when they drift (avoids per-sync rule gaps).
+    if want_sig != live_sig:
+        if fwd or exit_:                                       # enable forwarding + loose rp_filter (asymmetric paths)
+            run(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"])
+            wan = _detect_wan()
+            for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + exit_)}):
+                run(["sysctl", "-q", "-w", f"net.ipv4.conf.{dev}.rp_filter=2"])   # effective = max(all,dev): lower BOTH
+        for pri in band:                                       # teardown our whole band (rules + tables)
+            for _ in range(8):                                 # del-until-absent (a priority may carry several rules)
+                if run(["ip", "rule", "del", "pref", str(pri)]).returncode != 0:
+                    break
+            run(["ip", "route", "flush", "table", str(pri)])
+        for e in fwd:                                          # ENTRY: from S → table T (default via link)
+            T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
+            run(["ip", "route", "replace", "default", "dev", dev, "table", T])
+            run(["ip", "rule", "add", "from", S, "lookup", T, "priority", T])
+            res["changed"] += 1
+        for e in exit_:                                        # EXIT: to S → table T (S via link)
+            T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
+            run(["ip", "route", "replace", S, "dev", dev, "table", T])
+            run(["ip", "rule", "add", "to", S, "lookup", T, "priority", T])
+            res["changed"] += 1
+    # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
+    _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res)
     return res
 
 
@@ -700,6 +872,26 @@ def current_pubkeys(node_cfg, iface):
         return None
 
 
+def _norm_allowed(s):
+    """Normalize an AllowedIPs string for comparison — sorted, deduped, whitespace-stripped CIDRs.
+    (awg/wg may reorder the list, so a raw string compare would churn.)"""
+    return ",".join(sorted({c.strip() for c in (s or "").split(",") if c.strip()}))
+
+
+def current_allowed(node_cfg, iface):
+    """{pubkey -> normalized AllowedIPs} live on the interface, or None if it can't be read."""
+    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
+    cmd = ic.get("cmd", ["awg"])
+    try:
+        r = run(cmd + ["show", iface, "dump"])
+        if r.returncode != 0:
+            return None
+        _, peers = parse_dump(r.stdout)
+        return {p["public_key"]: _norm_allowed(p["allowed_ips"]) for p in peers}
+    except Exception:
+        return None
+
+
 def current_listen_port(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = ic.get("cmd", ["awg"])
@@ -767,6 +959,7 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
         if current is None:
             res["errors"].append(f"{iface}: cannot read interface")
             continue
+        live_allowed = current_allowed(node_cfg, iface) or {}   # for re-applying a CHANGED AllowedIPs (cascade /32→/0)
         # EXPLICIT retirements from the panel (a key it rotated/deleted) FIRST — removed even on an
         # add-only interface, and before the add below so the replacement key can take the freed IP.
         for pk in remove_by_iface.get(iface, []):
@@ -778,6 +971,17 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                     res["errors"].append(f"retire {pk[:8]}: {r.get('error')}")
         for pk, p in desired.items():
             if pk in current:
+                # already present — but its AllowedIPs may have CHANGED (cascade flips a mesh peer
+                # /32 ↔ 0.0.0.0/0, or an exit gains a forwarded subnet). reconcile otherwise skips
+                # present peers, so apply the diff surgically (this is risk R1).
+                want_a = _norm_allowed(p.get("allowed_ips", ""))
+                if want_a and live_allowed.get(pk) is not None and live_allowed[pk] != want_a:
+                    r = run_agent(agent, sudo, {"op": "set-peer-allowed", "iface": iface,
+                                                "public_key": pk, "allowed_ips": p.get("allowed_ips", "")})
+                    if r.get("ok"):
+                        res["added"] += 1                        # count as a change (drives the reconcile log)
+                    else:
+                        res["errors"].append(f"allowed {pk[:8]}: {r.get('error')}")
                 continue
             r = run_agent(agent, sudo, {
                 "op": "add-peer", "iface": iface, "public_key": pk,
@@ -1779,6 +1983,7 @@ def main():
                 sa = start_ifaces(node_cfg, reply.get("iface_start"), agent, sudo)
                 ik = apply_iface_keys(node_cfg, reply.get("iface_key"), agent, sudo)   # keypair restore/rebaseline from the on-disk backup
                 eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
+                cas = reconcile_cascade(node_cfg, reply.get("cascade"))   # Phase 2: forward policy-routing + exit SNAT
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name
                 for blk in (cr, dl, ob, rs, sp, sa):
                     for e in blk["errors"]:
@@ -1795,13 +2000,13 @@ def main():
                 for k in list(NODE_ERRORS):
                     if k not in active:
                         NODE_ERRORS.pop(k, None)
-                for e in eg["errors"]:
+                for e in eg["errors"] + cas["errors"]:
                     print("egress: " + e, flush=True)
                 if (r["added"] or r["removed"] or r["errors"] or ri["changed"] or ri["errors"]
-                        or eg["changed"] or eg["errors"]
+                        or eg["changed"] or eg["errors"] or cas["changed"] or cas["errors"]
                         or ob["added"] or ob["errors"] or cr["created"] or cr["errors"]
                         or dl["deleted"] or dl["errors"] or tp["done"] or tp["errors"]):
-                    print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} "
+                    print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} cascade~{cas['changed']} "
                           f"onboard+{ob['added']} create+{cr['created']} delete-{dl['deleted']} turn={tp['done']} "
                           f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'] + tp['errors'])[:3]}", flush=True)
                 interval = reply.get("interval", interval)

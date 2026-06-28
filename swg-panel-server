@@ -968,7 +968,7 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc):
             "listen_port": port, "psk": psk, "role": "x" if nid == x_nid else "y"}
         n.setdefault("create", {})[iface] = {
             "cmd": ["awg"], "subnet": str(sub), "address": f"{mine}/31",
-            "listen_port": port, "mtu": mc["mtu"]}
+            "listen_port": port, "mtu": mc["mtu"], "table": "off"}   # Table=off: cascade manages routing, no /0 hijack
         n.setdefault("ifaces", {})[iface] = {"awg_params": dict(awg), "system": True, "link_node": peer}
     ev_append(deps["roster_path"], "node", a, "Linked node", nodes[b].get("name", b))
     return True
@@ -995,16 +995,19 @@ def reconcile_mesh(nodes, snaps, deps):
             ifc = lr.get("iface")
             if ifc and ifc not in snap_ifs and ifc not in pending:
                 n.setdefault("create", {})[ifc] = {"cmd": ["awg"], "subnet": lr["subnet"],
-                    "address": lr["address"] + "/31", "listen_port": lr["listen_port"], "mtu": mc["mtu"]}
+                    "address": lr["address"] + "/31", "listen_port": lr["listen_port"], "mtu": mc["mtu"], "table": "off"}
                 ov = n.setdefault("ifaces", {}).setdefault(ifc, {})
                 ov.setdefault("system", True); ov.setdefault("link_node", peer)
                 changed = True
     return changed
 
 
-def desired_mesh_for_node(nodes, nid, keepalive):
+def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None):
     """The mesh peer set for `nid`, grouped by link iface — one remote peer per link, emitted only once
-    the REMOTE end is ready (its pubkey blessed, its listen_port known, its endpoint_host set)."""
+    the REMOTE end is ready (its pubkey blessed, its listen_port known, its endpoint_host set).
+    `allowed_overrides` (Phase 2 cascade) maps a local link iface → the AllowedIPs the mesh peer should
+    carry (e.g. "0.0.0.0/0" on a forwarding entry, "<base>/32,<subnet>" on an exit); default = link /32."""
+    ov_map = allowed_overrides or {}
     out = {}
     me = nodes.get(nid) or {}
     for peer_nid, lr in (me.get("links") or {}).items():
@@ -1019,12 +1022,90 @@ def desired_mesh_for_node(nodes, nid, keepalive):
             continue                                   # remote not ready → no peer yet (the iface still exists)
         out.setdefault(iface, []).append({
             "public_key": pub,
-            "allowed_ips": (lr.get("peer_address") or "") + "/32",   # Phase 1: link /32 only (0.0.0.0/0 is Phase 2)
+            "allowed_ips": ov_map.get(iface) or ((lr.get("peer_address") or "") + "/32"),   # cascade override, else link /32
             "preshared_key": lr.get("psk") or "none",
             "endpoint": f"{rhost}:{rport}",
             "persistent_keepalive": keepalive,
             "name": "mesh:" + (peer.get("name") or peer_nid)})
     return out
+
+
+# ───────────────────────── Phase 2: traffic cascade ─────────────────────────
+SWG_RT_BASE = 7000          # swg-owned policy-routing table id / ip-rule priority band [BASE, MAX]
+SWG_RT_MAX = 7099           # (one table id per egress target per node; priority == table number)
+
+
+def _iface_subnet_from_snap(snaps, nid, iface):
+    """A user interface's tunnel subnet as the node reported it (node_describe meta)."""
+    return (((((snaps or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {}).get("subnet") or ""
+
+
+def cascade_plan(nodes, snaps):
+    """Fleet-wide traffic-cascade plan. For every user interface set to egress_mode=forward, route ALL of
+    its client traffic through the existing N↔P mesh link and exit P's WAN (SNAT to egress_ip). Returns
+    per-node slices the sync loop hands to each node:
+        plans[nid] = {"forward":[{subnet,via_iface,table}],                      # entry node N
+                      "exit":   [{subnet,via_iface,table,egress_ip,wan_iface}],  # exit node P
+                      "allowed":{<link iface>: "<AllowedIPs>"}}                   # forward-aware mesh ACL
+    Safe by construction: a pair whose subnet/link isn't reported yet is skipped (forwarding pauses, never
+    errors), and only an explicit forward toggle produces any entry — the engine is inert otherwise."""
+    plans = {}
+
+    def slot(nid):
+        return plans.setdefault(nid, {"forward": [], "exit": [], "allowed": {},
+                                      "_fwd_seen": set(), "_exit_seen": set(), "_targets": {}})
+
+    # 1) collect (N, P, S, I, X, W) for every forwarding user iface, and per-node target order for table ids
+    items = []
+    for nid, node in nodes.items():
+        targets = []                                   # ordered distinct egress targets of this node → stable table ids
+        for iface, ov in (node.get("ifaces") or {}).items():
+            if ov.get("system") or (ov.get("egress_mode") != "forward"):
+                continue
+            P = ov.get("egress_node")
+            if not P or P not in nodes:
+                continue
+            S = _iface_subnet_from_snap(snaps, nid, iface)
+            if not S:
+                continue                               # subnet not reported yet → pause this one (no error)
+            lr_n = (node.get("links") or {}).get(P) or {}
+            lr_p = ((nodes.get(P) or {}).get("links") or {}).get(nid) or {}
+            dev_n = lr_n.get("iface"); dev_p = lr_p.get("iface")
+            base_p = lr_p.get("peer_address")          # N's link address as seen by P (its return-route source base)
+            if not (dev_n and dev_p and base_p):
+                continue                               # link not staged yet
+            if P not in targets:
+                targets.append(P)
+            items.append((nid, P, S, dev_n, dev_p, base_p, (ov.get("egress_ip") or "").strip(),
+                          (ov.get("wan_iface") or "").strip()))
+        if targets:
+            slot(nid)["_targets"] = {p: SWG_RT_BASE + i for i, p in enumerate(sorted(targets))}
+
+    # 2) build forward (entry) + exit + AllowedIPs overrides
+    for (nid, P, S, dev_n, dev_p, base_p, X, W) in items:
+        T = slot(nid)["_targets"].get(P)
+        if T is None or T > SWG_RT_MAX:
+            continue                                   # exhausted the band (≥100 targets) → skip extras
+        sn = slot(nid)
+        if (S, dev_n, T) not in sn["_fwd_seen"]:
+            sn["_fwd_seen"].add((S, dev_n, T))
+            sn["forward"].append({"subnet": S, "via_iface": dev_n, "table": T})
+        sn["allowed"][dev_n] = "0.0.0.0/0"             # entry link carries everything (and accepts any-source returns)
+        sp = slot(P)
+        if (S, dev_p, T) not in sp["_exit_seen"]:
+            sp["_exit_seen"].add((S, dev_p, T))
+            sp["exit"].append({"subnet": S, "via_iface": dev_p, "table": T, "egress_ip": X, "wan_iface": W})
+        # exit AllowedIPs: base link /31 end ∪ forwarded subnets — UNLESS an entry role already set this
+        # dev to 0.0.0.0/0 (a bidirectionally-forwarding link); /0 already accepts the return source.
+        if sp["allowed"].get(dev_p) != "0.0.0.0/0":
+            cur = set(filter(None, (sp["allowed"].get(dev_p) or (base_p + "/32")).split(",")))
+            cur |= {base_p + "/32", S}
+            sp["allowed"][dev_p] = ",".join(sorted(cur))
+
+    for sn in plans.values():                          # drop internal bookkeeping before returning
+        for k in ("_fwd_seen", "_exit_seen", "_targets"):
+            sn.pop(k, None)
+    return plans
 
 
 def mesh_unlink_node(nodes, nid):
@@ -2660,8 +2741,11 @@ class Handler(BaseHTTPRequestHandler):
                 nodes_save(Handler.deps["nodes_path"], nodes)
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
-        for _ifn, _ps in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"]).items():
-            desired.setdefault(_ifn, []).extend(_ps)   # node↔node mesh peers (endpoint + keepalive)
+        cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {})   # Phase 2: whole-fleet forward plan
+        my_plan = cas_plans.get(nid) or {"forward": [], "exit": [], "allowed": {}}
+        for _ifn, _ps in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
+                                               my_plan.get("allowed")).items():
+            desired.setdefault(_ifn, []).extend(_ps)   # node↔node mesh peers (endpoint + keepalive; cascade-aware AllowedIPs)
         # panel-managed interface config the node converges to — drift-aware: push an override until the
         # node confirms it (_synced); once confirmed, if the node diverges (a direct edit on the server)
         # PAUSE pushing + record the node's value in _drift so the panel can flag it (Adopt / Restore).
@@ -2896,6 +2980,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "onboard": node.get("onboard") or {}, "create": node.get("create") or None,
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
                                 "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
+                                "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):

@@ -769,6 +769,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-busy.del{background:rgba(240,90,90,.15);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 38%,transparent)}
 .tg-busy.warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 38%,transparent)}
 .tg-ok{background:rgba(63,216,154,.16);color:var(--online);border-color:color-mix(in srgb,var(--online) 30%,transparent)}
+.tg-fwd{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 34%,transparent)}   /* traffic cascade: forwards out via another node — BRAND cyan */
+.tg-fwd svg{width:11px;height:11px}
 .tg-warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 35%,transparent)}
 .tg-del{background:rgba(242,107,130,.16);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 35%,transparent)}   /* interface being deleted */
 .tg-off{background:rgba(98,116,139,.16);color:var(--unknown);border-color:color-mix(in srgb,var(--unknown) 30%,transparent)}   /* stopped / stale — a deliberate, non-error state */
