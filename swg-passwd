@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""swg-passwd — reset the swg-panel web login, like the system `passwd`.
+
+Run on the PANEL host as root:
+
+    sudo swg-passwd            # change the current user's password
+    sudo swg-passwd <newuser>  # also rename the login user
+
+Prompts for the new password twice (hidden, no echo), writes the pbkdf2 hash to the panel's auth
+file (SWG_PANEL_AUTH, default /etc/swg-panel/auth) and restarts the panel so it takes effect now.
+"""
+import sys, os, hashlib, base64, getpass, subprocess, contextlib
+
+AUTH = os.environ.get("SWG_PANEL_AUTH") or "/etc/swg-panel/auth"
+ITER = 200000
+
+
+def _current_user():
+    with contextlib.suppress(OSError):
+        with open(AUTH) as f:
+            return f.readline().split(":", 1)[0].strip()
+    return ""
+
+
+def main():
+    user = (sys.argv[1] if len(sys.argv) > 1 else _current_user()).strip() or "admin"
+    if ":" in user:
+        sys.exit("swg-passwd: username can't contain a ':'")
+    etc = os.path.dirname(AUTH) or "/"
+    if not os.access(etc, os.W_OK):
+        sys.exit(f"swg-passwd: need root to write {AUTH}  (try: sudo swg-passwd)")
+
+    print(f"Changing panel password for {user}.")
+    try:
+        pw = getpass.getpass("New password: ")
+        if len(pw) < 8:
+            sys.exit("swg-passwd: password must be at least 8 characters")
+        if getpass.getpass("Retype new password: ") != pw:
+            sys.exit("swg-passwd: passwords do not match")
+    except (KeyboardInterrupt, EOFError):
+        sys.exit("\nswg-passwd: aborted — password unchanged")
+
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, ITER)
+    line = "%s:pbkdf2_sha256$%d$%s$%s\n" % (user, ITER, base64.b64encode(salt).decode(), base64.b64encode(h).decode())
+    tmp = AUTH + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write(line)
+        os.chmod(tmp, 0o640)
+        with contextlib.suppress(Exception):
+            import grp
+            os.chown(tmp, 0, grp.getgrnam("swg").gr_gid)   # root:swg, like the installer
+        os.replace(tmp, AUTH)                              # atomic swap
+    except OSError as e:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        sys.exit(f"swg-passwd: cannot write {AUTH}: {e}")
+
+    # apply immediately (the panel reads the auth file at startup)
+    applied = False
+    with contextlib.suppress(Exception):
+        if subprocess.run(["systemctl", "restart", "swg-panel-server"],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+            applied = True
+    print("swg-passwd: password updated." +
+          ("" if applied else "  Restart the panel to apply:  systemctl restart swg-panel-server"))
+
+
+if __name__ == "__main__":
+    main()

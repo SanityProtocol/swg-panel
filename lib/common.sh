@@ -90,8 +90,8 @@ summary_host_block(){   # <method> <converted?yes|no>
   echo "${C_BLUE:-}▸${RESET:-} $(b "$mlabel SWG Host")${ver:+ $(b "v$ver")}$note"
   echo; echo "  $(b 'Panel') (login + the $(b "${tls:-?}") cert preserved):"; echo
   printf '    %-9s%s\n' "URL"     "$(bb "$url")"
-  if [ "$m" = docker ]; then reset="docker exec -it swg-panel /opt/swg-panel/swg-panel-server passwd"
-  else reset="sudo /opt/swg-panel/swg-panel-server passwd"; fi
+  if [ "$m" = docker ]; then reset="docker exec -it swg-panel swg-passwd"
+  else reset="sudo swg-passwd"; fi
   printf '    %-9s%s\n' "Login"   "$(b "${login:-admin}")  (to reset the password run: $(b "$reset"))"
   printf '    %-9s%s\n' "TLS"     "$(b "${tls:-?}")"
   if [ "$m" = docker ]; then
