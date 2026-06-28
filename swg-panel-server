@@ -1003,12 +1003,31 @@ def reconcile_mesh(nodes, snaps, deps):
     return changed
 
 
-def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None):
+def node_public_ip(snap):
+    """A node's first public IPv4 from its reported node_ips — the address other nodes dial for the mesh
+    (used when an operator hasn't set an explicit endpoint_host). Skips private/loopback/link-local."""
+    for ip in (snap or {}).get("node_ips") or []:
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if a.version == 4 and not (a.is_private or a.is_loopback or a.is_link_local):
+            return ip
+    return ""
+
+
+def mesh_endpoint_host(node, snap):
+    """The host a peer dials for this node's mesh: the explicit endpoint_host, else its reported public IP."""
+    return (node.get("endpoint_host") or "").strip() or node_public_ip(snap)
+
+
+def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None, snaps=None):
     """The mesh peer set for `nid`, grouped by link iface — one remote peer per link, emitted only once
-    the REMOTE end is ready (its pubkey blessed, its listen_port known, its endpoint_host set).
+    the REMOTE end is ready (its pubkey blessed, its listen_port known, its dial endpoint resolvable).
     `allowed_overrides` (Phase 2 cascade) maps a local link iface → the AllowedIPs the mesh peer should
     carry (e.g. "0.0.0.0/0" on a forwarding entry, "<base>/32,<subnet>" on an exit); default = link /32."""
     ov_map = allowed_overrides or {}
+    snaps = snaps or {}
     out = {}
     me = nodes.get(nid) or {}
     for peer_nid, lr in (me.get("links") or {}).items():
@@ -1018,7 +1037,8 @@ def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None):
         iface = lr.get("iface")
         rov = (peer.get("ifaces") or {}).get((peer.get("links") or {}).get(nid, {}).get("iface")) or {}
         rlr = (peer.get("links") or {}).get(nid) or {}
-        pub = rov.get("public_key"); rport = rlr.get("listen_port"); rhost = peer.get("endpoint_host")
+        pub = rov.get("public_key"); rport = rlr.get("listen_port")
+        rhost = mesh_endpoint_host(peer, snaps.get(peer_nid))   # explicit endpoint_host, else reported public IP
         if not (pub and rport and rhost and iface):
             continue                                   # remote not ready → no peer yet (the iface still exists)
         out.setdefault(iface, []).append({
@@ -2700,6 +2720,12 @@ class Handler(BaseHTTPRequestHandler):
         snap = body.get("snapshot") or {}
         Handler.deps.setdefault("node_snaps", {})[nid] = snap
         Handler.deps.setdefault("node_seen", {})[nid] = int(time.time())
+        if not (node.get("endpoint_host") or "").strip():   # mesh needs a dial host — auto-fill from the reported
+            _pub = node_public_ip(snap)                      # public IP (operator can still override it later)
+            if _pub:
+                node["endpoint_host"] = _pub
+                with contextlib.suppress(Exception):
+                    nodes_save(Handler.deps["nodes_path"], nodes)
         if node.pop("uninstalled", None) is not None:   # node is back (re-installed with the same token) → clear the grey "Uninstalled" tag
             nodes_save(Handler.deps["nodes_path"], nodes)
         if snap.get("kind") and node.get("kind") != snap["kind"]:   # remember the method persistently, so a DOWN node (no live snapshot) still knows it (Recover shows the right command)
@@ -2745,7 +2771,7 @@ class Handler(BaseHTTPRequestHandler):
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {})   # Phase 2: whole-fleet forward plan
         my_plan = cas_plans.get(nid) or {"forward": [], "exit": [], "allowed": {}}
         for _ifn, _ps in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
-                                               my_plan.get("allowed")).items():
+                                               my_plan.get("allowed"), Handler.deps.get("node_snaps")).items():
             desired.setdefault(_ifn, []).extend(_ps)   # node↔node mesh peers (endpoint + keepalive; cascade-aware AllowedIPs)
         # panel-managed interface config the node converges to — drift-aware: push an override until the
         # node confirms it (_synced); once confirmed, if the node diverges (a direct edit on the server)
