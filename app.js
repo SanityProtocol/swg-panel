@@ -388,7 +388,11 @@ const Store = {
     this.fleet = this.nodes.map(n => ({ id: n.id, name: n.name, color: n.color, transport: "https" }));
     const retiring = new Set();   // pubkeys mid-removal (rotation/delete) — keep them out of the orphans grid
     for (const n of this.nodes) for (const pk of (n.retiring || [])) retiring.add(pk);
-    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, rotating: new Set(Object.keys(this.rotating)) });
+    const systemIfaces = new Set();   // node|iface that are panel-managed mesh links (swg_*) — their peers
+    for (const nid of Object.keys(this.describe || {}))   // are managed via nodes.json, NOT the roster: not orphans
+      for (const ifn of Object.keys(this.describe[nid] || {}))
+        if (this.describe[nid][ifn] && this.describe[nid][ifn].system) systemIfaces.add(nid + "|" + ifn);
+    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)) });
     // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
     for (const id of Object.keys(this.rotating)) {
       const pr = this.recon.peers.find(p => p.id === id);
@@ -1368,7 +1372,7 @@ function NodeDetail({ node: rawName }) {
       <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
     <//>` : null}
 
-    <${Panel} icon="shield" title="User interfaces" tone="ready" count=${userKeys.length}
+    <${Panel} icon="globe" title="User interfaces" tone="ready" count=${userKeys.length}
         actions=${html`<${Fragment}>${nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".

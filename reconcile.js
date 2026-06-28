@@ -153,11 +153,13 @@ function reconcile(roster, stats, now, cfg) {
 
   // peers on a node that the roster doesn't own — adoptable
   const retiring = cfg.retiring || null;   // pubkeys the panel is actively dropping (e.g. a rotated key
-  const orphans = [];                       // still on the wire) — don't flash them as orphans mid-rotation
+  const systemIfaces = cfg.systemIfaces || null;   // node|iface mesh-link interfaces (swg_*): their peers are
+  const orphans = [];                       // managed via nodes.json links, not the roster — never orphans
   for (const key of Object.keys(observed)) {
     if (managed[key]) continue;
     const parts = key.split("|");
     if (nodeStatus[parts[0]] !== "live") continue;
+    if (systemIfaces && systemIfaces.has(parts[0] + "|" + parts[1])) continue;
     if (retiring && retiring.has(parts[2])) continue;
     orphans.push(Object.assign({ node: parts[0], iface: parts[1], pubkey: parts[2], status: "orphan" }, observed[key]));
   }

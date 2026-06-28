@@ -800,13 +800,14 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .panel-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)}
 .panel-ic{width:27px;height:27px;border-radius:8px;flex:none;display:inline-flex;align-items:center;justify-content:center;
   background:color-mix(in srgb,var(--brand) 15%,transparent);color:var(--brand)}
-.panel-ic svg{width:15px;height:15px}
+.panel-ic .ic{display:flex;align-items:center;justify-content:center}   /* kill the inline baseline gap so the glyph centres H+V */
+.panel-ic svg{width:15px;height:15px;display:block}
 .panel-ic.t-online{background:color-mix(in srgb,var(--online) 15%,transparent);color:var(--online)}
 .panel-ic.t-ready{background:color-mix(in srgb,var(--ready) 15%,transparent);color:var(--ready)}
 .panel-ic.t-pending{background:color-mix(in srgb,var(--pending) 16%,transparent);color:var(--pending)}
 .panel-ic.t-orphan{background:color-mix(in srgb,var(--orphan) 16%,transparent);color:var(--orphan)}
 .panel-ic.t-warn{background:color-mix(in srgb,var(--partial) 16%,transparent);color:var(--partial)}
-.panel-ic.t-turn{background:color-mix(in srgb,#B49BF7 16%,transparent);color:#B49BF7}
+.panel-ic.t-turn{background:color-mix(in srgb,#7C5CFF 16%,transparent);color:#7C5CFF}   /* matches the WINGS-N turn-fork accent */
 .panel-head h3{margin:0;font-size:14px;font-weight:600;color:var(--ink);letter-spacing:-.01em}
 .panel-count{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
 .panel-head .grow{flex:1}
