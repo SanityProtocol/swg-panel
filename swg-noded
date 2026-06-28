@@ -34,6 +34,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 
 CONFIG_PATH = os.environ.get("SWG_AGENT_CONFIG", "/etc/swg-agent/config.json")
 STATE_DIR   = os.environ.get("SWG_NODED_STATE", "/var/lib/swg-noded")
@@ -778,7 +779,7 @@ def _ensure_smart_nft(smart_e, categories, res):
     if not smart_e and not cats:                                # nothing wanted → tear our table down
         if have.returncode == 0:
             run(["nft", "delete", "table", "inet", SMART_NFT_TABLE]); res["changed"] += 1
-        return
+        return {}
     body = have.stdout if have.returncode == 0 else ""
     if have.returncode != 0:
         run(["nft", "add", "table", "inet", SMART_NFT_TABLE])
@@ -806,6 +807,129 @@ def _ensure_smart_nft(smart_e, categories, res):
                 res["errors"].append("smart nft " + S + "/" + sn + ": " + (r.stderr or "").strip()[:120])
             else:
                 res["changed"] += 1
+    # per-set live element counts (so _smart_geo_refresh knows which need (re)loading — e.g. empty after a reboot)
+    counts = {}
+    for sm in re.finditer(r"set (\S+) {(.*?)}", body, re.S):
+        els = re.search(r"elements = {(.*?)}", sm.group(2), re.S)
+        counts[sm.group(1)] = len([x for x in (els.group(1).split(",") if els else []) if x.strip()])
+    return counts
+
+
+# ── geo CIDR distribution: per-category lists fetched from upstream (Loyalsoldier geoip / ipverse ASN),
+#    cached, and loaded into the nft sets. Mirrors the turn-binary fetch (SWG_GEO_MIRROR proxy fallback).
+GEO_DIR = os.path.join(STATE_DIR, "geo")
+GEO_TTL = 3 * 86400          # refresh a cached category list at most this often (when fetches succeed)
+GEO_RETRY = 3600             # …but back off failed/missing fetches to once an hour, so a source outage
+#                              never re-hammers (and never blocks every sync on a hanging download)
+_CIDR4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
+# category → upstream source specs. "LS:<file>" = Loyalsoldier/geoip release text/<file>.txt;
+# "AS:<asn>" = ipverse/asn-ip as/<asn>/ipv4-aggregated.txt. Multiple specs are unioned (e.g. VK's two ASNs).
+GEO_SOURCES = {
+    "google": ["LS:google"], "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"],
+    "netflix": ["LS:netflix"], "meta": ["LS:facebook"], "twitter": ["LS:twitter"], "ru": ["LS:ru"],
+    "yandex": ["AS:13238"], "vk": ["AS:47541", "AS:47542"],
+}
+
+
+def _geo_url(spec):
+    if spec.startswith("LS:"):
+        return "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/" + spec[3:] + ".txt"
+    if spec.startswith("AS:"):
+        return "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/" + spec[3:] + "/ipv4-aggregated.txt"
+    return spec
+
+
+def _geo_fetch_one(url, timeout=40):
+    req = urllib.request.Request(url, headers={"User-Agent": "swg-noded"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:   # nosec - public CIDR list over https, CA-verified
+        return r.read().decode("utf-8", "ignore")
+
+
+def _geo_fetch(cat):
+    """Union of CIDRs for a category from its source specs (GitHub direct, then any SWG_GEO_MIRROR proxy
+    prefixes). Returns a sorted CIDR list, or None if any source couldn't be fetched (don't half-populate)."""
+    mirrors = (os.environ.get("SWG_GEO_MIRROR") or "").split()
+    cidrs = set()
+    for spec in GEO_SOURCES.get(cat, []):
+        url = _geo_url(spec)
+        data = None
+        for u in [url] + [m.rstrip("/") + "/" + url for m in mirrors]:
+            try:
+                data = _geo_fetch_one(u); break
+            except Exception:
+                continue
+        if data is None:
+            return None
+        cidrs |= {ln.strip() for ln in data.splitlines() if _CIDR4_RE.match(ln.strip())}
+    return sorted(cidrs) or None
+
+
+def _nft_load_set(setname, cidrs):
+    """Atomically replace an nft interval set's elements (flush + chunked add via `nft -f`)."""
+    lines = [f"flush set inet {SMART_NFT_TABLE} {setname}"]
+    for i in range(0, len(cidrs), 2000):
+        lines.append(f"add element inet {SMART_NFT_TABLE} {setname} {{ {', '.join(cidrs[i:i + 2000])} }}")
+    path = os.path.join(GEO_DIR, "." + setname + ".nft")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    rc = run(["nft", "-f", path]).returncode
+    with contextlib.suppress(OSError):
+        os.unlink(path)
+    return rc
+
+
+def _smart_geo_refresh(categories, set_counts, res):
+    """Ensure each needed category's CIDR list is cached + fresh and loaded into its nft set. Fetches only
+    when the cache is missing/stale (TTL-gated, so most syncs do nothing); reloads the set when the data
+    changed OR the live set is empty (e.g. after a reboot — nft sets aren't persistent). Failures leave the
+    set as-is (inert / last-good) and retry next TTL."""
+    if not categories:
+        return
+    try:
+        os.makedirs(GEO_DIR, exist_ok=True)
+    except OSError as e:
+        res["errors"].append("smart geo dir: " + str(e)); return     # can't cache → skip (sets stay inert)
+    for cat in categories:
+        try:                                                   # one bad category must never crash the sync loop
+            sn = _smart_setname(cat)
+            path = os.path.join(GEO_DIR, cat + ".txt")
+            try:
+                stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_TTL)
+            except OSError:
+                stale = True
+            ap = os.path.join(GEO_DIR, "." + cat + ".attempt")
+            try:
+                due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
+            except OSError:
+                due = stale
+            if due:
+                with contextlib.suppress(OSError):                 # stamp BEFORE fetching → a hang still backs off
+                    open(ap, "w").write(str(int(time.time())))
+                data = _geo_fetch(cat)
+                if data:
+                    tmp = path + ".tmp"
+                    with open(tmp, "w") as f:
+                        f.write("\n".join(data) + "\n")
+                    os.replace(tmp, path)
+            if not os.path.exists(path):
+                continue                                       # no data yet → set stays empty (inert), retry next TTL
+            cidrs = [ln.strip() for ln in open(path).read().splitlines() if _CIDR4_RE.match(ln.strip())]
+            if not cidrs:
+                continue
+            h = hashlib.sha256(("\n".join(cidrs)).encode()).hexdigest()
+            lp = os.path.join(GEO_DIR, "." + cat + ".loaded")
+            loaded = ""
+            with contextlib.suppress(OSError):
+                loaded = open(lp).read().strip()
+            if loaded != h or set_counts.get(sn, 0) == 0:      # data changed, or set empty (post-reboot) → (re)load
+                if _nft_load_set(sn, cidrs) == 0:
+                    with contextlib.suppress(OSError):
+                        open(lp, "w").write(h)
+                    res["changed"] += 1
+                else:
+                    res["errors"].append("smart geo load " + cat + " failed")
+        except Exception as e:
+            res["errors"].append("smart geo " + cat + ": " + str(e)[:120])
 
 
 def reconcile_cascade(node_cfg, plan, smart=None):
@@ -854,7 +978,11 @@ def reconcile_cascade(node_cfg, plan, smart=None):
     # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
     _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res)
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
-    _ensure_smart_nft(smart_e, (smart or {}).get("categories") or [], res)
+    smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e})
+    set_counts = _ensure_smart_nft(smart_e, smart_cats, res)
+    # populate the category sets from the cached geo CIDR lists (fetch is TTL-gated; reload only on change/empty)
+    if smart_cats:
+        _smart_geo_refresh(smart_cats, set_counts or {}, res)
     return res
 
 

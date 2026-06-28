@@ -287,6 +287,7 @@ def test_node_smart():
             return R(LIVE["nft_rc"], LIVE["nft_out"]) if args[1:3] == ["list", "table"] else R(0)
         return R(0)
     m.run = fake; m._detect_wan = lambda: "eth0"
+    m._smart_geo_refresh = lambda *a, **k: None   # isolate from the geo fetch (covered by test_node_geo)
     smart = {"entries": [{"subnet": "10.8.0.0/24", "category": "google", "via_iface": "swg_AB", "table": 7000}], "categories": ["google"]}
     calls.clear()
     m.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": []}, smart)
@@ -314,11 +315,48 @@ def test_node_smart():
     print("OK node: smart reconcile (nft mark + fwmark route) + idempotent")
 
 
+def test_node_geo():
+    """Phase 3 geo: a fetched category list loads into its nft set; reload only on data change or empty set."""
+    import tempfile, os as _os
+    m = _load("swg_noded_geo", "swg-noded")
+    m.GEO_DIR = tempfile.mkdtemp()
+    m._geo_fetch = lambda cat: ["149.154.160.0/20", "91.108.4.0/22"] if cat == "telegram" else None
+    calls = []
+
+    def R(rc=0):
+        class _R:
+            pass
+        r = _R(); r.returncode = rc; r.stdout = ""; r.stderr = ""; return r
+
+    def fake(args, **k):
+        c = [str(x) for x in args]
+        if c[:2] == ["nft", "-f"]:
+            c = ["nft", "-f", open(args[2]).read()]            # capture the generated file body
+        calls.append(c); return R(0)
+    m.run = fake
+    res = {"changed": 0, "errors": []}
+    m._smart_geo_refresh(["telegram"], {"cat_telegram": 0}, res)        # set empty → load
+    body = next((c[2] for c in calls if c[:2] == ["nft", "-f"]), "")
+    assert "flush set inet swg_smart cat_telegram" in body and "149.154.160.0/20" in body, body
+    assert res["changed"] == 1
+    calls.clear()
+    m._smart_geo_refresh(["telegram"], {"cat_telegram": 2}, res)        # unchanged + populated → no reload
+    assert not [c for c in calls if c[:2] == ["nft", "-f"]]
+    m._geo_fetch = lambda cat: ["1.2.3.0/24"]                           # data changes → reload
+    _os.utime(_os.path.join(m.GEO_DIR, "telegram.txt"), (0, 0))         # age cache + attempt marker so it refetches
+    _os.utime(_os.path.join(m.GEO_DIR, ".telegram.attempt"), (0, 0))
+    calls.clear()
+    m._smart_geo_refresh(["telegram"], {"cat_telegram": 2}, res)
+    assert [c for c in calls if c[:2] == ["nft", "-f"]], "changed data should reload the set"
+    print("OK node: geo fetch→set load + change/empty reload-gating")
+
+
 def main():
     test_panel()
     test_panel_smart()
     test_node_cascade()
     test_node_smart()
+    test_node_geo()
     test_node_allowed_drift()
     test_agent_conf()
     print("OK test_cascade: all assertions passed")
