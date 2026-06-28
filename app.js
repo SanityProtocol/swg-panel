@@ -437,7 +437,7 @@ function ifaceTurnBadges(node, fwdTurns) {
 // online/down dimming, click-to-manage. `metas` = the node's all-interface metas (Store.describe[node]).
 function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   metas = metas || {};
-  const z = reorder ? reorder.zone(tp.service) : null;
+  const it = reorder ? reorder.item(tp.service) : null;
   const lp = portOf(tp.connect);
   const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp);
   const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
@@ -464,7 +464,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
   const conn = fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : [];   // online peers via this proxy → header count
   const canOpen = nrec.turn_manage && !converting && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting (don't open a half-created proxy)
-  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (z ? z.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} onDragOver=${z ? z.onDragOver : null} onDrop=${z ? z.onDrop : null}>
+  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} data-rid=${it ? it.rid : null}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
       : pend === "delete"
@@ -516,7 +516,7 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length}
       actions=${(!iface && nrec.turn_manage) ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>Turn-proxy management is <b>off</b> on this node — no Docker socket was mounted at install (<b>TURN_MANAGE=manual</b>), so these are read-only here. Add, edit or restart them on the box directly.</span></div>` : null}
-    <div class="ifgrid">${cards.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface} reorder=${iface ? null : tReorder}/>`)}
+    <div class="ifgrid" ...${iface ? {} : tReorder.container()}>${cards.map(tp => html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface} reorder=${iface ? null : tReorder}/>`)}
     ${optTurns.map(o => optCard(o.svc, o.d))}
     ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">deleting…</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>pending</span>`}<button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
     ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
@@ -619,16 +619,65 @@ function orderById(items, savedOrder, idOf) {
 const GRIP_SVG = `<svg width="11" height="16" viewBox="0 0 11 16" fill="currentColor"><circle cx="3" cy="3" r="1.4"/><circle cx="8" cy="3" r="1.4"/><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="3" cy="13" r="1.4"/><circle cx="8" cy="13" r="1.4"/></svg>`;
 // HTML5 drag-reorder. `ids` is the CURRENT visible order; `onReorder(newIds)` persists it. Returns
 // per-item props: grip(id) for the handle, zone(id) for the card wrapper, plus the live dragId.
-function useReorder(ids, onReorder) {
-  const [drag, setDrag] = useState(null);     // { id, over, before }
+// FLIP: after a reorder re-renders the (keyed) cards into new positions, slide each from where it WAS
+// (`first` rects, snapshot at drop time) to where it now is, so it's visible what moved and where.
+function flipPlay(container, first) {
+  requestAnimationFrame(() => {
+    const moved = [];
+    for (const el of container.querySelectorAll("[data-rid]")) {
+      const f = first.get(el.dataset.rid); if (!f) continue;
+      const l = el.getBoundingClientRect();
+      const dx = f.left - l.left, dy = f.top - l.top;
+      if (dx || dy) { el.style.transition = "none"; el.style.transform = "translate(" + dx + "px," + dy + "px)"; moved.push(el); }   // INVERT
+    }
+    if (!moved.length) return;
+    requestAnimationFrame(() => { for (const el of moved) { el.style.transition = "transform .24s cubic-bezier(.2,.7,.2,1)"; el.style.transform = ""; } });   // PLAY
+    setTimeout(() => { for (const el of moved) { el.style.transition = ""; el.style.transform = ""; } }, 320);
+  });
+}
+function useReorder(ids, onReorder, axis = "x") {   // axis "x" = horizontal grid (left/right edges); "y" = vertical list (top/bottom)
+  const [drag, setDrag] = useState(null);     // { id, k } — for the highlight (k = insertion index among the OTHER cards)
   const dragId = drag && drag.id;
-  const reorder = (toId, before) => {
-    if (!dragId || toId === dragId) return;
-    const rest = ids.filter(x => x !== dragId);
-    let at = rest.indexOf(toId); if (at < 0) return;
-    if (!before) at += 1;
-    rest.splice(at, 0, dragId);
-    if (rest.join(" ") !== ids.join(" ")) onReorder(rest);
+  const prev = useRef(null);      // our floating translucent preview
+  const off = useRef([0, 0]);     // cursor offset within the grabbed card
+  const cont = useRef(null);      // container element (dragEnd has no event target for it)
+  const liveK = useRef(-1);       // CURRENT insertion index — a ref so dragEnd never reads a stale closure
+  const idRef = useRef(null);     // the dragged id
+  const esc = useRef(false);      // ESC pressed mid-drag → cancel (best-effort; some browsers swallow keydown while dragging)
+  const onKey = useRef(null);
+  const rest = dragId ? ids.filter(x => x !== dragId) : ids;
+  const k = drag ? drag.k : -1;
+  const gapL = (k > 0 && k <= rest.length) ? rest[k - 1] : null;
+  const gapR = (k >= 0 && k < rest.length) ? rest[k] : null;
+  const trail = axis === "y" ? " drop-b" : " drop-r";
+  const lead = axis === "y" ? " drop-t" : " drop-l";
+  // insertion index from the cursor over the WHOLE container (releasing in a gap / past the ends still
+  // lands at the nearest spot, no pixel-precise aiming). Counts the non-dragged cards before the cursor.
+  const indexAt = (container, x, y) => {
+    let i = 0;
+    for (const el of container.querySelectorAll("[data-rid]")) {
+      if (el.dataset.rid === dragId) continue;
+      const r = el.getBoundingClientRect();
+      if (axis === "y") { if (y > r.top + r.height / 2) i++; }
+      else if (r.bottom < y) i++;
+      else if (y >= r.top && (r.left + r.width / 2) < x) i++;
+    }
+    return i;
+  };
+  const movePrev = (x, y) => { if (prev.current) prev.current.style.transform = "translate(" + (x - off.current[0]) + "px," + (y - off.current[1]) + "px)"; };
+  const stopPreview = () => { if (prev.current) { prev.current.remove(); prev.current = null; } };
+  // Commit on dragEND (always fires) using the LAST highlighted position, so releasing OUTSIDE the
+  // container still drops at the highlighted gap. ESC, or never highlighting a spot, returns to origin.
+  const finish = () => {
+    if (onKey.current) { window.removeEventListener("keydown", onKey.current, true); onKey.current = null; }
+    const c = cont.current, kk = liveK.current, did = idRef.current, cancelled = esc.current;
+    stopPreview(); cont.current = null; idRef.current = null; liveK.current = -1; esc.current = false;
+    setDrag(null);
+    if (cancelled || kk < 0 || !c || !did) return;            // ESC / nothing highlighted → back to original
+    const first = new Map();                                   // FLIP: snapshot positions before the reorder
+    for (const el of c.querySelectorAll("[data-rid]")) first.set(el.dataset.rid, el.getBoundingClientRect());
+    const arr = ids.filter(x => x !== did); arr.splice(kk, 0, did);
+    if (arr.join(" ") !== ids.join(" ")) { onReorder(arr); flipPlay(c, first); }
   };
   return {
     dragId,
@@ -636,36 +685,44 @@ function useReorder(ids, onReorder) {
       return {
         draggable: true,
         onDragStart: e => {
-          // drag the WHOLE card with the cursor: snapshot a semi-transparent clone of the card as the
-          // drag image (the default would be just the tiny grip handle).
+          cont.current = e.currentTarget.closest(".ifgrid, .nodegrid");
+          idRef.current = id; liveK.current = -1; esc.current = false;
+          onKey.current = ev => { if (ev.key === "Escape") esc.current = true; };
+          window.addEventListener("keydown", onKey.current, true);
           const card = e.currentTarget.closest(".ifcard, .ncard");
           try {
             e.dataTransfer.effectAllowed = "move";
             e.dataTransfer.setData("text/plain", id);
-            if (card && e.dataTransfer.setDragImage) {
+            const empty = new Image(); empty.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+            e.dataTransfer.setDragImage(empty, 0, 0);
+            if (card) {
               const r = card.getBoundingClientRect();
-              const ghost = card.cloneNode(true);
-              ghost.classList.add("drag-ghost");
-              ghost.style.cssText = "position:fixed;top:-9999px;left:0;margin:0;width:" + r.width + "px;height:" + r.height + "px;pointer-events:none";
-              document.body.appendChild(ghost);
-              e.dataTransfer.setDragImage(ghost, e.clientX - r.left, e.clientY - r.top);
-              setTimeout(() => ghost.remove(), 0);
+              off.current = [e.clientX - r.left, e.clientY - r.top];
+              const g = card.cloneNode(true);
+              g.classList.add("drag-ghost");
+              g.style.cssText = "position:fixed;left:0;top:0;margin:0;width:" + r.width + "px;height:" + r.height + "px;pointer-events:none;z-index:9999;transform:translate(" + r.left + "px," + r.top + "px)";
+              document.body.appendChild(g);
+              prev.current = g;
             }
           } catch (_) {}
-          setDrag({ id, over: null, before: true });
+          setDrag({ id, k: -1 });
         },
-        onDragEnd: () => setDrag(null),
+        onDrag: e => { if (e.clientX || e.clientY) movePrev(e.clientX, e.clientY); },   // follow the cursor (fires even outside the container)
+        onDragEnd: () => finish(),
       };
     },
-    zone(id) {
-      const over = drag && drag.over === id;
+    container() {
       return {
-        cls: (dragId === id ? " dragging" : "") + (over ? (drag.before ? " drop-before" : " drop-after") : ""),
-        onDragOver: e => { if (!dragId || dragId === id) return; e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
-          const r = e.currentTarget.getBoundingClientRect(); const before = (e.clientX - r.left) < r.width / 2;
-          if (!drag.over || drag.over !== id || drag.before !== before) setDrag({ ...drag, over: id, before }); },
-        onDrop: e => { e.preventDefault(); const before = drag && drag.before; setDrag(null); reorder(id, before); },
+        onDragOver: e => { if (!dragId) return; e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+          movePrev(e.clientX, e.clientY);
+          const nk = indexAt(e.currentTarget, e.clientX, e.clientY);
+          liveK.current = nk;
+          if (!drag || drag.k !== nk) setDrag({ id: dragId, k: nk }); },
+        onDrop: e => { e.preventDefault(); },   // the real commit happens in dragEnd (covers release-outside too)
       };
+    },
+    item(id) {
+      return { rid: id, cls: (dragId === id ? " dragging" : "") + (id === gapL ? trail : "") + (id === gapR ? lead : "") };
     },
   };
 }
@@ -1344,9 +1401,9 @@ function NodeDetail({ node: rawName }) {
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
           : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
-          : html`<div class="ifgrid">${orderById(Object.keys(meta), nrec.iface_order, x => x).map(ifn => {
+          : html`<div class="ifgrid" ...${ifReorder.container()}>${orderById(Object.keys(meta), nrec.iface_order, x => x).map(ifn => {
               const m = meta[ifn];
-              const z = ifReorder.zone(ifn);
+              const it = ifReorder.item(ifn);
               if (ifaceWasBusy[name + "|" + ifn]) { ifaceReady[name + "|" + ifn] = Date.now() + 5000; ifaceWasBusy[name + "|" + ifn] = false; }   // just came up after being pending/creating → "ready" 5s
               const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
               const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
@@ -1363,7 +1420,7 @@ function NodeDetail({ node: rawName }) {
               const iop = Store.ifaceOp[name + "|" + ifn];   // optimistic start/stop/restart lifecycle (set on click, before the node reflects it)
               const iopBusy = iop && iop.phase === "busy";
               const idim = iconverting || deleting || idown || istopped || irestarting || iopBusy || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / stopped / in-flight / node gone dark → dim
-              return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + z.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} onDragOver=${z.onDragOver} onDrop=${z.onDrop}>
+              return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
                 <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
@@ -2734,13 +2791,13 @@ function NodesScreen() {
   const nReorder = useReorder(ns.map(n => n.id), ids => mutate({
     patch: s => { s.nodes = orderById(s.nodes, ids, n => n.id); },
     call: () => api.saveOrder({ kind: "node", order: ids }),
-  }));
+  }), "y");   // nodes stack vertically → top/bottom drop edges
   return html`<div class="screen">
     <div class="section-title" style="margin:6px 2px 16px"><h2>Nodes</h2><span class="count">${ns.length + (ns.length === 1 ? " server" : " servers")}</span>
       <span class="nodehint">Entry servers run <span class="mono">swg-noded</span>, which syncs to this panel over HTTPS — the node needs no inbound access.</span><span class="grow"></span>
       <button class="btn btn-primary" onClick=${openNodeCreate}><span class="plus"><${Ic} i="plus"/></span> Add node</button></div>
     ${!ns.length ? html`<div class="empty"><b>No nodes yet</b>Add your first entry server — you'll get a one-time command to run on it.</div>`
-      : html`<div class="nodegrid">${ns.map(n => html`<${NodeCard} key=${n.id} n=${n} reorder=${nReorder}/>`)}</div>`}
+      : html`<div class="nodegrid" ...${nReorder.container()}>${ns.map(n => html`<${NodeCard} key=${n.id} n=${n} reorder=${nReorder}/>`)}</div>`}
   </div>`;
 }
 // load/util tone: green under 70%, amber to 90%, red above.
@@ -3093,7 +3150,7 @@ async function checkForUpdate(e, nodeId) {
   } finally { if (btn) btn.classList.remove("checking"); }
 }
 function NodeCard({ n, reorder }) {
-  const z = reorder ? reorder.zone(n.id) : null;
+  const it = reorder ? reorder.item(n.id) : null;
   const st = n.status || "dangling";
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
@@ -3111,7 +3168,7 @@ function NodeCard({ n, reorder }) {
   const nUpdating = n.updating || (n.local && (hostUpdating || inProc(Store.hostProc)));
   const procEff = (n.proc_status && !inProc(n.proc_status)) ? n.proc_status : (nUpdating ? "updating" : n.proc_status);
   const nav = () => go("#/node/" + encodeURIComponent(n.id));
-  return html`<div class=${"ncard clk" + (removing ? " removing" : "") + (z ? z.cls : "")} onClick=${nav} onDragOver=${z ? z.onDragOver : null} onDrop=${z ? z.onDrop : null}>
+  return html`<div class=${"ncard clk" + (removing ? " removing" : "") + (it ? it.cls : "")} onClick=${nav} data-rid=${it ? it.rid : null}>
     <div class="ntop">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(n.id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       ${!n.uninstalled && (n.outdated || (n.local && Store.panelOutdated)) && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
