@@ -1368,7 +1368,7 @@ function NodeDetail({ node: rawName }) {
       <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
     <//>` : null}
 
-    <${Panel} icon="network" title="User interfaces" count=${userKeys.length}
+    <${Panel} icon="shield" title="User interfaces" tone="ready" count=${userKeys.length}
         actions=${html`<${Fragment}>${nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
@@ -1438,7 +1438,7 @@ function NodeDetail({ node: rawName }) {
             })}${pcards}</div>`; })()}
     <//>
 
-    ${sysKeys.length ? html`<${Panel} icon="network" title="Node connections" tone="online" count=${sysKeys.length}>
+    ${sysKeys.length ? html`<${Panel} icon="network" title="Node connections" tone="pending" count=${sysKeys.length}>
       <div class="ifgrid">${sysKeys.sort((a, b) => Store.nodeName(meta[a].link_node).localeCompare(Store.nodeName(meta[b].link_node))).map(ifn => {
         const m = meta[ifn];
         const peer = m.link_node;
@@ -1451,7 +1451,7 @@ function NodeDetail({ node: rawName }) {
         const carried = userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
           .map(k => meta[k].subnet).filter(Boolean);   // local user subnets forwarded out through THIS link
         return html`<div key=${ifn} class=${"ifcard tp clickable" + (muted ? " down" : "")} onClick=${() => openConnectionEdit(name, ifn)}>
-          <div class="ifcard-top"><span class="iftype turn" style=${"color:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}<span class=${"lkdot " + lk} title=${lkTitle}></span></div>
+          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}<span class=${"lkdot " + lk} title=${lkTitle}></span></div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${m.subnet || "—"}</span></div>
             ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r addr">${carried.join(", ")}</span></div>` : null}

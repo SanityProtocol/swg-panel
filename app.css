@@ -802,6 +802,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
   background:color-mix(in srgb,var(--brand) 15%,transparent);color:var(--brand)}
 .panel-ic svg{width:15px;height:15px}
 .panel-ic.t-online{background:color-mix(in srgb,var(--online) 15%,transparent);color:var(--online)}
+.panel-ic.t-ready{background:color-mix(in srgb,var(--ready) 15%,transparent);color:var(--ready)}
 .panel-ic.t-pending{background:color-mix(in srgb,var(--pending) 16%,transparent);color:var(--pending)}
 .panel-ic.t-orphan{background:color-mix(in srgb,var(--orphan) 16%,transparent);color:var(--orphan)}
 .panel-ic.t-warn{background:color-mix(in srgb,var(--partial) 16%,transparent);color:var(--partial)}
