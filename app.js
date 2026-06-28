@@ -1372,6 +1372,28 @@ function NodeDetail({ node: rawName }) {
       <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
     <//>` : null}
 
+    ${sysKeys.length ? html`<${Panel} icon="network" title="Node connections" tone="pending" count=${sysKeys.length}>
+      <div class="ifgrid">${sysKeys.sort((a, b) => Store.nodeName(meta[a].link_node).localeCompare(Store.nodeName(meta[b].link_node))).map(ifn => {
+        const m = meta[ifn];
+        const peer = m.link_node;
+        const col = Store.nodeColor(peer);
+        // link health → one glowing dot: green up (recent handshake) · amber connecting (never handshook)
+        // · red down (handshook then went stale, or the node itself is dark)
+        const lk = nodeStale(name) ? "down" : (m.handshake_age == null ? "connecting" : (m.handshake_age < 180 ? "up" : "down"));
+        const lkTitle = { up: "Link up", connecting: "Connecting…", down: "Link down" }[lk];
+        const muted = lk === "down";
+        const carried = userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
+          .map(k => meta[k].subnet).filter(Boolean);   // local user subnets forwarded out through THIS link
+        return html`<div key=${ifn} class=${"ifcard tp clickable" + (muted ? " down" : "")} onClick=${() => openConnectionEdit(name, ifn)}>
+          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}<span class=${"lkdot " + lk} title=${lkTitle}></span></div>
+          <div class="ifcard-rows">
+            <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${m.subnet || "—"}</span></div>
+            ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r addr">${carried.join(", ")}</span></div>` : null}
+            <div class="ifrow"><span class="l">Throughput</span><span class="r">↓ ${rate(m.rx_speed || 0)} · ↑ ${rate(m.tx_speed || 0)}</span></div>
+          </div></div>`;
+      })}</div>
+    <//>` : null}
+
     <${Panel} icon="globe" title="User interfaces" tone="ready" count=${userKeys.length}
         actions=${html`<${Fragment}>${nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
@@ -1441,28 +1463,6 @@ function NodeDetail({ node: rawName }) {
                 </div></a>`;
             })}${pcards}</div>`; })()}
     <//>
-
-    ${sysKeys.length ? html`<${Panel} icon="network" title="Node connections" tone="pending" count=${sysKeys.length}>
-      <div class="ifgrid">${sysKeys.sort((a, b) => Store.nodeName(meta[a].link_node).localeCompare(Store.nodeName(meta[b].link_node))).map(ifn => {
-        const m = meta[ifn];
-        const peer = m.link_node;
-        const col = Store.nodeColor(peer);
-        // link health → one glowing dot: green up (recent handshake) · amber connecting (never handshook)
-        // · red down (handshook then went stale, or the node itself is dark)
-        const lk = nodeStale(name) ? "down" : (m.handshake_age == null ? "connecting" : (m.handshake_age < 180 ? "up" : "down"));
-        const lkTitle = { up: "Link up", connecting: "Connecting…", down: "Link down" }[lk];
-        const muted = lk === "down";
-        const carried = userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
-          .map(k => meta[k].subnet).filter(Boolean);   // local user subnets forwarded out through THIS link
-        return html`<div key=${ifn} class=${"ifcard tp clickable" + (muted ? " down" : "")} onClick=${() => openConnectionEdit(name, ifn)}>
-          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}<span class=${"lkdot " + lk} title=${lkTitle}></span></div>
-          <div class="ifcard-rows">
-            <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${m.subnet || "—"}</span></div>
-            ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r addr">${carried.join(", ")}</span></div>` : null}
-            <div class="ifrow"><span class="l">Throughput</span><span class="r">↓ ${rate(m.rx_speed || 0)} · ↑ ${rate(m.tx_speed || 0)}</span></div>
-          </div></div>`;
-      })}</div>
-    <//>` : null}
 
     ${hasTurns ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title="Turn proxies"/>` : null}
     `}

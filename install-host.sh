@@ -1147,7 +1147,7 @@ mk_update_unit(){
 # panel, a docker node, or both). swg programs only (panel/noded/agent); never wg/awg/turn-proxies. Logs to journal.
 set -euo pipefail
 URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
-curl -fsSL "$URL" | bash -s update -y --no-components
+curl -fsSL "$URL" | bash -s update -y --no-components "$@"   # extra flags (e.g. --node-only) pass through
 WRAP
   # A docker container's write to a bind-mounted trigger does NOT cross to a host .path/inotify watch, so we POLL.
   # FIXED unit names + a COMPREHENSIVE trigger list mean a bare panel and a docker node on the SAME box write
@@ -1156,14 +1156,22 @@ WRAP
 #!/usr/bin/env bash
 set -euo pipefail
 STAMP=/var/lib/swg-update.stamp
-_run=no
-for _t in /var/lib/swg-panel/.update-request /var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/lib/.update-request /opt/swg-panel-docker/data/node/.update-request; do
+PANEL_TRIGGERS="/var/lib/swg-panel/.update-request /opt/swg-panel-docker/data/lib/.update-request"
+NODE_TRIGGERS="/var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/node/.update-request"
+_run=no; _panel=no
+for _t in $PANEL_TRIGGERS $NODE_TRIGGERS; do
   [ -f "$_t" ] || continue
-  { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; } && _run=yes
+  if { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; }; then
+    _run=yes
+    case " $PANEL_TRIGGERS " in *" $_t "*) _panel=yes;; esac   # a PANEL trigger → this is a host update
+  fi
 done
 [ "$_run" = yes ] || exit 0
 touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
-exec /usr/local/bin/swg-update
+# Only a NODE trigger fired (no panel trigger) → update JUST the node: --node-only keeps the update off the
+# panel's host_proc, so a co-located node self-updating doesn't light up "up to date" on the panel header.
+if [ "$_panel" = yes ]; then exec /usr/local/bin/swg-update
+else exec /usr/local/bin/swg-update --node-only; fi
 WRAP2
   writef /etc/systemd/system/swg-update.service 644 <<EOF
 [Unit]
