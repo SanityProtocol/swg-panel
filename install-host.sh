@@ -955,9 +955,19 @@ if [ "$HOST_HAS_WG" = yes ]; then
   [ "$SERVE_MODE" = internal ] && [ "$TLS_MODE" != skip ] && LOCAL_SCHEME=https
   LOCAL_PANEL_URL="${LOCAL_SCHEME}://127.0.0.1:${PORT}${PANEL_BASE}"
 
+  # Keep an existing agent config ONLY if it already points at THIS (local) panel — a genuine re-run on a
+  # master. If it points at a REMOTE panel (this box was a NODE for another panel before), re-point it to the
+  # local panel by re-enrolling: otherwise the "master" local node keeps syncing to the old panel and never
+  # shows up here. URL is 127.0.0.1 for a local node (see LOCAL_PANEL_URL above).
+  _keep_agent=no; _agent_purl=""
   if [ -f "$PREFIX/etc/swg-agent/config.json" ]; then
-    ok "keeping existing /etc/swg-agent/config.json (local node already enrolled)"
+    _agent_purl="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
+    case "$_agent_purl" in *127.0.0.1*|*localhost*) _keep_agent=yes;; esac
+  fi
+  if [ "$_keep_agent" = yes ]; then
+    ok "keeping existing /etc/swg-agent/config.json (local node already enrolled to this panel)"
   else
+    [ -f "$PREFIX/etc/swg-agent/config.json" ] && info "re-pointing the local node to this panel (was syncing to ${_agent_purl:-another panel})"
     # auto-enroll: mint a token for the local node; its hash goes into nodes.json below
     LOCAL_TOKEN="$(head -c18 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')"
     LOCAL_TOKHASH="$(python3 -c 'import hashlib,os,base64,sys;t=sys.argv[1].encode();s=os.urandom(16);h=hashlib.pbkdf2_hmac("sha256",t,s,200000);print("pbkdf2_sha256$200000$"+base64.b64encode(s).decode()+"$"+base64.b64encode(h).decode())' "$LOCAL_TOKEN")"
