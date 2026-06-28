@@ -946,40 +946,59 @@ def _alloc_link_subnet(nodes, mesh_subnet):
     return None
 
 
-def mesh_link_new_node(nodes, snaps, deps, new_nid):
-    """Stage a full-mesh link between `new_nid` and every existing node: for each pair create a link
-    interface on BOTH ends (create requests + matching awg_params/psk overrides + link records)."""
+def _mesh_make_link(nodes, snaps, deps, a, b, mc):
+    """Create the link between nodes a and b on BOTH ends (link records + create requests + matching
+    awg_params/psk overrides). Caller ensures the pair isn't already linked."""
+    link_id = hashlib.sha256(("|".join(sorted((a, b)))).encode()).hexdigest()
+    sub = _alloc_link_subnet(nodes, mc["subnet"])
+    if sub is None:
+        return False
+    hosts = list(sub)                            # /31 → [.0, .1]
+    psk = gen_psk(); awg = gen_awg_params()
+    x_nid = min(a, b)                            # the smaller id is the .0 end (deterministic, both ends agree)
+    for nid, peer in ((a, b), (b, a)):
+        n = nodes[nid]
+        iface = _link_iface_name(n, link_id)
+        mine, theirs = (hosts[0], hosts[1]) if nid == x_nid else (hosts[1], hosts[0])
+        port = _alloc_port(_used_ports(nodes, snaps, nid), mc["port_base"])
+        n.setdefault("links", {})[peer] = {
+            "iface": iface, "link_id": link_id, "subnet": str(sub),
+            "address": str(mine), "peer_address": str(theirs),
+            "listen_port": port, "psk": psk, "role": "x" if nid == x_nid else "y"}
+        n.setdefault("create", {})[iface] = {
+            "cmd": ["awg"], "subnet": str(sub), "address": f"{mine}/31",
+            "listen_port": port, "mtu": mc["mtu"]}
+        n.setdefault("ifaces", {})[iface] = {"awg_params": dict(awg), "system": True, "link_node": peer}
+    ev_append(deps["roster_path"], "node", a, "Linked node", nodes[b].get("name", b))
+    return True
+
+
+def reconcile_mesh(nodes, snaps, deps):
+    """Self-healing full mesh — run on every sync AND on node-add, so the mesh integrates with EVERY
+    node lifecycle (panel add, auto-enrolled master/local node, convert, re-install, manual edits):
+      1. ensure every node PAIR is linked (covers a node that entered nodes.json outside /api/nodes/create);
+      2. re-stage a `create` for any link interface a node isn't currently reporting AND isn't already
+         creating (covers a lost/replaced conf after convert/re-install).
+    Returns True if it changed anything (so the caller persists)."""
     mc = mesh_cfg(deps)
-    me = nodes.get(new_nid)
-    if not me:
-        return
-    for oid, other in list(nodes.items()):
-        if oid == new_nid:
-            continue
-        link_id = hashlib.sha256(("|".join(sorted((new_nid, oid)))).encode()).hexdigest()
-        sub = _alloc_link_subnet(nodes, mc["subnet"])
-        if sub is None:
-            break
-        hosts = list(sub.network_address.__class__(int(sub.network_address) + i) for i in (0, 1))
-        psk = gen_psk(); awg = gen_awg_params()
-        # X = the lexicographically-smaller node id (deterministic, so both ends agree on who is .0)
-        x_nid = min(new_nid, oid)
-        for nid, peer in ((new_nid, oid), (oid, new_nid)):
-            n = nodes[nid]
-            iface = _link_iface_name(n, link_id)
-            mine, theirs = (hosts[0], hosts[1]) if nid == x_nid else (hosts[1], hosts[0])
-            port = _alloc_port(_used_ports(nodes, snaps, nid), mc["port_base"])
-            n.setdefault("links", {})[peer] = {
-                "iface": iface, "link_id": link_id, "subnet": str(sub),
-                "address": str(mine), "peer_address": str(theirs),
-                "listen_port": port, "psk": psk, "role": "x" if nid == x_nid else "y"}
-            n.setdefault("create", {})[iface] = {
-                "cmd": ["awg"], "subnet": str(sub), "address": f"{mine}/31",
-                "listen_port": port, "mtu": mc["mtu"]}
-            n.setdefault("ifaces", {})[iface] = {
-                "awg_params": dict(awg), "system": True, "link_node": peer}
-        ev_append(deps["roster_path"], "node", new_nid, "Linked node",
-                  nodes[oid].get("name", oid))
+    changed = False
+    ids = list(nodes.keys())
+    for i, a in enumerate(ids):                                  # 1) every pair linked
+        for b in ids[i + 1:]:
+            if b not in (nodes[a].get("links") or {}):
+                changed = _mesh_make_link(nodes, snaps, deps, a, b, mc) or changed
+    for nid, n in nodes.items():                                 # 2) re-stage any missing link iface
+        snap_ifs = set((((snaps or {}).get(nid) or {}).get("interfaces") or {}))
+        pending = set(n.get("create") or {})
+        for peer, lr in (n.get("links") or {}).items():
+            ifc = lr.get("iface")
+            if ifc and ifc not in snap_ifs and ifc not in pending:
+                n.setdefault("create", {})[ifc] = {"cmd": ["awg"], "subnet": lr["subnet"],
+                    "address": lr["address"] + "/31", "listen_port": lr["listen_port"], "mtu": mc["mtu"]}
+                ov = n.setdefault("ifaces", {}).setdefault(ifc, {})
+                ov.setdefault("system", True); ov.setdefault("link_node", peer)
+                changed = True
+    return changed
 
 
 def desired_mesh_for_node(nodes, nid, keepalive):
@@ -1807,7 +1826,7 @@ def api(method, path, qs, body, deps):
                       "token_hash": make_token_hash(token), "created": now()}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Enrolled node", name)
-        mesh_link_new_node(nodes, deps.get("node_snaps") or {}, deps, nid)   # full-mesh link to every existing node
+        reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # full-mesh link to every existing node
         nodes_save(deps["nodes_path"], nodes)
         return 200, {"ok": True, "data": {"id": nid, "name": name, "token": token}}
 
@@ -2590,6 +2609,12 @@ class Handler(BaseHTTPRequestHandler):
             buf.append((int(time.time()), cpu, mem, disk, rx, tx))
             if len(buf) > LIVE_MAX:
                 del buf[:len(buf) - LIVE_MAX]
+        # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
+        # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
+        # gets its links (re)staged on its very next sync.
+        if reconcile_mesh(nodes, Handler.deps.get("node_snaps") or {}, Handler.deps):
+            with contextlib.suppress(Exception):
+                nodes_save(Handler.deps["nodes_path"], nodes)
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
         for _ifn, _ps in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"]).items():
@@ -2605,6 +2630,7 @@ class Handler(BaseHTTPRequestHandler):
             synced = ov.setdefault("_synced", {})
             drift = ov.setdefault("_drift", {})
             d = {}
+            sysif = bool(ov.get("system"))   # mesh link — panel-managed: AUTO-ADOPT any node-side change, never drift
             def _clear_drift(k):
                 if k in drift:
                     drift.pop(k, None); return True
@@ -2619,7 +2645,7 @@ class Handler(BaseHTTPRequestHandler):
                     if synced.get("listen_port") != want:
                         synced["listen_port"] = want; ifaces_dirty = True
                     ifaces_dirty = _clear_drift("listen_port") or ifaces_dirty
-                elif synced.get("listen_port") == want:                 # confirmed, then diverged → drift
+                elif synced.get("listen_port") == want and not sysif:   # confirmed, then diverged → drift (user ifaces)
                     if drift.get("listen_port") != rp:
                         drift["listen_port"] = rp; ifaces_dirty = True
                 else:                                                   # not yet confirmed → push to converge
@@ -2634,16 +2660,18 @@ class Handler(BaseHTTPRequestHandler):
                     if synced.get("awg_params") != want:
                         synced["awg_params"] = dict(want); ifaces_dirty = True
                     ifaces_dirty = _clear_drift("awg_params") or ifaces_dirty
-                elif synced.get("awg_params") == want:                  # confirmed, then diverged → drift
+                elif synced.get("awg_params") == want and not sysif:    # confirmed, then diverged → drift (user ifaces)
                     nd = {k: ra.get(k) for k in want}
                     if drift.get("awg_params") != nd:
                         drift["awg_params"] = nd; ifaces_dirty = True
-                else:
+                else:                                                   # not yet confirmed (or a system link) → re-push the panel value
                     ifaces_dirty = _clear_drift("awg_params") or ifaces_dirty
                     d["awg_params"] = want
             # server keypair — the NODE owns the private key (the panel never holds it). Bless the first
             # public key we see; if it later changes (key rotated on the server) flag drift so the operator
             # can Restore (node reverts from its on-disk backup) or Adopt (accept new → every client breaks).
+            # A SYSTEM (mesh) link auto-adopts a rotated key instead — a re-install regenerates the keypair,
+            # and re-blessing lets the panel hand the new pubkey to the other end so the tunnel re-forms.
             rep_pub = rep.get("public_key")
             if rep_pub:
                 blessed = ov.get("public_key")
@@ -2651,6 +2679,8 @@ class Handler(BaseHTTPRequestHandler):
                     ov["public_key"] = rep_pub; ifaces_dirty = True            # first sight → bless it
                 elif rep_pub == blessed:
                     ifaces_dirty = _clear_drift("public_key") or ifaces_dirty
+                elif sysif:                                                    # mesh link key rotated → auto-adopt (re-bless), no drift
+                    ov["public_key"] = rep_pub; _clear_drift("public_key"); ifaces_dirty = True
                 elif drift.get("public_key") != rep_pub:
                     drift["public_key"] = rep_pub; ifaces_dirty = True
             # egress IP + WAN NIC: the node doesn't report them back, so always push (no drift tracking).
