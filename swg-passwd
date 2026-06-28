@@ -57,14 +57,22 @@ def main():
             os.remove(tmp)
         sys.exit(f"swg-passwd: cannot write {AUTH}: {e}")
 
-    # apply immediately (the panel reads the auth file at startup)
+    # apply immediately — the panel reads the auth file once at startup, so it needs a restart.
+    in_container = os.path.exists("/.dockerenv") or os.environ.get("container") == "docker"
     applied = False
-    with contextlib.suppress(Exception):
-        if subprocess.run(["systemctl", "restart", "swg-panel-server"],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-            applied = True
-    print("swg-passwd: password updated." +
-          ("" if applied else "  Restart the panel to apply:  systemctl restart swg-panel-server"))
+    if not in_container:                       # bare-metal: bounce the systemd unit ourselves
+        with contextlib.suppress(Exception):
+            if subprocess.run(["systemctl", "restart", "swg-panel-server"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                applied = True
+    if applied:
+        print("swg-passwd: password updated.")
+    elif in_container:                         # a process INSIDE the container can't restart it — tell the host
+        print("swg-passwd: password updated. Restart the panel from the host to apply:\n"
+              "             docker compose restart swg-panel")
+    else:
+        print("swg-passwd: password updated. Restart the panel to apply:\n"
+              "             systemctl restart swg-panel-server")
 
 
 if __name__ == "__main__":
