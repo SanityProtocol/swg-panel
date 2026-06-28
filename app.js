@@ -2684,12 +2684,17 @@ function HealthMeter({ label, pct, text, tone, spark }) {
 // Gradient area chart for a history series (0–100). Stretches to its container width;
 // the stroke stays crisp via non-scaling-stroke. Used for the CPU-load history.
 // format a chart point's timestamp for the hover tooltip — time of day, + date for week/month ranges
-const MON3 = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+// per-range tooltip time: live = h:m:s, hour/day = h:m, week/month = "June 24, 6PM" (date + 12h hour)
 function histTime(ts, range) {
   if (ts == null) return "";
   const d = new Date(ts * 1000), p2 = x => String(x).padStart(2, "0");
-  const t = p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
-  return (range === "week" || range === "month") ? MON3[d.getMonth()] + " " + d.getDate() + " " + t : t;
+  if (range === "week" || range === "month") {
+    const h = d.getHours(), h12 = ((h + 11) % 12) + 1;
+    return MONTHS[d.getMonth()] + " " + d.getDate() + ", " + h12 + (h < 12 ? "AM" : "PM");
+  }
+  const hm = p2(d.getHours()) + ":" + p2(d.getMinutes());
+  return range === "live" ? hm + ":" + p2(d.getSeconds()) : hm;
 }
 // hover overlay shared by the CPU + throughput charts: vertical guide, point dot(s), value tooltip
 function ChartHover({ xp, dots, label }) {
@@ -2700,35 +2705,68 @@ function ChartHover({ xp, dots, label }) {
     <div class="ch-tip" style=${"left:" + xp + "%;transform:" + anchor}>${label}</div>
   <//>`;
 }
-function MiniArea({ points, color, h, times, range }) {
+// CPU-load colour ramp for the history line: green ≤60%, green→orange 60–90%, orange→red
+// 90–120%, solid red beyond. v is load-per-core as a percentage (so an overloaded box reads >100).
+const LOAD_G = [63, 216, 154], LOAD_O = [242, 163, 60], LOAD_R = [242, 84, 91];
+function loadColor(v) {
+  const mix = (a, b, t) => "rgb(" + a.map((x, i) => Math.round(x + (b[i] - x) * t)).join(",") + ")";
+  if (v <= 60) return mix(LOAD_G, LOAD_G, 0);
+  if (v <= 90) return mix(LOAD_G, LOAD_O, (v - 60) / 30);
+  if (v <= 120) return mix(LOAD_O, LOAD_R, (v - 90) / 30);
+  return mix(LOAD_R, LOAD_R, 0);
+}
+function MiniArea({ points, h, times, range, cap }) {
   const [hov, setHov] = useState(null);
   const wref = useRef(null);
   const pts = (points || []).filter(v => v != null);
   h = h || 42; const w = 100;
-  if (pts.length < 2) return html`<div class="harea-empty">collecting history…</div>`;
-  // tight autoscale to the series' own min/max (small vpad) so CPU reads as a jagged "heartbeat"
-  const n = pts.length, lo = Math.min(...pts), hi = Math.max(...pts), rng = (hi - lo) || 1, vpad = h * 0.06;
-  const xy = pts.map((v, i) => [i / (n - 1) * w, h - vpad - ((v - lo) / rng) * (h - 2 * vpad)]);
-  const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
-  const area = "0," + h + " " + line + " " + w + "," + h;
-  const gid = "ha" + (MiniArea._n = (MiniArea._n || 0) + 1);
+  const n = pts.length;
+  // x-axis holds `cap` blocks (the ring's full capacity); data is pinned to the RIGHT edge and
+  // grows leftward as blocks arrive, so a fresh node fills one block at a time instead of stretching.
+  const C = Math.max(cap || n || 1, 2);
+  const xAt = i => w - (n - 1 - i) * (w / (C - 1));
   const T = times || [];
-  const onMove = e => { const el = wref.current; if (!el) return; const r = el.getBoundingClientRect(); setHov(Math.max(0, Math.min(n - 1, Math.round((e.clientX - r.left) / r.width * (n - 1))))); };
+  // map a mouse x to the nearest plotted block (null over the still-empty left area)
+  const onMove = e => { const el = wref.current; if (!el) return; const r = el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width * w; const i = Math.round((n - 1) - (w - x) * (C - 1) / w);
+    setHov(i >= 0 && i < n ? i : null); };
+  if (n === 0)   // empty plot area — fills from the right as the first blocks arrive
+    return html`<div class="harea-wrap" style=${"height:" + h + "px"}></div>`;
+  // tight autoscale to the series' own min/max (small vpad) so CPU reads as a jagged "heartbeat"
+  const lo = Math.min(...pts), hi = Math.max(...pts), rng = (hi - lo) || 1, vpad = h * 0.06;
+  const Y = v => h - vpad - ((v - lo) / rng) * (h - 2 * vpad);
+  const xy = pts.map((v, i) => [xAt(i), Y(v)]);
+  const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  const area = xy[0][0].toFixed(1) + "," + h + " " + line + " " + xy[n - 1][0].toFixed(1) + "," + h;
+  const id = "ha" + (MiniArea._n = (MiniArea._n || 0) + 1);
+  // vertical stroke gradient: colour each height by its absolute load value (green→orange→red).
+  // Stops at the band edges that fall inside the visible [lo,hi] window — linear between them
+  // reproduces the ramp exactly (both colour and y are linear in value within a band).
+  // offsets are normalised to the polyline's own bounding box (objectBoundingBox): top = hi → 0, bottom = lo → 1
+  const edges = [...new Set([lo, 60, 90, 120, hi].filter(v => v >= lo && v <= hi))].sort((a, b) => b - a);
+  const stops = edges.map(v => ({ off: Math.max(0, Math.min(1, (hi - v) / rng)), col: loadColor(v) }));
+  const cur = pts[n - 1];   // area fade is tinted by the latest value
   return html`<div class="harea-wrap" ref=${wref} style=${"height:" + h + "px"} onMouseMove=${onMove} onMouseLeave=${() => setHov(null)}>
     <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
-      <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
-        <stop offset="0" stop-color=${color} stop-opacity="0.32"/><stop offset="1" stop-color=${color} stop-opacity="0"/>
-      </linearGradient></defs>
-      <polygon points=${area} fill=${"url(#" + gid + ")"}/>
-      <polyline points=${line} fill="none" stroke=${color} stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+      <defs>
+        <linearGradient id=${id + "s"} x1="0" x2="0" y1="0" y2="1">
+          ${stops.map(s => html`<stop offset=${s.off} stop-color=${s.col}/>`)}
+        </linearGradient>
+        <linearGradient id=${id + "a"} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stop-color=${loadColor(cur)} stop-opacity="0.30"/><stop offset="1" stop-color=${loadColor(cur)} stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      ${n >= 2 ? html`<polygon points=${area} fill=${"url(#" + id + "a)"}/>
+      <polyline points=${line} fill="none" stroke=${"url(#" + id + "s)"} stroke-width="1.4" vector-effect="non-scaling-stroke"/>` : null}
     </svg>
-    ${hov != null ? html`<${ChartHover} xp=${n > 1 ? hov / (n - 1) * 100 : 0} dots=${[{ yp: xy[hov][1] / h * 100, color }]}
-      label=${histTime(T[hov], range) + " · " + pts[hov].toFixed(2)}/>` : null}
+    ${n === 1 ? html`<div class="ch-dot" style=${"left:" + xy[0][0] + "%;top:" + (xy[0][1] / h * 100) + "%;background:" + loadColor(cur)}></div>` : null}
+    ${(hov != null && hov < n) ? html`<${ChartHover} xp=${xy[hov][0]} dots=${[{ yp: xy[hov][1] / h * 100, color: loadColor(pts[hov]) }]}
+      label=${histTime(T[hov], range) + " · " + Math.round(pts[hov]) + "%"}/>` : null}
   </div>`;
 }
 
 // Throughput history: rx as a filled area + tx as a line, scaled to the series max.
-function ThroughputChart({ rx, tx, h, head, times, range }) {
+function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
   const [hov, setHov] = useState(null);
   const wref = useRef(null);
   const R = (rx || []).map(v => v || 0), T = (tx || []).map(v => v || 0);
@@ -2736,19 +2774,20 @@ function ThroughputChart({ rx, tx, h, head, times, range }) {
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   const hi = n ? Math.max(0, ...R, ...T) : 0;
   const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="grow"></span>${head || null}</div>`;
-  // Only collapse to a slim strip when there genuinely aren't enough points yet. A flat-zero
-  // window still draws the chart (baseline line) so LIVE/HOUR/DAY stay visually consistent.
-  if (n < 2)
-    return html`<div class="tp-wrap">${legend}<div class="tp-idle">collecting throughput history…</div></div>`;
   h = h || 60; const w = 100;
+  // right-anchored to the ring's full capacity, like MiniArea — fills from the right as blocks arrive
+  const C = Math.max(cap || n || 1, 2);
+  const xAt = i => w - (n - 1 - i) * (w / (C - 1));
   // autoscale to the combined min/max so the curve is spiky/expressive, not a flat baseline
-  const lo = Math.min(...R, ...T), rng = (hi - lo) || 1, vpad = h * 0.12;
-  const X = i => i / (n - 1) * w, Y = v => h - vpad - ((v - lo) / rng) * (h - 2 * vpad);
-  const line = arr => arr.map((v, i) => X(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
-  const rxLine = line(R), rxArea = "0," + h + " " + rxLine + " " + w + "," + h;
+  const lo = n ? Math.min(...R, ...T) : 0, rng = (hi - lo) || 1, vpad = h * 0.12;
+  const Y = v => h - vpad - ((v - lo) / rng) * (h - 2 * vpad);
+  const line = arr => arr.map((v, i) => xAt(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
+  const rxLine = line(R), rxArea = n >= 2 ? (xAt(0).toFixed(1) + "," + h + " " + rxLine + " " + xAt(n - 1).toFixed(1) + "," + h) : "";
   const gid = "tp" + (ThroughputChart._n = (ThroughputChart._n || 0) + 1);
   const TT = times || [];
-  const onMove = e => { const el = wref.current; if (!el) return; const r = el.getBoundingClientRect(); setHov(Math.max(0, Math.min(n - 1, Math.round((e.clientX - r.left) / r.width * (n - 1))))); };
+  const onMove = e => { const el = wref.current; if (!el) return; const r = el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width * w; const i = Math.round((n - 1) - (w - x) * (C - 1) / w);
+    setHov(i >= 0 && i < n ? i : null); };
   return html`<div class="tp-wrap">
     ${legend}
     <div class="harea-wrap" ref=${wref} style=${"height:" + h + "px"} onMouseMove=${onMove} onMouseLeave=${() => setHov(null)}>
@@ -2756,11 +2795,13 @@ function ThroughputChart({ rx, tx, h, head, times, range }) {
         <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
           <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
         </linearGradient></defs>
-        <polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
+        ${n >= 2 ? html`<polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
         <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
-        <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>
+        <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>` : null}
       </svg>
-      ${hov != null ? html`<${ChartHover} xp=${hov / (n - 1) * 100}
+      ${n === 1 ? html`<div class="ch-dot" style=${"left:" + xAt(0) + "%;top:" + (Y(R[0]) / h * 100) + "%;background:var(--brand)"}></div>
+        <div class="ch-dot" style=${"left:" + xAt(0) + "%;top:" + (Y(T[0]) / h * 100) + "%;background:var(--tp-tx)"}></div>` : null}
+      ${(hov != null && hov < n) ? html`<${ChartHover} xp=${xAt(hov)}
         dots=${[{ yp: Y(R[hov] || 0) / h * 100, color: "var(--brand)" }, { yp: Y(T[hov] || 0) / h * 100, color: "var(--tp-tx)" }]}
         label=${histTime(TT[hov], range) + " · ↓ " + rate(R[hov] || 0) + " · ↑ " + rate(T[hov] || 0)}/>` : null}
     </div>
@@ -2801,49 +2842,41 @@ function RankBars({ rows }) {
 // A history chart (CPU or throughput) with live/day/week/month range tabs. "live" uses the
 // series already in /api/state; day/week/month are fetched on demand from /api/node-history.
 const HIST_RANGES = ["live", "hour", "day", "week", "month"];
-const HIST_WIN = { live: 600, hour: 3600, day: 86400, week: 604800, month: 2592000 };  // seconds each range spans
+// blocks (= slots = plotted points) each range's x-axis holds — must match swg-panel-server
+// HRRD_RINGS slot counts (live = LIVE_MAX). Charts pin data to the right and fill leftward.
+const RANGE_CAP = { live: 200, hour: 250, day: 300, week: 350, month: 400 };
 const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem", "disk", "rx", "tx"]) if (Array.isArray((s || {})[k])) o[k] = s[k].slice(-n); return o; };
-// shown instead of a misleading chart when the node hasn't collected enough history for the range
-function HistMsg({ span, need, range }) {
-  return html`<div class="harea-msg"><${Ic} i="info"/><span>This node has only <b>${dur(span)}</b> of history so far — the <b>${range}</b> view needs about <b>${dur(need)}</b>. It'll fill in as the node keeps running.</span></div>`;
-}
 function RangedHistory({ node, kind, live, h, head, liveFine }) {
   const [range, setRange] = useState("live");
   const [fetched, setFetched] = useState(null);
-  const [loading, setLoading] = useState(false);
   const fetchRange = range === "day" || range === "week" || range === "month";   // live/hour come from /api/state
   useEffect(() => {
-    if (!fetchRange) { setFetched(null); setLoading(false); return; }
-    let ok = true; setLoading(true);
-    api.nodeHistory(node, range).then(r => { if (ok) { setFetched(r && r.ok ? r.data : {}); setLoading(false); } }).catch(() => { if (ok) setLoading(false); });
+    if (!fetchRange) { setFetched(null); return; }
+    let ok = true; setFetched(null);   // clear so the chart shows an empty area, then fills when the fetch lands
+    api.nodeHistory(node, range).then(r => { if (ok) setFetched(r && r.ok ? r.data : {}); }).catch(() => {});
     return () => { ok = false; };
   }, [node, range]);
-  // live = last 10 minute-buckets, hour = the full ~60-pt /api/state series, longer ranges fetched
-  // LIVE = the raw per-sync buffer (~5s points) when present, else the coarse last-10-minute series
-  const s = range === "live" ? ((liveFine && (liveFine.t || []).length > 1) ? liveFine : tailSeries(live, 10))
+  // LIVE = the raw ~5s in-memory buffer when present; else — e.g. just after a panel restart, before
+  // the buffer refills — fall back to the tail of the 15s ring (`live`, the hour series) so the chart
+  // keeps showing recent history. hour = the full 15s series from /api/state; day/week/month fetched.
+  const liveBuf = range === "live" && liveFine && (liveFine.t || []).length > 1;
+  const s = range === "live" ? (liveBuf ? liveFine : tailSeries(live, 70))
     : range === "hour" ? (live || {}) : (fetched || {});
-  // the node may not have run long enough to fill this range — detect from the data's own time span
-  const tt = (s.t || []).filter(x => x != null);
-  const span = tt.length > 1 ? (tt[tt.length - 1] - tt[0]) : 0;
-  const need = HIST_WIN[range] || 0;
-  const sparse = !loading && tt.length > 1 && need && span < need * 0.7;
+  // x-axis capacity: the live fallback is coarse 15s data, so let it fit to its own length (cap 0)
+  // rather than pinning to the 5s window; every other range uses its fixed block count.
+  const cap = range === "live" ? (liveBuf ? RANGE_CAP.live : 0) : RANGE_CAP[range];
+  const hasData = (s.cpu || s.rx || []).some(x => x != null);
   const nlive = Store.recon.nodeStatus[node] === "live";   // node hasn't reported for several rounds → the live feed is frozen
-  const staleLive = !nlive && (range === "live" || range === "hour");   // only the live-fed ranges; day/week/month keep their stored history
-  const staleMsg = html`<div class="harea-msg"><${Ic} i="info"/><span>This node isn't sending any data right now — the chart will fill back in as soon as it's reporting again.</span></div>`;
-  const tabs = html`<div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div>`;
-  if (kind === "throughput") {
-    const tpinner = loading ? html`<div class="harea-empty">loading ${range}…</div>`
-      : staleLive ? staleMsg
-      : sparse ? html`<${HistMsg} span=${span} need=${need} range=${range}/>` : null;
-    if (tpinner) return html`<div class="tp-wrap"><div class="tp-legend"><span class="grow"></span>${tabs}</div>${tpinner}</div>`;
-    return html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs} times=${s.t} range=${range}/>`;
-  }
+  // A node that stops reporting (update / re-install / convert / brief outage) must NEVER blank the
+  // chart — the data already collected stays on screen, flagged with a small "paused" pill.
+  const notLive = !nlive && (range === "live" || range === "hour");   // only the live-fed ranges; day/week/month keep their stored history
+  const pausedPill = (notLive && hasData) ? html`<span class="rt-paused" title="This node isn't reporting right now — showing the last data it sent.">paused</span>` : null;
+  const tabs = html`${pausedPill}<div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div>`;
+  if (kind === "throughput")
+    return html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs} times=${s.t} range=${range} cap=${cap}/>`;
   return html`<div class="chartwrap">
     <div class="chart-head">${head || null}<span class="grow"></span>${tabs}</div>
-    ${loading ? html`<div class="harea-empty">loading ${range}…</div>`
-      : staleLive ? staleMsg
-      : sparse ? html`<${HistMsg} span=${span} need=${need} range=${range}/>`
-      : html`<${MiniArea} points=${s.cpu} color="var(--online)" h=${h} times=${s.t} range=${range}/>`}
+    <${MiniArea} points=${s.cpu} h=${h} times=${s.t} range=${range} cap=${cap}/>
   </div>`;
 }
 
@@ -2885,7 +2918,7 @@ function NodeHealth({ health, node, compact, history }) {
     <${HealthMeters} health=${health}/>
     ${(history !== false && cpuHist) ? html`<div class="health-hist">
       <span class="hist-cap">CPU history</span>
-      <${MiniArea} points=${cpuHist} color="var(--online)" h=${compact ? 36 : 52}/>
+      <${MiniArea} points=${cpuHist} h=${compact ? 36 : 52}/>
     </div>` : null}
   </div>`;
 }

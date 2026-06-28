@@ -839,26 +839,36 @@ def panel_next_ip(snaps, roster, nodes, iface):
 
 # ───────────────── node health history (RRD-style binary ring) ─────────────────
 #
-# A tiny round-robin file per node under stats_dir (health-<node>.rrd): fixed size,
-# one slot per HRRD_STEP-second bucket, HRRD_SLOTS slots = a 24h window that wraps and
-# overwrites the oldest. Each slot keeps the LAST cpu/mem/disk percent seen in its
-# bucket (consolidation), so 5s syncs naturally downsample to 1-minute points.
-# Stdlib `struct`, O(1) seek+write per sync, survives restart, ~11 KB/node. Reads
-# return the most recent points for the sparklines. Lock guards concurrent node syncs.
+# A tiny round-robin file per node under stats_dir (health-<node>.rrd): FOUR fixed-size rings,
+# one resolution each. Every slot holds the cpu/mem/disk/rx/tx AVERAGE for its bucket, and each
+# tier is the average of the already-computed averages in the tier directly below it — raw 5s
+# samples are consumed ONLY by the finest ring; the coarse tiers never re-read raw data:
+# Each ring's slot count == the points its view plots (1 slot = 1 block = 1 plotted point), so a
+# brand-new node fills each chart one block at a time from the right; nothing waits to "fill up":
+#   ring0  15s  × 250  (62.5 min) ← incremental mean of the raw ~5s syncs  (~3/bucket) → HOUR  (250)
+#   ring1  5min × 300  (25 h)     ← fresh mean of its 20 fifteen-sec children          → DAY   (300)
+#   ring2  30min× 350  (7.3 days) ← fresh mean of its 6 five-minute children           → WEEK  (350)
+#   ring3  2h   × 400  (33.3 days)← fresh mean of its 4 thirty-minute children         → MONTH (400)
+# (LIVE is the raw 5s in-memory buffer, not this file — LIVE_MAX points.) Averaging shallow groups
+# avoids the precision drift a single deep incremental mean would suffer (a byte-rounded running
+# mean over ~1440 samples freezes on its earliest readings). Buckets align to the panel host's
+# LOCAL time so week/month land on clean local boundaries. Stdlib `struct`, O(1) seeks per sync,
+# survives restart, ~20 KB/node. Lock guards concurrent node syncs.
 
 HRRD_MAGIC = b"SWGH"
-HRRD_VER = 3            # v3: a coarse hourly ring added after the minute ring (week/month views)
-HRRD_STEP = 60          # minute ring: seconds per bucket (1-minute resolution)
-HRRD_SLOTS = 1440       # minute ring: 24h of buckets  → live + day views
-HRRD_HSTEP = 3600       # hour ring: seconds per bucket (1-hour resolution)
-HRRD_HSLOTS = 744       # hour ring: 31 days of buckets → week + month views
-HRRD_VIEW = 60          # points returned for the default (live) sparkline
-LIVE_MAX = 120          # in-memory raw samples kept per node for the LIVE view (one per sync; ~10min@5s)
-HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, min_step, min_slots
-HRRD_SLOT = struct.Struct("<IBBBxII")         # bucket, cpu, mem, disk, pad, rx, tx  (16 bytes)
+HRRD_VER = 5            # v5: 4-tier averages-of-averages (was 2 rings, peak/last consolidation)
+#                 (step seconds, slot count) per ring, finest first; slots == plotted points
+HRRD_RINGS = [(15, 250), (300, 300), (1800, 350), (7200, 400)]
+HRRD_RATIO = [1, 20, 6, 4]          # children each tier folds from the one below (= step ratio); ring0 reads raw
+HRRD_VIEW = 250         # default read = the hour ring's window (also feeds the overview sparkline)
+LIVE_MAX = 200          # in-memory raw samples kept per node for the LIVE view (one per sync; ~16.7min@5s)
+HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, ring0_step, ring0_slots
+HRRD_SLOT = struct.Struct("<IBBBBII")         # bucket, cpu, mem, disk, count, rx, tx  (16 bytes)
 HRRD_NA = 255
 HRRD_U32 = 0xFFFFFFFF
-HRRD_HBASE = HRRD_HEAD.size + HRRD_SLOTS * HRRD_SLOT.size   # byte offset of the hour ring
+HRRD_TOTAL = sum(n for _, n in HRRD_RINGS)
+def _ring_base(i):                  # byte offset of ring i within the file
+    return HRRD_HEAD.size + sum(n for _, n in HRRD_RINGS[:i]) * HRRD_SLOT.size
 _hrrd_lock = threading.Lock()
 
 
@@ -882,7 +892,10 @@ def health_pcts(health):
     cpu = HRRD_NA
     load = health.get("load")
     if isinstance(load, list) and load:
-        cpu = max(0, min(100, round((load[0] or 0) / (health.get("ncpu") or 1) * 100)))
+        # NOT capped at 100: CPU is load-per-core, so an overloaded node reads >100% (e.g. load 2.0
+        # on 1 core = 200%). The chart's colour gradient turns red past ~120% — clamp only at the
+        # ring byte's ceiling (254; 255 is the NA sentinel).
+        cpu = max(0, min(254, round((load[0] or 0) / (health.get("ncpu") or 1) * 100)))
     m = health.get("mem") or {}
     mem = pc(m.get("used", 0), m.get("total", 0))
     disk = HRRD_NA
@@ -896,51 +909,106 @@ def _hrrd_ok(path):
     try:
         with open(path, "rb") as f:
             magic, ver, step, slots = HRRD_HEAD.unpack(f.read(HRRD_HEAD.size))
-        return magic == HRRD_MAGIC and ver == HRRD_VER and step == HRRD_STEP and slots == HRRD_SLOTS
+        return magic == HRRD_MAGIC and ver == HRRD_VER and (step, slots) == HRRD_RINGS[0]
     except (OSError, struct.error):
         return False
 
 
-def _hrrd_mx(new, old):           # peak of two pct bytes, ignoring the NA sentinel
+def _bucket_of(ts, step):         # LOCAL-time-aligned bucket id for a timestamp (clean week/month boundaries)
+    off = time.localtime(ts).tm_gmtoff or 0
+    return ((int(ts) + off) // step) & 0xFFFFFFFF
+
+
+def _bucket_epoch(bucket, step):  # inverse: a bucket id back to the real epoch of its local boundary
+    wall = bucket * step
+    return wall - (time.localtime(wall).tm_gmtoff or 0)
+
+
+def _avg_pct(old, new, cnt):      # incremental mean of two pct bytes, NA-aware (cnt = samples already in bucket)
     if new == HRRD_NA: return old
-    if old == HRRD_NA: return new
-    return max(new, old)
+    if old == HRRD_NA or cnt <= 0: return new
+    return max(0, min(254, round((old * cnt + new) / (cnt + 1))))
 
 
-def _hrrd_put(f, base, slots, bucket, cpu, mem, disk, rx, tx, merge=False):
-    off = base + (bucket % slots) * HRRD_SLOT.size
-    if merge:
-        # same bucket still in this slot → keep the peak so sub-bucket spikes survive the
-        # coarser downsample (the hour ring is 1 sample/hour; last-write-wins would hide them).
-        f.seek(off)
-        cur = f.read(HRRD_SLOT.size)
-        if len(cur) == HRRD_SLOT.size:
-            b0, c0, m0, d0, rx0, tx0 = HRRD_SLOT.unpack(cur)
-            if b0 == (bucket & 0xFFFFFFFF):
-                cpu, mem, disk = _hrrd_mx(cpu, c0), _hrrd_mx(mem, m0), _hrrd_mx(disk, d0)
-                rx, tx = max(int(rx), rx0), max(int(tx), tx0)
-    f.seek(off)
-    f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF,
+def _avg_u32(old, new, cnt):      # incremental mean of an rx/tx counter (no NA sentinel)
+    new = min(max(int(new), 0), HRRD_U32)
+    if cnt <= 0: return new
+    return min(round((old * cnt + new) / (cnt + 1)), HRRD_U32)
+
+
+def _slot_write(f, base, slots, bucket, cpu, mem, disk, cnt, rx, tx):
+    f.seek(base + (bucket % slots) * HRRD_SLOT.size)
+    f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF, min(max(cnt, 0), 255) & 0xFF,
                            min(max(int(rx), 0), HRRD_U32), min(max(int(tx), 0), HRRD_U32)))
+
+
+def _slot_read(f, base, slots, bucket):
+    """(cpu, mem, disk, rx, tx) if the slot for `bucket` currently holds it, else None."""
+    f.seek(base + (bucket % slots) * HRRD_SLOT.size)
+    cur = f.read(HRRD_SLOT.size)
+    if len(cur) == HRRD_SLOT.size:
+        b0, c0, m0, d0, n0, rx0, tx0 = HRRD_SLOT.unpack(cur)
+        if b0 == (bucket & 0xFFFFFFFF):
+            return (c0, m0, d0, rx0, tx0)
+    return None
+
+
+def _hrrd_put_raw(f, base, slots, bucket, cpu, mem, disk, rx, tx):
+    # ring0 only: fold a raw sample into its 15s bucket as an incremental mean (~3 samples/bucket,
+    # so no rounding drift). A new bucket resets the slot, overwriting the stale wrap value.
+    bucket &= 0xFFFFFFFF
+    cnt = 0
+    f.seek(base + (bucket % slots) * HRRD_SLOT.size)
+    cur = f.read(HRRD_SLOT.size)
+    if len(cur) == HRRD_SLOT.size:
+        b0, c0, m0, d0, n0, rx0, tx0 = HRRD_SLOT.unpack(cur)
+        if b0 == bucket:                          # same bucket → fold into the existing mean
+            cnt = n0
+            cpu, mem, disk = _avg_pct(c0, cpu, cnt), _avg_pct(m0, mem, cnt), _avg_pct(d0, disk, cnt)
+            rx, tx = _avg_u32(rx0, rx, cnt), _avg_u32(tx0, tx, cnt)
+    _slot_write(f, base, slots, bucket, cpu, mem, disk, cnt + 1, rx, tx)
+
+
+def _hrrd_consolidate(f, i, ts):
+    # ring i (>=1): recompute its CURRENT bucket as the fresh mean of the (already-averaged) children
+    # it covers in ring i-1. One rounding per metric, NA-aware; rx/tx straight mean.
+    step, slots = HRRD_RINGS[i]
+    cstep, cslots = HRRD_RINGS[i - 1]
+    cbase = _ring_base(i - 1)
+    ratio = HRRD_RATIO[i]
+    bucket = _bucket_of(ts, step)
+    kids = [v for k in range(bucket * ratio, bucket * ratio + ratio)
+            if (v := _slot_read(f, cbase, cslots, k)) is not None]
+    if not kids:
+        return
+    def mean_pct(j):
+        vs = [k[j] for k in kids if k[j] != HRRD_NA]
+        return round(sum(vs) / len(vs)) if vs else HRRD_NA
+    def mean_u(j):
+        return round(sum(k[j] for k in kids) / len(kids))
+    _slot_write(f, _ring_base(i), slots, bucket,
+                mean_pct(0), mean_pct(1), mean_pct(2), len(kids), mean_u(3), mean_u(4))
 
 
 def hrrd_update(path, ts, cpu, mem, disk, rx=0, tx=0):
     ts = int(ts)
     with _hrrd_lock:
-        if not _hrrd_ok(path):                    # (re)create: header + both zeroed rings (also upgrades v1/v2)
+        if not _hrrd_ok(path):                    # (re)create: header + all rings zeroed (also upgrades older versions)
             with contextlib.suppress(OSError):
                 with open(path, "wb") as f:
-                    f.write(HRRD_HEAD.pack(HRRD_MAGIC, HRRD_VER, HRRD_STEP, HRRD_SLOTS))
-                    f.write(b"\x00" * (HRRD_SLOT.size * (HRRD_SLOTS + HRRD_HSLOTS)))
+                    f.write(HRRD_HEAD.pack(HRRD_MAGIC, HRRD_VER, HRRD_RINGS[0][0], HRRD_RINGS[0][1]))
+                    f.write(b"\x00" * (HRRD_SLOT.size * HRRD_TOTAL))
         with contextlib.suppress(OSError):
             with open(path, "r+b") as f:
-                _hrrd_put(f, HRRD_HEAD.size, HRRD_SLOTS, ts // HRRD_STEP, cpu, mem, disk, rx, tx)   # minute ring
-                _hrrd_put(f, HRRD_HBASE, HRRD_HSLOTS, ts // HRRD_HSTEP, cpu, mem, disk, rx, tx, merge=True)  # hour ring (peak-consolidated)
+                step0, slots0 = HRRD_RINGS[0]
+                _hrrd_put_raw(f, _ring_base(0), slots0, _bucket_of(ts, step0), cpu, mem, disk, rx, tx)
+                for i in range(1, len(HRRD_RINGS)):          # 5min ← 15s, 30min ← 5min, 2h ← 30min
+                    _hrrd_consolidate(f, i, ts)
 
 
-def hrrd_read(path, want=HRRD_VIEW, hourly=False):
-    """Most recent `want` buckets from the minute (or hourly) ring as
-    {t, cpu, mem, disk, rx, tx} (NA -> None)."""
+def hrrd_read(path, ring=0, want=HRRD_VIEW):
+    """Most recent `want` buckets from ring index `ring` as {t, cpu, mem, disk, rx, tx} (NA -> None).
+    Timestamps are the real epoch of each bucket's local-time boundary."""
     with _hrrd_lock:
         try:
             with open(path, "rb") as f:
@@ -949,18 +1017,17 @@ def hrrd_read(path, want=HRRD_VIEW, hourly=False):
             return None
     if len(data) < HRRD_HEAD.size or data[:4] != HRRD_MAGIC:
         return None
-    _, ver, step, slots = HRRD_HEAD.unpack_from(data, 0)
-    if ver != HRRD_VER or step != HRRD_STEP or slots != HRRD_SLOTS:   # old layout — show nothing till it refills
+    _, ver, step0, slots0 = HRRD_HEAD.unpack_from(data, 0)
+    if ver != HRRD_VER or (step0, slots0) != HRRD_RINGS[0]:   # old layout — show nothing till it refills
         return None
-    base = HRRD_HBASE if hourly else HRRD_HEAD.size
-    nslots = HRRD_HSLOTS if hourly else HRRD_SLOTS
-    rstep = HRRD_HSTEP if hourly else HRRD_STEP
+    step, nslots = HRRD_RINGS[ring]
+    base = _ring_base(ring)
     rows = []
     for i in range(nslots):
         off = base + i * HRRD_SLOT.size
         if off + HRRD_SLOT.size > len(data):
             break
-        b, c, m, d, rx, tx = HRRD_SLOT.unpack_from(data, off)
+        b, c, m, d, n, rx, tx = HRRD_SLOT.unpack_from(data, off)   # n = per-bucket sample count (write-time only)
         if b:
             rows.append((b, c, m, d, rx, tx))
     if not rows:
@@ -968,7 +1035,7 @@ def hrrd_read(path, want=HRRD_VIEW, hourly=False):
     rows.sort()
     rows = rows[-want:]
     na = lambda v: None if v == HRRD_NA else v
-    return {"t": [r[0] * rstep for r in rows],
+    return {"t": [_bucket_epoch(r[0], step) for r in rows],
             "cpu": [na(r[1]) for r in rows], "mem": [na(r[2]) for r in rows], "disk": [na(r[3]) for r in rows],
             "rx": [r[4] for r in rows], "tx": [r[5] for r in rows]}
 
@@ -1176,12 +1243,13 @@ def api(method, path, qs, body, deps):
         if not known(node):
             return 400, {"ok": False, "error": f"unknown node {node!r}", "code": "bad_request"}
         rrd = os.path.join(stats_dir, f"health-{node}.rrd") if stats_dir else None
-        # (points, hourly): live=10m, hour=60m, day=24h from the minute ring; week/month from the hour ring
-        spec = {"live": (10, False), "hour": (60, False), "day": (HRRD_SLOTS, False),
-                "week": (168, True), "month": (HRRD_HSLOTS, True)}.get(rng)
+        # each range = one ring's most-recent points: hour=15s(250) day=5min(300) week=30min(350) month=2h(400).
+        # live also comes straight off the 15s ring as a fallback (the SPA prefers the raw 5s buffer).
+        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
         if not spec:
             return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        data = hrrd_read(rrd, spec[0], hourly=spec[1]) if rrd else None
+        ring, want = spec
+        data = hrrd_read(rrd, ring=ring, want=want) if rrd else None
         return 200, {"ok": True, "data": data or {"t": [], "cpu": [], "mem": [], "disk": [], "rx": [], "tx": []}}
 
     if method == "GET" and path == "/api/next-ip":

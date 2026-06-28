@@ -955,6 +955,12 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
   letter-spacing:.06em;padding:4px 9px;border-radius:6px;transition:all .14s}
 .rtab:hover{color:var(--ink-2)}
 .rtab.on{background:var(--brand);color:var(--brand-ink);font-weight:600}
+/* "paused" pill: node isn't reporting right now, but the last-collected data stays charted */
+.rt-paused{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:9.5px;text-transform:uppercase;
+  letter-spacing:.07em;color:var(--pending);background:color-mix(in srgb,var(--pending) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--pending) 34%,transparent);border-radius:6px;padding:3px 8px;white-space:nowrap}
+.rt-paused::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--pending);animation:rtpulse 1.6s var(--ease) infinite}
+@keyframes rtpulse{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* node-detail: push sync/uptime + chart range tabs to the right */
 .noderibbon .nr-sync{margin-left:auto}
