@@ -1195,20 +1195,62 @@ def _hrrd_consolidate(f, i, ts):
                 mean_pct(0), mean_pct(1), mean_pct(2), len(kids), mean_u(3), mean_u(4))
 
 
+def _hrrd_feed(f, ts, cpu, mem, disk, rx, tx):
+    # one sample → ring0 (raw incremental mean) then recompute the coarser rings for ts.
+    step0, slots0 = HRRD_RINGS[0]
+    _hrrd_put_raw(f, _ring_base(0), slots0, _bucket_of(ts, step0), cpu, mem, disk, rx, tx)
+    for i in range(1, len(HRRD_RINGS)):              # 5min ← 15s, 30min ← 5min, 2h ← 30min
+        _hrrd_consolidate(f, i, ts)
+
+
+def _hrrd_salvage(path):
+    """Read an OLDER-layout RRD's finest ring before we recreate it, so a format-version change MIGRATES
+    history into the new rings instead of wiping the graph. Returns [(ts, cpu, mem, disk, rx, tx), …] from
+    the file's header-declared ring0, or None if there's nothing salvageable. The slot struct's metric bytes
+    (cpu/mem/disk) + rx/tx have lived at the same offsets across every version (only the pad/count byte at
+    offset 7 differs), so reading old slots with the current struct is correct."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    if len(data) < HRRD_HEAD.size or data[:4] != HRRD_MAGIC:
+        return None                                  # absent / not ours / truncated header → nothing to carry
+    _, ver, step0, slots0 = HRRD_HEAD.unpack_from(data, 0)
+    if ver == HRRD_VER and (step0, slots0) == HRRD_RINGS[0]:
+        return None                                  # same layout (would've passed _hrrd_ok) → nothing to do
+    if not (0 < step0 <= 86400 and 0 < slots0 <= 100000):
+        return None                                  # implausible header → don't trust the body
+    pts = []
+    for i in range(slots0):                          # the file's own ring0 = its finest history
+        off = HRRD_HEAD.size + i * HRRD_SLOT.size
+        if off + HRRD_SLOT.size > len(data):
+            break
+        b, c, m, d, n, rx, tx = HRRD_SLOT.unpack_from(data, off)
+        if b:
+            pts.append((b * step0, c, m, d, rx, tx))
+    pts.sort()
+    return pts or None
+
+
 def hrrd_update(path, ts, cpu, mem, disk, rx=0, tx=0):
     ts = int(ts)
     with _hrrd_lock:
         if not _hrrd_ok(path):                    # (re)create: header + all rings zeroed (also upgrades older versions)
+            carry = _hrrd_salvage(path)           # migrate an older-format file's history instead of wiping it
             with contextlib.suppress(OSError):
+                if carry and os.path.exists(path):
+                    os.replace(path, path + ".bak")   # keep the pre-migration original recoverable
                 with open(path, "wb") as f:
                     f.write(HRRD_HEAD.pack(HRRD_MAGIC, HRRD_VER, HRRD_RINGS[0][0], HRRD_RINGS[0][1]))
                     f.write(b"\x00" * (HRRD_SLOT.size * HRRD_TOTAL))
+                if carry:
+                    with open(path, "r+b") as f:
+                        for (cts, ccpu, cmem, cdisk, crx, ctx) in carry:
+                            _hrrd_feed(f, cts, ccpu, cmem, cdisk, crx, ctx)
         with contextlib.suppress(OSError):
             with open(path, "r+b") as f:
-                step0, slots0 = HRRD_RINGS[0]
-                _hrrd_put_raw(f, _ring_base(0), slots0, _bucket_of(ts, step0), cpu, mem, disk, rx, tx)
-                for i in range(1, len(HRRD_RINGS)):          # 5min ← 15s, 30min ← 5min, 2h ← 30min
-                    _hrrd_consolidate(f, i, ts)
+                _hrrd_feed(f, ts, cpu, mem, disk, rx, tx)
 
 
 def hrrd_read(path, ring=0, want=HRRD_VIEW):
