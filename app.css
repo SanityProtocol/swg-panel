@@ -771,6 +771,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-ok{background:rgba(63,216,154,.16);color:var(--online);border-color:color-mix(in srgb,var(--online) 30%,transparent)}
 .tg-fwd{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 34%,transparent)}   /* traffic cascade: forwards out via another node — BRAND cyan */
 .tg-fwd svg{width:11px;height:11px}
+/* node-connection link health: a single glowing dot (green up / amber connecting / red down) */
+.lkdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown);--g:var(--unknown)}
+.lkdot.up{background:var(--online);--g:var(--online);animation:pulse 2.6s infinite}
+.lkdot.connecting{background:var(--partial);--g:var(--partial);animation:pulse 1.5s infinite}
+.lkdot.down{background:var(--dangling);--g:var(--dangling)}
+.lkdot.up,.lkdot.connecting,.lkdot.down{box-shadow:0 0 8px -1px var(--g)}
 .tg-warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 35%,transparent)}
 .tg-del{background:rgba(242,107,130,.16);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 35%,transparent)}   /* interface being deleted */
 .tg-off{background:rgba(98,116,139,.16);color:var(--unknown);border-color:color-mix(in srgb,var(--unknown) 30%,transparent)}   /* stopped / stale — a deliberate, non-error state */

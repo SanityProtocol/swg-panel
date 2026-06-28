@@ -1441,12 +1441,15 @@ function NodeDetail({ node: rawName }) {
         const m = meta[ifn];
         const peer = m.link_node;
         const col = Store.nodeColor(peer);
-        const up = m.handshake_age != null && m.handshake_age < 180;   // a recent handshake → link is live
-        const muted = nodeStale(name) || !up;
+        // link health → one glowing dot: green up (recent handshake) · amber connecting (never handshook)
+        // · red down (handshook then went stale, or the node itself is dark)
+        const lk = nodeStale(name) ? "down" : (m.handshake_age == null ? "connecting" : (m.handshake_age < 180 ? "up" : "down"));
+        const lkTitle = { up: "Link up", connecting: "Connecting…", down: "Link down" }[lk];
+        const muted = lk === "down";
         const carried = userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
           .map(k => meta[k].subnet).filter(Boolean);   // local user subnets forwarded out through THIS link
         return html`<div key=${ifn} class=${"ifcard tp clickable" + (muted ? " down" : "")} onClick=${() => openConnectionEdit(name, ifn)}>
-          <div class="ifcard-top"><span class="iftype turn" style=${"color:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}${up ? html`<span class="tg tg-ok"><${Ic} i="check"/>up</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${m.handshake_age == null ? "connecting" : "idle"}</span>`}</div>
+          <div class="ifcard-top"><span class="iftype turn" style=${"color:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}<span class=${"lkdot " + lk} title=${lkTitle}></span></div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${m.subnet || "—"}</span></div>
             ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r addr">${carried.join(", ")}</span></div>` : null}
@@ -1846,7 +1849,8 @@ function ConnectionEditSheet({ node, iface }) {
   useStore();
   const meta = Store.ifaceMeta(node, iface) || {};
   const peer = meta.link_node;
-  const up = meta.handshake_age != null && meta.handshake_age < 180;
+  const lk = nodeStale(node) ? "down" : (meta.handshake_age == null ? "connecting" : (meta.handshake_age < 180 ? "up" : "down"));
+  const lkLabel = { up: "up", connecting: "connecting…", down: "down" }[lk];
   const Row = (l, v) => html`<div class="row"><span class="k">${l}</span><span class="vv">${v}</span></div>`;
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
@@ -1857,7 +1861,7 @@ function ConnectionEditSheet({ node, iface }) {
       foot=${html`<button class="btn" onClick=${closeModal}>Close</button>`}>
     <div class="dmeta">
       ${Row("Peer node", html`<a href=${"#/node/" + encodeURIComponent(peer)} onClick=${closeModal}>${Store.nodeName(peer)}</a>`)}
-      ${Row("Status", up ? html`<span class="tg tg-ok"><${Ic} i="check"/>up</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${meta.handshake_age == null ? "connecting…" : "idle"}</span>`)}
+      ${Row("Status", html`<span style="display:inline-flex;align-items:center;gap:7px"><span class=${"lkdot " + lk}></span>${lkLabel}</span>`)}
       ${Row("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
       ${Row("Tunnel subnet", meta.subnet || "—")}
       ${Row("This end", meta.address || "—")}
