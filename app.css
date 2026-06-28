@@ -113,6 +113,9 @@ h1,h2,h3{font-family:var(--sans)}
 .nbadge::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--c);flex:none}
 a.nbadge:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c) 55%,transparent);background:color-mix(in srgb,var(--c) 16%,transparent);transform:translateY(-1px)}
 .nbadge.on{color:var(--ink);font-weight:600;border-color:color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 20%,transparent);cursor:default}
+.nbadge.off{opacity:.42;filter:grayscale(.8);border-color:var(--line);background:transparent;color:var(--faint)}   /* node not reporting → dimmed/greyed */
+.nbadge.off::before{background:var(--unknown)}                                                                    /* its colour dot goes grey too */
+a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var(--line);background:color-mix(in srgb,var(--unknown) 12%,transparent)}
 .lbl{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);font-weight:600}
 .card{background:linear-gradient(180deg,var(--raise),var(--surface));border:1px solid var(--line);border-radius:var(--r);padding:22px}
 .section-title{display:flex;align-items:center;gap:9px;margin:22px 2px 9px}
@@ -899,6 +902,7 @@ a.tg:hover{filter:brightness(1.25)}
 .tp-legend .sw{width:10px;height:3px;border-radius:2px;display:inline-block}
 .tp-legend .sw.rx{background:var(--tp-rx)} .tp-legend .sw.tx{background:var(--tp-tx)}
 .tp-legend .tp-peak{color:var(--faint)}
+.tp-legend .tp-scale{color:var(--faint);border:1px solid var(--line);border-radius:99px;padding:0 7px;font-size:9.5px;letter-spacing:.03em}   /* the fixed vertical-scale tier (100 Mbps / 500 Mbps / auto) */
 /* idle/empty throughput: a slim strip instead of a tall empty chart */
 .tp-idle{height:34px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10.5px;
   letter-spacing:.04em;color:var(--faint);border:1px dashed var(--line);border-radius:8px;background:rgba(255,255,255,.012)}

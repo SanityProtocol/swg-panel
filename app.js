@@ -1274,9 +1274,11 @@ function NodeBadges({ active }) {
   if (ns.length < 2) return null;
   return html`<div class="node-badges">${ns.map(n => {
     const col = n.color || Store.nodeColor(n.id);
+    const down = Store.recon.nodeStatus[n.id] !== "live";   // not reporting → dim it (greyed, desaturated)
+    const cls = "nbadge" + (down ? " off" : "");
     return n.id === active
-      ? html`<span class="nbadge on" style=${"--c:" + col} title=${n.name}>${n.name}</span>`
-      : html`<a class="nbadge" style=${"--c:" + col} href=${"#/node/" + encodeURIComponent(n.id)} title=${"Go to " + n.name}>${n.name}</a>`;
+      ? html`<span class=${cls + " on"} style=${"--c:" + col} title=${n.name + (down ? " · not reporting" : "")}>${n.name}</span>`
+      : html`<a class=${cls} style=${"--c:" + col} href=${"#/node/" + encodeURIComponent(n.id)} title=${(down ? "Down — " : "Go to ") + n.name}>${n.name}</a>`;
   })}</div>`;
 }
 function NodeDetail({ node: rawName }) {
@@ -3004,14 +3006,21 @@ function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
   const n = Math.max(R.length, T.length);
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   const hi = n ? Math.max(0, ...R, ...T) : 0;
-  const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="grow"></span>${head || null}</div>`;
+  // FIXED tiered y-scale so the curve reflects real magnitude instead of stretching to fill the height
+  // (a 39 B/s peak shouldn't look identical to a 39 Mbps one). Tiers by the view's peak:
+  //   ≤100 Mbps → 0–100 Mbps · ≤500 Mbps → 0–500 Mbps · above → dynamic (0–peak).
+  const MBIT = 125000;                                   // bytes/sec per megabit/sec
+  const T1 = 100 * MBIT, T2 = 500 * MBIT;
+  const scaleMax = hi <= T1 ? T1 : (hi <= T2 ? T2 : (hi || 1));
+  const scaleLabel = hi <= T1 ? "100 Mbps" : (hi <= T2 ? "500 Mbps" : "auto");
+  const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="tp-scale" title="Vertical scale (auto = scaled to the peak above 500 Mbps)">${scaleLabel}</span><span class="grow"></span>${head || null}</div>`;
   h = h || 60; const w = 100;
   // right-anchored to the ring's full capacity, like MiniArea — fills from the right as blocks arrive
   const C = Math.max(cap || n || 1, 2);
   const xAt = i => w - (n - 1 - i) * (w / (C - 1));
-  // autoscale to the combined min/max so the curve is spiky/expressive, not a flat baseline
-  const lo = n ? Math.min(...R, ...T) : 0, rng = (hi - lo) || 1, vpad = h * 0.12;
-  const Y = v => h - vpad - ((v - lo) / rng) * (h - 2 * vpad);
+  // baseline 0 at the bottom, scaleMax at the top (with a little headroom) — fixed, not min/max autoscale
+  const top = h * 0.10;
+  const Y = v => h - (Math.max(0, Math.min(v, scaleMax)) / scaleMax) * (h - top);
   const line = arr => arr.map((v, i) => xAt(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
   const rxLine = line(R), rxArea = n >= 2 ? (xAt(0).toFixed(1) + "," + h + " " + rxLine + " " + xAt(n - 1).toFixed(1) + "," + h) : "";
   const gid = "tp" + (ThroughputChart._n = (ThroughputChart._n || 0) + 1);
