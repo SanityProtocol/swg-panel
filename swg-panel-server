@@ -26,6 +26,7 @@ import hmac
 import ipaddress
 import json
 import os
+import random
 import shutil
 import signal
 import ssl
@@ -659,6 +660,7 @@ def node_remove(deps, nid):
     affected = {pid: p for pid, p in roster["peers"].items()
                 if any(t.get("node") == nid for t in p.get("targets", []))}
     _archive_node(deps, nid, nm, node_entry, affected, sf)   # back up BEFORE purging (moves stats/health out)
+    mesh_unlink_node(nodes, nid)                              # tear down this node's mesh links on every survivor
     del nodes[nid]
     nodes_save(deps["nodes_path"], nodes)
     changed = False
@@ -785,6 +787,9 @@ def node_describe(snapshot):
             "endpoint": meta.get("endpoint"), "address": meta.get("address"),
             "subnet": meta.get("subnet"), "awg_params": meta.get("awg_params", {}),
             "dns": meta.get("dns", []), "used_ips": used, "peer_count": len(peers),
+            "rx_speed": sum(p.get("rx_speed", 0) or 0 for p in peers),   # per-iface throughput (mesh link cards)
+            "tx_speed": sum(p.get("tx_speed", 0) or 0 for p in peers),
+            "handshake_age": min((p.get("handshake_age") for p in peers if p.get("handshake_age") is not None), default=None),
         }
     return {"ok": True, "op": "describe",
             "data": {"hostname": snapshot.get("hostname"), "interfaces": interfaces}}
@@ -820,6 +825,10 @@ def apply_iface_meta(node_cfg, interfaces):
         ifc["mtu"] = ov.get("mtu") or 1280
         ifc["egress_ip"] = ov.get("egress_ip") or ""   # per-interface source/egress IP (blank = auto/MASQUERADE)
         ifc["wan_iface"] = ov.get("wan_iface") or ""   # per-interface egress WAN NIC (blank = auto-detect)
+        ifc["egress_mode"] = ov.get("egress_mode") or "direct"   # "direct" = SNAT out a NIC | "forward" = cascade to egress_node (P2)
+        ifc["egress_node"] = ov.get("egress_node") or ""         # forward target node id
+        ifc["system"] = bool(ov.get("system"))         # panel-managed mesh link interface (a node↔node connection)
+        ifc["link_node"] = ov.get("link_node") or ""   # the peer node this link connects to (SPA resolves the name)
         ifc["drift"] = dict(ov.get("_drift") or {})    # settings edited directly on the server (key → the node's value)
         # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
         # the node converges its interface to it. awg_pending flags desired != reported in the UI.
@@ -864,6 +873,154 @@ def panel_next_ip(snaps, roster, nodes, iface):
             return {"ok": True, "op": "next-ip",
                     "data": {"iface": iface, "next_ip": str(host) + "/32", "subnet": subnet}}
     return err("next-ip", "no free addresses across selected nodes", "subnet_full")
+
+
+# ───────────────────────── fleet mesh (node↔node tunnels) ─────────────────────────
+# Every node pair gets a point-to-point AmneziaWG link interface (one per link, NOT one shared mesh
+# iface) — because WireGuard can route 0.0.0.0/0 to only one peer per interface, so flexible per-user-
+# interface exit (Phase 2 cascade) needs a dedicated tunnel per node-to-node link. Phase 1 just brings
+# the tunnels up (handshake + keepalive); the cascade routing is Phase 2.
+
+def mesh_cfg(deps):
+    f = deps.get("fleet") or {}
+    return {"subnet": f.get("mesh_subnet", "10.99.0.0/16"), "mtu": int(f.get("mesh_mtu", 1320)),
+            "keepalive": int(f.get("mesh_keepalive", 25)), "port_base": int(f.get("mesh_port_base", 52000))}
+
+
+def gen_awg_params():
+    """Panel-generated AmneziaWG obfuscation params (dict form). The panel owns each LINK's params and
+    pushes the SAME dict to both ends, because AmneziaWG only handshakes when both peers share identical
+    obfuscation — the node's own random per-iface params (swg-agent _awg_obfuscation) would differ."""
+    s1 = 15 + random.randint(0, 135); s2 = 15 + random.randint(0, 135)
+    while s2 == s1 or s2 == s1 + 56:
+        s2 = 15 + random.randint(0, 135)
+    s3 = 15 + random.randint(0, 85); s4 = 15 + random.randint(0, 85)
+    b = [base + random.randint(0, 899999999) for base in (5, 1000000000, 2000000000, 3000000000)]
+    w = 15
+    return {"Jc": 4, "Jmin": 40, "Jmax": 70, "S1": s1, "S2": s2, "S3": s3, "S4": s4,
+            "H1": f"{b[0]}-{b[0]+w}", "H2": f"{b[1]}-{b[1]+w}", "H3": f"{b[2]}-{b[2]+w}", "H4": f"{b[3]}-{b[3]+w}",
+            "I1": "<b 0xc300000001><r 1200>"}
+
+
+def _link_iface_name(node, link_id):
+    """`swg_<8hex>` (12 chars ≤ IFNAMSIZ 15), same on both ends of a link. On the rare 8-hex collision
+    within one node, slide along the hash until a free window is found."""
+    existing = {lr.get("iface") for lr in (node.get("links") or {}).values()}
+    for i in range(0, len(link_id) - 8 + 1):
+        nm = "swg_" + link_id[i:i + 8]
+        if nm not in existing:
+            return nm
+    return "swg_" + link_id[:8]
+
+
+def _used_ports(nodes, snaps, nid):
+    used = set()
+    snap = (snaps or {}).get(nid) or {}
+    for blk in (snap.get("interfaces") or {}).values():
+        p = ((blk.get("meta") or {}).get("listen_port"))
+        if str(p).isdigit():
+            used.add(int(p))
+    for tp in (snap.get("turn_proxies") or []):
+        m = re.search(r":(\d+)$", str(tp.get("listen") or ""))
+        if m:
+            used.add(int(m.group(1)))
+    for lr in (nodes.get(nid, {}).get("links") or {}).values():
+        if str(lr.get("listen_port")).isdigit():
+            used.add(int(lr["listen_port"]))
+    return used
+
+
+def _alloc_port(used, base):
+    p = base
+    while p in used:
+        p += 1
+    return p
+
+
+def _alloc_link_subnet(nodes, mesh_subnet):
+    taken = {lr.get("subnet") for n in nodes.values() for lr in (n.get("links") or {}).values()}
+    net = ipaddress.ip_network(mesh_subnet, strict=False)
+    for sub in net.subnets(new_prefix=31):
+        if str(sub) not in taken:
+            return sub
+    return None
+
+
+def mesh_link_new_node(nodes, snaps, deps, new_nid):
+    """Stage a full-mesh link between `new_nid` and every existing node: for each pair create a link
+    interface on BOTH ends (create requests + matching awg_params/psk overrides + link records)."""
+    mc = mesh_cfg(deps)
+    me = nodes.get(new_nid)
+    if not me:
+        return
+    for oid, other in list(nodes.items()):
+        if oid == new_nid:
+            continue
+        link_id = hashlib.sha256(("|".join(sorted((new_nid, oid)))).encode()).hexdigest()
+        sub = _alloc_link_subnet(nodes, mc["subnet"])
+        if sub is None:
+            break
+        hosts = list(sub.network_address.__class__(int(sub.network_address) + i) for i in (0, 1))
+        psk = gen_psk(); awg = gen_awg_params()
+        # X = the lexicographically-smaller node id (deterministic, so both ends agree on who is .0)
+        x_nid = min(new_nid, oid)
+        for nid, peer in ((new_nid, oid), (oid, new_nid)):
+            n = nodes[nid]
+            iface = _link_iface_name(n, link_id)
+            mine, theirs = (hosts[0], hosts[1]) if nid == x_nid else (hosts[1], hosts[0])
+            port = _alloc_port(_used_ports(nodes, snaps, nid), mc["port_base"])
+            n.setdefault("links", {})[peer] = {
+                "iface": iface, "link_id": link_id, "subnet": str(sub),
+                "address": str(mine), "peer_address": str(theirs),
+                "listen_port": port, "psk": psk, "role": "x" if nid == x_nid else "y"}
+            n.setdefault("create", {})[iface] = {
+                "cmd": ["awg"], "subnet": str(sub), "address": f"{mine}/31",
+                "listen_port": port, "mtu": mc["mtu"]}
+            n.setdefault("ifaces", {})[iface] = {
+                "awg_params": dict(awg), "system": True, "link_node": peer}
+        ev_append(deps["roster_path"], "node", new_nid, "Linked node",
+                  nodes[oid].get("name", oid))
+
+
+def desired_mesh_for_node(nodes, nid, keepalive):
+    """The mesh peer set for `nid`, grouped by link iface — one remote peer per link, emitted only once
+    the REMOTE end is ready (its pubkey blessed, its listen_port known, its endpoint_host set)."""
+    out = {}
+    me = nodes.get(nid) or {}
+    for peer_nid, lr in (me.get("links") or {}).items():
+        peer = nodes.get(peer_nid)
+        if not peer:
+            continue
+        iface = lr.get("iface")
+        rov = (peer.get("ifaces") or {}).get((peer.get("links") or {}).get(nid, {}).get("iface")) or {}
+        rlr = (peer.get("links") or {}).get(nid) or {}
+        pub = rov.get("public_key"); rport = rlr.get("listen_port"); rhost = peer.get("endpoint_host")
+        if not (pub and rport and rhost and iface):
+            continue                                   # remote not ready → no peer yet (the iface still exists)
+        out.setdefault(iface, []).append({
+            "public_key": pub,
+            "allowed_ips": (lr.get("peer_address") or "") + "/32",   # Phase 1: link /32 only (0.0.0.0/0 is Phase 2)
+            "preshared_key": lr.get("psk") or "none",
+            "endpoint": f"{rhost}:{rport}",
+            "persistent_keepalive": keepalive,
+            "name": "mesh:" + (peer.get("name") or peer_nid)})
+    return out
+
+
+def mesh_unlink_node(nodes, nid):
+    """Tear down every link to `nid` across the fleet: stage a delete of the link iface on each survivor
+    and drop the link records. The removed node's own entry is discarded by the caller."""
+    for oid, other in nodes.items():
+        if oid == nid:
+            continue
+        lr = (other.get("links") or {}).get(nid)
+        if not lr:
+            continue
+        iface = lr.get("iface")
+        if iface:
+            other.setdefault("delete", {})[iface] = {"at": int(time.time())}
+            (other.get("ifaces") or {}).pop(iface, None)
+        other["links"].pop(nid, None)
 
 
 # ───────────────── node health history (RRD-style binary ring) ─────────────────
@@ -1650,6 +1807,8 @@ def api(method, path, qs, body, deps):
                       "token_hash": make_token_hash(token), "created": now()}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Enrolled node", name)
+        mesh_link_new_node(nodes, deps.get("node_snaps") or {}, deps, nid)   # full-mesh link to every existing node
+        nodes_save(deps["nodes_path"], nodes)
         return 200, {"ok": True, "data": {"id": nid, "name": name, "token": token}}
 
     if method == "POST" and path == "/api/nodes/update":
@@ -1771,6 +1930,17 @@ def api(method, path, qs, body, deps):
                 ov["wan_iface"] = w
             else:
                 ov.pop("wan_iface", None)
+        if "egress_mode" in body:                        # "direct" = SNAT out a NIC | "forward" = cascade to egress_node (routing is Phase 2)
+            mode = (body.get("egress_mode") or "direct").strip()
+            if mode not in ("direct", "forward"):
+                return 400, {"ok": False, "error": "egress_mode must be direct|forward", "code": "bad_request"}
+            if mode == "forward":
+                en = (body.get("egress_node") or "").strip()
+                if en not in nodes or en == nid:
+                    return 400, {"ok": False, "error": "egress_node must be another known node", "code": "bad_request"}
+                ov["egress_mode"] = "forward"; ov["egress_node"] = en
+            else:
+                ov["egress_mode"] = "direct"; ov.pop("egress_node", None)
         for k in ("listen_port", "awg_params"):     # a user-set value re-asserts: drop its drift + synced so it re-pushes
             if k in body:
                 (ov.get("_synced") or {}).pop(k, None); (ov.get("_drift") or {}).pop(k, None)
@@ -1846,6 +2016,10 @@ def api(method, path, qs, body, deps):
             w = body["wan_iface"].strip()
             if " " not in w and "/" not in w:
                 ov["wan_iface"] = w
+        if (body.get("egress_mode") or "direct").strip() == "forward":   # cascade exit to another node (routing is Phase 2)
+            en = (body.get("egress_node") or "").strip()
+            if en in nodes and en != nid:
+                ov["egress_mode"] = "forward"; ov["egress_node"] = en
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Creating interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
@@ -2418,6 +2592,8 @@ class Handler(BaseHTTPRequestHandler):
                 del buf[:len(buf) - LIVE_MAX]
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
+        for _ifn, _ps in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"]).items():
+            desired.setdefault(_ifn, []).extend(_ps)   # node↔node mesh peers (endpoint + keepalive)
         # panel-managed interface config the node converges to — drift-aware: push an override until the
         # node confirms it (_synced); once confirmed, if the node diverges (a direct edit on the server)
         # PAUSE pushing + record the node's value in _drift so the panel can flag it (Adopt / Restore).
@@ -2477,11 +2653,14 @@ class Handler(BaseHTTPRequestHandler):
                     ifaces_dirty = _clear_drift("public_key") or ifaces_dirty
                 elif drift.get("public_key") != rep_pub:
                     drift["public_key"] = rep_pub; ifaces_dirty = True
-            # egress IP + WAN NIC: the node doesn't report them back, so always push (no drift tracking)
-            if "egress_ip" in ov:
-                d["egress_ip"] = ov.get("egress_ip") or ""
-            if "wan_iface" in ov:
-                d["wan_iface"] = ov.get("wan_iface") or ""
+            # egress IP + WAN NIC: the node doesn't report them back, so always push (no drift tracking).
+            # FORWARD mode (cascade to another node) must NOT push a non-local egress_ip — that SNAT lands
+            # on the wrong box. Phase 1 stores the forward config but the routing is Phase 2, so skip the push.
+            if ov.get("egress_mode") != "forward":
+                if "egress_ip" in ov:
+                    d["egress_ip"] = ov.get("egress_ip") or ""
+                if "wan_iface" in ov:
+                    d["wan_iface"] = ov.get("wan_iface") or ""
             if not synced:
                 ov.pop("_synced", None)
             if not drift:

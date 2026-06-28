@@ -1292,8 +1292,11 @@ function NodeDetail({ node: rawName }) {
   const seenRef = useRef(false);
   useEffect(() => { if (node) seenRef.current = true; else if (seenRef.current) go("#/nodes"); }, [node]);
 
-  // drag-to-reorder the interface cards (saved order overlays the node's reported set)
-  const ifaceIds = orderById(meta ? Object.keys(meta) : [], nrec.iface_order, x => x);
+  // split the node's interfaces: USER interfaces (operator-created) vs SYSTEM mesh links (node↔node connections)
+  const userKeys = meta ? Object.keys(meta).filter(k => !meta[k].system) : [];
+  const sysKeys = meta ? Object.keys(meta).filter(k => meta[k].system) : [];
+  // drag-to-reorder the (user) interface cards (saved order overlays the node's reported set)
+  const ifaceIds = orderById(userKeys, nrec.iface_order, x => x);
   const ifReorder = useReorder(ifaceIds, ids => mutate({
     patch: s => { const nn = (s.nodes || []).find(x => x.id === name); if (nn) nn.iface_order = ids; },
     call: () => api.saveOrder({ kind: "iface", node: name, order: ids }),
@@ -1341,7 +1344,7 @@ function NodeDetail({ node: rawName }) {
 
     ${!snap ? html`<div class="node-nodata"><${Ic} i="activity"/><p>This node isn't sending any data right now</p></div>` : html`<div class="noderibbon">
       <div class="nr-tags">
-        ${orderById(meta ? Object.keys(meta) : [], nrec.iface_order, x => x).map(ifn => {
+        ${orderById(userKeys, nrec.iface_order, x => x).map(ifn => {
           const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
           return html`<a class=${"tg tg-" + type + ((nodeStale(name) || ifaceNotUp(name, ifn)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
         })}
@@ -1363,7 +1366,7 @@ function NodeDetail({ node: rawName }) {
       <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
     <//>` : null}
 
-    <${Panel} icon="network" title="Interfaces" count=${meta ? Object.keys(meta).length : 0}
+    <${Panel} icon="network" title="User interfaces" count=${userKeys.length}
         actions=${html`<${Fragment}>${nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
@@ -1400,8 +1403,8 @@ function NodeDetail({ node: rawName }) {
           .concat(optCards);
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
-          : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
-          : html`<div class="ifgrid" ...${ifReorder.container()}>${orderById(Object.keys(meta), nrec.iface_order, x => x).map(ifn => {
+          : (!userKeys.length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
+          : html`<div class="ifgrid" ...${ifReorder.container()}>${orderById(userKeys, nrec.iface_order, x => x).map(ifn => {
               const m = meta[ifn];
               const it = ifReorder.item(ifn);
               if (ifaceWasBusy[name + "|" + ifn]) { ifaceReady[name + "|" + ifn] = Date.now() + 5000; ifaceWasBusy[name + "|" + ifn] = false; }   // just came up after being pending/creating → "ready" 5s
@@ -1432,6 +1435,22 @@ function NodeDetail({ node: rawName }) {
                 </div></a>`;
             })}${pcards}</div>`; })()}
     <//>
+
+    ${sysKeys.length ? html`<${Panel} icon="network" title="Node connections" tone="online" count=${sysKeys.length}>
+      <div class="ifgrid">${sysKeys.sort((a, b) => Store.nodeName(meta[a].link_node).localeCompare(Store.nodeName(meta[b].link_node))).map(ifn => {
+        const m = meta[ifn];
+        const peer = m.link_node;
+        const col = Store.nodeColor(peer);
+        const up = m.handshake_age != null && m.handshake_age < 180;   // a recent handshake → link is live
+        const muted = nodeStale(name) || !up;
+        return html`<div key=${ifn} class=${"ifcard tp clickable" + (muted ? " down" : "")} onClick=${() => openConnectionEdit(name, ifn)}>
+          <div class="ifcard-top"><span class="iftype turn" style=${"color:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${up ? html`<span class="tg tg-ok"><${Ic} i="check"/>up</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${m.handshake_age == null ? "connecting" : "idle"}</span>`}</div>
+          <div class="ifcard-rows">
+            <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${m.subnet || "—"}</span></div>
+            <div class="ifrow"><span class="l">Throughput</span><span class="r">↓ ${rate(m.rx_speed || 0)} · ↑ ${rate(m.tx_speed || 0)}</span></div>
+          </div></div>`;
+      })}</div>
+    <//>` : null}
 
     ${hasTurns ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title="Turn proxies"/>` : null}
     `}
@@ -1601,6 +1620,43 @@ function suggestSubnet(node) {
   for (const p of pendingIf(node)) { const m = /^10\.(\d{1,3})\./.exec(p.subnet || ""); if (m) hi = Math.max(hi, Number(m[1])); }   // include the ones being created
   return "10." + (hi + 1) + ".0.0/24";
 }
+// Two-dropdown egress: where an interface's traffic exits — Auto, Direct out a NIC, or Forward (cascade)
+// to another node — plus the source IP (this node's, or the TARGET node's for forward). value =
+// {mode:"auto"|"direct"|"forward", nic, node, ip}; the routing for "forward" is wired in Phase 2.
+function EgressPicker({ node, value, onChange }) {
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const ipIfaces = nrec.ip_ifaces || [];
+  const nics = [...new Set(ipIfaces.map(p => p.iface))];
+  const others = (Store.nodes || []).filter(n => n.id !== node);
+  const ifSel = value.mode === "forward" ? "forward|" + (value.node || "") : value.mode === "direct" ? "direct|" + (value.nic || "") : "auto";
+  let ipOpts = [];
+  if (value.mode === "direct") ipOpts = ipIfaces.filter(p => !value.nic || p.iface === value.nic).map(p => p.ip);
+  else if (value.mode === "forward") { const tn = others.find(n => n.id === value.node); ipOpts = (tn && tn.ips) || []; }
+  const onIf = e => {
+    const v = e.target.value;
+    if (v === "auto") return onChange({ mode: "auto", nic: "", node: "", ip: "" });
+    const [mode, x] = v.split("|");
+    onChange(mode === "forward" ? { mode, node: x, nic: "", ip: "" } : { mode, nic: x, node: "", ip: "" });
+  };
+  return html`<${Fragment}>
+    <div class="field"><label>Outbound (egress) interface</label>
+      <select class="selwrap" value=${ifSel} onChange=${onIf}>
+        <option value="auto">Auto (MASQUERADE)</option>
+        ${nics.map(n => html`<option value=${"direct|" + n}>Direct — ${n}</option>`)}
+        ${others.length ? html`<optgroup label="Forward to node (cascade)">${others.map(n => html`<option value=${"forward|" + n.id}>Forward to ${n.name}</option>`)}</optgroup>` : null}
+      </select>
+      <div class="hint">Exit directly out a NIC, or channel this interface's traffic through another node.</div></div>
+    ${value.mode !== "auto" ? html`<div class="field"><label>Outbound (egress) IP</label>
+      <select class="selwrap" value=${value.ip || ""} onChange=${e => onChange({ ...value, ip: e.target.value })}>
+        <option value="">${value.mode === "forward" ? "Auto (target node default)" : "Auto"}</option>
+        ${ipOpts.map(ip => html`<option value=${ip}>${ip}</option>`)}
+      </select>
+      <div class="hint">${value.mode === "forward" ? "Source IP on the target node that clients egress from." : "Source IP clients egress from."}</div></div>` : null}
+  <//>`;
+}
+const egressInit = m => ({ mode: m.egress_mode === "forward" ? "forward" : (m.egress_ip || m.wan_iface) ? "direct" : "auto",
+  nic: m.wan_iface || "", node: m.egress_node || "", ip: m.egress_ip || "" });
+const egressBody = eg => ({ egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" });
 function LoadIfaceSheet({ node }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
@@ -1610,15 +1666,13 @@ function LoadIfaceSheet({ node }) {
   const [host, setHost] = useState(""); const [port, setPort] = useState(String(suggestPort(node, "iface")));
   const [dns, setDns] = useState("1.1.1.1"); const [mtu, setMtu] = useState("1280"); const [ka, setKa] = useState("25");
   const [conf, setConf] = useState("");
-  const ips = nrec.ips || []; const [egress, setEgress] = useState("");
+  const ips = nrec.ips || []; const [eg, setEg] = useState(() => egressInit({}));
   // endpoint host: dropdown of the node's known IPs (default the first), last entry = a free-text "Custom IP / Host…"
   const [hostSel, setHostSel] = useState(ips[0] || "__custom__"); const [hostCustom, setHostCustom] = useState("");
   const pickProto = p => {   // switching base re-suggests the name only if the field is still an untouched suggestion
     if (p !== "existing" && (iface === sugAwg || iface === sugWg || !iface.trim())) setIface(p === "wg" ? sugWg : sugAwg);
     setProto(p);
   };
-  const wanifs = nrec.wan_ifaces || []; const [wan, setWan] = useState("");
-  const ipIfaces = nrec.ip_ifaces || [];   // [{ip, iface}] for the merged egress picker
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const existing = proto === "existing";
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
@@ -1637,7 +1691,7 @@ function LoadIfaceSheet({ node }) {
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
       const hostVal = ipPickerVal(hostSel, hostCustom);
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
-        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan });
+        listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) });
     }
     if (!r.ok) return fail(r.error || "Request failed.");
     // optimistic: show the card — WITH the details just entered — the instant Create is clicked (use the
@@ -1682,15 +1736,8 @@ function LoadIfaceSheet({ node }) {
         <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Blank = 1280</div></div>
         <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
       </div>
-      <div class="row2">
-        <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">Comma-separated</div></div>
-        <div class="field"><label>Outbound (egress) IP / interface</label>
-          <select class="selwrap" value=${egress ? egress + "|" + wan : ""} onChange=${e => { const [eip, eifc] = e.target.value.split("|"); setEgress(eip || ""); setWan(eifc || ""); }}>
-            <option value="">Auto (MASQUERADE)</option>
-            ${ipIfaces.map(p => html`<option value=${p.ip + "|" + p.iface}>${p.ip} — ${p.iface}</option>`)}
-          </select>
-          <div class="hint">Source IP + NIC clients egress from</div></div>
-      </div>
+      <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1"/><div class="hint">Comma-separated</div></div>
+      <${EgressPicker} node=${node} value=${eg} onChange=${setEg}/>
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -1789,6 +1836,29 @@ function trackIfaceOps() {
   }
 }
 function openEditIface(node, iface) { openModal(html`<${EditIfaceSheet} node=${node} iface=${iface}/>`); }
+function openConnectionEdit(node, iface) { openModal(html`<${ConnectionEditSheet} node=${node} iface=${iface}/>`); }
+// A node↔node mesh link (system interface). Mesh-managed (no create/delete/egress here) — mostly status;
+// the only operator knob is whether this link can carry forwarded user traffic (reserved for Phase 2).
+function ConnectionEditSheet({ node, iface }) {
+  useStore();
+  const meta = Store.ifaceMeta(node, iface) || {};
+  const peer = meta.link_node;
+  const up = meta.handshake_age != null && meta.handshake_age < 180;
+  const Row = (l, v) => html`<div class="row"><span class="k">${l}</span><span class="vv">${v}</span></div>`;
+  return html`<${Sheet} title=${"Connection to " + Store.nodeName(peer)} onClose=${closeModal}
+      foot=${html`<button class="btn" onClick=${closeModal}>Close</button>`}>
+    <div class="dmeta">
+      ${Row("Peer node", html`<a href=${"#/node/" + encodeURIComponent(peer)} onClick=${closeModal}>${Store.nodeName(peer)}</a>`)}
+      ${Row("Status", up ? html`<span class="tg tg-ok"><${Ic} i="check"/>up</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>${meta.handshake_age == null ? "connecting…" : "idle"}</span>`)}
+      ${Row("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
+      ${Row("Tunnel subnet", meta.subnet || "—")}
+      ${Row("This end", meta.address || "—")}
+      ${Row("Listen", meta.endpoint || "—")}
+      ${Row("Throughput", html`↓ ${rate(meta.rx_speed || 0)} · ↑ ${rate(meta.tx_speed || 0)}`)}
+    </div>
+    <div class="hint" style="margin-top:14px">This is a panel-managed mesh link to <b>${Store.nodeName(peer)}</b>. It's created and torn down automatically as nodes are added or removed. To route a user interface's traffic out through this node, set that interface's egress to <b>Forward to ${Store.nodeName(peer)}</b>.</div>
+  <//>`;
+}
 function EditIfaceSheet({ node, iface }) {
   const meta = Store.ifaceMeta(node, iface) || {};
   const ep = meta.endpoint || "";
@@ -1799,12 +1869,7 @@ function EditIfaceSheet({ node, iface }) {
   const [mtu, setMtu] = useState(String(meta.mtu || 1280));
   const [ka, setKa] = useState(String(meta.keepalive || 25));
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-  const ips = nrec.ips || [];
-  const [egress, setEgress] = useState(meta.egress_ip || "");
-  const wanifs = nrec.wan_ifaces || [];
-  const [wan, setWan] = useState(meta.wan_iface || "");
-  const ipIfaces = nrec.ip_ifaces || [];   // [{ip, iface}] — merged egress picker
-  const egPairs = (egress && !ipIfaces.some(p => p.ip === egress)) ? [{ ip: egress, iface: wan || "?" }, ...ipIfaces] : ipIfaces;
+  const [eg, setEg] = useState(() => egressInit(meta));
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
   const [awg, setAwg] = useState(() => Object.assign({}, meta.awg_params || {}));
   const setAwgK = (k, v) => setAwg(a => ({ ...a, [k]: v }));
@@ -1814,7 +1879,7 @@ function EditIfaceSheet({ node, iface }) {
   const notup = !!idown || istopped;         // either way: Save brings it up; footer offers Start
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const doSave = async () => {
-    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), egress_ip: egress, wan_iface: wan };
+    const body = { node, iface, endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) };
     if (isAwg) body.awg_params = AWG_ORDER.reduce((o, k) => { const v = String(awg[k] == null ? "" : awg[k]).trim(); if (v) o[k] = v; return o; }, {});
     // down → "start" (real bring-up); up → "apply" live (no restart). Optimistic: flip the lifecycle +
     // close the modal(s) NOW so the detail page shows starting/applying the instant Save is pressed.
@@ -1870,15 +1935,8 @@ function EditIfaceSheet({ node, iface }) {
       <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers</div></div>
       <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
     </div>
-    <div class="row2">
-      <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated</div></div>
-      <div class="field"><label>Outbound (egress) IP / interface</label>
-        <select class="selwrap" value=${egress ? egress + "|" + wan : ""} onChange=${e => { const [eip, eifc] = e.target.value.split("|"); setEgress(eip || ""); setWan(eifc || ""); }}>
-          <option value="">Auto (MASQUERADE)</option>
-          ${egPairs.map(p => html`<option value=${p.ip + "|" + p.iface}>${p.ip} — ${p.iface}${!ipIfaces.some(x => x.ip === p.ip) ? " (not on node now)" : ""}</option>`)}
-        </select>
-        <div class="hint">Source IP + NIC clients egress from</div></div>
-    </div>
+    <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated</div></div>
+    <${EgressPicker} node=${node} value=${eg} onChange=${setEg}/>
     ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
       <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
       <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div></div>` : null}

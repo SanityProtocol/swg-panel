@@ -4,5 +4,10 @@
   "stats_dir":     "/var/www/wgstats",
   "store_configs": false,
   "config_dir":    "/var/lib/swg-panel/configs",
-  "node_interval": 5
+  "node_interval": 5,
+
+  "mesh_subnet":   "10.99.0.0/16",
+  "mesh_mtu":      1320,
+  "mesh_keepalive": 25,
+  "mesh_port_base": 52000
 }

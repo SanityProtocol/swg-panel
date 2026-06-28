@@ -783,6 +783,8 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                 "op": "add-peer", "iface": iface, "public_key": pk,
                 "allowed_ips": p.get("allowed_ips", ""),
                 "preshared_key": p.get("preshared_key", "none"),
+                "endpoint": p.get("endpoint"),                       # mesh peers dial out (user peers: None)
+                "persistent_keepalive": p.get("persistent_keepalive"),
                 "name": p.get("name", "")})
             if r.get("ok"):
                 res["added"] += 1
@@ -967,6 +969,7 @@ def create_ifaces(node_cfg, create, agent, sudo):
         cmd = want.get("cmd") or ["awg"]
         r = run_agent(agent, sudo, {"op": "create-iface", "iface": iface, "cmd": cmd,
                                     "subnet": want.get("subnet"), "listen_port": want.get("listen_port"),
+                                    "address": want.get("address"),   # explicit addr (mesh /31 ends)
                                     "mtu": want.get("mtu")})
         if not r.get("ok"):
             res["errors"].append(f"{iface}: {r.get('error')}"); continue

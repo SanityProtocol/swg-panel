@@ -167,7 +167,7 @@ def gen_psk(ic):
     return run(ic["cmd"] + ["genpsk"]).strip()
 
 
-def append_peer_to_conf(path, pub, psk, allowed, name):
+def append_peer_to_conf(path, pub, psk, allowed, name, endpoint=None, keepalive=None):
     block = "\n"
     if name:
         block += f"# name: {name}\n"
@@ -176,6 +176,10 @@ def append_peer_to_conf(path, pub, psk, allowed, name):
     if psk:
         block += f"PresharedKey = {psk}\n"
     block += f"AllowedIPs = {allowed}\n"
+    if endpoint:                       # node-to-node mesh peers dial out (user peers omit both)
+        block += f"Endpoint = {endpoint}\n"
+    if keepalive:
+        block += f"PersistentKeepalive = {keepalive}\n"
     with open(path, "a") as f:
         f.write(block)
 
@@ -359,14 +363,26 @@ def op_add_peer(cfg, req):
     else:
         psk = psk_req
 
+    # mesh/node-to-node peers also dial out: an Endpoint + keepalive (user peers send neither)
+    endpoint = (req.get("endpoint") or "").strip() or None
+    ka = req.get("persistent_keepalive")
+    try:
+        ka = int(ka) if ka else None
+    except (TypeError, ValueError):
+        ka = None
+
     # 1) apply to the running interface (surgical — never touches other peers)
     args = ic["cmd"] + ["set", iface, "peer", pub, "allowed-ips", allowed]
+    if endpoint:
+        args += ["endpoint", endpoint]
+    if ka:
+        args += ["persistent-keepalive", str(ka)]
     if psk:
         args += ["preshared-key", "/dev/stdin"]
     run(args, input_text=(psk + "\n") if psk else None)
 
     # 2) persist to the conf
-    append_peer_to_conf(ic["conf"], pub, psk, allowed, name)
+    append_peer_to_conf(ic["conf"], pub, psk, allowed, name, endpoint=endpoint, keepalive=ka)
 
     port = int(iface_line[2]) if len(iface_line) > 2 and iface_line[2].isdigit() else None
     return {
@@ -519,7 +535,14 @@ def op_create_iface(cfg, req):
     if not priv:
         raise AgentError("internal", f"{tool} genkey produced no key")
     pub = run(cmd + ["pubkey"], input_text=priv + "\n").strip()
-    addr = f"{net.network_address + 1}/{net.prefixlen}"
+    ov_addr = (req.get("address") or "").strip()   # explicit iface address (mesh /31 ends differ per side)
+    if ov_addr:
+        try:
+            addr = str(ipaddress.ip_interface(ov_addr))
+        except Exception:
+            raise AgentError("bad_request", "address must be CIDR like 10.99.0.0/31")
+    else:
+        addr = f"{net.network_address + 1}/{net.prefixlen}"
     wan = _wan_iface()
     # NAT is BEST-EFFORT (each step `|| true`) so the interface still comes up where iptables/nat
     # isn't available (e.g. some containers) — matching node-entrypoint.sh's non-fatal NAT. A failed
