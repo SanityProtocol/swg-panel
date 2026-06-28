@@ -101,10 +101,18 @@ h1,h2,h3{font-family:var(--sans)}
 .view{max-width:1260px;margin:0 auto;padding:18px 22px 64px}
 .screen{animation:rise .32s var(--ease)}
 @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.crumb{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);margin-bottom:16px}
+.crumb{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);margin-bottom:16px;flex-wrap:wrap}
 .crumb a{color:var(--dim)} .crumb a:hover{color:var(--ink)}
 .crumb .sep{color:var(--faint)}
 .crumb b{color:var(--ink);font-weight:600}
+/* quick node→node jump chips, pushed to the right of the breadcrumb line */
+.node-badges{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.nbadge{--c:var(--brand);display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;line-height:1;
+  padding:5px 9px;border-radius:7px;border:1px solid color-mix(in srgb,var(--c) 30%,transparent);
+  background:color-mix(in srgb,var(--c) 9%,transparent);color:var(--ink-2);white-space:nowrap;transition:all .14s}
+.nbadge::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--c);flex:none}
+a.nbadge:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c) 55%,transparent);background:color-mix(in srgb,var(--c) 16%,transparent);transform:translateY(-1px)}
+.nbadge.on{color:var(--ink);font-weight:600;border-color:color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 20%,transparent);cursor:default}
 .lbl{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);font-weight:600}
 .card{background:linear-gradient(180deg,var(--raise),var(--surface));border:1px solid var(--line);border-radius:var(--r);padding:22px}
 .section-title{display:flex;align-items:center;gap:9px;margin:22px 2px 9px}
@@ -285,6 +293,19 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .ifcard-top .rowarrow{color:var(--faint)}
 .ifcard-top .grow{flex:1 1 0;min-width:0}
 .ifcard-rows{display:flex;flex-direction:column;gap:6px}
+/* drag-to-reorder: grip handle + drag/drop affordances (cards, turn cards, node cards) */
+.drag-grip{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;height:18px;margin:-2px 2px -2px -3px;
+  color:var(--faint);cursor:grab;opacity:.32;border-radius:5px;transition:opacity .12s,color .12s,background .12s}
+.drag-grip:hover{opacity:1;color:var(--ink-2);background:var(--surface-2)}
+.drag-grip:active{cursor:grabbing}
+.ifcard:hover .drag-grip,.ncard:hover .drag-grip,.ifcard.tp:hover .drag-grip{opacity:.6}
+.dragging{opacity:.4}
+.drop-before{box-shadow:inset 3px 0 0 var(--brand)}
+.drop-after{box-shadow:inset -3px 0 0 var(--brand)}
+/* the whole-card "ghost" that follows the cursor while dragging (off-screen clone used as the drag image) */
+.drag-ghost{opacity:.72;background:var(--raise);border:1px solid var(--brand);border-radius:var(--r);
+  box-shadow:0 20px 46px -10px rgba(0,0,0,.6);overflow:hidden}
+.drag-ghost .drag-grip{opacity:1;color:var(--brand)}
 .ifrow{display:flex;justify-content:space-between;gap:10px;font-size:12px}
 .ifrow .l{color:var(--dim)} .ifrow .r{font-family:var(--mono);color:var(--ink-2)}
 .ifrow .r.addr{font-size:11px}

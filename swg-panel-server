@@ -584,6 +584,35 @@ def migrate_node_ids(nodes_path, roster_path, store_configs, config_dir):
     print(f"migrated {len(new_nodes)} node(s) to stable ids", flush=True)
 
 
+def normalize_stats_files(nodes_path, stats_dir):
+    """Make every node's snapshot mirror id-keyed: `stats_file` -> `stats-<id>.json`, renaming the file
+    on disk if it's still under a legacy name (auto-enrolled nodes were written `stats-<hostname>.json`).
+    The health RRD is already `health-<id>.rrd`, so after this BOTH health files share the stable id —
+    they always travel together (e.g. through a convert) and the warm-start can't be orphaned by a
+    hostname change. Idempotent."""
+    nodes = load_json(nodes_path, {})
+    if not isinstance(nodes, dict) or not nodes:
+        return
+    changed = False
+    for nid, c in nodes.items():
+        if not isinstance(c, dict):
+            continue
+        canon = f"stats-{nid}.json"
+        old = c.get("stats_file")
+        if old == canon:
+            continue
+        if old and stats_dir:                       # carry the existing mirror over to the canonical name
+            with contextlib.suppress(OSError):
+                src = os.path.join(stats_dir, old)
+                if os.path.exists(src) and not os.path.exists(os.path.join(stats_dir, canon)):
+                    os.replace(src, os.path.join(stats_dir, canon))
+        c["stats_file"] = canon
+        changed = True
+    if changed:
+        nodes_save(nodes_path, nodes)
+        print("normalized node stats_file -> stats-<id>.json", flush=True)
+
+
 def find_node_by_token(nodes, token):
     if not token:
         return None, None
@@ -1066,7 +1095,8 @@ def api(method, path, qs, body, deps):
 
     def nodes_view():
         out = []
-        for nid, c in nodes.items():
+        # operator-set order (POST /api/order): `pos` ascending, unordered nodes after, by created
+        for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
             snap = snaps.get(nid) or {}
             ls = seen.get(nid)
             online = ls is not None and (now() - ls) <= NODE_OFFLINE
@@ -1084,6 +1114,8 @@ def api(method, path, qs, body, deps):
                   if len(lb) > 1 else None)
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https",
+                        "iface_order": c.get("iface_order") or [],   # operator drag-order overlays (POST /api/order)
+                        "turn_order": c.get("turn_order") or [],
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
                         "uninstalled": c.get("uninstalled"),   # unsolicited uninstall → grey "Uninstalled" tag; recover by re-installing with the same token
@@ -1636,6 +1668,29 @@ def api(method, path, qs, body, deps):
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
+
+    if method == "POST" and path == "/api/order":
+        # operator drag-to-reorder. kind=node → set per-node `pos`; kind=iface/turn → a per-node order
+        # list the UI overlays on the node's reported interfaces / turn-proxies. Stored in nodes.json so
+        # it survives reloads (and rides along through a convert, like the rest of the node store).
+        kind = (body.get("kind") or "").strip()
+        order = body.get("order")
+        if not isinstance(order, list):
+            return 400, {"ok": False, "error": "order must be a list", "code": "bad_request"}
+        order = [str(x) for x in order]
+        if kind == "node":
+            for i, oid in enumerate(order):
+                if oid in nodes:
+                    nodes[oid]["pos"] = i
+        elif kind in ("iface", "turn"):
+            nid = body.get("node") or ""
+            if nid not in nodes:
+                return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+            nodes[nid]["iface_order" if kind == "iface" else "turn_order"] = order
+        else:
+            return 400, {"ok": False, "error": "kind must be node|iface|turn", "code": "bad_request"}
+        nodes_save(deps["nodes_path"], nodes)
+        return 200, {"ok": True}
 
     if method == "POST" and path == "/api/iface/update":
         # Panel-side per-interface overrides: public endpoint host/port (what clients dial) and the
@@ -2781,6 +2836,7 @@ def main():
     _sc = fleet.get("store_configs", True) is not False
     _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")
     migrate_node_ids(nodes_path, _rp, _sc, _cd)        # legacy name-keyed -> stable id-keyed (one-time)
+    normalize_stats_files(nodes_path, fleet.get("stats_dir", "/var/www/wgstats"))   # stats_file -> stats-<id>.json (id-keyed health files survive convert)
     _hpp = os.path.join(os.path.dirname(nodes_path) or ".", "host_proc")   # this host's re-install/convert flag
     with contextlib.suppress(Exception):
         # a fresh panel process means an in-flight RE-INSTALL is done → drop its tag. A CONVERT, though, writes its

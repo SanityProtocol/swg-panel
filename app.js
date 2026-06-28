@@ -292,6 +292,7 @@ const api = {
   nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
   nodeUnflagRemove(b) { return this.post("/api/nodes/unflag-remove", b); },
   nodeDelete(b) { return this.post("/api/nodes/delete", b); },
+  saveOrder(b) { return this.post("/api/order", b); },   // drag-to-reorder: {kind:"node"|"iface"|"turn", node?, order:[ids]}
   // users
   userCreate(b) { return this.post("/api/users/create", b); },
   userUpdate(b) { return this.post("/api/users/update", b); },
@@ -434,8 +435,9 @@ function ifaceTurnBadges(node, fwdTurns) {
 // One turn-proxy card — shared by the node detail (Forwards-to shown) and the interface detail
 // (showForwards=false, that view is already scoped to the fronted iface). Same data, status tags,
 // online/down dimming, click-to-manage. `metas` = the node's all-interface metas (Store.describe[node]).
-function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
+function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   metas = metas || {};
+  const z = reorder ? reorder.zone(tp.service) : null;
   const lp = portOf(tp.connect);
   const fronted = Object.keys(metas).find(i => String((metas[i] || {}).listen_port) === lp);
   const ftype = (fronted && metas[fronted].awg_params && Object.keys(metas[fronted].awg_params).length) ? "awg" : "wg";
@@ -462,8 +464,8 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
   const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
   const conn = fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : [];   // online peers via this proxy → header count
   const canOpen = nrec.turn_manage && !converting && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting (don't open a half-created proxy)
-  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null}>
-    <div class="ifcard-top"><span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
+  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (z ? z.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} onDragOver=${z ? z.onDragOver : null} onDrop=${z ? z.onDrop : null}>
+    <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
       : pend === "delete"
       ? html`<${StatusTag} cls="tg-busy del" label="deleting…" msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
@@ -489,7 +491,12 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true }) {
 function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   snap = snap || Store.stats[node] || {}; metas = metas || Store.describe[node] || {}; nrec = nrec || {};
   const all = snap.turn_proxies || [];
-  const cards = iface ? turnProxiesFor(node, iface) : all;
+  const cards = iface ? turnProxiesFor(node, iface) : orderById(all, nrec.turn_order, tp => tp.service);
+  // drag-to-reorder turn-proxies (node view only; the per-interface view is a filtered subset)
+  const tReorder = useReorder(iface ? [] : cards.map(tp => tp.service), ids => mutate({
+    patch: s => { const nn = (s.nodes || []).find(x => x.id === node); if (nn) nn.turn_order = ids; },
+    call: () => api.saveOrder({ kind: "turn", node, order: ids }),
+  }));
   if (iface && !cards.length) return null;               // interface view: nothing forwards here → no block
   const blocked = (Store.recon.nodeStatus[node] !== "live") || inProc(nrec.proc_status);
   // client-optimistic installs: a FULL card with the entered data, dimmed + "installing", shown the instant
@@ -509,7 +516,7 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length}
       actions=${(!iface && nrec.turn_manage) ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>Turn-proxy management is <b>off</b> on this node — no Docker socket was mounted at install (<b>TURN_MANAGE=manual</b>), so these are read-only here. Add, edit or restart them on the box directly.</span></div>` : null}
-    <div class="ifgrid">${cards.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface}/>`)}
+    <div class="ifgrid">${cards.map(tp => html`<${TurnCard} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface} reorder=${iface ? null : tReorder}/>`)}
     ${optTurns.map(o => optCard(o.svc, o.d))}
     ${!iface ? Object.entries(nrec.turn_pending || {}).filter(([s]) => !all.some(t => t.service === s) && !optSvcs.has(s)).map(([s, act]) => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">${turnLabel(s, "")}</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[s]}/>${act === "delete" ? html`<span class="tg-busy del">deleting…</span>` : html`<span class="tg tg-pending"><${Ic} i="clock"/>pending</span>`}<button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { service: s })}><${Ic} i="x"/></button></div></div>`) : null}
     ${!iface ? (nrec.turn_onboarding || []).map(p => html`<div class="ifcard tp pending"><div class="ifcard-top"><span class="iftype turn">turn</span><span class="ifname">adopting…</span><span class="grow"></span><${CmdErr} err=${(nrec.cmd_errors || {})[p]}/><span class="tg-busy">adopting…</span><button class="xbtn" title="Cancel this request" onClick=${() => cancelTurn(node, { path: p })}><${Ic} i="x"/></button></div><div class="ifcard-rows"><div class="ifrow"><span class="l faint" style="word-break:break-all">${p}</span></div></div></div>`) : null}
@@ -594,6 +601,74 @@ function mutate({ key, patch, call, onOk, timeout = 8000 }) {
 }
 function rowError(key) { return Store.rowErrors[key] || null; }
 function dismissError(key) { if (Store.rowErrors[key]) { delete Store.rowErrors[key]; Store.apply(); } }
+
+// ───────────────────────── drag-to-reorder ─────────────────────────
+// Order `items` by their position in `savedOrder` (a list of ids); ids not in the saved order keep
+// their original relative order and go LAST (so a newly-reported iface/turn appears at the end).
+function orderById(items, savedOrder, idOf) {
+  const ord = savedOrder || [];
+  if (!ord.length) return items;
+  const pos = new Map(ord.map((id, i) => [id, i]));
+  return items.map((it, i) => [it, i]).sort((a, b) => {
+    const pa = pos.has(idOf(a[0])) ? pos.get(idOf(a[0])) : Infinity;
+    const pb = pos.has(idOf(b[0])) ? pos.get(idOf(b[0])) : Infinity;
+    return pa - pb || a[1] - b[1];
+  }).map(x => x[0]);
+}
+// 6-dot grip glyph used as the drag handle on reorderable cards.
+const GRIP_SVG = `<svg width="11" height="16" viewBox="0 0 11 16" fill="currentColor"><circle cx="3" cy="3" r="1.4"/><circle cx="8" cy="3" r="1.4"/><circle cx="3" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="3" cy="13" r="1.4"/><circle cx="8" cy="13" r="1.4"/></svg>`;
+// HTML5 drag-reorder. `ids` is the CURRENT visible order; `onReorder(newIds)` persists it. Returns
+// per-item props: grip(id) for the handle, zone(id) for the card wrapper, plus the live dragId.
+function useReorder(ids, onReorder) {
+  const [drag, setDrag] = useState(null);     // { id, over, before }
+  const dragId = drag && drag.id;
+  const reorder = (toId, before) => {
+    if (!dragId || toId === dragId) return;
+    const rest = ids.filter(x => x !== dragId);
+    let at = rest.indexOf(toId); if (at < 0) return;
+    if (!before) at += 1;
+    rest.splice(at, 0, dragId);
+    if (rest.join(" ") !== ids.join(" ")) onReorder(rest);
+  };
+  return {
+    dragId,
+    grip(id) {
+      return {
+        draggable: true,
+        onDragStart: e => {
+          // drag the WHOLE card with the cursor: snapshot a semi-transparent clone of the card as the
+          // drag image (the default would be just the tiny grip handle).
+          const card = e.currentTarget.closest(".ifcard, .ncard");
+          try {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", id);
+            if (card && e.dataTransfer.setDragImage) {
+              const r = card.getBoundingClientRect();
+              const ghost = card.cloneNode(true);
+              ghost.classList.add("drag-ghost");
+              ghost.style.cssText = "position:fixed;top:-9999px;left:0;margin:0;width:" + r.width + "px;height:" + r.height + "px;pointer-events:none";
+              document.body.appendChild(ghost);
+              e.dataTransfer.setDragImage(ghost, e.clientX - r.left, e.clientY - r.top);
+              setTimeout(() => ghost.remove(), 0);
+            }
+          } catch (_) {}
+          setDrag({ id, over: null, before: true });
+        },
+        onDragEnd: () => setDrag(null),
+      };
+    },
+    zone(id) {
+      const over = drag && drag.over === id;
+      return {
+        cls: (dragId === id ? " dragging" : "") + (over ? (drag.before ? " drop-before" : " drop-after") : ""),
+        onDragOver: e => { if (!dragId || dragId === id) return; e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+          const r = e.currentTarget.getBoundingClientRect(); const before = (e.clientX - r.left) < r.width / 2;
+          if (!drag.over || drag.over !== id || drag.before !== before) setDrag({ ...drag, over: id, before }); },
+        onDrop: e => { e.preventDefault(); const before = drag && drag.before; setDrag(null); reorder(id, before); },
+      };
+    },
+  };
+}
 
 // ───────────────────────── modal ─────────────────────────
 // Modal STACK. openModal replaces the current top (so every legacy single-modal flow behaves exactly
@@ -1136,6 +1211,17 @@ function HealthDot({ issues }) {
     ${issues.map(it => html`<div class="onrow hrow"><span class="on-name">${it}</span></div>`)}
   </${Popover}>`;
 }
+// Quick node→node nav: a colour-coded chip per server (saved order), the current one highlighted.
+function NodeBadges({ active }) {
+  const ns = Store.nodes || [];
+  if (ns.length < 2) return null;
+  return html`<div class="node-badges">${ns.map(n => {
+    const col = n.color || Store.nodeColor(n.id);
+    return n.id === active
+      ? html`<span class="nbadge on" style=${"--c:" + col} title=${n.name}>${n.name}</span>`
+      : html`<a class="nbadge" style=${"--c:" + col} href=${"#/node/" + encodeURIComponent(n.id)} title=${"Go to " + n.name}>${n.name}</a>`;
+  })}</div>`;
+}
 function NodeDetail({ node: rawName }) {
   const name = decodeURIComponent(rawName);   // `name` is the node id (the connector); display uses dname
   const node = Store.node(name);
@@ -1148,6 +1234,13 @@ function NodeDetail({ node: rawName }) {
   // here (stale link) just shows the message below.
   const seenRef = useRef(false);
   useEffect(() => { if (node) seenRef.current = true; else if (seenRef.current) go("#/nodes"); }, [node]);
+
+  // drag-to-reorder the interface cards (saved order overlays the node's reported set)
+  const ifaceIds = orderById(meta ? Object.keys(meta) : [], nrec.iface_order, x => x);
+  const ifReorder = useReorder(ifaceIds, ids => mutate({
+    patch: s => { const nn = (s.nodes || []).find(x => x.id === name); if (nn) nn.iface_order = ids; },
+    call: () => api.saveOrder({ kind: "iface", node: name, order: ids }),
+  }));
 
   if (!node) return html`<div class="screen"><div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${name}</b></div>
     <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
@@ -1168,7 +1261,7 @@ function NodeDetail({ node: rawName }) {
   if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); syncTxt = live ? "synced " + seen(a) + " ago" : "stale for " + seen(a); }
 
   return html`<div class="screen">
-    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b></div>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b><${NodeBadges} active=${name}/></div>
     <div class="detail-head">
       <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> uninstalled</span>` : live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err, !live && nrec.status === "dangling") : null}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
@@ -1191,11 +1284,11 @@ function NodeDetail({ node: rawName }) {
 
     ${!snap ? html`<div class="node-nodata"><${Ic} i="activity"/><p>This node isn't sending any data right now</p></div>` : html`<div class="noderibbon">
       <div class="nr-tags">
-        ${(meta ? Object.keys(meta) : []).map(ifn => {
+        ${orderById(meta ? Object.keys(meta) : [], nrec.iface_order, x => x).map(ifn => {
           const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
           return html`<a class=${"tg tg-" + type + ((nodeStale(name) || ifaceNotUp(name, ifn)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
         })}
-        ${((snap && snap.turn_proxies) || []).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}
+        ${orderById((snap && snap.turn_proxies) || [], nrec.turn_order, tp => tp.service).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}
       </div>
       <span class="grow"></span>
       <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}</div>
@@ -1251,8 +1344,9 @@ function NodeDetail({ node: rawName }) {
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
           : (!Object.keys(meta).length && !pending.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
-          : html`<div class="ifgrid">${Object.keys(meta).map(ifn => {
+          : html`<div class="ifgrid">${orderById(Object.keys(meta), nrec.iface_order, x => x).map(ifn => {
               const m = meta[ifn];
+              const z = ifReorder.zone(ifn);
               if (ifaceWasBusy[name + "|" + ifn]) { ifaceReady[name + "|" + ifn] = Date.now() + 5000; ifaceWasBusy[name + "|" + ifn] = false; }   // just came up after being pending/creating → "ready" 5s
               const type = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
               const ps = here.filter(p => p.targets.some(t => t.node === name && t.iface === ifn));
@@ -1269,8 +1363,8 @@ function NodeDetail({ node: rawName }) {
               const iop = Store.ifaceOp[name + "|" + ifn];   // optimistic start/stop/restart lifecycle (set on click, before the node reflects it)
               const iopBusy = iop && iop.phase === "busy";
               const idim = iconverting || deleting || idown || istopped || irestarting || iopBusy || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / stopped / in-flight / node gone dark → dim
-              return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>
-                <div class="ifcard-top"><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
+              return html`<a class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + z.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} onDragOver=${z.onDragOver} onDrop=${z.onDrop}>
+                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1329,7 +1423,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   });
 
   return html`<div class="screen">
-    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b><${NodeBadges} active=${node}/></div>
     <div class="detail-head">
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${istopped ? html`<span class="badge b-unknown ic" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/>stopped</span>` : idown ? html`<span class="badge b-dangling ic" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/>down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
@@ -2636,12 +2730,17 @@ const SWATCHES = ["#34d399", "#22d3ee", "#e8c04b", "#f0913c", "#f0596b", "#c084e
 function NodesScreen() {
   useStore();
   const ns = Store.nodes || [];
+  // drag-to-reorder the whole fleet (persisted as per-node `pos`)
+  const nReorder = useReorder(ns.map(n => n.id), ids => mutate({
+    patch: s => { s.nodes = orderById(s.nodes, ids, n => n.id); },
+    call: () => api.saveOrder({ kind: "node", order: ids }),
+  }));
   return html`<div class="screen">
     <div class="section-title" style="margin:6px 2px 16px"><h2>Nodes</h2><span class="count">${ns.length + (ns.length === 1 ? " server" : " servers")}</span>
       <span class="nodehint">Entry servers run <span class="mono">swg-noded</span>, which syncs to this panel over HTTPS — the node needs no inbound access.</span><span class="grow"></span>
       <button class="btn btn-primary" onClick=${openNodeCreate}><span class="plus"><${Ic} i="plus"/></span> Add node</button></div>
     ${!ns.length ? html`<div class="empty"><b>No nodes yet</b>Add your first entry server — you'll get a one-time command to run on it.</div>`
-      : html`<div class="nodegrid">${ns.map(n => html`<${NodeCard} key=${n.id} n=${n}/>`)}</div>`}
+      : html`<div class="nodegrid">${ns.map(n => html`<${NodeCard} key=${n.id} n=${n} reorder=${nReorder}/>`)}</div>`}
   </div>`;
 }
 // load/util tone: green under 70%, amber to 90%, red above.
@@ -2993,7 +3092,8 @@ async function checkForUpdate(e, nodeId) {
     else { Store.updFlash = Date.now() + 5000; Store.apply(); setTimeout(() => Store.apply(), 5100); }   // panel up to date → green "up to date" tag for 5s
   } finally { if (btn) btn.classList.remove("checking"); }
 }
-function NodeCard({ n }) {
+function NodeCard({ n, reorder }) {
+  const z = reorder ? reorder.zone(n.id) : null;
   const st = n.status || "dangling";
   const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
   const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
@@ -3011,8 +3111,8 @@ function NodeCard({ n }) {
   const nUpdating = n.updating || (n.local && (hostUpdating || inProc(Store.hostProc)));
   const procEff = (n.proc_status && !inProc(n.proc_status)) ? n.proc_status : (nUpdating ? "updating" : n.proc_status);
   const nav = () => go("#/node/" + encodeURIComponent(n.id));
-  return html`<div class=${"ncard clk" + (removing ? " removing" : "")} onClick=${nav}>
-    <div class="ntop">
+  return html`<div class=${"ncard clk" + (removing ? " removing" : "") + (z ? z.cls : "")} onClick=${nav} onDragOver=${z ? z.onDragOver : null} onDrop=${z ? z.onDrop : null}>
+    <div class="ntop">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(n.id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
       ${!n.uninstalled && (n.outdated || (n.local && Store.panelOutdated)) && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}

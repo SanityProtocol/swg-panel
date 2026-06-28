@@ -331,12 +331,14 @@ PY
   mkdir -p "$DOCKER_DIR"/data/lib "$DOCKER_DIR"/data/etc "$DOCKER_DIR"/data/stats
   [ -d "$STATE" ] && cp -a "$STATE/." "$DOCKER_DIR/data/lib/"   2>/dev/null || true   # roster, nodes.json, configs
   [ -d "$ETC" ]   && cp -a "$ETC/."   "$DOCKER_DIR/data/etc/"   2>/dev/null || true   # fleet.json, auth, tls/
-  [ -d "$STATS" ] && cp -a "$STATS/." "$DOCKER_DIR/data/stats/" 2>/dev/null || true
+  [ -d "$STATS" ] && cp -a "$STATS/." "$DOCKER_DIR/data/stats/" 2>/dev/null || true   # status snapshots + health-*.rrd graph history
+  _rrd_src=$(find "$STATS" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' '); _rrd_dst=$(find "$DOCKER_DIR/data/stats" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' ')
+  [ "${_rrd_src:-0}" -gt 0 ] && [ "${_rrd_dst:-0}" != "${_rrd_src:-0}" ] && warn "health graphs: staged ${_rrd_dst:-0}/${_rrd_src} rrd file(s) — some history may not have transferred"
   # carry the acme.sh renewal state (bare keeps it in /root/.acme.sh; the container reads data/etc/acme) and
   # point its stored reload command at the container (kill -HUP 1) instead of the systemd unit, so renewals reload.
   for _ah in /root/.acme.sh "${HOME:-/root}/.acme.sh"; do [ -d "$_ah" ] && { mkdir -p "$DOCKER_DIR/data/etc/acme"; cp -a "$_ah/." "$DOCKER_DIR/data/etc/acme/" 2>/dev/null || true; break; }; done
   find "$DOCKER_DIR/data/etc/acme" -name '*.conf' -exec sed -i "s#^Le_ReloadCmd=.*#Le_ReloadCmd='kill -HUP 1'#" {} + 2>/dev/null || true
-  sub "staged roster + nodes + login + $(b "$PTLS") cert (+ acme renewal) → $DOCKER_DIR/data"
+  sub "staged roster + nodes + login + $(b "$PTLS") cert + ${_rrd_dst:-0} health graph(s) (+ acme renewal) → $DOCKER_DIR/data"
 
   # MASTER: the local node's interfaces + turn-proxies are migrated in the NODE STAGE (the install-docker node
   # sub-step below): migrate_baremetal_ifaces + migrate_baremetal_turns each ask "Transfer? (Y/n)" and copy-first.
@@ -470,15 +472,20 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   # dir while the container runs) — leaving the host source EMPTY while the container still serves the data by inode.
   # tar runs inside the container's mount namespace, so it always reads the LIVE data the panel is actually using.
   # Fall back to ./data on disk only when the container isn't found (e.g. a resume after it's already gone).
+  _rrd_src=0
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx swg-panel; then
+    _rrd_src=$(docker exec swg-panel sh -c 'ls /var/www/wgstats/health-*.rrd 2>/dev/null | wc -l' 2>/dev/null | tr -d ' '); _rrd_src=${_rrd_src:-0}
     docker exec swg-panel tar c -C /var/lib/swg-panel . 2>/dev/null | tar x -C "$STATE" 2>/dev/null || true   # roster (users.json), nodes.json, configs
     docker exec swg-panel tar c -C /etc/swg-panel   . 2>/dev/null | tar x -C "$ETC"   2>/dev/null || true   # fleet.json, auth, tls/, acme/
-    docker exec swg-panel tar c -C /var/www/wgstats . 2>/dev/null | tar x -C "$STATS" 2>/dev/null || true
+    docker exec swg-panel tar c -C /var/www/wgstats . 2>/dev/null | tar x -C "$STATS" 2>/dev/null || true   # status snapshots + health-*.rrd graph history
   else
     [ -d "$DOCKER_DIR/data/lib" ]   && cp -a "$DOCKER_DIR/data/lib/."   "$STATE/" 2>/dev/null || true
     [ -d "$DOCKER_DIR/data/etc" ]   && cp -a "$DOCKER_DIR/data/etc/."   "$ETC/"   2>/dev/null || true
-    [ -d "$DOCKER_DIR/data/stats" ] && cp -a "$DOCKER_DIR/data/stats/." "$STATS/" 2>/dev/null || true
+    [ -d "$DOCKER_DIR/data/stats" ] && { cp -a "$DOCKER_DIR/data/stats/." "$STATS/" 2>/dev/null || true; _rrd_src=$(find "$DOCKER_DIR/data/stats" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' '); }
   fi
+  _rrd_dst=$(find "$STATS" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' ')
+  sub "staged roster + nodes + login + cert + ${_rrd_dst:-0} health graph(s) → bare-metal"
+  [ "${_rrd_src:-0}" -gt 0 ] && [ "${_rrd_dst:-0}" != "${_rrd_src:-0}" ] && warn "health graphs: transferred ${_rrd_dst:-0}/${_rrd_src} rrd file(s) — some node-health history may be missing"
   # GUARD: never proceed (and let install-host seed a blank panel) if the login + node store didn't come across.
   { [ -s "$ETC/auth" ] && [ -f "$STATE/nodes.json" ]; } || die "couldn't stage the panel state (login/nodes missing) — aborting to avoid data loss. The docker panel is untouched; check 'docker exec swg-panel ls -la /var/lib/swg-panel /etc/swg-panel'."
   # carry the acme renewal state back to the host (/root/.acme.sh) + repoint its reload cmd at the systemd unit
