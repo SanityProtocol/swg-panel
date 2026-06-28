@@ -642,14 +642,17 @@ def reconcile_egress(node_cfg, desired_ifaces):
 # ───────────────────────── Phase 2: traffic cascade ─────────────────────────
 SWG_RT_BASE = 7000          # swg-owned policy-routing table id / ip-rule priority band [BASE, MAX]
 SWG_RT_MAX = 7099           # (priority == table number; one table per egress target per node)
+SMART_NFT_TABLE = "swg_smart"   # Phase 3: inet nft table holding the per-category dest sets + marking chain
 
 
-def _cascade_want_sig(fwd, exit_):
+def _cascade_want_sig(fwd, exit_, smart=None):
     """Canonical signature of the policy rules+routes a plan wants — same token shape as the live
     reader below, so an exact-match means 'no drift' and we skip the (gap-inducing) flush+rebuild."""
     sig = set()
     for e in fwd:
         T = str(e["table"]); sig.add(f"R|from|{e['subnet']}|{T}"); sig.add(f"T|{T}|default|{e['via_iface']}")
+    for e in (smart or []):                            # smart entry = fwmark T → table T (default via link)
+        T = str(e["table"]); sig.add(f"R|fwmark|{int(e['table'])}|{T}"); sig.add(f"T|{T}|default|{e['via_iface']}")
     for e in exit_:
         T = str(e["table"]); sig.add(f"R|to|{e['subnet']}|{T}"); sig.add(f"T|{T}|{e['subnet']}|{e['via_iface']}")
     return sig
@@ -670,7 +673,10 @@ def _cascade_live_sig(tables):
             body = mp.group(2)
             lk = re.search(r"lookup (\S+)", body); T = lk.group(1) if lk else str(pri)
             mto = re.search(r"\bto (\S+)", body); mfrom = re.search(r"\bfrom (\S+)", body)
-            if mto:
+            mfw = re.search(r"fwmark (0x[0-9a-fA-F]+|\d+)", body)
+            if mfw:
+                sig.add(f"R|fwmark|{int(mfw.group(1), 0)}|{T}")
+            elif mto:
                 sig.add(f"R|to|{mto.group(1)}|{T}")
             elif mfrom and mfrom.group(1) != "all":
                 sig.add(f"R|from|{mfrom.group(1)}|{T}")
@@ -757,38 +763,88 @@ def _ensure_dev_rules(table, chain, prefix, link_devs, res, mk):
             run(["sh", "-c", "iptables " + " ".join(targs) + " " + ln.replace("-A " + chain, "-D " + chain, 1)]); res["changed"] += 1
 
 
-def reconcile_cascade(node_cfg, plan):
-    """Phase 2 traffic cascade. ENTRY: policy-route a forwarded user subnet S into its mesh link
-    (`ip rule from S lookup T` + `default dev <link> table T`). EXIT: route returns back into the link
-    (`ip rule to S lookup T` + `S dev <link> table T`) and SNAT S out the WAN to the chosen egress_ip.
-    Idempotent: the policy rules/routes are rebuilt only when they DRIFT from the plan (a signature
-    compare — never churn the rules each sync, which would leak a packet to direct egress mid-gap);
-    the iptables side is diffed by tag. Runtime routing is lost on reboot, so this re-applies on the
-    first sync after a reboot. Returns {changed, errors}."""
+def _smart_setname(cat):
+    return "cat_" + re.sub(r"[^a-z0-9]", "_", str(cat).lower())
+
+
+def _ensure_smart_nft(smart_e, categories, res):
+    """Phase 3 marking: keep an inet table `swg_smart` with one interval set per category (populated from
+    shipped geo CIDR lists — see _smart_geo_refresh) and a prerouting chain that marks
+    `ip saddr <S> ip daddr @cat_<c> meta mark set <T>`. Idempotent + drift-gated (flush+rebuild the chain
+    only when the wanted rule set changes, so steady-state never un-marks a packet mid-flight). Packets
+    stay 100% kernel-routed (the mark feeds the `ip rule fwmark` band). v1 is IPv4-only (v6 leaks direct)."""
+    cats = sorted(set(categories) | {e["category"] for e in smart_e})
+    have = run(["nft", "list", "table", "inet", SMART_NFT_TABLE])
+    if not smart_e and not cats:                                # nothing wanted → tear our table down
+        if have.returncode == 0:
+            run(["nft", "delete", "table", "inet", SMART_NFT_TABLE]); res["changed"] += 1
+        return
+    body = have.stdout if have.returncode == 0 else ""
+    if have.returncode != 0:
+        run(["nft", "add", "table", "inet", SMART_NFT_TABLE])
+    have_sets = set(re.findall(r"set (\S+) {", body))
+    for c in cats:                                              # one interval set per category (empty = inert until geo data lands)
+        sn = _smart_setname(c)
+        if sn not in have_sets:
+            run(["nft", "add", "set", "inet", SMART_NFT_TABLE, sn, "{ type ipv4_addr; flags interval; }"])
+    if "prerouting" not in re.findall(r"chain (\S+) {", body):
+        run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "prerouting",
+             "{ type filter hook prerouting priority mangle; policy accept; }"])
+    # drift-gate the mark rules: want vs live (parsed from the chain), flush+rebuild only on change
+    want = [(e["subnet"], _smart_setname(e["category"]), int(e["table"])) for e in smart_e]
+    live = []
+    for ln in body.splitlines():
+        mt = re.search(r"ip saddr (\S+) ip daddr @(\S+) meta mark set (0x[0-9a-fA-F]+|\d+)", ln)
+        if mt:
+            live.append((mt.group(1), mt.group(2), int(mt.group(3), 0)))
+    if set(want) != set(live):
+        run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "prerouting"])
+        for (S, sn, T) in want:
+            r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting",
+                     "ip", "saddr", S, "ip", "daddr", "@" + sn, "meta", "mark", "set", str(T)])
+            if r.returncode != 0:
+                res["errors"].append("smart nft " + S + "/" + sn + ": " + (r.stderr or "").strip()[:120])
+            else:
+                res["changed"] += 1
+
+
+def reconcile_cascade(node_cfg, plan, smart=None):
+    """Phase 2 cascade + Phase 3 smart routing. ENTRY (P2 forward): `ip rule from S lookup T`; ENTRY
+    (P3 smart): nftables marks `ip saddr S ip daddr @<category> meta mark set T` then `ip rule fwmark T
+    lookup T` — both route into `default dev <link> table T`. EXIT (shared): `ip rule to S lookup T` +
+    `S dev <link> table T` + SNAT S out the WAN. Idempotent: policy rules/routes are rebuilt only when
+    they DRIFT from the plan (a signature compare — never churn each sync, which would leak a packet to
+    direct egress mid-gap); the iptables + nft sides are diffed by tag/signature. Runtime state is lost on
+    reboot, so this re-applies on the first sync after one. Returns {changed, errors}."""
     res = {"changed": 0, "errors": []}
     plan = plan or {}
     fwd = plan.get("forward") or []
     exit_ = plan.get("exit") or []
+    smart_e = (smart or {}).get("entries") or []
     band = _live_band_prios()
-    want_tables = {str(e["table"]) for e in (fwd + exit_)}
-    want_sig = _cascade_want_sig(fwd, exit_)
+    want_tables = {str(e["table"]) for e in (fwd + smart_e + exit_)}
+    want_sig = _cascade_want_sig(fwd, exit_, smart_e)
     live_sig = _cascade_live_sig({str(p) for p in band} | want_tables)
     # POLICY RULES/ROUTES — only touch them when they drift (avoids per-sync rule gaps).
     if want_sig != live_sig:
-        if fwd or exit_:                                       # enable forwarding + loose rp_filter (asymmetric paths)
+        if fwd or smart_e or exit_:                            # enable forwarding + loose rp_filter (asymmetric paths)
             run(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"])
             wan = _detect_wan()
-            for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + exit_)}):
+            for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + smart_e + exit_)}):
                 run(["sysctl", "-q", "-w", f"net.ipv4.conf.{dev}.rp_filter=2"])   # effective = max(all,dev): lower BOTH
         for pri in band:                                       # teardown our whole band (rules + tables)
             for _ in range(8):                                 # del-until-absent (a priority may carry several rules)
                 if run(["ip", "rule", "del", "pref", str(pri)]).returncode != 0:
                     break
             run(["ip", "route", "flush", "table", str(pri)])
-        for e in fwd:                                          # ENTRY: from S → table T (default via link)
+        for e in fwd:                                          # P2 ENTRY: from S → table T (default via link)
             T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
             run(["ip", "route", "replace", "default", "dev", dev, "table", T])
             run(["ip", "rule", "add", "from", S, "lookup", T, "priority", T])
+            res["changed"] += 1
+        for T, dev in sorted({(str(e["table"]), e["via_iface"]) for e in smart_e}):   # P3 ENTRY: fwmark T → table T
+            run(["ip", "route", "replace", "default", "dev", dev, "table", T])
+            run(["ip", "rule", "add", "fwmark", T, "lookup", T, "priority", T])
             res["changed"] += 1
         for e in exit_:                                        # EXIT: to S → table T (S via link)
             T = str(e["table"]); S = e["subnet"]; dev = e["via_iface"]
@@ -797,7 +853,24 @@ def reconcile_cascade(node_cfg, plan):
             res["changed"] += 1
     # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
     _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res)
+    # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
+    _ensure_smart_nft(smart_e, (smart or {}).get("categories") or [], res)
     return res
+
+
+def smart_status():
+    """Phase 3 smart-routing health for the panel UI: whether our nft table is up, per-category element
+    counts (a populated set = geo data loaded), and the number of active mark rules. nft absent → inactive."""
+    r = run(["nft", "list", "table", "inet", SMART_NFT_TABLE])
+    if r.returncode != 0:
+        return {"active": False, "sets": {}, "rules": 0}
+    out = r.stdout
+    sets = {}
+    for sm in re.finditer(r"set (\S+) {(.*?)}", out, re.S):
+        els = re.search(r"elements = {(.*?)}", sm.group(2), re.S)
+        sets[sm.group(1)] = len([x for x in (els.group(1).split(",") if els else []) if x.strip()])
+    rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", out))
+    return {"active": rules > 0, "sets": sets, "rules": rules}
 
 
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
@@ -851,7 +924,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
             "node_ips": list_node_ips(), "node_ifaces": list_node_ifaces(),
-            "node_ip_ifaces": list_node_ip_ifaces()}
+            "node_ip_ifaces": list_node_ip_ifaces(), "smartroute": smart_status()}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap
@@ -1983,7 +2056,7 @@ def main():
                 sa = start_ifaces(node_cfg, reply.get("iface_start"), agent, sudo)
                 ik = apply_iface_keys(node_cfg, reply.get("iface_key"), agent, sudo)   # keypair restore/rebaseline from the on-disk backup
                 eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
-                cas = reconcile_cascade(node_cfg, reply.get("cascade"))   # Phase 2: forward policy-routing + exit SNAT
+                cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"))   # P2 forward + P3 smart routing + exit SNAT
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name
                 for blk in (cr, dl, ob, rs, sp, sa):
                     for e in blk["errors"]:

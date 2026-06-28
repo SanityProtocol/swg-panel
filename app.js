@@ -1452,7 +1452,7 @@ function NodeDetail({ node: rawName }) {
               const iopBusy = iop && iop.phase === "busy";
               const idim = iconverting || deleting || idown || istopped || irestarting || iopBusy || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / stopped / in-flight / node gone dark → dim
               return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
-                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${m.egress_mode === "forward" && m.egress_node ? html`<span class="tg tg-fwd" title=${"Traffic exits via " + Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "")}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>` : null}${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
+                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="grow"></span>${m.egress_mode === "forward" && m.egress_node ? html`<span class="tg tg-fwd" title=${"Traffic exits via " + Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "")}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>` : m.egress_mode === "smart" ? html`<span class="tg tg-fwd" title=${(m.routing || []).filter(r => r.action === "exit").length + " destination rule(s)"}><${Ic} i="network"/>smart</span>` : null}${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1635,20 +1635,67 @@ function suggestSubnet(node) {
 // Two-dropdown egress: where an interface's traffic exits — Auto, Direct out a NIC, or Forward (cascade)
 // to another node — plus the source IP (this node's, or the TARGET node's for forward). value =
 // {mode:"auto"|"direct"|"forward", nic, node, ip}; the routing for "forward" is wired in Phase 2.
+// Phase 3 smart-routing categories (keep in sync with SMART_CATEGORIES in swg-panel-server). Each is a
+// provider-level destination set; the node routes its IPs (geoip) into the chosen exit's mesh link.
+const SMART_CATEGORIES = [
+  ["google", "Google (incl. YouTube)"], ["yandex", "Yandex"], ["vk", "VK"], ["telegram", "Telegram"],
+  ["cloudflare", "Cloudflare"], ["meta", "Meta (FB / IG / WA)"], ["twitter", "Twitter / X"],
+  ["netflix", "Netflix"], ["ru", "Russia (country)"],
+];
+const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
+let _ruleSeq = 0;
+const newRid = () => "rr" + (++_ruleSeq);
+
+// One smart-routing rule row: a category → a destination (exit node / direct / block). Reuses the
+// drag-reorder hook; order is priority (first match wins on the node).
+function RoutingRules({ node, rules, onChange }) {
+  const others = (Store.nodes || []).filter(n => n.id !== node);
+  const rs = useReorder(rules.map(r => r._rid), ids => onChange(ids.map(id => rules.find(r => r._rid === id)).filter(Boolean)), "y");
+  const setRule = (rid, patch) => onChange(rules.map(r => r._rid === rid ? { ...r, ...patch } : r));
+  const addRule = () => onChange([...rules, { _rid: newRid(), enabled: true, category: "google", action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
+  const destVal = r => r.action === "exit" ? "exit|" + (r.node || "") : r.action;
+  const onDest = (rid, v) => { const [a, n] = v.split("|"); setRule(rid, a === "exit" ? { action: "exit", node: n } : { action: a, node: "" }); };
+  const seen = {};
+  return html`<div class="field"><label>Routing rules <span class="faint" style="text-transform:none;letter-spacing:0">— first match wins; everything else exits direct</span></label>
+    <div class="rrlist" ...${rs.container()}>${rules.map(r => {
+      const dup = seen[r.category]; seen[r.category] = true;
+      const self = r.action === "exit" && r.node === node;
+      const it = rs.item(r._rid);
+      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self) ? " warn" : "")} data-rid=${it.rid}>
+        <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
+        <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
+          ${SMART_CATEGORIES.map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
+        </select>
+        <span class="rrarrow">→</span>
+        <select class="selwrap" value=${destVal(r)} onChange=${e => onDest(r._rid, e.target.value)}>
+          <option value="direct">Direct (this node)</option>
+          <option value="block">Block</option>
+          ${others.length ? html`<optgroup label="Exit via node">${others.map(n => html`<option value=${"exit|" + n.id}>→ ${n.name}</option>`)}</optgroup>` : null}
+        </select>
+        <button class="xbtn" title="Remove rule" onClick=${() => onChange(rules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
+        ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${SMART_CAT_LABEL[r.category]} rule</span>` : null}
+      </div>`;
+    })}</div>
+    <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span><span class="faint">Everything else → Direct (this node)</span></div>
+    ${rules.length ? null : html`<div class="hint">No rules yet — all traffic exits direct. Add a rule to send a provider through another node.</div>`}
+  </div>`;
+}
+
 function EgressPicker({ node, value, onChange }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const ipIfaces = nrec.ip_ifaces || [];
   const nics = [...new Set(ipIfaces.map(p => p.iface))];
   const others = (Store.nodes || []).filter(n => n.id !== node);
-  const ifSel = value.mode === "forward" ? "forward|" + (value.node || "") : value.mode === "direct" ? "direct|" + (value.nic || "") : "auto";
+  const ifSel = value.mode === "smart" ? "smart" : value.mode === "forward" ? "forward|" + (value.node || "") : value.mode === "direct" ? "direct|" + (value.nic || "") : "auto";
   let ipOpts = [];
   if (value.mode === "direct") ipOpts = ipIfaces.filter(p => !value.nic || p.iface === value.nic).map(p => p.ip);
   else if (value.mode === "forward") { const tn = others.find(n => n.id === value.node); ipOpts = (tn && tn.ips) || []; }
   const onIf = e => {
     const v = e.target.value;
-    if (v === "auto") return onChange({ mode: "auto", nic: "", node: "", ip: "" });
+    if (v === "auto") return onChange({ mode: "auto", nic: "", node: "", ip: "", rules: value.rules || [] });
+    if (v === "smart") return onChange({ mode: "smart", nic: "", node: "", ip: "", rules: value.rules || [] });
     const [mode, x] = v.split("|");
-    onChange(mode === "forward" ? { mode, node: x, nic: "", ip: "" } : { mode, nic: x, node: "", ip: "" });
+    onChange(mode === "forward" ? { mode, node: x, nic: "", ip: "", rules: value.rules || [] } : { mode, nic: x, node: "", ip: "", rules: value.rules || [] });
   };
   return html`<${Fragment}>
     <div class="field"><label>Outbound (egress) interface</label>
@@ -1656,9 +1703,12 @@ function EgressPicker({ node, value, onChange }) {
         <option value="auto">Auto (MASQUERADE)</option>
         ${nics.map(n => html`<option value=${"direct|" + n}>Direct — ${n}</option>`)}
         ${others.length ? html`<optgroup label="Forward to node (cascade)">${others.map(n => html`<option value=${"forward|" + n.id}>Forward to ${n.name}</option>`)}</optgroup>` : null}
+        ${others.length ? html`<option value="smart">Smart routing (by destination)</option>` : null}
       </select>
-      <div class="hint">Exit directly out a NIC, or channel this interface's traffic through another node.</div></div>
-    ${value.mode !== "auto" ? html`<div class="field"><label>Outbound (egress) IP</label>
+      <div class="hint">Exit directly out a NIC, channel everything through another node, or route per-destination (smart).</div></div>
+    ${value.mode === "smart"
+      ? html`<${RoutingRules} node=${node} rules=${value.rules || []} onChange=${rs => onChange({ ...value, rules: rs })}/>`
+      : value.mode !== "auto" ? html`<div class="field"><label>Outbound (egress) IP</label>
       <select class="selwrap" value=${value.ip || ""} onChange=${e => onChange({ ...value, ip: e.target.value })}>
         <option value="">${value.mode === "forward" ? "Auto (target node default)" : "Auto"}</option>
         ${ipOpts.map(ip => html`<option value=${ip}>${ip}</option>`)}
@@ -1666,9 +1716,12 @@ function EgressPicker({ node, value, onChange }) {
       <div class="hint">${value.mode === "forward" ? "Source IP on the target node that clients egress from." : "Source IP clients egress from."}</div></div>` : null}
   <//>`;
 }
-const egressInit = m => ({ mode: m.egress_mode === "forward" ? "forward" : (m.egress_ip || m.wan_iface) ? "direct" : "auto",
-  nic: m.wan_iface || "", node: m.egress_node || "", ip: m.egress_ip || "" });
-const egressBody = eg => ({ egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" });
+const egressInit = m => ({ mode: m.egress_mode === "smart" ? "smart" : m.egress_mode === "forward" ? "forward" : (m.egress_ip || m.wan_iface) ? "direct" : "auto",
+  nic: m.wan_iface || "", node: m.egress_node || "", ip: m.egress_ip || "",
+  rules: (m.routing || []).map(r => ({ ...r, _rid: newRid() })) });
+const egressBody = eg => eg.mode === "smart"
+  ? { egress_mode: "smart", routing: (eg.rules || []).map(({ _rid, ...r }) => r) }
+  : { egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" };
 function LoadIfaceSheet({ node }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing

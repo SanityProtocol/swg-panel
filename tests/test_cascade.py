@@ -231,9 +231,94 @@ def test_agent_conf():
     print("OK agent: Table=off self-heal + peer-allowed rewrite")
 
 
+def test_panel_smart():
+    """Phase 3: smart per-destination routing compiles into cascade_plan's smart entries + reused exits."""
+    m = _load("swg_panel_smart", "swg-panel-server")
+    A, B, C = "aaaa", "bbbb", "cccc"
+
+    def link(self_a, peer_a, i):
+        return {"iface": i, "subnet": "x", "address": self_a, "peer_address": peer_a, "listen_port": 1, "psk": "k", "role": "x"}
+    nodes = {
+        A: {"id": A, "name": "msk", "endpoint_host": "a",
+            "links": {B: link("10.99.0.0", "10.99.0.1", "swg_AB"), C: link("10.99.0.2", "10.99.0.3", "swg_AC")},
+            "ifaces": {"awg1": {"egress_mode": "smart", "routing": [
+                {"category": "google", "action": "exit", "node": B},
+                {"category": "vk", "action": "exit", "node": C},
+                {"category": "ru", "action": "direct"}]},
+                       "swg_AB": {"system": True, "link_node": B}, "swg_AC": {"system": True, "link_node": C}}},
+        B: {"id": B, "name": "ams", "endpoint_host": "b", "links": {A: link("10.99.0.1", "10.99.0.0", "swg_AB")}, "ifaces": {"swg_AB": {"system": True}}},
+        C: {"id": C, "name": "sgp", "endpoint_host": "c", "links": {A: link("10.99.0.3", "10.99.0.2", "swg_AC")}, "ifaces": {"swg_AC": {"system": True}}},
+    }
+    snaps = {A: {"interfaces": {"awg1": {"meta": {"subnet": "10.8.0.0/24"}}}}}
+    plans = m.cascade_plan(nodes, snaps)
+    sm = {(e["category"], e["via_iface"], e["table"]) for e in plans[A]["smart"]}
+    assert ("google", "swg_AB", 7000) in sm and ("vk", "swg_AC", 7001) in sm, sm
+    assert plans[A]["forward"] == [] and plans[A]["allowed"] == {"swg_AB": "0.0.0.0/0", "swg_AC": "0.0.0.0/0"}
+    assert plans[B]["exit"] == [{"subnet": "10.8.0.0/24", "via_iface": "swg_AB", "table": 7000, "egress_ip": "", "wan_iface": ""}], plans[B]["exit"]
+    assert plans[C]["exit"][0]["table"] == 7001
+    # validation + safe-skips
+    assert m._validate_routing([{"category": "nope", "action": "exit", "node": B}], nodes, A)[1]
+    assert m._validate_routing([{"category": "google", "action": "exit", "node": A}], nodes, A)[1]   # exit-to-self
+    nodes[A]["ifaces"]["awg1"]["routing"] = [{"category": "google", "action": "exit", "node": B, "enabled": False}, {"category": "vk", "action": "direct"}]
+    assert m.cascade_plan(nodes, snaps).get(A, {}).get("smart", []) == []   # disabled + direct → no entry
+    print("OK panel: smart routing plan + validation")
+
+
+def test_node_smart():
+    """Phase 3: reconcile_cascade with a smart plan → nft set/chain/mark + ip rule fwmark; idempotent."""
+    m = _load("swg_noded_smart", "swg-noded")
+    calls = []
+
+    def R(rc=0, out=""):
+        class _R:
+            pass
+        r = _R(); r.returncode = rc; r.stdout = out; r.stderr = ""; return r
+    LIVE = {"nft_rc": 1, "iprule": "", "natP": "", "fwd": "", "mangle": "", "routes": {}, "nft_out": ""}
+
+    def fake(args, **k):
+        calls.append([str(x) for x in args])
+        if args[:3] == ["ip", "rule", "show"]:
+            return R(0, LIVE["iprule"])
+        if args[:3] == ["ip", "route", "show"]:
+            return R(0, LIVE["routes"].get(args[args.index("table") + 1], ""))
+        if args[:1] == ["iptables"] and "-S" in args:
+            return R(0, LIVE["natP"] if "POSTROUTING" in args else (LIVE["mangle"] if "mangle" in args else LIVE["fwd"]))
+        if args[:1] == ["nft"]:
+            return R(LIVE["nft_rc"], LIVE["nft_out"]) if args[1:3] == ["list", "table"] else R(0)
+        return R(0)
+    m.run = fake; m._detect_wan = lambda: "eth0"
+    smart = {"entries": [{"subnet": "10.8.0.0/24", "category": "google", "via_iface": "swg_AB", "table": 7000}], "categories": ["google"]}
+    calls.clear()
+    m.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": []}, smart)
+    a = [" ".join(c) for c in calls]
+    assert "ip route replace default dev swg_AB table 7000" in a
+    assert "ip rule add fwmark 7000 lookup 7000 priority 7000" in a, a
+    assert any("add set inet swg_smart cat_google" in x for x in a)
+    assert any("add chain inet swg_smart prerouting" in x for x in a)
+    assert any("add rule inet swg_smart prerouting ip saddr 10.8.0.0/24 ip daddr @cat_google meta mark set 7000" in x for x in a), a
+    # fwmark in the 7000-band, never WG's 0xca6c (51820)
+    assert not any("51820" in x or "0xca6c" in x for x in a)
+    # idempotent: live state matches → no nft flush / no ip rule churn
+    LIVE.update(nft_rc=0, natP="-P POSTROUTING ACCEPT\n",
+                iprule="7000:\tfrom all fwmark 0x1b58 lookup 7000\n",
+                routes={"7000": "default dev swg_AB scope link\n"},
+                fwd="-A FORWARD -i swg_AB -m comment --comment swg-fwd-acl:swg_AB -j ACCEPT\n-A FORWARD -o swg_AB -m comment --comment swg-fwd-acl:swg_AB -j ACCEPT\n",
+                mangle="-A FORWARD -o swg_AB -p tcp -m comment --comment swg-fwd-mss:swg_AB -j TCPMSS --clamp-mss-to-pmtu\n",
+                nft_out=("table inet swg_smart {\n\tset cat_google { type ipv4_addr\n\tflags interval\n\t}\n"
+                         "\tchain prerouting {\n\t\ttype filter hook prerouting priority mangle; policy accept;\n"
+                         "\t\tip saddr 10.8.0.0/24 ip daddr @cat_google meta mark set 0x00001b58\n\t}\n}\n"))
+    calls.clear()
+    m.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": []}, smart)
+    churn = [" ".join(c) for c in calls if any(k in " ".join(c) for k in ("ip rule add", "ip rule del", "ip route replace", "nft flush", "nft add rule"))]
+    assert churn == [], churn
+    print("OK node: smart reconcile (nft mark + fwmark route) + idempotent")
+
+
 def main():
     test_panel()
+    test_panel_smart()
     test_node_cascade()
+    test_node_smart()
     test_node_allowed_drift()
     test_agent_conf()
     print("OK test_cascade: all assertions passed")

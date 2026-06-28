@@ -774,6 +774,17 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-ok{background:rgba(63,216,154,.16);color:var(--online);border-color:color-mix(in srgb,var(--online) 30%,transparent)}
 .tg-fwd{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 34%,transparent)}   /* traffic cascade: forwards out via another node — BRAND cyan */
 .tg-fwd svg{width:11px;height:11px}
+/* Phase 3 smart-routing rule editor */
+.rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
+.rrrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+.rrrow.warn{border-color:color-mix(in srgb,var(--partial) 45%,transparent)}
+.rrrow .drag-grip{cursor:grab;opacity:.4;flex:none}.rrrow:hover .drag-grip{opacity:.7}
+.rrrow .selwrap{flex:1;min-width:0}
+.rrarrow{color:var(--faint);flex:none}
+.rrrow .xbtn{flex:none}
+.rrlint{flex:none;font-size:10px;color:var(--partial);font-family:var(--mono)}
+.rrfoot{display:flex;align-items:center;gap:8px;margin-top:8px}
+.rrfoot .faint{font-size:11px}
 /* node-connection link health: a single glowing dot (green up / amber connecting / red down) */
 .lkdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown);--g:var(--unknown)}
 .lkdot.up{background:var(--online);--g:var(--online);animation:pulse 2.6s infinite}

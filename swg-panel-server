@@ -827,8 +827,9 @@ def apply_iface_meta(node_cfg, interfaces):
         ifc["mtu"] = ov.get("mtu") or 1280
         ifc["egress_ip"] = ov.get("egress_ip") or ""   # per-interface source/egress IP (blank = auto/MASQUERADE)
         ifc["wan_iface"] = ov.get("wan_iface") or ""   # per-interface egress WAN NIC (blank = auto-detect)
-        ifc["egress_mode"] = ov.get("egress_mode") or "direct"   # "direct" = SNAT out a NIC | "forward" = cascade to egress_node (P2)
+        ifc["egress_mode"] = ov.get("egress_mode") or "direct"   # direct = SNAT a NIC | forward = whole-iface cascade (P2) | smart = per-dest rules (P3)
         ifc["egress_node"] = ov.get("egress_node") or ""         # forward target node id
+        ifc["routing"] = ov.get("routing") or []                 # smart-routing rule list (P3): [{category,action,node}]
         ifc["system"] = bool(ov.get("system"))         # panel-managed mesh link interface (a node↔node connection)
         ifc["link_node"] = ov.get("link_node") or ""   # the peer node this link connects to (SPA resolves the name)
         ifc["drift"] = dict(ov.get("_drift") or {})    # settings edited directly on the server (key → the node's value)
@@ -1055,76 +1056,156 @@ def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None, snaps=N
 SWG_RT_BASE = 7000          # swg-owned policy-routing table id / ip-rule priority band [BASE, MAX]
 SWG_RT_MAX = 7099           # (one table id per egress target per node; priority == table number)
 
+# Phase 3 (v1): provider-level destination categories an operator can route per interface. Each maps to a
+# CIDR set (geoip/ASN) shipped to the node and loaded into an nftables interval set. Provider-level only —
+# e.g. "google" is all of Google's IP space (YouTube rides with it until the v2 domain tier separates them).
+SMART_CATEGORIES = {
+    "google":   "Google (incl. YouTube, in v1)",
+    "yandex":   "Yandex",
+    "vk":       "VK",
+    "telegram": "Telegram",
+    "cloudflare": "Cloudflare",
+    "meta":     "Meta (Facebook / Instagram / WhatsApp)",
+    "twitter":  "Twitter / X",
+    "netflix":  "Netflix",
+    "ru":       "Russia (country)",
+}
+
+
+def _validate_routing(routing, nodes, nid):
+    """Validate + normalize a smart-routing rule list. Returns (clean_rules, error). Each rule:
+    {enabled:bool, category:<in SMART_CATEGORIES>, action:"exit"|"direct"|"block", node:<exit nid if exit>}.
+    The implicit 'everything else → direct' default is NOT stored (appended at compile time)."""
+    if not isinstance(routing, list):
+        return None, "routing must be a list of rules"
+    clean = []
+    for r in routing:
+        if not isinstance(r, dict):
+            return None, "each routing rule must be an object"
+        cat = (r.get("category") or "").strip()
+        if cat not in SMART_CATEGORIES:
+            return None, f"unknown category '{cat}'"
+        act = (r.get("action") or "exit").strip()
+        if act not in ("exit", "direct", "block"):
+            return None, "rule action must be exit|direct|block"
+        out = {"enabled": r.get("enabled", True) is not False, "category": cat, "action": act}
+        if act == "exit":
+            en = (r.get("node") or "").strip()
+            if en not in nodes or en == nid:
+                return None, f"rule for '{cat}': exit node must be another known node"
+            out["node"] = en
+        clean.append(out)
+    return clean, None
+
 
 def _iface_subnet_from_snap(snaps, nid, iface):
     """A user interface's tunnel subnet as the node reported it (node_describe meta)."""
     return (((((snaps or {}).get(nid) or {}).get("interfaces") or {}).get(iface) or {}).get("meta") or {}).get("subnet") or ""
 
 
+def _link_devs(nodes, nid, P):
+    """(dev on nid → P, dev on P → nid, P's view of nid's /31 address) for the N↔P mesh link, or Nones."""
+    lr_n = ((nodes.get(nid) or {}).get("links") or {}).get(P) or {}
+    lr_p = ((nodes.get(P) or {}).get("links") or {}).get(nid) or {}
+    return lr_n.get("iface"), lr_p.get("iface"), lr_p.get("peer_address")
+
+
 def cascade_plan(nodes, snaps):
-    """Fleet-wide traffic-cascade plan. For every user interface set to egress_mode=forward, route ALL of
-    its client traffic through the existing N↔P mesh link and exit P's WAN (SNAT to egress_ip). Returns
-    per-node slices the sync loop hands to each node:
-        plans[nid] = {"forward":[{subnet,via_iface,table}],                      # entry node N
-                      "exit":   [{subnet,via_iface,table,egress_ip,wan_iface}],  # exit node P
+    """Fleet-wide egress plan covering BOTH Phase-2 whole-interface forward (egress_mode=forward) AND
+    Phase-3 per-destination smart routing (egress_mode=smart). Both route a user interface's traffic into
+    the existing N↔P mesh link and exit P's WAN; smart just scopes the entry match to a destination category
+    (an nftables set) instead of the whole subnet. They SHARE the per-node target→table band and the exit
+    records (the exit side is identical and reused by reconcile_cascade). Returns per-node slices:
+        plans[nid] = {"forward":[{subnet,via_iface,table}],                       # P2 entry (whole iface)
+                      "smart":  [{subnet,category,via_iface,table}],              # P3 entry (per dest cat)
+                      "exit":   [{subnet,via_iface,table,egress_ip,wan_iface}],   # exit node P (shared)
                       "allowed":{<link iface>: "<AllowedIPs>"}}                   # forward-aware mesh ACL
-    Safe by construction: a pair whose subnet/link isn't reported yet is skipped (forwarding pauses, never
-    errors), and only an explicit forward toggle produces any entry — the engine is inert otherwise."""
+    Safe by construction: a pair/rule whose subnet/link isn't reported yet is skipped (pauses, never errors);
+    only an explicit forward/smart toggle produces any entry — inert otherwise."""
     plans = {}
 
     def slot(nid):
-        return plans.setdefault(nid, {"forward": [], "exit": [], "allowed": {},
-                                      "_fwd_seen": set(), "_exit_seen": set(), "_targets": {}})
+        return plans.setdefault(nid, {"forward": [], "smart": [], "exit": [], "allowed": {},
+                                      "_fwd_seen": set(), "_smart_seen": set(), "_exit_seen": set(), "_targets": {}})
 
-    # 1) collect (N, P, S, I, X, W) for every forwarding user iface, and per-node target order for table ids
-    items = []
-    for nid, node in nodes.items():
-        targets = []                                   # ordered distinct egress targets of this node → stable table ids
-        for iface, ov in (node.get("ifaces") or {}).items():
-            if ov.get("system") or (ov.get("egress_mode") != "forward"):
-                continue
-            P = ov.get("egress_node")
-            if not P or P not in nodes:
-                continue
-            S = _iface_subnet_from_snap(snaps, nid, iface)
-            if not S:
-                continue                               # subnet not reported yet → pause this one (no error)
-            lr_n = (node.get("links") or {}).get(P) or {}
-            lr_p = ((nodes.get(P) or {}).get("links") or {}).get(nid) or {}
-            dev_n = lr_n.get("iface"); dev_p = lr_p.get("iface")
-            base_p = lr_p.get("peer_address")          # N's link address as seen by P (its return-route source base)
-            if not (dev_n and dev_p and base_p):
-                continue                               # link not staged yet
-            if P not in targets:
-                targets.append(P)
-            items.append((nid, P, S, dev_n, dev_p, base_p, (ov.get("egress_ip") or "").strip(),
-                          (ov.get("wan_iface") or "").strip()))
-        if targets:
-            slot(nid)["_targets"] = {p: SWG_RT_BASE + i for i, p in enumerate(sorted(targets))}
-
-    # 2) build forward (entry) + exit + AllowedIPs overrides
-    for (nid, P, S, dev_n, dev_p, base_p, X, W) in items:
-        T = slot(nid)["_targets"].get(P)
-        if T is None or T > SWG_RT_MAX:
-            continue                                   # exhausted the band (≥100 targets) → skip extras
-        sn = slot(nid)
-        if (S, dev_n, T) not in sn["_fwd_seen"]:
-            sn["_fwd_seen"].add((S, dev_n, T))
-            sn["forward"].append({"subnet": S, "via_iface": dev_n, "table": T})
-        sn["allowed"][dev_n] = "0.0.0.0/0"             # entry link carries everything (and accepts any-source returns)
+    def add_exit(P, S, dev_p, T, X, W, base_p):        # exit record + exit-side AllowedIPs (shared by forward + smart)
         sp = slot(P)
         if (S, dev_p, T) not in sp["_exit_seen"]:
             sp["_exit_seen"].add((S, dev_p, T))
             sp["exit"].append({"subnet": S, "via_iface": dev_p, "table": T, "egress_ip": X, "wan_iface": W})
-        # exit AllowedIPs: base link /31 end ∪ forwarded subnets — UNLESS an entry role already set this
-        # dev to 0.0.0.0/0 (a bidirectionally-forwarding link); /0 already accepts the return source.
-        if sp["allowed"].get(dev_p) != "0.0.0.0/0":
+        if sp["allowed"].get(dev_p) != "0.0.0.0/0":    # base /31 ∪ S, unless an entry role already set /0
             cur = set(filter(None, (sp["allowed"].get(dev_p) or (base_p + "/32")).split(",")))
             cur |= {base_p + "/32", S}
             sp["allowed"][dev_p] = ",".join(sorted(cur))
 
-    for sn in plans.values():                          # drop internal bookkeeping before returning
-        for k in ("_fwd_seen", "_exit_seen", "_targets"):
+    # 1) collect forward + smart items; per-node target order (UNION) → stable table ids shared by both modes
+    fwd_items, smart_items = [], []
+    for nid, node in nodes.items():
+        targets = []
+        for iface, ov in (node.get("ifaces") or {}).items():
+            if ov.get("system"):
+                continue
+            mode = ov.get("egress_mode")
+            if mode == "forward":
+                P = ov.get("egress_node")
+                if not P or P not in nodes:
+                    continue
+                S = _iface_subnet_from_snap(snaps, nid, iface)
+                if not S:
+                    continue
+                dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
+                if not (dev_n and dev_p and base_p):
+                    continue
+                if P not in targets:
+                    targets.append(P)
+                fwd_items.append((nid, P, S, dev_n, dev_p, base_p,
+                                  (ov.get("egress_ip") or "").strip(), (ov.get("wan_iface") or "").strip()))
+            elif mode == "smart":
+                S = _iface_subnet_from_snap(snaps, nid, iface)
+                if not S:
+                    continue
+                for r in (ov.get("routing") or []):
+                    if r.get("enabled", True) is False or r.get("action") != "exit":
+                        continue                       # disabled / direct / block → no mesh entry (direct = default route)
+                    P = r.get("node"); cat = r.get("category")
+                    if not P or P not in nodes or not cat:
+                        continue
+                    dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
+                    if not (dev_n and dev_p and base_p):
+                        continue
+                    if P not in targets:
+                        targets.append(P)
+                    smart_items.append((nid, P, S, cat, dev_n, dev_p, base_p))
+        if targets:
+            slot(nid)["_targets"] = {p: SWG_RT_BASE + i for i, p in enumerate(sorted(targets))}
+
+    # 2a) Phase-2 forward entries
+    for (nid, P, S, dev_n, dev_p, base_p, X, W) in fwd_items:
+        T = slot(nid)["_targets"].get(P)
+        if T is None or T > SWG_RT_MAX:
+            continue
+        sn = slot(nid)
+        if (S, dev_n, T) not in sn["_fwd_seen"]:
+            sn["_fwd_seen"].add((S, dev_n, T))
+            sn["forward"].append({"subnet": S, "via_iface": dev_n, "table": T})
+        sn["allowed"][dev_n] = "0.0.0.0/0"
+        add_exit(P, S, dev_p, T, X, W, base_p)
+
+    # 2b) Phase-3 smart entries (category-scoped; exit = MASQUERADE out P's WAN, egress_ip "")
+    for (nid, P, S, cat, dev_n, dev_p, base_p) in smart_items:
+        T = slot(nid)["_targets"].get(P)
+        if T is None or T > SWG_RT_MAX:
+            continue
+        sn = slot(nid)
+        key = (S, cat, dev_n, T)
+        if key not in sn["_smart_seen"]:
+            sn["_smart_seen"].add(key)
+            sn["smart"].append({"subnet": S, "category": cat, "via_iface": dev_n, "table": T})
+        sn["allowed"][dev_n] = "0.0.0.0/0"
+        add_exit(P, S, dev_p, T, "", "", base_p)
+
+    for sn in plans.values():
+        for k in ("_fwd_seen", "_smart_seen", "_exit_seen", "_targets"):
             sn.pop(k, None)
     return plans
 
@@ -2094,17 +2175,27 @@ def api(method, path, qs, body, deps):
                 ov["wan_iface"] = w
             else:
                 ov.pop("wan_iface", None)
-        if "egress_mode" in body:                        # "direct" = SNAT out a NIC | "forward" = cascade to egress_node (routing is Phase 2)
+        if "egress_mode" in body:                        # direct = SNAT a NIC | forward = whole-iface cascade (P2) | smart = per-destination rules (P3)
             mode = (body.get("egress_mode") or "direct").strip()
-            if mode not in ("direct", "forward"):
-                return 400, {"ok": False, "error": "egress_mode must be direct|forward", "code": "bad_request"}
+            if mode not in ("direct", "forward", "smart"):
+                return 400, {"ok": False, "error": "egress_mode must be direct|forward|smart", "code": "bad_request"}
             if mode == "forward":
                 en = (body.get("egress_node") or "").strip()
                 if en not in nodes or en == nid:
                     return 400, {"ok": False, "error": "egress_node must be another known node", "code": "bad_request"}
-                ov["egress_mode"] = "forward"; ov["egress_node"] = en
+                ov["egress_mode"] = "forward"; ov["egress_node"] = en; ov.pop("routing", None)
+            elif mode == "smart":
+                rules, err = _validate_routing(body.get("routing"), nodes, nid)
+                if err:
+                    return 400, {"ok": False, "error": err, "code": "bad_request"}
+                ov["egress_mode"] = "smart"; ov["routing"] = rules; ov.pop("egress_node", None)
             else:
-                ov["egress_mode"] = "direct"; ov.pop("egress_node", None)
+                ov["egress_mode"] = "direct"; ov.pop("egress_node", None); ov.pop("routing", None)
+        elif "routing" in body and ov.get("egress_mode") == "smart":   # rule-only edit (mode already smart)
+            rules, err = _validate_routing(body.get("routing"), nodes, nid)
+            if err:
+                return 400, {"ok": False, "error": err, "code": "bad_request"}
+            ov["routing"] = rules
         for k in ("listen_port", "awg_params"):     # a user-set value re-asserts: drop its drift + synced so it re-pushes
             if k in body:
                 (ov.get("_synced") or {}).pop(k, None); (ov.get("_drift") or {}).pop(k, None)
@@ -2180,10 +2271,16 @@ def api(method, path, qs, body, deps):
             w = body["wan_iface"].strip()
             if " " not in w and "/" not in w:
                 ov["wan_iface"] = w
-        if (body.get("egress_mode") or "direct").strip() == "forward":   # cascade exit to another node (routing is Phase 2)
+        _cm = (body.get("egress_mode") or "direct").strip()
+        if _cm == "forward":                              # cascade exit to another node (routing is Phase 2)
             en = (body.get("egress_node") or "").strip()
             if en in nodes and en != nid:
                 ov["egress_mode"] = "forward"; ov["egress_node"] = en
+        elif _cm == "smart":                              # per-destination smart routing (Phase 3)
+            rules, err = _validate_routing(body.get("routing"), nodes, nid)
+            if err:
+                return 400, {"ok": False, "error": err, "code": "bad_request"}
+            ov["egress_mode"] = "smart"; ov["routing"] = rules
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Creating interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
@@ -2773,7 +2870,7 @@ class Handler(BaseHTTPRequestHandler):
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {})   # Phase 2: whole-fleet forward plan
-        my_plan = cas_plans.get(nid) or {"forward": [], "exit": [], "allowed": {}}
+        my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "allowed": {}}
         for _ifn, _ps in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
                                                my_plan.get("allowed"), Handler.deps.get("node_snaps")).items():
             desired.setdefault(_ifn, []).extend(_ps)   # node↔node mesh peers (endpoint + keepalive; cascade-aware AllowedIPs)
@@ -3012,6 +3109,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "turn": node.get("turn") or {}, "turn_onboard": node.get("turn_onboard") or [],
                                 "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
+                                "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
+                                          "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])})},
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):
