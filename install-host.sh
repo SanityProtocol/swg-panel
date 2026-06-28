@@ -1015,9 +1015,37 @@ fi
 # ───────────────────────── nodes.json + fleet.json ─────────────────────────
 info "nodes.json + fleet.json"
 if [ "$HOST_HAS_WG" = yes ] && [ -n "$LOCAL_TOKHASH" ]; then
+  # STABLE co-located node id so its health-<id>.rrd (graph history) + stats survive reinstalls. Reuse the
+  # id already in nodes.json (matched by display name) if present, else derive a DETERMINISTIC one from the
+  # machine-id. Writing the entry id-keyed (id == key) stops migrate_node_ids minting a fresh RANDOM id every
+  # re-enroll — which orphaned the old RRD and reset the graphs on each install.
+  LOCAL_NODE_ID="$(python3 - "$PREFIX$STATE_DIR/nodes.json" "$HOST_NODE_NAME" 2>/dev/null <<'PYID'
+import json, sys, hashlib
+path, name = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(path)); assert isinstance(d, dict)
+except Exception:
+    d = {}
+nid = next((v.get("id") or k for k, v in d.items() if isinstance(v, dict) and v.get("name") == name), "")
+if not nid:
+    mid = ""
+    for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            mid = open(p).read().strip()
+        except Exception:
+            mid = ""
+        if mid:
+            break
+    if not mid:
+        import socket; mid = socket.gethostname()
+    nid = hashlib.sha256((mid + "|swg-local-node").encode()).hexdigest()[:12]
+print(nid)
+PYID
+)"
+  [ -n "$LOCAL_NODE_ID" ] || LOCAL_NODE_ID="$HOST_NODE_NAME"
   writef "$STATE_DIR/nodes.json" 600 <<EOF
 {
-  "${HOST_NODE_NAME}": { "name": "${HOST_NODE_NAME}", "color": "${PALETTE[0]}", "endpoint_host": "", "stats_file": "stats-${HOST_NODE_NAME}.json", "token_hash": "${LOCAL_TOKHASH}", "created": $(date +%s 2>/dev/null || echo 0) }
+  "${LOCAL_NODE_ID}": { "id": "${LOCAL_NODE_ID}", "name": "${HOST_NODE_NAME}", "color": "${PALETTE[0]}", "endpoint_host": "", "stats_file": "stats-${LOCAL_NODE_ID}.json", "token_hash": "${LOCAL_TOKHASH}", "created": $(date +%s 2>/dev/null || echo 0) }
 }
 EOF
 elif [ ! -f "$PREFIX$STATE_DIR/nodes.json" ]; then

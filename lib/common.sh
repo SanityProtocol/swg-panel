@@ -77,7 +77,7 @@ _sum_detect(){ local hm="" nm=""   # echoes "<host_method> <node_method>", each 
 _sum_note(){ case "$1" in docker) echo "$(b 'newly converted') (was bare-metal)";; *) echo "$(b 'newly converted') (was docker)";; esac; }
 
 summary_host_block(){   # <method> <converted?yes|no>
-  local m="$1" conv="$2" url login tls ver mlabel note="" e dom port base sch ps
+  local m="$1" conv="$2" url login tls ver mlabel note="" e dom port base sch ps reset
   if [ "$m" = docker ]; then e="$_SUM_DDIR/.env"; mlabel=Docker
     dom="$(_sum_get "$e" PANEL_DOMAIN)"; port="$(_sum_get "$e" PANEL_PORT)"; base="$(_sum_get "$e" PANEL_BASE)"; tls="$(_sum_get "$e" TLS)"
     login="$(_sum_get "$e" PANEL_USER)"; ver="$(docker exec swg-panel cat /opt/swg-panel/VERSION 2>/dev/null | head -1 || true)"
@@ -90,7 +90,9 @@ summary_host_block(){   # <method> <converted?yes|no>
   echo "${C_BLUE:-}▸${RESET:-} $(b "$mlabel SWG Host")${ver:+ $(b "v$ver")}$note"
   echo; echo "  $(b 'Panel') (login + the $(b "${tls:-?}") cert preserved):"; echo
   printf '    %-9s%s\n' "URL"     "$(bb "$url")"
-  printf '    %-9s%s\n' "Login"   "$(b "${login:-admin}")  (unchanged)"
+  if [ "$m" = docker ]; then reset="docker exec -it swg-panel /opt/swg-panel/swg-panel-server passwd"
+  else reset="sudo /opt/swg-panel/swg-panel-server passwd"; fi
+  printf '    %-9s%s\n' "Login"   "$(b "${login:-admin}")  (to reset the password run: $(b "$reset"))"
   printf '    %-9s%s\n' "TLS"     "$(b "${tls:-?}")"
   if [ "$m" = docker ]; then
     printf '    %-9s%s\n' "Config"  "$(b "nano $_SUM_DDIR/.env")"

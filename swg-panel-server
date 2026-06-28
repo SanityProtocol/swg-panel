@@ -28,6 +28,7 @@ import json
 import os
 import random
 import shutil
+import sys
 import signal
 import ssl
 import struct
@@ -3078,7 +3079,40 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def passwd_cmd(argv):
+    """`swg-panel-server passwd [user]` — regenerate the pbkdf2 login file (for a locked-out reset from
+    the host). Keeps the existing username unless one is given; prompts for the new password twice."""
+    import getpass
+    authfile = os.environ.get("SWG_PANEL_AUTH") or "/etc/swg-panel/auth"
+    user = argv[2] if len(argv) > 2 else None
+    if not user:
+        with contextlib.suppress(OSError):
+            with open(authfile) as f:
+                user = (f.readline() or "").split(":", 1)[0].strip()
+    user = (user or "admin").strip()
+    if ":" in user:
+        raise SystemExit("username can't contain a colon")
+    pw = getpass.getpass(f"New password for '{user}': ")
+    if len(pw) < 8:
+        raise SystemExit("password must be at least 8 characters")
+    if getpass.getpass("Confirm new password: ") != pw:
+        raise SystemExit("passwords don't match")
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, 200000)
+    line = f"{user}:pbkdf2_sha256$200000${base64.b64encode(salt).decode()}${base64.b64encode(h).decode()}\n"
+    try:
+        with open(authfile, "w") as f:
+            f.write(line)
+        with contextlib.suppress(OSError):
+            os.chmod(authfile, 0o640)
+    except OSError as e:
+        raise SystemExit(f"cannot write {authfile}: {e}\n(run with sudo, or set SWG_PANEL_AUTH to the right path)")
+    print(f"updated login for '{user}'. Apply now: systemctl restart swg-panel-server")
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "passwd":   # host-side password reset, no server start
+        return passwd_cmd(sys.argv)
     fleet = load_json(FLEET_PATH, None)
     if fleet is None:
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
