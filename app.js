@@ -4258,14 +4258,25 @@ function NodeEditSheet({ node }) {
   const ips = node.ips || [];
   const rsv = (Store.panelSettings || {}).reserved || {};   // panel-wide defaults → shown as placeholders
   const nameBad = name.trim() && !V.nodeName(name);
-  const save = async () => {
-    if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
+  const meshChanged = meshSubnet.trim() !== (node.mesh_subnet || "")
+    || meshPort.trim() !== (node.mesh_port ? String(node.mesh_port) : "")
+    || meshPrefix.trim() !== (node.mesh_prefix || "");
+  const doSave = () => {
     closeModal();   // optimistic: card reflects the rename immediately (name is just a label — no refs to migrate)
     mutate({
       key: "node:" + node.id,
       patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; n.endpoint_host = ingress; n.mesh_port = meshPort; n.mesh_subnet = meshSubnet; n.mesh_prefix = meshPrefix; n.default_egress_ip = defEgress; n.panel_ip = panelIp; } },
       call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: meshPort, mesh_subnet: meshSubnet, mesh_prefix: meshPrefix, default_egress_ip: defEgress, panel_ip: panelIp }),
     });
+  };
+  const save = async () => {
+    if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
+    if (meshChanged) {   // re-provisioning bounces this node's mesh links → confirm first
+      return pushModal(html`<${ConfirmSheet} title="Re-provision this node's mesh links?" confirmLabel="Re-provision" warn=${true}
+        body=${"Changing " + node.name + "'s mesh subnet/port/prefix rebuilds all of its node-to-node links with the new settings. " + node.name + " will briefly drop off the mesh (and any cascade/smart traffic routed through it pauses) until every peer pulls the new config and reconnects — usually a few seconds. Other nodes' links to each other are unaffected."}
+        onConfirm=${doSave}/>`);
+    }
+    doSave();
   };
   return html`<${Sheet} title=${"Node settings · " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
@@ -4282,7 +4293,7 @@ function NodeEditSheet({ node }) {
       <div class="field"><label>Mesh subnet</label><input value=${meshSubnet} onInput=${e => setMeshSubnet(e.target.value)} placeholder=${rsv.mesh_subnet || "10.255.0.0/16"}/></div>
       <div class="field"><label>Mesh prefix</label><input value=${meshPrefix} onInput=${e => setMeshPrefix(e.target.value)} placeholder=${rsv.iface_prefix || "swg_"}/></div>
     </div>
-    <div class="hint" style="margin-top:-4px">Per-node mesh overrides — applied to <b>new</b> links only (existing links keep their address/port/name). Blank = the panel default shown.</div>
+    <div class="hint" style="margin-top:-4px">Per-node mesh overrides. <b>Changing the subnet, port, or prefix re-provisions this node's mesh links</b> — it briefly drops off the mesh while every peer pulls the new config and reconnects. Blank = the panel default shown.</div>
     <div class="field" style="margin-top:14px"><label>Default egress IP <span class="faint" style="text-transform:none;letter-spacing:0">— direct internet exit</span></label>
       <${NodeIpPick} ips=${ips} value=${defEgress} onChange=${setDefEgress} auto="Auto (MASQUERADE)"/>
       <div class="hint">The fallback source IP this node SNATs to when traffic exits to the internet here — applied to any interface (and traffic received from other nodes) that doesn't set its own egress IP. Interfaces with their own egress IP, and cascading traffic that exits elsewhere, are unaffected.</div></div>

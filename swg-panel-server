@@ -911,12 +911,12 @@ def node_mesh_cfg(deps, node):
     return mc
 
 
-def reserved_conflict(deps, nodes, subnet=None, port=None, name=None):
-    """Reject user interfaces / turn-proxies that collide with the panel-managed mesh's reserved ranges
-    (subnet / port band / iface-name prefix). Reserves the configured mesh subnet AND the /16 around every
-    link subnet actually in use, so an existing fleet on a different range stays protected too. Returns an
-    error string, or None if there's no conflict."""
-    mc = mesh_cfg(deps)
+def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None):
+    """Reject user interfaces / turn-proxies that collide with the mesh's reserved ranges (subnet / port
+    band / iface-name prefix) — evaluated against THIS node's EFFECTIVE mesh config (per-node overrides over
+    the panel default). Also reserves the /16 around every in-use link subnet across the fleet, so an
+    existing fleet on a different range stays protected. Returns an error string, or None if no conflict."""
+    mc = node_mesh_cfg(deps, node)
     prefix = mc.get("iface_prefix") or "swg_"
     if name and str(name).startswith(prefix):
         return f"names starting with '{prefix}' are reserved for system mesh links"
@@ -1003,10 +1003,37 @@ def _alloc_link_subnet(nodes, mesh_subnet):
     return None
 
 
+def _link_id(nodes, a, b):
+    """Deterministic link id (same from either end). Folds in each end's `mesh_gen` so bumping a node's
+    generation (on a mesh-settings change) yields a NEW id → new iface names, so a re-provision is a clean
+    delete-old + create-new rather than a same-name address swap."""
+    lo, hi = sorted((a, b))
+    glo = int((nodes.get(lo) or {}).get("mesh_gen") or 0)
+    ghi = int((nodes.get(hi) or {}).get("mesh_gen") or 0)
+    return hashlib.sha256(f"{lo}|{glo}|{hi}|{ghi}".encode()).hexdigest()
+
+
+def mesh_reprovision_node(nodes, nid):
+    """Re-provision node `nid`'s mesh links: bump its generation and tear down its current links on BOTH
+    ends (stage iface deletes + drop the link records). reconcile_mesh (called next) then rebuilds every
+    pair — `nid`'s links come back with NEW iface names + `nid`'s current per-node mesh config (subnet /
+    port / prefix). `nid` is briefly off the mesh until peers pull the new config and reconnect."""
+    me = nodes.get(nid) or {}
+    me["mesh_gen"] = int(me.get("mesh_gen") or 0) + 1
+    for peer, lr in list((me.get("links") or {}).items()):
+        for who, link in ((nid, lr), (peer, ((nodes.get(peer) or {}).get("links") or {}).get(nid))):
+            if link and link.get("iface"):
+                (nodes[who].get("create") or {}).pop(link["iface"], None)   # cancel any pending create for the old iface
+                nodes[who].setdefault("delete", {})[link["iface"]] = {"at": int(time.time())}
+                (nodes[who].get("ifaces") or {}).pop(link["iface"], None)
+        ((nodes.get(peer) or {}).get("links") or {}).pop(nid, None)
+    me["links"] = {}
+
+
 def _mesh_make_link(nodes, snaps, deps, a, b, mc):
     """Create the link between nodes a and b on BOTH ends (link records + create requests + matching
     awg_params/psk overrides). Caller ensures the pair isn't already linked."""
-    link_id = hashlib.sha256(("|".join(sorted((a, b)))).encode()).hexdigest()
+    link_id = _link_id(nodes, a, b)
     x_nid = min(a, b)                            # the smaller id is the .0 end (deterministic, both ends agree)
     sub = _alloc_link_subnet(nodes, node_mesh_cfg(deps, nodes[x_nid])["subnet"])   # link /31 from the x-end's mesh subnet
     if sub is None:
@@ -2214,7 +2241,10 @@ def api(method, path, qs, body, deps):
                     except ValueError:
                         return 400, {"ok": False, "error": k + " must be a valid IPv4 address (or blank)", "code": "bad_request"}
                 nodes[nid][k] = v
-        if "mesh_port" in body:                        # per-node mesh overrides (new links only; blank = panel default)
+        # per-node mesh overrides — a CHANGE re-provisions THIS node's links (it briefly drops off the mesh
+        # while peers reconnect with the new config); a blank value falls back to the panel default.
+        _mesh_before = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
+        if "mesh_port" in body:
             mp = (str(body.get("mesh_port") or "")).strip()
             if mp and not (mp.isdigit() and 1 <= int(mp) <= 65535):
                 return 400, {"ok": False, "error": "mesh port must be 1–65535 (or blank)", "code": "bad_request"}
@@ -2229,6 +2259,11 @@ def api(method, path, qs, body, deps):
             nodes[nid]["mesh_subnet"] = ms
         if "mesh_prefix" in body:
             nodes[nid]["mesh_prefix"] = re.sub(r"[^a-z0-9_]", "", (body.get("mesh_prefix") or "").lower())[:6]
+        _mesh_after = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
+        if _mesh_after != _mesh_before:                # subnet / port / prefix changed → re-provision this node's links
+            mesh_reprovision_node(nodes, nid)
+            reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # rebuild its links with the new config
+            ev_append(roster_path, "node", nid, "Re-provisioned mesh links", nodes[nid].get("name", nid))
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
@@ -2301,7 +2336,7 @@ def api(method, path, qs, body, deps):
                     return 400, {"ok": False, "error": "port must be a number", "code": "bad_request"}
                 if not (1 <= p <= 65535):
                     return 400, {"ok": False, "error": "port must be 1–65535", "code": "bad_request"}
-                rc = reserved_conflict(deps, nodes, port=p)
+                rc = reserved_conflict(deps, nodes, nodes[nid], port=p)
                 if rc:
                     return 400, {"ok": False, "error": rc, "code": "bad_request"}
                 ov["listen_port"] = p
@@ -2425,7 +2460,7 @@ def api(method, path, qs, body, deps):
             ipaddress.ip_network(subnet, strict=False)
         except Exception:
             return 400, {"ok": False, "error": "subnet must be a CIDR like 10.8.0.0/24", "code": "bad_request"}
-        rc = reserved_conflict(deps, nodes, subnet=subnet, port=body.get("listen_port"), name=iface)
+        rc = reserved_conflict(deps, nodes, nodes[nid], subnet=subnet, port=body.get("listen_port"), name=iface)
         if rc:
             return 400, {"ok": False, "error": rc, "code": "bad_request"}
         cmd = ["wg"] if (body.get("protocol") or "awg").lower() == "wg" else ["awg"]
@@ -2549,7 +2584,7 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "a fork + owner repo are required", "code": "bad_request"}
         if not _ipport(listen) or not _ipport(connect):
             return 400, {"ok": False, "error": "listen and connect must be ip:port", "code": "bad_request"}
-        rc = reserved_conflict(deps, nodes, port=listen.rsplit(":", 1)[1])
+        rc = reserved_conflict(deps, nodes, nodes[nid], port=listen.rsplit(":", 1)[1])
         if rc:
             return 400, {"ok": False, "error": rc, "code": "bad_request"}
         svc = "vk-turn-proxy-" + fork + "-" + listen.rsplit(":", 1)[1]
