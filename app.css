@@ -890,14 +890,15 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .mh-tag-hdr{gap:7px}
 .mh-lbl-hdr{font-size:14px;font-weight:600;color:var(--ink);letter-spacing:-.01em}   /* match the panel header h3 */
 .nm-meshitem{margin-right:26px;display:inline-flex;align-items:center}   /* clear gap before CPU load */
-.mh-num{font-family:var(--mono);font-weight:500;font-size:12px}          /* numbers NOT bold */
+.mh-num{font-family:var(--mono);font-weight:400;font-size:12px}          /* numbers NOT bold */
 .mh-num-hdr{font-size:14px;font-weight:600}
 .mh-num.ok{color:var(--online)} .mh-num.warn{color:#F0913C} .mh-num.bad{color:var(--dangling)} .mh-num.off{color:var(--faint)}
-.mh-ar{font-weight:900;line-height:1;font-size:14px}
+.mh-ar{font-weight:900;line-height:1;font-size:14px;-webkit-text-stroke:.6px currentColor}   /* bold arrow glyphs */
+.mh-tag .mh-ar{transform:translateY(-1px)}   /* nudge up to sit on the label's baseline */
 .mh-ar.mh-down.s-up{color:var(--online)} .mh-ar.mh-down.s-connecting{color:var(--partial)} .mh-ar.mh-down.s-down{color:var(--dangling)}
 .mh-ar.mh-up.s-up{color:var(--ready)} .mh-ar.mh-up.s-connecting{color:var(--partial)} .mh-ar.mh-up.s-down{color:var(--dangling)}
-.mh-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:3px 2px}
-.mh-rn{font-family:var(--mono);font-size:12.5px}
+.mh-row{display:flex;align-items:center;justify-content:flex-start;gap:12px;padding:4px 8px}   /* names align with the title (8px) */
+.mh-rn{font-family:var(--mono);font-size:12.5px;flex:none}
 .mh-rn.mh-bold{font-weight:700} .mh-rn.mh-dim{opacity:.5}
 .mh-rar{display:inline-flex;gap:7px;flex:none}
 .mh-rar .mh-ar{font-size:16px;text-shadow:0 0 9px currentColor}   /* bigger, glowing arrows in the bubble */

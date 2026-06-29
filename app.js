@@ -3204,7 +3204,8 @@ function UsageBar({ value, total, color }) {
 // interface tags for a node: each iface coloured by protocol, linking to its detail.
 function ifaceTags(node) {
   const meta = Store.describe[node] || {};
-  return Object.keys(meta).map(ifn => {
+  const pfx = (Store.panelSettings || {}).reserved?.iface_prefix || "swg_";
+  return Object.keys(meta).filter(ifn => !meta[ifn].system && !ifn.startsWith(pfx) && !ifn.startsWith("swg_")).map(ifn => {
     const op = Store.ifaceOp[node + "|" + ifn];   // start/stop/restart in flight → show it here too (optimistic, set on click)
     if (op && op.phase === "busy") return html`<a class="tg tg-busy" href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(ifn)} onClick=${e => e.stopPropagation()}><${Ic} i="clock"/>${ifn} ${IFOP_BUSY[op.verb] || op.verb}</a>`;
     const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
