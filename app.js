@@ -1694,12 +1694,15 @@ function suggestIface(node, proto) {
 // next free 10.X.0.0/24 tunnel subnet: highest used second octet + 1 (default 10.8) (mirrors install-node.sh next_free_subnet)
 function suggestSubnet(node) {
   let hi = 7;   // → first suggestion 10.8.0.0/24
-  for (const b of Object.values((Store.stats[node] || {}).interfaces || {})) {
-    const s = (b.meta || {}).subnet || (b.meta || {}).address || "";
-    const m = /^10\.(\d{1,3})\./.exec(s); if (m) hi = Math.max(hi, Number(m[1]));
+  const pfx = (Store.panelSettings || {}).reserved?.iface_prefix || "swg_";
+  const isSys = ifn => ifn.startsWith(pfx) || ifn.startsWith("swg_");
+  const bump = s => { const m = /^10\.(\d{1,3})\./.exec(s || ""); if (m && Number(m[1]) < 255) hi = Math.max(hi, Number(m[1])); };   // skip 10.255.x (reserved mesh range)
+  for (const [ifn, b] of Object.entries((Store.stats[node] || {}).interfaces || {})) {
+    if (isSys(ifn)) continue;   // ignore system mesh links (10.255.x.x) — count only user wg/awg interfaces
+    bump((b.meta || {}).subnet || (b.meta || {}).address || "");
   }
-  for (const p of pendingIf(node)) { const m = /^10\.(\d{1,3})\./.exec(p.subnet || ""); if (m) hi = Math.max(hi, Number(m[1])); }   // include the ones being created
-  return "10." + (hi + 1) + ".0.0/24";
+  for (const p of pendingIf(node)) bump(p.subnet);   // include the ones being created
+  return "10." + Math.min(hi + 1, 254) + ".0.0/24";
 }
 // Two-dropdown egress: where an interface's traffic exits — Auto, Direct out a NIC, or Forward (cascade)
 // to another node — plus the source IP (this node's, or the TARGET node's for forward). value =
