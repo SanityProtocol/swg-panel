@@ -53,7 +53,7 @@ function randWrapKey() { const a = new Uint8Array(32); crypto.getRandomValues(a)
 function IpPicker({ ips, sel, setSel, custom, setCustom, placeholder }) {
   return html`<${Fragment}>
     <select class="selwrap" value=${sel} onChange=${e => setSel(e.target.value)}>
-      ${(ips || []).map(ip => html`<option value=${ip}>${ip}</option>`)}
+      ${(ips || []).filter(ip => !isPrivIp(ip)).map(ip => html`<option value=${ip}>${ip}</option>`)}
       <option value="__custom__">Custom IP / Host…</option>
     </select>
     ${sel === "__custom__" ? html`<input style="margin-top:6px" value=${custom} onInput=${e => setCustom(e.target.value)} placeholder=${placeholder || "203.0.113.7"} autocomplete="off"/>` : null}
@@ -965,18 +965,18 @@ const mhArrow = (dir, status) => html`<span class=${"mh-ar mh-" + dir + " s-" + 
 function MeshStat({ nodeId, mode }) {
   const h = meshHealth(nodeId);
   if (!h.total) return null;
-  const num = ok => html`<b class=${"mh-num " + meshTone(ok, h.total)}>${ok}/${h.total}</b>`;
+  const num = ok => html`<b class=${"mh-num " + (mode === "in" ? "mh-num-hdr " : "") + meshTone(ok, h.total)}>${ok}/${h.total}</b>`;
   const ordered = (Store.nodes || []).filter(n => h.peers.some(p => p.peer === n.id));
-  const row = n => {
+  const row = n => {   // node name FIRST, then the glowing arrow(s)
     const p = h.peers.find(x => x.peer === n.id);
     const nameCls = p.in === "up" ? "mh-bold" : p.in === "down" ? "mh-dim" : "";
-    return html`<div class="mh-row"><span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span><span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span></div>`;
+    return html`<div class="mh-row"><span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span><span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span></div>`;
   };
   const trigger = mode === "in"
-    ? html`<span class="mh-tag"><span class="mh-lbl">This node's mesh status:</span> ${num(h.okIn)}</span>`
-    : html`<span class="mh-tag"><span class="mh-lbl">Mesh link</span><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn)}<span class="mh-ar mh-up s-up">↑</span>${num(h.okOut)}</span>`;
+    ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">This node's mesh status:</span> ${num(h.okIn)}</span>`
+    : html`<span class="mh-tag"><span class="nm-l">Mesh link</span><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn)}<span class="mh-ar mh-up s-up">↑</span>${num(h.okOut)}</span>`;
   return html`<${Popover} cls="mh-pop" trigger=${trigger}>
-    <div class="onpop-h">${mode === "in" ? "Inbound mesh links" : "Mesh links (↓ in · ↑ out)"} · ${h.total}</div>
+    <div class="onpop-h">${mode === "in" ? "Inbound links" : "Mesh connections"}</div>
     ${ordered.map(row)}
   </${Popover}>`;
 }
@@ -2088,7 +2088,9 @@ function EditIfaceSheet({ node, iface }) {
       </span></div>` : null}
     <div class="field ipk-field subnet-row"><label>Host tunnel IP</label><span class="ipk-val"><b>${(meta.address || "").split("/")[0] || meta.subnet || "—"}</b> <span class="faint">(set at creation — delete & recreate to change)</span></span></div>
     <div class="row2">
-      <div class="field"><label>Endpoint host / IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial — config-facing only</div></div>
+      <div class="field"><label>Endpoint host / IP</label>
+        <${NodeIpPick} ips=${nrec.ips || []} value=${host} onChange=${setHost} auto="Auto (node's detected address)" customPlaceholder="IP or hostname — e.g. vpn.example.com"/>
+        <div class="hint">What clients dial — config-facing only</div></div>
       <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"})</div></div>
     </div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg}/>
@@ -4328,7 +4330,7 @@ const ipLabel = ip => isPrivIp(ip) ? ip + " (private)" : ip;
 // IP picker: only the node's PUBLIC (internet-routable) IPs are listed; internal/private IPs are hidden.
 // A "Use custom IP…" entry reveals a free-text field for any address not in the list (also how an already-set
 // private/custom value is shown — preserved, editable). value "" = the Auto option.
-function NodeIpPick({ ips, value, onChange, auto }) {
+function NodeIpPick({ ips, value, onChange, auto, customPlaceholder }) {
   const pub = (ips || []).filter(ip => !isPrivIp(ip));
   const valIsCustom = !!value && !pub.includes(value);
   const [custom, setCustom] = useState(valIsCustom);
@@ -4338,9 +4340,9 @@ function NodeIpPick({ ips, value, onChange, auto }) {
     <select class="selwrap" value=${sel} onChange=${e => onSel(e.target.value)}>
       <option value="">${auto}</option>
       ${pub.map(ip => html`<option value=${ip}>${ip}</option>`)}
-      <option value="__custom__">Use custom IP…</option>
+      <option value="__custom__">Use custom…</option>
     </select>
-    ${sel === "__custom__" ? html`<input class="ipk-custom" placeholder="Custom IP — e.g. 203.0.113.5" value=${value || ""} onInput=${e => onChange(e.target.value)} spellcheck="false" autocomplete="off"/>` : null}
+    ${sel === "__custom__" ? html`<input class="ipk-custom" placeholder=${customPlaceholder || "Custom IP — e.g. 203.0.113.5"} value=${value || ""} onInput=${e => onChange(e.target.value)} spellcheck="false" autocomplete="off"/>` : null}
   </${Fragment}>`;
 }
 function NodeEditSheet({ node }) {
