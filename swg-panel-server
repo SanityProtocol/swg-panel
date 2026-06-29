@@ -898,6 +898,19 @@ def mesh_cfg(deps):
             "iface_prefix": (r.get("iface_prefix") or f.get("mesh_iface_prefix") or "swg_")}
 
 
+def node_mesh_cfg(deps, node):
+    """Global mesh_cfg with this node's per-node overrides applied (Node settings → mesh subnet / port /
+    prefix). New links involving the node use these; empty fields fall back to the global (panel) values."""
+    mc = dict(mesh_cfg(deps)); n = node or {}
+    if n.get("mesh_subnet"):
+        mc["subnet"] = n["mesh_subnet"]
+    if str(n.get("mesh_port") or "").strip().isdigit():
+        mc["port_base"] = int(n["mesh_port"])
+    if n.get("mesh_prefix"):
+        mc["iface_prefix"] = n["mesh_prefix"]
+    return mc
+
+
 def reserved_conflict(deps, nodes, subnet=None, port=None, name=None):
     """Reject user interfaces / turn-proxies that collide with the panel-managed mesh's reserved ranges
     (subnet / port band / iface-name prefix). Reserves the configured mesh subnet AND the /16 around every
@@ -994,24 +1007,25 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc):
     """Create the link between nodes a and b on BOTH ends (link records + create requests + matching
     awg_params/psk overrides). Caller ensures the pair isn't already linked."""
     link_id = hashlib.sha256(("|".join(sorted((a, b)))).encode()).hexdigest()
-    sub = _alloc_link_subnet(nodes, mc["subnet"])
+    x_nid = min(a, b)                            # the smaller id is the .0 end (deterministic, both ends agree)
+    sub = _alloc_link_subnet(nodes, node_mesh_cfg(deps, nodes[x_nid])["subnet"])   # link /31 from the x-end's mesh subnet
     if sub is None:
         return False
     hosts = list(sub)                            # /31 → [.0, .1]
     psk = gen_psk(); awg = gen_awg_params()
-    x_nid = min(a, b)                            # the smaller id is the .0 end (deterministic, both ends agree)
     for nid, peer in ((a, b), (b, a)):
         n = nodes[nid]
-        iface = _link_iface_name(n, link_id, mc.get("iface_prefix") or "swg_")
+        nmc = node_mesh_cfg(deps, n)             # per-node prefix / port base
+        iface = _link_iface_name(n, link_id, nmc.get("iface_prefix") or "swg_")
         mine, theirs = (hosts[0], hosts[1]) if nid == x_nid else (hosts[1], hosts[0])
-        port = _alloc_port(_used_ports(nodes, snaps, nid), mc["port_base"])
+        port = _alloc_port(_used_ports(nodes, snaps, nid), nmc["port_base"])
         n.setdefault("links", {})[peer] = {
             "iface": iface, "link_id": link_id, "subnet": str(sub),
             "address": str(mine), "peer_address": str(theirs),
             "listen_port": port, "psk": psk, "role": "x" if nid == x_nid else "y"}
         n.setdefault("create", {})[iface] = {
             "cmd": ["awg"], "subnet": str(sub), "address": f"{mine}/31",
-            "listen_port": port, "mtu": mc["mtu"], "table": "off"}   # Table=off: cascade manages routing, no /0 hijack
+            "listen_port": port, "mtu": nmc["mtu"], "table": "off"}   # Table=off: cascade manages routing, no /0 hijack
         n.setdefault("ifaces", {})[iface] = {"awg_params": dict(awg), "system": True, "link_node": peer}
     ev_append(deps["roster_path"], "node", a, "Linked node", nodes[b].get("name", b))
     return True
@@ -1587,6 +1601,7 @@ def api(method, path, qs, body, deps):
                         "turn_order": c.get("turn_order") or [],
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "default_egress_ip": c.get("default_egress_ip") or "", "panel_ip": c.get("panel_ip") or "",
+                        "mesh_port": c.get("mesh_port") or "", "mesh_subnet": c.get("mesh_subnet") or "", "mesh_prefix": c.get("mesh_prefix") or "",
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
                         "uninstalled": c.get("uninstalled"),   # unsolicited uninstall → grey "Uninstalled" tag; recover by re-installing with the same token
                         # node lifecycle tag via _proc_view: in-progress for PROC_GRACE then "<op> failed";
@@ -2199,6 +2214,21 @@ def api(method, path, qs, body, deps):
                     except ValueError:
                         return 400, {"ok": False, "error": k + " must be a valid IPv4 address (or blank)", "code": "bad_request"}
                 nodes[nid][k] = v
+        if "mesh_port" in body:                        # per-node mesh overrides (new links only; blank = panel default)
+            mp = (str(body.get("mesh_port") or "")).strip()
+            if mp and not (mp.isdigit() and 1 <= int(mp) <= 65535):
+                return 400, {"ok": False, "error": "mesh port must be 1–65535 (or blank)", "code": "bad_request"}
+            nodes[nid]["mesh_port"] = int(mp) if mp else ""
+        if "mesh_subnet" in body:
+            ms = (body.get("mesh_subnet") or "").strip()
+            if ms:
+                try:
+                    ipaddress.ip_network(ms, strict=False)
+                except Exception:
+                    return 400, {"ok": False, "error": "mesh subnet must be a CIDR (or blank)", "code": "bad_request"}
+            nodes[nid]["mesh_subnet"] = ms
+        if "mesh_prefix" in body:
+            nodes[nid]["mesh_prefix"] = re.sub(r"[^a-z0-9_]", "", (body.get("mesh_prefix") or "").lower())[:6]
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
