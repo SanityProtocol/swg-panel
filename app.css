@@ -892,16 +892,18 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-meshitem{margin-right:26px;display:inline-flex;align-items:center}   /* clear gap before CPU load */
 .mh-num{font-family:var(--mono);font-weight:400;font-size:12px}          /* numbers NOT bold */
 .mh-num-hdr{font-size:14px;font-weight:600}
-.mh-num.ok{color:var(--online)} .mh-num.warn{color:#F0913C} .mh-num.bad{color:var(--dangling)} .mh-num.off{color:var(--faint)}
+/* numbers: all-up → arrow colour (inbound green · outbound blue); partial → orange; none → red */
+.mh-num.mhn-down{color:var(--online)} .mh-num.mhn-up{color:var(--ready)} .mh-num.mhn-warn{color:#F0913C} .mh-num.mhn-bad{color:var(--dangling)}
 .mh-ar{font-family:var(--mono);line-height:1;font-size:12.5px}   /* identical to the throughput arrows: same MONO glyph (was inheriting the sans font), size + weight */
 .mh-ar.mh-down.s-up{color:var(--online)} .mh-ar.mh-down.s-connecting{color:var(--partial)} .mh-ar.mh-down.s-down{color:var(--dangling)}
 .mh-ar.mh-up.s-up{color:var(--ready)} .mh-ar.mh-up.s-connecting{color:var(--partial)} .mh-ar.mh-up.s-down{color:var(--dangling)}
 .mh-row{display:flex;align-items:center;justify-content:flex-start;gap:12px;padding:4px 8px}   /* names align with the title (8px) */
 .mh-rn{font-family:var(--mono);font-size:12.5px;flex:none}
 .mh-rn.mh-bold{font-weight:700} .mh-rn.mh-dim{opacity:.5}
-.mh-rar{display:inline-flex;gap:7px;flex:none}
-.mh-rar .mh-ar{font-size:15px}
-.mh-rar .mh-ar.s-up{text-shadow:0 0 9px currentColor}   /* static glow only for up status — green (down) / blue (up); yellow + red get no glow */
+.mh-rar{display:inline-flex;gap:6px;flex:none}
+.mh-rar .mh-ar{font-size:13px}   /* small arrows, matching the line */
+.mh-rar .mh-ar.s-up{text-shadow:0 0 8px currentColor}   /* static glow only for up status — green (down) / blue (up); yellow + red get no glow */
+.deppop.mh-bubble{min-width:150px}   /* mesh bubble: only as wide as it needs */
 /* node↔node connection info card (NOC-style: status pill + protocol tag + labeled grid) */
 .conncard{border:1px solid var(--line);border-radius:12px;padding:15px 17px;background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
 .conncard-top{display:flex;align-items:center;gap:9px;margin-bottom:16px}

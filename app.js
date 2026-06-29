@@ -867,7 +867,7 @@ function peerLabel(p) { return p.unassigned ? "" : (p.name || ""); }
 
 // Generic hover/click bubble (the DepBadge mechanics, reusable): hover opens, click pins (touch),
 // position:fixed anchored to the trigger so overflow:hidden can't clip it.
-function Popover({ trigger, cls, children }) {
+function Popover({ trigger, cls, popCls, children }) {
   const [open, setOpen] = useState(false), [pinned, setPinned] = useState(false), [pos, setPos] = useState(null);
   const ref = useRef(null), closeT = useRef(null);
   const show = open || pinned;
@@ -886,7 +886,7 @@ function Popover({ trigger, cls, children }) {
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
     onClick=${e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); }}
     onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>${trigger}
-    ${show && pos ? html`<div class="deppop onlpop" style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
+    ${show && pos ? html`<div class=${"deppop onlpop " + (popCls || "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div>` : null}
   </span>`;
 }
@@ -965,7 +965,8 @@ const mhArrow = (dir, status) => html`<span class=${"mh-ar mh-" + dir + " s-" + 
 function MeshStat({ nodeId, mode }) {
   const h = meshHealth(nodeId);
   if (!h.total) return null;
-  const num = ok => html`<b class=${"mh-num " + (mode === "in" ? "mh-num-hdr " : "") + meshTone(ok, h.total)}>${ok}/${h.total}</b>`;
+  // all-up → the arrow's colour (inbound green · outbound blue) · none up → red · partial → orange
+  const num = (ok, dir) => html`<b class=${"mh-num " + (mode === "in" ? "mh-num-hdr " : "") + (ok >= h.total ? dir : ok === 0 ? "mhn-bad" : "mhn-warn")}>${ok}/${h.total}</b>`;
   const ordered = (Store.nodes || []).filter(n => h.peers.some(p => p.peer === n.id));
   const row = n => {   // node name FIRST, then the glowing arrow(s)
     const p = h.peers.find(x => x.peer === n.id);
@@ -973,9 +974,9 @@ function MeshStat({ nodeId, mode }) {
     return html`<div class="mh-row"><span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span><span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span></div>`;
   };
   const trigger = mode === "in"
-    ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">This node's mesh status:</span> ${num(h.okIn)}</span>`
-    : html`<span class="mh-tag"><span class="nm-l">Mesh link</span><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn)}<span class="mh-ar mh-up s-up">↑</span>${num(h.okOut)}</span>`;
-  return html`<${Popover} cls="mh-pop" trigger=${trigger}>
+    ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">This node's mesh status:</span> ${num(h.okIn, "mhn-down")}</span>`
+    : html`<span class="mh-tag"><span class="nm-l">Mesh link</span><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}<span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span>`;
+  return html`<${Popover} cls="mh-pop" popCls="mh-bubble" trigger=${trigger}>
     <div class="onpop-h">${mode === "in" ? "Inbound links" : "Mesh connections"}</div>
     ${ordered.map(row)}
   </${Popover}>`;
