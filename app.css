@@ -901,7 +901,11 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .mh-rn{font-family:var(--mono);font-size:12.5px;flex:none}
 .mh-rn.mh-bold{font-weight:700} .mh-rn.mh-dim{opacity:.5}
 .mh-rar{display:inline-flex;gap:7px;flex:none}
-.mh-rar .mh-ar{font-size:16px;text-shadow:0 0 9px currentColor}   /* bigger, glowing arrows in the bubble */
+.mh-rar .mh-ar{font-size:16px;animation:mh-glow 1.9s ease-in-out infinite}   /* bigger, pulsing-glow arrows in the bubble */
+@keyframes mh-glow{   /* dip dark between bright peaks so the glow clearly animates; peak = full glow */
+  0%,100%{opacity:1;text-shadow:0 0 10px currentColor,0 0 4px currentColor}
+  55%{opacity:.28;text-shadow:0 0 1px currentColor}
+}
 /* node↔node connection info card (NOC-style: status pill + protocol tag + labeled grid) */
 .conncard{border:1px solid var(--line);border-radius:12px;padding:15px 17px;background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
 .conncard-top{display:flex;align-items:center;gap:9px;margin-bottom:16px}
