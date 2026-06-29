@@ -1658,6 +1658,12 @@ def api(method, path, qs, body, deps):
             _mesh_peers = [{"peer": pr, "iface": (lk or {}).get("iface") or "",
                             "reprovisioning": bool((lk or {}).get("iface") in _crt)}
                            for pr, lk in (c.get("links") or {}).items()]
+            # system (mesh-link) ifaces must never appear as a selectable egress NIC / IP — filter them out of
+            # the egress-picker inputs by the node's link iface names + the reserved prefix (covers un-updated
+            # nodes that still report swg_* in node_ip_ifaces, and custom prefixes via the link records).
+            _link_ifs = {(lk or {}).get("iface") for lk in (c.get("links") or {}).values()}
+            _mpfx = node_mesh_cfg(deps, c).get("iface_prefix") or "swg_"
+            _is_sysif = lambda ifn: bool(ifn) and (ifn in _link_ifs or str(ifn).startswith(_mpfx) or str(ifn).startswith("swg_"))
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
                         "transport": "https", "mesh_awg": _mawg, "mesh_peers": _mesh_peers,
                         "iface_order": c.get("iface_order") or [],   # operator drag-order overlays (POST /api/order)
@@ -1684,8 +1690,8 @@ def api(method, path, qs, body, deps):
                         "net_mode": snap.get("net_mode") or "host",   # docker net mode: host | bridge (bridge → created-iface ports need publishing)
                         "turn_manage": bool(snap.get("turn_manage")),  # can the panel edit/restart this node's turn-proxies?
                         "ips": snap.get("node_ips") or [],             # the node's own IPs — candidates for a per-interface egress IP
-                        "wan_ifaces": snap.get("node_ifaces") or [],   # the node's NICs — candidates for the egress WAN interface
-                        "ip_ifaces": snap.get("node_ip_ifaces") or [], # (ip, iface) pairs — for the merged egress picker
+                        "wan_ifaces": [w for w in (snap.get("node_ifaces") or []) if not _is_sysif(w)],   # the node's NICs — candidates for the egress WAN interface (no mesh links)
+                        "ip_ifaces": [p for p in (snap.get("node_ip_ifaces") or []) if not _is_sysif((p or {}).get("iface"))], # (ip, iface) pairs — egress picker (no mesh links)
                         "version": snap.get("noded_version"),   # swg-noded version this node reports
                         "latest": LATEST_REMOTE.get("version") or VERSIONS.get("panel"),   # track the LATEST release, not the panel — a node shows its real upgrade even when the panel itself is still behind (falls back to the panel's version until the remote check has run)
                         "outdated": _ver_behind(snap.get("noded_version"), LATEST_REMOTE.get("version") or VERSIONS.get("panel")),   # strictly older only — never offer a downgrade

@@ -521,7 +521,7 @@ def list_node_ips():
         if len(p) < 4 or p[2] != "inet":
             continue
         dev, ip = p[1], p[3].split("/")[0]
-        if dev == "lo" or dev.startswith(("wg", "awg", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
+        if dev == "lo" or dev.startswith(("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
             continue
         if ip.startswith("127.") or ip in ips:
             continue
@@ -541,7 +541,7 @@ def list_node_ip_ifaces():
         if len(p) < 4 or p[2] != "inet":
             continue
         dev, ip = p[1], p[3].split("/")[0]
-        if dev == "lo" or dev.startswith(("wg", "awg", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
+        if dev == "lo" or dev.startswith(("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
             continue
         if ip.startswith("127.") or any(x["ip"] == ip for x in pairs):
             continue
@@ -561,7 +561,7 @@ def list_node_ifaces():
         if len(p) < 4 or p[2] != "inet":
             continue
         dev, ip = p[1], p[3].split("/")[0]
-        if dev == "lo" or dev.startswith(("wg", "awg", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
+        if dev == "lo" or dev.startswith(("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
             continue
         if ip.startswith("127.") or dev in ifs:
             continue
