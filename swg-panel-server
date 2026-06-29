@@ -1069,6 +1069,7 @@ SMART_CATEGORIES = {
     "twitter":  "Twitter / X",
     "netflix":  "Netflix",
     "ru":       "Russia (country)",
+    "all":      "All traffic (catch-all)",   # matches everything not caught by an earlier rule (no geo set)
 }
 
 

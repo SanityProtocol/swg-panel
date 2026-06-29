@@ -261,7 +261,12 @@ def test_panel_smart():
     assert m._validate_routing([{"category": "google", "action": "exit", "node": A}], nodes, A)[1]   # exit-to-self
     nodes[A]["ifaces"]["awg1"]["routing"] = [{"category": "google", "action": "exit", "node": B, "enabled": False}, {"category": "vk", "action": "direct"}]
     assert m.cascade_plan(nodes, snaps).get(A, {}).get("smart", []) == []   # disabled + direct → no entry
-    print("OK panel: smart routing plan + validation")
+    # "All traffic" catch-all is a valid category and compiles to a smart entry like any other exit rule
+    assert m._validate_routing([{"category": "all", "action": "exit", "node": B}], nodes, A)[1] is None
+    nodes[A]["ifaces"]["awg1"]["routing"] = [{"category": "google", "action": "exit", "node": B}, {"category": "all", "action": "exit", "node": C}]
+    sm2 = {(e["category"], e["table"]) for e in m.cascade_plan(nodes, snaps)[A]["smart"]}
+    assert ("google", 7000) in sm2 and ("all", 7001) in sm2, sm2
+    print("OK panel: smart routing plan + validation (incl. All-traffic catch-all)")
 
 
 def test_node_smart():
@@ -299,6 +304,18 @@ def test_node_smart():
     assert any("add rule inet swg_smart prerouting ip saddr 10.8.0.0/24 ip daddr @cat_google meta mark set 7000" in x for x in a), a
     # fwmark in the 7000-band, never WG's 0xca6c (51820)
     assert not any("51820" in x or "0xca6c" in x for x in a)
+    # "All traffic" catch-all: no set, guarded mark 0x0 rule emitted AFTER the category rule
+    LIVE["nft_rc"] = 1
+    calls.clear()
+    m.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": []}, {"categories": ["google", "all"], "entries": [
+        {"subnet": "10.8.0.0/24", "category": "google", "via_iface": "swg_AB", "table": 7000},
+        {"subnet": "10.8.0.0/24", "category": "all", "via_iface": "swg_AC", "table": 7001}]})
+    a2 = [" ".join(c) for c in calls]
+    assert not any("cat_all" in x for x in a2), "no geo set for 'all'"
+    gi = next(i for i, x in enumerate(a2) if "ip daddr @cat_google meta mark set 7000" in x)
+    ai = next(i for i, x in enumerate(a2) if "ip saddr 10.8.0.0/24 meta mark 0x0 meta mark set 7001" in x)
+    assert gi < ai, "catch-all must be emitted after the category rule"
+    LIVE["nft_rc"] = 0
     # idempotent: live state matches → no nft flush / no ip rule churn
     LIVE.update(nft_rc=0, natP="-P POSTROUTING ACCEPT\n",
                 iprule="7000:\tfrom all fwmark 0x1b58 lookup 7000\n",

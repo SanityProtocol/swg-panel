@@ -784,27 +784,42 @@ def _ensure_smart_nft(smart_e, categories, res):
     if have.returncode != 0:
         run(["nft", "add", "table", "inet", SMART_NFT_TABLE])
     have_sets = set(re.findall(r"set (\S+) {", body))
-    for c in cats:                                              # one interval set per category (empty = inert until geo data lands)
+    for c in cats:                                              # one interval set per category ("all" is the catch-all → no set)
+        if c == "all":
+            continue
         sn = _smart_setname(c)
         if sn not in have_sets:
             run(["nft", "add", "set", "inet", SMART_NFT_TABLE, sn, "{ type ipv4_addr; flags interval; }"])
     if "prerouting" not in re.findall(r"chain (\S+) {", body):
         run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "prerouting",
              "{ type filter hook prerouting priority mangle; policy accept; }"])
-    # drift-gate the mark rules: want vs live (parsed from the chain), flush+rebuild only on change
-    want = [(e["subnet"], _smart_setname(e["category"]), int(e["table"])) for e in smart_e]
-    live = []
+    # drift-gate the mark rules: want vs live (parsed from the chain), flush+rebuild only on change.
+    # Category rules match a dest set; the "all" catch-all matches any dest but ONLY when still unmarked
+    # (`meta mark 0x0`) and is emitted LAST, so specific categories win (first-match semantics).
+    want_cat = {(e["subnet"], _smart_setname(e["category"]), int(e["table"])) for e in smart_e if e["category"] != "all"}
+    want_all = {(e["subnet"], int(e["table"])) for e in smart_e if e["category"] == "all"}
+    live_cat, live_all = set(), set()
     for ln in body.splitlines():
-        mt = re.search(r"ip saddr (\S+) ip daddr @(\S+) meta mark set (0x[0-9a-fA-F]+|\d+)", ln)
-        if mt:
-            live.append((mt.group(1), mt.group(2), int(mt.group(3), 0)))
-    if set(want) != set(live):
+        mc = re.search(r"ip saddr (\S+) ip daddr @(\S+) meta mark set (0x[0-9a-fA-F]+|\d+)", ln)
+        if mc:
+            live_cat.add((mc.group(1), mc.group(2), int(mc.group(3), 0))); continue
+        ma = re.search(r"ip saddr (\S+) meta mark (?:0x0+|0) meta mark set (0x[0-9a-fA-F]+|\d+)", ln)
+        if ma:
+            live_all.add((ma.group(1), int(ma.group(2), 0)))
+    if want_cat != live_cat or want_all != live_all:
         run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "prerouting"])
-        for (S, sn, T) in want:
+        for (S, sn, T) in sorted(want_cat):                     # specific categories first
             r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting",
                      "ip", "saddr", S, "ip", "daddr", "@" + sn, "meta", "mark", "set", str(T)])
             if r.returncode != 0:
                 res["errors"].append("smart nft " + S + "/" + sn + ": " + (r.stderr or "").strip()[:120])
+            else:
+                res["changed"] += 1
+        for (S, T) in sorted(want_all):                         # catch-all last, guarded so it only marks the rest
+            r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting",
+                     "ip", "saddr", S, "meta", "mark", "0x0", "meta", "mark", "set", str(T)])
+            if r.returncode != 0:
+                res["errors"].append("smart nft " + S + "/all: " + (r.stderr or "").strip()[:120])
             else:
                 res["changed"] += 1
     # per-set live element counts (so _smart_geo_refresh knows which need (re)loading — e.g. empty after a reboot)
@@ -890,6 +905,8 @@ def _smart_geo_refresh(categories, set_counts, res):
     except OSError as e:
         res["errors"].append("smart geo dir: " + str(e)); return     # can't cache → skip (sets stay inert)
     for cat in categories:
+        if cat == "all":
+            continue                                           # the catch-all matches any dest — no geo set to load
         try:                                                   # one bad category must never crash the sync loop
             sn = _smart_setname(cat)
             path = os.path.join(GEO_DIR, cat + ".txt")

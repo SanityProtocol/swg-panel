@@ -1341,7 +1341,7 @@ function NodeDetail({ node: rawName }) {
           ? html`<span class="livepill upd-uptodate" title=${nrec.local ? "This master is on the latest version" : "This node is on the latest version"}><${Ic} i="check"/> up to date</span>`
           : html`<button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Check for updates"} onClick=${e => checkForUpdate(e, nrec.local ? undefined : nrec.id)}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></button>`}
         <span class="dh-sep"></span>
-        <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit node"} onClick=${() => openNodeEdit(nrec)}><${Ic} i="pencil"/></button>
+        <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${() => openNodeEdit(nrec)}><${Ic} i="gear"/></button>
         ${down ? null : html`<button class="iconbtn" title="Rotate token (re-enroll / re-install)" onClick=${() => openNodeRotate(nrec)}><${Ic} i="key"/></button>`}
         <button class="iconbtn danger" title=${nrec.removing ? "Force remove node" : "Remove node"} onClick=${() => openNodeRemove(nrec)}><${Ic} i="trash"/></button>
         ${down ? html`<button class="iconbtn recover" title="Recover this node — rotate its token and get a fresh paste-on-the-server install command (the node keeps its peers)" onClick=${() => openNodeRecover(nrec)}><${Ic} i="key"/> recover</button>` : null}
@@ -1640,7 +1640,7 @@ function suggestSubnet(node) {
 const SMART_CATEGORIES = [
   ["google", "Google (incl. YouTube)"], ["yandex", "Yandex"], ["vk", "VK"], ["telegram", "Telegram"],
   ["cloudflare", "Cloudflare"], ["meta", "Meta (FB / IG / WA)"], ["twitter", "Twitter / X"],
-  ["netflix", "Netflix"], ["ru", "Russia (country)"],
+  ["netflix", "Netflix"], ["ru", "Russia (country)"], ["all", "All traffic (catch-all)"],
 ];
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 let _ruleSeq = 0;
@@ -1655,13 +1655,15 @@ function RoutingRules({ node, rules, onChange }) {
   const addRule = () => onChange([...rules, { _rid: newRid(), enabled: true, category: "google", action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
   const destVal = r => r.action === "exit" ? "exit|" + (r.node || "") : r.action;
   const onDest = (rid, v) => { const [a, n] = v.split("|"); setRule(rid, a === "exit" ? { action: "exit", node: n } : { action: a, node: "" }); };
-  const seen = {};
-  return html`<div class="field"><label>Routing rules <span class="faint" style="text-transform:none;letter-spacing:0">— first match wins; everything else exits direct</span></label>
+  const seen = {}; let catchAll = false;
+  const hasAll = rules.some(r => r.category === "all");
+  return html`<div class="field"><label>Routing rules <span class="faint" style="text-transform:none;letter-spacing:0">— first match wins${hasAll ? "" : "; everything else exits direct"}</span></label>
     <div class="rrlist" ...${rs.container()}>${rules.map(r => {
       const dup = seen[r.category]; seen[r.category] = true;
+      const shadowed = catchAll; if (r.category === "all") catchAll = true;
       const self = r.action === "exit" && r.node === node;
       const it = rs.item(r._rid);
-      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self) ? " warn" : "")} data-rid=${it.rid}>
+      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || shadowed) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
           ${SMART_CATEGORIES.map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
@@ -1673,11 +1675,11 @@ function RoutingRules({ node, rules, onChange }) {
           ${others.length ? html`<optgroup label="Exit via node">${others.map(n => html`<option value=${"exit|" + n.id}>→ ${n.name}</option>`)}</optgroup>` : null}
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => onChange(rules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
-        ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${SMART_CAT_LABEL[r.category]} rule</span>` : null}
+        ${self ? html`<span class="rrlint">can't exit via itself</span>` : shadowed ? html`<span class="rrlint">unreachable — an earlier "All traffic" rule already matches everything</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${SMART_CAT_LABEL[r.category]} rule</span>` : null}
       </div>`;
     })}</div>
-    <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span><span class="faint">Everything else → Direct (this node)</span></div>
-    ${rules.length ? null : html`<div class="hint">No rules yet — all traffic exits direct. Add a rule to send a provider through another node.</div>`}
+    <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span>${hasAll ? null : html`<span class="faint">Everything else → Direct (this node)</span>`}</div>
+    ${rules.length ? null : html`<div class="hint">No rules yet — all traffic exits direct. Add a rule to send a provider through another node, or "All traffic" to send everything.</div>`}
   </div>`;
 }
 
@@ -3340,7 +3342,7 @@ function NodeCard({ n, reorder }) {
           <span class="nm-l">Turn-proxies</span>
           <span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span>
           <div class="nacts" onClick=${e => e.stopPropagation()}>
-            <button class="iconbtn" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Edit node"} onClick=${() => openNodeEdit(n)}><${Ic} i="pencil"/></button>
+            <button class="iconbtn" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${() => openNodeEdit(n)}><${Ic} i="gear"/></button>
             ${ndown ? null : html`<button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(n)}><${Ic} i="key"/></button>`}
             <button class="iconbtn danger" title=${removing ? "Force remove" : "Remove node"} onClick=${() => openNodeRemove(n)}><${Ic} i="trash"/></button>
           </div>
@@ -4122,7 +4124,7 @@ function NodeEditSheet({ node }) {
       call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color }),
     });
   };
-  return html`<${Sheet} title=${"Edit " + node.name}
+  return html`<${Sheet} title=${"Node settings · " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
     <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
