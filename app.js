@@ -1396,7 +1396,7 @@ function NodeDetail({ node: rawName }) {
         const carried = userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
           .map(k => meta[k].subnet).filter(Boolean);   // local user subnets forwarded out through THIS link
         return html`<div key=${ifn} class=${"ifcard tp clickable" + (muted ? " down" : "")} onClick=${() => openConnectionEdit(name, ifn)}>
-          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}<span class=${"lkdot " + lk} title=${lkTitle}></span></div>
+          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}<span class=${"lkdot " + lk} style="align-self:flex-start;margin-top:1px" title=${lkTitle}></span></div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${m.subnet || "—"}</span></div>
             ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r addr">${carried.join(", ")}</span></div>` : null}
