@@ -396,6 +396,27 @@ def test_node_dial_src():
     print("OK node: dial-src /32 source route install + remove")
 
 
+def test_node_endpoint_redial():
+    """A peer's endpoint (ingress IP) change re-dials existing links; unchanged → no churn."""
+    import tempfile
+    m = _load("swg_noded_redial", "swg-noded")
+    m.STATE_DIR = tempfile.mkdtemp()
+    ops = []
+    m.run_agent = lambda agent, sudo, req: (ops.append(req) or {"ok": True})
+    m.current_pubkeys = lambda nc, i: {"PK"}                      # peer already present
+    m.current_allowed = lambda nc, i: {"PK": "10.255.0.1/32"}
+    nc = {"interfaces": {"swg_AB": {"cmd": ["awg"]}}}
+    des = {"swg_AB": [{"public_key": "PK", "allowed_ips": "10.255.0.1/32", "endpoint": "1.1.1.1:9999", "persistent_keepalive": 25}]}
+    m.reconcile(nc, des, "agent", False)                         # first run re-asserts + records the endpoint
+    assert [o for o in ops if o["op"] == "add-peer" and o.get("endpoint") == "1.1.1.1:9999"], ops
+    ops.clear(); m.reconcile(nc, des, "agent", False)            # unchanged → no re-dial
+    assert not [o for o in ops if o["op"] == "add-peer"], ops
+    ops.clear(); des["swg_AB"][0]["endpoint"] = "2.2.2.2:9999"   # ingress changed → re-dial
+    m.reconcile(nc, des, "agent", False)
+    assert [o for o in ops if o.get("endpoint") == "2.2.2.2:9999"], ops
+    print("OK node: existing peer re-dials on endpoint change (churn-safe)")
+
+
 def main():
     test_panel()
     test_panel_smart()
@@ -403,6 +424,7 @@ def main():
     test_node_smart()
     test_node_geo()
     test_node_dial_src()
+    test_node_endpoint_redial()
     test_node_allowed_drift()
     test_agent_conf()
     print("OK test_cascade: all assertions passed")

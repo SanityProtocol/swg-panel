@@ -1254,6 +1254,14 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
     """Apply the panel's desired peer set. Only ever called on a valid sync reply."""
     res = {"added": 0, "removed": 0, "errors": []}
     remove_by_iface = remove_by_iface or {}
+    # last DESIRED endpoint we pushed per peer — so an operator changing a node's ingress IP re-dials existing
+    # links (the panel sends the new endpoint; we apply it once), without fighting WireGuard's roaming (we key
+    # on the desired value, not the live/roamed one). iface|pubkey -> endpoint.
+    EP_FILE = os.path.join(STATE_DIR, "mesh-eps.json")
+    applied_ep = {}
+    with contextlib.suppress(Exception):
+        applied_ep = json.load(open(EP_FILE))
+    ep_dirty = False
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         desired = {p["public_key"]: p for p in (desired_by_iface.get(iface) or [])}
         current = current_pubkeys(node_cfg, iface)
@@ -1283,6 +1291,20 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                         res["added"] += 1                        # count as a change (drives the reconcile log)
                     else:
                         res["errors"].append(f"allowed {pk[:8]}: {r.get('error')}")
+                # endpoint CHANGED (the peer's ingress IP/port was edited) → re-dial: re-assert the peer with
+                # the new endpoint. Keyed on the desired value so this fires once per real change, not per roam.
+                ek = iface + "|" + pk; want_ep = p.get("endpoint")
+                if want_ep and applied_ep.get(ek) != want_ep:
+                    r = run_agent(agent, sudo, {"op": "add-peer", "iface": iface, "public_key": pk,
+                                                "allowed_ips": p.get("allowed_ips", ""),
+                                                "preshared_key": p.get("preshared_key", "none"),
+                                                "endpoint": want_ep,
+                                                "persistent_keepalive": p.get("persistent_keepalive"),
+                                                "name": p.get("name", "")})
+                    if r.get("ok"):
+                        applied_ep[ek] = want_ep; ep_dirty = True; res["added"] += 1
+                    else:
+                        res["errors"].append(f"endpoint {pk[:8]}: {r.get('error')}")
                 continue
             r = run_agent(agent, sudo, {
                 "op": "add-peer", "iface": iface, "public_key": pk,
@@ -1293,6 +1315,8 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                 "name": p.get("name", "")})
             if r.get("ok"):
                 res["added"] += 1
+                if p.get("endpoint"):
+                    applied_ep[iface + "|" + pk] = p.get("endpoint"); ep_dirty = True
             else:
                 res["errors"].append(f"add {pk[:8]}: {r.get('error')}")
         # An onboarded interface is ADD-ONLY: the panel never removes peers it didn't create, so an
@@ -1304,8 +1328,14 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
             r = run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
             if r.get("ok"):
                 res["removed"] += 1
+                applied_ep.pop(iface + "|" + pk, None); ep_dirty = True
             else:
                 res["errors"].append(f"remove {pk[:8]}: {r.get('error')}")
+    if ep_dirty:
+        with contextlib.suppress(Exception):
+            with open(EP_FILE + ".tmp", "w") as f:
+                json.dump(applied_ep, f)
+            os.replace(EP_FILE + ".tmp", EP_FILE)
     return res
 
 
