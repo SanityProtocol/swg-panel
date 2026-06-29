@@ -876,7 +876,7 @@ function Popover({ trigger, cls, popCls, alignRight, children }) {
   // alignRight: anchor the popover's left to the trigger's RIGHT edge, then translateX(-100%) so its own right
   // edge lines up there (under the value, not the label) — scrollbar-proof, no width guessing.
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
-    setPos({ left: Math.round(alignRight ? r.right : r.left), top: Math.round(r.bottom + 6) }); };
+    setPos({ left: Math.round(alignRight ? r.right + 3 : r.left), top: Math.round(r.bottom + 6) }); };   // alignRight: +3px so the bubble's right edge sits a touch past where the value ends
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
