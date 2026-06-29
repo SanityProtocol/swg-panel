@@ -1944,6 +1944,7 @@ function EditIfaceSheet({ node, iface }) {
   const [dns, setDns] = useState((meta.dns || []).join(", "));
   const [mtu, setMtu] = useState(String(meta.mtu || 1280));
   const [ka, setKa] = useState(String(meta.keepalive || 25));
+  const [adv, setAdv] = useState(false);     // MTU / keepalive / DNS / AmneziaWG live under "Show advanced"
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const [eg, setEg] = useState(() => egressInit(meta));
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
@@ -1986,10 +1987,7 @@ function EditIfaceSheet({ node, iface }) {
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
-    <div class="iface-intro">
-      <div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections.</div>
-      <div>You will need to re-distribute the configs / QR codes.</div>
-    </div>
+    <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${meta.drift && meta.drift.public_key ? html`<div class="notice warn">
       <${Ic} i="warn"/><span><b>Server key changed on the node.</b> This interface's server keypair was rotated directly on the server, so <b>every client's existing config / QR for this interface no longer connects</b>. The node kept a backup of the original key.
@@ -2002,21 +2000,23 @@ function EditIfaceSheet({ node, iface }) {
         <button type="button" class="linkbtn" style="margin-left:8px" onClick=${async () => { const r = await api.ifaceAdopt({ node, iface, key: k }); if (!r.ok) return toast(r.error || "Failed", "err"); closeModal(); await Store.poll(); toast("Adopted the server value.", "ok"); }}>Adopt</button>
         · <button type="button" class="linkbtn" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: k }); if (!r.ok) return toast(r.error || "Failed", "err"); closeModal(); await Store.poll(); toast("Restoring the panel value on the next sync.", "ok"); }}>Restore panel value</button></div>`)}
       </span></div>` : null}
-    <div class="field"><label>Tunnel subnet</label><div style="font-size:13.5px;color:var(--ink);padding:2px 0"><b>${meta.subnet || "—"}</b> <span class="faint">· host uses ${(meta.address || "").split("/")[0] || "—"} (set at creation — delete & recreate to change)</span></div></div>
+    <div class="field ipk-field subnet-row"><label>Host tunnel IP</label><span class="ipk-val"><b>${(meta.address || "").split("/")[0] || meta.subnet || "—"}</b> <span class="faint">(set at creation — delete & recreate to change)</span></span></div>
     <div class="row2">
       <div class="field"><label>Endpoint host / IP</label><input autofocus value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial — config-facing only</div></div>
       <div class="field"><label>Listen port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${String(meta.listen_port || "")}/><div class="hint">Applied to the node (currently ${meta.listen_port || "—"})</div></div>
     </div>
-    <div class="row2">
-      <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers</div></div>
-      <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
-    </div>
-    <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="1.1.1.1, 1.0.0.1"/><div class="hint">Comma-separated</div></div>
     <${EgressPicker} node=${node} value=${eg} onChange=${setEg}/>
-    ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
-      <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
-      <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div></div>` : null}
-    <div class="field ipk-field"><label>Public key</label><span class="grow"></span><span class="ipk-val">${meta.public_key || "—"}</span>${meta.public_key ? html`<button class="copybtn" title="Copy public key" onClick=${() => copy(meta.public_key, "Public key copied")}><${Ic} i="copy"/></button>` : null}</div>
+    <button type="button" class="advtoggle" onClick=${() => setAdv(a => !a)}><span class="advcaret">${adv ? "▾" : "▸"}</span> Advanced settings</button>
+    ${adv ? html`<${Fragment}>
+      <div class="row2">
+        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/><div class="hint">Default for new peers</div></div>
+        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/><div class="hint">0 disables · blank = 25</div></div>
+      </div>
+      <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="https://8.8.8.8/dns-query, 1.1.1.1"/><div class="hint">Comma-separated</div></div>
+      ${isAwg ? html`<div class="field"><label>AmneziaWG parameters</label>
+        <div class="hint" style="margin:0 0 8px">Pushed to the node's interface and rendered into configs/QRs. Existing clients must re-import after a change.</div>
+        <div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1", "I2", "I3", "I4", "I5"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span><input value=${awg[k] == null ? "" : awg[k]} onInput=${e => setAwgK(k, e.target.value)}/></label>`)}</div>`)}</div></div>` : null}
+    <//>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

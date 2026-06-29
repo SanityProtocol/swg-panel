@@ -860,6 +860,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ipk-field>label{margin:0;white-space:nowrap}
 .ipk-field .grow{flex:1}
 .ipk-val{font-family:var(--mono);font-size:12px;color:var(--ink-2);word-break:break-all;min-width:0;text-align:right}
+.subnet-row .ipk-val{text-align:left;word-break:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ipk-field .copybtn:hover{color:var(--ready)}
 @media(max-width:760px){.iface-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
@@ -974,6 +975,9 @@ a.tg:hover{filter:brightness(1.25)}
 .iconbtn.recover svg{width:14px;height:14px}
 .linkbtn{background:none;border:0;color:var(--brand);cursor:pointer;padding:0;font:inherit}
 .linkbtn.danger{color:var(--dangling)}
+.advtoggle{background:none;border:0;color:var(--ink-2);cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:7px;margin:16px 0 2px;padding:0;letter-spacing:.02em}
+.advtoggle:hover{color:var(--brand)}
+.advtoggle .advcaret{font-size:10px;color:var(--faint);width:10px;display:inline-block}
 .cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:flex-start}
 .cfgsheet .deploy{width:256px;flex:none}
 .cfgsheet .deploy .qr{flex:1;min-width:0}
