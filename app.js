@@ -975,7 +975,7 @@ function MeshStat({ nodeId, mode }) {
   };
   const trigger = mode === "in"
     ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">This node's mesh status:</span> ${num(h.okIn, "mhn-down")}</span>`
-    : html`<span class="mh-tag"><span class="nm-l">Mesh link</span><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}<span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span>`;
+    : html`<span class="mh-tag"><span class="nm-l">Mesh link</span><span class="mh-grp"><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}</span><span class="mh-grp"><span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span></span>`;
   return html`<${Popover} cls="mh-pop" popCls="mh-bubble" trigger=${trigger}>
     <div class="onpop-h">${mode === "in" ? "Inbound links" : "Mesh connections"}</div>
     ${ordered.map(row)}
