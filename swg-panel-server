@@ -1074,6 +1074,25 @@ SMART_CATEGORIES = {
     "all":      "All traffic (catch-all)",   # matches everything not caught by an earlier rule (no geo set)
 }
 
+# Panel settings (persisted to panel-settings.json; surfaced + edited via the Panel settings screen).
+# store_configs=None means "use the fleet.json default"; geo_epoch is bumped by the Refresh-geo button.
+PANEL_SETTINGS_DEFAULTS = {
+    "interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25},
+    "mirrors": {"geo": "", "turn": ""},
+    "store_configs": None,
+    "advanced": {"node_stale_ms": 30000, "peer_grace_ms": 60000, "geo_ttl_days": 3},
+    "geo_epoch": 0,
+}
+
+
+def load_panel_settings(path):
+    """panel-settings.json merged over the defaults (one level deep for the sub-dicts)."""
+    saved = load_json(path, {}) or {}
+    out = {**PANEL_SETTINGS_DEFAULTS, **saved}
+    for k in ("interface_defaults", "mirrors", "advanced"):
+        out[k] = {**PANEL_SETTINGS_DEFAULTS[k], **(saved.get(k) or {})}
+    return out
+
 
 def _validate_routing(routing, nodes, nid):
     """Validate + normalize a smart-routing rule list. Returns (clean_rules, error). Each rule:
@@ -1484,7 +1503,9 @@ def api(method, path, qs, body, deps):
     # store_configs defaults ON: client configs (with the private key) are kept on the panel host
     # so QR codes / config downloads stay available any time, not just at creation. Set it to
     # false in fleet.json to keep no client secrets at rest. config_dir defaults next to the roster.
-    store_configs = fleet.get("store_configs", True) is not False
+    panel_settings = deps.get("panel_settings") or {}
+    _sc_override = panel_settings.get("store_configs")          # Panel settings override of the fleet.json default
+    store_configs = (fleet.get("store_configs", True) is not False) if _sc_override is None else bool(_sc_override)
     config_dir = fleet.get("config_dir") or os.path.join(os.path.dirname(roster_path) or ".", "configs")
 
     def known(node):
@@ -1605,10 +1626,45 @@ def api(method, path, qs, body, deps):
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
+            "panel_settings": panel_settings,            # Panel settings screen: interface defaults, mirrors, advanced thresholds
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
         }}
+
+    if method == "POST" and path == "/api/panel/settings":   # Panel settings: validate + persist + hot-reload in deps
+        cur = dict(deps.get("panel_settings") or {})
+        incoming = body if isinstance(body, dict) else {}
+        idf = incoming.get("interface_defaults")
+        if isinstance(idf, dict):
+            dns = idf.get("dns")
+            cur["interface_defaults"] = {
+                "dns": (dns if isinstance(dns, list) else [s.strip() for s in str(dns or "").split(",") if s.strip()]),
+                "mtu": int(idf.get("mtu") or 1280),
+                "keepalive": int(idf.get("keepalive") or 25)}
+        mir = incoming.get("mirrors")
+        if isinstance(mir, dict):
+            cur["mirrors"] = {"geo": (mir.get("geo") or "").strip(), "turn": (mir.get("turn") or "").strip()}
+        if "store_configs" in incoming:
+            cur["store_configs"] = None if incoming["store_configs"] is None else bool(incoming["store_configs"])
+        adv = incoming.get("advanced")
+        if isinstance(adv, dict):
+            cur["advanced"] = {"node_stale_ms": max(5000, int(adv.get("node_stale_ms") or 30000)),
+                               "peer_grace_ms": max(5000, int(adv.get("peer_grace_ms") or 60000)),
+                               "geo_ttl_days": max(1, int(adv.get("geo_ttl_days") or 3))}
+        deps["panel_settings"] = cur
+        with contextlib.suppress(Exception):
+            atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
+        ev_append(roster_path, "panel", "settings", "Updated panel settings", "")
+        return 200, {"ok": True, "data": cur}
+
+    if method == "POST" and path == "/api/panel/refresh-geo":   # bump the epoch nodes watch to force a geo re-fetch
+        cur = dict(deps.get("panel_settings") or {})
+        cur["geo_epoch"] = int(cur.get("geo_epoch") or 0) + 1
+        deps["panel_settings"] = cur
+        with contextlib.suppress(Exception):
+            atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
+        return 200, {"ok": True, "data": {"geo_epoch": cur["geo_epoch"]}}
 
     if method == "GET" and path == "/api/roster":
         return 200, {"ok": True, "data": roster_load(roster_path)}
@@ -2901,6 +2957,7 @@ class Handler(BaseHTTPRequestHandler):
         desired = desired_for_node(roster, nid)
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {})   # Phase 2: whole-fleet forward plan
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "allowed": {}}
+        _ps = Handler.deps.get("panel_settings") or {}   # Panel settings → mirrors / geo TTL / geo epoch for the node
         for _ifn, _ps in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
                                                my_plan.get("allowed"), Handler.deps.get("node_snaps")).items():
             desired.setdefault(_ifn, []).extend(_ps)   # node↔node mesh peers (endpoint + keepalive; cascade-aware AllowedIPs)
@@ -3143,6 +3200,10 @@ class Handler(BaseHTTPRequestHandler):
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])})},
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
                                                 "panel_ip": node.get("panel_ip") or ""},
+                                "panel": {"geo_mirror": (_ps.get("mirrors") or {}).get("geo") or "",   # Panel settings → node (Part 5)
+                                          "turn_mirror": (_ps.get("mirrors") or {}).get("turn") or "",
+                                          "geo_ttl_days": (_ps.get("advanced") or {}).get("geo_ttl_days") or 3,
+                                          "geo_epoch": _ps.get("geo_epoch") or 0},
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):
@@ -3356,9 +3417,11 @@ def main():
             _hpfirst = (_f.readline() or "").strip()
         if not _hpfirst.startswith("converting"):
             os.remove(_hpp)
+    _psp = fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".", "panel-settings.json")
     Handler.deps = {"fleet": fleet, "host_proc_path": _hpp,
                     "roster_path": fleet.get("roster_path", "/var/lib/swg-panel/users.json"),
                     "stats_dir": fleet.get("stats_dir", "/var/www/wgstats"),
+                    "panel_settings_path": _psp, "panel_settings": load_panel_settings(_psp),
                     "nodes_path": nodes_path, "nodes": nodes_load(nodes_path),
                     "node_snaps": {}, "node_seen": {}, "live_samples": {},
                     "auth": load_auth(),

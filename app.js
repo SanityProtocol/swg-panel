@@ -289,6 +289,8 @@ const api = {
   nodeCreate(b) { return this.post("/api/nodes/create", b); },
   nodeUpdate(b) { return this.post("/api/nodes/update", b); },
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
+  panelSettings(b) { return this.post("/api/panel/settings", b); },
+  refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
   nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
   nodeUnflagRemove(b) { return this.post("/api/nodes/unflag-remove", b); },
@@ -368,6 +370,7 @@ const Store = {
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
     this.storeConfigs = !!d.store_configs;
+    this.panelSettings = d.panel_settings || this.panelSettings || {};
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
@@ -393,7 +396,9 @@ const Store = {
     for (const nid of Object.keys(this.describe || {}))   // are managed via nodes.json, NOT the roster: not orphans
       for (const ifn of Object.keys(this.describe[nid] || {}))
         if (this.describe[nid][ifn] && this.describe[nid][ifn].system) systemIfaces.add(nid + "|" + ifn);
-    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)) });
+    const _adv = (this.panelSettings || {}).advanced || {};   // operator-tunable stale/grace thresholds
+    this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
+      ...(_adv.node_stale_ms ? { nodeStaleMs: _adv.node_stale_ms } : {}), ...(_adv.peer_grace_ms ? { graceMs: _adv.peer_grace_ms } : {}) });
     // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
     for (const id of Object.keys(this.rotating)) {
       const pr = this.recon.peers.find(p => p.id === id);
@@ -1732,7 +1737,8 @@ function LoadIfaceSheet({ node }) {
   const sugAwg = suggestIface(node, "awg"), sugWg = suggestIface(node, "wg");   // auto-suggested names (per base)
   const [iface, setIface] = useState(sugAwg); const [subnet, setSubnet] = useState(suggestSubnet(node));
   const [host, setHost] = useState(""); const [port, setPort] = useState(String(suggestPort(node, "iface")));
-  const [dns, setDns] = useState("1.1.1.1"); const [mtu, setMtu] = useState("1280"); const [ka, setKa] = useState("25");
+  const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
+  const [dns, setDns] = useState((_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String(_idf.mtu || 1280)); const [ka, setKa] = useState(String(_idf.keepalive || 25));
   const [conf, setConf] = useState("");
   const ips = nrec.ips || []; const [eg, setEg] = useState(() => egressInit({}));
   // endpoint host: dropdown of the node's known IPs (default the first), last entry = a free-text "Custom IP / Host…"
@@ -3399,6 +3405,73 @@ function AccountScreen() {
   </div>`;
 }
 
+function PanelSettingsScreen() {
+  useStore();
+  const ps = Store.panelSettings || {};
+  const idf = ps.interface_defaults || {}; const mir = ps.mirrors || {}; const adv = ps.advanced || {};
+  const [dns, setDns] = useState((idf.dns || []).join(", "));
+  const [mtu, setMtu] = useState(String(idf.mtu || 1280));
+  const [ka, setKa] = useState(String(idf.keepalive || 25));
+  const [geoMir, setGeoMir] = useState(mir.geo || "");
+  const [turnMir, setTurnMir] = useState(mir.turn || "");
+  const [sc, setSc] = useState(ps.store_configs === true ? "on" : ps.store_configs === false ? "off" : "default");
+  const [staleMs, setStaleMs] = useState(String(adv.node_stale_ms || 30000));
+  const [graceMs, setGraceMs] = useState(String(adv.peer_grace_ms || 60000));
+  const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
+  const [showAdv, setShowAdv] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const save = async () => {
+    setMsg({ ok: true, t: "Saving…" });
+    const r = await api.panelSettings({
+      interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25 },
+      mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
+      store_configs: sc === "on" ? true : sc === "off" ? false : null,
+      advanced: { node_stale_ms: +staleMs || 30000, peer_grace_ms: +graceMs || 60000, geo_ttl_days: +ttlD || 3 },
+    });
+    if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
+    setMsg({ ok: true, t: "Saved." });
+    await Store.poll();
+  };
+  const refreshGeo = async () => { const r = await api.refreshGeo(); toast(r.ok ? "Geo lists will refresh on each node's next sync." : (r.error || "Failed"), r.ok ? "ok" : "err"); };
+  return html`<div class="screen">
+    <div class="crumb"><b>Panel settings</b></div>
+    <div class="card" style="max-width:620px">
+      ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
+      <div class="seclabel" style="margin-top:0">New-interface defaults</div>
+      <p class="hint" style="margin:0 0 12px">Applied when creating a new interface — you can still override per interface.</p>
+      <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="https://8.8.8.8/dns-query, 1.1.1.1"/><div class="hint">Comma-separated</div></div>
+      <div class="row2">
+        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
+        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div>
+      </div>
+      <div class="seclabel">Mirrors</div>
+      <p class="hint" style="margin:0 0 12px">Optional proxy prefixes for nodes that can't reach GitHub directly (geo CIDR lists / turn binaries). Blank = fetch direct.</p>
+      <div class="field"><label>Geo lists mirror</label><input value=${geoMir} onInput=${e => setGeoMir(e.target.value)} placeholder="https://mirror.example/"/></div>
+      <div class="field"><label>Turn binaries mirror</label><input value=${turnMir} onInput=${e => setTurnMir(e.target.value)} placeholder="https://mirror.example/"/>
+        <div style="margin-top:8px"><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh geo lists now</button> <span class="faint" style="font-size:11px">forces every node to re-fetch on its next sync</span></div></div>
+      <div class="seclabel">Client configs</div>
+      <div class="field"><label>Store client configs</label>
+        <select class="selwrap" value=${sc} onChange=${e => setSc(e.target.value)}>
+          <option value="default">Default (fleet.json)</option>
+          <option value="on">On — keep configs (QRs re-viewable anytime)</option>
+          <option value="off">Off — never store private keys</option>
+        </select>
+        <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off"
+          ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute."
+          : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
+      <button type="button" class="advtoggle" onClick=${() => setShowAdv(a => !a)}><span class="advcaret">${showAdv ? "▾" : "▸"}</span> Advanced</button>
+      ${showAdv ? html`<${Fragment}>
+        <div class="row2" style="margin-top:8px">
+          <div class="field"><label>Node stale after (ms)</label><input value=${staleMs} onInput=${e => setStaleMs(e.target.value)} placeholder="30000"/></div>
+          <div class="field"><label>Peer grace window (ms)</label><input value=${graceMs} onInput=${e => setGraceMs(e.target.value)} placeholder="60000"/></div>
+        </div>
+        <div class="field"><label>Geo list refresh interval (days)</label><input value=${ttlD} onInput=${e => setTtlD(e.target.value)} placeholder="3"/></div>
+      <//>` : null}
+      <div style="margin-top:14px"><button class="btn btn-primary" onClick=${save}>Save changes</button></div>
+    </div>
+  </div>`;
+}
+
 // Account form as a modal (opened from the header user icon).
 function AccountSheet() {
   const [user, setUser] = useState("");
@@ -4259,6 +4332,7 @@ const ROUTES = [
   { re: /^\/user\/(.+)$/, fn: UserDetail, tab: "users", keys: ["id"] },
   { re: /^\/peer\/(.+)$/, fn: PeerDetail, tab: "users", keys: ["id"] },
   { re: /^\/account$/, fn: AccountScreen, tab: "account" },
+  { re: /^\/panel\/settings$/, fn: PanelSettingsScreen, tab: "panel-settings" },
 ];
 function go(hash) { location.hash = hash; }
 function matchRoute(hash) {

@@ -842,6 +842,7 @@ def _ensure_smart_nft(smart_e, categories, res):
 #    cached, and loaded into the nft sets. Mirrors the turn-binary fetch (SWG_GEO_MIRROR proxy fallback).
 GEO_DIR = os.path.join(STATE_DIR, "geo")
 GEO_TTL = 3 * 86400          # refresh a cached category list at most this often (when fetches succeed)
+GEO_RT = {"ttl": GEO_TTL}    # runtime-overridable TTL (Panel settings → advanced.geo_ttl_days)
 GEO_RETRY = 3600             # …but back off failed/missing fetches to once an hour, so a source outage
 #                              never re-hammers (and never blocks every sync on a hanging download)
 _CIDR4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
@@ -919,7 +920,7 @@ def _smart_geo_refresh(categories, set_counts, res):
             sn = _smart_setname(cat)
             path = os.path.join(GEO_DIR, cat + ".txt")
             try:
-                stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_TTL)
+                stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
             except OSError:
                 stale = True
             ap = os.path.join(GEO_DIR, "." + cat + ".attempt")
@@ -999,6 +1000,36 @@ def reconcile_dial_src(desired_by_iface, res):
                 os.replace(statef + ".tmp", statef)
     except Exception as e:
         res["errors"].append("dial-src: " + str(e)[:120])
+
+
+def apply_panel_settings(pan):
+    """Consume the sync-reply `panel` block (Panel settings): push the geo/turn mirrors via in-process env
+    (existing readers pick them up untouched), set the runtime geo TTL, and force a geo re-fetch when the
+    operator bumps the epoch (wipe the cache files so they read missing). Never raises."""
+    try:
+        if not isinstance(pan, dict):
+            return
+        if pan.get("geo_mirror") is not None:                  # panel is authoritative for the geo mirror
+            os.environ["SWG_GEO_MIRROR"] = pan.get("geo_mirror") or ""
+        if (pan.get("turn_mirror") or "").strip():             # only ADD a turn mirror (preserve any install-time one)
+            os.environ["SWG_TURN_MIRROR"] = pan["turn_mirror"].strip()
+        GEO_RT["ttl"] = max(86400, int(pan.get("geo_ttl_days") or 3) * 86400)
+        ep = str(int(pan.get("geo_epoch") or 0))
+        ef = os.path.join(GEO_DIR, ".geo-epoch")
+        cur = ""
+        with contextlib.suppress(Exception):
+            cur = open(ef).read().strip()
+        if ep != cur:                                          # Refresh-geo pressed → drop cache so it refetches
+            with contextlib.suppress(OSError):
+                os.makedirs(GEO_DIR, exist_ok=True)
+            for fn in (os.listdir(GEO_DIR) if os.path.isdir(GEO_DIR) else []):
+                if fn.endswith((".txt", ".attempt", ".loaded")):
+                    with contextlib.suppress(OSError):
+                        os.unlink(os.path.join(GEO_DIR, fn))
+            with contextlib.suppress(OSError):
+                open(ef, "w").write(ep)
+    except Exception:
+        pass
 
 
 def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
@@ -2265,6 +2296,7 @@ def main():
                         update_started = run_self_update(node_cfg, reply["update"])
                 cr = create_ifaces(node_cfg, reply.get("create"), agent, sudo)   # create new interfaces
                 dl = delete_ifaces(node_cfg, reply.get("delete"), agent, sudo)   # tear down deleted ones
+                apply_panel_settings(reply.get("panel"))      # Panel settings → mirrors / geo TTL / geo refetch
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
                 r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
