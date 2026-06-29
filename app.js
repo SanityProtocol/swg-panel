@@ -3114,9 +3114,11 @@ function MiniArea({ points, h, times, range, cap }) {
     setHov(i >= 0 && i < n ? i : null); };
   if (n === 0)   // empty plot area — fills from the right as the first blocks arrive
     return html`<div class="harea-wrap" style=${"height:" + h + "px"}></div>`;
-  // tight autoscale to the series' own min/max (small vpad) so CPU reads as a jagged "heartbeat"
+  // FIXED stepped y-scale from 0 (not min/max autoscale) so CPU doesn't always touch the top. Pick the bar
+  // height by the peak: ≤10% → 0–20% · ≤30% → 0–50% · ≤60% → 0–80% · above → 0–100%.
   const lo = Math.min(...pts), hi = Math.max(...pts), rng = (hi - lo) || 1, vpad = h * 0.06;
-  const Y = v => h - vpad - ((v - lo) / rng) * (h - 2 * vpad);
+  const scaleMax = hi <= 10 ? 20 : hi <= 30 ? 50 : hi <= 60 ? 80 : 100;
+  const Y = v => h - vpad - (Math.min(Math.max(v, 0), scaleMax) / scaleMax) * (h - 2 * vpad);
   const xy = pts.map((v, i) => [xAt(i), Y(v)]);
   const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
   const area = xy[0][0].toFixed(1) + "," + h + " " + line + " " + xy[n - 1][0].toFixed(1) + "," + h;
@@ -3156,13 +3158,18 @@ function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   const hi = n ? Math.max(0, ...R, ...T) : 0;
   // FIXED tiered y-scale so the curve reflects real magnitude instead of stretching to fill the height
-  // (a 39 B/s peak shouldn't look identical to a 39 Mbps one). Tiers by the view's peak:
-  //   ≤100 Mbps → 0–100 Mbps · ≤500 Mbps → 0–500 Mbps · above → dynamic (0–peak).
+  // (a 39 B/s peak shouldn't look identical to a 39 Mbps one). Tier the scale by the view's peak (Mbps):
+  //   ≤45 → 0–50 · ≤90 → 0–100 · ≤180 → 0–200 · ≤470 → 0–500 · ≤1000 → 0–1 Gbps · above → dynamic (peak +10%).
   const MBIT = 125000;                                   // bytes/sec per megabit/sec
-  const T1 = 100 * MBIT, T2 = 500 * MBIT;
-  const scaleMax = hi <= T1 ? T1 : (hi <= T2 ? T2 : (hi || 1));
-  const scaleLabel = hi <= T1 ? "100 Mbps" : (hi <= T2 ? "500 Mbps" : "auto");
-  const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="tp-scale" title="Vertical scale (auto = scaled to the peak above 500 Mbps)">${scaleLabel}</span><span class="grow"></span>${head || null}</div>`;
+  const hiM = hi / MBIT;                                 // peak in Mbps
+  const [smM, scaleLabel] = hiM <= 45 ? [50, "50 Mbps"]
+    : hiM <= 90 ? [100, "100 Mbps"]
+    : hiM <= 180 ? [200, "200 Mbps"]
+    : hiM <= 470 ? [500, "500 Mbps"]
+    : hiM <= 1000 ? [1000, "1 Gbps"]
+    : [hiM * 1.1, "auto"];
+  const scaleMax = (smM * MBIT) || 1;
+  const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="tp-scale" title="Vertical scale (auto = peak +10%, above 1 Gbps)">${scaleLabel}</span><span class="grow"></span>${head || null}</div>`;
   h = h || 60; const w = 100;
   // right-anchored to the ring's full capacity, like MiniArea — fills from the right as blocks arrive
   const C = Math.max(cap || n || 1, 2);
