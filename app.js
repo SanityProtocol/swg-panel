@@ -1952,7 +1952,7 @@ function ConnectionEditSheet({ node, iface }) {
       <div class="conn-grid">
         ${Cell("Node", html`<a href=${"#/node/" + encodeURIComponent(peer)} onClick=${closeModal}>${Store.nodeName(peer)}</a>`)}
         ${Cell("This end", meta.address || "—")}
-        ${Cell("Endpoint", meta.endpoint || "—")}
+        ${Cell("Endpoint", meta.peer_endpoint || "— (not dialed yet)")}
         ${Cell("Rate", html`↓ ${rate(dlul(meta.rx_speed, meta.tx_speed)[0])} · ↑ ${rate(dlul(meta.rx_speed, meta.tx_speed)[1])}`)}
         ${meta.rx_bytes != null || meta.tx_bytes != null ? Cell("Total", html`↓ ${fmtBytes(dlul(meta.rx_bytes, meta.tx_bytes)[0])} · ↑ ${fmtBytes(dlul(meta.rx_bytes, meta.tx_bytes)[1])}`) : null}
         ${Cell("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
@@ -3433,6 +3433,10 @@ function PanelSettingsScreen() {
   const [staleMs, setStaleMs] = useState(String(adv.node_stale_ms || 30000));
   const [graceMs, setGraceMs] = useState(String(adv.peer_grace_ms || 60000));
   const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
+  const rsv = ps.reserved || {};
+  const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
+  const [rsvPort, setRsvPort] = useState(String(rsv.mesh_port_base || 9999));
+  const [rsvPrefix, setRsvPrefix] = useState(rsv.iface_prefix || "swg_");
   const [showAdv, setShowAdv] = useState(false);
   const [msg, setMsg] = useState(null);
   const save = async () => {
@@ -3442,6 +3446,7 @@ function PanelSettingsScreen() {
       mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
       store_configs: sc === "on" ? true : sc === "off" ? false : null,
       throughput_perspective: tput,
+      reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
       advanced: { node_stale_ms: +staleMs || 30000, peer_grace_ms: +graceMs || 60000, geo_ttl_days: +ttlD || 3 },
     });
     if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
@@ -3489,6 +3494,13 @@ function PanelSettingsScreen() {
           <div class="field"><label>Peer grace window (ms)</label><input value=${graceMs} onInput=${e => setGraceMs(e.target.value)} placeholder="60000"/></div>
         </div>
         <div class="field"><label>Geo list refresh interval (days)</label><input value=${ttlD} onInput=${e => setTtlD(e.target.value)} placeholder="3"/></div>
+        <div class="seclabel">Reserved (system mesh)</div>
+        <p class="hint" style="margin:0 0 12px">Ranges the panel-managed inter-node mesh owns. User interfaces and turn-proxies can't use these. Changing them affects <b>new</b> links only — existing links keep their current addresses.</p>
+        <div class="row2">
+          <div class="field"><label>Mesh subnet</label><input value=${rsvSubnet} onInput=${e => setRsvSubnet(e.target.value)} placeholder="10.255.0.0/16"/></div>
+          <div class="field"><label>Mesh port (base)</label><input value=${rsvPort} onInput=${e => setRsvPort(e.target.value)} placeholder="9999"/></div>
+        </div>
+        <div class="field"><label>Interface name prefix</label><input value=${rsvPrefix} onInput=${e => setRsvPrefix(e.target.value)} placeholder="swg_"/><div class="hint">Mesh link interfaces are named <span class="mono">${(rsvPrefix || "swg_")}&lt;hex&gt;</span>.</div></div>
       <//>` : null}
       <div style="margin-top:14px"><button class="btn btn-primary" onClick=${save}>Save changes</button></div>
     </div>

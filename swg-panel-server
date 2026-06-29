@@ -794,6 +794,7 @@ def node_describe(snapshot):
             "rx_bytes": sum(p.get("rx_bytes", 0) or 0 for p in peers),   # cumulative totals (connection card)
             "tx_bytes": sum(p.get("tx_bytes", 0) or 0 for p in peers),
             "handshake_age": min((p.get("handshake_age") for p in peers if p.get("handshake_age") is not None), default=None),
+            "peer_endpoint": (peers[0].get("endpoint") if len(peers) == 1 else None),   # the actual dialed peer endpoint (mesh link → connection card "Endpoint")
         }
     return {"ok": True, "op": "describe",
             "data": {"hostname": snapshot.get("hostname"), "interfaces": interfaces}}
@@ -889,8 +890,45 @@ def panel_next_ip(snaps, roster, nodes, iface):
 
 def mesh_cfg(deps):
     f = deps.get("fleet") or {}
-    return {"subnet": f.get("mesh_subnet", "10.99.0.0/16"), "mtu": int(f.get("mesh_mtu", 1320)),
-            "keepalive": int(f.get("mesh_keepalive", 25)), "port_base": int(f.get("mesh_port_base", 52000))}
+    r = (deps.get("panel_settings") or {}).get("reserved") or {}   # Panel settings override the fleet/defaults
+    return {"subnet": r.get("mesh_subnet") or f.get("mesh_subnet", "10.255.0.0/16"), "mtu": int(f.get("mesh_mtu", 1320)),
+            "keepalive": int(f.get("mesh_keepalive", 25)),
+            "port_base": int(r.get("mesh_port_base") or f.get("mesh_port_base", 9999)),
+            "port_span": int(r.get("port_span") or 100),
+            "iface_prefix": (r.get("iface_prefix") or f.get("mesh_iface_prefix") or "swg_")}
+
+
+def reserved_conflict(deps, nodes, subnet=None, port=None, name=None):
+    """Reject user interfaces / turn-proxies that collide with the panel-managed mesh's reserved ranges
+    (subnet / port band / iface-name prefix). Reserves the configured mesh subnet AND the /16 around every
+    link subnet actually in use, so an existing fleet on a different range stays protected too. Returns an
+    error string, or None if there's no conflict."""
+    mc = mesh_cfg(deps)
+    prefix = mc.get("iface_prefix") or "swg_"
+    if name and str(name).startswith(prefix):
+        return f"names starting with '{prefix}' are reserved for system mesh links"
+    if subnet:
+        try:
+            net = ipaddress.ip_network(subnet, strict=False)
+        except Exception:
+            net = None
+        if net is not None:
+            reserved = []
+            with contextlib.suppress(Exception):
+                reserved.append(ipaddress.ip_network(mc["subnet"], strict=False))
+            for n in (nodes or {}).values():
+                for lr in (n.get("links") or {}).values():
+                    with contextlib.suppress(Exception):
+                        ln = ipaddress.ip_network(lr.get("subnet"), strict=False)
+                        reserved.append(ln.supernet(new_prefix=16) if ln.version == 4 and ln.prefixlen > 16 else ln)
+            for rn in reserved:
+                if net.version == rn.version and net.overlaps(rn):
+                    return f"subnet overlaps the reserved system mesh range ({rn})"
+    if port is not None and str(port).strip().isdigit():
+        base = mc["port_base"]; span = mc.get("port_span", 100)
+        if base <= int(port) < base + span:
+            return f"port {port} is in the reserved system mesh range ({base}–{base + span - 1})"
+    return None
 
 
 def gen_awg_params():
@@ -908,15 +946,15 @@ def gen_awg_params():
             "I1": "<b 0xc300000001><r 1200>"}
 
 
-def _link_iface_name(node, link_id):
-    """`swg_<8hex>` (12 chars ≤ IFNAMSIZ 15), same on both ends of a link. On the rare 8-hex collision
+def _link_iface_name(node, link_id, prefix="swg_"):
+    """`<prefix><8hex>` (≤ IFNAMSIZ 15), same on both ends of a link. On the rare 8-hex collision
     within one node, slide along the hash until a free window is found."""
     existing = {lr.get("iface") for lr in (node.get("links") or {}).values()}
     for i in range(0, len(link_id) - 8 + 1):
-        nm = "swg_" + link_id[i:i + 8]
+        nm = prefix + link_id[i:i + 8]
         if nm not in existing:
             return nm
-    return "swg_" + link_id[:8]
+    return prefix + link_id[:8]
 
 
 def _used_ports(nodes, snaps, nid):
@@ -964,7 +1002,7 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc):
     x_nid = min(a, b)                            # the smaller id is the .0 end (deterministic, both ends agree)
     for nid, peer in ((a, b), (b, a)):
         n = nodes[nid]
-        iface = _link_iface_name(n, link_id)
+        iface = _link_iface_name(n, link_id, mc.get("iface_prefix") or "swg_")
         mine, theirs = (hosts[0], hosts[1]) if nid == x_nid else (hosts[1], hosts[0])
         port = _alloc_port(_used_ports(nodes, snaps, nid), mc["port_base"])
         n.setdefault("links", {})[peer] = {
@@ -1083,6 +1121,8 @@ PANEL_SETTINGS_DEFAULTS = {
     "mirrors": {"geo": "", "turn": ""},
     "store_configs": None,
     "throughput_perspective": "nodes",   # "nodes" = node rx=down/tx=up | "peers" = flip (peer's down = node's tx)
+    # reserved ranges for the panel-managed inter-node mesh — user interfaces / turn-proxies may NOT use these
+    "reserved": {"mesh_subnet": "10.255.0.0/16", "mesh_port_base": 9999, "port_span": 100, "iface_prefix": "swg_"},
     "advanced": {"node_stale_ms": 30000, "peer_grace_ms": 60000, "geo_ttl_days": 3},
     "geo_epoch": 0,
 }
@@ -1092,7 +1132,7 @@ def load_panel_settings(path):
     """panel-settings.json merged over the defaults (one level deep for the sub-dicts)."""
     saved = load_json(path, {}) or {}
     out = {**PANEL_SETTINGS_DEFAULTS, **saved}
-    for k in ("interface_defaults", "mirrors", "advanced"):
+    for k in ("interface_defaults", "mirrors", "advanced", "reserved"):
         out[k] = {**PANEL_SETTINGS_DEFAULTS[k], **(saved.get(k) or {})}
     return out
 
@@ -1650,6 +1690,21 @@ def api(method, path, qs, body, deps):
             cur["mirrors"] = {"geo": (mir.get("geo") or "").strip(), "turn": (mir.get("turn") or "").strip()}
         if "throughput_perspective" in incoming:
             cur["throughput_perspective"] = "peers" if incoming["throughput_perspective"] == "peers" else "nodes"
+        rsv = incoming.get("reserved")
+        if isinstance(rsv, dict):
+            base = dict(cur.get("reserved") or PANEL_SETTINGS_DEFAULTS["reserved"])
+            if rsv.get("mesh_subnet"):
+                try:
+                    ipaddress.ip_network(str(rsv["mesh_subnet"]).strip(), strict=False)
+                    base["mesh_subnet"] = str(rsv["mesh_subnet"]).strip()
+                except Exception:
+                    return 400, {"ok": False, "error": "reserved mesh subnet must be a CIDR", "code": "bad_request"}
+            if str(rsv.get("mesh_port_base") or "").strip():
+                base["mesh_port_base"] = max(1, min(65000, int(rsv["mesh_port_base"])))
+            if rsv.get("iface_prefix"):
+                pfx = re.sub(r"[^a-z0-9_]", "", str(rsv["iface_prefix"]).lower())[:6] or "swg_"
+                base["iface_prefix"] = pfx
+            cur["reserved"] = base
         if "store_configs" in incoming:
             cur["store_configs"] = None if incoming["store_configs"] is None else bool(incoming["store_configs"])
         adv = incoming.get("advanced")
@@ -2216,6 +2271,9 @@ def api(method, path, qs, body, deps):
                     return 400, {"ok": False, "error": "port must be a number", "code": "bad_request"}
                 if not (1 <= p <= 65535):
                     return 400, {"ok": False, "error": "port must be 1–65535", "code": "bad_request"}
+                rc = reserved_conflict(deps, nodes, port=p)
+                if rc:
+                    return 400, {"ok": False, "error": rc, "code": "bad_request"}
                 ov["listen_port"] = p
         if "dns" in body:
             dns = body.get("dns")
@@ -2337,6 +2395,9 @@ def api(method, path, qs, body, deps):
             ipaddress.ip_network(subnet, strict=False)
         except Exception:
             return 400, {"ok": False, "error": "subnet must be a CIDR like 10.8.0.0/24", "code": "bad_request"}
+        rc = reserved_conflict(deps, nodes, subnet=subnet, port=body.get("listen_port"), name=iface)
+        if rc:
+            return 400, {"ok": False, "error": rc, "code": "bad_request"}
         cmd = ["wg"] if (body.get("protocol") or "awg").lower() == "wg" else ["awg"]
         req = {"cmd": cmd, "subnet": subnet}
         if str(body.get("listen_port") or "").isdigit():
@@ -2458,6 +2519,9 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "a fork + owner repo are required", "code": "bad_request"}
         if not _ipport(listen) or not _ipport(connect):
             return 400, {"ok": False, "error": "listen and connect must be ip:port", "code": "bad_request"}
+        rc = reserved_conflict(deps, nodes, port=listen.rsplit(":", 1)[1])
+        if rc:
+            return 400, {"ok": False, "error": rc, "code": "bad_request"}
         svc = "vk-turn-proxy-" + fork + "-" + listen.rsplit(":", 1)[1]
         if svc in (nodes[nid].get("turn") or {}):
             return 409, {"ok": False, "error": "an install for this fork+port is already pending", "code": "conflict"}
