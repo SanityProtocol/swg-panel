@@ -1732,10 +1732,7 @@ function EgressPicker({ node, value, onChange }) {
     ${value.mode === "smart"
       ? html`<${RoutingRules} node=${node} rules=${value.rules || []} onChange=${rs => onChange({ ...value, rules: rs })}/>`
       : value.mode !== "auto" ? html`<div class="field"><label>Outbound (egress) IP</label>
-      <select class="selwrap" value=${value.ip || ""} onChange=${e => onChange({ ...value, ip: e.target.value })}>
-        <option value="">${value.mode === "forward" ? "Auto (target node default)" : "Auto"}</option>
-        ${ipOpts.map(ip => html`<option value=${ip}>${ipLabel(ip)}</option>`)}
-      </select>
+      <${NodeIpPick} ips=${ipOpts} value=${value.ip || ""} onChange=${ip => onChange({ ...value, ip })} auto=${value.mode === "forward" ? "Auto (target node default)" : "Auto"}/>
       <div class="hint">${value.mode === "forward" ? "Source IP on the target node that clients egress from." : "Source IP clients egress from."}</div></div>` : null}
   <//>`;
 }
@@ -4288,12 +4285,23 @@ const isPrivIp = ip => /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01
 const ipLabel = ip => isPrivIp(ip) ? ip + " (private)" : ip;
 // dropdown of the node's internet IPs (already excludes wg/awg/swg/docker) + an Auto option; keeps a
 // current custom value (e.g. a hostname ingress) selectable even if it isn't in the reported IP list.
+// IP picker: only the node's PUBLIC (internet-routable) IPs are listed; internal/private IPs are hidden.
+// A "Use custom IP…" entry reveals a free-text field for any address not in the list (also how an already-set
+// private/custom value is shown — preserved, editable). value "" = the Auto option.
 function NodeIpPick({ ips, value, onChange, auto }) {
-  const opts = [...new Set([...(value ? [value] : []), ...(ips || [])])];
-  return html`<select class="selwrap" value=${value || ""} onChange=${e => onChange(e.target.value)}>
-    <option value="">${auto}</option>
-    ${opts.map(ip => html`<option value=${ip}>${ipLabel(ip)}</option>`)}
-  </select>`;
+  const pub = (ips || []).filter(ip => !isPrivIp(ip));
+  const valIsCustom = !!value && !pub.includes(value);
+  const [custom, setCustom] = useState(valIsCustom);
+  const sel = (custom || valIsCustom) ? "__custom__" : (value || "");
+  const onSel = v => { if (v === "__custom__") setCustom(true); else { setCustom(false); onChange(v); } };
+  return html`<${Fragment}>
+    <select class="selwrap" value=${sel} onChange=${e => onSel(e.target.value)}>
+      <option value="">${auto}</option>
+      ${pub.map(ip => html`<option value=${ip}>${ip}</option>`)}
+      <option value="__custom__">Use custom IP…</option>
+    </select>
+    ${sel === "__custom__" ? html`<input class="ipk-custom" placeholder="Custom IP — e.g. 203.0.113.5" value=${value || ""} onInput=${e => onChange(e.target.value)} spellcheck="false" autocomplete="off"/>` : null}
+  </${Fragment}>`;
 }
 function NodeEditSheet({ node }) {
   const rsv = (Store.panelSettings || {}).reserved || {};   // panel-wide defaults (used when the node has no override)

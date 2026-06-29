@@ -883,6 +883,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .awg-cell label{font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);font-weight:600}
 .awg-cell input{width:100%;font-family:var(--mono);font-size:12px;padding:5px 7px}
 .awg-val{font-family:var(--mono);font-size:12px;color:var(--ink);padding:5px 7px;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ipk-custom{margin-top:6px;width:100%;font-family:var(--mono);font-size:12.5px}
 /* node↔node connection info card (NOC-style: status pill + protocol tag + labeled grid) */
 .conncard{border:1px solid var(--line);border-radius:12px;padding:15px 17px;background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
 .conncard-top{display:flex;align-items:center;gap:9px;margin-bottom:16px}
