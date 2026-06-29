@@ -368,12 +368,41 @@ def test_node_geo():
     print("OK node: geo fetch→set load + change/empty reload-gating")
 
 
+def test_node_dial_src():
+    """Part 3: a per-link dial_src installs a /32 source route to the peer endpoint; clearing it removes it."""
+    import tempfile
+    m = _load("swg_noded_dial", "swg-noded")
+    m.STATE_DIR = tempfile.mkdtemp()
+    calls = []
+
+    def R(rc=0, out=""):
+        class _R:
+            pass
+        r = _R(); r.returncode = rc; r.stdout = out; r.stderr = ""; return r
+
+    def fake(a, **k):
+        calls.append([str(x) for x in a])
+        if a[:3] == ["ip", "route", "get"]:
+            return R(0, "203.0.113.50 via 203.0.113.1 dev eth0 src 203.0.113.11 \n")
+        return R(0)
+    m.run = fake
+    res = {"changed": 0, "errors": []}
+    m.reconcile_dial_src({"swg_AB": [{"endpoint": "203.0.113.50:51820", "dial_src": "203.0.113.12"}]}, res)
+    a = [" ".join(c) for c in calls]
+    assert any("ip route replace 203.0.113.50/32 via 203.0.113.1 dev eth0 src 203.0.113.12" in x for x in a), a
+    calls.clear()
+    m.reconcile_dial_src({"swg_AB": [{"endpoint": "203.0.113.50:51820", "dial_src": ""}]}, res)   # cleared → drop /32
+    assert any("ip route del 203.0.113.50/32" in " ".join(c) for c in calls), calls
+    print("OK node: dial-src /32 source route install + remove")
+
+
 def main():
     test_panel()
     test_panel_smart()
     test_node_cascade()
     test_node_smart()
     test_node_geo()
+    test_node_dial_src()
     test_node_allowed_drift()
     test_agent_conf()
     print("OK test_cascade: all assertions passed")

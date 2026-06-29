@@ -288,6 +288,7 @@ const api = {
   nodes() { return this.get("/api/nodes"); },
   nodeCreate(b) { return this.post("/api/nodes/create", b); },
   nodeUpdate(b) { return this.post("/api/nodes/update", b); },
+  connectionUpdate(b) { return this.post("/api/connection/update", b); },
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
   nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
   nodeUnflagRemove(b) { return this.post("/api/nodes/unflag-remove", b); },
@@ -1910,16 +1911,26 @@ function ConnectionEditSheet({ node, iface }) {
   useStore();
   const meta = Store.ifaceMeta(node, iface) || {};
   const peer = meta.link_node;
+  const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const [dialSrc, setDialSrc] = useState(meta.dial_src || "");
   const lk = nodeStale(node) ? "down" : (meta.handshake_age == null ? "connecting" : (meta.handshake_age < 180 ? "up" : "down"));
   const lkLabel = { up: "up", connecting: "connecting…", down: "down" }[lk];
   const Row = (l, v) => html`<div class="row"><span class="k">${l}</span><span class="vv">${v}</span></div>`;
+  const saveDial = () => {
+    closeModal();
+    mutate({
+      key: "conn:" + node + "|" + peer,
+      patch: () => {},
+      call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc }),
+    });
+  };
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
   const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
     && allMeta[k].egress_mode === "forward" && allMeta[k].egress_node === peer)
     .map(k => ({ iface: k, subnet: allMeta[k].subnet, ip: allMeta[k].egress_ip }));
   return html`<${Sheet} title=${"Connection to " + Store.nodeName(peer)} onClose=${closeModal}
-      foot=${html`<button class="btn" onClick=${closeModal}>Close</button>`}>
+      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${saveDial}>Save</button></>`}>
     <div class="dmeta">
       ${Row("Peer node", html`<a href=${"#/node/" + encodeURIComponent(peer)} onClick=${closeModal}>${Store.nodeName(peer)}</a>`)}
       ${Row("Status", html`<span style="display:inline-flex;align-items:center;gap:7px"><span class=${"lkdot " + lk}></span>${lkLabel}</span>`)}
@@ -1929,6 +1940,9 @@ function ConnectionEditSheet({ node, iface }) {
       ${Row("Listen", meta.endpoint || "—")}
       ${Row("Throughput", html`↓ ${rate(meta.rx_speed || 0)} · ↑ ${rate(meta.tx_speed || 0)}`)}
     </div>
+    <div class="field" style="margin-top:14px"><label>Dial source IP <span class="faint" style="text-transform:none;letter-spacing:0">— which of this node's IPs dials ${Store.nodeName(peer)}</span></label>
+      <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto="Auto (default route)"/>
+      <div class="hint">A dedicated source IP for this node-to-node link. Doesn't change how routed traffic appears externally — that's the exit node's egress IP.</div></div>
     ${carried.length ? html`<div style="margin-top:16px">
       <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;font-size:12px;font-weight:600;color:var(--ink)"><${Ic} i="activity"/>Forwarding <span class="tg tg-fwd">cascade</span></div>
       <div class="dmeta">${carried.map(c => Row(c.iface, html`<span class="addr">${c.subnet || "?"}</span> → ${Store.nodeName(peer)}${c.ip ? html` <span class="faint">as ${c.ip}</span>` : ""}`))}</div>

@@ -832,6 +832,7 @@ def apply_iface_meta(node_cfg, interfaces):
         ifc["routing"] = ov.get("routing") or []                 # smart-routing rule list (P3): [{category,action,node}]
         ifc["system"] = bool(ov.get("system"))         # panel-managed mesh link interface (a node↔node connection)
         ifc["link_node"] = ov.get("link_node") or ""   # the peer node this link connects to (SPA resolves the name)
+        ifc["dial_src"] = (((node_cfg.get("links") or {}).get(ifc["link_node"]) or {}).get("dial_src") or "") if ifc["link_node"] else ""   # Part 3: source IP this node dials the peer from
         ifc["drift"] = dict(ov.get("_drift") or {})    # settings edited directly on the server (key → the node's value)
         # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
         # the node converges its interface to it. awg_pending flags desired != reported in the UI.
@@ -1048,6 +1049,7 @@ def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None, snaps=N
             "preshared_key": lr.get("psk") or "none",
             "endpoint": f"{rhost}:{rport}",
             "persistent_keepalive": keepalive,
+            "dial_src": lr.get("dial_src") or "",      # node IP role: local source IP to dial THIS peer (Part 3)
             "name": "mesh:" + (peer.get("name") or peer_nid)})
     return out
 
@@ -2084,6 +2086,22 @@ def api(method, path, qs, body, deps):
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
+
+    if method == "POST" and path == "/api/connection/update":
+        # per-mesh-link setting: the local source IP this node uses to dial a specific peer (Part 3).
+        nid = body.get("node") or ""; peer = body.get("peer") or ""
+        if nid not in nodes or peer not in (nodes[nid].get("links") or {}):
+            return 404, {"ok": False, "error": "unknown connection", "code": "not_found"}
+        ds = (body.get("dial_src") or "").strip()
+        if ds:
+            try:
+                if ipaddress.ip_address(ds).version != 4:
+                    raise ValueError
+            except ValueError:
+                return 400, {"ok": False, "error": "dial_src must be a valid IPv4 address (or blank)", "code": "bad_request"}
+        nodes[nid]["links"][peer]["dial_src"] = ds
+        nodes_save(deps["nodes_path"], nodes)
+        return 200, {"ok": True, "data": {"node": nid, "peer": peer, "dial_src": ds}}
 
     if method == "POST" and path == "/api/order":
         # operator drag-to-reorder. kind=node → set per-node `pos`; kind=iface/turn → a per-node order

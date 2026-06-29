@@ -957,6 +957,50 @@ def _smart_geo_refresh(categories, set_counts, res):
             res["errors"].append("smart geo " + cat + ": " + str(e)[:120])
 
 
+def reconcile_dial_src(desired_by_iface, res):
+    """Pin the OUTBOUND source IP for each mesh link that set a dial_src — a /32 route to the peer endpoint
+    with `src <dial_src>` in the main table (the encrypted tunnel UDP leaves the WAN, so this never touches
+    the cascade 7000-band). `ip route replace` is atomic (no gap) so it's re-asserted every sync (reboot-safe);
+    a cleared dial_src removes the route (diffed against a small state file). Never raises into the sync loop."""
+    try:
+        want = {}                                              # peer endpoint IP -> dial source IP
+        for peers in (desired_by_iface or {}).values():
+            for p in peers:
+                ds = (p.get("dial_src") or "").strip(); ep = p.get("endpoint") or ""
+                if not ds or not ep:
+                    continue
+                try:
+                    want[socket.gethostbyname(ep.rsplit(":", 1)[0])] = ds
+                except Exception:
+                    continue                                   # unresolvable endpoint → skip (retry next sync)
+        statef = os.path.join(STATE_DIR, "dial-src.json")
+        prev = {}
+        with contextlib.suppress(Exception):
+            prev = json.load(open(statef))
+        for ip in (set(prev) - set(want)):                     # dial_src cleared → drop our /32
+            run(["ip", "route", "del", ip + "/32"]); res["changed"] += 1
+        for ip, ds in want.items():                            # (re)assert the source route (atomic, idempotent)
+            g = run(["ip", "route", "get", ip]).stdout
+            mdev = re.search(r"\bdev (\S+)", g); mvia = re.search(r"\bvia (\S+)", g)
+            cmd = ["ip", "route", "replace", ip + "/32"]
+            if mvia:
+                cmd += ["via", mvia.group(1)]
+            if mdev:
+                cmd += ["dev", mdev.group(1)]
+            cmd += ["src", ds]
+            if run(cmd).returncode != 0:
+                res["errors"].append("dial-src " + ip + ": route failed")
+            elif prev.get(ip) != ds:
+                res["changed"] += 1
+        if want != prev:
+            with contextlib.suppress(Exception):
+                with open(statef + ".tmp", "w") as f:
+                    json.dump(want, f)
+                os.replace(statef + ".tmp", statef)
+    except Exception as e:
+        res["errors"].append("dial-src: " + str(e)[:120])
+
+
 def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     """Phase 2 cascade + Phase 3 smart routing. ENTRY (P2 forward): `ip rule from S lookup T`; ENTRY
     (P3 smart): nftables marks `ip saddr S ip daddr @<category> meta mark set T` then `ip rule fwmark T
@@ -2224,6 +2268,7 @@ def main():
                 ob = onboard_ifaces(node_cfg, reply.get("onboard"))   # add panel-requested interfaces first
                 tp = apply_turn(reply.get("turn"), reply.get("turn_onboard"))   # turn-proxy manage/onboard
                 r = reconcile(node_cfg, reply["desired"], agent, sudo, reply.get("remove"))
+                reconcile_dial_src(reply["desired"], r)        # Part 3: pin per-link outbound source IPs (folds into r)
                 ri = reconcile_ifaces(node_cfg, reply.get("desired_ifaces") or {}, agent, sudo)   # set-iface: write the new listen-port to the conf FIRST
                 rs = restart_ifaces(node_cfg, reply.get("restart"), agent, sudo)   # THEN bounce — a restart picks up the just-written conf (e.g. a changed port)
                 sp = stop_ifaces(node_cfg, reply.get("iface_stop"), agent, sudo)    # stop (down + disable) / start (up + enable) on request
