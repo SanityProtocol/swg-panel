@@ -787,6 +787,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-busy.warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 38%,transparent)}
 .tg-ok{background:rgba(63,216,154,.16);color:var(--online);border-color:color-mix(in srgb,var(--online) 30%,transparent)}
 .tg-fwd{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 34%,transparent)}   /* traffic cascade: forwards out via another node — BRAND cyan */
+.tg-direct{background:color-mix(in srgb,var(--dim) 12%,transparent);color:var(--dim);border-color:color-mix(in srgb,var(--dim) 28%,transparent)}   /* traffic exits directly from this node — neutral */
 .tg-fwd svg{width:11px;height:11px}
 /* Phase 3 smart-routing rule editor */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
