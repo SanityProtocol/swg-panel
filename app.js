@@ -1921,7 +1921,9 @@ function ConnectionEditSheet({ node, iface }) {
   const [dialSrc, setDialSrc] = useState(meta.dial_src || "");
   const lk = nodeStale(node) ? "down" : (meta.handshake_age == null ? "connecting" : (meta.handshake_age < 180 ? "up" : "down"));
   const lkLabel = { up: "up", connecting: "connecting…", down: "down" }[lk];
+  const proto = (meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
   const Row = (l, v) => html`<div class="row"><span class="k">${l}</span><span class="vv">${v}</span></div>`;
+  const Cell = (l, v) => html`<div class="conn-cell"><span class="cl">${l}</span><span class="cv">${v}</span></div>`;
   const saveDial = () => {
     closeModal();
     mutate({
@@ -1937,14 +1939,20 @@ function ConnectionEditSheet({ node, iface }) {
     .map(k => ({ iface: k, subnet: allMeta[k].subnet, ip: allMeta[k].egress_ip }));
   return html`<${Sheet} title=${"Connection to " + Store.nodeName(peer)} onClose=${closeModal}
       foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${saveDial}>Save</button></>`}>
-    <div class="dmeta">
-      ${Row("Peer node", html`<a href=${"#/node/" + encodeURIComponent(peer)} onClick=${closeModal}>${Store.nodeName(peer)}</a>`)}
-      ${Row("Status", html`<span style="display:inline-flex;align-items:center;gap:7px"><span class=${"lkdot " + lk}></span>${lkLabel}</span>`)}
-      ${Row("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
-      ${Row("Tunnel subnet", meta.subnet || "—")}
-      ${Row("This end", meta.address || "—")}
-      ${Row("Listen", meta.endpoint || "—")}
-      ${Row("Throughput", html`↓ ${rate(meta.rx_speed || 0)} · ↑ ${rate(meta.tx_speed || 0)}`)}
+    <div class="conncard">
+      <div class="conncard-top">
+        <span class=${"lkpill " + lk}><span class=${"lkdot " + lk}></span>${lkLabel}</span>
+        <span class=${"iftype " + proto}>${proto}</span>
+      </div>
+      <div class="conn-grid">
+        ${Cell("Peer", html`<a href=${"#/node/" + encodeURIComponent(peer)} onClick=${closeModal}>${Store.nodeName(peer)}</a>`)}
+        ${Cell("This end", meta.address || "—")}
+        ${Cell("Endpoint", meta.endpoint || "—")}
+        ${Cell("Tunnel subnet", meta.subnet || "—")}
+        ${Cell("Rate", html`↓ ${rate(meta.rx_speed || 0)} · ↑ ${rate(meta.tx_speed || 0)}`)}
+        ${meta.rx_bytes != null || meta.tx_bytes != null ? Cell("Total", html`↓ ${fmtBytes(meta.rx_bytes || 0)} · ↑ ${fmtBytes(meta.tx_bytes || 0)}`) : null}
+        ${Cell("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
+      </div>
     </div>
     <div class="field" style="margin-top:14px"><label>Dial source IP <span class="faint" style="text-transform:none;letter-spacing:0">— which of this node's IPs dials ${Store.nodeName(peer)}</span></label>
       <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto="Auto (default route)"/>

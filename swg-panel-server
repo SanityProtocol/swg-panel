@@ -791,6 +791,8 @@ def node_describe(snapshot):
             "dns": meta.get("dns", []), "used_ips": used, "peer_count": len(peers),
             "rx_speed": sum(p.get("rx_speed", 0) or 0 for p in peers),   # per-iface throughput (mesh link cards)
             "tx_speed": sum(p.get("tx_speed", 0) or 0 for p in peers),
+            "rx_bytes": sum(p.get("rx_bytes", 0) or 0 for p in peers),   # cumulative totals (connection card)
+            "tx_bytes": sum(p.get("tx_bytes", 0) or 0 for p in peers),
             "handshake_age": min((p.get("handshake_age") for p in peers if p.get("handshake_age") is not None), default=None),
         }
     return {"ok": True, "op": "describe",

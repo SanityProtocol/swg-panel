@@ -862,6 +862,18 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ipk-val{font-family:var(--mono);font-size:12px;color:var(--ink-2);word-break:break-all;min-width:0;text-align:right}
 .subnet-row .ipk-val{text-align:left;word-break:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .seclabel{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin:18px 0 8px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+/* node↔node connection info card (NOC-style: status pill + protocol tag + labeled grid) */
+.conncard{border:1px solid var(--line);border-radius:12px;padding:15px 17px;background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
+.conncard-top{display:flex;align-items:center;gap:9px;margin-bottom:16px}
+.lkpill{display:inline-flex;align-items:center;gap:7px;padding:3px 11px;border-radius:999px;border:1px solid var(--line);font-size:12px;font-weight:600;text-transform:capitalize;color:var(--ink-2)}
+.lkpill.up{color:var(--online);border-color:color-mix(in srgb,var(--online) 38%,transparent);background:color-mix(in srgb,var(--online) 12%,transparent)}
+.lkpill.connecting{color:var(--partial);border-color:color-mix(in srgb,var(--partial) 38%,transparent);background:color-mix(in srgb,var(--partial) 12%,transparent)}
+.lkpill.down{color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 38%,transparent);background:color-mix(in srgb,var(--dangling) 12%,transparent)}
+.conn-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 20px}
+.conn-cell{display:flex;flex-direction:column;gap:5px;min-width:0}
+.conn-cell .cl{font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--faint)}
+.conn-cell .cv{font-family:var(--mono);font-size:13px;color:var(--ink);word-break:break-all;line-height:1.35}
+.conn-cell .cv a{color:var(--brand)}
 .ipk-field .copybtn:hover{color:var(--ready)}
 @media(max-width:760px){.iface-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
