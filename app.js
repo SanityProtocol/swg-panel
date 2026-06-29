@@ -942,6 +942,44 @@ function OnlPop({ title, rows, peer, orphans, orphHref, trigger, cls }) {
     ${rows.length > 10 ? html`<a class="onpop-viewall" href="#/connections" onClick=${e => e.stopPropagation()}>view all ${rows.length} connections →</a>` : null}
   </${Popover}>`;
 }
+// ───── mesh health: per-node, per-direction link status (down = other→this · up = this→other) ─────
+// OUT (this node → peer) = this node's reported handshake on its link iface. IN (peer → this node) = the
+// PEER's reported handshake on its iface back to this node. Both come from snapshots the panel already has.
+function meshHealth(nodeId) {
+  const byId = id => (Store.nodes || []).find(n => n.id === id);
+  const mp = (byId(nodeId) || {}).mesh_peers || [];
+  const hs = (nid, iface) => iface ? (((Store.describe || {})[nid] || {})[iface] || {}).handshake_age : undefined;
+  const stat = (nid, iface, reprov) => reprov ? "connecting"
+    : (nodeStale(nid) || !iface) ? "down"
+    : (hs(nid, iface) == null ? "connecting" : (hs(nid, iface) < 180 ? "up" : "down"));
+  const peers = mp.map(({ peer, iface, reprovisioning }) => {
+    const pmp = ((byId(peer) || {}).mesh_peers || []).find(x => x.peer === nodeId) || {};
+    return { peer, out: stat(nodeId, iface, reprovisioning), in: stat(peer, pmp.iface, pmp.reprovisioning) };
+  });
+  return { peers, total: peers.length,
+    okIn: peers.filter(p => p.in === "up").length, okOut: peers.filter(p => p.out === "up").length };
+}
+const meshTone = (ok, total) => total === 0 ? "off" : ok === total ? "ok" : ok === 0 ? "bad" : "warn";
+const mhArrow = (dir, status) => html`<span class=${"mh-ar mh-" + dir + " s-" + status}>${dir === "down" ? "↓" : "↑"}</span>`;
+// mode "in" → node-detail header (inbound only) · mode "both" → nodes-list (down = inbound, up = outbound)
+function MeshStat({ nodeId, mode }) {
+  const h = meshHealth(nodeId);
+  if (!h.total) return null;
+  const num = ok => html`<b class=${"mh-num " + meshTone(ok, h.total)}>${ok}/${h.total}</b>`;
+  const ordered = (Store.nodes || []).filter(n => h.peers.some(p => p.peer === n.id));
+  const row = n => {
+    const p = h.peers.find(x => x.peer === n.id);
+    const nameCls = p.in === "up" ? "mh-bold" : p.in === "down" ? "mh-dim" : "";
+    return html`<div class="mh-row"><span class="mh-rar">${mhArrow("down", p.in)}${mode === "both" ? mhArrow("up", p.out) : null}</span><span class=${"mh-rn " + nameCls} style=${"color:" + Store.nodeColor(n.id)}>${n.name}</span></div>`;
+  };
+  const trigger = mode === "in"
+    ? html`<span class="mh-tag"><span class="mh-lbl">This node's mesh status:</span> ${num(h.okIn)}</span>`
+    : html`<span class="mh-tag"><span class="mh-lbl">Mesh link</span><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn)}<span class="mh-ar mh-up s-up">↑</span>${num(h.okOut)}</span>`;
+  return html`<${Popover} cls="mh-pop" trigger=${trigger}>
+    <div class="onpop-h">${mode === "in" ? "Inbound mesh links" : "Mesh links (↓ in · ↑ out)"} · ${h.total}</div>
+    ${ordered.map(row)}
+  </${Popover}>`;
+}
 // "N online" tag → users bubble. nodeId null = whole fleet. trigger: optional (count)=>vnode.
 function OnlineUsersTag({ nodeId, cls, trigger }) {
   return html`<${OnlPop} title="Online users" rows=${onlineUserRows(nodeId)} cls=${cls}
@@ -1389,7 +1427,8 @@ function NodeDetail({ node: rawName }) {
       <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
     <//>` : null}
 
-    ${(nrec.mesh_peers || []).length ? html`<${Panel} icon="network" title="Node connections" tone="pending" count=${(nrec.mesh_peers || []).length}>
+    ${(nrec.mesh_peers || []).length ? html`<${Panel} icon="network" title="Node connections" tone="pending" count=${(nrec.mesh_peers || []).length}
+        actions=${html`<${MeshStat} nodeId=${name} mode="in"/>`}>
       <div class="ifgrid">${[...(nrec.mesh_peers || [])].sort((a, b) => Store.nodeName(a.peer).localeCompare(Store.nodeName(b.peer))).map(mp => {
         const peer = mp.peer;
         const ifn = mp.iface;
@@ -3370,6 +3409,7 @@ function NodeCard({ n, reorder }) {
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
       <span class="grow"></span>
+      ${(n.mesh_peers || []).length ? html`<span class="nm-meshitem"><${MeshStat} nodeId=${n.id} mode="both"/></span>` : null}
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style=${"color:" + htcolor(cpct)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     </div>
     <div class="nmeta">
