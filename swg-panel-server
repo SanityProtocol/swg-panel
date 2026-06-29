@@ -1520,6 +1520,7 @@ def api(method, path, qs, body, deps):
                         "iface_order": c.get("iface_order") or [],   # operator drag-order overlays (POST /api/order)
                         "turn_order": c.get("turn_order") or [],
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
+                        "default_egress_ip": c.get("default_egress_ip") or "", "panel_ip": c.get("panel_ip") or "",
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
                         "uninstalled": c.get("uninstalled"),   # unsolicited uninstall → grey "Uninstalled" tag; recover by re-installing with the same token
                         # node lifecycle tag via _proc_view: in-progress for PROC_GRACE then "<op> failed";
@@ -2070,6 +2071,16 @@ def api(method, path, qs, body, deps):
             nodes[nid]["color"] = body.get("color") or nodes[nid].get("color")
         if "endpoint_host" in body:
             nodes[nid]["endpoint_host"] = (body.get("endpoint_host") or "").strip()
+        for k in ("default_egress_ip", "panel_ip"):   # node IP roles: SNAT source for direct egress / source to dial the panel
+            if k in body:
+                v = (body.get(k) or "").strip()
+                if v:
+                    try:
+                        if ipaddress.ip_address(v).version != 4:
+                            raise ValueError
+                    except ValueError:
+                        return 400, {"ok": False, "error": k + " must be a valid IPv4 address (or blank)", "code": "bad_request"}
+                nodes[nid][k] = v
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
@@ -3112,6 +3123,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])})},
+                                "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
+                                                "panel_ip": node.get("panel_ip") or ""},
                                 "update": upd or None, "interval": interval})
 
     def _node_goodbye(self):

@@ -314,12 +314,14 @@ def run_agent(agent, sudo, payload):
         return {"ok": False, "op": payload.get("op"), "error": "agent non-JSON", "code": "internal"}
 
 
-def post_json(url, token, obj, panel, timeout=20):
+def post_json(url, token, obj, panel, timeout=20, source_ip=""):
     """POST JSON to the panel. TLS posture comes from `panel`:
          fingerprint set -> pin sha256 (verified during the handshake, before any
                             bytes are sent, and fails closed if it can't be read);
          verify true     -> system CA verification;
          otherwise       -> unverified (self-signed; encrypted but no MITM protection).
+    `source_ip` (optional) binds the local source IP for the connection (the node's "panel connection IP"
+    role); callers fall back to unbound on failure so a bad IP can't cut the node off from the panel.
     Returns (status, dict). status 0 means the request never completed."""
     body = json.dumps(obj).encode()
     headers = {"Content-Type": "application/json", "Authorization": "Bearer " + token}
@@ -328,16 +330,17 @@ def post_json(url, token, obj, panel, timeout=20):
     port = u.port or (443 if u.scheme == "https" else 80)
     path = (u.path or "/") + (("?" + u.query) if u.query else "")
     fp = (panel.get("fingerprint") or "").replace(":", "").lower().strip()
+    src = (source_ip, 0) if source_ip else None
     conn = None
     try:
         if u.scheme == "http":
-            conn = http.client.HTTPConnection(host, port, timeout=timeout)
+            conn = http.client.HTTPConnection(host, port, timeout=timeout, source_address=src)
         elif u.scheme == "https":
             if panel.get("verify", False) and not fp:
                 ctx = ssl.create_default_context()
             else:
                 ctx = ssl._create_unverified_context()
-            conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx, source_address=src)
             if fp:
                 conn.connect()                      # TLS handshake before sending the token
                 der = conn.sock.getpeercert(True)
@@ -606,7 +609,7 @@ def _snat_reconcile_rule(tag, subnet, des, rules):
     return (True, None)
 
 
-def reconcile_egress(node_cfg, desired_ifaces):
+def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
     """Option-I source-NAT: per interface, ensure an SNAT rule to its chosen egress_ip (tagged with a
     'swg-egress:<iface>' comment, inserted ahead of the default MASQUERADE), replace it on change, and
     remove it when cleared (→ falls back to MASQUERADE). Runs iptables directly (root on bare-metal;
@@ -628,6 +631,8 @@ def reconcile_egress(node_cfg, desired_ifaces):
             continue
         if egress:                                            # SNAT to a chosen source IP, out a chosen/auto WAN
             des = ("SNAT", wan_ov or default_wan, egress)
+        elif default_egress_ip:                               # node-level default direct egress IP (fallback)
+            des = ("SNAT", wan_ov or default_wan, default_egress_ip)
         elif wan_ov:                                          # just pin the WAN egress interface
             des = ("MASQUERADE", wan_ov, "")
         else:
@@ -706,9 +711,11 @@ def _live_band_prios():
     return sorted(set(out))
 
 
-def _ensure_fwd_iptables(fwd, exit_, default_wan, res):
+def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip=""):
     """Idempotent (no-churn) exit SNAT + FORWARD-accept + MSS-clamp for the link devices, tagged
-    swg-fwd-{snat,acl,mss}:* so stale entries (after a forward→direct switch) are cleaned up."""
+    swg-fwd-{snat,acl,mss}:* so stale entries (after a forward→direct switch) are cleaned up. Traffic
+    received from other nodes (the cascade/smart exit side) SNATs to the exit record's egress_ip, falling
+    back to THIS node's default direct egress IP — so routed traffic appears as the exit node's chosen IP."""
     link_devs = sorted({e["via_iface"] for e in (fwd + exit_)})
     # 1) exit SNAT per forwarded subnet (diff via the shared helper) + drop stale tags
     try:
@@ -718,7 +725,8 @@ def _ensure_fwd_iptables(fwd, exit_, default_wan, res):
     want_snat = set()
     for e in exit_:
         S = e["subnet"]; tag = "swg-fwd-snat:" + S; want_snat.add(tag)
-        W = (e.get("wan_iface") or "").strip() or default_wan; X = (e.get("egress_ip") or "").strip()
+        W = (e.get("wan_iface") or "").strip() or default_wan
+        X = (e.get("egress_ip") or "").strip() or default_egress_ip
         des = ("SNAT", W, X) if X else ("MASQUERADE", W, "")
         _ch, err = _snat_reconcile_rule(tag, S, des, nat)
         if err:
@@ -949,7 +957,7 @@ def _smart_geo_refresh(categories, set_counts, res):
             res["errors"].append("smart geo " + cat + ": " + str(e)[:120])
 
 
-def reconcile_cascade(node_cfg, plan, smart=None):
+def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     """Phase 2 cascade + Phase 3 smart routing. ENTRY (P2 forward): `ip rule from S lookup T`; ENTRY
     (P3 smart): nftables marks `ip saddr S ip daddr @<category> meta mark set T` then `ip rule fwmark T
     lookup T` — both route into `default dev <link> table T`. EXIT (shared): `ip rule to S lookup T` +
@@ -993,7 +1001,7 @@ def reconcile_cascade(node_cfg, plan, smart=None):
             run(["ip", "rule", "add", "to", S, "lookup", T, "priority", T])
             res["changed"] += 1
     # IPTABLES (SNAT / FORWARD accept / MSS clamp) — always reconciled by tag (cheap, no-churn).
-    _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res)
+    _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip)
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e})
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res)
@@ -2149,6 +2157,10 @@ def main():
     sudo = bool(nd.get("sudo"))
     os.makedirs(STATE_DIR, exist_ok=True)
     last_samples = {}
+    PANEL_IP_FILE = os.path.join(STATE_DIR, "panel-ip")   # node IP role: source IP to dial the panel (persisted)
+    panel_ip = ""; bad_pip = ""                     # bad_pip = a panel_ip that failed to connect → don't keep re-binding it
+    with contextlib.suppress(OSError):
+        panel_ip = open(PANEL_IP_FILE).read().strip()
     update_started = False                          # spawn the self-updater at most once per process
     print(f"swg-noded: panel={panel['url']} interval={interval}s "
           f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
@@ -2158,7 +2170,24 @@ def main():
         t0 = time.time()
         try:
             snap = build_snapshot(node_cfg, online_max, last_samples)
-            status, reply = post_json(url, token, {"snapshot": snap}, panel)
+            use_ip = panel_ip if (panel_ip and panel_ip != bad_pip) else ""
+            status, reply = post_json(url, token, {"snapshot": snap}, panel, source_ip=use_ip)
+            if status == 0 and use_ip:              # fail-safe: a bound source couldn't reach the panel → retry unbound + stop binding that IP
+                bad_pip = use_ip
+                status, reply = post_json(url, token, {"snapshot": snap}, panel)
+            if status == 200:                       # adopt the panel-chosen connection IP (persist; reset bad-flag if it changed)
+                want_pip = ((reply.get("node_egress") or {}).get("panel_ip") or "").strip()
+                if want_pip != panel_ip:
+                    panel_ip = want_pip
+                    if want_pip != bad_pip:
+                        bad_pip = ""
+                    with contextlib.suppress(OSError):
+                        if want_pip:
+                            with open(PANEL_IP_FILE + ".tmp", "w") as _f:
+                                _f.write(want_pip)
+                            os.replace(PANEL_IP_FILE + ".tmp", PANEL_IP_FILE)
+                        else:
+                            os.unlink(PANEL_IP_FILE)
             if status == 200 and isinstance(reply.get("desired"), dict):
                 _upd0 = reply.get("update")
                 if _upd0 and not update_started:   # already fired THIS exact request (a recreate restarted us)? then DON'T re-fire — else the update loops forever (recreate → restart → re-trigger → recreate …)
@@ -2200,8 +2229,9 @@ def main():
                 sp = stop_ifaces(node_cfg, reply.get("iface_stop"), agent, sudo)    # stop (down + disable) / start (up + enable) on request
                 sa = start_ifaces(node_cfg, reply.get("iface_start"), agent, sudo)
                 ik = apply_iface_keys(node_cfg, reply.get("iface_key"), agent, sudo)   # keypair restore/rebaseline from the on-disk backup
-                eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {})   # per-interface egress SNAT
-                cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"))   # P2 forward + P3 smart routing + exit SNAT
+                _def_egress = ((reply.get("node_egress") or {}).get("default_egress_ip") or "").strip()   # node IP role: fallback SNAT source
+                eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
+                cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress)   # P2 forward + P3 smart + exit SNAT
                 # surface iface command failures to the panel too (cmd_errors), keyed by iface name
                 for blk in (cr, dl, ob, rs, sp, sa):
                     for e in blk["errors"]:

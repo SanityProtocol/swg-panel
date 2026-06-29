@@ -4112,22 +4112,45 @@ function NodeTokenSheet({ name, token, isNew, kind }) {
   <//>`;
 }
 function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
+// dropdown of the node's internet IPs (already excludes wg/awg/swg/docker) + an Auto option; keeps a
+// current custom value (e.g. a hostname ingress) selectable even if it isn't in the reported IP list.
+function NodeIpPick({ ips, value, onChange, auto }) {
+  const opts = [...new Set([...(value ? [value] : []), ...(ips || [])])];
+  return html`<select class="selwrap" value=${value || ""} onChange=${e => onChange(e.target.value)}>
+    <option value="">${auto}</option>
+    ${opts.map(ip => html`<option value=${ip}>${ip}</option>`)}
+  </select>`;
+}
 function NodeEditSheet({ node }) {
   const [name, setName] = useState(node.name || ""); const [color, setColor] = useState(node.color || SWATCHES[0]); const [msg, setMsg] = useState(null);
+  const [ingress, setIngress] = useState(node.endpoint_host || "");
+  const [defEgress, setDefEgress] = useState(node.default_egress_ip || "");
+  const [panelIp, setPanelIp] = useState(node.panel_ip || "");
+  const ips = node.ips || [];
   const nameBad = name.trim() && !V.nodeName(name);
   const save = async () => {
     if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
     closeModal();   // optimistic: card reflects the rename immediately (name is just a label — no refs to migrate)
     mutate({
       key: "node:" + node.id,
-      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; } },
-      call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color }),
+      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; n.endpoint_host = ingress; n.default_egress_ip = defEgress; n.panel_ip = panelIp; } },
+      call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, default_egress_ip: defEgress, panel_ip: panelIp }),
     });
   };
   return html`<${Sheet} title=${"Node settings · " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
     <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
+    <div class="seclabel">Connection IPs</div>
+    <div class="field"><label>Ingress IP <span class="faint" style="text-transform:none;letter-spacing:0">— mesh endpoint peers dial</span></label>
+      <${NodeIpPick} ips=${ips} value=${ingress} onChange=${setIngress} auto="Auto (public IP)"/>
+      <div class="hint">The address other nodes dial to reach this node for cascading.</div></div>
+    <div class="field"><label>Default egress IP <span class="faint" style="text-transform:none;letter-spacing:0">— direct internet exit</span></label>
+      <${NodeIpPick} ips=${ips} value=${defEgress} onChange=${setDefEgress} auto="Auto (MASQUERADE)"/>
+      <div class="hint">Source IP this node SNATs to when traffic exits to the internet here (its own direct interfaces + traffic received from other nodes). Cascading traffic is unaffected.</div></div>
+    <div class="field"><label>Panel connection IP <span class="faint" style="text-transform:none;letter-spacing:0">— source to reach the panel</span></label>
+      <${NodeIpPick} ips=${ips} value=${panelIp} onChange=${setPanelIp} auto="Auto (default route)"/>
+      <div class="hint">Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.</div></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
