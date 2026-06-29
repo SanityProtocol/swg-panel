@@ -3099,10 +3099,10 @@ class Handler(BaseHTTPRequestHandler):
         desired = desired_for_node(roster, nid)
         cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {})   # Phase 2: whole-fleet forward plan
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "allowed": {}}
-        _ps = Handler.deps.get("panel_settings") or {}   # Panel settings → mirrors / geo TTL / geo epoch for the node
-        for _ifn, _ps in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
-                                               my_plan.get("allowed"), Handler.deps.get("node_snaps")).items():
-            desired.setdefault(_ifn, []).extend(_ps)   # node↔node mesh peers (endpoint + keepalive; cascade-aware AllowedIPs)
+        _ps = Handler.deps.get("panel_settings") or {}   # Panel settings → mirrors / geo TTL / geo epoch for the node (used in the reply below)
+        for _ifn, _mpeers in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],
+                                                    my_plan.get("allowed"), Handler.deps.get("node_snaps")).items():
+            desired.setdefault(_ifn, []).extend(_mpeers)   # node↔node mesh peers (endpoint + keepalive; cascade-aware AllowedIPs)
         # panel-managed interface config the node converges to — drift-aware: push an override until the
         # node confirms it (_synced); once confirmed, if the node diverges (a direct edit on the server)
         # PAUSE pushing + record the node's value in _drift so the panel can flag it (Adopt / Restore).

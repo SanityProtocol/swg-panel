@@ -4274,7 +4274,7 @@ function NodeEditSheet({ node }) {
     || ovPort !== (node.mesh_port ? String(node.mesh_port) : "")
     || ovPfx !== (node.mesh_prefix || "");
   const doSave = () => {
-    closeModal();   // optimistic: card reflects the rename immediately (name is just a label — no refs to migrate)
+    closeAllModals();   // close the sheet AND any re-provision confirm stacked on top; optimistic — the card reflects the change immediately
     mutate({
       key: "node:" + node.id,
       patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; n.endpoint_host = ingress; n.mesh_port = ovPort; n.mesh_subnet = ovSub; n.mesh_prefix = ovPfx; n.default_egress_ip = defEgress; n.panel_ip = panelIp; } },
