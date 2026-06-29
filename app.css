@@ -893,7 +893,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .mh-num{font-family:var(--mono);font-weight:400;font-size:12px}          /* numbers NOT bold */
 .mh-num-hdr{font-size:14px;font-weight:600}
 .mh-num.ok{color:var(--online)} .mh-num.warn{color:#F0913C} .mh-num.bad{color:var(--dangling)} .mh-num.off{color:var(--faint)}
-.mh-ar{line-height:1;font-size:13px}   /* identical to the throughput arrows: same thin glyph + weight */
+.mh-ar{font-family:var(--mono);line-height:1;font-size:12.5px}   /* identical to the throughput arrows: same MONO glyph (was inheriting the sans font), size + weight */
 .mh-ar.mh-down.s-up{color:var(--online)} .mh-ar.mh-down.s-connecting{color:var(--partial)} .mh-ar.mh-down.s-down{color:var(--dangling)}
 .mh-ar.mh-up.s-up{color:var(--ready)} .mh-ar.mh-up.s-connecting{color:var(--partial)} .mh-ar.mh-up.s-down{color:var(--dangling)}
 .mh-row{display:flex;align-items:center;justify-content:flex-start;gap:12px;padding:4px 8px}   /* names align with the title (8px) */
