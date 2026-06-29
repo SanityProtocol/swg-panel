@@ -4254,25 +4254,31 @@ function NodeIpPick({ ips, value, onChange, auto }) {
   </select>`;
 }
 function NodeEditSheet({ node }) {
+  const rsv = (Store.panelSettings || {}).reserved || {};   // panel-wide defaults (used when the node has no override)
+  const dSub = rsv.mesh_subnet || "10.255.0.0/16", dPort = String(rsv.mesh_port_base || 9999), dPfx = rsv.iface_prefix || "swg_";
   const [name, setName] = useState(node.name || ""); const [color, setColor] = useState(node.color || SWATCHES[0]); const [msg, setMsg] = useState(null);
   const [ingress, setIngress] = useState(node.endpoint_host || "");
-  const [meshPort, setMeshPort] = useState(node.mesh_port ? String(node.mesh_port) : "");
-  const [meshSubnet, setMeshSubnet] = useState(node.mesh_subnet || "");
-  const [meshPrefix, setMeshPrefix] = useState(node.mesh_prefix || "");
+  // mesh fields show the EFFECTIVE value in use (the node's override, else the panel default). Leaving it at
+  // the default normalizes to "inherit" on save (no spurious override / re-provision).
+  const [meshPort, setMeshPort] = useState(node.mesh_port ? String(node.mesh_port) : dPort);
+  const [meshSubnet, setMeshSubnet] = useState(node.mesh_subnet || dSub);
+  const [meshPrefix, setMeshPrefix] = useState(node.mesh_prefix || dPfx);
   const [defEgress, setDefEgress] = useState(node.default_egress_ip || "");
   const [panelIp, setPanelIp] = useState(node.panel_ip || "");
   const ips = node.ips || [];
-  const rsv = (Store.panelSettings || {}).reserved || {};   // panel-wide defaults → shown as placeholders
+  const ovSub = meshSubnet.trim() === dSub ? "" : meshSubnet.trim();   // normalized overrides (default → inherit)
+  const ovPort = meshPort.trim() === dPort ? "" : meshPort.trim();
+  const ovPfx = meshPrefix.trim() === dPfx ? "" : meshPrefix.trim();
   const nameBad = name.trim() && !V.nodeName(name);
-  const meshChanged = meshSubnet.trim() !== (node.mesh_subnet || "")
-    || meshPort.trim() !== (node.mesh_port ? String(node.mesh_port) : "")
-    || meshPrefix.trim() !== (node.mesh_prefix || "");
+  const meshChanged = ovSub !== (node.mesh_subnet || "")
+    || ovPort !== (node.mesh_port ? String(node.mesh_port) : "")
+    || ovPfx !== (node.mesh_prefix || "");
   const doSave = () => {
     closeModal();   // optimistic: card reflects the rename immediately (name is just a label — no refs to migrate)
     mutate({
       key: "node:" + node.id,
-      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; n.endpoint_host = ingress; n.mesh_port = meshPort; n.mesh_subnet = meshSubnet; n.mesh_prefix = meshPrefix; n.default_egress_ip = defEgress; n.panel_ip = panelIp; } },
-      call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: meshPort, mesh_subnet: meshSubnet, mesh_prefix: meshPrefix, default_egress_ip: defEgress, panel_ip: panelIp }),
+      patch: s => { const n = s.nodes.find(x => x.id === node.id); if (n) { n.name = name.trim(); n.color = color; n.endpoint_host = ingress; n.mesh_port = ovPort; n.mesh_subnet = ovSub; n.mesh_prefix = ovPfx; n.default_egress_ip = defEgress; n.panel_ip = panelIp; } },
+      call: () => api.nodeUpdate({ id: node.id, name: name.trim(), color, endpoint_host: ingress, mesh_port: ovPort, mesh_subnet: ovSub, mesh_prefix: ovPfx, default_egress_ip: defEgress, panel_ip: panelIp }),
     });
   };
   const save = async () => {
