@@ -1309,9 +1309,15 @@ function NodeDetail({ node: rawName }) {
   const seenRef = useRef(false);
   useEffect(() => { if (node) seenRef.current = true; else if (seenRef.current) go("#/nodes"); }, [node]);
 
-  // split the node's interfaces: USER interfaces (operator-created) vs SYSTEM mesh links (node↔node connections)
-  const userKeys = meta ? Object.keys(meta).filter(k => !meta[k].system) : [];
-  const sysKeys = meta ? Object.keys(meta).filter(k => meta[k].system) : [];
+  // split the node's interfaces: USER interfaces (operator-created) vs SYSTEM mesh links (node↔node connections).
+  // System ifaces are EXCLUDED from the user list by BOTH the reported `system` flag AND the reserved name
+  // prefix — a mesh iface mid-delete loses its override flag but keeps its swg_ name, so it must never leak
+  // onto the User-interfaces screen as a card.
+  const meshPfx = (nrec.mesh_prefix || (Store.panelSettings || {}).reserved?.iface_prefix || "swg_");
+  const isSysName = k => k.startsWith(meshPfx) || k.startsWith("swg_");
+  const isSysIface = k => (meta[k] && meta[k].system) || isSysName(k);
+  const userKeys = meta ? Object.keys(meta).filter(k => !isSysIface(k)) : [];
+  const sysKeys = meta ? Object.keys(meta).filter(k => isSysIface(k)) : [];
   // drag-to-reorder the (user) interface cards (saved order overlays the node's reported set)
   const ifaceIds = orderById(userKeys, nrec.iface_order, x => x);
   const ifReorder = useReorder(ifaceIds, ids => mutate({
@@ -1383,24 +1389,26 @@ function NodeDetail({ node: rawName }) {
       <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
     <//>` : null}
 
-    ${sysKeys.length ? html`<${Panel} icon="network" title="Node connections" tone="pending" count=${sysKeys.length}>
-      <div class="ifgrid">${sysKeys.sort((a, b) => Store.nodeName(meta[a].link_node).localeCompare(Store.nodeName(meta[b].link_node))).map(ifn => {
-        const m = meta[ifn];
-        const peer = m.link_node;
+    ${(nrec.mesh_peers || []).length ? html`<${Panel} icon="network" title="Node connections" tone="pending" count=${(nrec.mesh_peers || []).length}>
+      <div class="ifgrid">${[...(nrec.mesh_peers || [])].sort((a, b) => Store.nodeName(a.peer).localeCompare(Store.nodeName(b.peer))).map(mp => {
+        const peer = mp.peer;
+        const ifn = mp.iface;
+        const m = (ifn && meta) ? meta[ifn] : null;   // reported stats for the link's CURRENT iface (absent mid-rebuild)
         const col = Store.nodeColor(peer);
+        const reprov = !!mp.reprovisioning || (!!ifn && !m);   // staged create, or iface not reported yet → re-provisioning
         // link health → one glowing dot: green up (recent handshake) · amber connecting (never handshook)
-        // · red down (handshook then went stale, or the node itself is dark)
-        const lk = nodeStale(name) ? "down" : (m.handshake_age == null ? "connecting" : (m.handshake_age < 180 ? "up" : "down"));
+        // · red down (handshook then went stale, or the node itself is dark). reprov takes over the card.
+        const lk = reprov ? "reprov" : nodeStale(name) ? "down" : (!m || m.handshake_age == null ? "connecting" : (m.handshake_age < 180 ? "up" : "down"));
         const lkTitle = { up: "Link up", connecting: "Connecting…", down: "Link down" }[lk];
-        const muted = lk === "down";
-        const carried = userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
+        const muted = lk === "down" || reprov;
+        const carried = reprov ? [] : userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
           .map(k => meta[k].subnet).filter(Boolean);   // local user subnets forwarded out through THIS link
-        return html`<div key=${ifn} class=${"ifcard tp clickable" + (muted ? " down" : "")} onClick=${() => openConnectionEdit(name, ifn)}>
-          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}<span class=${"lkdot " + lk} style="align-self:flex-start;margin-top:1px" title=${lkTitle}></span></div>
+        return html`<div key=${peer} class=${"ifcard tp" + (reprov ? "" : " clickable") + (muted ? " down" : "")} onClick=${reprov || !ifn ? null : () => openConnectionEdit(name, ifn)}>
+          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="tg tg-fwd" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}${reprov ? html`<span class="tg tg-busy" title="Rebuilding this node's mesh link — it reconnects in a few seconds"><${Ic} i="clock"/>re-provisioning</span>` : html`<span class=${"lkdot " + lk} style="align-self:flex-start;margin-top:1px" title=${lkTitle}></span>`}</div>
           <div class="ifcard-rows">
-            <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${m.subnet || "—"}</span></div>
+            <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${(m && m.subnet) || "—"}</span></div>
             ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r addr">${carried.join(", ")}</span></div>` : null}
-            <div class="ifrow"><span class="l">Throughput</span><span class="r">↓ ${rate(dlul(m.rx_speed, m.tx_speed)[0])} · ↑ ${rate(dlul(m.rx_speed, m.tx_speed)[1])}</span></div>
+            <div class="ifrow"><span class="l">Throughput</span><span class="r">${m ? html`↓ ${rate(dlul(m.rx_speed, m.tx_speed)[0])} · ↑ ${rate(dlul(m.rx_speed, m.tx_speed)[1])}` : html`<span class="faint">—</span>`}</span></div>
           </div></div>`;
       })}</div>
     <//>` : null}
@@ -1431,9 +1439,11 @@ function NodeDetail({ node: rawName }) {
           else if (Date.now() - (Store.ifaceNew[k].at || 0) > 900000) delete Store.ifaceNew[k];
         }
         const optNames = Object.keys(Store.ifaceNew).filter(k => k.startsWith(_pfx)).map(k => k.slice(_pfx.length));
-        const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn));
+        // system mesh-link ifaces (swg_*) are created/torn down by the panel during re-provision — they belong
+        // to the Node-connections cards, NEVER the User-interfaces list, so exclude them from every pending lane.
+        const pendOn = (nrec.onboarding || []).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn) && !isSysName(ifn));
         const cr = nrec.creating || {};   // { iface: "wg" | "awg" } — server-side, deduped against the client cards
-        const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn));
+        const pendCr = Object.keys(cr).filter(ifn => !(meta && meta[ifn]) && !optNames.includes(ifn) && !isSysName(ifn));
         const optCards = optNames.filter(ifn => !(meta && meta[ifn])).map(ifn => optIfCard(ifn, Store.ifaceNew[_pfx + ifn]));
         const pending = pendOn.concat(pendCr, optNames);
         pending.forEach(ifn => { ifaceWasBusy[name + "|" + ifn] = true; });   // any in-flight iface (create / onboard / server) → flash "ready" once it appears in meta
@@ -3425,6 +3435,27 @@ function AccountScreen() {
   </div>`;
 }
 
+const AWG_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1"];
+// client-side AmneziaWG obfuscation generator — mirrors the panel's gen_awg_params (for the "Generate" button)
+function genAwg() {
+  const r = n => Math.floor(Math.random() * n), w = 15;
+  let s1 = 15 + r(135), s2 = 15 + r(135);
+  while (s2 === s1 || s2 === s1 + 56) s2 = 15 + r(135);
+  const b = [5, 1e9, 2e9, 3e9].map(base => base + r(9e8));
+  return { Jc: 4, Jmin: 40, Jmax: 70, S1: s1, S2: s2, S3: 15 + r(85), S4: 15 + r(85),
+    H1: `${b[0]}-${b[0] + w}`, H2: `${b[1]}-${b[1] + w}`, H3: `${b[2]}-${b[2] + w}`, H4: `${b[3]}-${b[3] + w}`,
+    I1: "<b 0xc300000001><r 1200>" };
+}
+// labelled grid of the 12 AWG fields — read-only display (node settings) or editable (panel settings).
+function AwgGrid({ value, onChange, readOnly }) {
+  const v = value || {};
+  return html`<div class="awg-grid">${AWG_KEYS.map(k => html`<div class=${"awg-cell" + (k === "I1" ? " wide" : "")}>
+    <label>${k}</label>${readOnly
+      ? html`<span class="awg-val">${v[k] != null && v[k] !== "" ? v[k] : "—"}</span>`
+      : html`<input value=${v[k] ?? ""} onInput=${e => onChange({ ...v, [k]: e.target.value })} spellcheck="false"/>`}
+  </div>`)}</div>`;
+}
+
 function PanelSettingsScreen() {
   useStore();
   const ps = Store.panelSettings || {};
@@ -3443,6 +3474,9 @@ function PanelSettingsScreen() {
   const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
   const [rsvPort, setRsvPort] = useState(String(rsv.mesh_port_base || 9999));
   const [rsvPrefix, setRsvPrefix] = useState(rsv.iface_prefix || "swg_");
+  const [awg, setAwg] = useState(ps.mesh_awg || {});
+  const [showAwg, setShowAwg] = useState(false);
+  const awgSet = AWG_KEYS.some(k => String(awg[k] ?? "").trim() !== "");
   const [showAdv, setShowAdv] = useState(false);
   const [msg, setMsg] = useState(null);
   const save = async () => {
@@ -3453,6 +3487,7 @@ function PanelSettingsScreen() {
       store_configs: sc === "on" ? true : sc === "off" ? false : null,
       throughput_perspective: tput,
       reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
+      mesh_awg: awgSet ? awg : {},
       advanced: { node_stale_ms: +staleMs || 30000, peer_grace_ms: +graceMs || 60000, geo_ttl_days: +ttlD || 3 },
     });
     if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
@@ -3507,6 +3542,13 @@ function PanelSettingsScreen() {
           <div class="field"><label>Mesh port (base)</label><input value=${rsvPort} onInput=${e => setRsvPort(e.target.value)} placeholder="9999"/></div>
         </div>
         <div class="field"><label>Interface name prefix</label><input value=${rsvPrefix} onInput=${e => setRsvPrefix(e.target.value)} placeholder="swg_"/><div class="hint">Mesh link interfaces are named <span class="mono">${(rsvPrefix || "swg_")}&lt;hex&gt;</span>.</div></div>
+        <div class="seclabel">Default mesh AWG params</div>
+        <p class="hint" style="margin:0 0 10px">AmneziaWG obfuscation for <b>new</b> mesh links — both ends of a link always share one set. Blank = a fresh set is generated per link. Existing links keep theirs; re-provision a node to adopt these.</p>
+        <button type="button" class="advtoggle" onClick=${() => setShowAwg(a => !a)}><span class="advcaret">${showAwg ? "▾" : "▸"}</span> ${awgSet ? "Show AWG params" : "Set AWG params"}${awgSet ? "" : html` <span class="faint" style="font-weight:400">(auto)</span>`}</button>
+        ${showAwg ? html`<div style="margin-top:8px">
+          <${AwgGrid} value=${awg} onChange=${setAwg}/>
+          <div style="margin-top:8px;display:flex;gap:8px"><button type="button" class="btn btn-mini" onClick=${() => setAwg(genAwg())}><${Ic} i="refresh"/> Generate a set</button>${awgSet ? html`<button type="button" class="btn btn-mini" onClick=${() => setAwg({})}>Clear (auto)</button>` : null}</div>
+        </div>` : null}
       <//>` : null}
       <div style="margin-top:14px"><button class="btn btn-primary" onClick=${save}>Save changes</button></div>
     </div>
@@ -4290,6 +4332,9 @@ function NodeEditSheet({ node }) {
     }
     doSave();
   };
+  const [showAwg, setShowAwg] = useState(false);
+  const meshAwg = node.mesh_awg || {};
+  const hasAwg = AWG_KEYS.some(k => meshAwg[k] != null && meshAwg[k] !== "");
   return html`<${Sheet} title=${"Node settings · " + node.name}
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
     <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes."}</div></div>
@@ -4313,6 +4358,10 @@ function NodeEditSheet({ node }) {
       <div class="field"><label>Mesh prefix</label><input value=${meshPrefix} onInput=${e => setMeshPrefix(e.target.value)} placeholder=${rsv.iface_prefix || "swg_"}/></div>
     </div>
     <div class="hint" style="margin-top:-4px">Per-node mesh overrides. <b>Changing the subnet, port, or prefix re-provisions this node's mesh links</b> — it briefly drops off the mesh while every peer pulls the new config and reconnects. Blank = the panel default shown.</div>
+    <button type="button" class="advtoggle" style="margin-top:12px" onClick=${() => setShowAwg(a => !a)}><span class="advcaret">${showAwg ? "▾" : "▸"}</span> Show AWG params</button>
+    ${showAwg ? html`<div style="margin-top:8px">${hasAwg
+      ? html`<${AwgGrid} value=${meshAwg} readOnly=${true}/><div class="hint" style="margin-top:6px">The AmneziaWG obfuscation this node's mesh links use (both ends of each link share one set). Set the default in <a href="#/panel/settings">Panel settings</a>; re-provision to adopt a new one.</div>`
+      : html`<div class="hint">No mesh links yet — params appear once this node is linked.</div>`}</div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

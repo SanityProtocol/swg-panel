@@ -961,6 +961,28 @@ def gen_awg_params():
             "I1": "<b 0xc300000001><r 1200>"}
 
 
+AWG_FIELDS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1")
+
+
+def sanitize_awg_params(raw):
+    """Keep only recognised AmneziaWG obfuscation fields with non-empty values, as strings. Empty → {}."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for k in AWG_FIELDS:
+        v = raw.get(k)
+        if v is None or str(v).strip() == "":
+            continue
+        out[k] = str(v).strip()
+    return out
+
+
+def link_awg_params(deps):
+    """AWG params for a NEW mesh link: the panel-settings default if the operator set one, else a fresh set."""
+    pa = sanitize_awg_params(((deps.get("panel_settings") or {}).get("mesh_awg")))
+    return pa or gen_awg_params()
+
+
 def _link_iface_name(node, link_id, prefix="swg_"):
     """`<prefix><8hex>` (≤ IFNAMSIZ 15), same on both ends of a link. On the rare 8-hex collision
     within one node, slide along the hash until a free window is found."""
@@ -1041,7 +1063,7 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc):
     if sub is None:
         return False
     hosts = list(sub)                            # /31 → [.0, .1]
-    psk = gen_psk(); awg = gen_awg_params()
+    psk = gen_psk(); awg = link_awg_params(deps)   # panel-settings default mesh AWG, else a fresh generated set
     for nid, peer in ((a, b), (b, a)):
         n = nodes[nid]
         nmc = node_mesh_cfg(deps, n)             # per-node prefix / port base
@@ -1161,6 +1183,7 @@ SMART_CATEGORIES = {
 # store_configs=None means "use the fleet.json default"; geo_epoch is bumped by the Refresh-geo button.
 PANEL_SETTINGS_DEFAULTS = {
     "interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25},
+    "mesh_awg": {},   # default AmneziaWG obfuscation for NEW mesh links ({} = auto-generate a fresh set per link)
     "mirrors": {"geo": "", "turn": ""},
     "store_configs": None,
     "throughput_perspective": "nodes",   # "nodes" = node rx=down/tx=up | "peers" = flip (peer's down = node's tx)
@@ -1624,8 +1647,19 @@ def api(method, path, qs, body, deps):
             hl = ({"t": [s[0] for s in lb], "cpu": [na(s[1]) for s in lb], "mem": [na(s[2]) for s in lb],
                    "disk": [na(s[3]) for s in lb], "rx": [s[4] for s in lb], "tx": [s[5] for s in lb]}
                   if len(lb) > 1 else None)
+            # the node's ACTUAL mesh AWG params — taken from one of its system link ifaces (all the node's
+            # links share params once the panel default is set; a pre-default link keeps its generated set).
+            _mawg = next((iv.get("awg_params") for iv in (c.get("ifaces") or {}).values()
+                          if iv.get("system") and iv.get("awg_params")), {})
+            # mesh links keyed by peer — drives the Node-connections cards from the link RECORDS (not the
+            # reported ifaces), so a card stays put through a re-provision (old iface deleted, new created) and
+            # shows "re-provisioning" until the new iface is reported, instead of vanishing or leaking a swg_ card.
+            _crt = c.get("create") or {}; _del = c.get("delete") or {}
+            _mesh_peers = [{"peer": pr, "iface": (lk or {}).get("iface") or "",
+                            "reprovisioning": bool((lk or {}).get("iface") in _crt)}
+                           for pr, lk in (c.get("links") or {}).items()]
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
-                        "transport": "https",
+                        "transport": "https", "mesh_awg": _mawg, "mesh_peers": _mesh_peers,
                         "iface_order": c.get("iface_order") or [],   # operator drag-order overlays (POST /api/order)
                         "turn_order": c.get("turn_order") or [],
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
@@ -1729,6 +1763,8 @@ def api(method, path, qs, body, deps):
                 "dns": (dns if isinstance(dns, list) else [s.strip() for s in str(dns or "").split(",") if s.strip()]),
                 "mtu": int(idf.get("mtu") or 1280),
                 "keepalive": int(idf.get("keepalive") or 25)}
+        if "mesh_awg" in incoming:   # default AmneziaWG obfuscation for new mesh links ({} = auto per link)
+            cur["mesh_awg"] = sanitize_awg_params(incoming.get("mesh_awg"))
         mir = incoming.get("mirrors")
         if isinstance(mir, dict):
             cur["mirrors"] = {"geo": (mir.get("geo") or "").strip(), "turn": (mir.get("turn") or "").strip()}
