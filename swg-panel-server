@@ -2298,10 +2298,26 @@ def api(method, path, qs, body, deps):
         if "mesh_prefix" in body:
             nodes[nid]["mesh_prefix"] = re.sub(r"[^a-z0-9_]", "", (body.get("mesh_prefix") or "").lower())[:6]
         _mesh_after = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
-        if _mesh_after != _mesh_before:                # subnet / port / prefix changed → re-provision this node's links
+        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2]:
+            # subnet or PREFIX changed → the link is re-addressed / the iface renamed: must re-provision (rebuild)
             mesh_reprovision_node(nodes, nid)
             reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # rebuild its links with the new config
             ev_append(roster_path, "node", nid, "Re-provisioned mesh links", nodes[nid].get("name", nid))
+        elif _mesh_after[1] != _mesh_before[1]:
+            # ONLY the mesh port changed → LIVE re-port, no iface rebuild: re-point each of this node's links to
+            # a port off the new base, set it on the link record + the iface override. The node then changes the
+            # live listen_port in place (reconcile_ifaces set-iface) and every peer re-dials the new endpoint
+            # (desired_mesh_for_node carries the new port → the reconcile endpoint re-dial). No tunnel teardown.
+            me = nodes[nid]; nmc = node_mesh_cfg(deps, me)
+            used = {p for p in _used_ports(nodes, deps.get("node_snaps") or {}, nid)}
+            for lr in (me.get("links") or {}).values():
+                if str(lr.get("listen_port")).isdigit():
+                    used.discard(int(lr["listen_port"]))            # free this node's current mesh ports for reassignment
+            for lr in (me.get("links") or {}).values():
+                np = _alloc_port(used, nmc["port_base"]); used.add(np)
+                lr["listen_port"] = np
+                me.setdefault("ifaces", {}).setdefault(lr.get("iface"), {})["listen_port"] = np   # push via reconcile_ifaces
+            ev_append(roster_path, "node", nid, "Re-ported mesh links (live)", me.get("name", nid))
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}

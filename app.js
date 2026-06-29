@@ -4312,9 +4312,9 @@ function NodeEditSheet({ node }) {
   const ovPort = meshPort.trim() === dPort ? "" : meshPort.trim();
   const ovPfx = meshPrefix.trim() === dPfx ? "" : meshPrefix.trim();
   const nameBad = name.trim() && !V.nodeName(name);
-  const meshChanged = ovSub !== (node.mesh_subnet || "")
-    || ovPort !== (node.mesh_port ? String(node.mesh_port) : "")
-    || ovPfx !== (node.mesh_prefix || "");
+  // Only a subnet or PREFIX change re-provisions (re-addresses / renames the iface → rebuild). A port-only
+  // change is applied LIVE (the node re-ports in place + peers re-dial), so it needs no re-provision confirm.
+  const reprovChanged = ovSub !== (node.mesh_subnet || "") || ovPfx !== (node.mesh_prefix || "");
   const doSave = () => {
     closeAllModals();   // close the sheet AND any re-provision confirm stacked on top; optimistic — the card reflects the change immediately
     mutate({
@@ -4325,7 +4325,7 @@ function NodeEditSheet({ node }) {
   };
   const save = async () => {
     if (!name.trim() || !V.nodeName(name)) return setMsg({ k: "err", t: "Name: 1–40 chars, letters/digits/-/_ only." });
-    if (meshChanged) {   // re-provisioning bounces this node's mesh links → confirm first
+    if (reprovChanged) {   // re-provisioning bounces this node's mesh links → confirm first
       return pushModal(html`<${ConfirmSheet} title="Re-provision this node's mesh links?" confirmLabel="Re-provision" warn=${true}
         body=${"Changing " + node.name + "'s mesh subnet/port/prefix rebuilds all of its node-to-node links with the new settings. " + node.name + " will briefly drop off the mesh (and any cascade/smart traffic routed through it pauses) until every peer pulls the new config and reconnects — usually a few seconds. Other nodes' links to each other are unaffected."}
         onConfirm=${doSave}/>`);
