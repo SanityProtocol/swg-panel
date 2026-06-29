@@ -789,6 +789,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-fwd{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 34%,transparent)}   /* traffic cascade: forwards out via another node — BRAND cyan */
 .tg-direct{background:color-mix(in srgb,var(--dim) 12%,transparent);color:var(--dim);border-color:color-mix(in srgb,var(--dim) 28%,transparent)}   /* traffic exits directly from this node — neutral */
 .tg-fwd svg{width:11px;height:11px}
+/* bare traffic/cascade badges — coloured icon + text, no pill background */
+.egb{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;line-height:1;white-space:nowrap}
+.egb svg{width:13px;height:13px}
+.egb-fwd{color:var(--brand)}              /* smart / → node — cyan */
+.egb-direct{color:var(--dim)}             /* direct — neutral */
+.egb-cascade{color:var(--pending)}        /* cascade — Node-connections icon colour (purple) */
 /* Phase 3 smart-routing rule editor */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
 .rrrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
