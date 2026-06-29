@@ -1719,7 +1719,7 @@ function EgressPicker({ node, value, onChange }) {
       : value.mode !== "auto" ? html`<div class="field"><label>Outbound (egress) IP</label>
       <select class="selwrap" value=${value.ip || ""} onChange=${e => onChange({ ...value, ip: e.target.value })}>
         <option value="">${value.mode === "forward" ? "Auto (target node default)" : "Auto"}</option>
-        ${ipOpts.map(ip => html`<option value=${ip}>${ip}</option>`)}
+        ${ipOpts.map(ip => html`<option value=${ip}>${ipLabel(ip)}</option>`)}
       </select>
       <div class="hint">${value.mode === "forward" ? "Source IP on the target node that clients egress from." : "Source IP clients egress from."}</div></div>` : null}
   <//>`;
@@ -4199,13 +4199,17 @@ function NodeTokenSheet({ name, token, isNew, kind }) {
   <//>`;
 }
 function openNodeEdit(node) { openModal(html`<${NodeEditSheet} node=${node}/>`); }
+// RFC1918 / loopback / link-local / CGNAT — kept selectable (valid behind cloud 1:1 NAT or on a private
+// interconnect) but tagged "(private)" so an operator knows it isn't a public address.
+const isPrivIp = ip => /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip || "");
+const ipLabel = ip => isPrivIp(ip) ? ip + " (private)" : ip;
 // dropdown of the node's internet IPs (already excludes wg/awg/swg/docker) + an Auto option; keeps a
 // current custom value (e.g. a hostname ingress) selectable even if it isn't in the reported IP list.
 function NodeIpPick({ ips, value, onChange, auto }) {
   const opts = [...new Set([...(value ? [value] : []), ...(ips || [])])];
   return html`<select class="selwrap" value=${value || ""} onChange=${e => onChange(e.target.value)}>
     <option value="">${auto}</option>
-    ${opts.map(ip => html`<option value=${ip}>${ip}</option>`)}
+    ${opts.map(ip => html`<option value=${ip}>${ipLabel(ip)}</option>`)}
   </select>`;
 }
 function NodeEditSheet({ node }) {
@@ -4234,7 +4238,7 @@ function NodeEditSheet({ node }) {
       <div class="hint">The address other nodes dial to reach this node for cascading.</div></div>
     <div class="field"><label>Default egress IP <span class="faint" style="text-transform:none;letter-spacing:0">— direct internet exit</span></label>
       <${NodeIpPick} ips=${ips} value=${defEgress} onChange=${setDefEgress} auto="Auto (MASQUERADE)"/>
-      <div class="hint">Source IP this node SNATs to when traffic exits to the internet here (its own direct interfaces + traffic received from other nodes). Cascading traffic is unaffected.</div></div>
+      <div class="hint">The fallback source IP this node SNATs to when traffic exits to the internet here — applied to any interface (and traffic received from other nodes) that doesn't set its own egress IP. Interfaces with their own egress IP, and cascading traffic that exits elsewhere, are unaffected.</div></div>
     <div class="field"><label>Panel connection IP <span class="faint" style="text-transform:none;letter-spacing:0">— source to reach the panel</span></label>
       <${NodeIpPick} ips=${ips} value=${panelIp} onChange=${setPanelIp} auto="Auto (default route)"/>
       <div class="hint">Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.</div></div>

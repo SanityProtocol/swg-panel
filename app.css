@@ -784,7 +784,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .rrrow .xbtn{flex:none}
 .rrlint{flex:none;font-size:10px;color:var(--partial);font-family:var(--mono)}
 .rrfoot{display:flex;align-items:center;gap:8px;margin-top:8px}
-.rrfoot .faint{font-size:11px}
+.rrfoot .faint{font-size:12.5px}
 /* node-connection link health: a single glowing dot (green up / amber connecting / red down) */
 .lkdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown);--g:var(--unknown)}
 .lkdot.up{background:var(--online);--g:var(--online);animation:pulse 2.6s infinite}
