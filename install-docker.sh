@@ -695,7 +695,7 @@ ask_node_iface(){    # WG/AWG interface (container-managed) + its endpoint; mirr
 # current interface names for this docker node — persisted confs (./data/node-confs) ∪ the .env spec
 current_node_ifaces(){
   local seen=" " n e OIFS c
-  if [ -d "$INSTALL_DIR/data/node-confs" ]; then
+  { if [ -d "$INSTALL_DIR/data/node-confs" ]; then
     for c in "$INSTALL_DIR/data/node-confs/"*.conf; do [ -f "$c" ] || continue
       n="$(basename "$c" .conf)"; case "$seen" in *" $n "*) : ;; *) echo "$n"; seen="$seen$n ";; esac; done
   fi
@@ -704,6 +704,7 @@ current_node_ifaces(){
       case "$seen" in *" $n "*) : ;; *) [ -n "$n" ] && { echo "$n"; seen="$seen$n "; };; esac; IFS=','; done; IFS="$OIFS"
   elif [ "$EXISTING_DOCKER" = yes ] && [ -n "$NODE_IFACE" ] && [ "$seen" = " " ]; then   # only when NO real conf is on disk — else NODE_IFACE is just the install default (a convert/master with migrated confs would otherwise list a ghost awg0)
     case "$seen" in *" $NODE_IFACE "*) : ;; *) echo "$NODE_IFACE";; esac; fi
+  } | drop_sys_ifaces   # never present panel-managed mesh-link (swg_*) interfaces
 }
 # EVERY interface NAME already present or queued on this box: node confs + queued spec (current_node_ifaces),
 # live wg/awg ifaces, a co-located bare-metal node, and any /etc/amnezia//etc/wireguard conf. A new
@@ -742,9 +743,10 @@ add_node_iface(){
   ok "queued interface $(col "$C_GREEN" "$name") — created on the node's next start"
 }
 # ── interface picker helpers ──────────────────────────────────────────────
-host_wg_ifaces(){   # live wg/awg interface NAMES on the host (any owner)
+host_wg_ifaces(){   # live wg/awg interface NAMES on the host (any owner) — excludes panel-managed mesh links
   ip -o link show 2>/dev/null | sed -n 's/^[0-9]\{1,\}: \([^:@]*\).*/\1/p' | while read -r d; do
     [ "$d" = lo ] && continue
+    is_sys_iface "$d" && continue
     ip -d link show "$d" 2>/dev/null | grep -qE 'amneziawg|wireguard' && echo "$d"
   done
 }
@@ -772,11 +774,12 @@ kern_label(){       # human label of the kernel service an interface currently r
   elif [ -n "$(etc_wg_conf "$1")" ];  then echo "kernel WireGuard (wg-quick@$1)"
   else echo "the kernel datapath"; fi
 }
-bm_node_ifaces(){   # interfaces a co-located BARE-METAL node manages (from its agent config)
+bm_node_ifaces(){   # interfaces a co-located BARE-METAL node manages (from its agent config) — excludes mesh links
   [ -f /etc/swg-agent/config.json ] || return 0
-  python3 - <<'PY' 2>/dev/null || true
+  python3 - <<'PY' 2>/dev/null | drop_sys_ifaces || true
 import json
-try: print(" ".join(json.load(open("/etc/swg-agent/config.json")).get("interfaces", {})))
+try:
+    for n in json.load(open("/etc/swg-agent/config.json")).get("interfaces", {}): print(n)
 except Exception: pass
 PY
 }

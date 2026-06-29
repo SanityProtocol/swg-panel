@@ -28,7 +28,7 @@ ARG TARGETARCH=amd64
 # util-linux = nsenter (host_sh helper), curl + the static docker CLI = drive host turn-proxy units
 # via the mounted docker.sock when TURN_MANAGE=panel (B1). The daemon is never installed — client only.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      iproute2 iptables ca-certificates procps curl util-linux \
+      iproute2 iptables nftables ca-certificates procps curl util-linux \
  && case "$TARGETARCH" in amd64) A=x86_64;; arm64) A=aarch64;; *) A=x86_64;; esac \
  && curl -fsSL "https://download.docker.com/linux/static/stable/${A}/docker-27.3.1.tgz" -o /tmp/d.tgz \
  && tar -xzf /tmp/d.tgz -C /tmp && install /tmp/docker/docker /usr/bin/docker \

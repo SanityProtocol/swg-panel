@@ -295,7 +295,15 @@ def collect_health(proc_root="/proc", mounts=None, statvfs=os.statvfs):
 # ───────────────────────── io ─────────────────────────
 
 def run(args, input_text=None, timeout=20):
-    return subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout)
+    # Fail-safe: a MISSING binary (e.g. `nft` on a node/image without nftables) must never crash a caller —
+    # return a non-zero result like a normal command failure so callers handle it (smart routing then no-ops
+    # instead of taking down the sync loop). Same for a timeout.
+    try:
+        return subprocess.run(args, input=input_text, capture_output=True, text=True, timeout=timeout)
+    except (FileNotFoundError, PermissionError) as e:
+        return subprocess.CompletedProcess(args, 127, "", str(e))
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 124, "", "timeout")
 
 
 def run_agent(agent, sudo, payload):

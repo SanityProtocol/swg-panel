@@ -8,6 +8,14 @@
 # pretty protocol name for interface listings: awg → AmneziaWG, wg → Wireguard (anything else passes through)
 proto_label(){ case "$1" in wg) printf 'Wireguard';; awg) printf 'AmneziaWG';; *) printf '%s' "$1";; esac; }
 
+# System (panel-managed inter-node mesh-link) interfaces use a reserved name prefix (default `swg_`); user
+# interfaces can never use it (the panel rejects it). These are NOT user interfaces and must never be
+# presented/offered in any installer / re-installer / docker / convert / uninstall listing.
+# is_sys_iface <name> → 0 if it's a system iface; drop_sys_ifaces filters them from stdin (one name/line).
+SWG_SYS_PREFIX="${SWG_SYS_PREFIX:-swg_}"
+is_sys_iface(){ case "$1" in "$SWG_SYS_PREFIX"*) return 0;; *) return 1;; esac; }
+drop_sys_ifaces(){ grep -v "^[[:space:]]*${SWG_SYS_PREFIX}" || true; }
+
 # bold (b) + bold-blue link (bb) text — print_summary uses both, but convert.sh / update.sh don't define bb
 # themselves, so provide them here. The guard only FILLS A GAP: a script that defines its own (identical) b/bb
 # keeps it, in any source order. Colours are read at call time, so they need not be set when this file is sourced.

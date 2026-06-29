@@ -353,6 +353,7 @@ iface_list(){  # <dir> -> "awg0:51820, awg505:51234" (interface name + ListenPor
   local dir="$1" out="" f n p
   for f in "$dir"/*.conf; do [ -f "$f" ] || continue
     n="$(basename "$f" .conf)"
+    case "$n" in "${SWG_SYS_PREFIX:-swg_}"*) continue;; esac   # don't list panel-managed mesh links
     p="$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$f" 2>/dev/null | head -1)"
     out="${out:+$out, }${n}${p:+:$p}"
   done
@@ -362,7 +363,7 @@ bm_node_detail(){  # bare-metal node: endpoint + interfaces from config.json
   local cfg=/etc/swg-agent/config.json ep ifs
   if [ -f "$cfg" ] && command -v python3 >/dev/null 2>&1; then
     ep="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("endpoint_host",""))' "$cfg" 2>/dev/null)"
-    ifs="$(python3 -c 'import json,sys;print(", ".join((json.load(open(sys.argv[1])).get("interfaces") or {}).keys()))' "$cfg" 2>/dev/null)"
+    ifs="$(python3 -c 'import json,sys;print(", ".join(k for k in (json.load(open(sys.argv[1])).get("interfaces") or {}) if not k.startswith("swg_")))' "$cfg" 2>/dev/null)"
   fi
   printf 'swg-noded%s%s' "${ep:+ · endpoint $ep}" "${ifs:+ · ifaces: $ifs}"
 }

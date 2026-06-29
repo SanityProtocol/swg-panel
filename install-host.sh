@@ -226,13 +226,13 @@ node_ifaces(){ # interfaces this node already manages — config.json keys WHOSE
   { [ -f /etc/swg-agent/config.json ] && have python3; } || return 0
   python3 -c 'import json, os
 for n, ic in (json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).items():
-    if isinstance(ic, dict) and os.path.exists(ic.get("conf", "")): print(n)' 2>/dev/null || true
+    if isinstance(ic, dict) and os.path.exists(ic.get("conf", "")): print(n)' 2>/dev/null | drop_sys_ifaces || true
 }
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 docker_node_ifaces(){   # interfaces managed by a co-located DOCKER node (its ./data/node-confs)
-  local d c; for d in "${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"; do
+  local d c n; for d in "${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"; do
     [ -d "$d/data/node-confs" ] || continue
-    for c in "$d"/data/node-confs/*.conf; do [ -f "$c" ] && basename "$c" .conf; done
+    for c in "$d"/data/node-confs/*.conf; do [ -f "$c" ] && { n="$(basename "$c" .conf)"; is_sys_iface "$n" || echo "$n"; }; done
   done
 }
 transfer_from_docker(){ # import a docker node-conf to bare-metal: copy out, ADD host NAT, drop the source
