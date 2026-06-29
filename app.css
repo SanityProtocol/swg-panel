@@ -283,6 +283,13 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .keyrow{display:flex;gap:8px;align-items:center}
 .keyrow input{flex:1;min-width:0}
 .ifcard-top{display:flex;align-items:center;gap:8px;margin-bottom:10px;overflow:hidden}   /* clip any header spill (e.g. a restart tag + × on a narrow card) inside the card — never push the page wide */
+/* hover edit affordance on an interface card: padded hit-area (easy to click), hidden until card hover;
+   hovering the area highlights only the icon (no area background); click opens Edit (not the detail page). */
+.ifc-edit{flex:none;background:none;border:0;cursor:pointer;padding:11px;margin:-11px -8px -11px 0;display:inline-flex;align-items:center;opacity:0;transition:opacity .12s}
+.ifcard:hover .ifc-edit{opacity:1}
+.ifc-edit .ic{display:flex;color:var(--faint);transition:color .12s}
+.ifc-edit .ic svg{width:14px;height:14px}
+.ifc-edit:hover .ic{color:var(--brand)}
 .ifcard-top .tg{flex:none}          /* status tags keep their full width — the name ellipsis-shrinks instead */
 .ifcard-top .onlinetag{flex:none}   /* connections count in a turn card header — don't stretch */
 /* a status tag carrying a node message is clickable (opens it) — pointer + hover highlight as the affordance */
