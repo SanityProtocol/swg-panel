@@ -163,45 +163,74 @@ if ! $DRYRUN; then
   elif [ "$HAVE_BNODE" = yes ] || [ "$HAVE_BPAN" = yes ]; then    lc_clear_convert_leftover baremetal "$DOCKER_DIR"; fi
 fi
 
-install_update_unit(){   # idempotent: wire one-click host self-update for an existing bare-metal panel
+install_update_unit(){   # idempotent: wire one-click host self-update for an existing bare-metal panel.
+  # MUST stay identical to install-host.sh's mk_update_unit. The design is a STAMP-GUARDED swg-update-check
+  # (only updates when a trigger file is NEWER than the last-handled stamp), polled by swg-update.timer.
+  # NEVER point swg-update.service straight at /usr/local/bin/swg-update or wire a swg-update.path: that was
+  # the old design, and because the timer fires the service every 20s, an unguarded service re-ran the whole
+  # installer every 20s forever (an endless update loop). update.sh runs on EVERY update, so a divergence
+  # here silently re-introduced the loop on already-fixed hosts.
   local st="${STATE_DIR:-/var/lib/swg-panel}" usr="${PANEL_USER:-swgpanel}" trig
   trig="${st}/.update-request"
-  if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-update + swg-update.{service,path} + trigger drop-in"; return 0; fi
+  if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-update{,-check} + swg-update.{service,timer} + trigger drop-in"; return 0; fi
   cat > /usr/local/bin/swg-update <<'WRAP'
 #!/usr/bin/env bash
 # swg-update — fixed root entrypoint for one-click in-place update (swg programs only).
 set -euo pipefail
 URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
-curl -fsSL "$URL" | bash -s update -y --no-components
+curl -fsSL "$URL" | bash -s update -y --no-components "$@"   # extra flags (e.g. --node-only) pass through
 WRAP
   chmod 755 /usr/local/bin/swg-update
+  cat > /usr/local/bin/swg-update-check <<'WRAP2'
+#!/usr/bin/env bash
+set -euo pipefail
+STAMP=/var/lib/swg-update.stamp
+PANEL_TRIGGERS="/var/lib/swg-panel/.update-request /opt/swg-panel-docker/data/lib/.update-request"
+NODE_TRIGGERS="/var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/node/.update-request"
+_run=no; _panel=no
+for _t in $PANEL_TRIGGERS $NODE_TRIGGERS; do
+  [ -f "$_t" ] || continue
+  if { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; }; then
+    _run=yes
+    case " $PANEL_TRIGGERS " in *" $_t "*) _panel=yes;; esac   # a PANEL trigger → this is a host update
+  fi
+done
+[ "$_run" = yes ] || exit 0
+touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
+if [ "$_panel" = yes ]; then exec /usr/local/bin/swg-update
+else exec /usr/local/bin/swg-update --node-only; fi
+WRAP2
+  chmod 755 /usr/local/bin/swg-update-check
   cat > /etc/systemd/system/swg-update.service <<EOF
 [Unit]
 Description=swg-panel one-click self-update (swg programs only)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/swg-update
+ExecStart=/usr/local/bin/swg-update-check
 EOF
-  cat > /etc/systemd/system/swg-update.path <<EOF
+  cat > /etc/systemd/system/swg-update.timer <<EOF
 [Unit]
-Description=watch for a swg-panel update request
+Description=poll for a swg one-click update request
 
-[Path]
-PathModified=${trig}
-Unit=swg-update.service
+[Timer]
+OnActiveSec=20s
+OnUnitActiveSec=20s
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=timers.target
 EOF
+  rm -f /etc/systemd/system/swg-update.path   # retire the legacy inotify watch that drove the loop
   [ -e "$trig" ] || : > "$trig"   # create when MISSING — re-writing content would fire a spurious self-update
   chown "$usr:swg" "$trig" 2>/dev/null || true; chmod 660 "$trig" 2>/dev/null || true   # ALWAYS re-assert ownership so the panel can write it even if a convert/older root process left it root-owned
   # point the (already-installed) panel at the trigger via a drop-in — don't edit the main unit
   install -d /etc/systemd/system/swg-panel-server.service.d
   printf '[Service]\nEnvironment=SWG_UPDATE_TRIGGER=%s\n' "$trig" \
     > /etc/systemd/system/swg-panel-server.service.d/zz-swg-update.conf
+  touch /var/lib/swg-update.stamp   # stamp AFTER the trigger so THIS update (its trigger is now older) doesn't re-fire
   systemctl daemon-reload
-  systemctl enable --now swg-update.path >/dev/null 2>&1 || warn "couldn't enable swg-update.path"
+  systemctl disable --now swg-update.path >/dev/null 2>&1 || true
+  systemctl enable --quiet --now swg-update.timer >/dev/null 2>&1 || warn "couldn't enable swg-update.timer"
 }
 
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
