@@ -1082,6 +1082,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "interface_defaults": {"dns": ["1.1.1.1"], "mtu": 1280, "keepalive": 25},
     "mirrors": {"geo": "", "turn": ""},
     "store_configs": None,
+    "throughput_perspective": "nodes",   # "nodes" = node rx=down/tx=up | "peers" = flip (peer's down = node's tx)
     "advanced": {"node_stale_ms": 30000, "peer_grace_ms": 60000, "geo_ttl_days": 3},
     "geo_epoch": 0,
 }
@@ -1647,6 +1648,8 @@ def api(method, path, qs, body, deps):
         mir = incoming.get("mirrors")
         if isinstance(mir, dict):
             cur["mirrors"] = {"geo": (mir.get("geo") or "").strip(), "turn": (mir.get("turn") or "").strip()}
+        if "throughput_perspective" in incoming:
+            cur["throughput_perspective"] = "peers" if incoming["throughput_perspective"] == "peers" else "nodes"
         if "store_configs" in incoming:
             cur["store_configs"] = None if incoming["store_configs"] is None else bool(incoming["store_configs"])
         adv = incoming.get("advanced")
