@@ -1923,7 +1923,9 @@ function ConnectionEditSheet({ node, iface }) {
   const meta = Store.ifaceMeta(node, iface) || {};
   const peer = meta.link_node;
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
+  const prec = (Store.nodes || []).find(n => n.id === peer) || {};
   const [dialSrc, setDialSrc] = useState(meta.dial_src || "");
+  const [dialEp, setDialEp] = useState(meta.dial_endpoint || "");
   const lk = nodeStale(node) ? "down" : (meta.handshake_age == null ? "connecting" : (meta.handshake_age < 180 ? "up" : "down"));
   const lkLabel = { up: "connected", connecting: "connecting", down: "down" }[lk];
   const proto = (meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
@@ -1934,7 +1936,7 @@ function ConnectionEditSheet({ node, iface }) {
     mutate({
       key: "conn:" + node + "|" + peer,
       patch: () => {},
-      call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc }),
+      call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp }),
     });
   };
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
@@ -1958,9 +1960,13 @@ function ConnectionEditSheet({ node, iface }) {
         ${Cell("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
       </div>
     </div>
-    <div class="field" style="margin-top:14px"><label>Dial source IP <span class="faint" style="text-transform:none;letter-spacing:0">— which of this node's IPs dials ${Store.nodeName(peer)}</span></label>
-      <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto="Auto (default route)"/>
-      <div class="hint">A dedicated source IP for this node-to-node link. Doesn't change how routed traffic appears externally — that's the exit node's egress IP.</div></div>
+    <div class="row2" style="margin-top:14px">
+      <div class="field"><label>Dial source IP <span class="faint" style="text-transform:none;letter-spacing:0">— ${Store.nodeName(node)}'s IP</span></label>
+        <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto="Auto (default route)"/></div>
+      <div class="field"><label>Dial endpoint IP <span class="faint" style="text-transform:none;letter-spacing:0">— ${Store.nodeName(peer)}'s IP</span></label>
+        <${NodeIpPick} ips=${prec.ips || []} value=${dialEp} onChange=${setDialEp} auto=${"Auto (" + Store.nodeName(peer) + "'s ingress)"}/></div>
+    </div>
+    <div class="hint" style="margin-top:-4px">Per-connection overrides: which of <b>${Store.nodeName(node)}</b>'s IPs dials out, and which of <b>${Store.nodeName(peer)}</b>'s IPs it dials to (overriding ${Store.nodeName(peer)}'s default ingress). Changing the endpoint re-connects this link automatically. Neither changes how routed traffic appears externally — that's the exit node's egress IP.</div>
     ${carried.length ? html`<div style="margin-top:16px">
       <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;font-size:12px;font-weight:600;color:var(--ink)"><${Ic} i="activity"/>Forwarding <span class="tg tg-fwd">cascade</span></div>
       <div class="dmeta">${carried.map(c => Row(c.iface, html`<span class="addr">${c.subnet || "?"}</span> → ${Store.nodeName(peer)}${c.ip ? html` <span class="faint">as ${c.ip}</span>` : ""}`))}</div>
@@ -4282,11 +4288,18 @@ function NodeEditSheet({ node }) {
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
     <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
-    <div class="seclabel">Connection IPs</div>
+    <div class="seclabel">Egress</div>
+    <div class="field"><label>Default egress IP <span class="faint" style="text-transform:none;letter-spacing:0">— direct internet exit</span></label>
+      <${NodeIpPick} ips=${ips} value=${defEgress} onChange=${setDefEgress} auto="Auto (MASQUERADE)"/>
+      <div class="hint">The fallback source IP this node SNATs to when traffic exits to the internet here — applied to any interface (and traffic received from other nodes) that doesn't set its own egress IP. Interfaces with their own egress IP, and cascading traffic that exits elsewhere, are unaffected.</div></div>
+    <div class="field"><label>Panel egress connection IP <span class="faint" style="text-transform:none;letter-spacing:0">— source to reach the panel</span></label>
+      <${NodeIpPick} ips=${ips} value=${panelIp} onChange=${setPanelIp} auto="Auto (default route)"/>
+      <div class="hint">Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.</div></div>
+    <div class="seclabel">Mesh settings</div>
     <div class="row2">
       <div class="field"><label>Mesh Ingress IP <span class="faint" style="text-transform:none;letter-spacing:0">— endpoint peers dial</span></label>
         <${NodeIpPick} ips=${ips} value=${ingress} onChange=${setIngress} auto="Auto (public IP)"/></div>
-      <div class="field"><label>Port</label><input value=${meshPort} onInput=${e => setMeshPort(e.target.value)} placeholder=${String(rsv.mesh_port_base || 9999)}/></div>
+      <div class="field"><label>Mesh port</label><input value=${meshPort} onInput=${e => setMeshPort(e.target.value)} placeholder=${String(rsv.mesh_port_base || 9999)}/></div>
     </div>
     <div class="hint" style="margin-top:-4px">The address (and port) other nodes dial to reach this node for cascading. Changing the IP re-connects existing links automatically.</div>
     <div class="row2" style="margin-top:10px">
@@ -4294,12 +4307,6 @@ function NodeEditSheet({ node }) {
       <div class="field"><label>Mesh prefix</label><input value=${meshPrefix} onInput=${e => setMeshPrefix(e.target.value)} placeholder=${rsv.iface_prefix || "swg_"}/></div>
     </div>
     <div class="hint" style="margin-top:-4px">Per-node mesh overrides. <b>Changing the subnet, port, or prefix re-provisions this node's mesh links</b> — it briefly drops off the mesh while every peer pulls the new config and reconnects. Blank = the panel default shown.</div>
-    <div class="field" style="margin-top:14px"><label>Default egress IP <span class="faint" style="text-transform:none;letter-spacing:0">— direct internet exit</span></label>
-      <${NodeIpPick} ips=${ips} value=${defEgress} onChange=${setDefEgress} auto="Auto (MASQUERADE)"/>
-      <div class="hint">The fallback source IP this node SNATs to when traffic exits to the internet here — applied to any interface (and traffic received from other nodes) that doesn't set its own egress IP. Interfaces with their own egress IP, and cascading traffic that exits elsewhere, are unaffected.</div></div>
-    <div class="field"><label>Panel connection IP <span class="faint" style="text-transform:none;letter-spacing:0">— source to reach the panel</span></label>
-      <${NodeIpPick} ips=${ips} value=${panelIp} onChange=${setPanelIp} auto="Auto (default route)"/>
-      <div class="hint">Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.</div></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
