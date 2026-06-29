@@ -867,13 +867,16 @@ function peerLabel(p) { return p.unassigned ? "" : (p.name || ""); }
 
 // Generic hover/click bubble (the DepBadge mechanics, reusable): hover opens, click pins (touch),
 // position:fixed anchored to the trigger so overflow:hidden can't clip it.
-function Popover({ trigger, cls, popCls, children }) {
+function Popover({ trigger, cls, popCls, alignRight, children }) {
   const [open, setOpen] = useState(false), [pinned, setPinned] = useState(false), [pos, setPos] = useState(null);
   const ref = useRef(null), closeT = useRef(null);
   const show = open || pinned;
   const cancelClose = () => clearTimeout(closeT.current);
   const scheduleClose = () => { cancelClose(); closeT.current = setTimeout(() => setOpen(false), 140); };
-  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect(); setPos({ left: Math.round(r.left), top: Math.round(r.bottom + 6) }); };
+  // alignRight: anchor the popover's left to the trigger's RIGHT edge, then translateX(-100%) so its own right
+  // edge lines up there (under the value, not the label) — scrollbar-proof, no width guessing.
+  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
+    setPos({ left: Math.round(alignRight ? r.right : r.left), top: Math.round(r.bottom + 6) }); };
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
@@ -886,7 +889,7 @@ function Popover({ trigger, cls, popCls, children }) {
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
     onClick=${e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); }}
     onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>${trigger}
-    ${show && pos ? html`<div class=${"deppop onlpop " + (popCls || "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px"}
+    ${show && pos ? html`<div class=${"deppop onlpop " + (popCls || "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px" + (alignRight ? ";transform:translateX(-100%)" : "")}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div>` : null}
   </span>`;
 }
@@ -976,7 +979,7 @@ function MeshStat({ nodeId, mode }) {
   const trigger = mode === "in"
     ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">This node's mesh status:</span> ${num(h.okIn, "mhn-down")}</span>`
     : html`<span class="mh-tag"><span class="nm-l">Mesh link</span><span class="mh-grp"><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}</span><span class="mh-grp"><span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span></span>`;
-  return html`<${Popover} cls="mh-pop" popCls="mh-bubble" trigger=${trigger}>
+  return html`<${Popover} cls="mh-pop" popCls="mh-bubble" alignRight=${true} trigger=${trigger}>
     <div class="onpop-h">${mode === "in" ? "Inbound links" : "Mesh connections"}</div>
     ${ordered.map(row)}
   </${Popover}>`;
