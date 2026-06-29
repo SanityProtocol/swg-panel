@@ -795,6 +795,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .egb-fwd{color:var(--brand)}              /* smart / → node — cyan */
 .egb-direct{color:var(--dim)}             /* direct — neutral */
 .egb-cascade{color:var(--pending)}        /* cascade — Node-connections icon colour (purple) */
+.carry-tags{display:inline-flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}   /* Carrying: forwarded interface tags, right-aligned */
 /* Phase 3 smart-routing rule editor */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
 .rrrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}

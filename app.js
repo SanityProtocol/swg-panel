@@ -1444,14 +1444,13 @@ function NodeDetail({ node: rawName }) {
         const lk = reprov ? "reprov" : nodeStale(name) ? "down" : (!m || m.handshake_age == null ? "connecting" : (m.handshake_age < 180 ? "up" : "down"));
         const lkTitle = { up: "Link up", connecting: "Connecting…", down: "Link down" }[lk];
         const muted = lk === "down" || reprov;
-        const carried = reprov ? [] : userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer)
-          .map(k => meta[k].subnet).filter(Boolean);   // local user subnets forwarded out through THIS link
+        const carried = reprov ? [] : userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer);   // user iface NAMES forwarded out through THIS link
         return html`<div key=${peer} class=${"ifcard tp" + (reprov ? "" : " clickable") + (muted ? " down" : "")} onClick=${reprov || !ifn ? null : () => openConnectionEdit(name, ifn)}>
-          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="egb egb-cascade" style="align-self:flex-start;margin-top:1px" title=${"Carrying " + carried.length + " forwarded subnet" + (carried.length === 1 ? "" : "s")}><${Ic} i="activity"/>cascade</span>` : null}${reprov ? html`<span class="tg tg-busy" title="Rebuilding this node's mesh link — it reconnects in a few seconds"><${Ic} i="clock"/>re-provisioning</span>` : html`<span class=${"lkdot " + lk} style="align-self:flex-start;margin-top:1px" title=${lkTitle}></span>`}</div>
+          <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${carried.length ? html`<span class="egb egb-cascade" title=${"Cascade: relays " + carried.length + " interface" + (carried.length === 1 ? "" : "s") + " out via " + Store.nodeName(peer)}><${Ic} i="relay"/>cascade</span>` : null}${reprov ? html`<span class="tg tg-busy" title="Rebuilding this node's mesh link — it reconnects in a few seconds"><${Ic} i="clock"/>re-provisioning</span>` : html`<span class=${"lkdot " + lk} title=${lkTitle}></span>`}</div>
           <div class="ifcard-rows">
+            <div class="ifrow"><span class="l">Endpoint</span><span class="r addr">${(m && m.peer_endpoint) || "—"}</span></div>
             <div class="ifrow"><span class="l">Tunnel</span><span class="r addr">${(m && m.subnet) || "—"}</span></div>
-            ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r addr">${carried.join(", ")}</span></div>` : null}
-            <div class="ifrow"><span class="l">Throughput</span><span class="r">${m ? html`↓ ${rate(dlul(m.rx_speed, m.tx_speed)[0])} · ↑ ${rate(dlul(m.rx_speed, m.tx_speed)[1])}` : html`<span class="faint">—</span>`}</span></div>
+            ${carried.length ? html`<div class="ifrow"><span class="l">Carrying</span><span class="r"><span class="carry-tags">${carried.map(k => html`<span class=${"tg tg-" + ((meta[k].awg_params && Object.keys(meta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`)}</span></span></div>` : null}
           </div></div>`;
       })}</div>
     <//>` : null}
@@ -1521,7 +1520,7 @@ function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
                   <div class="ifrow"><span class="l">Traffic</span><span class="r">${m.egress_mode === "forward" && m.egress_node
-                    ? html`<span class="egb egb-fwd" title=${"Exits via " + Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "")}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>`
+                    ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(m.egress_node)} title=${"Exits via " + Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "")}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>`
                     : m.egress_mode === "smart"
                     ? html`<span class="egb egb-fwd" title=${(m.routing || []).filter(r => r.action === "exit").length + " destination rule(s)"}><${Ic} i="network"/>smart</span>`
                     : html`<span class="egb egb-direct" title="Exits directly from this node"><${Ic} i="globe"/>direct</span>`}</span></div>
