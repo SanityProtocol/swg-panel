@@ -3624,7 +3624,23 @@ function PanelSettingsScreen() {
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "anton48"]));   // forks offered in the install picker
   const [forkColors, setForkColors] = useState({ ...Object.fromEntries(TURN_FORKS.map(f => [f.id, f.color])), ...(ps.turn_fork_colors || {}) });   // per-fork colour (override or default)
   const forkColorOverrides = () => Object.fromEntries(TURN_FORKS.filter(f => (forkColors[f.id] || "").toLowerCase() !== f.color.toLowerCase()).map(f => [f.id, forkColors[f.id]]));
-  const [section, setSection] = useState("routing");   // active left-rail section
+  // Security (panel login) — folded into the unified Save: credentials update on Save (if changed), and a
+  // validation error blocks Save. Username is loaded from the server once on mount.
+  const [secUser, setSecUser] = useState(""); const [secOrigUser, setSecOrigUser] = useState("");
+  const [secCur, setSecCur] = useState(""); const [secNp, setSecNp] = useState(""); const [secNp2, setSecNp2] = useState("");
+  const [secAuth, setSecAuth] = useState(true);   // false = panel has no login configured (fields disabled)
+  useEffect(() => { api.account().then(r => { if (r && r.ok) { setSecAuth(r.data.auth_enabled !== false); if (r.data.username) { setSecUser(r.data.username); setSecOrigUser(r.data.username); } } }); }, []);
+  const secChanged = () => secAuth && (secUser.trim() !== secOrigUser || !!secNp);
+  const secErr = () => {
+    if (!secAuth || !secChanged()) return null;
+    if (!secUser.trim()) return "Username can't be empty.";
+    if (secUser.includes(":")) return "Username can't contain a colon.";
+    if (!secCur) return "Enter your current password to confirm the change.";
+    if (secNp && secNp !== secNp2) return "New passwords don't match.";
+    if (secNp && secNp.length < 8) return "New password must be at least 8 characters.";
+    return null;
+  };
+  const [section, setSection] = useState("display");   // active left-rail section
   const rsv = ps.reserved || {};
   const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
   const [rsvPort, setRsvPort] = useState(String(rsv.mesh_port_base || 9999));
@@ -3679,6 +3695,13 @@ function PanelSettingsScreen() {
       if (!nr.ok) nerr = nr.error || ("Couldn't save " + n.name);
     }
     if (nerr) return setMsg({ ok: false, t: nerr });
+    // credentials (if changed) — last, since a username/password change re-auths and forces a reload
+    if (secChanged()) {
+      const ar = await api.accountSave({ username: secUser.trim(), current_password: secCur, new_password: secNp });
+      if (!ar.ok) return setMsg({ ok: false, t: ar.error || "Couldn't update credentials." });
+      setMsg({ ok: true, t: "Saved. Reloading — sign in with your new credentials…" });
+      return setTimeout(() => location.reload(), 1400);
+    }
     setMsg(null); setSaved(Date.now() + 4000);   // green "All settings saved" flash in the header
     await Store.poll();
     const fresh = Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)]));
@@ -3689,12 +3712,12 @@ function PanelSettingsScreen() {
   const diffList = () => {
     const out = [];
     if (glDirty("routing")) out.push("Routing lists — built-in / custom");
+    if (secChanged()) out.push("Security — panel credentials");
     if (glDirty("turn")) out.push("Turn proxies — install picker");
     if (glDirty("geo")) out.push("Geo data");
-    if (glDirty("defaults")) out.push("New-interface defaults");
-    if (glDirty("timing")) out.push("Status timing");
+    if (glDirty("defaults")) out.push("Interface defaults");
     if (glDirty("configs")) out.push("Client configs → " + (sc === "off" ? "off" : "on"));
-    if (glDirty("display")) out.push("Throughput perspective → " + tput);
+    if (glDirty("display")) out.push("Display / status timing");
     if (glDirty("mesh")) out.push("System mesh defaults");
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
@@ -3723,7 +3746,7 @@ function PanelSettingsScreen() {
   const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
   const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => setLists(ls => l ? ls.map(x => x._rid === nl._rid ? nl : x) : [...ls, nl])} onClose=${closeModal}/>`);
   const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
-  const SECTIONS = [["routing", "Routing lists"], ["turn", "Turn proxies"], ["geo", "Geo data"], ["defaults", "New-interface defaults"], ["timing", "Status timing"], ["configs", "Client configs"], ["display", "Display"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"]];
+  const SECTIONS = [["display", "Display"], ["security", "Security"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   // per-node context: the node whose mode/lists/mesh/egress we're editing — defaults to the first node (no "default")
@@ -3742,11 +3765,11 @@ function PanelSettingsScreen() {
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(ps.turn_fork_colors || {})) :
+    sec === "security" ? secChanged() :
     sec === "geo" ? (geoMir.trim() !== (mir.geo || "") || turnMir.trim() !== (mir.turn || "") || ttlD !== String(adv.geo_ttl_days || 3)) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25)) :
-    sec === "timing" ? (staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000))) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
-    sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes")) :
+    sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000))) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -3814,17 +3837,20 @@ function PanelSettingsScreen() {
           <div class="georefresh"><span class="faint" style="font-size:11px">To force every node to re-fetch on its next sync</span><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh geo lists now</button></div>
         </div>` : null}
         ${section === "defaults" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">New-interface defaults</div>
-          <p class="hint" style="margin:0 0 12px">Applied when creating a new interface — you can still override per interface.</p>
+          <div class="seclabel" style="margin-top:0">Interfaces</div>
+          <p class="hint" style="margin:0 0 12px">Defaults applied when creating a new interface — you can still override per interface.</p>
           <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="https://8.8.8.8/dns-query, 1.1.1.1"/><div class="hint">Comma-separated</div></div>
           <div class="row2"><div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
             <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div></div>
         </div>` : null}
-        ${section === "timing" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">Status timing</div>
-          <p class="hint" style="margin:0 0 12px">How long the panel waits before treating things as stale — in seconds.</p>
-          <div class="row2"><div class="field"><label>Node stale after (s)</label><input value=${staleS} onInput=${e => setStaleS(e.target.value)} placeholder="30"/><div class="hint">No sync for this long → the node shows stale.</div></div>
-            <div class="field"><label>Peer grace window (s)</label><input value=${graceS} onInput=${e => setGraceS(e.target.value)} placeholder="60"/><div class="hint">A peer stays "online" this long after its last handshake.</div></div></div>
+        ${section === "security" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Security</div>
+          <p class="hint" style="margin:0 0 14px">Change the panel username and password — applied on <b>Save</b>. Changing either takes effect immediately and you'll be asked to sign in again.</p>
+          ${!secAuth ? html`<div class="formmsg err">This panel has no login configured — changes are disabled.</div>` : (secErr() ? html`<div class="formmsg err">${secErr()}</div>` : null)}
+          <div class="field"><label>Username</label><input value=${secUser} disabled=${!secAuth} onInput=${e => setSecUser(e.target.value)} autocomplete="username"/></div>
+          <div class="field"><label>Current password</label><input type="password" value=${secCur} disabled=${!secAuth} onInput=${e => setSecCur(e.target.value)} autocomplete="current-password" placeholder="required to confirm a change"/></div>
+          <div class="row2"><div class="field"><label>New password</label><input type="password" value=${secNp} disabled=${!secAuth} onInput=${e => setSecNp(e.target.value)} autocomplete="new-password" placeholder="leave blank to keep current"/></div>
+            <div class="field"><label>Confirm new password</label><input type="password" value=${secNp2} disabled=${!secAuth} onInput=${e => setSecNp2(e.target.value)} autocomplete="new-password"/></div></div>
         </div>` : null}
         ${section === "configs" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Client configs</div>
@@ -3843,6 +3869,10 @@ function PanelSettingsScreen() {
               <option value="peers">Peers — what the client downloads / uploads</option>
             </select>
             <div class="hint">Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.</div></div>
+          <div class="seclabel">Status timing</div>
+          <p class="hint" style="margin:0 0 12px">How long the panel waits before treating things as stale — in seconds.</p>
+          <div class="row2"><div class="field"><label>Node stale after (s)</label><input value=${staleS} onInput=${e => setStaleS(e.target.value)} placeholder="30"/><div class="hint">No sync for this long → the node shows stale.</div></div>
+            <div class="field"><label>Peer grace window (s)</label><input value=${graceS} onInput=${e => setGraceS(e.target.value)} placeholder="60"/><div class="hint">A peer stays "online" this long after its last handshake.</div></div></div>
         </div>` : null}
         ${section === "mesh" ? html`<div class="card">
           ${nodeRec ? html`<div class="seclabel" style="margin-top:0">${nodeRec.name} — mesh</div>
@@ -3856,7 +3886,7 @@ function PanelSettingsScreen() {
         </div>` : null}
         <div class="setfoot">${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
           <button class="btn btn-ghost" onClick=${() => history.back()}>Back</button>
-          <button class="btn btn-primary" onClick=${confirmSave}>Save</button></div>
+          <button class="btn btn-primary" disabled=${!!secErr()} title=${secErr() || ""} onClick=${confirmSave}>Save</button></div>
       </div>
     </div>
   </div>`;
@@ -4887,8 +4917,8 @@ function App() {
       const htg = $("#hostproc-tag"); if (htg && Store.hostProcErr) htg.onclick = () => openConfirm({ title: PROC_LABEL[Store.hostProc] || Store.hostProc, log: Store.hostProcErr, confirmLabel: "Close" });
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
-    const acct = $("#acct-btn"); if (acct) acct.onclick = openAccount;
-    const out = $("#logout-btn"); if (out) out.onclick = doLogout;
+    const acct = $("#acct-btn"); if (acct) acct.onclick = toggleAcctMenu;
+    const out = $("#acct-logout"); if (out) out.onclick = () => { closeAcctMenu(); doLogout(); };
   });
 
   return html`<${Fragment}>
@@ -4924,8 +4954,24 @@ function LoginScreen() {
 }
 function doLogout() {
   openConfirm({ title: "Log out", confirmLabel: "Log out",
-    body: "You'll need to sign in again to manage the fleet.",
+    body: "Are you sure you want to logout?",
     onConfirm: async () => { try { await api.logout(); } catch (_) {} location.reload(); } });
+}
+// header user-icon dropdown (just "Logout" for now) — toggled open, closes on outside-click / Esc
+function closeAcctMenu() {
+  const m = document.getElementById("acct-menu"); if (m) m.hidden = true;
+  const b = document.getElementById("acct-btn"); if (b) b.setAttribute("aria-expanded", "false");
+}
+function toggleAcctMenu(e) {
+  if (e) e.stopPropagation();
+  const m = document.getElementById("acct-menu"); if (!m) return;
+  const show = m.hidden; m.hidden = !show;
+  const b = document.getElementById("acct-btn"); if (b) b.setAttribute("aria-expanded", show ? "true" : "false");
+  if (!show) return;
+  const off = ev => { if (ev.type === "keydown" && ev.key !== "Escape") return;
+    if (ev.type === "click" && ev.target.closest(".acct-wrap")) return;
+    closeAcctMenu(); document.removeEventListener("click", off, true); document.removeEventListener("keydown", off, true); };
+  setTimeout(() => { document.addEventListener("click", off, true); document.addEventListener("keydown", off, true); }, 0);
 }
 // Account form as a modal (same chrome as the node sheets).
 function openAccount() { openModal(html`<${AccountSheet}/>`); }

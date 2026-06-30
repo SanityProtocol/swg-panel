@@ -677,6 +677,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-row>.tags{flex:1;display:flex;flex-wrap:wrap;gap:5px;min-width:0;padding-top:1px}
 /* fixed-width right column (same on both rows) so the two tag lists are equal width and throughput lines up over the controls */
 .nm-row>.nm-thru,.nm-row>.nacts{flex:none;width:236px;margin-left:8px;justify-content:flex-end}
+.nm-row>.nacts{flex-direction:column;align-items:flex-end;justify-content:flex-start}   /* stack the control icons vertically at the card's right */
 .nm-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}
 .nm-v{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
 .nm-v.nm-peers{font-size:15px;color:var(--ink)}
@@ -895,6 +896,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .swt .knob{position:absolute;left:3px;top:3px;width:13px;height:13px;border-radius:50%;background:var(--dim);transition:transform .15s,background .15s}
 .swt input:checked~.track{background:color-mix(in srgb,var(--brand) 28%,transparent);border-color:var(--brand)}
 .swt input:checked~.knob{transform:translateX(15px);background:var(--brand)}
+/* header user-icon dropdown */
+.acct-wrap{position:relative;display:inline-flex}
+.acct-menu{position:absolute;top:calc(100% + 8px);right:0;min-width:152px;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:10px;padding:5px;z-index:60;box-shadow:0 10px 30px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:2px}
+.acct-menu[hidden]{display:none}
+.acct-menu-i{display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;background:none;border:0;border-radius:7px;color:var(--dim);font:inherit;font-size:13px;cursor:pointer;text-align:left}
+.acct-menu-i:hover{background:color-mix(in srgb,var(--ink) 6%,transparent);color:var(--ink)}
 @media (max-width:680px){.setbody{flex-direction:column}.setrail{flex-direction:row;flex-wrap:wrap;width:auto;position:static}}
 /* per-node context selector in the settings header (default + node badges) */
 .setnodes{position:absolute;top:14px;right:18px;z-index:2;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:62%}
