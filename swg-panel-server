@@ -146,6 +146,22 @@ def _check_latest_remote():
     return ok
 
 
+def _resolve_turn_tag(owner):
+    """Latest release tag of a turn-proxy fork repo, read from the 302 of releases/latest/download (no API →
+    no rate limit). Mirrors swg-noded's _turn_resolve_tag. "" if unreachable. Used by /api/turn/check-updates."""
+    if not owner or "/" not in owner:
+        return ""
+    url = "https://github.com/" + owner + "/releases/latest/download/server-linux-amd64"
+    try:
+        r = subprocess.run(["curl", "-fsS", "-o", os.devnull, "-w", "%{redirect_url}",
+                            "--connect-timeout", "12", "--max-time", "25", url],
+                           capture_output=True, text=True, timeout=30)
+        m = re.search(r"/releases/download/([^/]+)/", r.stdout or "")
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
 def _remote_version_loop():
     while True:
         _check_latest_remote()
@@ -2837,6 +2853,16 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {"node": nid, "iface": iface, "key": key}}
 
     # ── turn-proxy management (only on nodes that report turn_manage=true) ──
+    if method == "POST" and path == "/api/turn/check-updates":
+        # Resolve the latest release tag for each requested fork (the SPA compares to deployed versions).
+        forks = body.get("forks") if isinstance(body.get("forks"), list) else []
+        latest = {}
+        for f in forks[:32]:
+            fid = re.sub(r"[^A-Za-z0-9_-]", "", str((f or {}).get("id") or ""))[:48]
+            owner = str((f or {}).get("owner") or "").strip()
+            if fid and "/" in owner:
+                latest[fid] = _resolve_turn_tag(owner)
+        return 200, {"ok": True, "data": {"latest": latest}}
     if method == "POST" and path == "/api/turn/install":
         # Install a NEW turn-proxy: the node downloads the fork's prebuilt binary, writes the systemd
         # unit (listen → connect, + the fork's wrap flags & a fresh key), and enables it. Keyed by the

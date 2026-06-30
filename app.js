@@ -334,6 +334,7 @@ const api = {
   turnInstall(b) { return this.post("/api/turn/install", b); },       // install a new turn-proxy (download + unit)
   turnOnboard(b) { return this.post("/api/turn/onboard", b); },       // adopt a host .service by path
   turnCancel(b) { return this.post("/api/turn/cancel", b); },
+  turnCheckUpdates(b) { return this.post("/api/turn/check-updates", b); },   // resolve each fork's latest release tag
   nodeSelfUpdate(b) { return this.post("/api/node/update", b); },   // flag a node to self-update (≠ nodeUpdate, which renames)
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
@@ -3615,6 +3616,19 @@ function PanelSettingsScreen() {
   const forkColorOverrides = () => Object.fromEntries(TURN_FORKS.filter(f => (forkColors[f.id] || "").toLowerCase() !== f.color.toLowerCase()).map(f => [f.id, forkColors[f.id]]));
   // deployed version(s) of a fork across the fleet (from snapshots) — "" if it's never been installed
   const forkVersions = fid => { const v = new Set(); for (const snap of Object.values(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version); return [...v]; };
+  const [turnCheck, setTurnCheck] = useState({});   // {forkId: {status:'checking'|'uptodate'|'update', latest}}
+  const checkTurnUpdates = async () => {
+    setTurnCheck(Object.fromEntries(TURN_FORKS.map(f => [f.id, { status: "checking" }])));
+    const r = await api.turnCheckUpdates({ forks: TURN_FORKS.map(f => ({ id: f.id, owner: f.owner })) });
+    const latest = (r && r.ok && r.data.latest) || {};
+    const next = {};
+    for (const f of TURN_FORKS) {
+      const lt = latest[f.id] || "", dep = forkVersions(f.id);
+      next[f.id] = (lt && dep.length && dep.some(v => v !== lt)) ? { status: "update", latest: lt } : { status: "uptodate" };
+    }
+    setTurnCheck(next);
+    setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.status === "update" ? v : {}]))), 5000);   // "up to date" clears after 5s; "update" persists
+  };
   // Security (panel login) — folded into the unified Save: credentials update on Save (if changed), and a
   // validation error blocks Save. Username is loaded from the server once on mount.
   const [secUser, setSecUser] = useState(""); const [secOrigUser, setSecOrigUser] = useState("");
@@ -3804,6 +3818,7 @@ function PanelSettingsScreen() {
         </div>` : null}
         ${section === "turn" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Turn proxies<span class="grow"></span>
+            ${turnEnabledS ? html`<button class="btn btn-mini" disabled=${Object.values(turnCheck).some(v => v && v.status === "checking")} onClick=${checkTurnUpdates}><${Ic} i="refresh"/> Check for updates</button>` : null}
             <label class="swt" title=${turnEnabledS ? "Turn proxies are on" : "Turn proxies are off"}><input type="checkbox" checked=${turnEnabledS} onChange=${e => setTurnEnabledS(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
           ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">Turn proxies are off.</b> Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.</p>`
             : html`<p class="hint" style="margin:0 0 12px">Which forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node, and each fork's colour. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>`}
@@ -3812,6 +3827,10 @@ function PanelSettingsScreen() {
             <input type="color" class="tf-color" value=${forkColors[f.id] || f.color} title=${"Colour for " + f.label} onInput=${e => setForkColors(c => ({ ...c, [f.id]: e.target.value }))}/>
             <span class="tf-name">${f.label}</span>
             <span class="grow"></span>
+            ${(() => { const cs = turnCheck[f.id]; if (!cs || !cs.status) return null;
+              if (cs.status === "checking") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> checking…</span>`;
+              if (cs.status === "update") return html`<span class="tf-chk upd"><${Ic} i="refresh"/> update to ${cs.latest}</span>`;
+              return html`<span class="tf-chk ok"><${Ic} i="check"/> up to date</span>`; })()}
             ${(() => { const v = forkVersions(f.id); return v.length ? html`<span class="tf-ver" title="Version(s) deployed across the fleet">${v.join(", ")}</span>` : html`<span class="tf-ver none">not yet used</span>`; })()}
             <span class="faint cl-meta">${f.wrap ? "obfuscation" : "no obfuscation"} · ${f.owner}</span>
           </div>`)}</div>

@@ -894,6 +894,14 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tf-name{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:12.5px}
 .tf-ver{font-family:var(--mono);font-size:11px;color:var(--ready);background:color-mix(in srgb,var(--ready) 12%,transparent);padding:1px 7px;border-radius:99px;white-space:nowrap}
 .tf-ver.none{color:var(--faint);background:none;font-style:italic}
+/* update-check status per fork */
+.tf-chk{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);white-space:nowrap;color:var(--partial)}
+.tf-chk.ok{color:var(--online)}
+.tf-chk.upd{color:#F0913C}
+.tf-chk.upd svg{width:13px;height:13px}
+.tf-chk.ok svg{width:13px;height:13px}
+.tf-arrow{display:inline-flex;color:var(--partial);animation:spin .8s linear infinite}
+.tf-arrow svg{width:13px;height:13px}
 .warntext{color:var(--partial);font-weight:600}
 /* per-fork colour picker (native input, themed to a small rounded swatch) */
 .tf-color{width:24px;height:24px;flex:none;padding:0;border:1px solid var(--line-solid);border-radius:6px;background:none;cursor:pointer}
