@@ -797,8 +797,18 @@ def _ensure_smart_nft(smart_e, categories, res):
             run(["nft", "delete", "table", "inet", SMART_NFT_TABLE]); res["changed"] += 1
         return {}
     body = have.stdout if have.returncode == 0 else ""
-    if have.returncode != 0:
+    # one-shot migration: sets created before auto-merge can't get the flag in place (they're chain-referenced),
+    # so if any of ours lacks it, rebuild the whole table once — afterwards every set has auto-merge and the
+    # additive dnsmasq/custom-IP paths can't be rejected by an overlap. Stamp-guarded so it can never loop even
+    # if some nft version omits the flag from `list` output; sets refill (geoip/dnsmasq) on the next passes.
+    _am = os.path.join(GEO_DIR, ".automerge-migrated")
+    if have.returncode == 0 and not os.path.exists(_am) and re.search(r"set \S+ {(?:(?!auto-merge|}).)*}", body, re.S):
+        run(["nft", "delete", "table", "inet", SMART_NFT_TABLE]); res["changed"] += 1
+        body = ""
+    if not body:
         run(["nft", "add", "table", "inet", SMART_NFT_TABLE])
+    with contextlib.suppress(OSError):
+        os.makedirs(GEO_DIR, exist_ok=True); open(_am, "w").write("1")
     have_sets = set(re.findall(r"set (\S+) {", body))
     for c in cats:                                              # one interval set per category ("all" is the catch-all → no set)
         if c == "all":
@@ -1040,6 +1050,7 @@ def _dnsmasq_stop():
     pid = _dnsmasq_running()
     if pid:
         run(["kill", str(pid)])
+    run(["pkill", "-f", "--", "conf-file=" + DNSMASQ_CONF])   # reap any stray instances the pid-file missed
     for p in (DNSMASQ_PID, DNSMASQ_CONF):
         with contextlib.suppress(OSError):
             os.unlink(p)

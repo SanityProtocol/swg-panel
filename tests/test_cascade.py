@@ -358,7 +358,7 @@ def test_node_smart():
                 routes={"7000": "default dev swg_AB scope link\n"},
                 fwd="-A FORWARD -i swg_AB -m comment --comment swg-fwd-acl:swg_AB -j ACCEPT\n-A FORWARD -o swg_AB -m comment --comment swg-fwd-acl:swg_AB -j ACCEPT\n",
                 mangle="-A FORWARD -o swg_AB -p tcp -m comment --comment swg-fwd-mss:swg_AB -j TCPMSS --clamp-mss-to-pmtu\n",
-                nft_out=("table inet swg_smart {\n\tset cat_google { type ipv4_addr\n\tflags interval\n\t}\n"
+                nft_out=("table inet swg_smart {\n\tset cat_google { type ipv4_addr\n\tflags interval\n\t\tauto-merge\n\t}\n"
                          "\tchain prerouting {\n\t\ttype filter hook prerouting priority mangle; policy accept;\n"
                          "\t\tip saddr 10.8.0.0/24 ip daddr @cat_google meta mark set 0x00001b58\n\t}\n}\n"))
     calls.clear()
