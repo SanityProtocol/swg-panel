@@ -814,13 +814,19 @@ function Tag({ kind, label, color, muted }) {
 }
 // the tags that describe a peer's deployment on a (node,iface): protocol + interface + turn-proxy.
 // `muted` greys them out for inactive (offline / dangling / disconnected) rows.
-function targetTags(node, iface, type, via, muted) {
+function targetTags(node, iface, type, via, muted, viaTurn) {
   const tags = [];
   const proto = (type || "").toLowerCase();
   if (proto === "awg") tags.push(html`<${Tag} kind="awg" label="awg" muted=${muted}/>`);
   else if (proto === "wg") tags.push(html`<${Tag} kind="wg" label="wg" muted=${muted}/>`);
-  tags.push(html`<${Tag} kind="iface" label=${iface} color=${Store.nodeColor(node)} muted=${muted}/>`);
-  if (via === "turn" || turnProxiesFor(node, iface).length) tags.push(html`<${Tag} kind="turn" label="turn" muted=${muted}/>`);
+  if (viaTurn) {
+    // peer came in THROUGH a turn-proxy → tint the interface badge with the proxy's colour + a hover bubble
+    const tn = turnLabel(viaTurn), tc = turnColor(tn);
+    tags.push(html`<span class="turnwrap"><${Tag} kind="iface" label=${iface} color=${tc} muted=${muted}/><span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span></span></span>`);
+  } else {
+    tags.push(html`<${Tag} kind="iface" label=${iface} color=${Store.nodeColor(node)} muted=${muted}/>`);
+    if (via === "turn" || turnProxiesFor(node, iface).length) tags.push(html`<${Tag} kind="turn" label="turn" muted=${muted}/>`);
+  }
   return tags;
 }
 // rate cell, green when traffic is flowing
@@ -2324,13 +2330,15 @@ function DeleteTurnSheet({ node, service, label }) {
 // the installable turn-proxy forks (owner repo + the fork's obfuscation flags — the node appends a
 // fresh -wrap-key). Mirrors the installer's turn_repo_owner / turn_wrap_flags.
 const TURN_FORKS = [
-  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "" },
-  { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on" },
-  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/vk-turn-proxy", wrap: "-wrap" },
-  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "" },
-  { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap" },
-  { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp" },
+  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", color: "#5FB0E0" },
+  { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0" },
+  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/vk-turn-proxy", wrap: "-wrap", color: "#E0A85F" },
+  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", color: "#6FD9A8" },
+  { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A" },
+  { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F" },
 ];
+// stable colour for a turn-proxy fork (peers connected via it get their interface badge tinted this colour)
+function turnColor(label) { const fk = TURN_FORKS.find(x => x.id === label); return (fk && fk.color) || "#8FA8C0"; }
 const TURN_PEND = { install: "installing", manage: "applying", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "installing", start: "starting", stop: "stopping" };
 // turn-proxy restart completion flash: when a queued 'restart' clears, show a green "restarted" tag 5s
 const _turnRestartPend = {};   // "node|service" currently mid-restart (last poll)
@@ -2656,7 +2664,7 @@ function connRows() {
         node: t.node, iface: t.iface, type: t.type || "", endpoint: obs.endpoint || "", ip: t.ip || "",
         hs: (obs.handshake_age == null ? null : obs.handshake_age),
         rxb: obs.rx_bytes || 0, txb: obs.tx_bytes || 0, rx: obs.rx_speed || 0, tx: obs.tx_speed || 0,
-        online: !!obs.online, via: t.via,
+        online: !!obs.online, via: t.via, viaTurn: t.viaTurn,
       });
     }
   }
@@ -2720,7 +2728,7 @@ function ConnectionsScreen() {
           <td data-label="Peer" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(r.pid))}>${r.peer ? html`<b>${r.peer}</b>` : html`<span class="faint">unassigned</span>`}</td>
           <td data-label="User">${r.uid ? html`<a href=${"#/user/" + encodeURIComponent(r.uid)}>${r.user}</a>` : html`<span class="faint">—</span>`}</td>
           <td data-label="Node" class="clk" onClick=${() => go("#/node/" + encodeURIComponent(r.node) + "/" + encodeURIComponent(r.iface))}>
-            <span class="addr" style="color:var(--ink-2)">${Store.nodeName(r.node)}</span><span class="tags">${targetTags(r.node, r.iface, r.type, r.via, !r.online)}</span></td>
+            <span class="addr" style="color:var(--ink-2)">${Store.nodeName(r.node)}</span><span class="tags">${targetTags(r.node, r.iface, r.type, r.via, !r.online, r.viaTurn)}</span></td>
           <td data-label="Endpoint"><span class="addr">${r.endpoint || "—"}</span></td>
           <td data-label="Last"><span class="when">${seen(r.hs)}</span></td>
           <td data-label="Rate">${rateCell(r.rx, r.tx)}</td>
@@ -2762,7 +2770,7 @@ function PeerLine({ peer }) {
     <div class="pl-main">
       <div class="pl-title">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr" title=${peer.pubkey}>${peer.pubkey.slice(0, 10)}…</span></div>
       <div class="pl-targets">${peer.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}>
-        <span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
+        <span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online, t.viaTurn)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
     </div>
     <${Badge} s=${peer.status}/>
     <div class="pl-acts">
@@ -2830,7 +2838,7 @@ function UsersScreen() {
       <div class="ugroup unassigned"><div class="ug-peers">${unassigned.map(p => html`<div class="pline" key=${p.id}>
         <div class="pl-main">
           <div class="pl-title">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr">${p.pubkey.slice(0, 10)}…</span></div>
-          <div class="pl-targets">${p.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}><span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
+          <div class="pl-targets">${p.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}><span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online, t.viaTurn)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
         </div>
         <${Badge} s=${p.status}/>
         <div class="pl-acts">
@@ -3031,7 +3039,7 @@ function TargetCard({ peer, t, bare }) {
         <div class="row"><span class="k">address</span><span class="vv">${t.ip || "—"}</span></div>
         <div class="row"><span class="k">handshake</span><span class="vv">${obs ? seen(obs.handshake_age) : "—"}</span></div>
         <div class="row"><span class="k">transfer</span><span class="vv">${obs ? "↓ " + rate(dlul(obs.rx_speed, obs.tx_speed)[0]) + "  ↑ " + rate(dlul(obs.rx_speed, obs.tx_speed)[1]) : "—"}</span></div>
-        <div class="row"><span class="k">transport</span><span class="vv">${t.via === "turn" ? "via turn-proxy" : (t.via === "direct" ? "direct" : "—")}</span></div>
+        <div class="row"><span class="k">transport</span><span class="vv">${lt.viaTurn ? html`via <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnLabel(lt.viaTurn))}>${turnLabel(lt.viaTurn)}</span>` : (lt.via === "direct" ? "direct" : "—")}</span></div>
         ${tps.map(tp => html`<div class="row"><span class="k">turn-proxy</span><span class="vv">${tp.listen || "—"}
           ${tp.wrap_key ? html`<${Fragment}> · key <span class="addr">${String(tp.wrap_key).slice(0, 8)}…</span><button class="copybtn" title="Copy wrap key" onClick=${() => copy(tp.wrap_key, "Wrap key copied")}><${Ic} i="copy"/></button></>` : null}</span></div>`)}
       </div>`}

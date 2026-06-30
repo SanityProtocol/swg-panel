@@ -786,6 +786,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-wg{background:rgba(63,216,154,.13);color:var(--online)}
 .tg-awg{background:rgba(31,200,214,.14);color:var(--brand)}
 .tg-turn{color:var(--tfc,#B49BF7);background:color-mix(in srgb,var(--tfc,#A78BF5) 17%,transparent)}
+/* "Connected via <proxy>" hover bubble on a turn-proxied interface badge */
+.turnwrap{position:relative;display:inline-flex}
+.turnbub{position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);white-space:nowrap;
+  background:var(--surface-2);border:1px solid var(--line-solid);border-radius:8px;padding:6px 9px;font-size:11px;
+  color:var(--dim);display:none;align-items:center;gap:6px;z-index:40;box-shadow:0 6px 22px rgba(0,0,0,.45);text-transform:none;letter-spacing:0}
+.turnwrap:hover .turnbub{display:inline-flex}
 /* status pills (busy/ok/warn/del) — ONE uniform shape; colour per state. Defined after .tg so the
    pill shape wins even when written as "tg tg-busy" on cards (the type tags .tg-wg/.tg-awg stay small). */
 /* status pills — ONE shape/size/font for all; only colour differs (busy=cyan, ok=green, warn=yellow, del=red, off=grey) */

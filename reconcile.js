@@ -61,13 +61,13 @@ function reconcile(roster, stats, now, cfg) {
 
   // turn-proxy connect-IPs per node: a turn-proxied client reaches wg THROUGH the local
   // proxy, so wg sees its endpoint as the proxy's connect IP (typically 127.0.0.1).
-  const turnIp = {};
+  const turnIp = {};   // node → { connectIP: service } so a turn-proxied peer maps to the SPECIFIC proxy
   for (const node of Object.keys(stats)) {
-    const set = new Set();
+    const map = {};
     for (const tp of ((stats[node] && stats[node].turn_proxies) || [])) {
-      const ip = ipOf(tp && tp.connect); if (ip) set.add(ip);
+      const ip = ipOf(tp && tp.connect); if (ip) map[ip] = (tp && tp.service) || "turn";
     }
-    turnIp[node] = set;
+    turnIp[node] = map;
   }
 
   const managed = {};
@@ -86,10 +86,12 @@ function reconcile(roster, stats, now, cfg) {
       if (nodeStatus[t.node] !== "live") st = "unknown";
       else if (obs) st = obs.online ? "online" : "ready";
       else st = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
-      const via = (obs && obs.endpoint)
-        ? ((turnIp[t.node] && turnIp[t.node].has(ipOf(obs.endpoint))) ? "turn" : "direct") : null;
+      const epIp = (obs && obs.endpoint) ? ipOf(obs.endpoint) : "";
+      const tmap = turnIp[t.node] || {};
+      const via = epIp ? ((epIp in tmap) ? "turn" : "direct") : null;
       return { node: t.node, iface: t.iface, ip: t.ip, type: t.type,
                status: st, online: !!(obs && obs.online), observed: obs, via: via,
+               viaTurn: via === "turn" ? tmap[epIp] : null,   // the SPECIFIC turn-proxy service the peer came in through
                down: ifDown[t.node + "|" + t.iface] || null };
     });
 
