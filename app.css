@@ -624,12 +624,21 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nodegrid{display:flex;flex-direction:column;gap:15px}
 /* grid: title row spans the full width (so CPU load can reach over the controls);
    data row (col 1) and controls (col 2) share the second row, so they line up. */
-.ncard{display:grid;grid-template-columns:1fr;align-items:center;column-gap:12px;cursor:pointer;
+/* 4-column grid: each line's items share columns so they align vertically — name/peers, mesh/interfaces,
+   cpu/throughput, gear/trash. Turn-proxies span the middle columns on a third row. */
+.ncard{display:grid;grid-template-columns:32px minmax(0,1.5fr) minmax(0,1fr) auto auto;align-items:center;column-gap:14px;row-gap:15px;cursor:pointer;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:background .15s;padding:16px}
 .ncard.removing{opacity:.82;border-style:dashed}
 .ncard:hover{background:var(--surface-2)}
-.ncard .ntop{grid-column:1 / -1;display:flex;align-items:center;gap:9px;margin-bottom:18px;cursor:pointer}
-.ncard .nmeta{grid-column:1}
+.nc-gutter{grid-column:1;display:flex;align-items:center;gap:6px}
+.nc-name{grid-column:2;display:flex;align-items:center;gap:9px;min-width:0}
+.nc-mesh{grid-column:3;min-width:0}
+.nc-cpu{grid-column:4;justify-self:end}
+.nc-peers{grid-column:2}
+.nc-ifaces{grid-column:3;min-width:0}
+.nc-thru{grid-column:4;justify-self:end}
+.nc-ctl{grid-column:5;flex:none}
+.nc-turn{grid-column:3 / 5;min-width:0}
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
 /* CPU load lives at the right of the title row, reaching over the controls */
@@ -687,7 +696,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-thru .thru{display:flex;gap:16px}
 .nm-thru .down,.nm-thru .up{min-width:74px;white-space:nowrap;text-align:right}
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
-.nm-cpu .hm-bar{width:245px;flex:none}
+.nm-cpu .hm-bar{width:150px;flex:none}
 /* reserve room for up to 333.33 and right-align, so the bar->value gap shrinks as the number grows */
 .nm-cpu .nm-v{flex:none;min-width:50px;text-align:right}
 /* controls: pinned to the right of the turn-proxies row */
@@ -883,6 +892,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .cl-meta{font-size:11.5px}
 .tf-swatch{width:10px;height:10px;border-radius:50%;background:var(--c,var(--brand));flex:none;box-shadow:0 0 0 1px color-mix(in srgb,var(--c,var(--brand)) 40%,transparent)}
 .tf-name{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:12.5px}
+.tf-ver{font-family:var(--mono);font-size:11px;color:var(--ready);background:color-mix(in srgb,var(--ready) 12%,transparent);padding:1px 7px;border-radius:99px;white-space:nowrap}
+.tf-ver.none{color:var(--faint);background:none;font-style:italic}
 .warntext{color:var(--partial);font-weight:600}
 /* per-fork colour picker (native input, themed to a small rounded swatch) */
 .tf-color{width:24px;height:24px;flex:none;padding:0;border:1px solid var(--line-solid);border-radius:6px;background:none;cursor:pointer}

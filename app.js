@@ -3507,8 +3507,9 @@ function NodeCard({ n, reorder }) {
   const procEff = (n.proc_status && !inProc(n.proc_status)) ? n.proc_status : (nUpdating ? "updating" : n.proc_status);
   const nav = () => go("#/node/" + encodeURIComponent(n.id));
   return html`<div class=${"ncard clk" + (removing ? " removing" : "") + (it ? it.cls : "")} onClick=${nav} data-rid=${it ? it.rid : null}>
-    <div class="ntop">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(n.id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
-      ${!n.uninstalled && (n.outdated || (n.local && Store.panelOutdated)) && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
+    <div class="nc-gutter">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(n.id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
+      ${!n.uninstalled && (n.outdated || (n.local && Store.panelOutdated)) && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}</div>
+    <div class="nc-name">
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
       ${n.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> uninstalled</span>`
@@ -3517,31 +3518,22 @@ function NodeCard({ n, reorder }) {
         : html`<span class="nstat enroll"><${Ic} i="clock"/> awaiting enroll</span>`}${procEff ? procTag(procEff, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, n.proc_err, st !== "online" && st !== "offline") : null}
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
       ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
-      <span class="grow"></span>
-      ${(n.mesh_peers || []).length ? html`<span class="nm-meshitem"><${MeshStat} nodeId=${n.id} mode="both"/></span>` : null}
-      <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style=${"color:" + htcolor(cpct)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
-      <button class="iconbtn nctl" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${e => { e.stopPropagation(); openNodeEdit(n); }}><${Ic} i="gear"/></button>
     </div>
-    <div class="nmeta">
-      <span class="nm-item nm-peersitem">${here.length
-        ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
-            trigger=${() => html`<span class="nm-l">Peers</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
-        : html`<span class="nm-l">Peers</span><span class="nm-v nm-peers faint">none</span>`}</span>
-      <div class="nm-rows">
-        <div class="nm-row">
-          <span class="nm-l">Interfaces</span>
-          <span class="tags">${ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span>
-          <span class="nm-thru"><span class="nm-l">Throughput</span>${st === "online"
-            ? html`<span class="nm-v thru"><span class="down">↓ ${rate(dlul(n.rx_speed, n.tx_speed)[0])}</span><span class="up">↑ ${rate(dlul(n.rx_speed, n.tx_speed)[1])}</span></span>`
-            : html`<span class="nm-v faint">—</span>`}</span>
-          <button class="iconbtn nctl danger" title=${removing ? "Force remove" : "Remove node"} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>
-        </div>
-        ${turnEnabled() ? html`<div class="nm-row">
-          <span class="nm-l">Turn-proxies</span>
-          <span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span>
-        </div>` : null}
-      </div>
-    </div>
+    <div class="nc-mesh nm-item">${(n.mesh_peers || []).length ? html`<${MeshStat} nodeId=${n.id} mode="both"/>` : null}</div>
+    <div class="nc-cpu nm-item"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style=${"color:" + htcolor(cpct)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
+    <button class="iconbtn nc-ctl" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${e => { e.stopPropagation(); openNodeEdit(n); }}><${Ic} i="gear"/></button>
+
+    <span class="nc-peers nm-item">${here.length
+      ? html`<${OnlinePeersTag} nodeId=${n.id} orphans=${orphCount(n.id, null)} cls="nm-peerpop"
+          trigger=${() => html`<span class="nm-l">Peers</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
+      : html`<span class="nm-l">Peers</span><span class="nm-v nm-peers faint">none</span>`}</span>
+    <div class="nc-ifaces nm-item"><span class="nm-l">Interfaces</span><span class="tags">${ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
+    <span class="nc-thru nm-thru">${st === "online"
+      ? html`<span class="nm-v thru"><span class="down">↓ ${rate(dlul(n.rx_speed, n.tx_speed)[0])}</span><span class="up">↑ ${rate(dlul(n.rx_speed, n.tx_speed)[1])}</span></span>`
+      : html`<span class="nm-v faint">—</span>`}</span>
+    <button class="iconbtn nc-ctl danger" title=${removing ? "Force remove" : "Remove node"} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>
+
+    ${turnEnabled() ? html`<div class="nc-turn nm-item"><span class="nm-l">Turn-proxies</span><span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span></div>` : null}
   </div>`;
 }
 
@@ -3621,6 +3613,8 @@ function PanelSettingsScreen() {
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "anton48"]));   // forks offered in the install picker
   const [forkColors, setForkColors] = useState({ ...Object.fromEntries(TURN_FORKS.map(f => [f.id, f.color])), ...(ps.turn_fork_colors || {}) });   // per-fork colour (override or default)
   const forkColorOverrides = () => Object.fromEntries(TURN_FORKS.filter(f => (forkColors[f.id] || "").toLowerCase() !== f.color.toLowerCase()).map(f => [f.id, forkColors[f.id]]));
+  // deployed version(s) of a fork across the fleet (from snapshots) — "" if it's never been installed
+  const forkVersions = fid => { const v = new Set(); for (const snap of Object.values(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version); return [...v]; };
   // Security (panel login) — folded into the unified Save: credentials update on Save (if changed), and a
   // validation error blocks Save. Username is loaded from the server once on mount.
   const [secUser, setSecUser] = useState(""); const [secOrigUser, setSecOrigUser] = useState("");
@@ -3817,7 +3811,9 @@ function PanelSettingsScreen() {
             <label class="chk" title=${"Offer " + f.label + " in the install picker"}><input type="checkbox" checked=${turnForks.has(f.id)} onChange=${e => setTurnForks(s => { const n = new Set(s); e.target.checked ? n.add(f.id) : n.delete(f.id); return n; })}/></label>
             <input type="color" class="tf-color" value=${forkColors[f.id] || f.color} title=${"Colour for " + f.label} onInput=${e => setForkColors(c => ({ ...c, [f.id]: e.target.value }))}/>
             <span class="tf-name">${f.label}</span>
-            <span class="grow"></span><span class="faint cl-meta">${f.wrap ? "obfuscation" : "no obfuscation"} · ${f.owner}</span>
+            <span class="grow"></span>
+            ${(() => { const v = forkVersions(f.id); return v.length ? html`<span class="tf-ver" title="Version(s) deployed across the fleet">${v.join(", ")}</span>` : html`<span class="tf-ver none">not yet used</span>`; })()}
+            <span class="faint cl-meta">${f.wrap ? "obfuscation" : "no obfuscation"} · ${f.owner}</span>
           </div>`)}</div>
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
