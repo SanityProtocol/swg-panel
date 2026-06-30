@@ -910,7 +910,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .mh-grp{display:inline-flex;align-items:center;gap:4px}      /* ↓ + number as one tight unit */
 .mh-grp + .mh-grp{margin-left:8px}                          /* green↔blue = 8 (tag gap) + 8 = 16px, like throughput's ↓↔↑ */
 .mh-num{font-family:var(--mono);font-weight:400;font-size:12px}          /* numbers NOT bold */
-.mh-num-hdr{font-size:14px}                                 /* header number: header size, still not bold */
+.mh-num-hdr{font-family:inherit;font-size:14px;letter-spacing:-.01em}   /* header number: SAME sans font/size as the label text (not the mono used in the nodes-list tag) */
 /* numbers: all-up → arrow colour (inbound green · outbound blue); partial → orange; none → red */
 .mh-num.mhn-down{color:var(--online)} .mh-num.mhn-up{color:var(--ready)} .mh-num.mhn-warn{color:#F0913C} .mh-num.mhn-bad{color:var(--dangling)}
 .mh-ar{font-family:var(--mono);line-height:1;font-size:12.5px}   /* identical to the throughput arrows: same MONO glyph, size + weight */
