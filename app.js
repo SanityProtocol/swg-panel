@@ -465,6 +465,9 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
+  // in-flight label: a fresh install/reinstall reads "creating"; any other queued action (manage/rotate/…) or an
+  // Update-click reinstall reads its action word (manage → "applying") — even while the node is actively installing.
+  const pendLabel = updating ? "applying" : (pend && pend !== "install" && pend !== "reinstall") ? (TURN_PEND[pend] || "creating") : "creating";
   const dim = converting || nodeStale(node) || (!justRestarted && (installing || queued || pend || failed || down || stopped || err));   // dim through the WHOLE 'creating' phase (installing/queued/assigned) like the pending card + attention states (failed/down/stopped/deleting) — only a settled/ready card is full-bright
   const _busy = !!(queued || installing || (pend && pend !== "delete"));   // any in-flight create / install / op
   const _bad = !!(failed || down || converting || stopped);
@@ -481,9 +484,9 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
       : pend === "delete"
       ? html`<${StatusTag} cls="tg-busy del" label="deleting…" msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
-      : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label=${updating ? "applying" : "creating"} msg=${prog} title="The node is setting it up right now"/>`
+      : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label=${pendLabel} msg=${prog} title="The node is setting it up right now"/>`
       : turnReadyNow ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>`
-      : (pend || queued) ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${(pend && pend !== "install" && pend !== "reinstall") ? (TURN_PEND[pend] || "creating") : "creating"} msg=${err} title=${pend ? "The node is setting it up" : "Queued — the node creates these one at a time"}/>${pend ? html`<button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>` : null}`
+      : (pend || queued) ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${pend ? pendLabel : "creating"} msg=${err} title=${pend ? "The node is setting it up" : "Queued — the node creates these one at a time"}/>${pend ? html`<button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>` : null}`
       : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="install failed" msg=${err || "the install failed on the node"} title="Command failed on the node"/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
       : stopped ? html`<span class="tg-off" title="Stopped from the panel — open to Start it"><${Ic} i="stop"/>stopped</span>`
@@ -2199,16 +2202,18 @@ function TurnManageSheet({ node, tp }) {
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forward-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
     const newListen = lhost + ":" + lport.trim();
-    // title-only change → save it WITHOUT restarting the proxy (a cosmetic label shouldn't bounce traffic)
+    // title-only change → OPTIMISTIC: a cosmetic panel-side label, so close immediately + save in the background
+    // (no status, no node round-trip, the proxy keeps running). Other field changes go the proper pending route.
     const titleOnly = newListen === (tp.listen || "") && connect === (tp.connect || "") && params.trim() === origParams.trim();
-    setBusy(true); setMsg({ k: "work", t: "saving…" });
     if (titleOnly) {
-      if (title.trim() === (tp.title || "")) { closeModal(); return toast("No changes.", "ok"); }
+      closeModal();
+      if (title.trim() === (tp.title || "")) return toast("No changes.", "ok");
       const r = await api.turnTitle({ node, service: svc, title: title.trim() });
-      if (!r.ok) return fail(r.error || "Request failed.");
-      closeModal(); await Store.poll();
-      return toast("Title saved — the proxy keeps running.", "ok");
+      if (r.ok) { await Store.poll(); toast("Title saved — the proxy keeps running.", "ok"); }
+      else toast(r.error || "Failed to save the title.", "err");
+      return;
     }
+    setBusy(true); setMsg({ k: "work", t: "saving…" });
     const body = { node, service: svc, listen: newListen, connect, params: params.trim(), title: title.trim() };
     const r = await api.turnManage(body);
     if (!r.ok) return fail(r.error || "Request failed.");
