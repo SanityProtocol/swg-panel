@@ -287,10 +287,8 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
    hit-area escapes .ifcard-top's overflow clip and is hoverable on every side), hidden until card hover;
    hovering the area highlights only the icon (no area background); click opens Edit (not the detail page).
    The header reserves a right gutter so badges never sit under it. */
-.ifcard:not(.tp){position:relative}
-/* the edit button OVERLAYS the header's top-right (over the badges) on hover — no reserved gutter, so the
-   badges/status stay right-aligned. A frosted semi-transparent backdrop keeps the pencil readable on top. */
-.ifc-edit{position:absolute;top:8px;right:8px;z-index:2;background:color-mix(in srgb,var(--surface-2) 15%,transparent);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);border:0;border-radius:9px;cursor:pointer;padding:9px;display:inline-flex;align-items:center;opacity:0;transition:opacity .12s}
+/* the edit button sits inline right after the interface name, revealed on card hover */
+.ifc-edit{flex:none;background:none;border:0;cursor:pointer;padding:4px;margin-left:3px;display:inline-flex;align-items:center;opacity:0;transition:opacity .12s}
 .ifcard:hover .ifc-edit{opacity:1}
 .ifc-edit .ic{display:flex;color:var(--faint);transition:color .12s}
 .ifc-edit .ic svg{width:14px;height:14px}
@@ -798,6 +796,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .egb-smart{color:var(--smart)}            /* smart routing — rose/pink */
 .carry-tags{display:inline-flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}   /* Carrying: forwarded interface tags, right-aligned */
 /* connection-modal Forwarding / smart-cascade list */
+.fwd-head{margin-bottom:6px}
 .fwd-list{display:flex;flex-direction:column;gap:6px}
 .fwd-row{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--dim);flex-wrap:wrap}
 .fwd-arr{color:var(--faint)}
