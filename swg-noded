@@ -911,6 +911,21 @@ def _nft_load_set(setname, cidrs):
     return rc
 
 
+def _smart_demote_geo(cat, res):
+    """A category that's now domain-filled but was geoip-loaded before (e.g. after an upgrade that moved it to
+    the domain tier): flush its set ONCE and drop the geo cache, so only dnsmasq's resolved IPs remain — else a
+    provider's whole IP range would re-merge the split apart. Keyed on the .loaded marker, so it runs a single
+    time per transition and never wipes dnsmasq's accumulated fill afterwards."""
+    lp = os.path.join(GEO_DIR, "." + cat + ".loaded")
+    if not os.path.exists(lp):
+        return
+    run(["nft", "flush", "set", "inet", SMART_NFT_TABLE, _smart_setname(cat)])
+    for p in (lp, os.path.join(GEO_DIR, "." + cat + ".attempt"), os.path.join(GEO_DIR, cat + ".txt")):
+        with contextlib.suppress(OSError):
+            os.unlink(p)
+    res["changed"] += 1
+
+
 def _smart_geo_refresh(categories, set_counts, res, skip=()):
     """Ensure each needed category's CIDR list is cached + fresh and loaded into its nft set. Fetches only
     when the cache is missing/stale (TTL-gated, so most syncs do nothing); reloads the set when the data
@@ -924,8 +939,11 @@ def _smart_geo_refresh(categories, set_counts, res, skip=()):
     except OSError as e:
         res["errors"].append("smart geo dir: " + str(e)); return     # can't cache → skip (sets stay inert)
     for cat in categories:
-        if cat == "all" or cat in skip:
-            continue                                           # catch-all → no set; domain cats → dnsmasq-filled
+        if cat == "all":
+            continue                                           # catch-all → no set
+        if cat in skip:                                        # domain-filled → dnsmasq owns it; clear any stale geoip once
+            _smart_demote_geo(cat, res)
+            continue
         try:                                                   # one bad category must never crash the sync loop
             sn = _smart_setname(cat)
             path = os.path.join(GEO_DIR, cat + ".txt")

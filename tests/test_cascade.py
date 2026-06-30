@@ -376,7 +376,13 @@ def test_node_geo():
     calls.clear()
     m._smart_geo_refresh(["telegram"], {"cat_telegram": 2}, res)
     assert [c for c in calls if c[:2] == ["nft", "-f"]], "changed data should reload the set"
-    print("OK node: geo fetch→set load + change/empty reload-gating")
+    # demotion: a category now in `skip` (moved to the domain tier) with a stale geoip cache → flushed once
+    open(_os.path.join(m.GEO_DIR, ".telegram.loaded"), "w").write("x")
+    calls.clear()
+    m._smart_geo_refresh(["telegram"], {"cat_telegram": 9}, res, skip={"telegram"})
+    assert any(c[:3] == ["nft", "flush", "set"] and "cat_telegram" in c for c in calls), calls
+    assert not _os.path.exists(_os.path.join(m.GEO_DIR, ".telegram.loaded")), "loaded marker dropped after demotion"
+    print("OK node: geo fetch→set load + change/empty reload-gating + domain-tier demotion")
 
 
 def test_node_domain_dns():
