@@ -3550,11 +3550,10 @@ function genAwg() {
 // labelled grid of the 12 AWG fields — read-only display (node settings) or editable (panel settings).
 function AwgGrid({ value, onChange, readOnly }) {
   const v = value || {};
-  return html`<div class="awg-grid">${AWG_KEYS.map(k => html`<div class=${"awg-cell" + (k === "I1" ? " wide" : "")}>
-    <label>${k}</label>${readOnly
-      ? html`<span class="awg-val">${v[k] != null && v[k] !== "" ? v[k] : "—"}</span>`
-      : html`<input value=${v[k] ?? ""} onInput=${e => onChange({ ...v, [k]: e.target.value })} spellcheck="false"/>`}
-  </div>`)}</div>`;
+  // J / S / H / I as columns, fields stacked — same layout as the interface AWG display
+  return html`<div class="awg-cols">${[["Jc", "Jmin", "Jmax"], ["S1", "S2", "S3", "S4"], ["H1", "H2", "H3", "H4"], ["I1"]].map(grp => html`<div class="awg-col">${grp.map(k => html`<label class="awg-f"><span>${k}</span>${readOnly
+    ? html`<span class="awg-val">${v[k] != null && v[k] !== "" ? v[k] : "—"}</span>`
+    : html`<input value=${v[k] ?? ""} onInput=${e => onChange({ ...v, [k]: e.target.value })} spellcheck="false"/>`}</label>`)}</div>`)}</div>`;
 }
 
 function PanelSettingsScreen() {
@@ -3699,7 +3698,7 @@ function PanelSettingsScreen() {
           <p class="hint" style="margin:0 0 10px">AmneziaWG obfuscation for <b>new</b> mesh links — both ends share one set. Blank = a fresh set per link; re-provision a node to adopt these.</p>
           <button type="button" class="advtoggle" onClick=${() => setShowAwg(a => !a)}><span class="advcaret">${showAwg ? "▾" : "▸"}</span> ${awgSet ? "Show AWG params" : "Set AWG params"}${awgSet ? "" : html` <span class="faint" style="font-weight:400">(auto)</span>`}</button>
           ${showAwg ? html`<div style="margin-top:8px"><${AwgGrid} value=${awg} onChange=${setAwg}/>
-            <div style="margin-top:8px;display:flex;gap:8px"><button type="button" class="btn btn-mini" onClick=${() => setAwg(genAwg())}><${Ic} i="refresh"/> Generate a set</button>${awgSet ? html`<button type="button" class="btn btn-mini" onClick=${() => setAwg({})}>Clear (auto)</button>` : null}</div></div>` : null}
+            <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => setAwg(genAwg())}><${Ic} i="refresh"/> Generate a set</button>${awgSet ? html`<button type="button" class="btn btn-mini" onClick=${() => setAwg({})}>Clear (auto)</button>` : null}</div></div>` : null}
         </div>` : null}
       </div>
     </div>
