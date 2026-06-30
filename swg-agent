@@ -371,21 +371,26 @@ def op_add_peer(cfg, req):
     if any(p["public_key"] == pub for p in peers):
         raise AgentError("peer_exists", "a peer with this public key already exists")
 
-    # IP is always explicit; validate in-subnet, not the server, not taken.
+    # IP is always explicit; validate in-subnet, not the server, not taken — EXCEPT a default-route peer
+    # (0.0.0.0/0 or ::/0). That's a mesh/cascade peer carrying arbitrary destinations into the link: it dials
+    # out (endpoint) and its AllowedIPs is intentionally the whole internet, not an address in the link /31.
+    # (op_set_peer_allowed flips an existing peer to /0; this lets the very FIRST add already carry /0 — needed
+    # when the iface is rebuilt, e.g. after a reboot, while the cascade is already active.)
     if "/" not in allowed:
         raise AgentError("bad_request", "allowed_ips must be CIDR, e.g. 10.0.0.5/32")
     ip = allowed.split("/")[0]
     net = iface_net(info)
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        raise AgentError("bad_request", f"invalid ip {ip}")
-    if addr not in net.network:
-        raise AgentError("bad_request", f"{ip} not in subnet {net.network}")
-    if ip == str(net.ip):
-        raise AgentError("ip_in_use", f"{ip} is the server address")
-    if ip in used_ips(peers):
-        raise AgentError("ip_in_use", f"{ip} already assigned")
+    if allowed.strip() not in ("0.0.0.0/0", "::/0"):
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            raise AgentError("bad_request", f"invalid ip {ip}")
+        if addr not in net.network:
+            raise AgentError("bad_request", f"{ip} not in subnet {net.network}")
+        if ip == str(net.ip):
+            raise AgentError("ip_in_use", f"{ip} is the server address")
+        if ip in used_ips(peers):
+            raise AgentError("ip_in_use", f"{ip} already assigned")
 
     # PSK: default auto-generate; explicit value honored; "none"/false disables.
     if psk_req in (None, "none", False):
