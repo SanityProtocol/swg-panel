@@ -1063,7 +1063,9 @@ def _mesh_make_link(nodes, snaps, deps, a, b, mc):
     if sub is None:
         return False
     hosts = list(sub)                            # /31 → [.0, .1]
-    psk = gen_psk(); awg = link_awg_params(deps)   # panel-settings default mesh AWG, else a fresh generated set
+    # the link's obfuscation = the X-end node's per-node mesh AWG if it set one, else the panel default / a fresh set.
+    # both ends share it (the handshake requires matching params); editing a node's AWG re-provisions the links it anchors.
+    psk = gen_psk(); awg = sanitize_awg_params(nodes[x_nid].get("mesh_awg")) or link_awg_params(deps)
     for nid, peer in ((a, b), (b, a)):
         n = nodes[nid]
         nmc = node_mesh_cfg(deps, n)             # per-node prefix / port base
@@ -1758,7 +1760,8 @@ def api(method, path, qs, body, deps):
             _mpfx = node_mesh_cfg(deps, c).get("iface_prefix") or "swg_"
             _is_sysif = lambda ifn: bool(ifn) and (ifn in _link_ifs or str(ifn).startswith(_mpfx) or str(ifn).startswith("swg_"))
             out.append({"id": nid, "name": c.get("name", nid), "color": c.get("color"),
-                        "transport": "https", "mesh_awg": _mawg, "mesh_peers": _mesh_peers,
+                        "transport": "https", "mesh_awg": _mawg, "mesh_awg_set": c.get("mesh_awg") or {},   # actual (live) vs the per-node override the UI edits
+                        "mesh_peers": _mesh_peers,
                         "iface_order": c.get("iface_order") or [],   # operator drag-order overlays (POST /api/order)
                         "turn_order": c.get("turn_order") or [],
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
@@ -2427,9 +2430,12 @@ def api(method, path, qs, body, deps):
             nodes[nid]["mesh_subnet"] = ms
         if "mesh_prefix" in body:
             nodes[nid]["mesh_prefix"] = re.sub(r"[^a-z0-9_]", "", (body.get("mesh_prefix") or "").lower())[:6]
+        _awg_before = sanitize_awg_params(nodes[nid].get("mesh_awg"))
+        if "mesh_awg" in body:                  # per-node mesh obfuscation; links this node anchors adopt it (both ends match)
+            nodes[nid]["mesh_awg"] = sanitize_awg_params(body.get("mesh_awg"))
         _mesh_after = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
-        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2]:
-            # subnet or PREFIX changed → the link is re-addressed / the iface renamed: must re-provision (rebuild)
+        if _mesh_after[0] != _mesh_before[0] or _mesh_after[2] != _mesh_before[2] or sanitize_awg_params(nodes[nid].get("mesh_awg")) != _awg_before:
+            # subnet / PREFIX / AWG changed → the link is re-addressed / renamed / re-obfuscated: must re-provision (rebuild)
             mesh_reprovision_node(nodes, nid)
             reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # rebuild its links with the new config
             ev_append(roster_path, "node", nid, "Re-provisioned mesh links", nodes[nid].get("name", nid))

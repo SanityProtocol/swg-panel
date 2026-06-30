@@ -1741,7 +1741,9 @@ const autoGrow = el => { if (!el) return; el.style.height = "auto"; el.style.hei
 function RoutingRules({ node, rules, onChange }) {
   const others = (Store.nodes || []).filter(n => n.id !== node);
   const _ps = Store.panelSettings || {};
-  const hiddenCats = new Set(_ps.hidden_categories || []);
+  const _nrec = (Store.nodes || []).find(n => n.id === node);   // built-in categories enabled for THIS node (null/[] = all)
+  const _ec = _nrec && _nrec.enabled_categories && _nrec.enabled_categories.length ? new Set(_nrec.enabled_categories) : null;
+  const hiddenCats = { has: id => _ec ? !_ec.has(id) : false };   // node-scoped: hidden = not in the node's enabled set
   const customLists = (_ps.custom_lists || []).filter(l => l.enabled !== false);   // only enabled lists in the dropdown
   const listTitle = Object.fromEntries((_ps.custom_lists || []).map(l => [l.id, l.title]));
   const catLabel = c => c === "custom" ? "Custom IPs / domains" : (SMART_CAT_LABEL[c] || listTitle[c] || c);
@@ -3592,9 +3594,12 @@ function PanelSettingsScreen() {
   const [msg, setMsg] = useState(null);
   // per-node pending edits (mode / mesh / egress) — lifted here so switching node or section keeps unsaved
   // changes; the single Save commits the global settings AND one nodeUpdate per changed node.
+  const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
   const nFields = n => ({ routing_mode: n.routing_mode || "kernel", endpoint_host: n.endpoint_host || "",
     mesh_subnet: n.mesh_subnet || "", mesh_port: n.mesh_port ? String(n.mesh_port) : "", mesh_prefix: n.mesh_prefix || "",
-    default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "" });
+    default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "",
+    enabled_categories: (n.enabled_categories && n.enabled_categories.length) ? [...n.enabled_categories] : null,   // null = all built-ins enabled for this node
+    mesh_awg: (n.mesh_awg_set && Object.keys(n.mesh_awg_set).length) ? { ...n.mesh_awg_set } : {} });   // per-node mesh obfuscation override ({} = inherit/auto)
   const [nodeEdits, setNodeEdits] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const setNV = (nid, patch) => setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
@@ -3619,12 +3624,13 @@ function PanelSettingsScreen() {
     let nerr = null;
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {};
-      if (!Object.keys(nFields(n)).some(k => e[k] !== o[k])) continue;
+      if (!Object.keys(nFields(n)).some(k => !eq(e[k], o[k]))) continue;
       const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, endpoint_host: (e.endpoint_host || "").trim(),
         mesh_subnet: (e.mesh_subnet || "").trim() === dSub ? "" : (e.mesh_subnet || "").trim(),
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
         mesh_prefix: (e.mesh_prefix || "").trim() === dPfx ? "" : (e.mesh_prefix || "").trim(),
-        default_egress_ip: e.default_egress_ip || "", panel_ip: e.panel_ip || "" });
+        default_egress_ip: e.default_egress_ip || "", panel_ip: e.panel_ip || "",
+        enabled_categories: e.enabled_categories || [], mesh_awg: e.mesh_awg || {} });
       if (!nr.ok) nerr = nr.error || ("Couldn't save " + n.name);
     }
     if (nerr) return setMsg({ ok: false, t: nerr });
@@ -3634,7 +3640,7 @@ function PanelSettingsScreen() {
     setNodeEdits(fresh); setOrig(fresh);
   };
   // Save click → confirm modal listing the modified values + a reprovisioning warning, then commit.
-  const REPROV_WARN = "Heads up: changing a node's mesh subnet or interface prefix re-provisions its mesh links — it briefly drops off the mesh while every peer pulls the new config and reconnects.";
+  const REPROV_WARN = "Heads up: changing a node's mesh subnet, interface prefix, or AWG params re-provisions its mesh links — it briefly drops off the mesh while every peer pulls the new config and reconnects.";
   const diffList = () => {
     const out = [];
     if (glDirty("routing")) out.push("Routing lists — built-in / custom");
@@ -3646,18 +3652,20 @@ function PanelSettingsScreen() {
     if (glDirty("mesh")) out.push("System mesh defaults");
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
-      if (e.routing_mode !== o.routing_mode) fl.push("mode → " + e.routing_mode);
-      if (e.endpoint_host !== o.endpoint_host) fl.push("ingress IP → " + (e.endpoint_host || "auto"));
-      if (e.mesh_subnet !== o.mesh_subnet) fl.push("mesh subnet → " + (e.mesh_subnet || "default"));
-      if (e.mesh_port !== o.mesh_port) fl.push("mesh port → " + (e.mesh_port || "default"));
-      if (e.mesh_prefix !== o.mesh_prefix) fl.push("prefix → " + (e.mesh_prefix || "default"));
-      if (e.default_egress_ip !== o.default_egress_ip) fl.push("egress IP → " + (e.default_egress_ip || "auto"));
-      if (e.panel_ip !== o.panel_ip) fl.push("panel IP → " + (e.panel_ip || "auto"));
+      if (!eq(e.routing_mode, o.routing_mode)) fl.push("mode → " + e.routing_mode);
+      if (!eq(e.endpoint_host, o.endpoint_host)) fl.push("ingress IP → " + (e.endpoint_host || "auto"));
+      if (!eq(e.mesh_subnet, o.mesh_subnet)) fl.push("mesh subnet → " + (e.mesh_subnet || "default"));
+      if (!eq(e.mesh_port, o.mesh_port)) fl.push("mesh port → " + (e.mesh_port || "default"));
+      if (!eq(e.mesh_prefix, o.mesh_prefix)) fl.push("prefix → " + (e.mesh_prefix || "default"));
+      if (!eq(e.default_egress_ip, o.default_egress_ip)) fl.push("egress IP → " + (e.default_egress_ip || "auto"));
+      if (!eq(e.panel_ip, o.panel_ip)) fl.push("panel IP → " + (e.panel_ip || "auto"));
+      if (!eq(e.enabled_categories, o.enabled_categories)) fl.push("enabled lists");
+      if (!eq(e.mesh_awg, o.mesh_awg)) fl.push("mesh AWG params");
       if (fl.length) out.push(n.name + " — " + fl.join(", "));
     }
     return out;
   };
-  const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return (e.mesh_subnet || "") !== (o.mesh_subnet || "") || (e.mesh_prefix || "") !== (o.mesh_prefix || ""); });
+  const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return !eq(e.mesh_subnet, o.mesh_subnet) || !eq(e.mesh_prefix, o.mesh_prefix) || !eq(e.mesh_awg, o.mesh_awg); });
   const confirmSave = () => {
     const ch = diffList();
     if (!ch.length) { toast("No changes to save.", "ok"); return; }
@@ -3672,15 +3680,18 @@ function PanelSettingsScreen() {
   const SECTIONS = [["routing", "Routing lists"], ["geo", "Geo data"], ["defaults", "New-interface defaults"], ["timing", "Status timing"], ["configs", "Client configs"], ["display", "Display"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
-  // per-node context: "" = default/global (the shared library); else a node id whose mode/lists we're editing
-  const [selNode, setSelNode] = useState("");
+  // per-node context: the node whose mode/lists/mesh/egress we're editing — defaults to the first node (no "default")
+  const [selNode, setSelNode] = useState(() => ((Store.nodes || [])[0] || {}).id || "");
   const perNodeSection = section === "routing" || section === "mesh" || section === "nodesegress";
   const nodeRec = (Store.nodes || []).find(n => n.id === selNode);
   const nodeMode = nv(selNode, "routing_mode") || "kernel";
   const setMode = m => setNV(selNode, { routing_mode: m });
+  const ecOf = nid => nv(nid, "enabled_categories");               // per-node enabled built-ins (null = all)
+  const catOn = id => { const ec = ecOf(selNode); return !ec || ec.includes(id); };
+  const toggleNodeCat = (id, on) => { const all = sysCats.map(([c]) => c); let ec = ecOf(selNode); if (ec == null) ec = all.slice(); ec = on ? [...new Set([...ec, id])] : ec.filter(c => c !== id); setNV(selNode, { enabled_categories: ec.length >= all.length ? null : ec }); };
   // dirty tracking — per global section + per node-per-section, drives the rail dots and badge glow
-  const SECF = { routing: ["routing_mode"], mesh: ["endpoint_host", "mesh_subnet", "mesh_port", "mesh_prefix"], nodesegress: ["default_egress_ip", "panel_ip"] };
-  const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => (nodeEdits[nid] || {})[f] !== (orig[nid] || {})[f]);
+  const SECF = { routing: ["routing_mode", "enabled_categories"], mesh: ["endpoint_host", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg"], nodesegress: ["default_egress_ip", "panel_ip"] };
+  const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
@@ -3699,28 +3710,24 @@ function PanelSettingsScreen() {
     ["sni", "SNI router — host + IP, DoH-proof", "A lightweight on-node component reads the hostname from each TLS handshake (SNI), so hostname routing works even when clients run their own DoH. Most accurate. ECH/QUIC-hidden names fall back to IP. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
   ];
   return html`<div class="screen setscreen">
-    <div class="sethead"><b>Panel settings</b>${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">
-        <button class=${"snbadge" + (selNode ? "" : " on")} onClick=${() => setSelNode("")}>default</button>
-        ${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}
-      </div>` : null}<span class="grow"></span>${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
+    <div class="sethead"><b>Panel settings</b><span class="grow"></span>${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => history.back()}>Back</button>
       <button class="btn btn-primary" onClick=${confirmSave}>Save</button></div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
     <div class="setbody">
       <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}</button>`)}</nav>
       <div class="setpane">
-        ${section === "routing" ? (selNode ? html`<div class="card">
+        ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}</div>` : null}
+        ${section === "routing" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
           <p class="hint" style="margin:0 0 12px">How this node matches smart-routing traffic. Changing the mode reconfigures the node (installs/removes its DNS resolver or SNI router) and changes which lists its interfaces can use.</p>
           ${MODES.map(([id, lbl, exp]) => html`<label class=${"moderow" + (nodeMode === id ? " on" : "")}>
             <input type="radio" name="rmode" checked=${nodeMode === id} onChange=${() => setMode(id)}/>
             <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
-          <div class="hint" style="margin-top:14px"><b>Enabled lists for this node</b> — next step (IP / Host groups, gated by the mode).</div>
-        </div>` : html`<div class="card">
-          <div class="seclabel" style="margin-top:0">Built-in lists</div>
-          <p class="hint" style="margin:0 0 12px">Tick the categories you want available in an interface's routing rules; unticked ones are hidden from the dropdown (existing rules keep working). "All traffic (catch-all)" and "Custom IPs / domains" are always available.</p>
-          <div class="catgrid">${sysCats.map(([id, lbl]) => html`<label class="chk"><input type="checkbox" checked=${!hidden.has(id)} onChange=${e => toggleCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>
-          <div class="seclabel">Custom lists</div>
+          <div class="seclabel">Built-in lists</div>
+          <p class="hint" style="margin:0 0 12px">Categories available in <b>${nodeRec ? nodeRec.name : "this node"}</b>'s interface routing dropdowns; unticked ones are hidden (existing rules keep working). "All traffic" and "Custom IPs / domains" are always available.</p>
+          <div class="catgrid">${sysCats.map(([id, lbl]) => html`<label class="chk"><input type="checkbox" checked=${catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>
+          <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— shared across all nodes</span></div>
           <p class="hint" style="margin:0 0 10px">Your own reusable IP/domain lists. Enabled ones appear in the routing dropdown; a rule that uses a list updates automatically when you edit it.</p>
           <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row" key=${l._rid}>
             <label class="chk" title="Show in the routing dropdown"><input type="checkbox" checked=${l.enabled !== false} onChange=${e => setList(l._rid, { enabled: e.target.checked })}/></label>
@@ -3729,7 +3736,7 @@ function PanelSettingsScreen() {
             <button class="xbtn" title="Delete list" onClick=${() => setLists(ls => ls.filter(x => x._rid !== l._rid))}><${Ic} i="x"/></button>
           </div>`) : html`<div class="hint">No custom lists yet.</div>`}</div>
           <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
-        </div>`) : null}
+        </div>` : null}
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>
           <p class="hint" style="margin:0 0 12px">Country / provider IP ranges (for the geoip routing categories) are public lists each node fetches over HTTPS: <b>Loyalsoldier/geoip</b> (countries + most providers) and <b>ipverse/asn-ip</b> (ASN-based, e.g. Yandex / VK). Domain-tier categories don't use these — the node's dnsmasq fills them live as clients resolve.</p>
@@ -3769,28 +3776,16 @@ function PanelSettingsScreen() {
             </select>
             <div class="hint">Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.</div></div>
         </div>` : null}
-        ${section === "mesh" ? (selNode ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — mesh overrides</div>
-          <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
-        </div>` : html`<div class="card">
-          <div class="seclabel" style="margin-top:0">System mesh (defaults)</div>
-          <p class="hint" style="margin:0 0 12px">Ranges the panel-managed inter-node mesh owns — user interfaces and turn-proxies can't use these. These are the defaults; pick a node above to override them per node. Changing them affects <b>new</b> links only; existing links keep their addresses.</p>
-          <div class="row2"><div class="field"><label>Mesh subnet</label><input value=${rsvSubnet} onInput=${e => setRsvSubnet(e.target.value)} placeholder="10.255.0.0/16"/></div>
-            <div class="field"><label>Mesh port (base)</label><input value=${rsvPort} onInput=${e => setRsvPort(e.target.value)} placeholder="9999"/></div></div>
-          <div class="field"><label>Interface name prefix</label><input value=${rsvPrefix} onInput=${e => setRsvPrefix(e.target.value)} placeholder="swg_"/><div class="hint">Mesh link interfaces are named <span class="mono">${(rsvPrefix || "swg_")}&lt;hex&gt;</span>.</div></div>
-          <div class="seclabel">Default mesh AWG params</div>
-          <p class="hint" style="margin:0 0 10px">AmneziaWG obfuscation for <b>new</b> mesh links — both ends share one set. Blank = a fresh set per link; re-provision a node to adopt these.</p>
-          <button type="button" class="advtoggle" onClick=${() => setShowAwg(a => !a)}><span class="advcaret">${showAwg ? "▾" : "▸"}</span> ${awgSet ? "Show AWG params" : "Set AWG params"}${awgSet ? "" : html` <span class="faint" style="font-weight:400">(auto)</span>`}</button>
-          ${showAwg ? html`<div style="margin-top:8px"><${AwgGrid} value=${awg} onChange=${setAwg}/>
-            <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => setAwg(genAwg())}><${Ic} i="refresh"/> Generate a set</button>${awgSet ? html`<button type="button" class="btn btn-mini" onClick=${() => setAwg({})}>Clear (auto)</button>` : null}</div></div>` : null}
-        </div>`) : null}
-        ${section === "nodesegress" ? (selNode ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — egress</div>
-          <${NodeEgressForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>
-        </div>` : html`<div class="card">
-          <div class="seclabel" style="margin-top:0">Nodes egress</div>
-          <p class="hint">Each node chooses which of its IPs to use for direct internet egress and for reaching the panel. Pick a node above to configure it.</p>
-        </div>`) : null}
+        ${section === "mesh" ? html`<div class="card">
+          ${nodeRec ? html`<div class="seclabel" style="margin-top:0">${nodeRec.name} — mesh</div>
+          <${NodeMeshForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>`
+            : html`<p class="hint" style="margin:0">No nodes yet — enroll a node to configure its mesh.</p>`}
+        </div>` : null}
+        ${section === "nodesegress" ? html`<div class="card">
+          ${nodeRec ? html`<div class="seclabel" style="margin-top:0">${nodeRec.name} — egress</div>
+          <${NodeEgressForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>`
+            : html`<p class="hint" style="margin:0">No nodes yet — enroll a node to configure its egress.</p>`}
+        </div>` : null}
       </div>
     </div>
   </div>`;
@@ -3815,13 +3810,21 @@ function NodeMeshForm({ node, vals, set }) {
   const dSub = rsv.mesh_subnet || "10.255.0.0/16", dPort = String(rsv.mesh_port_base || 9999), dPfx = rsv.iface_prefix || "swg_";
   const v = vals || {};
   return html`<div>
-    <p class="hint" style="margin:0 0 12px">Overrides for <b>${node.name}</b> — blank inherits the default. Changing the subnet or prefix re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config).</p>
+    <p class="hint" style="margin:0 0 12px">Overrides for <b>${node.name}</b> — blank inherits the default. Changing the subnet, prefix, or AWG re-provisions this node's links on Save (it briefly drops off the mesh while peers reconnect with the new config).</p>
     <div class="field"><label>Mesh Ingress IP <span class="faint" style="text-transform:none;letter-spacing:0">— the address peers dial to reach this node</span></label>
       <${NodeIpPick} ips=${node.ips || []} value=${v.endpoint_host || ""} onChange=${ip => set({ endpoint_host: ip })} auto="Auto (public IP)"/></div>
     <div class="row2"><div class="field"><label>Mesh subnet</label><input value=${v.mesh_subnet || ""} onInput=${e => set({ mesh_subnet: e.target.value })} placeholder=${dSub}/></div>
       <div class="field"><label>Mesh port</label><input value=${v.mesh_port || ""} onInput=${e => set({ mesh_port: e.target.value })} placeholder=${dPort}/></div></div>
     <div class="field"><label>Interface name prefix</label><input value=${v.mesh_prefix || ""} onInput=${e => set({ mesh_prefix: e.target.value })} placeholder=${dPfx}/></div>
-    ${(node.mesh_awg && Object.keys(node.mesh_awg).length) ? html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> This node's mesh AWG params</button><div style="display:none;margin-top:8px"><${AwgGrid} value=${node.mesh_awg} readOnly=${true}/><div class="hint" style="margin-top:6px">Read-only — set the default in System mesh (default), then re-provision to adopt it.</div></div></div>` : null}
+    ${(() => {
+      const isSet = AWG_KEYS.some(k => String((v.mesh_awg || {})[k] ?? "").trim() !== "");
+      return html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> This node's mesh AWG params${isSet ? "" : html` <span class="faint" style="font-weight:400">(auto)</span>`}</button>
+        <div style="display:none;margin-top:8px">
+          <${AwgGrid} value=${v.mesh_awg || {}} onChange=${a => set({ mesh_awg: a })}/>
+          <div class="hint" style="margin:8px 0 0">Obfuscation for the mesh links that terminate on <b>${node.name}</b> — any node connecting to it adopts these and reconnects on Save. Blank = auto (a fresh set per link).</div>
+          <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: genAwg() })}><${Ic} i="refresh"/> Generate a set</button>${isSet ? html`<button type="button" class="btn btn-mini" onClick=${() => set({ mesh_awg: {} })}>Clear (auto)</button>` : null}</div>
+        </div></div>`;
+    })()}
   </div>`;
 }
 
