@@ -1738,7 +1738,8 @@ function RoutingRules({ node, rules, onChange }) {
   const hasAll = rules.some(r => r.category === "all");
   return html`<div class="field"><label>Routing rules <span class="faint" style="text-transform:none;letter-spacing:0">— first match wins${hasAll ? "" : "; everything else exits direct"}</span></label>
     <div class="rrlist" ...${rs.container()}>${rules.map(r => {
-      const dup = seen[r.category]; seen[r.category] = true;
+      const ckey = r.category === "custom" ? "custom:" + (r.domains || []).join(",") : r.category;
+      const dup = seen[ckey]; seen[ckey] = true;
       const shadowed = catchAll; if (r.category === "all") catchAll = true;
       const self = r.action === "exit" && r.node === node;
       const it = rs.item(r._rid);
@@ -1746,6 +1747,7 @@ function RoutingRules({ node, rules, onChange }) {
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
           ${SMART_CATEGORIES.map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
+          <option value="custom">Custom domains…</option>
         </select>
         <span class="rrarrow">→</span>
         <select class="selwrap" value=${destVal(r)} onChange=${e => onDest(r._rid, e.target.value)}>
@@ -1754,7 +1756,8 @@ function RoutingRules({ node, rules, onChange }) {
           ${others.length ? html`<optgroup label="Exit via node">${others.map(n => html`<option value=${"exit|" + n.id}>→ ${n.name}</option>`)}</optgroup>` : null}
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => onChange(rules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
-        ${self ? html`<span class="rrlint">can't exit via itself</span>` : shadowed ? html`<span class="rrlint">unreachable — an earlier "All traffic" rule already matches everything</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${SMART_CAT_LABEL[r.category]} rule</span>` : null}
+        ${self ? html`<span class="rrlint">can't exit via itself</span>` : shadowed ? html`<span class="rrlint">unreachable — an earlier "All traffic" rule already matches everything</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${SMART_CAT_LABEL[r.category] || "custom-domains"} rule</span>` : null}
+        ${r.category === "custom" ? html`<input class="rrdoms" placeholder="domains — e.g. youtube.com, twitch.tv  (subdomains included)" value=${(r.domains || []).join(", ")} onInput=${e => setRule(r._rid, { domains: e.target.value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean) })}/>${(r.domains || []).length ? null : html`<span class="rrlint">add at least one domain</span>`}` : null}
       </div>`;
     })}</div>
     <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span>${hasAll ? null : html`<span class="faint">Everything else → Direct (this node)</span>`}</div>
@@ -2011,7 +2014,8 @@ function ConnectionEditSheet({ node, iface }) {
     .map(k => ({ iface: k, subnet: allMeta[k].subnet, ip: allMeta[k].egress_ip }));
   // interfaces that SMART-route some destination categories out through this link (not the whole iface)
   const smartCarried = Object.keys(allMeta).filter(k => !allMeta[k].system && allMeta[k].egress_mode === "smart")
-    .map(k => ({ iface: k, cats: (allMeta[k].routing || []).filter(r => r.action === "exit" && r.node === peer).map(r => r.category) }))
+    .map(k => ({ iface: k, cats: (allMeta[k].routing || []).filter(r => r.action === "exit" && r.node === peer)
+      .map(r => r.category === "custom" ? (r.domains || []).join(", ") || "custom domains" : (SMART_CAT_LABEL[r.category] || r.category)) }))
     .filter(x => x.cats.length);
   const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`;

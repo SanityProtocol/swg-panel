@@ -266,7 +266,18 @@ def test_panel_smart():
     nodes[A]["ifaces"]["awg1"]["routing"] = [{"category": "google", "action": "exit", "node": B}, {"category": "all", "action": "exit", "node": C}]
     sm2 = {(e["category"], e["table"]) for e in m.cascade_plan(nodes, snaps)[A]["smart"]}
     assert ("google", 7000) in sm2 and ("all", 7001) in sm2, sm2
-    print("OK panel: smart routing plan + validation (incl. All-traffic catch-all)")
+    # custom-domain rule: validates + normalizes (lowercase, scheme/path strip, drop invalid + dups), compiles
+    # to a synthetic custom_<hash> set, and ships its domains for the node's dnsmasq.
+    cv, ce = m._validate_routing([{"category": "custom", "action": "exit", "node": B,
+                                   "domains": ["YouTube.com", "https://twitch.tv/x", "bad_domain", "twitch.tv"]}], nodes, A)
+    assert ce is None and cv[0]["domains"] == ["youtube.com", "twitch.tv"], cv
+    assert m._validate_routing([{"category": "custom", "action": "exit", "node": B, "domains": ["???"]}], nodes, A)[1]
+    cid = m.custom_cat_id(["twitch.tv", "youtube.com"])
+    nodes[A]["ifaces"]["awg1"]["routing"] = [{"category": "custom", "action": "exit", "node": B, "domains": ["twitch.tv", "youtube.com"]}]
+    cp = m.cascade_plan(nodes, snaps)[A]
+    assert any(e["category"] == cid for e in cp["smart"]), cp["smart"]
+    assert cp["domains"].get(cid) == ["twitch.tv", "youtube.com"], cp["domains"]
+    print("OK panel: smart routing plan + validation (incl. All-traffic catch-all + custom domains)")
 
 
 def test_node_smart():

@@ -1200,6 +1200,26 @@ DOMAIN_BUNDLES = {
     "netflix": ["netflix.com", "nflxext.com", "nflximg.net", "nflxvideo.net", "nflxso.net"],
 }
 
+# A custom rule (category "custom") carries its own domain list; it gets a stable synthetic category id so its
+# nft set is shared by identical lists. dnsmasq matches a domain AND its subdomains, so bare apex names suffice.
+_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+
+
+def _clean_domains(raw):
+    """Normalize + validate a custom rule's domains: lowercase, strip scheme/path/leading '*.', de-dupe."""
+    out = []
+    for d in (raw or []):
+        d = re.sub(r"^https?://", "", str(d).strip().lower()).split("/")[0]
+        d = d[2:] if d.startswith("*.") else d
+        if d and _DOMAIN_RE.match(d) and d not in out:
+            out.append(d)
+    return out
+
+
+def custom_cat_id(domains):
+    """Stable nft category id for a custom domain rule (same domain set → same id/set)."""
+    return "custom_" + hashlib.sha1(",".join(sorted(domains)).encode()).hexdigest()[:10]
+
 # Panel settings (persisted to panel-settings.json; surfaced + edited via the Panel settings screen).
 # store_configs=None means "use the fleet.json default"; geo_epoch is bumped by the Refresh-geo button.
 PANEL_SETTINGS_DEFAULTS = {
@@ -1235,12 +1255,19 @@ def _validate_routing(routing, nodes, nid):
         if not isinstance(r, dict):
             return None, "each routing rule must be an object"
         cat = (r.get("category") or "").strip()
-        if cat not in SMART_CATEGORIES:
+        doms = None
+        if cat == "custom":
+            doms = _clean_domains(r.get("domains"))
+            if not doms:
+                return None, "a custom rule needs at least one valid domain"
+        elif cat not in SMART_CATEGORIES:
             return None, f"unknown category '{cat}'"
         act = (r.get("action") or "exit").strip()
         if act not in ("exit", "direct", "block"):
             return None, "rule action must be exit|direct|block"
         out = {"enabled": r.get("enabled", True) is not False, "category": cat, "action": act}
+        if doms is not None:
+            out["domains"] = doms
         if act == "exit":
             en = (r.get("node") or "").strip()
             if en not in nodes or en == nid:
@@ -1277,7 +1304,7 @@ def cascade_plan(nodes, snaps):
     plans = {}
 
     def slot(nid):
-        return plans.setdefault(nid, {"forward": [], "smart": [], "exit": [], "allowed": {},
+        return plans.setdefault(nid, {"forward": [], "smart": [], "exit": [], "allowed": {}, "domains": {},
                                       "_fwd_seen": set(), "_smart_seen": set(), "_exit_seen": set(), "_targets": {}})
 
     def add_exit(P, S, dev_p, T, X, W, base_p):        # exit record + exit-side AllowedIPs (shared by forward + smart)
@@ -1322,12 +1349,18 @@ def cascade_plan(nodes, snaps):
                     P = r.get("node"); cat = r.get("category")
                     if not P or P not in nodes or not cat:
                         continue
+                    doms = None
+                    if cat == "custom":                        # custom rule → its own synthetic set id + domain list
+                        doms = _clean_domains(r.get("domains"))
+                        if not doms:
+                            continue
+                        cat = custom_cat_id(doms)
                     dev_n, dev_p, base_p = _link_devs(nodes, nid, P)
                     if not (dev_n and dev_p and base_p):
                         continue
                     if P not in targets:
                         targets.append(P)
-                    smart_items.append((nid, P, S, cat, dev_n, dev_p, base_p))
+                    smart_items.append((nid, P, S, cat, dev_n, dev_p, base_p, doms))
         if targets:
             slot(nid)["_targets"] = {p: SWG_RT_BASE + i for i, p in enumerate(sorted(targets))}
 
@@ -1344,7 +1377,7 @@ def cascade_plan(nodes, snaps):
         add_exit(P, S, dev_p, T, X, W, base_p)
 
     # 2b) Phase-3 smart entries (category-scoped; exit = MASQUERADE out P's WAN, egress_ip "")
-    for (nid, P, S, cat, dev_n, dev_p, base_p) in smart_items:
+    for (nid, P, S, cat, dev_n, dev_p, base_p, doms) in smart_items:
         T = slot(nid)["_targets"].get(P)
         if T is None or T > SWG_RT_MAX:
             continue
@@ -1353,6 +1386,8 @@ def cascade_plan(nodes, snaps):
         if key not in sn["_smart_seen"]:
             sn["_smart_seen"].add(key)
             sn["smart"].append({"subnet": S, "category": cat, "via_iface": dev_n, "table": T})
+        if doms:                                               # custom rule: ship its domains so the node's dnsmasq fills cat_<id>
+            sn["domains"][cat] = doms
         sn["allowed"][dev_n] = "0.0.0.0/0"
         add_exit(P, S, dev_p, T, "", "", base_p)
 
@@ -3419,8 +3454,9 @@ class Handler(BaseHTTPRequestHandler):
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
-                                          # domain tier: bundles for the active domain categories → node fills these sets via dnsmasq, not geo-fetch
-                                          "domains": {c: DOMAIN_BUNDLES[c] for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in DOMAIN_BUNDLES}},
+                                          # domain tier: active bundles + any custom-rule domain lists → node fills these sets via dnsmasq, not geo-fetch
+                                          "domains": {**{c: DOMAIN_BUNDLES[c] for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in DOMAIN_BUNDLES},
+                                                      **(my_plan.get("domains") or {})}},
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
                                                 "panel_ip": node.get("panel_ip") or ""},
                                 "panel": {"geo_mirror": (_ps.get("mirrors") or {}).get("geo") or "",   # Panel settings → node (Part 5)
