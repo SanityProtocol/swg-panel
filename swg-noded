@@ -1246,8 +1246,15 @@ def _ensure_smart_dnsmasq(domains, smart_e, res):
     for cat in sorted(domains):                                # nftset=/d1/d2/.../4#inet#swg_smart#cat_<c>
         doms = sorted({d for d in domains[cat] if d})          # sorted → deterministic body (no needless restart)
         sn = _smart_setname(cat)
-        for i in range(0, len(doms), 256):                     # chunk: host-tier lists run to tens of thousands
-            conf.append("nftset=/" + "/".join(doms[i:i + 256]) + "/4#inet#" + SMART_NFT_TABLE + "#" + sn)
+        suffix = "/4#inet#" + SMART_NFT_TABLE + "#" + sn        # chunk by BYTE length: dnsmasq's config parser caps
+        cur, clen = [], 0                                       # a line at ~1024 chars (MAXDNAME), and host-tier lists
+        for d in doms:                                         # (e.g. cat_ru) have long names — chunking by count
+            if cur and 8 + clen + len(suffix) + 1 + len(d) > 900:   # ("nftset=/"=8, "/"=1) overflows that and dnsmasq
+                conf.append("nftset=/" + "/".join(cur) + suffix)    # FAILS to start. Keep each line < ~900 bytes.
+                cur, clen = [], 0
+            cur.append(d); clen += len(d) + (1 if clen else 0)
+        if cur:
+            conf.append("nftset=/" + "/".join(cur) + suffix)
     body = "\n".join(conf) + "\n"
     try:
         cur = open(DNSMASQ_CONF).read()
@@ -2773,7 +2780,7 @@ def main():
                         or dl["deleted"] or dl["errors"] or tp["done"] or tp["errors"]):
                     print(f"reconcile: +{r['added']} -{r['removed']} ifaces~{ri['changed']} cascade~{cas['changed']} "
                           f"onboard+{ob['added']} create+{cr['created']} delete-{dl['deleted']} turn={tp['done']} "
-                          f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'] + tp['errors'])[:3]}", flush=True)
+                          f"errors={(r['errors'] + ri['errors'] + ob['errors'] + cr['errors'] + dl['errors'] + tp['errors'] + eg['errors'] + cas['errors'])[:3]}", flush=True)
                 interval = reply.get("interval", interval)
             elif status == 0:
                 print("sync error:", reply.get("error"), flush=True)
