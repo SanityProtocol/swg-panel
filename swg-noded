@@ -1258,6 +1258,109 @@ def _ensure_smart_dnsmasq(domains, smart_e, res):
             res["changed"] += 1
 
 
+# ── Force-DNS guard (DoH/DoT block): in forcedns mode the node's dnsmasq IS the smart-routing oracle (it fills
+#    the domain sets), so a client that resolves over ENCRYPTED DNS would bypass it. Plaintext :53 is already
+#    DNAT'd to our dnsmasq (_smart_dns_redirect); this closes the encrypted holes by DROPping, from the smart
+#    subnets, DoT/DoQ (:853) and DoH/DoH3 (:443 to known DoH-resolver IPs). Gated on the panel's block_doh
+#    (routing_mode == forcedns) — NOT applied in kernel mode (geoip needs no DNS) or sni mode (Phase C is
+#    DoH-proof without forcing DNS). Own inet table `swg_doh`, reconciled/torn-down like the smart table.
+DOH_NFT_TABLE = "swg_doh"
+DOH_IP_URL = "https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv4.txt"
+# Built-in majors so the block works before/without the upstream fetch (unioned with the fetched feed).
+DOH_IPS_BUILTIN = [
+    "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112",
+    "94.140.14.14", "94.140.15.15", "208.67.222.222", "208.67.220.220", "45.90.28.0", "45.90.30.0",
+]
+_IP4_ONLY_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def _doh_ips():
+    """DoH-resolver IPv4s to block: the dibdot/DoH-IP-blocklists feed (fetched/cached as GEO_DIR/doh4.txt,
+    TTL+retry-gated + SWG_GEO_MIRROR-aware, exactly like geoip) UNIONed with DOH_IPS_BUILTIN. Never raises."""
+    ips = set(DOH_IPS_BUILTIN)
+    try:
+        os.makedirs(GEO_DIR, exist_ok=True)
+        path = os.path.join(GEO_DIR, "doh4.txt")
+        try:
+            stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
+        except OSError:
+            stale = True
+        ap = os.path.join(GEO_DIR, ".doh4.attempt")
+        try:
+            due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
+        except OSError:
+            due = stale
+        if due:
+            with contextlib.suppress(OSError):
+                open(ap, "w").write(str(int(time.time())))
+            text = _domain_fetch_text(DOH_IP_URL)              # mirror-aware fetcher (reused from the host tier)
+            if text:
+                got = [t for t in (ln.split()[0] for ln in text.splitlines() if ln.split()) if _IP4_ONLY_RE.match(t)]
+                if got:
+                    tmp = path + ".tmp"
+                    with open(tmp, "w") as f:
+                        f.write("\n".join(got) + "\n")
+                    os.replace(tmp, path)
+        if os.path.exists(path):
+            for ln in open(path).read().splitlines():
+                t = ln.strip()
+                if _IP4_ONLY_RE.match(t):
+                    ips.add(t)
+    except Exception:
+        pass
+    return sorted(ips)
+
+
+def _ensure_doh_block(subnets, enable, res):
+    """(Re)build or tear down the `swg_doh` drop table. Signature-gated (subnets + DoH-IP set), so steady state
+    is a no-op and a list refresh re-applies. Built atomically via `nft -f`. Never raises into the sync loop."""
+    try:
+        have = run(["nft", "list", "table", "inet", DOH_NFT_TABLE])
+        if not (enable and subnets):                           # disabled / no smart subnets → drop our table
+            if have.returncode == 0:
+                run(["nft", "delete", "table", "inet", DOH_NFT_TABLE]); res["changed"] += 1
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(GEO_DIR, ".doh.sig"))
+            return
+        ips = _doh_ips()
+        want_src = sorted(subnets)
+        sig = hashlib.sha256((";".join(want_src) + "|" + ";".join(ips)).encode()).hexdigest()
+        sigf = os.path.join(GEO_DIR, ".doh.sig")
+        cur = ""
+        with contextlib.suppress(OSError):
+            cur = open(sigf).read().strip()
+        if have.returncode == 0 and cur == sig:                # already converged (table present + same wants)
+            return
+        lines = []
+        if have.returncode == 0:
+            lines.append("delete table inet " + DOH_NFT_TABLE)
+        lines.append("table inet " + DOH_NFT_TABLE + " {")
+        lines.append("  set doh4 { type ipv4_addr; flags interval; auto-merge; elements = { " + ", ".join(ips) + " } }")
+        lines.append("  chain forward { type filter hook forward priority filter; policy accept;")
+        for S in want_src:
+            lines.append("    ip saddr " + S + " udp dport 853 drop")    # DoQ
+            lines.append("    ip saddr " + S + " tcp dport 853 drop")    # DoT
+            lines.append("    ip saddr " + S + " ip daddr @doh4 udp dport 443 drop")   # DoH3 / QUIC
+            lines.append("    ip saddr " + S + " ip daddr @doh4 tcp dport 443 drop")   # DoH
+        lines += ["  }", "}"]
+        with contextlib.suppress(OSError):
+            os.makedirs(GEO_DIR, exist_ok=True)
+        path = os.path.join(GEO_DIR, ".doh.nft")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        rc = run(["nft", "-f", path]).returncode
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        if rc == 0:
+            with contextlib.suppress(OSError):
+                open(sigf, "w").write(sig)
+            res["changed"] += 1
+        else:
+            res["errors"].append("doh block nft load failed")
+    except Exception as e:
+        res["errors"].append("doh block: " + str(e)[:120])
+
+
 def reconcile_dial_src(desired_by_iface, res):
     """Pin the OUTBOUND source IP for each mesh link that set a dial_src — a /32 route to the peer endpoint
     with `src <dial_src>` in the main table (the encrypted tunnel UDP leaves the WAN, so this never touches
@@ -1394,6 +1497,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     # domain tier: run/teardown the dnsmasq that fills domain sets + redirect smart-subnet DNS to it
     if smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
         _ensure_smart_dnsmasq(domains, smart_e, res)
+    # Force-DNS guard: block encrypted DNS (DoH/DoT) so the domain fill can't be bypassed (forcedns mode only)
+    _ensure_doh_block(sorted({e["subnet"] for e in smart_e}), bool((smart or {}).get("block_doh")), res)
     return res
 
 

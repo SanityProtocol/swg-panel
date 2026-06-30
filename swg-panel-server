@@ -3540,7 +3540,10 @@ class Handler(BaseHTTPRequestHandler):
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
                                           "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in HOST_CATEGORIES},
                                                        **(my_plan.get("domains") or {})} if (node.get("routing_mode") or "kernel") != "kernel" else {}),
-                                          "cidrs": my_plan.get("cidrs") or {}},   # custom-rule raw IPs/CIDRs → always loaded (DoH-proof) regardless of mode
+                                          "cidrs": my_plan.get("cidrs") or {},   # custom-rule raw IPs/CIDRs → always loaded (DoH-proof) regardless of mode
+                                          # Force-DNS guard: the node drops smart-subnet DoH/DoT so clients can't bypass its DNS-based
+                                          # domain fill. Only in forcedns mode (kernel needs no DNS; sni is DoH-proof by design, Phase C).
+                                          "block_doh": (node.get("routing_mode") or "kernel") == "forcedns"},
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
                                                 "panel_ip": node.get("panel_ip") or ""},
                                 "panel": {"geo_mirror": (_ps.get("mirrors") or {}).get("geo") or "",   # Panel settings → node (Part 5)
