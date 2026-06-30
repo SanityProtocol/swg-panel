@@ -3603,12 +3603,12 @@ function PanelSettingsScreen() {
   const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
   const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => setLists(ls => l ? ls.map(x => x._rid === nl._rid ? nl : x) : [...ls, nl])} onClose=${closeModal}/>`);
   const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
-  const SECTIONS = [["routing", "Routing lists"], ["geo", "Geo data"], ["defaults", "New-interface defaults"], ["timing", "Status timing"], ["configs", "Client configs"], ["display", "Display"], ["mesh", "System mesh"]];
+  const SECTIONS = [["routing", "Routing lists"], ["geo", "Geo data"], ["defaults", "New-interface defaults"], ["timing", "Status timing"], ["configs", "Client configs"], ["display", "Display"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   // per-node context: "" = default/global (the shared library); else a node id whose mode/lists we're editing
   const [selNode, setSelNode] = useState("");
-  const perNodeSection = section === "routing" || section === "mesh";
+  const perNodeSection = section === "routing" || section === "mesh" || section === "nodesegress";
   const nodeRec = (Store.nodes || []).find(n => n.id === selNode);
   const nodeMode = (nodeRec && nodeRec.routing_mode) || "kernel";
   const setMode = async m => { const r = await api.nodeUpdate({ id: selNode, routing_mode: m }); if (r.ok) await Store.poll(); else toast(r.error || "Couldn't set mode", "err"); };
@@ -3688,9 +3688,12 @@ function PanelSettingsScreen() {
             </select>
             <div class="hint">Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.</div></div>
         </div>` : null}
-        ${section === "mesh" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">System mesh (reserved)</div>
-          <p class="hint" style="margin:0 0 12px">Ranges the panel-managed inter-node mesh owns — user interfaces and turn-proxies can't use these. Changing them affects <b>new</b> links only; existing links keep their addresses.</p>
+        ${section === "mesh" ? (selNode ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — mesh overrides</div>
+          <${NodeMeshForm} key=${selNode} node=${nodeRec}/>
+        </div>` : html`<div class="card">
+          <div class="seclabel" style="margin-top:0">System mesh (defaults)</div>
+          <p class="hint" style="margin:0 0 12px">Ranges the panel-managed inter-node mesh owns — user interfaces and turn-proxies can't use these. These are the defaults; pick a node above to override them per node. Changing them affects <b>new</b> links only; existing links keep their addresses.</p>
           <div class="row2"><div class="field"><label>Mesh subnet</label><input value=${rsvSubnet} onInput=${e => setRsvSubnet(e.target.value)} placeholder="10.255.0.0/16"/></div>
             <div class="field"><label>Mesh port (base)</label><input value=${rsvPort} onInput=${e => setRsvPort(e.target.value)} placeholder="9999"/></div></div>
           <div class="field"><label>Interface name prefix</label><input value=${rsvPrefix} onInput=${e => setRsvPrefix(e.target.value)} placeholder="swg_"/><div class="hint">Mesh link interfaces are named <span class="mono">${(rsvPrefix || "swg_")}&lt;hex&gt;</span>.</div></div>
@@ -3699,7 +3702,14 @@ function PanelSettingsScreen() {
           <button type="button" class="advtoggle" onClick=${() => setShowAwg(a => !a)}><span class="advcaret">${showAwg ? "▾" : "▸"}</span> ${awgSet ? "Show AWG params" : "Set AWG params"}${awgSet ? "" : html` <span class="faint" style="font-weight:400">(auto)</span>`}</button>
           ${showAwg ? html`<div style="margin-top:8px"><${AwgGrid} value=${awg} onChange=${setAwg}/>
             <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-mini" onClick=${() => setAwg(genAwg())}><${Ic} i="refresh"/> Generate a set</button>${awgSet ? html`<button type="button" class="btn btn-mini" onClick=${() => setAwg({})}>Clear (auto)</button>` : null}</div></div>` : null}
-        </div>` : null}
+        </div>`) : null}
+        ${section === "nodesegress" ? (selNode ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — egress</div>
+          <${NodeEgressForm} key=${selNode} node=${nodeRec}/>
+        </div>` : html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Nodes egress</div>
+          <p class="hint">Each node chooses which of its IPs to use for direct internet egress and for reaching the panel. Pick a node above to configure it.</p>
+        </div>`) : null}
       </div>
     </div>
   </div>`;
@@ -3716,6 +3726,59 @@ function CustomListSheet({ list, onSave, onClose }) {
       <textarea class="rrdoms" rows="1" spellcheck="false" placeholder="comma-separated — spotify.com, 1.2.3.0/24, sub.example.com" value=${targets} onInput=${e => { autoGrow(e.target); setTargets(e.target.value); }} ref=${el => autoGrow(el)}/>
       <div class="hint">Domains match their subdomains too; IPs / CIDRs are matched directly.</div></div>
   <//>`;
+}
+
+// Per-node mesh overrides, edited in Panel settings → System mesh (keyed by node, so it re-inits on badge switch)
+function NodeMeshForm({ node }) {
+  const rsv = (Store.panelSettings || {}).reserved || {};
+  const dSub = rsv.mesh_subnet || "10.255.0.0/16", dPort = String(rsv.mesh_port_base || 9999), dPfx = rsv.iface_prefix || "swg_";
+  const [ingress, setIngress] = useState(node.endpoint_host || "");
+  const [sub, setSub] = useState(node.mesh_subnet || "");
+  const [port, setPort] = useState(node.mesh_port ? String(node.mesh_port) : "");
+  const [pfx, setPfx] = useState(node.mesh_prefix || "");
+  const [msg, setMsg] = useState(null);
+  const save = async () => {
+    setMsg({ ok: true, t: "Saving…" });
+    const ovSub = sub.trim() === dSub ? "" : sub.trim(), ovPort = port.trim() === dPort ? "" : port.trim(), ovPfx = pfx.trim() === dPfx ? "" : pfx.trim();
+    const r = await api.nodeUpdate({ id: node.id, endpoint_host: ingress.trim(), mesh_subnet: ovSub, mesh_port: ovPort, mesh_prefix: ovPfx });
+    if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
+    setMsg({ ok: true, t: "Saved" + ((ovSub !== (node.mesh_subnet || "") || ovPfx !== (node.mesh_prefix || "")) ? " — re-provisioning this node's links." : ".") });
+    await Store.poll();
+  };
+  return html`<div>
+    <p class="hint" style="margin:0 0 12px">Overrides for <b>${node.name}</b> — blank inherits the default. Changing the subnet or prefix re-provisions this node's links (it briefly drops off the mesh while peers reconnect with the new config).</p>
+    <div class="field"><label>Mesh Ingress IP <span class="faint" style="text-transform:none;letter-spacing:0">— the address peers dial to reach this node</span></label>
+      <${NodeIpPick} ips=${node.ips || []} value=${ingress} onChange=${setIngress} auto="Auto (public IP)"/></div>
+    <div class="row2"><div class="field"><label>Mesh subnet</label><input value=${sub} onInput=${e => setSub(e.target.value)} placeholder=${dSub}/></div>
+      <div class="field"><label>Mesh port</label><input value=${port} onInput=${e => setPort(e.target.value)} placeholder=${dPort}/></div></div>
+    <div class="field"><label>Interface name prefix</label><input value=${pfx} onInput=${e => setPfx(e.target.value)} placeholder=${dPfx}/></div>
+    ${(node.mesh_awg && Object.keys(node.mesh_awg).length) ? html`<div style="margin-top:6px"><button type="button" class="advtoggle" onClick=${e => { const d = e.currentTarget.nextElementSibling; d.style.display = d.style.display === "none" ? "" : "none"; }}><span class="advcaret">▸</span> This node's mesh AWG params</button><div style="display:none;margin-top:8px"><${AwgGrid} value=${node.mesh_awg} readOnly=${true}/><div class="hint" style="margin-top:6px">Read-only — set the default in System mesh (default), then re-provision to adopt it.</div></div></div>` : null}
+    ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
+    <div style="margin-top:12px;display:flex;justify-content:flex-end"><button class="btn btn-primary" onClick=${save}>Save mesh overrides</button></div>
+  </div>`;
+}
+
+// Per-node egress IP roles, edited in Panel settings → Nodes egress (copied from node settings; keyed by node)
+function NodeEgressForm({ node }) {
+  const ips = node.ips || [];
+  const [def, setDef] = useState(node.default_egress_ip || "");
+  const [pip, setPip] = useState(node.panel_ip || "");
+  const [msg, setMsg] = useState(null);
+  const save = async () => {
+    setMsg({ ok: true, t: "Saving…" });
+    const r = await api.nodeUpdate({ id: node.id, default_egress_ip: def, panel_ip: pip });
+    if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
+    setMsg({ ok: true, t: "Saved." }); await Store.poll();
+  };
+  return html`<div>
+    <p class="hint" style="margin:0 0 12px">Which of <b>${node.name}</b>'s IPs it uses for each outbound role.</p>
+    <div class="field"><label>Default egress IP <span class="faint" style="text-transform:none;letter-spacing:0">— direct internet exit</span></label>
+      <${NodeIpPick} ips=${ips} value=${def} onChange=${setDef} auto="Auto (MASQUERADE)"/></div>
+    <div class="field"><label>Panel egress connection IP <span class="faint" style="text-transform:none;letter-spacing:0">— source to reach the panel</span></label>
+      <${NodeIpPick} ips=${ips} value=${pip} onChange=${setPip} auto="Auto (default route)"/></div>
+    ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
+    <div style="margin-top:12px;display:flex;justify-content:flex-end"><button class="btn btn-primary" onClick=${save}>Save egress</button></div>
+  </div>`;
 }
 
 // Account form as a modal (opened from the header user icon).
@@ -4520,22 +4583,7 @@ function NodeEditSheet({ node }) {
     <div class="field"><label>Panel egress connection IP <span class="faint" style="text-transform:none;letter-spacing:0">— source to reach the panel</span></label>
       <${NodeIpPick} ips=${ips} value=${panelIp} onChange=${setPanelIp} auto="Auto (default route)"/>
       <div class="hint">Source IP this node uses to reach the panel. Ignored on same-server installs; falls back to auto if it can't connect.</div></div>
-    <div class="seclabel">Mesh settings</div>
-    <div class="row2">
-      <div class="field"><label>Mesh Ingress IP <span class="faint" style="text-transform:none;letter-spacing:0">— endpoint peers dial</span></label>
-        <${NodeIpPick} ips=${ips} value=${ingress} onChange=${setIngress} auto="Auto (public IP)"/></div>
-      <div class="field"><label>Mesh port</label><input value=${meshPort} onInput=${e => setMeshPort(e.target.value)} placeholder=${String(rsv.mesh_port_base || 9999)}/></div>
-    </div>
-    <div class="hint" style="margin-top:-4px">The address (and port) other nodes dial to reach this node for cascading. Changing the IP re-connects existing links automatically.</div>
-    <div class="row2" style="margin-top:10px">
-      <div class="field"><label>Mesh subnet</label><input value=${meshSubnet} onInput=${e => setMeshSubnet(e.target.value)} placeholder=${rsv.mesh_subnet || "10.255.0.0/16"}/></div>
-      <div class="field"><label>Mesh prefix</label><input value=${meshPrefix} onInput=${e => setMeshPrefix(e.target.value)} placeholder=${rsv.iface_prefix || "swg_"}/></div>
-    </div>
-    <div class="hint" style="margin-top:-4px">Per-node mesh overrides. <b>Changing the subnet, port, or prefix re-provisions this node's mesh links</b> — it briefly drops off the mesh while every peer pulls the new config and reconnects. Blank = the panel default shown.</div>
-    <button type="button" class="advtoggle" style="margin-top:12px" onClick=${() => setShowAwg(a => !a)}><span class="advcaret">${showAwg ? "▾" : "▸"}</span> Show AWG params</button>
-    ${showAwg ? html`<div style="margin-top:8px">${hasAwg
-      ? html`<${AwgGrid} value=${meshAwg} readOnly=${true}/><div class="hint" style="margin-top:6px">The AmneziaWG obfuscation this node's mesh links use (both ends of each link share one set). Set the default in <a href="#/panel/settings">Panel settings</a>; re-provision to adopt a new one.</div>`
-      : html`<div class="hint">No mesh links yet — params appear once this node is linked.</div>`}</div>` : null}
+    <div class="hint" style="margin-top:14px">Mesh settings (ingress IP, subnet, port, prefix, AWG) for this node are configured in <a href="#/panel/settings">Panel settings → System mesh</a> — select this node there.</div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
