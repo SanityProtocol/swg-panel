@@ -838,6 +838,18 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .cl-name:hover{color:var(--brand)}
 .cl-meta{font-size:11.5px}
 @media (max-width:680px){.setbody{flex-direction:column}.setrail{flex-direction:row;flex-wrap:wrap;width:auto;position:static}}
+/* per-node context selector in the settings header (default + node badges) */
+.setnodes{display:flex;flex-wrap:wrap;gap:6px;margin-left:14px}
+.snbadge{font:inherit;font-size:11.5px;font-family:var(--mono);cursor:pointer;padding:4px 10px;border-radius:99px;border:1px solid var(--line);background:none;color:var(--faint);transition:color .12s,border-color .12s,background .12s}
+.snbadge:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c,var(--brand)) 50%,var(--line))}
+.snbadge.on{color:var(--ink);border-color:var(--c,var(--brand));background:color-mix(in srgb,var(--c,var(--brand)) 16%,transparent);font-weight:600}
+/* routing-mode radio rows */
+.moderow{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;cursor:pointer;transition:border-color .12s,background .12s}
+.moderow:hover{border-color:color-mix(in srgb,var(--brand) 40%,var(--line))}
+.moderow.on{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 7%,transparent)}
+.moderow input{accent-color:var(--brand);margin-top:2px;flex:none;width:15px;height:15px}
+.modelbl{font-weight:600;font-size:13.5px}
+.modeexp{font-size:12px;color:var(--faint);line-height:1.5;margin-top:5px}
 /* Phase 3 smart-routing rule editor */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
 .rrrow{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}

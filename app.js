@@ -3599,15 +3599,36 @@ function PanelSettingsScreen() {
   const SECTIONS = [["routing", "Routing lists"], ["geo", "Geo data"], ["defaults", "New-interface defaults"], ["timing", "Status timing"], ["configs", "Client configs"], ["display", "Display"], ["mesh", "System mesh"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
+  // per-node context: "" = default/global (the shared library); else a node id whose mode/lists we're editing
+  const [selNode, setSelNode] = useState("");
+  const perNodeSection = section === "routing" || section === "mesh";
+  const nodeRec = (Store.nodes || []).find(n => n.id === selNode);
+  const nodeMode = (nodeRec && nodeRec.routing_mode) || "kernel";
+  const setMode = async m => { const r = await api.nodeUpdate({ id: selNode, routing_mode: m }); if (r.ok) await Store.poll(); else toast(r.error || "Couldn't set mode", "err"); };
+  const MODES = [
+    ["kernel", "Kernel only — IP routing", "Matches by destination IP (GeoIP/ASN). Works no matter what DNS your clients use (DoH-proof), zero extra moving parts. Can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
+    ["forcedns", "Force DNS — host + IP", "The node becomes your clients' resolver and blocks their encrypted DNS, so it can route by hostname too — per-service precision + domain lists. Can break a client that insists on its own DoH, and won't help under ECH/QUIC. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["sni", "SNI router — host + IP, DoH-proof", "A lightweight on-node component reads the hostname from each TLS handshake (SNI), so hostname routing works even when clients run their own DoH. Most accurate. ECH/QUIC-hidden names fall back to IP. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+  ];
   return html`<div class="screen setscreen">
-    <div class="sethead"><b>Panel settings</b><span class="grow"></span>
+    <div class="sethead"><b>Panel settings</b>${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">
+        <button class=${"snbadge" + (selNode ? "" : " on")} onClick=${() => setSelNode("")}>default</button>
+        ${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}
+      </div>` : null}<span class="grow"></span>
       <button class="btn" onClick=${() => history.back()}>Back</button>
       <button class="btn btn-primary" onClick=${save}>Save</button></div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
     <div class="setbody">
       <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}</button>`)}</nav>
       <div class="setpane">
-        ${section === "routing" ? html`<div class="card">
+        ${section === "routing" ? (selNode ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
+          <p class="hint" style="margin:0 0 12px">How this node matches smart-routing traffic. Changing the mode reconfigures the node (installs/removes its DNS resolver or SNI router) and changes which lists its interfaces can use.</p>
+          ${MODES.map(([id, lbl, exp]) => html`<label class=${"moderow" + (nodeMode === id ? " on" : "")}>
+            <input type="radio" name="rmode" checked=${nodeMode === id} onChange=${() => setMode(id)}/>
+            <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
+          <div class="hint" style="margin-top:14px"><b>Enabled lists for this node</b> — next step (IP / Host groups, gated by the mode).</div>
+        </div>` : html`<div class="card">
           <div class="seclabel" style="margin-top:0">Built-in lists</div>
           <p class="hint" style="margin:0 0 12px">Tick the categories you want available in an interface's routing rules; unticked ones are hidden from the dropdown (existing rules keep working). "All traffic (catch-all)" and "Custom IPs / domains" are always available.</p>
           <div class="catgrid">${sysCats.map(([id, lbl]) => html`<label class="chk"><input type="checkbox" checked=${!hidden.has(id)} onChange=${e => toggleCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>
@@ -3620,7 +3641,7 @@ function PanelSettingsScreen() {
             <button class="xbtn" title="Delete list" onClick=${() => setLists(ls => ls.filter(x => x._rid !== l._rid))}><${Ic} i="x"/></button>
           </div>`) : html`<div class="hint">No custom lists yet.</div>`}</div>
           <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
-        </div>` : null}
+        </div>`) : null}
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>
           <p class="hint" style="margin:0 0 12px">Country / provider IP ranges (for the geoip routing categories) are public lists each node fetches over HTTPS: <b>Loyalsoldier/geoip</b> (countries + most providers) and <b>ipverse/asn-ip</b> (ASN-based, e.g. Yandex / VK). Domain-tier categories don't use these — the node's dnsmasq fills them live as clients resolve.</p>
