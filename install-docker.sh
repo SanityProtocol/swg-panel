@@ -786,6 +786,7 @@ PY
 _in(){ case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 onboard_iface(){    # bring an interface under this docker node: import its .conf into ./data/node-confs
   local n="$1" src kconf="" dest                       # NB: don't reference $n in the same `local` (set -u)
+  is_sys_iface "$n" && { warn "'$n' is a panel-managed mesh link — not a user interface; skipping"; return 0; }
   dest="$INSTALL_DIR/data/node-confs/$n.conf"
   # prefer a kernel/host conf as the source — so a migration also tears the kernel side down
   kconf="$(etc_awg_conf "$n")"; [ -n "$kconf" ] || kconf="$(etc_wg_conf "$n")"
@@ -872,13 +873,14 @@ manage_node_ifaces(){
       { [ -d /etc/amnezia ] && find /etc/amnezia -maxdepth 3 -type f -name '*.conf' 2>/dev/null
         printf '%s\n' /etc/wireguard/*.conf "$INSTALL_DIR"/data/node-confs/*.conf
       } | while read -r c; do [ -f "$c" ] && basename "$c" .conf; done    # conf PATHS -> bare names
-      } | sort -u )" || true
+      } | sort -u | drop_sys_ifaces )" || true   # never surface the panel-managed mesh links (swg_*)
     # split the free interfaces: docker ORPHANS (left by a previous container) vs KERNEL interfaces
     # (running on the host's kernel datapath — onboarding one MOVES it off the kernel).
     dock=""; kern=""
     for n in $cand; do
       _in "$n" "$mine" && continue
       _in "$n" "$bm" && continue
+      is_sys_iface "$n" && continue            # belt-and-suspenders: mesh links are never orphans/candidates
       if is_kernel_iface "$n"; then kern="$kern $n"; else dock="$dock $n"; fi
     done
     dock="$(echo $dock)"; kern="$(echo $kern)"
