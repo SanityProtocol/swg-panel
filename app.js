@@ -374,6 +374,7 @@ const Store = {
     this.storeConfigs = !!d.store_configs;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
+    this.catDomains = d.cat_domains || this.catDomains || {};   // curated domains per host category → hover tooltip
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
@@ -1742,6 +1743,13 @@ const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 const catCap = id => (Store.smartCaps || {})[id] || { ip: false, host: false };
 const catHostOnly = id => { const c = catCap(id); return c.host && !c.ip; };
 const catUsableInMode = (id, mode) => mode === "kernel" ? catCap(id).ip : (catCap(id).ip || catCap(id).host);
+const catDoms = id => (Store.catDomains || {})[id] || [];   // curated domains for a host category (empty for geoip/fetched cats)
+// hover bubble listing a list's domains/IPs (only when there are some); `note` = a faint footer caption
+const listBubble = (items, note) => items && items.length ? html`<span class="listbub" role="tooltip">
+  <span class="lb-h">${items.length} entr${items.length === 1 ? "y" : "ies"}</span>
+  ${items.slice(0, 40).map(d => html`<span class="lb-i">${d}</span>`)}
+  ${items.length > 40 ? html`<span class="lb-m">+${items.length - 40} more</span>` : null}
+  ${note ? html`<span class="lb-n">${note}</span>` : null}</span>` : null;
 let _ruleSeq = 0;
 const newRid = () => "rr" + (++_ruleSeq);
 // grow a textarea to fit its content (starts at one row like a textbox, expands as lines wrap)
@@ -3725,9 +3733,7 @@ function PanelSettingsScreen() {
     ["sni", "SNI router — Host + IP, DoH-proof", "A lightweight on-node component reads the hostname from each TLS handshake (SNI), so hostname routing works even when clients run their own DoH. Most accurate. ECH/QUIC-hidden names fall back to IP. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
   ];
   return html`<div class="screen setscreen">
-    <div class="sethead"><b>Panel settings</b><span class="grow"></span>${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => history.back()}>Back</button>
-      <button class="btn btn-primary" onClick=${confirmSave}>Save</button></div>
+    <div class="sethead"><b>Panel settings</b></div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
     <div class="setbody">
       <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
@@ -3740,25 +3746,32 @@ function PanelSettingsScreen() {
             <input type="radio" name="rmode" checked=${nodeMode === id} onChange=${() => setMode(id)}/>
             <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
           <div class="seclabel">Built-in lists</div>
-          <p class="hint" style="margin:0 0 12px">Categories available in <b>${nodeRec ? nodeRec.name : "this node"}</b>'s interface routing dropdowns; unticked ones are hidden (existing rules keep working). "All traffic" and "Custom IPs / domains" are always available.</p>
+          <p class="hint" style="margin:0 0 4px">Categories available in <b>${nodeRec ? nodeRec.name : "this node"}</b>'s interface routing dropdowns; unticked ones are hidden (existing rules keep working). "All traffic" and "Custom IPs / domains" are always available.</p>
+          <p class="hint" style="margin:0 0 12px">These lists' contents are maintained for you from public sources (manage where they're fetched from in <b>Geo data</b>) — hover a list to see its domains. To route <b>your own</b> domains or IPs, add a <b>Custom list</b> below.</p>
           <div class="catgroup">IP <span class="req">— GeoIP, works in every mode</span></div>
-          <div class="catgrid">${sysCats.filter(([id]) => catCap(id).ip).map(([id, lbl]) => html`<label class="chk"><input type="checkbox" checked=${catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>
+          <div class="catgrid">${sysCats.filter(([id]) => catCap(id).ip).map(([id, lbl]) => html`<label class=${"chk" + (catDoms(id).length ? " listwrap" : "")}><input type="checkbox" checked=${catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id), catCap(id).ip ? "+ GeoIP ranges" : null)}</label>`)}</div>
           ${(() => { const hostCats = sysCats.filter(([id]) => catHostOnly(id)); if (!hostCats.length) return null; const dis = nodeMode === "kernel";
-            return html`<div class="catgroup">Host <span class="req">${dis ? "— needs Force-DNS or SNI mode" : "— matched by hostname"}</span></div>
-            <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "")} title=${dis ? "Host lists need Force-DNS or SNI mode (they require DNS)" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>`; })()}
+            return html`<div class="catgroup hostgroup">Host <span class="req">${dis ? "— needs Force-DNS or SNI mode" : "— matched by hostname"}</span></div>
+            <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "") + (catDoms(id).length ? " listwrap" : "")} title=${dis ? "Host lists need Force-DNS or SNI mode (they require DNS)" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id))}</label>`)}</div>`; })()}
           <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— shared across all nodes</span></div>
           <p class="hint" style="margin:0 0 10px">Your own reusable IP/domain lists. Enabled ones appear in the routing dropdown; a rule that uses a list updates automatically when you edit it.</p>
-          <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row" key=${l._rid}>
+          <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row listwrap" key=${l._rid}>
             <label class="chk" title="Show in the routing dropdown"><input type="checkbox" checked=${l.enabled !== false} onChange=${e => setList(l._rid, { enabled: e.target.checked })}/></label>
             <button class="cl-name" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button>
             <span class="grow"></span><span class="faint cl-meta">${entryCount(l.targets)} entr${entryCount(l.targets) === 1 ? "y" : "ies"}</span>
+            ${listBubble((l.targets || "").split(/[\s,]+/).filter(Boolean), "click to edit")}
             <button class="xbtn" title="Delete list" onClick=${() => setLists(ls => ls.filter(x => x._rid !== l._rid))}><${Ic} i="x"/></button>
           </div>`) : html`<div class="hint">No custom lists yet.</div>`}</div>
           <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>
-          <p class="hint" style="margin:0 0 12px">Country / provider IP ranges (for the geoip routing categories) are public lists each node fetches over HTTPS: <b>Loyalsoldier/geoip</b> (countries + most providers) and <b>ipverse/asn-ip</b> (ASN-based, e.g. Yandex / VK). Domain-tier categories don't use these — the node's dnsmasq fills them live as clients resolve.</p>
+          <p class="hint" style="margin:0 0 8px">Each node fetches these public lists over HTTPS and refreshes them on a schedule:</p>
+          <ul class="hint geosrc">
+            <li><b>IP ranges</b> (the GeoIP categories) — <b>Loyalsoldier/geoip</b> for countries + most providers (rebuilt from MaxMind GeoLite2 & others), and <b>ipverse/asn-ip</b> for per-ASN ranges (e.g. Yandex / VK).</li>
+            <li><b>Host / domain lists</b> — <b>v2fly/domain-list-community</b> for global services, and <b>1andrevich/Re-filter</b> for Russia. These feed the node's dnsmasq, which fills the sets live as clients resolve.</li>
+          </ul>
+          <p class="hint" style="margin:0 0 12px"><b>Using a different provider?</b> The <b>mirror</b> below proxies these same lists for nodes that can't reach GitHub directly (it must serve the same paths). Swapping to a different source entirely — e.g. <b>MaxMind GeoLite2</b>, <b>IPdeny</b>, or <b>sapics/ip-location-db</b> — isn't a panel toggle yet; it needs the source URLs changed on the node. Tell us if you need one and we'll wire it in.</p>
           <div class="field"><label>Auto-update interval (days)</label><input value=${ttlD} onInput=${e => setTtlD(e.target.value)} placeholder="3"/><div class="hint">How often a node re-fetches each list (a failed fetch backs off to hourly).</div></div>
           <div class="field"><label>Geo lists mirror (optional)</label><input value=${geoMir} onInput=${e => setGeoMir(e.target.value)} placeholder="https://mirror.example/"/><div class="hint">Proxy prefix for nodes that can't reach GitHub directly. Blank = fetch direct.</div></div>
           <div class="field"><label>Turn binaries mirror (optional)</label><input value=${turnMir} onInput=${e => setTurnMir(e.target.value)} placeholder="https://mirror.example/"/></div>
@@ -3805,6 +3818,9 @@ function PanelSettingsScreen() {
           <${NodeEgressForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>`
             : html`<p class="hint" style="margin:0">No nodes yet — enroll a node to configure its egress.</p>`}
         </div>` : null}
+        <div class="setfoot">${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
+          <button class="btn btn-ghost" onClick=${() => history.back()}>Back</button>
+          <button class="btn btn-primary" onClick=${confirmSave}>Save</button></div>
       </div>
     </div>
   </div>`;
