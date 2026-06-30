@@ -2361,6 +2361,13 @@ const TURN_FORKS = [
 ];
 // stable colour for a turn-proxy fork (peers connected via it get their interface badge tinted this colour)
 function turnColor(label) { const fk = TURN_FORKS.find(x => x.id === label); return (fk && fk.color) || "#8FA8C0"; }
+// the forks offered in the "install a fork" picker — toggled in Panel settings → Turn proxies. Disabling a fork
+// only hides it here; deployed proxies are untouched. Default (setting unset) = WINGS-N + anton48.
+function enabledTurnForks() {
+  const en = Store.panelSettings && Store.panelSettings.enabled_turn_forks;
+  const set = new Set(en || ["WINGS-N", "anton48"]);
+  return TURN_FORKS.filter(f => set.has(f.id));
+}
 const TURN_PEND = { install: "installing", manage: "applying", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "installing", start: "starting", stop: "stopping" };
 // turn-proxy restart completion flash: when a queued 'restart' clears, show a green "restarted" tag 5s
 const _turnRestartPend = {};   // "node|service" currently mid-restart (last poll)
@@ -2420,8 +2427,9 @@ async function startTurn(node, service) {
 }
 function openSetupTurn(node) { openModal(html`<${SetupTurnSheet} node=${node}/>`); }
 function SetupTurnSheet({ node }) {
+  const FORKS = enabledTurnForks();           // only the operator-enabled forks appear in the install picker
   const [mode, setMode] = useState("new");   // new (install) | existing (adopt)
-  const [fork, setFork] = useState(TURN_FORKS[0].id);
+  const [fork, setFork] = useState((FORKS[0] || TURN_FORKS[0]).id);
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const ips = nrec.ips || [];
   const snap = Store.stats[node] || {};
@@ -2443,12 +2451,12 @@ function SetupTurnSheet({ node }) {
   const [title, setTitle] = useState("");
   const [wrapKey] = useState(randWrapKey);            // one fresh key, reused so a fork switch is deterministic
   const dflParams = fk => fk.wrap ? (fk.wrap + " -wrap-key " + wrapKey) : "";
-  const [params, setParams] = useState(dflParams(TURN_FORKS[0]));
+  const [params, setParams] = useState(dflParams(FORKS[0] || TURN_FORKS[0]));
   const [path, setPath] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
-  const f = TURN_FORKS.find(x => x.id === fork) || TURN_FORKS[0];
+  const f = TURN_FORKS.find(x => x.id === fork) || FORKS[0] || TURN_FORKS[0];
   const lhost = ipPickerVal(lsel, lcustom);
   const pickFork = id => {   // re-default params for the new fork only if the field is still an untouched default
     const cf = TURN_FORKS.find(x => x.id === fork) || TURN_FORKS[0];
@@ -2484,7 +2492,7 @@ function SetupTurnSheet({ node }) {
     toast("Turn-proxy install requested — the node downloads + starts it on its next sync.", "ok");
   };
   return html`<${Sheet} title=${mode === "new" ? turnSheetTitle(f.label, title) : "Adopt turn-proxy"}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>${mode === "existing" ? "Adopt" : "Install"}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || (mode === "new" && !FORKS.length)} onClick=${save}>${mode === "existing" ? "Adopt" : "Install"}</button></>`}>
     <div class="field"><label>Source</label>
       <div class="chiprow proto3">
         <button class=${"chip c-awg" + (mode === "new" ? " on" : "")} onClick=${() => setMode("new")}>Install a fork</button>
@@ -2500,10 +2508,10 @@ function SetupTurnSheet({ node }) {
       <div class="row2">
         <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${f.label} autocomplete="off"/></div>
         <div class="field"><label>Fork</label>
-          <select class="selwrap" value=${fork} onChange=${e => pickFork(e.target.value)}>
-            ${TURN_FORKS.map(x => html`<option value=${x.id}>${x.label}${x.wrap ? "" : " · no obfuscation"}</option>`)}
+          <select class="selwrap" value=${fork} disabled=${!FORKS.length} onChange=${e => pickFork(e.target.value)}>
+            ${FORKS.map(x => html`<option value=${x.id}>${x.label}${x.wrap ? "" : " · no obfuscation"}</option>`)}
           </select>
-          <div class="hint">${f.owner}</div></div>
+          <div class="hint">${FORKS.length ? f.owner : "No forks enabled — turn them on in Panel settings → Turn proxies."}</div></div>
       </div>
       <div class="row2">
         <div class="field"><label>Listen IP</label>
@@ -3605,6 +3613,7 @@ function PanelSettingsScreen() {
   const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
   const [hidden, setHidden] = useState(new Set(ps.hidden_categories || []));   // built-in categories hidden from the routing dropdown
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
+  const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "anton48"]));   // forks offered in the install picker
   const [section, setSection] = useState("routing");   // active left-rail section
   const rsv = ps.reserved || {};
   const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
@@ -3640,6 +3649,7 @@ function PanelSettingsScreen() {
       advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
       hidden_categories: [...hidden],
       custom_lists: lists.map(({ _rid, domains, cidrs, ...l }) => l),   // send id/title/targets/enabled; backend re-derives domains+cidrs
+      enabled_turn_forks: [...turnForks],
     });
     if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
     // per-node changes: one nodeUpdate per node whose edits differ from the saved baseline
@@ -3667,6 +3677,7 @@ function PanelSettingsScreen() {
   const diffList = () => {
     const out = [];
     if (glDirty("routing")) out.push("Routing lists — built-in / custom");
+    if (glDirty("turn")) out.push("Turn proxies — install picker");
     if (glDirty("geo")) out.push("Geo data");
     if (glDirty("defaults")) out.push("New-interface defaults");
     if (glDirty("timing")) out.push("Status timing");
@@ -3700,7 +3711,7 @@ function PanelSettingsScreen() {
   const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
   const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => setLists(ls => l ? ls.map(x => x._rid === nl._rid ? nl : x) : [...ls, nl])} onClose=${closeModal}/>`);
   const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
-  const SECTIONS = [["routing", "Routing lists"], ["geo", "Geo data"], ["defaults", "New-interface defaults"], ["timing", "Status timing"], ["configs", "Client configs"], ["display", "Display"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"]];
+  const SECTIONS = [["routing", "Routing lists"], ["turn", "Turn proxies"], ["geo", "Geo data"], ["defaults", "New-interface defaults"], ["timing", "Status timing"], ["configs", "Client configs"], ["display", "Display"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   // per-node context: the node whose mode/lists/mesh/egress we're editing — defaults to the first node (no "default")
@@ -3718,6 +3729,7 @@ function PanelSettingsScreen() {
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
+    sec === "turn" ? ([...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join()) :
     sec === "geo" ? (geoMir.trim() !== (mir.geo || "") || turnMir.trim() !== (mir.turn || "") || ttlD !== String(adv.geo_ttl_days || 3)) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25)) :
     sec === "timing" ? (staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000))) :
@@ -3763,6 +3775,16 @@ function PanelSettingsScreen() {
             <button class="xbtn" title="Delete list" onClick=${() => setLists(ls => ls.filter(x => x._rid !== l._rid))}><${Ic} i="x"/></button>
           </div>`) : html`<div class="hint">No custom lists yet.</div>`}</div>
           <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
+        </div>` : null}
+        ${section === "turn" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Turn proxies — available for creation</div>
+          <p class="hint" style="margin:0 0 12px">Which turn-proxy forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>
+          <div class="cllist">${TURN_FORKS.map(f => html`<div class="cl-row" key=${f.id}>
+            <label class="chk" title=${"Offer " + f.label + " in the install picker"}><input type="checkbox" checked=${turnForks.has(f.id)} onChange=${e => setTurnForks(s => { const n = new Set(s); e.target.checked ? n.add(f.id) : n.delete(f.id); return n; })}/></label>
+            <span class="tf-swatch" style=${"--c:" + f.color}></span>
+            <span class="tf-name">${f.label}</span>
+            <span class="grow"></span><span class="faint cl-meta">${f.wrap ? "obfuscation" : "no obfuscation"} · ${f.owner}</span>
+          </div>`)}</div>
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>

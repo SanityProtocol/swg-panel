@@ -1308,6 +1308,9 @@ PANEL_SETTINGS_DEFAULTS = {
     # interface routing-rules dropdown; a rule references a custom list by its id (edit once, applies everywhere).
     "hidden_categories": [],
     "custom_lists": [],
+    # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
+    # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
+    "enabled_turn_forks": ["WINGS-N", "anton48"],
     "geo_epoch": 0,
 }
 
@@ -1952,6 +1955,14 @@ def api(method, path, qs, body, deps):
         hc = incoming.get("hidden_categories")          # built-in categories to hide from the routing dropdown
         if isinstance(hc, list):
             cur["hidden_categories"] = [c for c in hc if c in SMART_CATEGORIES and c != "all"]
+        tf = incoming.get("enabled_turn_forks")         # which turn-proxy forks the install-a-fork picker offers
+        if isinstance(tf, list):
+            seen_tf, out_tf = set(), []
+            for x in tf[:64]:
+                fid = re.sub(r"[^A-Za-z0-9_-]", "", str(x))[:48]
+                if fid and fid not in seen_tf:
+                    seen_tf.add(fid); out_tf.append(fid)
+            cur["enabled_turn_forks"] = out_tf
         cl = incoming.get("custom_lists")               # operator-defined reusable IP/domain lists
         if isinstance(cl, list):
             out_lists, seen = [], set()

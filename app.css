@@ -850,14 +850,15 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .chk input{appearance:none;-webkit-appearance:none;margin:0;width:13px;height:13px;flex:none;cursor:pointer;
   border:1.5px solid var(--line-solid);border-radius:3px;background:var(--surface-2);position:relative;transition:none}
 .chk input:checked{background:var(--brand);border-color:var(--brand)}
-.chk input:checked::after{content:"";position:absolute;left:3.5px;top:0;width:5px;height:9px;box-sizing:border-box;
-  border:solid var(--brand-ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+/* checked marker: a clean centered dot (not a check glyph) — reads as "on", crisp at any size */
+.chk input:checked::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;
+  background:var(--brand-ink);transform:translate(-50%,-50%)}
 .chk input:focus-visible{outline:2px solid color-mix(in srgb,var(--brand) 60%,transparent);outline-offset:1px}
 .chk.disabled{opacity:.4;cursor:not-allowed}
 .chk.disabled input{cursor:not-allowed}
 /* hover bubble: the domains/IPs inside a built-in or custom list */
 .listwrap{position:relative}
-.listbub{position:absolute;bottom:calc(100% + 6px);left:0;min-width:150px;max-width:300px;max-height:240px;overflow-y:auto;
+.listbub{position:absolute;top:calc(100% + 6px);left:0;min-width:150px;max-width:300px;max-height:240px;overflow-y:auto;
   background:var(--surface-2);border:1px solid var(--line-solid);border-radius:8px;padding:7px 9px;display:none;
   flex-direction:column;gap:2px;z-index:60;box-shadow:0 8px 24px rgba(0,0,0,.5);font-family:var(--mono);font-size:10.5px;
   color:var(--dim);text-transform:none;letter-spacing:0;font-weight:400;text-align:left;cursor:default}
@@ -876,6 +877,9 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .cl-name{background:none;border:0;color:var(--ink);font:inherit;font-weight:600;cursor:pointer;padding:0;text-align:left}
 .cl-name:hover{color:var(--brand)}
 .cl-meta{font-size:11.5px}
+.tf-swatch{width:10px;height:10px;border-radius:50%;background:var(--c,var(--brand));flex:none;box-shadow:0 0 0 1px color-mix(in srgb,var(--c,var(--brand)) 40%,transparent)}
+.tf-name{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:12.5px}
+.warntext{color:var(--partial);font-weight:600}
 @media (max-width:680px){.setbody{flex-direction:column}.setrail{flex-direction:row;flex-wrap:wrap;width:auto;position:static}}
 /* per-node context selector in the settings header (default + node badges) */
 .setnodes{position:absolute;top:14px;right:18px;z-index:2;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:62%}
