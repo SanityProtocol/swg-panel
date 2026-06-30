@@ -531,6 +531,12 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   $DRYRUN && return 0
   have "$cmd"               # success only if the tool is actually present now
 }
+ensure_smart_tools(){ # nftables (smart-routing marking, every mode) + dnsmasq (Force-DNS host tier) — idempotent, non-fatal
+  have nft     || { run apt-get update -qq || true; run apt-get install -y nftables || true; }
+  have dnsmasq || { run apt-get update -qq || true; run apt-get install -y dnsmasq  || true; }
+  # the node runs its OWN dnsmasq on loopback:5354 via swg-noded; disable the distro service so it can't grab :53
+  run systemctl disable --now dnsmasq 2>/dev/null || true
+}
 awg_obfuscation(){ # emit AmneziaWG v2 obfuscation — H1–H4 ranges, S1–S4, and a conservative QUIC-Initial I1
   local s1 s2 s3 s4 b1 b2 b3 b4 w=15
   s1=$(( 15 + RANDOM % 136 )); s2=$(( 15 + RANDOM % 136 ))
@@ -606,6 +612,7 @@ spec_iface(){ # prompt for one interface and queue it (no install yet)
   ok "queued interface $(col "$C_GREEN" "$name") ($proto, :$port) — installed once you finish adding interfaces"
 }
 apply_specs(){ # install tools + write confs + bring up every queued interface, then prune failures
+  ensure_smart_tools   # nftables (smart-routing marking) + dnsmasq (Force-DNS host tier) for this master's local node
   [ "${#SPEC_ORDER[@]}" -gt 0 ] || return 0
   local name proto port subnet addr conf cmd priv dir wan up down upok ep failed=""
   echo; info "Setting up ${#SPEC_ORDER[@]} interface(s)…"
