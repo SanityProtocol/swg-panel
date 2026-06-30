@@ -13,7 +13,7 @@
   --ink:#E7EEF6; --ink-2:#C2D0E0; --dim:#8EA0B7; --faint:#536679;
   --online:#3FD89A; --ready:#4FA8F0; --pending:#9A8BF0; --partial:#E2C84A;
   --dangling:#F26B82; --orphan:#B79BD6; --unknown:#62748B; --removing:#E2C84A;
-  --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A;
+  --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A; --smart:#F472B6;   /* smart routing — rose/pink, distinct from cascade purple */
   --tp-rx:#1FC8D6; --tp-tx:#818CF8;   /* throughput chart: rx (down) cyan, tx (up) indigo — kept distinct */
   --sans:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
@@ -795,7 +795,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .egb-fwd{color:var(--brand)}              /* smart / → node — cyan */
 .egb-direct{color:var(--dim)}             /* direct — neutral */
 .egb-cascade{color:var(--pending)}        /* cascade — Node-connections icon colour (purple) */
+.egb-smart{color:var(--smart)}            /* smart routing — rose/pink */
 .carry-tags{display:inline-flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}   /* Carrying: forwarded interface tags, right-aligned */
+/* connection-modal Forwarding / smart-cascade list */
+.fwd-list{display:flex;flex-direction:column;gap:6px}
+.fwd-row{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--dim);flex-wrap:wrap}
+.fwd-arr{color:var(--faint)}
 /* Phase 3 smart-routing rule editor */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
 .rrrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
