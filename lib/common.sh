@@ -113,7 +113,7 @@ summary_host_block(){   # <method> <converted?yes|no>
   fi
 }
 summary_node_block(){   # <method> <converted?yes|no>
-  local m="$1" conv="$2" ver mlabel note="" nep purl conf n proto units svc inst lis con u _trec
+  local m="$1" conv="$2" ver mlabel note="" nep purl conf n proto units svc inst lis con u _trec _meshif
   nep="$(_sum_node_ep)"; purl="$(_sum_node_purl)"
   if [ "$m" = docker ]; then mlabel=Docker; ver="$(docker exec swg-node cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"
   else mlabel=Bare-metal; ver="$(cat /opt/swg-noded/VERSION 2>/dev/null | head -1 || true)"; fi
@@ -121,8 +121,11 @@ summary_node_block(){   # <method> <converted?yes|no>
   echo "${C_BLUE:-}▸${RESET:-} $(b "$mlabel SWG Node")${ver:+ $(b "v$ver")}${purl:+  ·  syncs to $(bb "$purl")}$note"
   if [ "$m" = docker ]; then
     echo; echo "  $(b 'Interfaces') (in the swg-node container):"; echo
+    _meshif=""
     for conf in "$_SUM_DDIR"/data/node-confs/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
+      is_sys_iface "$n" && { _meshif="$_meshif $n"; continue; }   # panel-managed mesh link — never listed as a user interface
       grep -qiE '^[[:space:]]*(Jc|Jmin|S1|H1)[[:space:]]*=' "$conf" && proto=awg || proto=wg; _sum_iface_row "$n" "$proto" "$conf" "$nep"; done
+    for n in $_meshif; do printf '    %s Mesh interface %s\n' "${C_BLUE:-}→${RESET:-}" "${C_BLUE:-}$n${RESET:-}"; done
     units="$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^swg-turn-' || true)"; _trec="$_SUM_DDIR/data/node/turn-proxy.json"
     if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (sibling containers — swg-turn-*, managed from the panel):"; echo
       if [ -f "$_trec" ] && have python3; then   # docker turns are containers — listen/connect live in the node turn record, not a unit file
@@ -136,8 +139,11 @@ for t in tps:
     fi
   else
     echo; echo "  $(b 'Interfaces') (managed bare-metal — peers stay in the panel):"; echo
+    _meshif=""
     for conf in /etc/amnezia/amneziawg/*.conf /etc/wireguard/*.conf; do [ -f "$conf" ] || continue; n="$(basename "$conf" .conf)"
+      is_sys_iface "$n" && { _meshif="$_meshif $n"; continue; }   # panel-managed mesh link — never listed as a user interface
       case "$conf" in */wireguard/*) proto=wg;; *) proto=awg;; esac; _sum_iface_row "$n" "$proto" "$conf" "$nep"; done
+    for n in $_meshif; do printf '    %s Mesh interface %s\n' "${C_BLUE:-}→${RESET:-}" "${C_BLUE:-}$n${RESET:-}"; done
     units="$(ls /etc/systemd/system/vk-turn-proxy-*.service 2>/dev/null || true)"
     if [ -n "$units" ]; then echo; echo "  $(b 'Turn-proxies') (host systemd, managed from the panel):"; echo
       for u in $units; do svc="$(basename "$u" .service)"; inst="${svc#vk-turn-proxy-}"

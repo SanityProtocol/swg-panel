@@ -258,6 +258,7 @@ node_iface_rows(){
 node_iface_spec(){ local n="$1" e _ifs; [ -n "${NODE_IFACES:-}" ] || return 1; IFS=',' read -ra _ifs <<< "$NODE_IFACES"
   for e in "${_ifs[@]}"; do [ "$(printf '%s' "$e" | cut -d: -f1)" = "$n" ] && { printf '%s' "$e"; return 0; }; done; return 1; }
 iface_row(){ local n="$1" conf spec proto="" ep="" lp="" addr=""   # set -e safe; prefer a queued NODE_IFACES spec, else the conf
+  is_sys_iface "$n" && return 0   # panel-managed mesh links are never shown in a user-facing interface list
   spec="$(node_iface_spec "$n" || true)"
   if [ -n "$spec" ]; then
     lp="$(printf '%s' "$spec" | cut -d: -f2)"; addr="$(printf '%s' "$spec" | cut -d: -f3)"

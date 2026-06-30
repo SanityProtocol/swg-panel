@@ -47,6 +47,7 @@ col(){ local _c="$1"; shift; printf '%s%s%s' "$_c" "$*" "$RESET"; }
 conf_get(){ grep -iE "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed 's/.*=[[:space:]]*//; s/[[:space:]]*$//'; }
 # one styled interface row (green name + proto + endpoint:port + address) for the manage-loop lists, matching the SUMMARY.
 iface_row(){ local n="$1" conf proto ep lp addr _c   # set -e safe; prefer a just-queued spec (no conf yet), else the conf
+  is_sys_iface "$n" && return 0   # panel-managed mesh links are never shown in a user-facing interface list
   if [ -n "${SPEC_CMD[$n]:-}" ]; then proto="${SPEC_CMD[$n]}"; lp="${SPEC_PORT[$n]:-}"; addr="${SPEC_ADDR[$n]:-}"; ep="${SPEC_EP[$n]:-}"
   else conf="${IF_CONF[$n]:-}"; proto="${IF_CMD[$n]:-?}"; ep="${IF_ENDPOINT[$n]:-${ENDPOINT_IP:-}}"
     { [ -n "$conf" ] && [ -f "$conf" ]; } || for _c in "/etc/amnezia/amneziawg/$n.conf" "/etc/wireguard/$n.conf"; do [ -f "$_c" ] && { conf="$_c"; break; }; done   # IF_CONF missed it (e.g. an adopted iface) → find the on-disk conf by name so port/addr aren't '?'
@@ -388,7 +389,7 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
       detect_wg; names="${!IF_CMD[*]}"
       dk=""; for n in $(docker_node_ifaces); do _in "$n" "${ADOPTED_IFACES:-}" || dk="$dk $n"; done; dk="$(echo $dk)"   # the iface(s) we're converting away from docker are ours now, not "docker" ones
       mine=""; for n in $(node_ifaces) ${ADOPTED_IFACES:-} ${CREATED[@]+"${CREATED[@]}"}; do _in "$n" "$mine" || mine="$mine $n"; done; mine="$(echo $mine)"
-      avail=""; for n in $names; do _in "$n" "$mine" && continue; _in "$n" "$dk" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
+      avail=""; for n in $names; do _in "$n" "$mine" && continue; _in "$n" "$dk" && continue; is_sys_iface "$n" && continue; avail="$avail $n"; done; avail="$(echo $avail)"
       echo
       [ -n "$mine" ] && { echo "  Interfaces already on this node:"; echo; for n in $mine; do iface_row "$n"; done; echo; }
       if [ -n "$avail" ]; then echo "  Available orphan interfaces:"; echo; for n in $avail; do iface_row "$n"; done; echo
