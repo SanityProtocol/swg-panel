@@ -1163,11 +1163,16 @@ def desired_mesh_for_node(nodes, nid, keepalive, allowed_overrides=None, snaps=N
 SWG_RT_BASE = 7000          # swg-owned policy-routing table id / ip-rule priority band [BASE, MAX]
 SWG_RT_MAX = 7099           # (one table id per egress target per node; priority == table number)
 
-# Phase 3 (v1): provider-level destination categories an operator can route per interface. Each maps to a
-# CIDR set (geoip/ASN) shipped to the node and loaded into an nftables interval set. Provider-level only —
-# e.g. "google" is all of Google's IP space (YouTube rides with it until the v2 domain tier separates them).
+# Phase 3: per-interface destination categories an operator can route. Each maps to an nftables dest set on
+# the node; the marking chain (`ip daddr @set`) is identical no matter HOW the set is filled. Two fillers:
+#   • DOMAIN bundles (DOMAIN_BUNDLES) — the node's dnsmasq adds answer IPs to the set as clients resolve the
+#     bundle's domains. Domain-level, so we can separate e.g. YouTube from the rest of Google (they share IP
+#     space but not domains). Requires the interface's clients to resolve via the node.
+#   • GEOIP/ASN lists (GEO_SOURCES, node-side) — whole provider/country IP ranges. Right for IP-direct services
+#     (Telegram) and country/CDN scope (ru, cloudflare) where domains don't help.
 SMART_CATEGORIES = {
-    "google":   "Google (incl. YouTube, in v1)",
+    "google":   "Google",
+    "youtube":  "YouTube",
     "yandex":   "Yandex",
     "vk":       "VK",
     "telegram": "Telegram",
@@ -1177,6 +1182,22 @@ SMART_CATEGORIES = {
     "netflix":  "Netflix",
     "ru":       "Russia (country)",
     "all":      "All traffic (catch-all)",   # matches everything not caught by an earlier rule (no geo set)
+}
+
+# Domain-filled categories (the domain tier): curated bundles shipped to the node, which configures dnsmasq to
+# add each domain's resolved IPs into the category's nft set. A category present here is domain-filled and does
+# NOT geo-fetch — so `google` here is google-the-domains, disjoint from `youtube`'s googlevideo et al.
+DOMAIN_BUNDLES = {
+    "google":  ["google.com", "gstatic.com", "googleapis.com", "googleusercontent.com", "google-analytics.com",
+                "googletagmanager.com", "googlesyndication.com", "googleadservices.com", "gmail.com", "withgoogle.com"],
+    "youtube": ["youtube.com", "youtu.be", "googlevideo.com", "ytimg.com", "ggpht.com", "youtubei.googleapis.com",
+                "youtube-nocookie.com", "yt.be"],
+    "yandex":  ["yandex.ru", "yandex.net", "yandex.com", "yastatic.net", "ya.ru", "mc.yandex.ru", "yandexcloud.net", "dzen.ru"],
+    "vk":      ["vk.com", "vk.ru", "userapi.com", "vk-cdn.net", "vkuservideo.net", "mycdn.me", "vkuser.net", "vkvideo.ru"],
+    "meta":    ["facebook.com", "fbcdn.net", "instagram.com", "cdninstagram.com", "whatsapp.com", "whatsapp.net",
+                "fb.com", "fbsbx.com", "facebook.net"],
+    "twitter": ["twitter.com", "x.com", "twimg.com", "t.co", "periscope.tv", "twitterstat.us"],
+    "netflix": ["netflix.com", "nflxext.com", "nflximg.net", "nflxvideo.net", "nflxso.net"],
 }
 
 # Panel settings (persisted to panel-settings.json; surfaced + edited via the Panel settings screen).
@@ -3397,7 +3418,9 @@ class Handler(BaseHTTPRequestHandler):
                                 "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
-                                          "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])})},
+                                          "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
+                                          # domain tier: bundles for the active domain categories → node fills these sets via dnsmasq, not geo-fetch
+                                          "domains": {c: DOMAIN_BUNDLES[c] for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in DOMAIN_BUNDLES}},
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
                                                 "panel_ip": node.get("panel_ip") or ""},
                                 "panel": {"geo_mirror": (_ps.get("mirrors") or {}).get("geo") or "",   # Panel settings → node (Part 5)
