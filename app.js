@@ -1731,7 +1731,9 @@ const SMART_CATEGORIES = [
   ["cloudflare", "Cloudflare"], ["meta", "Meta (FB / IG / WA)"], ["twitter", "Twitter / X"],
   ["netflix", "Netflix"], ["spotify", "Spotify"], ["twitch", "Twitch"], ["tiktok", "TikTok"],
   ["disney", "Disney+"], ["reddit", "Reddit"], ["discord", "Discord"], ["github", "GitHub"],
-  ["ai", "AI (ChatGPT / Claude / Gemini / Grok)"], ["ru", "Russia (country)"], ["all", "All traffic (catch-all)"],
+  ["openai", "OpenAI / ChatGPT"], ["claude", "Claude (Anthropic)"], ["gemini", "Google Gemini"],
+  ["grok", "Grok (xAI)"], ["perplexity", "Perplexity"], ["deepseek", "DeepSeek"], ["copilot", "Microsoft Copilot"],
+  ["ru", "Russia (country)"], ["all", "All traffic (catch-all)"],
 ];
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in

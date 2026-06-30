@@ -1189,7 +1189,13 @@ SMART_CATEGORIES = {
     "reddit":   "Reddit",
     "discord":  "Discord",
     "github":   "GitHub",
-    "ai":       "AI (ChatGPT / Claude / Gemini / Grok …)",
+    "openai":   "OpenAI / ChatGPT",
+    "claude":   "Claude (Anthropic)",
+    "gemini":   "Google Gemini",
+    "grok":     "Grok (xAI)",
+    "perplexity": "Perplexity",
+    "deepseek": "DeepSeek",
+    "copilot":  "Microsoft Copilot",
     "ru":       "Russia (country)",
     "all":      "All traffic (catch-all)",   # matches everything not caught by an earlier rule (no geo set)
 }
@@ -1215,10 +1221,18 @@ DOMAIN_BUNDLES = {
     "disney":  ["disneyplus.com", "disney-plus.net", "dssott.com", "bamgrid.com", "disneyplus.disney.com", "dnitv.com"],
     "reddit":  ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com", "redditinc.com"],
     "discord": ["discord.com", "discordapp.com", "discordapp.net", "discord.gg", "discord.media", "discordcdn.com"],
-    "github":  ["github.com", "githubusercontent.com", "githubassets.com", "github.io", "githubcopilot.com", "ghcr.io"],
-    "ai":      ["openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "anthropic.com", "claude.ai",
-                "gemini.google.com", "bard.google.com", "aistudio.google.com", "perplexity.ai", "x.ai", "grok.com",
-                "copilot.microsoft.com", "poe.com", "mistral.ai", "deepseek.com", "huggingface.co"],
+    "github":  ["github.com", "githubusercontent.com", "githubassets.com", "github.io", "ghcr.io"],
+    # AI services — one list per provider. dnsmasq matches a domain AND all its subdomains. Gemini et al. live
+    # partly on shared Google infra (google.com / googleapis.com), so the provider-specific subdomains below are
+    # isolable, but where they share an IP with the parent they can't be split (same caveat as YouTube vs Google).
+    "openai":  ["openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com", "openai.fm"],
+    "claude":  ["claude.ai", "anthropic.com", "claudeusercontent.com", "claude.com"],
+    "gemini":  ["gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com",
+                "makersuite.google.com", "bard.google.com", "ai.google.dev", "deepmind.google", "notebooklm.google.com"],
+    "grok":    ["grok.com", "x.ai"],
+    "perplexity": ["perplexity.ai", "pplx.ai", "perplexitycdn.com"],
+    "deepseek": ["deepseek.com", "deepseek.ai"],
+    "copilot": ["copilot.microsoft.com", "copilot.cloud.microsoft", "githubcopilot.com"],
 }
 
 # The GeoSite host tier: categories that are DOMAIN-matched when a node runs in a DNS/SNI mode — the curated

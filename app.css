@@ -845,7 +845,14 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .setpane .card{max-width:none}
 .catgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:7px 16px;margin-bottom:4px}
 .chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
-.chk input{accent-color:var(--brand);width:15px;height:15px;flex:none;cursor:pointer}
+/* CSS-drawn checkbox (no native theme): the OS-themed control flashes on a full-form re-render even when its
+   state is unchanged — a plain styled box repaints cleanly, so sibling checkboxes don't flicker on a toggle. */
+.chk input{appearance:none;-webkit-appearance:none;margin:0;width:15px;height:15px;flex:none;cursor:pointer;
+  border:1.5px solid var(--line-solid);border-radius:4px;background:var(--surface-2);position:relative;transition:none}
+.chk input:checked{background:var(--brand);border-color:var(--brand)}
+.chk input:checked::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;box-sizing:border-box;
+  border:solid var(--brand-ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.chk input:focus-visible{outline:2px solid color-mix(in srgb,var(--brand) 60%,transparent);outline-offset:1px}
 .chk.disabled{opacity:.4;cursor:not-allowed}
 .chk.disabled input{cursor:not-allowed}
 .catgroup{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin:2px 0 7px}
