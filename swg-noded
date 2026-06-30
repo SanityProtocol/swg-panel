@@ -1088,8 +1088,9 @@ def _ensure_smart_dnsmasq(domains, smart_e, res):
     subnets = sorted({e["subnet"] for e in smart_e})
     want = bool(domains and subnets)
     _smart_dns_redirect(subnets if want else [], res)
-    if not want:
-        if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
+    if not want:                                               # nothing to fill → tear down + reap any stray instance
+        had = _dnsmasq_running() or os.path.exists(DNSMASQ_CONF) or run(["pgrep", "-f", "conf-file=" + DNSMASQ_CONF]).returncode == 0
+        if had:
             _dnsmasq_stop(); res["changed"] += 1
         return
     conf = ["# managed by swg-noded — domain-tier smart routing (do not edit)",
