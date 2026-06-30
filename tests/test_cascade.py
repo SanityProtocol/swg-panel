@@ -226,9 +226,26 @@ def test_agent_conf():
     m.rewrite_peer_allowed_in_conf(conf, pub, "10.8.0.0/24,10.99.0.0/32")
     assert "AllowedIPs = 10.8.0.0/24,10.99.0.0/32" in open(conf).read()
 
+    # op_add_peer: a default-route (0.0.0.0/0) mesh/cascade peer is ACCEPTED on add (carries arbitrary dests
+    # into the link, dials out) — this is the regression that broke a rebuilt mesh link; an out-of-subnet user
+    # peer is still rejected.
+    cfg = {"interfaces": {"swg_AB": {"conf": conf, "cmd": ["awg"]}}, "endpoint_host": "1.1.1.1"}
+    m.wg_dump = lambda ic, ifc: "PRIV\tSRVPUB\t52000\toff\n"   # iface line, no peers
+    m.run = lambda *a, **k: ""   # genpsk → "", set-peer → ignored
+    mpub = "Q" * 43 + "="
+    m.op_add_peer(cfg, {"iface": "swg_AB", "public_key": mpub, "allowed_ips": "0.0.0.0/0",
+                        "endpoint": "2.2.2.2:10000", "name": "mesh:svo"})   # must NOT raise
+    ct = open(conf).read()
+    assert "PublicKey = " + mpub in ct and "AllowedIPs = 0.0.0.0/0" in ct and "Table = off" in ct, ct
+    try:
+        m.op_add_peer(cfg, {"iface": "swg_AB", "public_key": "R" * 43 + "=", "allowed_ips": "10.50.0.5/32"})
+        raise AssertionError("expected an out-of-subnet user peer to be rejected")
+    except m.AgentError as e:
+        assert "not in subnet" in str(e), e
+
     # set-peer-allowed + create-iface Table=off are registered/wired
     assert "set-peer-allowed" in m.WRITE_OPS
-    print("OK agent: Table=off self-heal + peer-allowed rewrite")
+    print("OK agent: Table=off self-heal + peer-allowed rewrite + default-route peer add")
 
 
 def test_panel_smart():
