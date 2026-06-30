@@ -812,6 +812,27 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .fwd-ifaces{display:flex;flex-wrap:wrap;gap:5px}   /* cascade: all forwarded ifaces on one line */
 .fwd-list{display:flex;flex-direction:column;gap:7px}   /* smart cascade: one iface + its rules per line */
 .fwd-row{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--dim);flex-wrap:wrap}
+
+/* ── Panel settings screen: sticky Back/Save header + left section rail + content pane ── */
+.setscreen{max-width:1000px}
+.sethead{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.sethead b{font-size:18px;letter-spacing:-.01em}
+.setbody{display:flex;gap:20px;align-items:flex-start}
+.setrail{flex:none;width:188px;display:flex;flex-direction:column;gap:2px;position:sticky;top:16px}
+.setrail-i{text-align:left;background:none;border:0;color:var(--faint);font:inherit;font-size:13px;padding:8px 12px;border-radius:8px;cursor:pointer;transition:background .12s,color .12s}
+.setrail-i:hover{color:var(--ink);background:color-mix(in srgb,var(--ink) 4%,transparent)}
+.setrail-i.on{color:var(--ink);background:color-mix(in srgb,var(--brand) 16%,transparent);font-weight:600}
+.setpane{flex:1;min-width:0}
+.setpane .card{max-width:none}
+.catgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:7px 16px;margin-bottom:4px}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+.chk input{accent-color:var(--brand);width:15px;height:15px;flex:none;cursor:pointer}
+.cllist{display:flex;flex-direction:column;gap:6px}
+.cl-row{display:flex;align-items:center;gap:10px;padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+.cl-name{background:none;border:0;color:var(--ink);font:inherit;font-weight:600;cursor:pointer;padding:0;text-align:left}
+.cl-name:hover{color:var(--brand)}
+.cl-meta{font-size:11.5px}
+@media (max-width:680px){.setbody{flex-direction:column}.setrail{flex-direction:row;flex-wrap:wrap;width:auto;position:static}}
 /* Phase 3 smart-routing rule editor */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
 .rrrow{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}

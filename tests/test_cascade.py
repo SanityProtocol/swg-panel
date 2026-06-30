@@ -295,7 +295,14 @@ def test_panel_smart():
     cp = m.cascade_plan(nodes, snaps)[A]
     assert any(e["category"] == cid for e in cp["smart"]), cp["smart"]
     assert cp["domains"].get(cid) == ["youtube.com", "twitch.tv"] and cp["cidrs"].get(cid) == ["1.2.3.0/24", "8.8.8.8/32"], (cp["domains"], cp["cidrs"])
-    print("OK panel: smart routing plan + validation (incl. All-traffic catch-all + custom IPs/domains)")
+    # a rule referencing a reusable CUSTOM LIST by id resolves to that list's targets (passed via custom_lists)
+    clists = {"cl_x": {"id": "cl_x", "domains": ["spotify.com"], "cidrs": ["9.9.9.0/24"]}}
+    lid = m.custom_cat_id(["spotify.com"], ["9.9.9.0/24"])
+    nodes[A]["ifaces"]["awg1"]["routing"] = [{"category": "cl_x", "action": "exit", "node": B}]
+    cp2 = m.cascade_plan(nodes, snaps, clists)[A]
+    assert any(e["category"] == lid for e in cp2["smart"]), cp2["smart"]
+    assert cp2["domains"].get(lid) == ["spotify.com"] and cp2["cidrs"].get(lid) == ["9.9.9.0/24"], (cp2["domains"], cp2["cidrs"])
+    print("OK panel: smart routing plan + validation (custom IPs/domains + reusable custom lists)")
 
 
 def test_node_smart():

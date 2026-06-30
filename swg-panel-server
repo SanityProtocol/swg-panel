@@ -1250,6 +1250,11 @@ PANEL_SETTINGS_DEFAULTS = {
     # reserved ranges for the panel-managed inter-node mesh — user interfaces / turn-proxies may NOT use these
     "reserved": {"mesh_subnet": "10.255.0.0/16", "mesh_port_base": 9999, "port_span": 100, "iface_prefix": "swg_"},
     "advanced": {"node_stale_ms": 30000, "peer_grace_ms": 60000, "geo_ttl_days": 3},
+    # routing-rule dropdown control: which built-in categories to HIDE (default none = all shown), and operator-
+    # defined reusable lists [{id,title,domains,cidrs,enabled}]. Only enabled (built-in + custom) appear in the
+    # interface routing-rules dropdown; a rule references a custom list by its id (edit once, applies everywhere).
+    "hidden_categories": [],
+    "custom_lists": [],
     "geo_epoch": 0,
 }
 
@@ -1309,7 +1314,7 @@ def _link_devs(nodes, nid, P):
     return lr_n.get("iface"), lr_p.get("iface"), lr_p.get("peer_address")
 
 
-def cascade_plan(nodes, snaps):
+def cascade_plan(nodes, snaps, custom_lists=None):
     """Fleet-wide egress plan covering BOTH Phase-2 whole-interface forward (egress_mode=forward) AND
     Phase-3 per-destination smart routing (egress_mode=smart). Both route a user interface's traffic into
     the existing N↔P mesh link and exit P's WAN; smart just scopes the entry match to a destination category
@@ -1370,8 +1375,15 @@ def cascade_plan(nodes, snaps):
                     if not P or P not in nodes or not cat:
                         continue
                     extra = None
-                    if cat == "custom":                        # custom rule → its own synthetic set id + targets
+                    if cat == "custom":                        # inline custom rule → its own synthetic set id + targets
                         doms, cidrs = _clean_targets(r.get("targets") if r.get("targets") is not None else r.get("domains"))
+                        if not doms and not cidrs:
+                            continue
+                        cat = custom_cat_id(doms, cidrs)
+                        extra = (doms, cidrs)
+                    elif custom_lists and cat in custom_lists:  # a reusable custom list referenced by id → its targets
+                        cl = custom_lists[cat]
+                        doms, cidrs = list(cl.get("domains") or []), list(cl.get("cidrs") or [])
                         if not doms and not cidrs:
                             continue
                         cat = custom_cat_id(doms, cidrs)
@@ -1879,6 +1891,26 @@ def api(method, path, qs, body, deps):
             cur["advanced"] = {"node_stale_ms": max(5000, int(adv.get("node_stale_ms") or 30000)),
                                "peer_grace_ms": max(5000, int(adv.get("peer_grace_ms") or 60000)),
                                "geo_ttl_days": max(1, int(adv.get("geo_ttl_days") or 3))}
+        hc = incoming.get("hidden_categories")          # built-in categories to hide from the routing dropdown
+        if isinstance(hc, list):
+            cur["hidden_categories"] = [c for c in hc if c in SMART_CATEGORIES and c != "all"]
+        cl = incoming.get("custom_lists")               # operator-defined reusable IP/domain lists
+        if isinstance(cl, list):
+            out_lists, seen = [], set()
+            for item in cl[:64]:
+                if not isinstance(item, dict):
+                    continue
+                doms, cidrs = _clean_targets(item.get("targets") if item.get("targets") is not None
+                                             else [*(item.get("domains") or []), *(item.get("cidrs") or [])])
+                if not doms and not cidrs:
+                    continue                            # an empty list is dropped
+                lid = re.sub(r"[^a-z0-9_]", "", str(item.get("id") or "").lower())[:24]
+                if not lid or lid in seen:
+                    lid = "cl_" + hashlib.sha1((str(item.get("title")) + "|" + ",".join(doms + cidrs) + "|" + str(len(out_lists))).encode()).hexdigest()[:10]
+                seen.add(lid)
+                out_lists.append({"id": lid, "title": (str(item.get("title") or "").strip()[:60] or "Untitled list"),
+                                  "domains": doms, "cidrs": cidrs, "enabled": item.get("enabled", True) is not False})
+            cur["custom_lists"] = out_lists
         deps["panel_settings"] = cur
         with contextlib.suppress(Exception):
             atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
@@ -3236,7 +3268,8 @@ class Handler(BaseHTTPRequestHandler):
                 nodes_save(Handler.deps["nodes_path"], nodes)
         roster = roster_load(Handler.deps["roster_path"])
         desired = desired_for_node(roster, nid)
-        cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {})   # Phase 2: whole-fleet forward plan
+        _clists = {cl["id"]: cl for cl in ((Handler.deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")}
+        cas_plans = cascade_plan(nodes, Handler.deps.get("node_snaps") or {}, _clists)   # Phase 2/3: whole-fleet forward + smart plan (resolves custom-list rules)
         my_plan = cas_plans.get(nid) or {"forward": [], "smart": [], "exit": [], "allowed": {}}
         _ps = Handler.deps.get("panel_settings") or {}   # Panel settings → mirrors / geo TTL / geo epoch for the node (used in the reply below)
         for _ifn, _mpeers in desired_mesh_for_node(nodes, nid, mesh_cfg(Handler.deps)["keepalive"],

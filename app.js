@@ -1734,6 +1734,11 @@ const autoGrow = el => { if (!el) return; el.style.height = "auto"; el.style.hei
 // drag-reorder hook; order is priority (first match wins on the node).
 function RoutingRules({ node, rules, onChange }) {
   const others = (Store.nodes || []).filter(n => n.id !== node);
+  const _ps = Store.panelSettings || {};
+  const hiddenCats = new Set(_ps.hidden_categories || []);
+  const customLists = (_ps.custom_lists || []).filter(l => l.enabled !== false);   // only enabled lists in the dropdown
+  const listTitle = Object.fromEntries((_ps.custom_lists || []).map(l => [l.id, l.title]));
+  const catLabel = c => c === "custom" ? "Custom IPs / domains" : (SMART_CAT_LABEL[c] || listTitle[c] || c);
   const rs = useReorder(rules.map(r => r._rid), ids => onChange(ids.map(id => rules.find(r => r._rid === id)).filter(Boolean)), "y");
   const setRule = (rid, patch) => onChange(rules.map(r => r._rid === rid ? { ...r, ...patch } : r));
   const addRule = () => onChange([...rules, { _rid: newRid(), enabled: true, category: "google", action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
@@ -1752,7 +1757,9 @@ function RoutingRules({ node, rules, onChange }) {
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
           <option value="custom">Custom IPs / domains…</option>
-          ${SMART_CATEGORIES.map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
+          ${SMART_CATEGORIES.filter(([id]) => id === "all" || !hiddenCats.has(id)).map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
+          ${customLists.length ? html`<optgroup label="Custom lists">${customLists.map(l => html`<option value=${l.id}>${l.title}</option>`)}</optgroup>` : null}
+          ${(() => { const shown = new Set(["custom", "all", ...SMART_CATEGORIES.filter(([id]) => !hiddenCats.has(id)).map(([id]) => id), ...customLists.map(l => l.id)]); return r.category && !shown.has(r.category) ? html`<option value=${r.category}>${catLabel(r.category)} (hidden)</option>` : null; })()}
         </select>
         <span class="rrarrow">→</span>
         <select class="selwrap" value=${destVal(r)} onChange=${e => onDest(r._rid, e.target.value)}>
@@ -1761,7 +1768,7 @@ function RoutingRules({ node, rules, onChange }) {
           ${others.length ? html`<optgroup label="Exit via node">${others.map(n => html`<option value=${"exit|" + n.id}>→ ${n.name}</option>`)}</optgroup>` : null}
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => onChange(rules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
-        ${self ? html`<span class="rrlint">can't exit via itself</span>` : shadowed ? html`<span class="rrlint">unreachable — an earlier "All traffic" rule already matches everything</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${SMART_CAT_LABEL[r.category] || "custom-domains"} rule</span>` : null}
+        ${self ? html`<span class="rrlint">can't exit via itself</span>` : shadowed ? html`<span class="rrlint">unreachable — an earlier "All traffic" rule already matches everything</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
         ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder="IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com" value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${(r.targets || "").trim() ? null : html`<span class="rrlint">add at least one IP or domain</span>`}` : null}
       </div>`;
     })}</div>
@@ -2018,11 +2025,11 @@ function ConnectionEditSheet({ node, iface }) {
     && allMeta[k].egress_mode === "forward" && allMeta[k].egress_node === peer)
     .map(k => ({ iface: k, subnet: allMeta[k].subnet, ip: allMeta[k].egress_ip }));
   // interfaces that SMART-route some destination categories out through this link (not the whole iface)
+  const _listTitle = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
   const smartCarried = Object.keys(allMeta).filter(k => !allMeta[k].system && allMeta[k].egress_mode === "smart")
     .map(k => ({ iface: k, cats: (allMeta[k].routing || []).filter(r => r.action === "exit" && r.node === peer)
-      .map(r => r.category === "custom" ? [...(r.domains || []), ...(r.cidrs || [])].join(", ") || "custom" : (SMART_CAT_LABEL[r.category] || r.category)) }))
+      .map(r => r.category === "custom" ? [...(r.domains || []), ...(r.cidrs || [])].join(", ") || "custom" : (SMART_CAT_LABEL[r.category] || _listTitle[r.category] || r.category)) }))
     .filter(x => x.cats.length);
-  const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`;
   const peerNm = html`<b style=${"color:" + Store.nodeColor(peer)}>${Store.nodeName(peer)}</b>`;
   return html`<${Sheet} title=${"Connection to " + Store.nodeName(peer)} width=${680} onClose=${closeModal}
@@ -3553,9 +3560,12 @@ function PanelSettingsScreen() {
   const [turnMir, setTurnMir] = useState(mir.turn || "");
   const [sc, setSc] = useState(ps.store_configs === true ? "on" : ps.store_configs === false ? "off" : "default");
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
-  const [staleMs, setStaleMs] = useState(String(adv.node_stale_ms || 30000));
-  const [graceMs, setGraceMs] = useState(String(adv.peer_grace_ms || 60000));
+  const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
+  const [graceS, setGraceS] = useState(String(Math.round((adv.peer_grace_ms || 60000) / 1000)));
   const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
+  const [hidden, setHidden] = useState(new Set(ps.hidden_categories || []));   // built-in categories hidden from the routing dropdown
+  const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
+  const [section, setSection] = useState("routing");   // active left-rail section
   const rsv = ps.reserved || {};
   const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
   const [rsvPort, setRsvPort] = useState(String(rsv.mesh_port_base || 9999));
@@ -3574,71 +3584,111 @@ function PanelSettingsScreen() {
       throughput_perspective: tput,
       reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
       mesh_awg: awgSet ? awg : {},
-      advanced: { node_stale_ms: +staleMs || 30000, peer_grace_ms: +graceMs || 60000, geo_ttl_days: +ttlD || 3 },
+      advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
+      hidden_categories: [...hidden],
+      custom_lists: lists.map(({ _rid, domains, cidrs, ...l }) => l),   // send id/title/targets/enabled; backend re-derives domains+cidrs
     });
     if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
     setMsg({ ok: true, t: "Saved." });
     await Store.poll();
   };
   const refreshGeo = async () => { const r = await api.refreshGeo(); toast(r.ok ? "Geo lists will refresh on each node's next sync." : (r.error || "Failed"), r.ok ? "ok" : "err"); };
-  return html`<div class="screen">
-    <div class="crumb"><b>Panel settings</b></div>
-    <div class="card" style="max-width:620px">
-      ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
-      <div class="seclabel" style="margin-top:0">New-interface defaults</div>
-      <p class="hint" style="margin:0 0 12px">Applied when creating a new interface — you can still override per interface.</p>
-      <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="https://8.8.8.8/dns-query, 1.1.1.1"/><div class="hint">Comma-separated</div></div>
-      <div class="row2">
-        <div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
-        <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div>
-      </div>
-      <div class="seclabel">Mirrors</div>
-      <p class="hint" style="margin:0 0 12px">Optional proxy prefixes for nodes that can't reach GitHub directly (geo CIDR lists / turn binaries). Blank = fetch direct.</p>
-      <div class="field"><label>Geo lists mirror</label><input value=${geoMir} onInput=${e => setGeoMir(e.target.value)} placeholder="https://mirror.example/"/></div>
-      <div class="field"><label>Turn binaries mirror</label><input value=${turnMir} onInput=${e => setTurnMir(e.target.value)} placeholder="https://mirror.example/"/>
-        <div style="margin-top:8px"><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh geo lists now</button> <span class="faint" style="font-size:11px">forces every node to re-fetch on its next sync</span></div></div>
-      <div class="seclabel">Client configs</div>
-      <div class="field"><label>Store client configs</label>
-        <select class="selwrap" value=${sc} onChange=${e => setSc(e.target.value)}>
-          <option value="default">Default (fleet.json)</option>
-          <option value="on">On — keep configs (QRs re-viewable anytime)</option>
-          <option value="off">Off — never store private keys</option>
-        </select>
-        <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off"
-          ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute."
-          : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
-      <div class="seclabel">Display</div>
-      <div class="field"><label>Throughput perspective</label>
-        <select class="selwrap" value=${tput} onChange=${e => setTput(e.target.value)}>
-          <option value="nodes">Nodes — what the node downloads / uploads</option>
-          <option value="peers">Peers — what the client downloads / uploads</option>
-        </select>
-        <div class="hint">Which way ↓/↑ are labelled across the panel. "Nodes" shows the node's own rx/tx; "Peers" flips it to the client's view (a client's download is what the node uploads to it). Same numbers, swapped arrows.</div></div>
-      <button type="button" class="advtoggle" onClick=${() => setShowAdv(a => !a)}><span class="advcaret">${showAdv ? "▾" : "▸"}</span> Advanced</button>
-      ${showAdv ? html`<${Fragment}>
-        <div class="row2" style="margin-top:8px">
-          <div class="field"><label>Node stale after (ms)</label><input value=${staleMs} onInput=${e => setStaleMs(e.target.value)} placeholder="30000"/></div>
-          <div class="field"><label>Peer grace window (ms)</label><input value=${graceMs} onInput=${e => setGraceMs(e.target.value)} placeholder="60000"/></div>
-        </div>
-        <div class="field"><label>Geo list refresh interval (days)</label><input value=${ttlD} onInput=${e => setTtlD(e.target.value)} placeholder="3"/></div>
-        <div class="seclabel">Reserved (system mesh)</div>
-        <p class="hint" style="margin:0 0 12px">Ranges the panel-managed inter-node mesh owns. User interfaces and turn-proxies can't use these. Changing them affects <b>new</b> links only — existing links keep their current addresses.</p>
-        <div class="row2">
-          <div class="field"><label>Mesh subnet</label><input value=${rsvSubnet} onInput=${e => setRsvSubnet(e.target.value)} placeholder="10.255.0.0/16"/></div>
-          <div class="field"><label>Mesh port (base)</label><input value=${rsvPort} onInput=${e => setRsvPort(e.target.value)} placeholder="9999"/></div>
-        </div>
-        <div class="field"><label>Interface name prefix</label><input value=${rsvPrefix} onInput=${e => setRsvPrefix(e.target.value)} placeholder="swg_"/><div class="hint">Mesh link interfaces are named <span class="mono">${(rsvPrefix || "swg_")}&lt;hex&gt;</span>.</div></div>
-        <div class="seclabel">Default mesh AWG params</div>
-        <p class="hint" style="margin:0 0 10px">AmneziaWG obfuscation for <b>new</b> mesh links — both ends of a link always share one set. Blank = a fresh set is generated per link. Existing links keep theirs; re-provision a node to adopt these.</p>
-        <button type="button" class="advtoggle" onClick=${() => setShowAwg(a => !a)}><span class="advcaret">${showAwg ? "▾" : "▸"}</span> ${awgSet ? "Show AWG params" : "Set AWG params"}${awgSet ? "" : html` <span class="faint" style="font-weight:400">(auto)</span>`}</button>
-        ${showAwg ? html`<div style="margin-top:8px">
-          <${AwgGrid} value=${awg} onChange=${setAwg}/>
-          <div style="margin-top:8px;display:flex;gap:8px"><button type="button" class="btn btn-mini" onClick=${() => setAwg(genAwg())}><${Ic} i="refresh"/> Generate a set</button>${awgSet ? html`<button type="button" class="btn btn-mini" onClick=${() => setAwg({})}>Clear (auto)</button>` : null}</div>
+  const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
+  const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => setLists(ls => l ? ls.map(x => x._rid === nl._rid ? nl : x) : [...ls, nl])} onClose=${closeModal}/>`);
+  const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
+  const SECTIONS = [["routing", "Routing lists"], ["geo", "Geo data"], ["defaults", "New-interface defaults"], ["timing", "Status timing"], ["configs", "Client configs"], ["display", "Display"], ["mesh", "System mesh"]];
+  const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
+  const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
+  return html`<div class="screen setscreen">
+    <div class="sethead"><b>Panel settings</b><span class="grow"></span>
+      <button class="btn" onClick=${() => history.back()}>Back</button>
+      <button class="btn btn-primary" onClick=${save}>Save</button></div>
+    ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
+    <div class="setbody">
+      <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}</button>`)}</nav>
+      <div class="setpane">
+        ${section === "routing" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Built-in lists</div>
+          <p class="hint" style="margin:0 0 12px">Tick the categories you want available in an interface's routing rules; unticked ones are hidden from the dropdown (existing rules keep working). "All traffic (catch-all)" and "Custom IPs / domains" are always available.</p>
+          <div class="catgrid">${sysCats.map(([id, lbl]) => html`<label class="chk"><input type="checkbox" checked=${!hidden.has(id)} onChange=${e => toggleCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>
+          <div class="seclabel">Custom lists</div>
+          <p class="hint" style="margin:0 0 10px">Your own reusable IP/domain lists. Enabled ones appear in the routing dropdown; a rule that uses a list updates automatically when you edit it.</p>
+          <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row" key=${l._rid}>
+            <label class="chk" title="Show in the routing dropdown"><input type="checkbox" checked=${l.enabled !== false} onChange=${e => setList(l._rid, { enabled: e.target.checked })}/></label>
+            <button class="cl-name" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button>
+            <span class="grow"></span><span class="faint cl-meta">${entryCount(l.targets)} entr${entryCount(l.targets) === 1 ? "y" : "ies"}</span>
+            <button class="xbtn" title="Delete list" onClick=${() => setLists(ls => ls.filter(x => x._rid !== l._rid))}><${Ic} i="x"/></button>
+          </div>`) : html`<div class="hint">No custom lists yet.</div>`}</div>
+          <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
         </div>` : null}
-      <//>` : null}
-      <div style="margin-top:14px"><button class="btn btn-primary" onClick=${save}>Save changes</button></div>
+        ${section === "geo" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>
+          <p class="hint" style="margin:0 0 12px">Country / provider IP ranges (for the geoip routing categories) are public lists each node fetches over HTTPS: <b>Loyalsoldier/geoip</b> (countries + most providers) and <b>ipverse/asn-ip</b> (ASN-based, e.g. Yandex / VK). Domain-tier categories don't use these — the node's dnsmasq fills them live as clients resolve.</p>
+          <div class="field"><label>Auto-update interval (days)</label><input value=${ttlD} onInput=${e => setTtlD(e.target.value)} placeholder="3"/><div class="hint">How often a node re-fetches each list (a failed fetch backs off to hourly).</div></div>
+          <div style="margin:2px 0 16px"><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh geo lists now</button> <span class="faint" style="font-size:11px">forces every node to re-fetch on its next sync</span></div>
+          <div class="field"><label>Geo lists mirror (optional)</label><input value=${geoMir} onInput=${e => setGeoMir(e.target.value)} placeholder="https://mirror.example/"/><div class="hint">Proxy prefix for nodes that can't reach GitHub directly. Blank = fetch direct.</div></div>
+          <div class="field"><label>Turn binaries mirror (optional)</label><input value=${turnMir} onInput=${e => setTurnMir(e.target.value)} placeholder="https://mirror.example/"/></div>
+        </div>` : null}
+        ${section === "defaults" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">New-interface defaults</div>
+          <p class="hint" style="margin:0 0 12px">Applied when creating a new interface — you can still override per interface.</p>
+          <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="https://8.8.8.8/dns-query, 1.1.1.1"/><div class="hint">Comma-separated</div></div>
+          <div class="row2"><div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
+            <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div></div>
+        </div>` : null}
+        ${section === "timing" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Status timing</div>
+          <p class="hint" style="margin:0 0 12px">How long the panel waits before treating things as stale — in seconds.</p>
+          <div class="row2"><div class="field"><label>Node stale after (s)</label><input value=${staleS} onInput=${e => setStaleS(e.target.value)} placeholder="30"/><div class="hint">No sync for this long → the node shows stale.</div></div>
+            <div class="field"><label>Peer grace window (s)</label><input value=${graceS} onInput=${e => setGraceS(e.target.value)} placeholder="60"/><div class="hint">A peer stays "online" this long after its last handshake.</div></div></div>
+        </div>` : null}
+        ${section === "configs" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Client configs</div>
+          <div class="field"><label>Store client configs</label>
+            <select class="selwrap" value=${sc} onChange=${e => setSc(e.target.value)}>
+              <option value="default">Default (fleet.json)</option>
+              <option value="on">On — keep configs (QRs re-viewable anytime)</option>
+              <option value="off">Off — never store private keys</option>
+            </select>
+            <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off" ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute." : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
+        </div>` : null}
+        ${section === "display" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Display</div>
+          <div class="field"><label>Throughput perspective</label>
+            <select class="selwrap" value=${tput} onChange=${e => setTput(e.target.value)}>
+              <option value="nodes">Nodes — what the node downloads / uploads</option>
+              <option value="peers">Peers — what the client downloads / uploads</option>
+            </select>
+            <div class="hint">Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.</div></div>
+        </div>` : null}
+        ${section === "mesh" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">System mesh (reserved)</div>
+          <p class="hint" style="margin:0 0 12px">Ranges the panel-managed inter-node mesh owns — user interfaces and turn-proxies can't use these. Changing them affects <b>new</b> links only; existing links keep their addresses.</p>
+          <div class="row2"><div class="field"><label>Mesh subnet</label><input value=${rsvSubnet} onInput=${e => setRsvSubnet(e.target.value)} placeholder="10.255.0.0/16"/></div>
+            <div class="field"><label>Mesh port (base)</label><input value=${rsvPort} onInput=${e => setRsvPort(e.target.value)} placeholder="9999"/></div></div>
+          <div class="field"><label>Interface name prefix</label><input value=${rsvPrefix} onInput=${e => setRsvPrefix(e.target.value)} placeholder="swg_"/><div class="hint">Mesh link interfaces are named <span class="mono">${(rsvPrefix || "swg_")}&lt;hex&gt;</span>.</div></div>
+          <div class="seclabel">Default mesh AWG params</div>
+          <p class="hint" style="margin:0 0 10px">AmneziaWG obfuscation for <b>new</b> mesh links — both ends share one set. Blank = a fresh set per link; re-provision a node to adopt these.</p>
+          <button type="button" class="advtoggle" onClick=${() => setShowAwg(a => !a)}><span class="advcaret">${showAwg ? "▾" : "▸"}</span> ${awgSet ? "Show AWG params" : "Set AWG params"}${awgSet ? "" : html` <span class="faint" style="font-weight:400">(auto)</span>`}</button>
+          ${showAwg ? html`<div style="margin-top:8px"><${AwgGrid} value=${awg} onChange=${setAwg}/>
+            <div style="margin-top:8px;display:flex;gap:8px"><button type="button" class="btn btn-mini" onClick=${() => setAwg(genAwg())}><${Ic} i="refresh"/> Generate a set</button>${awgSet ? html`<button type="button" class="btn btn-mini" onClick=${() => setAwg({})}>Clear (auto)</button>` : null}</div></div>` : null}
+        </div>` : null}
+      </div>
     </div>
   </div>`;
+}
+
+function CustomListSheet({ list, onSave, onClose }) {
+  const [title, setTitle] = useState(list?.title || "");
+  const [targets, setTargets] = useState(list ? (list.targets ?? [...(list.domains || []), ...(list.cidrs || [])].join(", ")) : "");
+  const save = () => { onSave({ ...(list || { _rid: newRid() }), title: title.trim() || "Untitled list", targets }); onClose(); };
+  const foot = html`<button class="btn" onClick=${onClose}>Cancel</button><button class="btn btn-primary" onClick=${save}>${list ? "Save" : "Add"}</button>`;
+  return html`<${Sheet} title=${list ? "Edit list" : "New list"} width=${520} onClose=${onClose} foot=${foot}>
+    <div class="field"><label>Title</label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder="e.g. Streaming"/></div>
+    <div class="field"><label>IPs / domains</label>
+      <textarea class="rrdoms" rows="1" spellcheck="false" placeholder="comma-separated — spotify.com, 1.2.3.0/24, sub.example.com" value=${targets} onInput=${e => { autoGrow(e.target); setTargets(e.target.value); }} ref=${el => autoGrow(el)}/>
+      <div class="hint">Domains match their subdomains too; IPs / CIDRs are matched directly.</div></div>
+  <//>`;
 }
 
 // Account form as a modal (opened from the header user icon).
