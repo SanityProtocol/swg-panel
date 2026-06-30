@@ -692,6 +692,9 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-cpu .nm-v{flex:none;min-width:50px;text-align:right}
 /* controls: pinned to the right of the turn-proxies row */
 .nacts{display:flex;align-items:center;gap:4px;background:transparent;cursor:default}
+/* per-card controls now ride their metric line: gear on the CPU-load row, trash on the throughput row */
+.ncard .ntop .nctl{flex:none;margin-left:3px}
+.nm-row>.nctl{flex:none;align-self:center;margin-left:2px}
 @media(max-width:680px){.nmeta{grid-template-columns:1fr}}
 .btn-danger{background:rgba(240,89,107,.1);color:var(--dangling);border:1px solid rgba(240,89,107,.32);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
 .btn-danger:hover{background:rgba(240,89,107,.2)}

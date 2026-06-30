@@ -3520,6 +3520,7 @@ function NodeCard({ n, reorder }) {
       <span class="grow"></span>
       ${(n.mesh_peers || []).length ? html`<span class="nm-meshitem"><${MeshStat} nodeId=${n.id} mode="both"/></span>` : null}
       <span class="nm-item nm-cpuitem"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style=${"color:" + htcolor(cpct)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
+      <button class="iconbtn nctl" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${e => { e.stopPropagation(); openNodeEdit(n); }}><${Ic} i="gear"/></button>
     </div>
     <div class="nmeta">
       <span class="nm-item nm-peersitem">${here.length
@@ -3533,16 +3534,12 @@ function NodeCard({ n, reorder }) {
           <span class="nm-thru"><span class="nm-l">Throughput</span>${st === "online"
             ? html`<span class="nm-v thru"><span class="down">↓ ${rate(dlul(n.rx_speed, n.tx_speed)[0])}</span><span class="up">↑ ${rate(dlul(n.rx_speed, n.tx_speed)[1])}</span></span>`
             : html`<span class="nm-v faint">—</span>`}</span>
+          <button class="iconbtn nctl danger" title=${removing ? "Force remove" : "Remove node"} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>
         </div>
-        <div class="nm-row">
-          ${turnEnabled() ? html`<${Fragment}><span class="nm-l">Turn-proxies</span>
-          <span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span><//>` : html`<span class="tags"></span>`}
-          <div class="nacts" onClick=${e => e.stopPropagation()}>
-            <button class="iconbtn" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${() => openNodeEdit(n)}><${Ic} i="gear"/></button>
-            ${ndown ? null : html`<button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(n)}><${Ic} i="key"/></button>`}
-            <button class="iconbtn danger" title=${removing ? "Force remove" : "Remove node"} onClick=${() => openNodeRemove(n)}><${Ic} i="trash"/></button>
-          </div>
-        </div>
+        ${turnEnabled() ? html`<div class="nm-row">
+          <span class="nm-l">Turn-proxies</span>
+          <span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span>
+        </div>` : null}
       </div>
     </div>
   </div>`;
@@ -3712,7 +3709,7 @@ function PanelSettingsScreen() {
   const diffList = () => {
     const out = [];
     if (glDirty("routing")) out.push("Routing lists — built-in / custom");
-    if (secChanged()) out.push("Security — panel credentials");
+    if (secChanged()) out.push("Authentication — panel credentials");
     if (glDirty("turn")) out.push("Turn proxies — install picker");
     if (glDirty("geo")) out.push("Geo data");
     if (glDirty("defaults")) out.push("Interface defaults");
@@ -3746,7 +3743,7 @@ function PanelSettingsScreen() {
   const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
   const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => setLists(ls => l ? ls.map(x => x._rid === nl._rid ? nl : x) : [...ls, nl])} onClose=${closeModal}/>`);
   const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
-  const SECTIONS = [["display", "Display"], ["security", "Security"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
+  const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   // per-node context: the node whose mode/lists/mesh/egress we're editing — defaults to the first node (no "default")
@@ -3844,7 +3841,7 @@ function PanelSettingsScreen() {
             <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div></div>
         </div>` : null}
         ${section === "security" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">Security</div>
+          <div class="seclabel" style="margin-top:0">Authentication</div>
           <p class="hint" style="margin:0 0 14px">Change the panel username and password — applied on <b>Save</b>. Changing either takes effect immediately and you'll be asked to sign in again.</p>
           ${!secAuth ? html`<div class="formmsg err">This panel has no login configured — changes are disabled.</div>` : (secErr() ? html`<div class="formmsg err">${secErr()}</div>` : null)}
           <div class="field"><label>Username</label><input value=${secUser} disabled=${!secAuth} onInput=${e => setSecUser(e.target.value)} autocomplete="username"/></div>
@@ -4733,7 +4730,7 @@ function NodeEditSheet({ node }) {
   const meshAwg = node.mesh_awg || {};
   const hasAwg = AWG_KEYS.some(k => meshAwg[k] != null && meshAwg[k] !== "");
   return html`<${Sheet} title=${"Node settings · " + node.name}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
+    foot=${html`<${Fragment}><button class="btn btn-ghost" title="Rotate this node's enrollment token (re-enroll / re-install)" onClick=${() => openNodeRotate(node)}><${Ic} i="key"/> Rotate key</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
     <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes."}</div></div>
     <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
     <div class="seclabel">Egress</div>
