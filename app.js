@@ -1712,10 +1712,12 @@ function suggestSubnet(node) {
 // Two-dropdown egress: where an interface's traffic exits — Auto, Direct out a NIC, or Forward (cascade)
 // to another node — plus the source IP (this node's, or the TARGET node's for forward). value =
 // {mode:"auto"|"direct"|"forward", nic, node, ip}; the routing for "forward" is wired in Phase 2.
-// Phase 3 smart-routing categories (keep in sync with SMART_CATEGORIES in swg-panel-server). Each is a
-// provider-level destination set; the node routes its IPs (geoip) into the chosen exit's mesh link.
+// Phase 3 smart-routing categories (keep in sync with SMART_CATEGORIES in swg-panel-server). A category is a
+// destination set the node routes into the chosen exit's mesh link. Domain-tier ones (Google/YouTube/Yandex/
+// VK/Meta/Twitter/Netflix) match by domain via the node's dnsmasq — so YouTube splits from the rest of Google;
+// the rest (Telegram/Cloudflare/Russia/All) match by provider IP ranges (geoip).
 const SMART_CATEGORIES = [
-  ["google", "Google (incl. YouTube)"], ["yandex", "Yandex"], ["vk", "VK"], ["telegram", "Telegram"],
+  ["google", "Google"], ["youtube", "YouTube"], ["yandex", "Yandex"], ["vk", "VK"], ["telegram", "Telegram"],
   ["cloudflare", "Cloudflare"], ["meta", "Meta (FB / IG / WA)"], ["twitter", "Twitter / X"],
   ["netflix", "Netflix"], ["ru", "Russia (country)"], ["all", "All traffic (catch-all)"],
 ];

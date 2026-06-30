@@ -178,6 +178,12 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools if missing (idem
   $DRYRUN && return 0
   have "$cmd"
 }
+ensure_smart_tools(){ # nftables (smart-routing marking) + dnsmasq (domain-tier set filling) — idempotent, non-fatal
+  have nft     || { run apt-get update -qq || true; run apt-get install -y nftables || true; }
+  have dnsmasq || { run apt-get update -qq || true; run apt-get install -y dnsmasq  || true; }
+  # the node runs its OWN dnsmasq on loopback:5354 via swg-noded; disable the distro service so it can't grab :53
+  run systemctl disable --now dnsmasq 2>/dev/null || true
+}
 awg_obfuscation(){ # AmneziaWG v2 obfuscation — H1–H4 ranges, S1–S4, conservative QUIC-Initial I1
   local s1 s2 s3 s4 b1 b2 b3 b4 w=15
   s1=$(( 15 + RANDOM % 136 )); s2=$(( 15 + RANDOM % 136 ))
@@ -815,6 +821,7 @@ mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent" "$PREFIX/etc/sw
 info "Installing WireGuard + AmneziaWG tools (for future interface creation)"
 ensure_wg_tools wg  || warn "wireguard tools not installed — wg interface creation will need them"
 ensure_wg_tools awg || warn "amneziawg tools not installed (the amnezia ppa is Ubuntu-only) — awg interface creation will need them"
+ensure_smart_tools  # nftables + dnsmasq for Phase-3 smart routing (domain tier); harmless if already present
 
 # ───────────────────────── config.json (pull-only HTTPS) ─────────────────────────
 IFJSON=""; sep=""

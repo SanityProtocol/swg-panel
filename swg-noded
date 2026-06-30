@@ -856,10 +856,11 @@ GEO_RETRY = 3600             # …but back off failed/missing fetches to once an
 _CIDR4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 # category → upstream source specs. "LS:<file>" = Loyalsoldier/geoip release text/<file>.txt;
 # "AS:<asn>" = ipverse/asn-ip as/<asn>/ipv4-aggregated.txt. Multiple specs are unioned (e.g. VK's two ASNs).
+# GEOIP-filled categories only. google/youtube/yandex/vk/meta/twitter/netflix moved to the domain tier
+# (panel DOMAIN_BUNDLES → dnsmasq) so e.g. YouTube can split from Google; the IP-direct / country / CDN
+# categories below stay geoip because domains don't capture them well.
 GEO_SOURCES = {
-    "google": ["LS:google"], "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"],
-    "netflix": ["LS:netflix"], "meta": ["LS:facebook"], "twitter": ["LS:twitter"], "ru": ["LS:ru"],
-    "yandex": ["AS:13238"], "vk": ["AS:47541", "AS:47542"],
+    "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"], "ru": ["LS:ru"],
 }
 
 
@@ -910,11 +911,12 @@ def _nft_load_set(setname, cidrs):
     return rc
 
 
-def _smart_geo_refresh(categories, set_counts, res):
+def _smart_geo_refresh(categories, set_counts, res, skip=()):
     """Ensure each needed category's CIDR list is cached + fresh and loaded into its nft set. Fetches only
     when the cache is missing/stale (TTL-gated, so most syncs do nothing); reloads the set when the data
     changed OR the live set is empty (e.g. after a reboot — nft sets aren't persistent). Failures leave the
-    set as-is (inert / last-good) and retry next TTL."""
+    set as-is (inert / last-good) and retry next TTL. `skip` = domain-filled categories (dnsmasq owns those
+    sets — geo-fetch must never touch them, else a provider's whole IP range would re-merge the split apart)."""
     if not categories:
         return
     try:
@@ -922,8 +924,8 @@ def _smart_geo_refresh(categories, set_counts, res):
     except OSError as e:
         res["errors"].append("smart geo dir: " + str(e)); return     # can't cache → skip (sets stay inert)
     for cat in categories:
-        if cat == "all":
-            continue                                           # the catch-all matches any dest — no geo set to load
+        if cat == "all" or cat in skip:
+            continue                                           # catch-all → no set; domain cats → dnsmasq-filled
         try:                                                   # one bad category must never crash the sync loop
             sn = _smart_setname(cat)
             path = os.path.join(GEO_DIR, cat + ".txt")
@@ -964,6 +966,101 @@ def _smart_geo_refresh(categories, set_counts, res):
                     res["errors"].append("smart geo load " + cat + " failed")
         except Exception as e:
             res["errors"].append("smart geo " + cat + ": " + str(e)[:120])
+
+
+# ── domain tier: a dedicated dnsmasq fills the domain-category nft sets. Smart-interface clients have their
+#    DNS transparently DNAT-redirected here, so every lookup of a bundle domain adds its answer IPs to cat_<c>
+#    — the same set the marking chain matches. Managed from the sync loop (configured/started/torn down each
+#    pass, self-healing like the nft rules). The set fills as clients browse; no static IP list to go stale.
+SMART_DNS_PORT = 5354                                           # dnsmasq listens here on loopback (system :53 untouched)
+DNSMASQ_BIN  = "dnsmasq"
+DNSMASQ_CONF = os.path.join(STATE_DIR, "smart-dnsmasq.conf")
+DNSMASQ_PID  = os.path.join(STATE_DIR, "smart-dnsmasq.pid")
+SMARTDNS_TAG = "swg-smartdns"                                   # iptables comment tag for the DNS-redirect rules
+
+
+def _dnsmasq_running():
+    """Our dnsmasq's pid if alive, else 0 (stale/absent pid-file → 0)."""
+    try:
+        pid = int(open(DNSMASQ_PID).read().strip())
+        os.kill(pid, 0)                                        # signal 0 = liveness probe, sends nothing
+        return pid
+    except (OSError, ValueError):
+        return 0
+
+
+def _dnsmasq_stop():
+    pid = _dnsmasq_running()
+    if pid:
+        run(["kill", str(pid)])
+    for p in (DNSMASQ_PID, DNSMASQ_CONF):
+        with contextlib.suppress(OSError):
+            os.unlink(p)
+
+
+def _smart_dns_redirect(subnets, res):
+    """DNAT udp/tcp :53 from each smart subnet → our dnsmasq (127.0.0.1:SMART_DNS_PORT), tag-reconciled so it
+    converges (add wanted / drop stale) without churn. Empty subnets → remove all our redirect rules. The
+    route_localnet sysctl lets a forwarded packet DNAT to loopback (off by default)."""
+    want = {(S, proto) for S in subnets for proto in ("udp", "tcp")}
+    out = getattr(run(["iptables", "-t", "nat", "-S", "PREROUTING"]), "stdout", "") or ""
+    live = set()
+    for ln in out.splitlines():
+        if SMARTDNS_TAG not in ln:
+            continue
+        ms = re.search(r"-s (\S+)", ln); mp = re.search(r"-p (\w+)", ln)
+        if ms and mp:
+            S = ms.group(1)
+            live.add((S if "/" in S else S + "/32", mp.group(1)))
+    if want and not live:
+        run(["sysctl", "-q", "-w", "net.ipv4.conf.all.route_localnet=1"])
+
+    def rule(S, proto):
+        return ["-s", S, "-p", proto, "--dport", "53", "-m", "comment", "--comment", SMARTDNS_TAG,
+                "-j", "DNAT", "--to-destination", "127.0.0.1:" + str(SMART_DNS_PORT)]
+    for (S, proto) in sorted(want - live):
+        run(["iptables", "-t", "nat", "-A", "PREROUTING"] + rule(S, proto)); res["changed"] += 1
+    for (S, proto) in sorted(live - want):
+        run(["iptables", "-t", "nat", "-D", "PREROUTING"] + rule(S, proto)); res["changed"] += 1
+
+
+def _ensure_smart_dnsmasq(domains, smart_e, res):
+    """(Re)configure + run the domain-tier dnsmasq and redirect smart-subnet DNS to it. domains = {cat:[domain]}
+    for the active domain categories; smart_e gives the source subnets. Nothing wanted → full teardown."""
+    subnets = sorted({e["subnet"] for e in smart_e})
+    want = bool(domains and subnets)
+    _smart_dns_redirect(subnets if want else [], res)
+    if not want:
+        if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
+            _dnsmasq_stop(); res["changed"] += 1
+        return
+    conf = ["# managed by swg-noded — domain-tier smart routing (do not edit)",
+            "port=" + str(SMART_DNS_PORT), "listen-address=127.0.0.1", "bind-interfaces",
+            "no-resolv", "no-hosts", "cache-size=2000", "pid-file=" + DNSMASQ_PID]
+    conf += ["server=1.1.1.1", "server=8.8.8.8"]
+    for cat in sorted(domains):                                # nftset=/d1/d2/.../4#inet#swg_smart#cat_<c>
+        doms = [d for d in domains[cat] if d]
+        if doms:
+            conf.append("nftset=/" + "/".join(doms) + "/4#inet#" + SMART_NFT_TABLE + "#" + _smart_setname(cat))
+    body = "\n".join(conf) + "\n"
+    try:
+        cur = open(DNSMASQ_CONF).read()
+    except OSError:
+        cur = None
+    if cur != body:
+        try:
+            with open(DNSMASQ_CONF, "w") as f:
+                f.write(body)
+        except OSError as e:
+            res["errors"].append("smart dnsmasq conf: " + str(e)); return
+        if _dnsmasq_running():                                 # nftset directives are read only at startup → restart
+            _dnsmasq_stop()
+    if not _dnsmasq_running():                                 # (re)start, also self-heals after a reboot/crash
+        r = run([DNSMASQ_BIN, "--conf-file=" + DNSMASQ_CONF])
+        if getattr(r, "returncode", 1) != 0:
+            res["errors"].append("smart dnsmasq start: " + (getattr(r, "stderr", "") or "").strip()[:120])
+        else:
+            res["changed"] += 1
 
 
 def reconcile_dial_src(desired_by_iface, res):
@@ -1088,9 +1185,13 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e})
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res)
-    # populate the category sets from the cached geo CIDR lists (fetch is TTL-gated; reload only on change/empty)
+    domains = (smart or {}).get("domains") or {}               # domain-tier bundles {cat:[domain]} → dnsmasq-filled
+    # GEOIP cats fill from cached CIDR lists (TTL-gated); domain cats are owned by dnsmasq → skip them here.
     if smart_cats:
-        _smart_geo_refresh(smart_cats, set_counts or {}, res)
+        _smart_geo_refresh(smart_cats, set_counts or {}, res, skip=set(domains))
+    # domain tier: run/teardown the dnsmasq that fills domain sets + redirect smart-subnet DNS to it
+    if smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
+        _ensure_smart_dnsmasq(domains, smart_e, res)
     return res
 
 
@@ -1106,7 +1207,7 @@ def smart_status():
         els = re.search(r"elements = {(.*?)}", sm.group(2), re.S)
         sets[sm.group(1)] = len([x for x in (els.group(1).split(",") if els else []) if x.strip()])
     rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", out))
-    return {"active": rules > 0, "sets": sets, "rules": rules}
+    return {"active": rules > 0, "sets": sets, "rules": rules, "dnsmasq": bool(_dnsmasq_running())}
 
 
 def build_snapshot(node_cfg, online_max, last_samples, now=None):

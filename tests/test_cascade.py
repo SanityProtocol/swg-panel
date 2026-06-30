@@ -368,6 +368,52 @@ def test_node_geo():
     print("OK node: geo fetch→set load + change/empty reload-gating")
 
 
+def test_node_domain_dns():
+    """Phase 3 domain tier: a smart plan carrying domain bundles → a dnsmasq conf with nftset directives, the
+    dnsmasq (re)started, and smart-subnet DNS DNAT-redirected to it; an empty plan tears both down."""
+    import tempfile, os as _os
+    m = _load("swg_noded_dns", "swg-noded")
+    d = tempfile.mkdtemp()
+    m.DNSMASQ_CONF = _os.path.join(d, "dns.conf")
+    m.DNSMASQ_PID = _os.path.join(d, "dns.pid")
+    m._smart_geo_refresh = lambda *a, **k: None
+    calls = []
+
+    def R(rc=0, out=""):
+        class _R:
+            pass
+        r = _R(); r.returncode = rc; r.stdout = out; r.stderr = ""; return r
+    NAT = {"out": ""}
+
+    def fake(args, **k):
+        c = [str(x) for x in args]; calls.append(c)
+        if c[:1] == ["nft"]:
+            return R(1) if c[1:3] == ["list", "table"] else R(0)
+        if c[:1] == ["iptables"] and "-S" in c:
+            return R(0, NAT["out"])
+        return R(0)
+    m.run = fake; m._detect_wan = lambda: "eth0"
+    smart = {"entries": [{"subnet": "10.8.0.0/24", "category": "google", "via_iface": "swg_AB", "table": 7000}],
+             "categories": ["google"], "domains": {"google": ["google.com", "gstatic.com"]}}
+    m.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": []}, smart)
+    conf = open(m.DNSMASQ_CONF).read()
+    assert "nftset=/google.com/gstatic.com/4#inet#swg_smart#cat_google" in conf, conf
+    assert "port=5354" in conf and "listen-address=127.0.0.1" in conf
+    a = [" ".join(c) for c in calls]
+    assert any("dnsmasq --conf-file=" in x for x in a), a
+    assert any("iptables -t nat -A PREROUTING -s 10.8.0.0/24 -p udp --dport 53" in x and "DNAT" in x for x in a), a
+    assert any("net.ipv4.conf.all.route_localnet=1" in x for x in a)
+    # teardown: empty plan → DNS redirect removed + conf gone (simulate the live redirect so removal runs)
+    NAT["out"] = ("-A PREROUTING -s 10.8.0.0/24 -p udp -m comment --comment swg-smartdns --dport 53 -j DNAT --to-destination 127.0.0.1:5354\n"
+                  "-A PREROUTING -s 10.8.0.0/24 -p tcp -m comment --comment swg-smartdns --dport 53 -j DNAT --to-destination 127.0.0.1:5354\n")
+    calls.clear()
+    m.reconcile_cascade({"interfaces": {}}, {"forward": [], "exit": []}, {"entries": [], "categories": []})
+    a2 = [" ".join(c) for c in calls]
+    assert any("iptables -t nat -D PREROUTING -s 10.8.0.0/24 -p udp" in x for x in a2), a2
+    assert not _os.path.exists(m.DNSMASQ_CONF), "conf removed on teardown"
+    print("OK node: domain-tier dnsmasq conf + DNS redirect + teardown")
+
+
 def test_node_dial_src():
     """Part 3: a per-link dial_src installs a /32 source route to the peer endpoint; clearing it removes it."""
     import tempfile
@@ -423,6 +469,7 @@ def main():
     test_node_cascade()
     test_node_smart()
     test_node_geo()
+    test_node_domain_dns()
     test_node_dial_src()
     test_node_endpoint_redial()
     test_node_allowed_drift()
