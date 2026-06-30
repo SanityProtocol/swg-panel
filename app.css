@@ -63,6 +63,11 @@ h1,h2,h3{font-family:var(--sans)}
 .livepill{display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   color:var(--dim);font-family:var(--mono);padding:5px 11px;border:1px solid var(--line-solid);border-radius:99px;background:var(--surface-2)}
 .livepill b{color:var(--online);font-weight:600;font-size:13px;letter-spacing:-.02em}
+/* the node-detail update lifecycle pills (update to … / updating / up to date) — sized to match the reporting
+   and docker/bare-metal badges (10px, tighter padding), a touch smaller than a normal livepill */
+.updpill,.upd-busy,.upd-uptodate{font-size:10px;padding:3px 9px;gap:6px;letter-spacing:.06em;line-height:1}
+.updpill b,.upd-busy b,.upd-uptodate b{font-size:11px}
+.updpill svg,.upd-busy svg,.upd-uptodate svg{width:11px;height:11px}
 .livepill .dot{width:7px;height:7px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(70,216,168,.55);animation:pulse 2.6s infinite}
 @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(70,216,168,.45)}50%{opacity:.55}70%{box-shadow:0 0 0 6px rgba(70,216,168,0)}}
 .livepill.off b{color:var(--dim)}                /* no peers online → grey count … */
