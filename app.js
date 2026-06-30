@@ -433,14 +433,14 @@ function ifaceNotUp(node, ifn) { const s = (((Store.stats[node] || {}).interface
 function turnDown(tp) { return tp && tp.running === false; }
 // turn badges for an interface card: one fork-coloured "turn" chip per distinct forwarding fork
 // (collapses to one in the common single-fork case), greyed when that fork's proxies are all down / node stale.
-function ifaceTurnBadges(node, fwdTurns) {
+function ifaceTurnBadges(node, fwdTurns, compact) {
   if (!fwdTurns || !fwdTurns.length) return null;
   const stale = nodeStale(node), groups = {};
   fwdTurns.forEach(tp => { const f = turnFork(tp.service); (groups[f] = groups[f] || []).push(tp); });
   return Object.entries(groups).map(([f, list]) => {
     const allDown = list.every(turnDown);
-    return html`<span class=${"tg tg-turn tf-" + f + ((stale || allDown) ? " muted" : "")}
-      title=${list.length + " " + f + " turn-prox" + (list.length > 1 ? "ies" : "y") + " forward to this interface" + (allDown ? " — down" : "")}>turn</span>`;
+    return html`<span class=${"tg tg-turn tf-" + f + ((stale || allDown) ? " muted" : "") + (compact ? " mini" : "")}
+      title=${list.length + " " + f + " turn-prox" + (list.length > 1 ? "ies" : "y") + " forward to this interface" + (allDown ? " — down" : "")}>${compact ? "t" : "turn"}</span>`;
   });
 }
 
@@ -1519,9 +1519,12 @@ function NodeDetail({ node: rawName }) {
               const iprog = (nrec.cmd_progress || {})[ifn];   // node "what's happening now" (yellow note) for this interface
               const iop = Store.ifaceOp[name + "|" + ifn];   // optimistic start/stop/restart lifecycle (set on click, before the node reflects it)
               const iopBusy = iop && iop.phase === "busy";
+              // a wide status badge is showing → keep it on one line by compacting the turn badges (turn→t) and
+              // letting the name ellipsize; reverts to full once no such status is shown
+              const tight = iopBusy || iconverting || deleting || idown || irestarting || !!(nrec.cmd_errors || {})[ifn];
               const idim = iconverting || deleting || idown || istopped || irestarting || iopBusy || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / stopped / in-flight / node gone dark → dim
               return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
-                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><button class="ifc-edit" title="Edit interface" onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><${Ic} i="pencil"/></button><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
+                <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><button class="ifc-edit" title="Edit interface" onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><${Ic} i="pencil"/></button><span class="grow"></span>${ifaceTurnBadges(name, fwdTurns, tight)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
                   <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${m.subnet || "—"}</span></div>
@@ -1724,6 +1727,8 @@ const SMART_CATEGORIES = [
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 let _ruleSeq = 0;
 const newRid = () => "rr" + (++_ruleSeq);
+// grow a textarea to fit its content (starts at one row like a textbox, expands as lines wrap)
+const autoGrow = el => { if (!el) return; el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; };
 
 // One smart-routing rule row: a category → a destination (exit node / direct / block). Reuses the
 // drag-reorder hook; order is priority (first match wins on the node).
@@ -1738,7 +1743,7 @@ function RoutingRules({ node, rules, onChange }) {
   const hasAll = rules.some(r => r.category === "all");
   return html`<div class="field"><label>Routing rules <span class="faint" style="text-transform:none;letter-spacing:0">— first match wins${hasAll ? "" : "; everything else exits direct"}</span></label>
     <div class="rrlist" ...${rs.container()}>${rules.map(r => {
-      const ckey = r.category === "custom" ? "custom:" + (r.domains || []).join(",") : r.category;
+      const ckey = r.category === "custom" ? "custom:" + (r.targets || "") : r.category;
       const dup = seen[ckey]; seen[ckey] = true;
       const shadowed = catchAll; if (r.category === "all") catchAll = true;
       const self = r.action === "exit" && r.node === node;
@@ -1746,8 +1751,8 @@ function RoutingRules({ node, rules, onChange }) {
       return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || shadowed) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
+          <option value="custom">Custom IPs / domains…</option>
           ${SMART_CATEGORIES.map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
-          <option value="custom">Custom domains…</option>
         </select>
         <span class="rrarrow">→</span>
         <select class="selwrap" value=${destVal(r)} onChange=${e => onDest(r._rid, e.target.value)}>
@@ -1757,7 +1762,7 @@ function RoutingRules({ node, rules, onChange }) {
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => onChange(rules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
         ${self ? html`<span class="rrlint">can't exit via itself</span>` : shadowed ? html`<span class="rrlint">unreachable — an earlier "All traffic" rule already matches everything</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${SMART_CAT_LABEL[r.category] || "custom-domains"} rule</span>` : null}
-        ${r.category === "custom" ? html`<input class="rrdoms" placeholder="domains — e.g. youtube.com, twitch.tv  (subdomains included)" value=${(r.domains || []).join(", ")} onInput=${e => setRule(r._rid, { domains: e.target.value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean) })}/>${(r.domains || []).length ? null : html`<span class="rrlint">add at least one domain</span>`}` : null}
+        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder="IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com" value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${(r.targets || "").trim() ? null : html`<span class="rrlint">add at least one IP or domain</span>`}` : null}
       </div>`;
     })}</div>
     <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span>${hasAll ? null : html`<span class="faint">Everything else → Direct (this node)</span>`}</div>
@@ -1799,7 +1804,7 @@ function EgressPicker({ node, value, onChange }) {
 }
 const egressInit = m => ({ mode: m.egress_mode === "smart" ? "smart" : m.egress_mode === "forward" ? "forward" : (m.egress_ip || m.wan_iface) ? "direct" : "auto",
   nic: m.wan_iface || "", node: m.egress_node || "", ip: m.egress_ip || "",
-  rules: (m.routing || []).map(r => ({ ...r, _rid: newRid() })) });
+  rules: (m.routing || []).map(r => ({ ...r, _rid: newRid(), ...(r.category === "custom" ? { targets: [...(r.domains || []), ...(r.cidrs || [])].join(", ") } : {}) })) });
 const egressBody = eg => eg.mode === "smart"
   ? { egress_mode: "smart", routing: (eg.rules || []).map(({ _rid, ...r }) => r) }
   : { egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" };
@@ -2015,7 +2020,7 @@ function ConnectionEditSheet({ node, iface }) {
   // interfaces that SMART-route some destination categories out through this link (not the whole iface)
   const smartCarried = Object.keys(allMeta).filter(k => !allMeta[k].system && allMeta[k].egress_mode === "smart")
     .map(k => ({ iface: k, cats: (allMeta[k].routing || []).filter(r => r.action === "exit" && r.node === peer)
-      .map(r => r.category === "custom" ? (r.domains || []).join(", ") || "custom domains" : (SMART_CAT_LABEL[r.category] || r.category)) }))
+      .map(r => r.category === "custom" ? [...(r.domains || []), ...(r.cidrs || [])].join(", ") || "custom" : (SMART_CAT_LABEL[r.category] || r.category)) }))
     .filter(x => x.cats.length);
   const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`;

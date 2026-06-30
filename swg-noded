@@ -986,6 +986,22 @@ def _smart_geo_refresh(categories, set_counts, res, skip=()):
             res["errors"].append("smart geo " + cat + ": " + str(e)[:120])
 
 
+def _smart_load_cidrs(cidrs_map, set_counts, res):
+    """Custom-rule raw IPs/CIDRs → ADDED into their nft set directly. The set ALSO fills from dnsmasq for the
+    rule's domain half, so we add elements (never flush, which would wipe the dnsmasq-resolved IPs). Add-only +
+    gated on the live element count, so steady state is a no-op; a post-reboot empty set re-loads them."""
+    for cat, cl in (cidrs_map or {}).items():
+        cl = [c for c in (cl or []) if c]
+        if not cl:
+            continue
+        sn = _smart_setname(cat)
+        if set_counts.get(sn, 0) >= len(cl):                   # already present (count covers them) → skip the churn
+            continue
+        for i in range(0, len(cl), 2000):
+            if run(["nft", "add", "element", "inet", SMART_NFT_TABLE, sn, "{ " + ", ".join(cl[i:i + 2000]) + " }"]).returncode == 0:
+                res["changed"] += 1
+
+
 # ── domain tier: a dedicated dnsmasq fills the domain-category nft sets. Smart-interface clients have their
 #    DNS transparently DNAT-redirected here, so every lookup of a bundle domain adds its answer IPs to cat_<c>
 #    — the same set the marking chain matches. Managed from the sync loop (configured/started/torn down each
@@ -1207,6 +1223,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     # GEOIP cats fill from cached CIDR lists (TTL-gated); domain cats are owned by dnsmasq → skip them here.
     if smart_cats:
         _smart_geo_refresh(smart_cats, set_counts or {}, res, skip=set(domains))
+    _smart_load_cidrs((smart or {}).get("cidrs") or {}, set_counts or {}, res)   # custom-rule raw IPs/CIDRs → into the set
     # domain tier: run/teardown the dnsmasq that fills domain sets + redirect smart-subnet DNS to it
     if smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
         _ensure_smart_dnsmasq(domains, smart_e, res)
