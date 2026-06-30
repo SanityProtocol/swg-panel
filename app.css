@@ -826,13 +826,18 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 
 /* ── Panel settings screen: sticky Back/Save header + left section rail + content pane ── */
 .setscreen{max-width:1000px}
-.sethead{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.sethead{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-right:4px}   /* Save sits ~4px inside the content-card right edge */
+.savedflash{color:var(--online);font-weight:600;font-size:13px;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+.savedflash svg{width:15px;height:15px}
 .sethead b{font-size:18px;letter-spacing:-.01em}
 .setbody{display:flex;gap:20px;align-items:flex-start}
 .setrail{flex:none;width:188px;display:flex;flex-direction:column;gap:2px;position:sticky;top:16px}
 .setrail-i{display:flex;align-items:center;justify-content:space-between;text-align:left;background:none;border:0;color:var(--faint);font:inherit;font-size:13px;padding:8px 12px;border-radius:8px;cursor:pointer;transition:background .12s,color .12s}
-.dirtydot{width:7px;height:7px;border-radius:50%;background:var(--brand);box-shadow:0 0 7px var(--brand);flex:none;margin-left:8px}
-.snbadge.dirty{box-shadow:0 0 0 2px color-mix(in srgb,var(--brand) 75%,transparent),0 0 11px color-mix(in srgb,var(--brand) 55%,transparent)}
+/* save-confirmation modal: the list of modified values + the reprovisioning warning */
+.savediff-h{font-weight:600;margin-bottom:8px}
+.savediff ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:5px}
+.savediff li{font-size:13px;color:var(--ink)}
+.savediff-w{margin-top:12px;padding-top:10px;border-top:1px solid var(--line-solid);color:var(--partial);font-size:12.5px;line-height:1.5}
 .setrail-i:hover{color:var(--ink);background:color-mix(in srgb,var(--ink) 4%,transparent)}
 .setrail-i.on{color:var(--ink);background:color-mix(in srgb,var(--brand) 16%,transparent);font-weight:600}
 .setpane{flex:1;min-width:0}

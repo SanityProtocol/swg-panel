@@ -3599,6 +3599,7 @@ function PanelSettingsScreen() {
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const setNV = (nid, patch) => setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
   const nv = (nid, f) => (nodeEdits[nid] || {})[f];
+  const [saved, setSaved] = useState(0);   // timestamp; the green "All settings saved" flash shows while now < saved
   const save = async () => {
     setMsg({ ok: true, t: "Saving…" });
     const r = await api.panelSettings({
@@ -3627,10 +3628,42 @@ function PanelSettingsScreen() {
       if (!nr.ok) nerr = nr.error || ("Couldn't save " + n.name);
     }
     if (nerr) return setMsg({ ok: false, t: nerr });
-    setMsg({ ok: true, t: "Saved." });
+    setMsg(null); setSaved(Date.now() + 4000);   // green "All settings saved" flash in the header
     await Store.poll();
     const fresh = Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)]));
     setNodeEdits(fresh); setOrig(fresh);
+  };
+  // Save click → confirm modal listing the modified values + a reprovisioning warning, then commit.
+  const REPROV_WARN = "Heads up: changing a node's mesh subnet or interface prefix re-provisions its mesh links — it briefly drops off the mesh while every peer pulls the new config and reconnects.";
+  const diffList = () => {
+    const out = [];
+    if (glDirty("routing")) out.push("Routing lists — built-in / custom");
+    if (glDirty("geo")) out.push("Geo data");
+    if (glDirty("defaults")) out.push("New-interface defaults");
+    if (glDirty("timing")) out.push("Status timing");
+    if (glDirty("configs")) out.push("Client configs → " + (sc === "off" ? "off" : "on"));
+    if (glDirty("display")) out.push("Throughput perspective → " + tput);
+    if (glDirty("mesh")) out.push("System mesh defaults");
+    for (const n of (Store.nodes || [])) {
+      const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
+      if (e.routing_mode !== o.routing_mode) fl.push("mode → " + e.routing_mode);
+      if (e.endpoint_host !== o.endpoint_host) fl.push("ingress IP → " + (e.endpoint_host || "auto"));
+      if (e.mesh_subnet !== o.mesh_subnet) fl.push("mesh subnet → " + (e.mesh_subnet || "default"));
+      if (e.mesh_port !== o.mesh_port) fl.push("mesh port → " + (e.mesh_port || "default"));
+      if (e.mesh_prefix !== o.mesh_prefix) fl.push("prefix → " + (e.mesh_prefix || "default"));
+      if (e.default_egress_ip !== o.default_egress_ip) fl.push("egress IP → " + (e.default_egress_ip || "auto"));
+      if (e.panel_ip !== o.panel_ip) fl.push("panel IP → " + (e.panel_ip || "auto"));
+      if (fl.length) out.push(n.name + " — " + fl.join(", "));
+    }
+    return out;
+  };
+  const needsReprov = () => (Store.nodes || []).some(n => { const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}; return (e.mesh_subnet || "") !== (o.mesh_subnet || "") || (e.mesh_prefix || "") !== (o.mesh_prefix || ""); });
+  const confirmSave = () => {
+    const ch = diffList();
+    if (!ch.length) { toast("No changes to save.", "ok"); return; }
+    const rp = needsReprov();
+    openConfirm({ title: "Save settings", confirmLabel: "Save", warn: rp, onConfirm: save,
+      body: html`<div class="savediff"><div class="savediff-h">${ch.length} change${ch.length === 1 ? "" : "s"} to apply:</div><ul>${ch.map(c => html`<li>${c}</li>`)}</ul>${rp ? html`<div class="savediff-w">${REPROV_WARN}</div>` : null}</div>` });
   };
   const refreshGeo = async () => { const r = await api.refreshGeo(); toast(r.ok ? "Geo lists will refresh on each node's next sync." : (r.error || "Failed"), r.ok ? "ok" : "err"); };
   const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
@@ -3667,14 +3700,14 @@ function PanelSettingsScreen() {
   ];
   return html`<div class="screen setscreen">
     <div class="sethead"><b>Panel settings</b>${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">
-        <button class=${"snbadge" + (selNode ? "" : " on") + (badgeDirty("") ? " dirty" : "")} onClick=${() => setSelNode("")}>default</button>
-        ${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}
-      </div>` : null}<span class="grow"></span>
+        <button class=${"snbadge" + (selNode ? "" : " on")} onClick=${() => setSelNode("")}>default</button>
+        ${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}
+      </div>` : null}<span class="grow"></span>${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => history.back()}>Back</button>
-      <button class="btn btn-primary" onClick=${save}>Save</button></div>
+      <button class="btn btn-primary" onClick=${confirmSave}>Save</button></div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
     <div class="setbody">
-      <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}><span>${lbl}</span>${secDirty(id) ? html`<span class="dirtydot" title="Unsaved changes"></span>` : null}</button>`)}</nav>
+      <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}</button>`)}</nav>
       <div class="setpane">
         ${section === "routing" ? (selNode ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
