@@ -846,6 +846,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .catgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:7px 16px;margin-bottom:4px}
 .chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
 .chk input{accent-color:var(--brand);width:15px;height:15px;flex:none;cursor:pointer}
+.chk.disabled{opacity:.4;cursor:not-allowed}
+.chk.disabled input{cursor:not-allowed}
+.catgroup{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin:2px 0 7px}
+.catgroup .req{font-weight:400;text-transform:none;letter-spacing:0}
 .cllist{display:flex;flex-direction:column;gap:6px}
 .cl-row{display:flex;align-items:center;gap:10px;padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
 .cl-name{background:none;border:0;color:var(--ink);font:inherit;font-weight:600;cursor:pointer;padding:0;text-align:left}

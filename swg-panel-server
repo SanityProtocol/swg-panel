@@ -1209,6 +1209,17 @@ DOMAIN_BUNDLES = {
 # DOMAIN_SOURCES.
 HOST_CATEGORIES = set(DOMAIN_BUNDLES) | {"ru"}
 
+# IP-matched (geoip/ASN) categories — mirror of the node's GEO_SOURCES keys. A category here is matchable by
+# destination IP, so it works in EVERY routing mode (kernel included). A category that is host-capable but NOT
+# here (only youtube today) needs DNS and is dead weight in kernel mode — the UI greys it out there. Keep in
+# sync with swg-noded's GEO_SOURCES.
+IP_CATEGORIES = {"google", "telegram", "cloudflare", "netflix", "meta", "twitter", "ru", "yandex", "vk"}
+
+# Per-category capability map for the SPA: which match mechanisms a category supports, so the UI can group
+# built-in lists into [IP] / [Host] and grey host-only cats in kernel mode. ("all" is the catch-all → neither.)
+SMART_CAPS = {c: {"ip": c in IP_CATEGORIES, "host": c in HOST_CATEGORIES}
+              for c in SMART_CATEGORIES if c != "all"}
+
 # A custom rule (category "custom") carries its own list of IPs/CIDRs AND domains, mixed and comma/space
 # separated; it gets a stable synthetic category id so its nft set is shared by identical lists. The DOMAINS
 # fill the set via the node's dnsmasq (a domain matches its subdomains too); the IPs/CIDRs are loaded into the
@@ -1859,6 +1870,7 @@ def api(method, path, qs, body, deps):
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
             "panel_settings": panel_settings,            # Panel settings screen: interface defaults, mirrors, advanced thresholds
+            "smart_caps": SMART_CAPS,                     # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)

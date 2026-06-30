@@ -373,6 +373,7 @@ const Store = {
     this.stats = d.snapshots || {};
     this.storeConfigs = !!d.store_configs;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
+    this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
@@ -1731,6 +1732,12 @@ const SMART_CATEGORIES = [
   ["netflix", "Netflix"], ["ru", "Russia (country)"], ["all", "All traffic (catch-all)"],
 ];
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
+// Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
+// EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns/sni). A
+// host-ONLY category (youtube today) is dead weight in kernel mode, so the UI greys/hides it there.
+const catCap = id => (Store.smartCaps || {})[id] || { ip: false, host: false };
+const catHostOnly = id => { const c = catCap(id); return c.host && !c.ip; };
+const catUsableInMode = (id, mode) => mode === "kernel" ? catCap(id).ip : (catCap(id).ip || catCap(id).host);
 let _ruleSeq = 0;
 const newRid = () => "rr" + (++_ruleSeq);
 // grow a textarea to fit its content (starts at one row like a textbox, expands as lines wrap)
@@ -1742,8 +1749,9 @@ function RoutingRules({ node, rules, onChange }) {
   const others = (Store.nodes || []).filter(n => n.id !== node);
   const _ps = Store.panelSettings || {};
   const _nrec = (Store.nodes || []).find(n => n.id === node);   // built-in categories enabled for THIS node (null/[] = all)
+  const _mode = (_nrec && _nrec.routing_mode) || "kernel";        // host-only cats are unusable in kernel mode → drop them from the dropdown
   const _ec = _nrec && _nrec.enabled_categories && _nrec.enabled_categories.length ? new Set(_nrec.enabled_categories) : null;
-  const hiddenCats = { has: id => _ec ? !_ec.has(id) : false };   // node-scoped: hidden = not in the node's enabled set
+  const hiddenCats = { has: id => (_ec ? !_ec.has(id) : false) || !catUsableInMode(id, _mode) };   // node-scoped: hidden = not enabled, OR not matchable in this mode
   const customLists = (_ps.custom_lists || []).filter(l => l.enabled !== false);   // only enabled lists in the dropdown
   const listTitle = Object.fromEntries((_ps.custom_lists || []).map(l => [l.id, l.title]));
   const catLabel = c => c === "custom" ? "Custom IPs / domains" : (SMART_CAT_LABEL[c] || listTitle[c] || c);
@@ -3688,7 +3696,7 @@ function PanelSettingsScreen() {
   const setMode = m => setNV(selNode, { routing_mode: m });
   const ecOf = nid => nv(nid, "enabled_categories");               // per-node enabled built-ins (null = all)
   const catOn = id => { const ec = ecOf(selNode); return !ec || ec.includes(id); };
-  const toggleNodeCat = (id, on) => { const all = sysCats.map(([c]) => c); let ec = ecOf(selNode); if (ec == null) ec = all.slice(); ec = on ? [...new Set([...ec, id])] : ec.filter(c => c !== id); setNV(selNode, { enabled_categories: ec.length >= all.length ? null : ec }); };
+  const toggleNodeCat = (id, on) => { if (nodeMode === "kernel" && catHostOnly(id)) return; const all = sysCats.map(([c]) => c); let ec = ecOf(selNode); if (ec == null) ec = all.slice(); ec = on ? [...new Set([...ec, id])] : ec.filter(c => c !== id); setNV(selNode, { enabled_categories: ec.length >= all.length ? null : ec }); };
   // dirty tracking — per global section + per node-per-section, drives the rail dots and badge glow
   const SECF = { routing: ["routing_mode", "enabled_categories"], mesh: ["endpoint_host", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg"], nodesegress: ["default_egress_ip", "panel_ip"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
@@ -3726,7 +3734,11 @@ function PanelSettingsScreen() {
             <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
           <div class="seclabel">Built-in lists</div>
           <p class="hint" style="margin:0 0 12px">Categories available in <b>${nodeRec ? nodeRec.name : "this node"}</b>'s interface routing dropdowns; unticked ones are hidden (existing rules keep working). "All traffic" and "Custom IPs / domains" are always available.</p>
-          <div class="catgrid">${sysCats.map(([id, lbl]) => html`<label class="chk"><input type="checkbox" checked=${catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>
+          <div class="catgroup">IP <span class="req">— GeoIP, works in every mode</span></div>
+          <div class="catgrid">${sysCats.filter(([id]) => catCap(id).ip).map(([id, lbl]) => html`<label class="chk"><input type="checkbox" checked=${catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>
+          ${(() => { const hostCats = sysCats.filter(([id]) => catHostOnly(id)); if (!hostCats.length) return null; const dis = nodeMode === "kernel";
+            return html`<div class="catgroup">Host <span class="req">${dis ? "— needs Force-DNS or SNI mode" : "— matched by hostname"}</span></div>
+            <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "")} title=${dis ? "Host lists need Force-DNS or SNI mode (they require DNS)" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span></label>`)}</div>`; })()}
           <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— shared across all nodes</span></div>
           <p class="hint" style="margin:0 0 10px">Your own reusable IP/domain lists. Enabled ones appear in the routing dropdown; a rule that uses a list updates automatically when you edit it.</p>
           <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row" key=${l._rid}>
