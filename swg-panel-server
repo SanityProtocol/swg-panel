@@ -3512,10 +3512,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
-                                          # domain tier: active bundles + any custom-rule domain lists → node fills these sets via dnsmasq, not geo-fetch
-                                          "domains": {**{c: DOMAIN_BUNDLES[c] for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in DOMAIN_BUNDLES},
-                                                      **(my_plan.get("domains") or {})},
-                                          "cidrs": my_plan.get("cidrs") or {}},   # custom-rule raw IPs/CIDRs → loaded into the set directly
+                                          # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
+                                          # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
+                                          "domains": ({**{c: DOMAIN_BUNDLES[c] for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in DOMAIN_BUNDLES},
+                                                       **(my_plan.get("domains") or {})} if (node.get("routing_mode") or "kernel") != "kernel" else {}),
+                                          "cidrs": my_plan.get("cidrs") or {}},   # custom-rule raw IPs/CIDRs → always loaded (DoH-proof) regardless of mode
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
                                                 "panel_ip": node.get("panel_ip") or ""},
                                 "panel": {"geo_mirror": (_ps.get("mirrors") or {}).get("geo") or "",   # Panel settings → node (Part 5)

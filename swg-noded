@@ -856,11 +856,15 @@ GEO_RETRY = 3600             # …but back off failed/missing fetches to once an
 _CIDR4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 # category → upstream source specs. "LS:<file>" = Loyalsoldier/geoip release text/<file>.txt;
 # "AS:<asn>" = ipverse/asn-ip as/<asn>/ipv4-aggregated.txt. Multiple specs are unioned (e.g. VK's two ASNs).
-# GEOIP-filled categories only. google/youtube/yandex/vk/meta/twitter/netflix moved to the domain tier
-# (panel DOMAIN_BUNDLES → dnsmasq) so e.g. YouTube can split from Google; the IP-direct / country / CDN
-# categories below stay geoip because domains don't capture them well.
+# category → geoip/ASN source(s). Every category that CAN be matched by IP has a source here, so a Kernel-only
+# node (the default routing mode) matches it by destination IP — DoH-proof, no DNS dependency. The domain tier
+# (panel DOMAIN_BUNDLES → dnsmasq) is layered ON TOP only for nodes in a DNS/SNI mode; in Kernel-only mode the
+# panel ships no domains, so these sets fill purely from geoip. (youtube has no geoip — it shares Google's IPs;
+# it's domain-only and only works on a DNS/SNI-mode node.)
 GEO_SOURCES = {
-    "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"], "ru": ["LS:ru"],
+    "google": ["LS:google"], "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"],
+    "netflix": ["LS:netflix"], "meta": ["LS:facebook"], "twitter": ["LS:twitter"], "ru": ["LS:ru"],
+    "yandex": ["AS:13238"], "vk": ["AS:47541", "AS:47542"],
 }
 
 
