@@ -1025,6 +1025,141 @@ def _smart_load_cidrs(cidrs_map, set_counts, res):
                 res["changed"] += 1
 
 
+# ── GeoSite host tier: per-category DOMAIN lists, fetched/cached EXACTLY like the geoip tier above but feeding
+#    dnsmasq instead of nft sets. Sources: v2fly/domain-list-community for global services (one plaintext file
+#    per category, may use `include:`), 1andrevich/Re-filter-lists for Russia (a pre-flattened .lst). The fetched
+#    list UNIONS with the panel's curated DOMAIN_BUNDLES, then drives the dnsmasq nftset directives below. Only a
+#    DNS/SNI-mode node fetches these (the panel ships a domain cat only off Kernel mode); a Kernel node matches
+#    the same cats by geoip. Cached under GEO_DIR as <cat>.doms, TTL/retry-gated, mirror-able via SWG_GEO_MIRROR.
+#    "V2:<name>" = v2fly data/<name>; "RF:<name>" = Re-filter <name>.lst. Keep in sync with the panel's HOST_CATEGORIES.
+DOMAIN_SOURCES = {
+    "google":  ["V2:google"],  "youtube": ["V2:youtube"],  "yandex":  ["V2:yandex"],
+    "vk":      ["V2:vk"],       "meta":    ["V2:facebook", "V2:instagram"],
+    "twitter": ["V2:twitter"],  "netflix": ["V2:netflix"],  "ru":      ["RF:domains_all"],
+}
+_DOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+_DOM_INCLUDE_MAX = 64          # failsafe: never resolve more than this many included files for one category
+
+
+def _domain_url(spec):
+    if spec.startswith("V2:"):
+        return "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/" + spec[3:]
+    if spec.startswith("RF:"):
+        return "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/" + spec[3:] + ".lst"
+    return spec
+
+
+def _domain_fetch_text(url):
+    """Fetch one domain-list file, trying any SWG_GEO_MIRROR prefixes (reused from the geo tier). None on failure."""
+    mirrors = (os.environ.get("SWG_GEO_MIRROR") or "").split()
+    for u in [url] + [m.rstrip("/") + "/" + url for m in mirrors]:
+        try:
+            return _geo_fetch_one(u)
+        except Exception:
+            continue
+    return None
+
+
+def _v2fly_category(name, seen):
+    """A v2fly data/<name> file → its domain list. Resolves `include:` recursively (cycle-guarded by `seen`,
+    bounded by _DOM_INCLUDE_MAX). Keeps bare / `domain:` / `full:` entries (all collapse to dnsmasq suffix
+    matching); drops `keyword:` / `regexp:` (unmatchable) and ignores @attributes (route every domain in the
+    category). A failed include is skipped best-effort (lists get renamed) rather than failing the category."""
+    if name in seen or len(seen) >= _DOM_INCLUDE_MAX:
+        return []
+    seen.add(name)
+    text = _domain_fetch_text(_domain_url("V2:" + name))
+    if text is None:
+        return None
+    out = []
+    for raw in text.splitlines():
+        ln = raw.split("#", 1)[0].strip()
+        if not ln:
+            continue
+        val = ln.split()[0]                                    # token 0 = the value; rest are @attributes
+        if val.startswith("include:"):
+            inc = _v2fly_category(val[8:].strip().lower(), seen)   # best-effort: None (fetch fail) → skip
+            if inc:
+                out += inc
+            continue
+        if ":" in val:
+            kind, _, v = val.partition(":")
+            if kind in ("keyword", "regexp"):
+                continue                                       # dnsmasq suffix matching can't express these
+            val = v                                            # domain:/full: → the bare domain
+        d = val.strip().lower()
+        if _DOM_RE.match(d):
+            out.append(d)
+    return out
+
+
+def _domain_fetch(cat):
+    """All domains for a category from DOMAIN_SOURCES[cat], deduped + sorted. None if the TOP-LEVEL source of
+    any spec couldn't be fetched, so a source outage keeps the last-good cache instead of shrinking the set."""
+    specs = DOMAIN_SOURCES.get(cat)
+    if not specs:
+        return None
+    doms = set()
+    for spec in specs:
+        if spec.startswith("V2:"):
+            d = _v2fly_category(spec[3:], set())
+            if d is None:                                      # top-level file down → don't half-populate
+                return None
+            doms |= set(d)
+        else:
+            text = _domain_fetch_text(_domain_url(spec))
+            if text is None:
+                return None
+            for raw in text.splitlines():
+                ln = raw.split("#", 1)[0].strip().lower()
+                if _DOM_RE.match(ln):
+                    doms.add(ln)
+    return sorted(doms) or None
+
+
+def _smart_domain_refresh(cats, res):
+    """Ensure each domain category's <cat>.doms cache is fresh (TTL-gated, retry-backed off — mirrors
+    _smart_geo_refresh) and return {cat: domain-list} from cache. Cats with no DOMAIN_SOURCES entry (e.g. a
+    custom_<hash> rule, whose domains come from the panel) are skipped. Failures leave the cache as last-good."""
+    out = {}
+    if not cats:
+        return out
+    try:
+        os.makedirs(GEO_DIR, exist_ok=True)
+    except OSError as e:
+        res["errors"].append("smart domain dir: " + str(e)); return out
+    for cat in cats:
+        if cat not in DOMAIN_SOURCES:
+            continue
+        try:
+            path = os.path.join(GEO_DIR, cat + ".doms")
+            try:
+                stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
+            except OSError:
+                stale = True
+            ap = os.path.join(GEO_DIR, "." + cat + ".doms.attempt")
+            try:
+                due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
+            except OSError:
+                due = stale
+            if due:
+                with contextlib.suppress(OSError):                 # stamp BEFORE fetching → a hang still backs off
+                    open(ap, "w").write(str(int(time.time())))
+                data = _domain_fetch(cat)
+                if data:
+                    tmp = path + ".tmp"
+                    with open(tmp, "w") as f:
+                        f.write("\n".join(data) + "\n")
+                    os.replace(tmp, path)
+            if os.path.exists(path):
+                doms = [d for d in open(path).read().splitlines() if _DOM_RE.match(d.strip())]
+                if doms:
+                    out[cat] = doms
+        except Exception as e:
+            res["errors"].append("smart domain " + cat + ": " + str(e)[:120])
+    return out
+
+
 # ── domain tier: a dedicated dnsmasq fills the domain-category nft sets. Smart-interface clients have their
 #    DNS transparently DNAT-redirected here, so every lookup of a bundle domain adds its answer IPs to cat_<c>
 #    — the same set the marking chain matches. Managed from the sync loop (configured/started/torn down each
@@ -1098,9 +1233,10 @@ def _ensure_smart_dnsmasq(domains, smart_e, res):
             "no-resolv", "no-hosts", "cache-size=2000", "pid-file=" + DNSMASQ_PID]
     conf += ["server=1.1.1.1", "server=8.8.8.8"]
     for cat in sorted(domains):                                # nftset=/d1/d2/.../4#inet#swg_smart#cat_<c>
-        doms = [d for d in domains[cat] if d]
-        if doms:
-            conf.append("nftset=/" + "/".join(doms) + "/4#inet#" + SMART_NFT_TABLE + "#" + _smart_setname(cat))
+        doms = sorted({d for d in domains[cat] if d})          # sorted → deterministic body (no needless restart)
+        sn = _smart_setname(cat)
+        for i in range(0, len(doms), 256):                     # chunk: host-tier lists run to tens of thousands
+            conf.append("nftset=/" + "/".join(doms[i:i + 256]) + "/4#inet#" + SMART_NFT_TABLE + "#" + sn)
     body = "\n".join(conf) + "\n"
     try:
         cur = open(DNSMASQ_CONF).read()
@@ -1187,7 +1323,7 @@ def apply_panel_settings(pan):
             with contextlib.suppress(OSError):
                 os.makedirs(GEO_DIR, exist_ok=True)
             for fn in (os.listdir(GEO_DIR) if os.path.isdir(GEO_DIR) else []):
-                if fn.endswith((".txt", ".attempt", ".loaded")):
+                if fn.endswith((".txt", ".attempt", ".loaded", ".doms")):
                     with contextlib.suppress(OSError):
                         os.unlink(os.path.join(GEO_DIR, fn))
             with contextlib.suppress(OSError):
@@ -1244,10 +1380,16 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e})
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res)
-    domains = (smart or {}).get("domains") or {}               # domain-tier bundles {cat:[domain]} → dnsmasq-filled
-    # GEOIP cats fill from cached CIDR lists (TTL-gated); domain cats are owned by dnsmasq → skip them here.
+    domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq-filled
+    # GeoSite host tier: enrich each panel-shipped domain cat with the node-fetched upstream list (union), so the
+    # curated bundle stays a guaranteed fallback. Only the cats the panel shipped (=DNS-mode cats for this node).
+    for cat, fl in _smart_domain_refresh([c for c in domains if c in DOMAIN_SOURCES], res).items():
+        domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
+    # GEOIP cats fill from cached CIDR lists (TTL-gated); domain cats are owned by dnsmasq → skip them here. A
+    # cat is demoted from geoip only once it actually HAS domains, so a fetch-only cat (ru) stays geoip until its
+    # upstream list lands rather than going briefly empty.
     if smart_cats:
-        _smart_geo_refresh(smart_cats, set_counts or {}, res, skip=set(domains))
+        _smart_geo_refresh(smart_cats, set_counts or {}, res, skip={c for c, v in domains.items() if v})
     _smart_load_cidrs((smart or {}).get("cidrs") or {}, set_counts or {}, res)   # custom-rule raw IPs/CIDRs → into the set
     # domain tier: run/teardown the dnsmasq that fills domain sets + redirect smart-subnet DNS to it
     if smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):

@@ -1202,6 +1202,13 @@ DOMAIN_BUNDLES = {
     "netflix": ["netflix.com", "nflxext.com", "nflximg.net", "nflxvideo.net", "nflxso.net"],
 }
 
+# The GeoSite host tier: categories that are DOMAIN-matched when a node runs in a DNS/SNI mode — the curated
+# bundles above PLUS country/aggregate lists the NODE fetches itself (ru → Re-filter; no curated bundle). The
+# panel ships such a cat in the sync `domains` map (curated domains, or [] for a fetch-only cat) so the node
+# domain-fills it; in Kernel mode none are shipped and they match by geoip instead. Keep in sync with the node's
+# DOMAIN_SOURCES.
+HOST_CATEGORIES = set(DOMAIN_BUNDLES) | {"ru"}
+
 # A custom rule (category "custom") carries its own list of IPs/CIDRs AND domains, mixed and comma/space
 # separated; it gets a stable synthetic category id so its nft set is shared by identical lists. The DOMAINS
 # fill the set via the node's dnsmasq (a domain matches its subdomains too); the IPs/CIDRs are loaded into the
@@ -3531,7 +3538,7 @@ class Handler(BaseHTTPRequestHandler):
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
                                           # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
-                                          "domains": ({**{c: DOMAIN_BUNDLES[c] for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in DOMAIN_BUNDLES},
+                                          "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in HOST_CATEGORIES},
                                                        **(my_plan.get("domains") or {})} if (node.get("routing_mode") or "kernel") != "kernel" else {}),
                                           "cidrs": my_plan.get("cidrs") or {}},   # custom-rule raw IPs/CIDRs → always loaded (DoH-proof) regardless of mode
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
