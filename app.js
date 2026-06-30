@@ -1426,7 +1426,7 @@ function NodeDetail({ node: rawName }) {
           const type = (meta[ifn].awg_params && Object.keys(meta[ifn].awg_params).length) ? "awg" : "wg";
           return html`<a class=${"tg tg-" + type + ((nodeStale(name) || ifaceNotUp(name, ifn)) ? " muted" : "")} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}>${ifn}</a>`;
         })}
-        ${orderById((snap && snap.turn_proxies) || [], nrec.turn_order, tp => tp.service).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`)}
+        ${turnEnabled() ? orderById((snap && snap.turn_proxies) || [], nrec.turn_order, tp => tp.service).map(tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(name) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`) : null}
       </div>
       <span class="grow"></span>
       <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}</div>
@@ -1470,7 +1470,7 @@ function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="globe" title="User interfaces" tone="ready" count=${userKeys.length}
-        actions=${html`<${Fragment}>${nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
+        actions=${html`<${Fragment}>${turnEnabled() && nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
@@ -1549,7 +1549,7 @@ function NodeDetail({ node: rawName }) {
             })}${pcards}</div>`; })()}
     <//>
 
-    ${hasTurns ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title="Turn proxies"/>` : null}
+    ${hasTurns && turnEnabled() ? html`<${TurnProxiesBlock} node=${name} nrec=${nrec} snap=${snap} metas=${meta} title="Turn proxies"/>` : null}
     `}
   </div>`;
 }
@@ -1622,7 +1622,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         </div>` : null}
       <//>`}
 
-    <${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title="Reachable via turn-proxy" iface=${iface}/>
+    ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title="Reachable via turn-proxy" iface=${iface}/>` : null}
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
         lead=${html`<div class="search hdr"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${q} onInput=${e => setQ(e.target.value)}/></div>`}
@@ -2359,8 +2359,15 @@ const TURN_FORKS = [
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F" },
 ];
-// stable colour for a turn-proxy fork (peers connected via it get their interface badge tinted this colour)
-function turnColor(label) { const fk = TURN_FORKS.find(x => x.id === label); return (fk && fk.color) || "#8FA8C0"; }
+// stable colour for a turn-proxy fork (peers connected via it get their interface badge tinted this colour);
+// a Panel-settings override (turn_fork_colors) wins over the TURN_FORKS default.
+function turnColor(label) {
+  const ov = (Store.panelSettings && Store.panelSettings.turn_fork_colors) || {};
+  if (ov[label]) return ov[label];
+  const fk = TURN_FORKS.find(x => x.id === label); return (fk && fk.color) || "#8FA8C0";
+}
+// master switch: turn-proxy UI is shown unless explicitly disabled in Panel settings → Turn proxies.
+function turnEnabled() { return !(Store.panelSettings && Store.panelSettings.turn_enabled === false); }
 // the forks offered in the "install a fork" picker — toggled in Panel settings → Turn proxies. Disabling a fork
 // only hides it here; deployed proxies are untouched. Default (setting unset) = WINGS-N + anton48.
 function enabledTurnForks() {
@@ -3528,8 +3535,8 @@ function NodeCard({ n, reorder }) {
             : html`<span class="nm-v faint">—</span>`}</span>
         </div>
         <div class="nm-row">
-          <span class="nm-l">Turn-proxies</span>
-          <span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span>
+          ${turnEnabled() ? html`<${Fragment}><span class="nm-l">Turn-proxies</span>
+          <span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span><//>` : html`<span class="tags"></span>`}
           <div class="nacts" onClick=${e => e.stopPropagation()}>
             <button class="iconbtn" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${() => openNodeEdit(n)}><${Ic} i="gear"/></button>
             ${ndown ? null : html`<button class="iconbtn" title="Rotate token" onClick=${() => openNodeRotate(n)}><${Ic} i="key"/></button>`}
@@ -3613,7 +3620,10 @@ function PanelSettingsScreen() {
   const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
   const [hidden, setHidden] = useState(new Set(ps.hidden_categories || []));   // built-in categories hidden from the routing dropdown
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
+  const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "anton48"]));   // forks offered in the install picker
+  const [forkColors, setForkColors] = useState({ ...Object.fromEntries(TURN_FORKS.map(f => [f.id, f.color])), ...(ps.turn_fork_colors || {}) });   // per-fork colour (override or default)
+  const forkColorOverrides = () => Object.fromEntries(TURN_FORKS.filter(f => (forkColors[f.id] || "").toLowerCase() !== f.color.toLowerCase()).map(f => [f.id, forkColors[f.id]]));
   const [section, setSection] = useState("routing");   // active left-rail section
   const rsv = ps.reserved || {};
   const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
@@ -3649,7 +3659,9 @@ function PanelSettingsScreen() {
       advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
       hidden_categories: [...hidden],
       custom_lists: lists.map(({ _rid, domains, cidrs, ...l }) => l),   // send id/title/targets/enabled; backend re-derives domains+cidrs
+      turn_enabled: turnEnabledS,
       enabled_turn_forks: [...turnForks],
+      turn_fork_colors: forkColorOverrides(),
     });
     if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
     // per-node changes: one nodeUpdate per node whose edits differ from the saved baseline
@@ -3729,7 +3741,7 @@ function PanelSettingsScreen() {
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
-    sec === "turn" ? ([...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join()) :
+    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(ps.turn_fork_colors || {})) :
     sec === "geo" ? (geoMir.trim() !== (mir.geo || "") || turnMir.trim() !== (mir.turn || "") || ttlD !== String(adv.geo_ttl_days || 3)) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25)) :
     sec === "timing" ? (staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000))) :
@@ -3777,11 +3789,13 @@ function PanelSettingsScreen() {
           <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
         </div>` : null}
         ${section === "turn" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">Turn proxies — available for creation</div>
-          <p class="hint" style="margin:0 0 12px">Which turn-proxy forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>
-          <div class="cllist">${TURN_FORKS.map(f => html`<div class="cl-row" key=${f.id}>
+          <div class="seclabel turnhead" style="margin-top:0">Turn proxies<span class="grow"></span>
+            <label class="swt" title=${turnEnabledS ? "Turn proxies are on" : "Turn proxies are off"}><input type="checkbox" checked=${turnEnabledS} onChange=${e => setTurnEnabledS(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
+          ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">Turn proxies are off.</b> Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.</p>`
+            : html`<p class="hint" style="margin:0 0 12px">Which forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node, and each fork's colour. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>`}
+          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${TURN_FORKS.map(f => html`<div class="cl-row" key=${f.id}>
             <label class="chk" title=${"Offer " + f.label + " in the install picker"}><input type="checkbox" checked=${turnForks.has(f.id)} onChange=${e => setTurnForks(s => { const n = new Set(s); e.target.checked ? n.add(f.id) : n.delete(f.id); return n; })}/></label>
-            <span class="tf-swatch" style=${"--c:" + f.color}></span>
+            <input type="color" class="tf-color" value=${forkColors[f.id] || f.color} title=${"Colour for " + f.label} onInput=${e => setForkColors(c => ({ ...c, [f.id]: e.target.value }))}/>
             <span class="tf-name">${f.label}</span>
             <span class="grow"></span><span class="faint cl-meta">${f.wrap ? "obfuscation" : "no obfuscation"} · ${f.owner}</span>
           </div>`)}</div>

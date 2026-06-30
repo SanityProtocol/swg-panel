@@ -880,6 +880,21 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tf-swatch{width:10px;height:10px;border-radius:50%;background:var(--c,var(--brand));flex:none;box-shadow:0 0 0 1px color-mix(in srgb,var(--c,var(--brand)) 40%,transparent)}
 .tf-name{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:12.5px}
 .warntext{color:var(--partial);font-weight:600}
+/* per-fork colour picker (native input, themed to a small rounded swatch) */
+.tf-color{width:24px;height:24px;flex:none;padding:0;border:1px solid var(--line-solid);border-radius:6px;background:none;cursor:pointer}
+.tf-color::-webkit-color-swatch-wrapper{padding:2px}
+.tf-color::-webkit-color-swatch{border:none;border-radius:4px}
+.tf-color::-moz-color-swatch{border:none;border-radius:4px}
+.cllist.dimmed{opacity:.5;pointer-events:none}
+.turnhead{display:flex;align-items:center;gap:10px}
+.turnhead .grow{flex:1}
+/* on/off switch */
+.swt{position:relative;display:inline-flex;align-items:center;width:34px;height:19px;flex:none;cursor:pointer}
+.swt input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.swt .track{width:34px;height:19px;border-radius:99px;background:var(--surface-2);border:1px solid var(--line-solid);transition:background .15s,border-color .15s}
+.swt .knob{position:absolute;left:3px;top:3px;width:13px;height:13px;border-radius:50%;background:var(--dim);transition:transform .15s,background .15s}
+.swt input:checked~.track{background:color-mix(in srgb,var(--brand) 28%,transparent);border-color:var(--brand)}
+.swt input:checked~.knob{transform:translateX(15px);background:var(--brand)}
 @media (max-width:680px){.setbody{flex-direction:column}.setrail{flex-direction:row;flex-wrap:wrap;width:auto;position:static}}
 /* per-node context selector in the settings header (default + node badges) */
 .setnodes{position:absolute;top:14px;right:18px;z-index:2;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:62%}

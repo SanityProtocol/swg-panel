@@ -1308,9 +1308,13 @@ PANEL_SETTINGS_DEFAULTS = {
     # interface routing-rules dropdown; a rule references a custom list by its id (edit once, applies everywhere).
     "hidden_categories": [],
     "custom_lists": [],
+    # turn-proxy feature master switch — when False the SPA hides all turn-proxy UI (creation buttons, the node
+    # detail/list sections); deployed proxies keep running, they're just not shown. Default on.
+    "turn_enabled": True,
     # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
     "enabled_turn_forks": ["WINGS-N", "anton48"],
+    "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
     "geo_epoch": 0,
 }
 
@@ -1955,6 +1959,8 @@ def api(method, path, qs, body, deps):
         hc = incoming.get("hidden_categories")          # built-in categories to hide from the routing dropdown
         if isinstance(hc, list):
             cur["hidden_categories"] = [c for c in hc if c in SMART_CATEGORIES and c != "all"]
+        if "turn_enabled" in incoming:                  # master switch for all turn-proxy UI
+            cur["turn_enabled"] = bool(incoming.get("turn_enabled"))
         tf = incoming.get("enabled_turn_forks")         # which turn-proxy forks the install-a-fork picker offers
         if isinstance(tf, list):
             seen_tf, out_tf = set(), []
@@ -1963,6 +1969,11 @@ def api(method, path, qs, body, deps):
                 if fid and fid not in seen_tf:
                     seen_tf.add(fid); out_tf.append(fid)
             cur["enabled_turn_forks"] = out_tf
+        fc = incoming.get("turn_fork_colors")           # per-fork colour overrides {id: "#rrggbb"}
+        if isinstance(fc, dict):
+            cur["turn_fork_colors"] = {re.sub(r"[^A-Za-z0-9_-]", "", str(k))[:48]: str(v)
+                                       for k, v in list(fc.items())[:64]
+                                       if re.match(r"^#[0-9a-fA-F]{6}$", str(v))}
         cl = incoming.get("custom_lists")               # operator-defined reusable IP/domain lists
         if isinstance(cl, list):
             out_lists, seen = [], set()
