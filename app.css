@@ -794,12 +794,16 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .egb-direct{color:var(--dim)}             /* direct — neutral */
 .egb-cascade{color:var(--pending)}        /* cascade — Node-connections icon colour (purple) */
 .egb-smart{color:var(--smart)}            /* smart routing — rose/pink */
+/* on a node-connection card, the cascade badge + status dot sit at the TOP of the header (flex-start) so the
+   dot is equidistant from the card's top and right borders (both = the card padding), not centred on the name */
+.ifcard.tp .ifcard-top .egb,.ifcard.tp .ifcard-top .lkdot{align-self:flex-start}
 .carry-tags{display:inline-flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}   /* Carrying: forwarded interface tags, right-aligned */
 /* connection-modal Forwarding / smart-cascade list */
-.fwd-head{margin-bottom:6px}
-.fwd-list{display:flex;flex-direction:column;gap:6px}
+.fwd-head{display:flex;align-items:center;gap:7px;margin-bottom:8px;font-family:var(--mono);font-size:12px}
+.fwd-to{color:var(--faint)}
+.fwd-ifaces{display:flex;flex-wrap:wrap;gap:5px}   /* cascade: all forwarded ifaces on one line */
+.fwd-list{display:flex;flex-direction:column;gap:7px}   /* smart cascade: one iface + its rules per line */
 .fwd-row{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--dim);flex-wrap:wrap}
-.fwd-arr{color:var(--faint)}
 /* Phase 3 smart-routing rule editor */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
 .rrrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}

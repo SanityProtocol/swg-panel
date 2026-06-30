@@ -2038,12 +2038,11 @@ function ConnectionEditSheet({ node, iface }) {
     </div>
     <div class="hint" style="margin-top:-4px">Per-connection overrides: which of <b>${Store.nodeName(node)}</b>'s IPs dials out, and which of <b>${Store.nodeName(peer)}</b>'s IPs it dials to (overriding ${Store.nodeName(peer)}'s default ingress). Changing the endpoint re-connects this link automatically. Neither changes how routed traffic appears externally — that's the exit node's egress IP.</div>
     ${(carried.length || smartCarried.length) ? html`<div style="margin-top:16px">
-      <div style="font-size:12px;font-weight:600;color:var(--ink);margin-bottom:10px">Forwarding</div>
-      ${carried.length ? html`<div class="fwd-head"><span class="egb egb-cascade"><${Ic} i="cascade"/>cascade</span></div>
-        <div class="fwd-list">${carried.map(c => html`<div class="fwd-row">${ifBadge(c.iface)}<span class="fwd-arr">→</span>${peerNm}${c.ip ? html`<span class="faint">as ${c.ip}</span>` : ""}</div>`)}</div>` : null}
-      ${smartCarried.length ? html`<div class="fwd-head" style=${carried.length ? "margin-top:12px" : ""}><span class="egb egb-smart"><${Ic} i="cascade"/>smart cascade</span></div>
-        <div class="fwd-list">${smartCarried.map(s => html`<div class="fwd-row">${ifBadge(s.iface)}<span class="fwd-arr">→</span>${peerNm} <span class="faint">(${s.cats.map(c => SMART_CAT_LABEL[c] || c).join(", ")})</span></div>`)}</div>` : null}
-      <div class="hint" style="margin-top:9px">These interfaces' client traffic exits the fleet through <b>${Store.nodeName(peer)}</b>${smartCarried.length ? " — smart-routed by destination" : ""}.</div>
+      ${carried.length ? html`<div class="fwd-head"><span class="egb egb-cascade"><${Ic} i="cascade"/>cascade</span><span class="fwd-to">to</span>${peerNm}</div>
+        <div class="fwd-ifaces">${carried.map(c => ifBadge(c.iface))}</div>` : null}
+      ${smartCarried.length ? html`<div class="fwd-head" style=${carried.length ? "margin-top:14px" : ""}><span class="egb egb-smart"><${Ic} i="cascade"/>smart cascade</span><span class="fwd-to">to</span>${peerNm}</div>
+        <div class="fwd-list">${smartCarried.map(s => html`<div class="fwd-row">${ifBadge(s.iface)} <span class="faint">(${s.cats.map(c => SMART_CAT_LABEL[c] || c).join(", ")})</span></div>`)}</div>` : null}
+      <div class="hint" style="margin-top:16px">These interfaces' client traffic exits the fleet through <b>${Store.nodeName(peer)}</b>${smartCarried.length ? " — smart-routed by destination" : ""}.</div>
     </div>` : null}
     <div class="hint" style="margin-top:14px">This is a panel-managed mesh link to <b>${Store.nodeName(peer)}</b>. It's created and torn down automatically as nodes are added or removed. To route a user interface's traffic out through this node, set that interface's egress to <b>Forward to ${Store.nodeName(peer)}</b>.</div>
   <//>`;
