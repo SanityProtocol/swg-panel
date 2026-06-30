@@ -1528,7 +1528,7 @@ function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">Traffic</span><span class="r">${m.egress_mode === "forward" && m.egress_node
                     ? html`<span class="egb egb-fwd" style=${"color:" + Store.nodeColor(m.egress_node)} title=${"Exits via " + Store.nodeName(m.egress_node) + (m.egress_ip ? " (" + m.egress_ip + ")" : "")}><${Ic} i="server"/>→ ${Store.nodeName(m.egress_node)}</span>`
                     : m.egress_mode === "smart"
-                    ? html`<span class="egb egb-smart" title=${(m.routing || []).filter(r => r.action === "exit").length + " destination rule(s)"}><${Ic} i="smart"/>smart</span>`
+                    ? html`<span class="egb egb-smart" title=${(m.routing || []).filter(r => r.action === "exit").length + " destination rule(s)"}><${Ic} i="cascade"/>smart</span>`
                     : html`<span class="egb egb-direct" title="Exits directly from this node"><${Ic} i="globe"/>direct</span>`}</span></div>
                   <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length
                     ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}
