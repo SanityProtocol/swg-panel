@@ -1036,6 +1036,9 @@ DOMAIN_SOURCES = {
     "google":  ["V2:google"],  "youtube": ["V2:youtube"],  "yandex":  ["V2:yandex"],
     "vk":      ["V2:vk"],       "meta":    ["V2:facebook", "V2:instagram"],
     "twitter": ["V2:twitter"],  "netflix": ["V2:netflix"],  "ru":      ["RF:domains_all"],
+    "spotify": ["V2:spotify"],  "twitch":  ["V2:twitch"],   "tiktok":  ["V2:tiktok"],
+    "disney":  ["V2:disney"],   "reddit":  ["V2:reddit"],   "discord": ["V2:discord"],
+    "github":  ["V2:github"],   "ai":      ["V2:category-ai-chat-!cn"],   # aggregate; fail-closed → curated bundle if absent
 }
 _DOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
 _DOM_INCLUDE_MAX = 256         # failsafe vs a pathological include tree (cycles already guarded by `seen`);

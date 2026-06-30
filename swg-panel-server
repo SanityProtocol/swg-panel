@@ -1182,6 +1182,14 @@ SMART_CATEGORIES = {
     "meta":     "Meta (Facebook / Instagram / WhatsApp)",
     "twitter":  "Twitter / X",
     "netflix":  "Netflix",
+    "spotify":  "Spotify",
+    "twitch":   "Twitch",
+    "tiktok":   "TikTok",
+    "disney":   "Disney+",
+    "reddit":   "Reddit",
+    "discord":  "Discord",
+    "github":   "GitHub",
+    "ai":       "AI (ChatGPT / Claude / Gemini / Grok …)",
     "ru":       "Russia (country)",
     "all":      "All traffic (catch-all)",   # matches everything not caught by an earlier rule (no geo set)
 }
@@ -1200,6 +1208,17 @@ DOMAIN_BUNDLES = {
                 "fb.com", "fbsbx.com", "facebook.net"],
     "twitter": ["twitter.com", "x.com", "twimg.com", "t.co", "periscope.tv", "twitterstat.us"],
     "netflix": ["netflix.com", "nflxext.com", "nflximg.net", "nflxvideo.net", "nflxso.net"],
+    "spotify": ["spotify.com", "scdn.co", "spotifycdn.com", "pscdn.co", "spotify.map.fastly.net", "audio-fa.scdn.co"],
+    "twitch":  ["twitch.tv", "ttvnw.net", "jtvnw.net", "twitchcdn.net", "twitch.map.fastly.net", "twitchsvc.net"],
+    "tiktok":  ["tiktok.com", "tiktokcdn.com", "tiktokv.com", "byteoversea.com", "ibytedtos.com", "tiktokcdn-us.com",
+                "muscdn.com", "tiktokcdn-eu.com", "ttwstatic.com", "byteeffecttos.com"],
+    "disney":  ["disneyplus.com", "disney-plus.net", "dssott.com", "bamgrid.com", "disneyplus.disney.com", "dnitv.com"],
+    "reddit":  ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com", "redditinc.com"],
+    "discord": ["discord.com", "discordapp.com", "discordapp.net", "discord.gg", "discord.media", "discordcdn.com"],
+    "github":  ["github.com", "githubusercontent.com", "githubassets.com", "github.io", "githubcopilot.com", "ghcr.io"],
+    "ai":      ["openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "anthropic.com", "claude.ai",
+                "gemini.google.com", "bard.google.com", "aistudio.google.com", "perplexity.ai", "x.ai", "grok.com",
+                "copilot.microsoft.com", "poe.com", "mistral.ai", "deepseek.com", "huggingface.co"],
 }
 
 # The GeoSite host tier: categories that are DOMAIN-matched when a node runs in a DNS/SNI mode — the curated

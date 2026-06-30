@@ -1729,7 +1729,9 @@ function suggestSubnet(node) {
 const SMART_CATEGORIES = [
   ["google", "Google"], ["youtube", "YouTube"], ["yandex", "Yandex"], ["vk", "VK"], ["telegram", "Telegram"],
   ["cloudflare", "Cloudflare"], ["meta", "Meta (FB / IG / WA)"], ["twitter", "Twitter / X"],
-  ["netflix", "Netflix"], ["ru", "Russia (country)"], ["all", "All traffic (catch-all)"],
+  ["netflix", "Netflix"], ["spotify", "Spotify"], ["twitch", "Twitch"], ["tiktok", "TikTok"],
+  ["disney", "Disney+"], ["reddit", "Reddit"], ["discord", "Discord"], ["github", "GitHub"],
+  ["ai", "AI (ChatGPT / Claude / Gemini / Grok)"], ["ru", "Russia (country)"], ["all", "All traffic (catch-all)"],
 ];
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
@@ -3575,7 +3577,10 @@ function AwgGrid({ value, onChange, readOnly }) {
 }
 
 function PanelSettingsScreen() {
-  useStore();
+  // NOTE: deliberately NOT subscribed to the 5s poll (no useStore) — this is an edit form seeded from a
+  // snapshot at mount. Re-rendering every poll re-diffs every controlled input (the source of the checkbox
+  // repaint flicker) and is pointless for a form; it still re-renders on its own edits (setNodeEdits etc.),
+  // and save() re-polls + reseeds. A node added/renamed mid-edit just won't reflect until you re-enter.
   const ps = Store.panelSettings || {};
   const idf = ps.interface_defaults || {}; const mir = ps.mirrors || {}; const adv = ps.advanced || {};
   const [dns, setDns] = useState((idf.dns || []).join(", "));
@@ -3714,8 +3719,8 @@ function PanelSettingsScreen() {
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
   const MODES = [
     ["kernel", "Kernel only — IP routing", "Matches by destination IP (GeoIP/ASN). Works no matter what DNS your clients use (DoH-proof), zero extra moving parts. Can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
-    ["forcedns", "Force DNS — host + IP", "The node becomes your clients' resolver and blocks their encrypted DNS, so it can route by hostname too — per-service precision + domain lists. Can break a client that insists on its own DoH, and won't help under ECH/QUIC. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
-    ["sni", "SNI router — host + IP, DoH-proof", "A lightweight on-node component reads the hostname from each TLS handshake (SNI), so hostname routing works even when clients run their own DoH. Most accurate. ECH/QUIC-hidden names fall back to IP. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["forcedns", "Force DNS — Host + IP, No DoH", "The node becomes your clients' resolver and blocks their encrypted DNS, so it can route by hostname too — per-service precision + domain lists. Can break a client that insists on its own DoH, and won't help under ECH/QUIC. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["sni", "SNI router — Host + IP, DoH-proof", "A lightweight on-node component reads the hostname from each TLS handshake (SNI), so hostname routing works even when clients run their own DoH. Most accurate. ECH/QUIC-hidden names fall back to IP. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
   ];
   return html`<div class="screen setscreen">
     <div class="sethead"><b>Panel settings</b><span class="grow"></span>${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
@@ -3723,9 +3728,9 @@ function PanelSettingsScreen() {
       <button class="btn btn-primary" onClick=${confirmSave}>Save</button></div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
     <div class="setbody">
-      <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}</button>`)}</nav>
+      <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
       <div class="setpane">
-        ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}</div>` : null}
+        ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
           <p class="hint" style="margin:0 0 12px">How this node matches smart-routing traffic. Changing the mode reconfigures the node (installs/removes its DNS resolver or SNI router) and changes which lists its interfaces can use.</p>
@@ -3753,9 +3758,9 @@ function PanelSettingsScreen() {
           <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>
           <p class="hint" style="margin:0 0 12px">Country / provider IP ranges (for the geoip routing categories) are public lists each node fetches over HTTPS: <b>Loyalsoldier/geoip</b> (countries + most providers) and <b>ipverse/asn-ip</b> (ASN-based, e.g. Yandex / VK). Domain-tier categories don't use these — the node's dnsmasq fills them live as clients resolve.</p>
           <div class="field"><label>Auto-update interval (days)</label><input value=${ttlD} onInput=${e => setTtlD(e.target.value)} placeholder="3"/><div class="hint">How often a node re-fetches each list (a failed fetch backs off to hourly).</div></div>
-          <div style="margin:2px 0 16px"><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh geo lists now</button> <span class="faint" style="font-size:11px">forces every node to re-fetch on its next sync</span></div>
           <div class="field"><label>Geo lists mirror (optional)</label><input value=${geoMir} onInput=${e => setGeoMir(e.target.value)} placeholder="https://mirror.example/"/><div class="hint">Proxy prefix for nodes that can't reach GitHub directly. Blank = fetch direct.</div></div>
           <div class="field"><label>Turn binaries mirror (optional)</label><input value=${turnMir} onInput=${e => setTurnMir(e.target.value)} placeholder="https://mirror.example/"/></div>
+          <div class="georefresh"><span class="faint" style="font-size:11px">To force every node to re-fetch on its next sync</span><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh geo lists now</button></div>
         </div>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">New-interface defaults</div>
@@ -3807,7 +3812,7 @@ function CustomListSheet({ list, onSave, onClose }) {
   const [title, setTitle] = useState(list?.title || "");
   const [targets, setTargets] = useState(list ? (list.targets ?? [...(list.domains || []), ...(list.cidrs || [])].join(", ")) : "");
   const save = () => { onSave({ ...(list || { _rid: newRid() }), title: title.trim() || "Untitled list", targets }); onClose(); };
-  const foot = html`<button class="btn" onClick=${onClose}>Cancel</button><button class="btn btn-primary" onClick=${save}>${list ? "Save" : "Add"}</button>`;
+  const foot = html`<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>Cancel</button><button class="btn btn-primary" onClick=${save}>${list ? "Save" : "Add"}</button>`;
   return html`<${Sheet} title=${list ? "Edit list" : "New list"} width=${520} onClose=${onClose} foot=${foot}>
     <div class="field"><label>Title</label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder="e.g. Streaming"/></div>
     <div class="field"><label>IPs / domains</label>
