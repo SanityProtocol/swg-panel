@@ -1739,27 +1739,30 @@ function RoutingRules({ node, rules, onChange }) {
   const customLists = (_ps.custom_lists || []).filter(l => l.enabled !== false);   // only enabled lists in the dropdown
   const listTitle = Object.fromEntries((_ps.custom_lists || []).map(l => [l.id, l.title]));
   const catLabel = c => c === "custom" ? "Custom IPs / domains" : (SMART_CAT_LABEL[c] || listTitle[c] || c);
-  const rs = useReorder(rules.map(r => r._rid), ids => onChange(ids.map(id => rules.find(r => r._rid === id)).filter(Boolean)), "y");
-  const setRule = (rid, patch) => onChange(rules.map(r => r._rid === rid ? { ...r, ...patch } : r));
-  const addRule = () => onChange([...rules, { _rid: newRid(), enabled: true, category: "google", action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
+  const allRule = rules.find(r => r.category === "all");          // the catch-all ("everything else") → footer dropdown
+  const dispRules = rules.filter(r => r.category !== "all");
+  const emit = drules => onChange(allRule ? [...drules, allRule] : drules);   // catch-all is always kept LAST (first-match)
+  const rs = useReorder(dispRules.map(r => r._rid), ids => emit(ids.map(id => dispRules.find(r => r._rid === id)).filter(Boolean)), "y");
+  const setRule = (rid, patch) => emit(dispRules.map(r => r._rid === rid ? { ...r, ...patch } : r));
+  const addRule = () => emit([...dispRules, { _rid: newRid(), enabled: true, category: "custom", action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
   const destVal = r => r.action === "exit" ? "exit|" + (r.node || "") : r.action;
   const onDest = (rid, v) => { const [a, n] = v.split("|"); setRule(rid, a === "exit" ? { action: "exit", node: n } : { action: a, node: "" }); };
-  const seen = {}; let catchAll = false;
-  const hasAll = rules.some(r => r.category === "all");
-  return html`<div class="field"><label>Routing rules <span class="faint" style="text-transform:none;letter-spacing:0">— first match wins${hasAll ? "" : "; everything else exits direct"}</span></label>
-    <div class="rrlist" ...${rs.container()}>${rules.map(r => {
+  const catchVal = allRule && allRule.action === "exit" ? "exit|" + (allRule.node || "") : "direct";
+  const setCatch = v => { const [a, n] = v.split("|"); onChange(a === "exit" && n ? [...dispRules, { _rid: newRid(), enabled: true, category: "all", action: "exit", node: n }] : dispRules); };
+  const seen = {};
+  return html`<div class="field"><label>Routing rules <span class="faint" style="text-transform:none;letter-spacing:0">— first match wins</span></label>
+    <div class="rrlist" ...${rs.container()}>${dispRules.map(r => {
       const ckey = r.category === "custom" ? "custom:" + (r.targets || "") : r.category;
       const dup = seen[ckey]; seen[ckey] = true;
-      const shadowed = catchAll; if (r.category === "all") catchAll = true;
       const self = r.action === "exit" && r.node === node;
       const it = rs.item(r._rid);
-      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || shadowed) ? " warn" : "")} data-rid=${it.rid}>
+      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
           <option value="custom">Custom IPs / domains…</option>
-          ${SMART_CATEGORIES.filter(([id]) => id === "all" || !hiddenCats.has(id)).map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
+          ${SMART_CATEGORIES.filter(([id]) => id !== "all" && !hiddenCats.has(id)).map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
           ${customLists.length ? html`<optgroup label="Custom lists">${customLists.map(l => html`<option value=${l.id}>${l.title}</option>`)}</optgroup>` : null}
-          ${(() => { const shown = new Set(["custom", "all", ...SMART_CATEGORIES.filter(([id]) => !hiddenCats.has(id)).map(([id]) => id), ...customLists.map(l => l.id)]); return r.category && !shown.has(r.category) ? html`<option value=${r.category}>${catLabel(r.category)} (hidden)</option>` : null; })()}
+          ${(() => { const shown = new Set(["custom", ...SMART_CATEGORIES.filter(([id]) => id !== "all" && !hiddenCats.has(id)).map(([id]) => id), ...customLists.map(l => l.id)]); return r.category && !shown.has(r.category) ? html`<option value=${r.category}>${catLabel(r.category)} (hidden)</option>` : null; })()}
         </select>
         <span class="rrarrow">→</span>
         <select class="selwrap" value=${destVal(r)} onChange=${e => onDest(r._rid, e.target.value)}>
@@ -1767,13 +1770,18 @@ function RoutingRules({ node, rules, onChange }) {
           <option value="block">Block</option>
           ${others.length ? html`<optgroup label="Exit via node">${others.map(n => html`<option value=${"exit|" + n.id}>→ ${n.name}</option>`)}</optgroup>` : null}
         </select>
-        <button class="xbtn" title="Remove rule" onClick=${() => onChange(rules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
-        ${self ? html`<span class="rrlint">can't exit via itself</span>` : shadowed ? html`<span class="rrlint">unreachable — an earlier "All traffic" rule already matches everything</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
+        <button class="xbtn" title="Remove rule" onClick=${() => emit(dispRules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
+        ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
         ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder="IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com" value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${(r.targets || "").trim() ? null : html`<span class="rrlint">add at least one IP or domain</span>`}` : null}
       </div>`;
     })}</div>
-    <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span>${hasAll ? null : html`<span class="faint">Everything else → Direct (this node)</span>`}</div>
-    ${rules.length ? null : html`<div class="hint">No rules yet — all traffic exits direct. Add a rule to send a provider through another node, or "All traffic" to send everything.</div>`}
+    <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span>
+      <span class="faint">Everything else →</span>
+      <select class="selwrap rrcatch" value=${catchVal} onChange=${e => setCatch(e.target.value)}>
+        <option value="direct">Direct (this node)</option>
+        ${others.map(n => html`<option value=${"exit|" + n.id}>→ ${n.name}</option>`)}
+      </select></div>
+    ${dispRules.length || allRule ? null : html`<div class="hint">No rules yet. Add a rule to send a category through another node, or set "Everything else" to channel everything.</div>`}
   </div>`;
 }
 
@@ -3558,7 +3566,7 @@ function PanelSettingsScreen() {
   const [ka, setKa] = useState(String(idf.keepalive || 25));
   const [geoMir, setGeoMir] = useState(mir.geo || "");
   const [turnMir, setTurnMir] = useState(mir.turn || "");
-  const [sc, setSc] = useState(ps.store_configs === true ? "on" : ps.store_configs === false ? "off" : "default");
+  const [sc, setSc] = useState(ps.store_configs === false ? "off" : "on");   // ON and "default" merged — both keep configs
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
   const [graceS, setGraceS] = useState(String(Math.round((adv.peer_grace_ms || 60000) / 1000)));
@@ -3580,7 +3588,7 @@ function PanelSettingsScreen() {
     const r = await api.panelSettings({
       interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25 },
       mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
-      store_configs: sc === "on" ? true : sc === "off" ? false : null,
+      store_configs: sc === "off" ? false : true,
       throughput_perspective: tput,
       reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
       mesh_awg: awgSet ? awg : {},
@@ -3615,7 +3623,7 @@ function PanelSettingsScreen() {
         <button class=${"snbadge" + (selNode ? "" : " on")} onClick=${() => setSelNode("")}>default</button>
         ${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}
       </div>` : null}<span class="grow"></span>
-      <button class="btn" onClick=${() => history.back()}>Back</button>
+      <button class="btn btn-ghost" onClick=${() => history.back()}>Back</button>
       <button class="btn btn-primary" onClick=${save}>Save</button></div>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
     <div class="setbody">
@@ -3667,7 +3675,6 @@ function PanelSettingsScreen() {
           <div class="seclabel" style="margin-top:0">Client configs</div>
           <div class="field"><label>Store client configs</label>
             <select class="selwrap" value=${sc} onChange=${e => setSc(e.target.value)}>
-              <option value="default">Default (fleet.json)</option>
               <option value="on">On — keep configs (QRs re-viewable anytime)</option>
               <option value="off">Off — never store private keys</option>
             </select>

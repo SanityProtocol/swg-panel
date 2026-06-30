@@ -850,6 +850,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .moderow input{accent-color:var(--brand);margin-top:2px;flex:none;width:15px;height:15px}
 .modelbl{font-weight:600;font-size:13.5px}
 .modeexp{font-size:12px;color:var(--faint);line-height:1.5;margin-top:5px}
+.sethead .btn{padding:9px 16px}   /* Back + Save identical size */
+.rrcatch{flex:none;font-size:12px;max-width:220px}   /* the routing catch-all ("everything else →") dropdown */
 /* Phase 3 smart-routing rule editor */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
 .rrrow{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
