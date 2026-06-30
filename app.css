@@ -292,12 +292,16 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
    hovering the area highlights only the icon (no area background); click opens Edit (not the detail page).
    The header reserves a right gutter so badges never sit under it. */
 /* the edit button sits inline right after the interface name, revealed on card hover */
-.ifc-edit{flex:none;background:none;border:0;cursor:pointer;padding:4px;margin-left:-4px;margin-top:-2px;display:inline-flex;align-items:center;opacity:0;transition:opacity .12s}  /* -ml hugs the name (offsets the row gap); -mt lifts the glyph to the name's optical centre */
-.ifcard:hover .ifc-edit{opacity:1}
-.ifc-edit .ic{display:flex;color:var(--faint);transition:color .12s}
-.ifc-edit .ic svg{width:14px;height:14px}
-.ifcard:hover .ifc-edit .ic{animation:edithint 1s ease 1}   /* one-shot grey→cyan→grey pulse so the operator notices it */
-.ifc-edit:hover .ic{color:var(--brand)}
+/* the interface name IS the edit trigger: name + pencil are one button, so hovering the name reveals/highlights
+   the pencil and a click opens the edit modal (the rest of the card still links to the detail page) */
+.ifc-edit{flex:0 1 auto;min-width:0;background:none;border:0;padding:0;margin:0;cursor:pointer;color:inherit;font:inherit;display:inline-flex;align-items:center;gap:5px}
+.ifc-edit .ifname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ifc-pic{flex:none;display:inline-flex;align-items:center;margin-top:-1px;opacity:0;transition:opacity .12s}
+.ifcard:hover .ifc-pic{opacity:1}
+.ifc-pic .ic{display:flex;color:var(--faint);transition:color .12s}
+.ifc-pic .ic svg{width:14px;height:14px}
+.ifcard:hover .ifc-pic .ic{animation:edithint 1s ease 1}   /* one-shot grey→cyan→grey pulse so the operator notices it */
+.ifc-edit:hover .ifc-pic .ic{color:var(--brand)}
 @keyframes edithint{0%,100%{color:var(--faint)}45%{color:var(--brand)}}
 .ifcard-top .tg{flex:none}          /* status tags keep their full width — the name ellipsis-shrinks instead */
 .ifcard-top .onlinetag{flex:none}   /* connections count in a turn card header — don't stretch */
@@ -795,7 +799,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .egb{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;line-height:1;white-space:nowrap}
 .egb svg{width:13px;height:13px}
 .egb-fwd{color:var(--brand)}              /* smart / → node — cyan */
-.egb-direct{color:var(--dim)}             /* direct — neutral */
+.egb-direct{color:#5B8CFF}                /* direct — blue */
 .egb-cascade{color:var(--pending)}        /* cascade — Node-connections icon colour (purple) */
 .egb-smart{color:var(--smart)}            /* smart routing — rose/pink */
 /* on a node-connection card, the cascade badge + status dot sit at the TOP of the header (flex-start) so the
