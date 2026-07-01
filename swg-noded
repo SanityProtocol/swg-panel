@@ -508,64 +508,52 @@ def _attach_turn_running(tps):
             t["running"] = _TURN_RUN["map"][t["service"]]
 
 
-def list_node_ips():
+def _node_addrs():
+    """[(dev, ip)] for the node's non-loopback, non-tunnel/bridge IPv4 addresses — the shared parse behind
+    list_node_ips / _ip_ifaces / _ifaces. One `ip -o addr show` instead of three per snapshot."""
+    out = []
+    try:
+        raw = run(["ip", "-4", "-o", "addr", "show"]).stdout
+    except Exception:
+        return out
+    for ln in raw.splitlines():
+        p = ln.split()
+        if len(p) < 4 or p[2] != "inet":
+            continue
+        dev, ip = p[1], p[3].split("/")[0]
+        if dev == "lo" or dev.startswith(("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
+            continue
+        if ip.startswith("127."):
+            continue
+        out.append((dev, ip))
+    return out
+
+
+def list_node_ips(addrs=None):
     """The node's own IPv4 addresses (candidates for a per-interface egress/source IP), excluding
     loopback + tunnel/bridge devices. On a docker host-net node this is the HOST's addresses."""
     ips = []
-    try:
-        out = run(["ip", "-4", "-o", "addr", "show"]).stdout
-    except Exception:
-        return ips
-    for ln in out.splitlines():
-        p = ln.split()
-        if len(p) < 4 or p[2] != "inet":
-            continue
-        dev, ip = p[1], p[3].split("/")[0]
-        if dev == "lo" or dev.startswith(("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
-            continue
-        if ip.startswith("127.") or ip in ips:
-            continue
-        ips.append(ip)
+    for dev, ip in (addrs if addrs is not None else _node_addrs()):
+        if ip not in ips:
+            ips.append(ip)
     return ips
 
 
-def list_node_ip_ifaces():
+def list_node_ip_ifaces(addrs=None):
     """The node's (ipv4, nic) pairs — for the merged egress picker (a source IP always lives on a NIC)."""
     pairs = []
-    try:
-        out = run(["ip", "-4", "-o", "addr", "show"]).stdout
-    except Exception:
-        return pairs
-    for ln in out.splitlines():
-        p = ln.split()
-        if len(p) < 4 or p[2] != "inet":
-            continue
-        dev, ip = p[1], p[3].split("/")[0]
-        if dev == "lo" or dev.startswith(("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
-            continue
-        if ip.startswith("127.") or any(x["ip"] == ip for x in pairs):
-            continue
-        pairs.append({"ip": ip, "iface": dev})
+    for dev, ip in (addrs if addrs is not None else _node_addrs()):
+        if not any(x["ip"] == ip for x in pairs):
+            pairs.append({"ip": ip, "iface": dev})
     return pairs
 
 
-def list_node_ifaces():
+def list_node_ifaces(addrs=None):
     """The node's WAN-candidate NIC names (devices carrying a non-loopback IPv4) — for the egress -o."""
     ifs = []
-    try:
-        out = run(["ip", "-4", "-o", "addr", "show"]).stdout
-    except Exception:
-        return ifs
-    for ln in out.splitlines():
-        p = ln.split()
-        if len(p) < 4 or p[2] != "inet":
-            continue
-        dev, ip = p[1], p[3].split("/")[0]
-        if dev == "lo" or dev.startswith(("wg", "awg", "swg_", "dawg", "docker", "br-", "veth", "kube", "cni", "flannel")):
-            continue
-        if ip.startswith("127.") or dev in ifs:
-            continue
-        ifs.append(dev)
+    for dev, ip in (addrs if addrs is not None else _node_addrs()):
+        if dev not in ifs:
+            ifs.append(dev)
     return ifs
 
 
@@ -997,23 +985,32 @@ def _smart_geo_refresh(categories, set_counts, res, skip=()):
                     with open(tmp, "w") as f:
                         f.write("\n".join(data) + "\n")
                     os.replace(tmp, path)
-            if not os.path.exists(path):
-                continue                                       # no data yet → set stays empty (inert), retry next TTL
+            try:
+                st = os.stat(path)                             # no data yet → set stays empty (inert), retry next TTL
+            except OSError:
+                continue
+            sig = "%d:%d" % (int(st.st_mtime), st.st_size)      # cheap change signal — avoids re-reading/hashing a big file every cycle
+            lp = os.path.join(GEO_DIR, "." + cat + ".loaded")
+            marker = ""
+            with contextlib.suppress(OSError):
+                marker = open(lp).read().strip()
+            msig, mhash = marker.split("|", 1) if "|" in marker else ("", marker)   # legacy marker held the hash alone
+            if msig == sig and set_counts.get(sn, 0) > 0:      # file unchanged AND set populated → nothing to do (skip read/regex/hash)
+                continue
             cidrs = [ln.strip() for ln in open(path).read().splitlines() if _CIDR4_RE.match(ln.strip())]
             if not cidrs:
                 continue
             h = hashlib.sha256(("\n".join(cidrs)).encode()).hexdigest()
-            lp = os.path.join(GEO_DIR, "." + cat + ".loaded")
-            loaded = ""
-            with contextlib.suppress(OSError):
-                loaded = open(lp).read().strip()
-            if loaded != h or set_counts.get(sn, 0) == 0:      # data changed, or set empty (post-reboot) → (re)load
+            if mhash != h or set_counts.get(sn, 0) == 0:       # content changed, or set empty (post-reboot) → (re)load
                 if _nft_load_set(sn, cidrs) == 0:
                     with contextlib.suppress(OSError):
-                        open(lp, "w").write(h)
+                        open(lp, "w").write(sig + "|" + h)
                     res["changed"] += 1
                 else:
                     res["errors"].append("smart geo load " + cat + " failed")
+            else:                                              # mtime touched but content identical → just refresh the sig
+                with contextlib.suppress(OSError):
+                    open(lp, "w").write(sig + "|" + h)
         except Exception as e:
             res["errors"].append("smart geo " + cat + ": " + str(e)[:120])
 
@@ -1137,6 +1134,9 @@ def _domain_fetch(cat):
     return sorted(doms) or None
 
 
+_DOM_CACHE = {}   # cat -> ((mtime,size), parsed-domain-list): reuse the parsed list while the .doms file is unchanged
+
+
 def _smart_domain_refresh(cats, res):
     """Ensure each domain category's <cat>.doms cache is fresh (TTL-gated, retry-backed off — mirrors
     _smart_geo_refresh) and return {cat: domain-list} from cache. Cats with no DOMAIN_SOURCES entry (e.g. a
@@ -1171,10 +1171,19 @@ def _smart_domain_refresh(cats, res):
                     with open(tmp, "w") as f:
                         f.write("\n".join(data) + "\n")
                     os.replace(tmp, path)
-            if os.path.exists(path):
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue                                       # no cache yet → nothing to return for this cat
+            sig = (int(st.st_mtime), st.st_size)
+            cached = _DOM_CACHE.get(cat)
+            if cached and cached[0] == sig:                    # file unchanged → reuse the parsed list (skip the big read+regex)
+                doms = cached[1]
+            else:
                 doms = [d for d in open(path).read().splitlines() if _DOM_RE.match(d.strip())]
-                if doms:
-                    out[cat] = doms
+                _DOM_CACHE[cat] = (sig, doms)
+            if doms:
+                out[cat] = doms
         except Exception as e:
             res["errors"].append("smart domain " + cat + ": " + str(e)[:120])
     return out
@@ -1573,12 +1582,13 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         except Exception as e:
             print(f"snapshot: skipping {iface}: {e}", flush=True)
             continue
+    _addrs = _node_addrs()                         # one `ip -o addr show`, shared by the three derived views below
     snap = {"hostname": socket.gethostname(), "generated_at": now,
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
-            "node_ips": list_node_ips(), "node_ifaces": list_node_ifaces(),
-            "node_ip_ifaces": list_node_ip_ifaces(), "smartroute": smart_status()}
+            "node_ips": list_node_ips(_addrs), "node_ifaces": list_node_ifaces(_addrs),
+            "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status()}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     return snap
@@ -1586,17 +1596,30 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
 
 # ───────────────────────── reconcile ─────────────────────────
 
-def current_pubkeys(node_cfg, iface):
+_UNSET = object()
+
+
+def _iface_dump(node_cfg, iface):
+    """One `<cmd> show <iface> dump` -> (iface_line, peers), or None if the interface can't be read (down /
+    no such device). Lets a caller fetch the live interface ONCE and share it across current_pubkeys/
+    current_allowed instead of shelling out per accessor every cycle."""
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = ic.get("cmd", ["awg"])
     try:
         r = run(cmd + ["show", iface, "dump"])
-        if r.returncode != 0:                       # interface down / no such device — NOT "zero peers"
+        if r.returncode != 0:
             return None
-        _, peers = parse_dump(r.stdout)
-        return {p["public_key"] for p in peers}
+        return parse_dump(r.stdout)
     except Exception:
         return None
+
+
+def current_pubkeys(node_cfg, iface, dump=_UNSET):
+    if dump is _UNSET:                              # not pre-fetched → read it now
+        dump = _iface_dump(node_cfg, iface)
+    if dump is None:                               # interface down / no such device — NOT "zero peers"
+        return None
+    return {p["public_key"] for p in dump[1]}
 
 
 def _norm_allowed(s):
@@ -1605,18 +1628,13 @@ def _norm_allowed(s):
     return ",".join(sorted({c.strip() for c in (s or "").split(",") if c.strip()}))
 
 
-def current_allowed(node_cfg, iface):
+def current_allowed(node_cfg, iface, dump=_UNSET):
     """{pubkey -> normalized AllowedIPs} live on the interface, or None if it can't be read."""
-    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
-    cmd = ic.get("cmd", ["awg"])
-    try:
-        r = run(cmd + ["show", iface, "dump"])
-        if r.returncode != 0:
-            return None
-        _, peers = parse_dump(r.stdout)
-        return {p["public_key"]: _norm_allowed(p["allowed_ips"]) for p in peers}
-    except Exception:
+    if dump is _UNSET:
+        dump = _iface_dump(node_cfg, iface)
+    if dump is None:
         return None
+    return {p["public_key"]: _norm_allowed(p["allowed_ips"]) for p in dump[1]}
 
 
 def current_listen_port(node_cfg, iface):
@@ -1690,11 +1708,12 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
     ep_dirty = False
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
         desired = {p["public_key"]: p for p in (desired_by_iface.get(iface) or [])}
-        current = current_pubkeys(node_cfg, iface)
+        dump = _iface_dump(node_cfg, iface)         # read the live interface ONCE, shared by both accessors below
+        current = current_pubkeys(node_cfg, iface, dump)
         if current is None:
             res["errors"].append(f"{iface}: cannot read interface")
             continue
-        live_allowed = current_allowed(node_cfg, iface) or {}   # for re-applying a CHANGED AllowedIPs (cascade /32→/0)
+        live_allowed = current_allowed(node_cfg, iface, dump) or {}   # for re-applying a CHANGED AllowedIPs (cascade /32→/0)
         # EXPLICIT retirements from the panel (a key it rotated/deleted) FIRST — removed even on an
         # add-only interface, and before the add below so the replacement key can take the freed IP.
         for pk in remove_by_iface.get(iface, []):
