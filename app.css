@@ -980,22 +980,29 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .setfoot .grow{flex:1}   /* expand the spacer so Back/Save sit right (the saved-flash stays left) */
 .setfoot .btn{padding:9px 26px;min-width:104px;justify-content:center}   /* Back + Save: wide + equal */
 .setfoot .savedflash{margin-left:2px}
-.rrcatch{flex:none;font-size:12px;max-width:220px}   /* the routing catch-all ("everything else →") dropdown */
-/* Phase 3 smart-routing rule editor */
+.rrcatch{min-width:0}   /* the routing catch-all ("everything else") dropdown — matches the per-rule route-to dropdowns exactly */
+/* Phase 3 smart-routing rule editor. Row + catch-all footer share ONE grid template (grip · dropdown · arrow ·
+   dropdown · xbtn), so the "everything else" dropdown + arrow line up exactly under the per-rule ones. The side
+   columns are `auto` (icon-width) and identical in both, so the two 1fr dropdown columns come out equal. A flex
+   row can't do this reliably — a <span> and a <select> don't split a flex track equally. */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
-.rrrow{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
-/* custom IPs/domains rule: a full-width auto-growing textarea on its own line within the rule row. Starts one
-   row tall (like a textbox); JS grows it to fit wrapped content (resize off, no scrollbar). */
-.rrdoms{flex-basis:100%;width:100%;box-sizing:border-box;display:block;font-family:var(--mono);font-size:12px;line-height:1.55;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);resize:none;overflow:hidden}
+.rrrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+/* custom IPs/domains rule: a full-width auto-growing textarea on its own grid row. Starts one row tall (like a
+   textbox); JS grows it to fit wrapped content (resize off, no scrollbar). */
+.rrdoms{grid-column:1/-1;width:100%;box-sizing:border-box;display:block;font-family:var(--mono);font-size:12px;line-height:1.55;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);resize:none;overflow:hidden}
 .rrdoms::placeholder{color:var(--faint)}
 .rrrow.warn{border-color:color-mix(in srgb,var(--partial) 45%,transparent)}
-.rrrow .drag-grip{cursor:grab;opacity:.4;flex:none}.rrrow:hover .drag-grip{opacity:.7}
-.rrrow .selwrap{flex:1;min-width:0}
-.rrarrow{color:var(--faint);flex:none}
-.rrrow .xbtn{flex:none}
-.rrlint{flex:none;font-size:10px;color:var(--partial);font-family:var(--mono)}
-.rrfoot{display:flex;align-items:center;gap:8px;margin-top:8px}
-.rrfoot .faint{font-size:12.5px}
+.rrrow .drag-grip{cursor:grab;opacity:.4}.rrrow:hover .drag-grip{opacity:.7}
+.rrrow .selwrap{min-width:0}
+.rrarrow{color:var(--faint)}
+.rrrow .rrlint{grid-column:1/-1}   /* lint messages drop to their own full-width grid row */
+.rrlint{font-size:10px;color:var(--partial);font-family:var(--mono)}
+/* the catch-all footer reuses the row's grid template + the row's content inset (transparent padding+border) so
+   its columns start/end identically. The grip/xbtn ghosts are invisible width-matched spacers for cols 1 & 5. */
+.rrfoot{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;margin-top:8px;padding:0 8px;border:1px solid transparent}
+.rrfoot-ghost{visibility:hidden;pointer-events:none}
+.rrfoot-lead{min-width:0;display:flex;align-items:center;gap:8px}
+.rrfoot-label{font-size:13.5px;color:var(--dim);font-weight:600;white-space:nowrap}
 /* node-connection link health: a single glowing dot (green up / amber connecting / red down) */
 .lkdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown);--g:var(--unknown)}
 .lkdot.up{background:var(--online);--g:var(--online);animation:pulse 2.6s infinite}

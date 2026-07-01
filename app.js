@@ -1738,7 +1738,7 @@ function suggestSubnet(node) {
 // VK/Meta/Twitter/Netflix) match by domain via the node's dnsmasq — so YouTube splits from the rest of Google;
 // the rest (Telegram/Cloudflare/RU-net/All) match by provider IP ranges (geoip). "Russia" is TWO distinct lists:
 // ru_net = the whole Russian IP space (geoip, every mode); ru_blocked = sites blocked INSIDE Russia (circumvention
-// domains, Force-DNS/SNI only) — different meanings, so they're separate categories you route independently.
+// domains, Force-DNS only) — different meanings, so they're separate categories you route independently.
 const SMART_CATEGORIES = [
   ["google", "Google"], ["youtube", "YouTube"], ["yandex", "Yandex"], ["vk", "VK"], ["telegram", "Telegram"],
   ["cloudflare", "Cloudflare"], ["meta", "Meta (FB / IG / WA)"], ["twitter", "Twitter / X"],
@@ -1746,12 +1746,12 @@ const SMART_CATEGORIES = [
   ["disney", "Disney+"], ["reddit", "Reddit"], ["discord", "Discord"], ["github", "GitHub"],
   ["openai", "OpenAI / ChatGPT"], ["claude", "Claude (Anthropic)"], ["gemini", "Google Gemini"],
   ["grok", "Grok (xAI)"], ["perplexity", "Perplexity"], ["deepseek", "DeepSeek"], ["copilot", "Microsoft Copilot"],
-  ["ru_net", "Russia — network (all RU IPs)"], ["ru_blocked", "Russia — blocked / censored"],
+  ["ru_net", "Russia (all RU IPs)"], ["ru_blocked", "Russia (all blocked)"],
   ["all", "All traffic (catch-all)"],
 ];
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
-// EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns/sni). A
+// EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns). A
 // host-ONLY category (youtube today) is dead weight in kernel mode, so the UI greys/hides it there.
 const catCap = id => (Store.smartCaps || {})[id] || { ip: false, host: false };
 const catHostOnly = id => { const c = catCap(id); return c.host && !c.ip; };
@@ -1788,8 +1788,11 @@ function RoutingRules({ node, rules, onChange }) {
   const addRule = () => emit([...dispRules, { _rid: newRid(), enabled: true, category: "custom", action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
   const destVal = r => r.action === "exit" ? "exit|" + (r.node || "") : r.action;
   const onDest = (rid, v) => { const [a, n] = v.split("|"); setRule(rid, a === "exit" ? { action: "exit", node: n } : { action: a, node: "" }); };
-  const catchVal = allRule && allRule.action === "exit" ? "exit|" + (allRule.node || "") : "direct";
-  const setCatch = v => { const [a, n] = v.split("|"); onChange(a === "exit" && n ? [...dispRules, { _rid: newRid(), enabled: true, category: "all", action: "exit", node: n }] : dispRules); };
+  const catchVal = !allRule ? "direct" : allRule.action === "exit" ? "exit|" + (allRule.node || "") : allRule.action;   // "exit|<n>" | "block" | "direct" (default = no stored catch-all)
+  const setCatch = v => { const [a, n] = v.split("|");
+    onChange(a === "exit" && n ? [...dispRules, { _rid: newRid(), enabled: true, category: "all", action: "exit", node: n }]
+      : a === "block" ? [...dispRules, { _rid: newRid(), enabled: true, category: "all", action: "block" }]
+      : dispRules); };   // "direct" is the implicit default → no stored rule
   const seen = {};
   return html`<div class="field"><label>Routing rules <span class="faint" style="text-transform:none;letter-spacing:0">— first match wins</span></label>
     <div class="rrlist" ...${rs.container()}>${dispRules.map(r => {
@@ -1797,8 +1800,10 @@ function RoutingRules({ node, rules, onChange }) {
       const dup = seen[ckey]; seen[ckey] = true;
       const self = r.action === "exit" && r.node === node;
       const badToks = r.category === "custom" ? invalidTargets(r.targets || "") : [];
+      const ipOnly = _mode === "kernel";                       // kernel matches by dest IP only — no hostname routing
+      const domToks = (ipOnly && r.category === "custom") ? domainTargets(r.targets || "") : [];   // domains a kernel node can't match
       const it = rs.item(r._rid);
-      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || badToks.length) ? " warn" : "")} data-rid=${it.rid}>
+      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || badToks.length || domToks.length) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
           <option value="custom">Custom IPs / domains…</option>
@@ -1814,15 +1819,20 @@ function RoutingRules({ node, rules, onChange }) {
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => emit(dispRules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
         ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
-        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder="IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com" value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP or domain</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : null}` : null}
+        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder=${ipOnly ? "IPs / CIDRs only (Kernel mode) — e.g. 1.2.3.0/24, 5.6.7.8" : "IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com"} value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP${ipOnly ? " or CIDR" : " or domain"}</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : domToks.length ? html`<span class="rrlint">Kernel mode is IP-only — ${domToks.slice(0, 3).join(", ")}${domToks.length > 3 ? "…" : ""} ${domToks.length > 1 ? "are domains" : "is a domain"}. Use IPs/CIDRs, or switch this node to Force-DNS.</span>` : null}` : null}
       </div>`;
     })}</div>
-    <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span>
-      <span class="faint">Everything else →</span>
+    <div class="rrfoot">
+      <span class="drag-grip rrfoot-ghost" dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
+      <span class="rrfoot-lead"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span><b class="rrfoot-label">Everything else</b></span>
+      <span class="rrarrow">→</span>
       <select class="selwrap rrcatch" value=${catchVal} onChange=${e => setCatch(e.target.value)}>
         <option value="direct">Direct (this node)</option>
         ${others.map(n => html`<option value=${"exit|" + n.id}>→ ${n.name}</option>`)}
-      </select></div>
+        <option value="block">Block</option>
+      </select>
+      <button class="xbtn rrfoot-ghost" tabindex="-1"><${Ic} i="x"/></button>
+    </div>
     ${dispRules.length || allRule ? null : html`<div class="hint">No rules yet. Add a rule to send a category through another node, or set "Everything else" to channel everything.</div>`}
   </div>`;
 }
@@ -1885,8 +1895,11 @@ function validTarget(tok) {
   return labels.length >= 2 && labels.every(l => _RR_LABEL.test(l)) && /^[a-z]{2,}$/.test(labels[labels.length - 1]);
 }
 const invalidTargets = raw => splitTargets(raw).filter(t => !validTarget(t));
-// null when the egress config is savable; otherwise a message the sheets show + disable Save on.
-function egressError(eg) {
+const isIpTarget = tok => { const m = String(tok).trim().toLowerCase().match(_RR_IP4); return !!m && [1, 2, 3, 4].every(i => +m[i] <= 255) && (!m[5] || +m[5].slice(1) <= 32); };
+const domainTargets = raw => splitTargets(raw).filter(t => validTarget(t) && !isIpTarget(t));   // real hostnames among the valid tokens (kernel mode can't match these)
+// null when the egress config is savable; otherwise a message the sheets show + disable Save on. `mode` = the node's
+// routing_mode: in kernel (IP-only) a custom rule can't use domains — only Force-DNS matches by hostname.
+function egressError(eg, mode) {
   if (!eg || eg.mode !== "smart") return null;
   for (const r of (eg.rules || [])) {
     if (r.category !== "custom") continue;
@@ -1894,6 +1907,10 @@ function egressError(eg) {
     if (!toks.length) return "A custom rule needs at least one IP or domain.";
     const bad = toks.filter(t => !validTarget(t));
     if (bad.length) return "Invalid target" + (bad.length > 1 ? "s" : "") + ": " + bad.slice(0, 4).join(", ") + (bad.length > 4 ? "…" : "");
+    if (mode === "kernel") {
+      const doms = domainTargets(r.targets || "");
+      if (doms.length) return "Kernel mode routes by IP only — remove the domain" + (doms.length > 1 ? "s" : "") + " (" + doms.slice(0, 3).join(", ") + (doms.length > 3 ? "…" : "") + "), or switch this node to Force-DNS.";
+    }
   }
   return null;
 }
@@ -1930,7 +1947,7 @@ function LoadIfaceSheet({ node }) {
       if (!nm || /[\s/]/.test(nm)) return fail("Interface name is required (no spaces or /).");
       if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.");
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
-      const ee = egressError(eg); if (ee) return fail(ee);
+      const ee = egressError(eg, nrec.routing_mode || "kernel"); if (ee) return fail(ee);
       const hostVal = ipPickerVal(hostSel, hostCustom);
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) });
@@ -1947,7 +1964,7 @@ function LoadIfaceSheet({ node }) {
     toast(existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync.", "ok");
   };
   return html`<${Sheet} title="Create new interface"
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || (!existing && !!egressError(eg))} title=${(!existing && egressError(eg)) || ""} onClick=${save}>${existing ? "Adopt" : "Create"}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || (!existing && !!egressError(eg, nrec.routing_mode || "kernel"))} title=${(!existing && egressError(eg, nrec.routing_mode || "kernel")) || ""} onClick=${save}>${existing ? "Adopt" : "Create"}</button></>`}>
     <div class="field"><label>Protocol</label>
       <div class="chiprow proto3">
         <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
@@ -2150,6 +2167,7 @@ function ConnectionEditSheet({ node, iface }) {
 }
 function EditIfaceSheet({ node, iface }) {
   const meta = Store.ifaceMeta(node, iface) || {};
+  const emode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";   // for smart-rule validation (kernel = IP-only)
   const ep = meta.endpoint || "";
   const epHost = ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep;
   const [host, setHost] = useState(epHost);
@@ -2183,7 +2201,7 @@ function EditIfaceSheet({ node, iface }) {
     await Store.poll();   // trackIfaceOps drives busy → done
   };
   const save = () => {
-    const ee = egressError(eg); if (ee) return toast(ee, "err");
+    const ee = egressError(eg, emode); if (ee) return toast(ee, "err");
     const portChanged = port.trim() !== String(meta.desired_port || meta.listen_port || "");
     const epChanged = host.trim() !== epHost;
     if (portChanged || epChanged) {           // client-breaking → confirm first (the editor stays open behind it)
@@ -2200,7 +2218,7 @@ function EditIfaceSheet({ node, iface }) {
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg)} title=${egressError(eg) || ""} onClick=${save}>Save</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode)} title=${egressError(eg, emode) || ""} onClick=${save}>Save</button></>`}>
     <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${meta.drift && meta.drift.public_key ? html`<div class="notice warn">
@@ -3858,9 +3876,8 @@ function PanelSettingsScreen() {
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
   const MODES = [
-    ["kernel", "Kernel only — IP routing", "Matches by destination IP (GeoIP/ASN). Works no matter what DNS your clients use (DoH-proof), zero extra moving parts. Can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
-    ["forcedns", "Force DNS — Host + IP, No DoH", "The node becomes your clients' resolver and blocks their encrypted DNS, so it can route by hostname too — per-service precision + domain lists. Can break a client that insists on its own DoH, and won't help under ECH/QUIC. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
-    ["sni", "SNI router — Host + IP, DoH-proof", "A lightweight on-node component reads the hostname from each TLS handshake (SNI), so hostname routing works even when clients run their own DoH. Most accurate. ECH/QUIC-hidden names fall back to IP. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["kernel", "Default — IP routing, supports DoH", "Matches by destination IP (GeoIP/ASN). Works no matter what DNS your clients use (DoH-proof), zero extra moving parts. Can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
+    ["forcedns", "Force DNS — Host + IP routing, overrides DoH", "The node becomes your clients' resolver and blocks their encrypted DNS, so it can route by hostname too — per-service precision + domain lists. Can break a client that insists on its own DoH, and won't help under ECH/QUIC. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
   ];
   return html`<div class="screen setscreen">
     <div class="sethead"><b>Panel settings</b></div>
@@ -3871,7 +3888,7 @@ function PanelSettingsScreen() {
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
-          <p class="hint" style="margin:0 0 12px">How this node matches smart-routing traffic. Changing the mode reconfigures the node (installs/removes its DNS resolver or SNI router) and changes which lists its interfaces can use.</p>
+          <p class="hint" style="margin:0 0 12px">How this node matches smart-routing traffic. Changing the mode reconfigures the node (installs/removes its DNS resolver) and changes which lists its interfaces can use.</p>
           ${MODES.map(([id, lbl, exp]) => html`<label class=${"moderow" + (nodeMode === id ? " on" : "")}>
             <input type="radio" name="rmode" checked=${nodeMode === id} onChange=${() => setMode(id)}/>
             <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
@@ -3881,8 +3898,8 @@ function PanelSettingsScreen() {
           <div class="catgroup">IP <span class="req">— GeoIP, works in every mode</span></div>
           <div class="catgrid">${sysCats.filter(([id]) => catCap(id).ip).map(([id, lbl]) => html`<label class=${"chk" + (catDoms(id).length ? " listwrap" : "")}><input type="checkbox" checked=${catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id), catCap(id).ip ? "+ GeoIP ranges" : null)}</label>`)}</div>
           ${(() => { const hostCats = sysCats.filter(([id]) => catHostOnly(id)); if (!hostCats.length) return null; const dis = nodeMode === "kernel";
-            return html`<div class="catgroup hostgroup">Host <span class="req">${dis ? "— needs Force-DNS or SNI mode" : "— matched by hostname"}</span></div>
-            <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "") + (catDoms(id).length ? " listwrap" : "")} title=${dis ? "Host lists need Force-DNS or SNI mode (they require DNS)" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id))}</label>`)}</div>`; })()}
+            return html`<div class="catgroup hostgroup">Host <span class="req">${dis ? "— needs Force-DNS mode" : "— matched by hostname"}</span></div>
+            <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "") + (catDoms(id).length ? " listwrap" : "")} title=${dis ? "Host lists need Force-DNS mode (they require DNS)" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id))}</label>`)}</div>`; })()}
           <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— shared across all nodes</span></div>
           <p class="hint" style="margin:0 0 10px">Your own reusable IP/domain lists. Enabled ones appear in the routing dropdown; a rule that uses a list updates automatically when you edit it.</p>
           <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row listwrap" key=${l._rid}>

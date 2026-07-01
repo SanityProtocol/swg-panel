@@ -1247,8 +1247,8 @@ SMART_CATEGORIES = {
     "perplexity": "Perplexity",
     "deepseek": "DeepSeek",
     "copilot":  "Microsoft Copilot",
-    "ru_net":     "Russia — network (all RU IPs)",     # geoip LS:ru — the whole Russian IP space (works in every mode)
-    "ru_blocked": "Russia — blocked / censored",       # RF domains_all — sites blocked INSIDE Russia (circumvention); domain-only
+    "ru_net":     "Russia (all RU IPs)",     # geoip LS:ru — the whole Russian IP space (works in every mode)
+    "ru_blocked": "Russia (all blocked)",    # RF domains_all — sites blocked INSIDE Russia (circumvention); domain-only
     "all":      "All traffic (catch-all)",   # matches everything not caught by an earlier rule (no geo set)
 }
 
@@ -1399,6 +1399,10 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=()):
                                          else [*(r.get("domains") or []), *(r.get("cidrs") or [])])
             if not doms and not cidrs:
                 return None, "a custom rule needs at least one valid IP or domain"
+            if ((nodes.get(nid) or {}).get("routing_mode") or "kernel") == "kernel" and doms:
+                return None, ("kernel mode routes by IP only — a custom rule can't use domains ("
+                              + ", ".join(doms[:3]) + ("…" if len(doms) > 3 else "")
+                              + "); use IPs/CIDRs or switch the node to Force-DNS")
             tgt = (doms, cidrs)
         elif cat in custom_list_ids:
             pass                                           # a reusable custom list referenced by id (targets resolved at compile time)
@@ -2537,9 +2541,9 @@ def api(method, path, qs, body, deps):
                         return 400, {"ok": False, "error": k + " must be a valid IPv4 address (or blank)", "code": "bad_request"}
                 nodes[nid][k] = v
         if "routing_mode" in body:              # how THIS node matches smart traffic: kernel (geoip only, DoH-proof) |
-            rm = (body.get("routing_mode") or "kernel").strip()   # forcedns (host+IP via dnsmasq) | sni (host+IP via SNI router)
-            if rm not in ("kernel", "forcedns", "sni"):
-                return 400, {"ok": False, "error": "routing_mode must be kernel|forcedns|sni", "code": "bad_request"}
+            rm = (body.get("routing_mode") or "kernel").strip()   # forcedns (host+IP via dnsmasq). 'sni' is Phase C —
+            if rm not in ("kernel", "forcedns"):                  # deferred + not offered in the UI, so don't accept it.
+                return 400, {"ok": False, "error": "routing_mode must be kernel|forcedns", "code": "bad_request"}
             nodes[nid]["routing_mode"] = rm
         if "enabled_categories" in body:        # built-in categories shown for THIS node's interfaces ([]/absent = all)
             ec = body.get("enabled_categories")
