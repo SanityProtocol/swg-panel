@@ -2052,8 +2052,10 @@ def api(method, path, qs, body, deps):
                 if not lid or lid in seen:
                     lid = "cl_" + hashlib.sha1((str(item.get("title")) + "|" + ",".join(doms + cidrs) + "|" + str(len(out_lists))).encode()).hexdigest()[:10]
                 seen.add(lid)
+                dn = list(dict.fromkeys(str(x) for x in (item.get("disabled_nodes") or []) if isinstance(x, str) and x.strip()))[:128]
                 out_lists.append({"id": lid, "title": (str(item.get("title") or "").strip()[:60] or "Untitled list"),
-                                  "domains": doms, "cidrs": cidrs, "enabled": item.get("enabled", True) is not False})
+                                  "domains": doms, "cidrs": cidrs, "enabled": item.get("enabled", True) is not False,
+                                  "disabled_nodes": dn})
             cur["custom_lists"] = out_lists
         deps["panel_settings"] = cur
         with contextlib.suppress(Exception):
