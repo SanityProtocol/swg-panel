@@ -592,12 +592,21 @@ def _iface_subnet(node_cfg, iface):
         return ""
 
 
+def _comment_re(tag):
+    """Match a `--comment <tag>` in `iptables -S` output. iptables QUOTES comments (--comment "tag"),
+    but some builds don't — match either form. Getting this wrong makes the "does this rule already
+    exist?" check always miss, so the reconcile appends a fresh duplicate every cycle → the POSTROUTING
+    chain explodes into tens of thousands of rules and listing it pins the CPU."""
+    return re.compile(r'--comment "?' + re.escape(tag) + r'"?(?:\s|$)')
+
+
 def _snat_reconcile_rule(tag, subnet, des, rules):
     """Ensure exactly one tagged SNAT/MASQUERADE POSTROUTING rule for `subnet`, inserted at the head
     (ahead of any default MASQUERADE). des = ("SNAT", wan, ip) | ("MASQUERADE", wan, "") | None (no rule).
     `rules` = current `iptables -t nat -S POSTROUTING` lines. Returns (changed: bool, error: str|None).
     Shared by reconcile_egress (local-iface SNAT) and reconcile_cascade (exit forwarded-subnet SNAT)."""
-    existing = [ln for ln in rules if ("--comment " + tag) in ln]
+    _re = _comment_re(tag)
+    existing = [ln for ln in rules if _re.search(ln)]
     cur = None
     if existing:
         o = re.search(r"-o (\S+)", existing[0]); src = re.search(r"--to-source (\S+)", existing[0])
@@ -742,7 +751,7 @@ def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip=""):
         elif _ch:
             res["changed"] += 1
     for ln in nat:                                              # remove SNAT tags no longer wanted
-        mt = re.search(r"--comment (swg-fwd-snat:\S+)", ln)
+        mt = re.search(r'--comment "?(swg-fwd-snat:[^"\s]+)"?', ln)
         if mt and mt.group(1) not in want_snat and ln.startswith("-A POSTROUTING"):
             run(["sh", "-c", "iptables -t nat " + ln.replace("-A POSTROUTING", "-D POSTROUTING", 1)]); res["changed"] += 1
     # 2) FORWARD accept (filter) + 3) MSS clamp (mangle), present-or-absent per link dev
@@ -775,7 +784,7 @@ def _ensure_dev_rules(table, chain, prefix, link_devs, res, mk):
                 run(add)
                 res["changed"] += 1
     for ln in lines:                                            # drop stale device tags
-        mt = re.search(r"--comment (" + re.escape(prefix) + r"\S+)", ln)
+        mt = re.search(r'--comment "?(' + re.escape(prefix) + r'[^"\s]+)"?', ln)
         if mt and mt.group(1) not in want and ln.startswith("-A " + chain):
             run(["sh", "-c", "iptables " + " ".join(targs) + " " + ln.replace("-A " + chain, "-D " + chain, 1)]); res["changed"] += 1
 
