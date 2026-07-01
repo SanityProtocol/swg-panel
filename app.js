@@ -3876,9 +3876,9 @@ function PanelSettingsScreen() {
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
   const MODES = [
-    ["kernel", "Default — IP routing, supports DoH", "Matches by destination IP (GeoIP/ASN). Works no matter what DNS your clients use (DoH-proof), zero extra moving parts. Can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
-    ["forcedns", "Force DNS — Host + IP routing, overrides DoH", "The node becomes your clients' resolver and blocks their encrypted DNS, so it can route by hostname too — per-service precision + domain lists. Can break a client that insists on its own DoH, and won't help under ECH/QUIC. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
-    ["sni", "SNI router — Host + IP routing, keeps DNS private", "Routes by hostname by reading the SNI from each TLS handshake — so the client's own DNS (incl. DoH/DoT) is never touched, observed, or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection, so a brand-new host routes on the next one; ECH-hidden names fall back to IP. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["kernel", "Default — IP only, any DNS", "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
+    ["forcedns", "Force DNS — Host + IP, overrides encrypted DNS", "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["sni", "SNI router — Host + IP, DNS stays private", "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
   ];
   return html`<div class="screen setscreen">
     <div class="sethead"><b>Panel settings</b></div>
@@ -3889,7 +3889,7 @@ function PanelSettingsScreen() {
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
-          <p class="hint" style="margin:0 0 12px">How this node matches smart-routing traffic. Changing the mode reconfigures the node (installs/removes its DNS resolver) and changes which lists its interfaces can use.</p>
+          <p class="hint" style="margin:0 0 12px">How this node matches smart-routing traffic. <b>All three route in the kernel</b> (no proxy hop) — they differ only in <b>how they match</b> (by IP vs by hostname) and <b>whether they touch your clients' DNS</b>. Changing the mode reconfigures the node (installs/removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</p>
           ${MODES.map(([id, lbl, exp]) => html`<label class=${"moderow" + (nodeMode === id ? " on" : "")}>
             <input type="radio" name="rmode" checked=${nodeMode === id} onChange=${() => setMode(id)}/>
             <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
