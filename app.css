@@ -914,14 +914,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tf-verwrap{position:relative;display:inline-flex}
 .tf-ver{font-family:var(--mono);font-size:11px;color:var(--tfc,var(--ready));background:color-mix(in srgb,var(--tfc,var(--ready)) 13%,transparent);padding:1px 7px;border-radius:99px;white-space:nowrap;cursor:default;border:1px solid color-mix(in srgb,var(--tfc,var(--ready)) 22%,transparent)}
 .tf-ver.none{color:var(--faint);background:none;font-style:italic}
-/* hover bubble: which node runs which version (+ live updating/updated during an Update) */
-.tf-verpop{position:absolute;top:calc(100% + 6px);left:0;z-index:40;min-width:190px;display:none;flex-direction:column;gap:7px;
-  padding:9px 10px;border:1px solid var(--line-solid);border-radius:9px;background:var(--surface-2);box-shadow:0 8px 26px rgba(0,0,0,.45)}
+/* hover bubble: the nodes running this fork (+ live updating/updated during an Update) */
+.tf-verpop{position:absolute;top:calc(100% + 6px);left:0;z-index:40;min-width:max-content;display:none;flex-direction:column;gap:4px;
+  padding:7px 9px;border:1px solid var(--line-solid);border-radius:9px;background:var(--surface-2);box-shadow:0 8px 26px rgba(0,0,0,.45)}
 .tf-verwrap:hover .tf-verpop{display:flex}
-.tf-verpop-h{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:600}
-.tf-vg{display:flex;flex-direction:column;gap:4px}
-.tf-vg-v{align-self:flex-start;font-family:var(--mono);font-size:10.5px;color:var(--tfc,var(--ready));background:color-mix(in srgb,var(--tfc,var(--ready)) 14%,transparent);padding:0 6px;border-radius:99px}
-.tf-vg-nodes{display:flex;flex-direction:column;gap:3px;padding-left:2px}
 .tf-vg-node{display:flex;align-items:center;gap:6px;font-size:11.5px}
 .tf-vg-dot{width:7px;height:7px;border-radius:50%;flex:none}
 .tf-vg-nm{color:var(--ink);font-family:var(--mono);font-size:11px}

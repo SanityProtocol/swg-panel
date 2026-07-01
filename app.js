@@ -3909,14 +3909,10 @@ function PanelSettingsScreen() {
               if (!v.length) return html`<span class="tf-ver none">not yet used</span>`;
               const nodes = forkNodeStates(f.id); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
               const bub = html`<span class="tf-verpop">
-                <span class="tf-verpop-h">Deployed across the fleet</span>
-                ${v.map(ver => html`<span class="tf-vg">
-                  <span class="tf-vg-v" style=${"--tfc:" + col}>${ver}</span>
-                  <span class="tf-vg-nodes">${nodes.filter(n => n.version === ver).map(n => html`<span class="tf-vg-node">
-                    <span class="tf-vg-dot" style=${"background:" + (Store.nodeColor(n.node) || "var(--ink)")}></span>
-                    <span class="tf-vg-nm">${Store.nodeName(n.node)}</span>
-                    ${n.installing ? html`<span class="tf-vg-st upd">updating…</span>` : (n.updatePending && latest && ver === latest) ? html`<span class="tf-vg-st ok"><${Ic} i="check"/>updated</span>` : null}
-                  </span>`)}</span>
+                ${nodes.map(n => html`<span class="tf-vg-node">
+                  <span class="tf-vg-dot" style=${"background:" + (Store.nodeColor(n.node) || "var(--ink)")}></span>
+                  <span class="tf-vg-nm">${Store.nodeName(n.node)}</span>
+                  ${n.installing ? html`<span class="tf-vg-st upd">updating…</span>` : (n.updatePending && latest && n.version === latest) ? html`<span class="tf-vg-st ok"><${Ic} i="check"/>updated</span>` : null}
                 </span>`)}
               </span>`;
               return html`<span class="tf-verwrap" style=${"--tfc:" + col}><span class="tf-ver">${v.join(", ")}</span>${bub}</span>`;
