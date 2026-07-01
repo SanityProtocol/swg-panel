@@ -628,18 +628,21 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
    cpu/throughput, gear/trash. Turn-proxies span the middle columns on a third row. */
 /* 7-column grid. Left cluster: gutter · name/peers · interfaces/turn (hug peers). Flex gap. Right cluster:
    mesh (hugs cpu) · cpu/throughput (right-aligned metric) · gear/trash. */
-.ncard{display:grid;grid-template-columns:32px minmax(0,auto) minmax(0,auto) minmax(16px,1fr) auto auto auto;align-items:center;column-gap:14px;row-gap:15px;cursor:pointer;
+/* FIXED column widths so every card's data lines up at the same x (cross-card alignment): the name/peers
+   column is fixed (name spans past it into the gap), so interfaces/turn always start at the same x; the right
+   cluster (mesh · cpu/throughput · icons) is fixed and right-anchored, so it's identical across cards. */
+.ncard{display:grid;grid-template-columns:32px 124px minmax(0,auto) minmax(14px,1fr) 148px 316px 28px;align-items:center;column-gap:14px;row-gap:15px;cursor:pointer;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:background .15s;padding:16px}
 .ncard.removing{opacity:.82;border-style:dashed}
 .ncard:hover{background:var(--surface-2)}
 .nc-gutter{grid-column:1;display:flex;align-items:center;gap:6px}
-.nc-name{grid-column:2;display:flex;align-items:center;gap:9px;min-width:0}
+.nc-name{grid-column:2 / 5;display:flex;align-items:center;gap:9px;min-width:0}   /* spans past the fixed peers col so long names+badges have room */
 .nc-peers{grid-column:2}
-.nc-ifaces{grid-column:3;min-width:0}          /* interfaces hug peers (left) */
+.nc-ifaces{grid-column:3;min-width:0}          /* interfaces hug peers (start at a fixed x) */
 .nc-turn{grid-column:3 / 7;min-width:0}         /* turn-proxies start by peers, room to the right */
-.nc-mesh{grid-column:5;min-width:0}             /* mesh hugs cpu (right) */
-.nc-cpu{grid-column:6;justify-self:end}
-.nc-thru{grid-column:6;justify-self:end}        /* aligns under cpu, with its label */
+.nc-mesh{grid-column:5;min-width:0;justify-self:end}   /* mesh sits at the right of its col, hugging cpu */
+.nc-cpu{grid-column:6;justify-self:start;margin-left:-6px}    /* -6 → mesh↔cpu gap = 8 (like throughput label↔value) */
+.nc-thru{grid-column:6;justify-self:start;margin-left:-6px;padding-left:62px}  /* indent so the "T" lands ~5px after the cpu bar's left edge */
 .nc-ctl{grid-column:7;flex:none}
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
