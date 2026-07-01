@@ -972,7 +972,15 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .moderow{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;cursor:pointer;transition:border-color .12s,background .12s}
 .moderow:hover{border-color:color-mix(in srgb,var(--brand) 40%,var(--line))}
 .moderow.on{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 7%,transparent)}
-.moderow input{accent-color:var(--brand);margin-top:2px;flex:none;width:15px;height:15px}
+/* Custom radio dot driven by the `.on` STATE class, not the native `:checked`. A native (accent-color) radio
+   round-trips its checked visual whenever the browser toggles it — e.g. a stray click near the control — even
+   when our state (nodeMode) never changes, which reads as a select/unselect flicker. Rendering the dot from
+   `.moderow.on` (Preact state) makes any native toggle visually inert. Same fix as the checkboxes. */
+.moderow input{appearance:none;-webkit-appearance:none;margin-top:2px;flex:none;width:15px;height:15px;border-radius:50%;
+  border:1.5px solid var(--line-solid);background:transparent;cursor:pointer;position:relative;transition:none}
+.moderow.on input{border-color:var(--brand)}
+.moderow.on input::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--brand)}
+.moderow input:focus-visible{outline:2px solid color-mix(in srgb,var(--brand) 55%,transparent);outline-offset:2px}
 .modelbl{font-weight:600;font-size:13.5px}
 .modeexp{font-size:12px;color:var(--faint);line-height:1.5;margin-top:5px}
 /* Back/Save now live in a footer BELOW the content card, right-aligned + nudged a touch past the card edge */
