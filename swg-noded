@@ -1135,6 +1135,8 @@ def _domain_fetch(cat):
 
 
 _DOM_CACHE = {}   # cat -> ((mtime,size), parsed-domain-list): reuse the parsed list while the .doms file is unchanged
+_DOMTIER_CACHE = {}   # {"v": (input-signature, fully-enriched {cat:[domain]})}: skip the union+sort when inputs are unchanged
+_DNSMASQ_BUILD = {"n": 0}   # cycles since the domain tier went active — drives the periodic self-heal rebuild
 
 
 def _smart_domain_refresh(cats, res):
@@ -1246,17 +1248,23 @@ def _smart_dns_redirect(subnets, res):
         run(["iptables", "-t", "nat", "-D", "PREROUTING"] + rule(S, proto)); res["changed"] += 1
 
 
-def _ensure_smart_dnsmasq(domains, smart_e, res):
+def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False):
     """(Re)configure + run the domain-tier dnsmasq and redirect smart-subnet DNS to it. domains = {cat:[domain]}
-    for the active domain categories; smart_e gives the source subnets. Nothing wanted → full teardown."""
+    for the active domain categories; smart_e gives the source subnets. Nothing wanted → full teardown.
+    unchanged=True (inputs identical to last cycle) → skip the expensive body rebuild, but still re-assert the DNS
+    redirect (cheap, diff-gated) and, every ~12 cycles, force a full rebuild to self-heal any external drift."""
     subnets = sorted({e["subnet"] for e in smart_e})
     want = bool(domains and subnets)
-    _smart_dns_redirect(subnets if want else [], res)
+    _smart_dns_redirect(subnets if want else [], res)          # cheap, diff-gated — always reconciled
     if not want:                                               # nothing to fill → tear down + reap any stray instance
+        _DNSMASQ_BUILD["n"] = 0
         had = _dnsmasq_running() or os.path.exists(DNSMASQ_CONF) or run(["pgrep", "-f", "conf-file=" + DNSMASQ_CONF]).returncode == 0
         if had:
             _dnsmasq_stop(); res["changed"] += 1
         return
+    _DNSMASQ_BUILD["n"] += 1
+    if unchanged and _DNSMASQ_BUILD["n"] % 12 != 0 and _dnsmasq_running():
+        return                                                 # inputs unchanged + dnsmasq alive → skip the O(n) config rebuild
     conf = ["# managed by swg-noded — domain-tier smart routing (do not edit)",
             "port=" + str(SMART_DNS_PORT), "listen-address=127.0.0.1", "bind-interfaces",
             "no-resolv", "no-hosts", "cache-size=2000", "pid-file=" + DNSMASQ_PID]
@@ -1504,9 +1512,22 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res)
     domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq-filled
     # GeoSite host tier: enrich each panel-shipped domain cat with the node-fetched upstream list (union), so the
-    # curated bundle stays a guaranteed fallback. Only the cats the panel shipped (=DNS-mode cats for this node).
-    for cat, fl in _smart_domain_refresh([c for c in domains if c in DOMAIN_SOURCES], res).items():
-        domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
+    # curated bundle stays a guaranteed fallback. The union+sort of a ~100k-entry list is expensive to redo every
+    # cycle, so cache the enriched dict on a CHEAP signature of the inputs — subnets + the raw panel bundles (small)
+    # + each fetched cat's geo-file (mtime,size) — never touching the big lists. Unchanged inputs reuse the enriched
+    # dict AND tell _ensure_smart_dnsmasq to skip its (equally expensive) config rebuild. This keeps domains[cat]
+    # populated either way, so the geoip↔domain split below (skip=...) stays correct.
+    _fetched = _smart_domain_refresh([c for c in domains if c in DOMAIN_SOURCES], res)
+    dom_sig = (tuple(sorted({e["subnet"] for e in smart_e})), json.dumps(domains, sort_keys=True),
+               tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in _fetched)))
+    _dt = _DOMTIER_CACHE.get("v")
+    dom_unchanged = bool(_dt and _dt[0] == dom_sig)
+    if dom_unchanged:
+        domains = _dt[1]                                       # inputs unchanged → reuse enriched dict (skip union+sort)
+    else:
+        for cat, fl in _fetched.items():
+            domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
+        _DOMTIER_CACHE["v"] = (dom_sig, domains)
     # GEOIP cats fill from cached CIDR lists (TTL-gated); domain cats are owned by dnsmasq → skip them here. A
     # cat is demoted from geoip only once it actually HAS domains, so a fetch-only cat (ru) stays geoip until its
     # upstream list lands rather than going briefly empty.
@@ -1515,7 +1536,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     _smart_load_cidrs((smart or {}).get("cidrs") or {}, set_counts or {}, res)   # custom-rule raw IPs/CIDRs → into the set
     # domain tier: run/teardown the dnsmasq that fills domain sets + redirect smart-subnet DNS to it
     if smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
-        _ensure_smart_dnsmasq(domains, smart_e, res)
+        _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=dom_unchanged)
     # Force-DNS guard: block encrypted DNS (DoH/DoT) so the domain fill can't be bypassed (forcedns mode only)
     _ensure_doh_block(sorted({e["subnet"] for e in smart_e}), bool((smart or {}).get("block_doh")), res)
     return res
