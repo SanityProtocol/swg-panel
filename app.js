@@ -1807,8 +1807,8 @@ function RoutingRules({ node, rules, onChange }) {
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
           <option value="custom">Custom IPs / domains…</option>
-          ${SMART_CATEGORIES.filter(([id]) => id !== "all" && !hiddenCats.has(id)).map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}
           ${customLists.length ? html`<optgroup label="Custom lists">${customLists.map(l => html`<option value=${l.id}>${l.title}</option>`)}</optgroup>` : null}
+          <optgroup label="Pre-defined lists">${SMART_CATEGORIES.filter(([id]) => id !== "all" && !hiddenCats.has(id)).map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}</optgroup>
           ${(() => { const shown = new Set(["custom", ...SMART_CATEGORIES.filter(([id]) => id !== "all" && !hiddenCats.has(id)).map(([id]) => id), ...customLists.map(l => l.id)]); return r.category && !shown.has(r.category) ? html`<option value=${r.category}>${catLabel(r.category)} (hidden)</option>` : null; })()}
         </select>
         <span class="rrarrow">→</span>
@@ -1823,8 +1823,7 @@ function RoutingRules({ node, rules, onChange }) {
       </div>`;
     })}</div>
     <div class="rrfoot">
-      <span class="drag-grip rrfoot-ghost" dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
-      <span class="rrfoot-lead"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span><b class="rrfoot-label">Everything else</b></span>
+      <span class="rrfoot-lead"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><b class="rrfoot-label">Everything else</b></span>
       <span class="rrarrow">→</span>
       <select class="selwrap rrcatch" value=${catchVal} onChange=${e => setCatch(e.target.value)}>
         <option value="direct">Direct (this node)</option>
@@ -3766,21 +3765,23 @@ function PanelSettingsScreen() {
   const [saved, setSaved] = useState(0);   // timestamp; the green "All settings saved" flash shows while now < saved
   const save = async () => {
     setMsg({ ok: true, t: "Saving…" });
-    const r = await api.panelSettings({
-      interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25 },
-      mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
-      store_configs: sc === "off" ? false : true,
-      throughput_perspective: tput,
-      reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
-      mesh_awg: awgSet ? awg : {},
-      advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
-      hidden_categories: [...hidden],
-      custom_lists: lists.map(({ _rid, domains, cidrs, ...l }) => l),   // send id/title/targets/enabled; backend re-derives domains+cidrs
-      turn_enabled: turnEnabledS,
-      enabled_turn_forks: [...turnForks],
-      turn_fork_colors: forkColorOverrides(),
-    });
-    if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
+    if (SECTIONS.some(([s]) => glDirty(s))) {   // only rewrite panel_settings when a GLOBAL setting actually changed (nodes go via nodeUpdate below)
+      const r = await api.panelSettings({
+        interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25 },
+        mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
+        store_configs: sc === "off" ? false : true,
+        throughput_perspective: tput,
+        reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
+        mesh_awg: awgSet ? awg : {},
+        advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
+        hidden_categories: [...hidden],
+        custom_lists: lists.map(({ _rid, domains, cidrs, ...l }) => l),   // send id/title/targets/enabled; backend re-derives domains+cidrs
+        turn_enabled: turnEnabledS,
+        enabled_turn_forks: [...turnForks],
+        turn_fork_colors: forkColorOverrides(),
+      });
+      if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
+    }
     // per-node changes: one nodeUpdate per node whose edits differ from the saved baseline
     const dSub = rsvSubnet.trim(), dPort = String(+rsvPort || 9999), dPfx = rsvPrefix.trim() || "swg_";
     let nerr = null;
@@ -3845,7 +3846,17 @@ function PanelSettingsScreen() {
   };
   const refreshGeo = async () => { const r = await api.refreshGeo(); toast(r.ok ? "Geo lists will refresh on each node's next sync." : (r.error || "Failed"), r.ok ? "ok" : "err"); };
   const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
-  const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => setLists(ls => l ? ls.map(x => x._rid === nl._rid ? nl : x) : [...ls, nl])} onDelete=${l ? () => setLists(ls => ls.filter(x => x._rid !== l._rid)) : null} onClose=${closeModal}/>`);
+  // Custom lists AUTOSAVE on add/edit/delete — they persist on their own (POST just custom_lists), no global Save needed.
+  // Re-baseline the local rows from the server afterwards so the row content + the routing dirty-state both stay correct.
+  const persistLists = async newLists => {
+    setLists(newLists);
+    const r = await api.panelSettings({ custom_lists: newLists.map(({ _rid, domains, cidrs, ...l }) => l) });
+    if (!r.ok) return setMsg({ ok: false, t: r.error || "Couldn't save the list." });
+    await Store.poll();
+    setLists(((Store.panelSettings || {}).custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
+    setSaved(Date.now() + 2500);
+  };
+  const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => persistLists(l ? lists.map(x => x._rid === nl._rid ? nl : x) : [...lists, nl])} onDelete=${l ? () => persistLists(lists.filter(x => x._rid !== l._rid)) : null} onClose=${closeModal}/>`);
   const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
   const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
@@ -3885,8 +3896,17 @@ function PanelSettingsScreen() {
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
   const anyDirty = SECTIONS.some(([s]) => secDirty(s));
+  // Unsaved-changes guard: warn before leaving (in-app nav via the router, the Back button, or a browser refresh/close)
+  const dirtyRef = useRef(anyDirty); dirtyRef.current = anyDirty;
+  useEffect(() => {
+    _unsavedGuard = () => dirtyRef.current;
+    const bu = e => { if (dirtyRef.current) { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", bu);
+    return () => { _unsavedGuard = null; window.removeEventListener("beforeunload", bu); };
+  }, []);
+  const leaveSettings = () => { if (!anyDirty || confirm("You have unsaved changes that will be lost. Leave without saving?")) { _unsavedGuard = null; history.back(); } };
   const MODES = [
-    ["kernel", "Default — IP only, any DNS", "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
+    ["kernel", "Default — IP only, DNS is not involved", "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
     ["forcedns", "Force DNS — Host + IP, overrides encrypted DNS", "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
     ["sni", "SNI router — Host + IP, DNS stays private", "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
   ];
@@ -4013,8 +4033,8 @@ function PanelSettingsScreen() {
             : html`<p class="hint" style="margin:0">No nodes yet — enroll a node to configure its egress.</p>`}
         </div>` : null}
         <div class="setfoot">${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
-          <button class="btn btn-ghost" onClick=${() => history.back()}>Back</button>
-          <button class="btn btn-primary" disabled=${!!secErr()} title=${secErr() || ""} onClick=${confirmSave}>Save</button></div>
+          <button class="btn btn-ghost" onClick=${leaveSettings}>Back</button>
+          <button class="btn btn-primary" disabled=${!!secErr() || !anyDirty} title=${secErr() || (!anyDirty ? "No changes to save" : "")} onClick=${confirmSave}>Save</button></div>
       </div>
     </div>
   </div>`;
@@ -4976,6 +4996,7 @@ const ROUTES = [
   { re: /^\/panel\/settings$/, fn: PanelSettingsScreen, tab: "panel-settings" },
 ];
 function go(hash) { location.hash = hash; }
+let _unsavedGuard = null, _prevHash = location.hash || "#/";   // a screen with unsaved edits registers () => true; the router confirms before navigating away
 function matchRoute(hash) {
   const path = (hash || "#/").replace(/^#/, "") || "/";
   for (const r of ROUTES) { const m = path.match(r.re); if (m) { const params = {}; (r.keys || []).forEach((k, i) => params[k] = m[i + 1]); return { route: r, params }; } }
@@ -4988,7 +5009,14 @@ function App() {
   const [modalStack, setModalStack] = useState([]);
   useEffect(() => { _setStack = setModalStack; }, []);
   useEffect(() => {
-    const onHash = () => { setHash(location.hash || "#/"); _applyStack([]); window.scrollTo(0, 0); };
+    const onHash = () => {
+      const nh = location.hash || "#/";
+      if (_unsavedGuard && nh !== _prevHash && _unsavedGuard() && !confirm("You have unsaved changes that will be lost. Leave without saving?")) {
+        history.replaceState(null, "", _prevHash); return;   // stay put — restore the URL without re-firing
+      }
+      _unsavedGuard = null; _prevHash = nh;
+      setHash(nh); _applyStack([]); window.scrollTo(0, 0);
+    };
     window.addEventListener("hashchange", onHash);
     // Esc/Enter inside dialogs are owned by <Sheet> (with its dirty-guard); nothing global here.
     // A MOUSE click on an icon button / nav tab shouldn't leave a lingering focus ring (it persists

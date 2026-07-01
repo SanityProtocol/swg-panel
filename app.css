@@ -1000,7 +1000,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
    columns are `auto` (icon-width) and identical in both, so the two 1fr dropdown columns come out equal. A flex
    row can't do this reliably — a <span> and a <select> don't split a flex track equally. */
 .rrlist{display:flex;flex-direction:column;gap:6px;margin-top:2px}
-.rrrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+.rrrow{display:grid;grid-template-columns:16px minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
 /* custom IPs/domains rule: a full-width auto-growing textarea on its own grid row. Starts one row tall (like a
    textbox); JS grows it to fit wrapped content (resize off, no scrollbar). */
 .rrdoms{grid-column:1/-1;width:100%;box-sizing:border-box;display:block;font-family:var(--mono);font-size:12px;line-height:1.55;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);resize:none;overflow:hidden}
@@ -1013,9 +1013,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rrlint{font-size:10px;color:var(--partial);font-family:var(--mono)}
 /* the catch-all footer reuses the row's grid template + the row's content inset (transparent padding+border) so
    its columns start/end identically. The grip/xbtn ghosts are invisible width-matched spacers for cols 1 & 5. */
-.rrfoot{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;margin-top:8px;padding:0 8px;border:1px solid transparent}
+.rrfoot{display:grid;grid-template-columns:16px minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;margin-top:8px;padding:0 8px;border:1px solid transparent}
 .rrfoot-ghost{visibility:hidden;pointer-events:none}
-.rrfoot-lead{min-width:0;display:flex;align-items:center;gap:8px}
+.rrfoot-lead{grid-column:1/3;min-width:0;display:flex;align-items:center;gap:8px}
 .rrfoot-label{font-size:13.5px;color:var(--dim);font-weight:600;white-space:nowrap;margin-left:auto}   /* right-align within the column so it sits next to the → arrow */
 /* node-connection link health: a single glowing dot (green up / amber connecting / red down) */
 .lkdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown);--g:var(--unknown)}
