@@ -1344,10 +1344,10 @@ def load_panel_settings(path):
     return out
 
 
-def _validate_routing(routing, nodes, nid):
+def _validate_routing(routing, nodes, nid, custom_list_ids=()):
     """Validate + normalize a smart-routing rule list. Returns (clean_rules, error). Each rule:
-    {enabled:bool, category:<in SMART_CATEGORIES>, action:"exit"|"direct"|"block", node:<exit nid if exit>}.
-    The implicit 'everything else → direct' default is NOT stored (appended at compile time)."""
+    {enabled:bool, category:<in SMART_CATEGORIES | a custom_list id | "custom">, action:"exit"|"direct"|"block",
+    node:<exit nid if exit>}. The implicit 'everything else → direct' default is NOT stored (appended at compile time)."""
     if not isinstance(routing, list):
         return None, "routing must be a list of rules"
     clean = []
@@ -1357,10 +1357,15 @@ def _validate_routing(routing, nodes, nid):
         cat = (r.get("category") or "").strip()
         tgt = None
         if cat == "custom":
-            doms, cidrs = _clean_targets(r.get("targets") if r.get("targets") is not None else r.get("domains"))
+            # re-split from targets (fresh edit) OR the stored domains+cidrs (a re-save carries no `targets`) — read
+            # BOTH halves so a CIDR-only / mixed custom rule keeps its IPs (else cascade_plan would drop them).
+            doms, cidrs = _clean_targets(r.get("targets") if r.get("targets") is not None
+                                         else [*(r.get("domains") or []), *(r.get("cidrs") or [])])
             if not doms and not cidrs:
                 return None, "a custom rule needs at least one valid IP or domain"
             tgt = (doms, cidrs)
+        elif cat in custom_list_ids:
+            pass                                           # a reusable custom list referenced by id (targets resolved at compile time)
         elif cat not in SMART_CATEGORIES:
             return None, f"unknown category '{cat}'"
         act = (r.get("action") or "exit").strip()
@@ -1452,7 +1457,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                         continue
                     extra = None
                     if cat == "custom":                        # inline custom rule → its own synthetic set id + targets
-                        doms, cidrs = _clean_targets(r.get("targets") if r.get("targets") is not None else r.get("domains"))
+                        doms, cidrs = _clean_targets(r.get("targets") if r.get("targets") is not None
+                                                     else [*(r.get("domains") or []), *(r.get("cidrs") or [])])
                         if not doms and not cidrs:
                             continue
                         cat = custom_cat_id(doms, cidrs)
@@ -2686,14 +2692,14 @@ def api(method, path, qs, body, deps):
                     return 400, {"ok": False, "error": "egress_node must be another known node", "code": "bad_request"}
                 ov["egress_mode"] = "forward"; ov["egress_node"] = en; ov.pop("routing", None)
             elif mode == "smart":
-                rules, err = _validate_routing(body.get("routing"), nodes, nid)
+                rules, err = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")])
                 if err:
                     return 400, {"ok": False, "error": err, "code": "bad_request"}
                 ov["egress_mode"] = "smart"; ov["routing"] = rules; ov.pop("egress_node", None)
             else:
                 ov["egress_mode"] = "direct"; ov.pop("egress_node", None); ov.pop("routing", None)
         elif "routing" in body and ov.get("egress_mode") == "smart":   # rule-only edit (mode already smart)
-            rules, err = _validate_routing(body.get("routing"), nodes, nid)
+            rules, err = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")])
             if err:
                 return 400, {"ok": False, "error": err, "code": "bad_request"}
             ov["routing"] = rules
@@ -2781,7 +2787,7 @@ def api(method, path, qs, body, deps):
             if en in nodes and en != nid:
                 ov["egress_mode"] = "forward"; ov["egress_node"] = en
         elif _cm == "smart":                              # per-destination smart routing (Phase 3)
-            rules, err = _validate_routing(body.get("routing"), nodes, nid)
+            rules, err = _validate_routing(body.get("routing"), nodes, nid, [cl.get("id") for cl in ((deps.get("panel_settings") or {}).get("custom_lists") or []) if cl.get("id")])
             if err:
                 return 400, {"ok": False, "error": err, "code": "bad_request"}
             ov["egress_mode"] = "smart"; ov["routing"] = rules
