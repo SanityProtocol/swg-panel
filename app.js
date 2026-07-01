@@ -3845,11 +3845,21 @@ function PanelSettingsScreen() {
   };
   const refreshGeo = async () => { const r = await api.refreshGeo(); toast(r.ok ? "Geo lists will refresh on each node's next sync." : (r.error || "Failed"), r.ok ? "ok" : "err"); };
   const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
-  const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => setLists(ls => l ? ls.map(x => x._rid === nl._rid ? nl : x) : [...ls, nl])} onClose=${closeModal}/>`);
+  const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => setLists(ls => l ? ls.map(x => x._rid === nl._rid ? nl : x) : [...ls, nl])} onDelete=${l ? () => setLists(ls => ls.filter(x => x._rid !== l._rid)) : null} onClose=${closeModal}/>`);
   const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
   const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
+  const entryPreview = t => {   // as many WHOLE entries as fit ~one line, then a "(N more)" tail — never cuts an entry
+    const items = (t || "").split(/[\s,]+/).filter(Boolean);
+    const shown = []; let len = 0;
+    for (const it of items) {
+      const add = (shown.length ? 2 : 0) + it.length;   // ", " separator
+      if (shown.length && len + add > 52) break;         // always keep ≥1, then stop before overflow
+      shown.push(it); len += add;
+    }
+    return { text: shown.join(", "), more: items.length - shown.length };
+  };
   // per-node context: the node whose mode/lists/mesh/egress we're editing — defaults to the first node (no "default")
   const [selNode, setSelNode] = useState(() => ((Store.nodes || [])[0] || {}).id || "");
   const perNodeSection = section === "routing" || section === "mesh" || section === "nodesegress";
@@ -3889,7 +3899,7 @@ function PanelSettingsScreen() {
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
-          <p class="hint" style="margin:0 0 12px">How this node matches smart-routing traffic. <b>All three route in the kernel</b> (no proxy hop) — they differ only in <b>how they match</b> (by IP vs by hostname) and <b>whether they touch your clients' DNS</b>. Changing the mode reconfigures the node (installs/removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</p>
+          <p class="hint" style="margin:0 0 12px">Select how this node matches smart-routing traffic — by destination <b>IP</b>, or by <b>hostname</b> (via the node's DNS, or read from the TLS handshake). In every mode the traffic stays in-kernel (no userspace proxy); the modes differ only in match precision and in whether they touch your clients' DNS. Changing the mode reconfigures the node (adds or removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</p>
           ${MODES.map(([id, lbl, exp]) => html`<label class=${"moderow" + (nodeMode === id ? " on" : "")}>
             <input type="radio" name="rmode" checked=${nodeMode === id} onChange=${() => setMode(id)}/>
             <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
@@ -3903,12 +3913,10 @@ function PanelSettingsScreen() {
             <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "") + (catDoms(id).length ? " listwrap" : "")} title=${dis ? "Host lists need Force-DNS or SNI mode" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id))}</label>`)}</div>`; })()}
           <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— shared across all nodes</span></div>
           <p class="hint" style="margin:0 0 10px">Your own reusable IP/domain lists. Enabled ones appear in the routing dropdown; a rule that uses a list updates automatically when you edit it.</p>
-          <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row listwrap" key=${l._rid}>
+          <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row" key=${l._rid}>
             <label class="chk" title="Show in the routing dropdown"><input type="checkbox" checked=${l.enabled !== false} onChange=${e => setList(l._rid, { enabled: e.target.checked })}/></label>
             <button class="cl-name" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button>
-            <span class="grow"></span><span class="faint cl-meta">${entryCount(l.targets)} entr${entryCount(l.targets) === 1 ? "y" : "ies"}</span>
-            ${listBubble((l.targets || "").split(/[\s,]+/).filter(Boolean), "click to edit")}
-            <button class="xbtn" title="Delete list" onClick=${() => setLists(ls => ls.filter(x => x._rid !== l._rid))}><${Ic} i="x"/></button>
+            ${(() => { const p = entryPreview(l.targets); return html`<button class="cl-preview" onClick=${() => openList(l)} title="Click to edit">${p.text ? html`<span class="cl-ptext">${p.text}</span>` : html`<span class="faint">empty</span>`}${p.more ? html`<span class="cl-more">(${p.more} more)</span>` : null}</button>`; })()}
           </div>`) : html`<div class="hint">No custom lists yet.</div>`}</div>
           <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
         </div>` : null}
@@ -4013,11 +4021,15 @@ function PanelSettingsScreen() {
   </div>`;
 }
 
-function CustomListSheet({ list, onSave, onClose }) {
+function CustomListSheet({ list, onSave, onDelete, onClose }) {
   const [title, setTitle] = useState(list?.title || "");
   const [targets, setTargets] = useState(list ? (list.targets ?? [...(list.domains || []), ...(list.cidrs || [])].join(", ")) : "");
+  const [confirmDel, setConfirmDel] = useState(false);
   const save = () => { onSave({ ...(list || { _rid: newRid() }), title: title.trim() || "Untitled list", targets }); onClose(); };
-  const foot = html`<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>Cancel</button><button class="btn btn-primary" onClick=${save}>${list ? "Save" : "Add"}</button>`;
+  const del = onDelete ? (confirmDel                                   // left-aligned delete, two-step confirm
+    ? html`<span class="del-confirm"><span class="faint">Delete this list?</span><button class="btn-danger" onClick=${() => { onDelete(); onClose(); }}>Delete</button><button class="btn btn-mini" onClick=${() => setConfirmDel(false)}>Keep</button></span>`
+    : html`<button class="btn btn-ghost danger del-btn" onClick=${() => setConfirmDel(true)}><${Ic} i="trash"/> Delete</button>`) : null;
+  const foot = html`${del}<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>Cancel</button><button class="btn btn-primary" onClick=${save}>${list ? "Save" : "Add"}</button>`;
   return html`<${Sheet} title=${list ? "Edit list" : "New list"} width=${520} onClose=${onClose} foot=${foot}>
     <div class="field"><label>Title</label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder="e.g. Streaming"/></div>
     <div class="field"><label>IPs / domains</label>
