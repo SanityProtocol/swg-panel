@@ -781,6 +781,35 @@ def _smart_setname(cat):
     return "cat_" + re.sub(r"[^a-z0-9]", "_", str(cat).lower())
 
 
+_LOOP = {"n": 0}                       # reconcile-loop counter — drives per-loop caches (bumped at the top of main's loop)
+_SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set()}
+
+
+def _smart_table():
+    """`nft list table inet swg_smart` rendered AND parsed at most ONCE per reconcile loop, shared by
+    smart_status + _ensure_smart_nft. Both the render (serializes every CIDR of every set — thousands for a
+    geoip category like cat_ru) and the element-count parse (regex + split over that text) are O(set size), so
+    doing them once instead of twice halves that cost. Nothing mutates the table between those two callers
+    within a loop, so the shared result is current; the next loop bumps _LOOP and re-renders. Returns the
+    cache dict: ["rc"], ["out"] (raw), ["counts"] {set:element_count}, ["setnames"] {set}."""
+    if _SMART_TABLE["n"] != _LOOP["n"]:
+        r = run(["nft", "list", "table", "inet", SMART_NFT_TABLE])
+        out = r.stdout or ""
+        counts, setnames = {}, set()
+        if r.returncode == 0:
+            setnames = set(re.findall(r"set (\S+) {", out))
+            counts = {c: 0 for c in setnames}
+            # nft nests the elements in a second brace pair — `set X { type…; elements = { CIDR, … } }` — so the
+            # naive `set {(.*?)}` stops at the INNER `}` and always counts 0. Anchor on the elements block
+            # instead (element CIDRs contain no braces). A wrong 0 here forces a full geo set reload EVERY cycle
+            # (nft -f of thousands of CIDRs ≈ 250ms), because the reload guard is "count == 0 → (re)load".
+            for m in re.finditer(r"set (\S+) {(?:[^}]*?elements = {([^}]*)})?", out, re.S):
+                el = m.group(2)
+                counts[m.group(1)] = len([x for x in el.split(",") if x.strip()]) if el else 0
+        _SMART_TABLE.update(n=_LOOP["n"], rc=r.returncode, out=out, counts=counts, setnames=setnames)
+    return _SMART_TABLE
+
+
 def _ensure_smart_nft(smart_e, categories, res):
     """Phase 3 marking: keep an inet table `swg_smart` with one interval set per category (populated from
     shipped geo CIDR lists — see _smart_geo_refresh) and a prerouting chain that marks
@@ -788,18 +817,18 @@ def _ensure_smart_nft(smart_e, categories, res):
     only when the wanted rule set changes, so steady-state never un-marks a packet mid-flight). Packets
     stay 100% kernel-routed (the mark feeds the `ip rule fwmark` band). v1 is IPv4-only (v6 leaks direct)."""
     cats = sorted(set(categories) | {e["category"] for e in smart_e})
-    have = run(["nft", "list", "table", "inet", SMART_NFT_TABLE])
+    _t = _smart_table()                                         # shared per-loop render + parse (see smart_status)
     if not smart_e and not cats:                                # nothing wanted → tear our table down
-        if have.returncode == 0:
+        if _t["rc"] == 0:
             run(["nft", "delete", "table", "inet", SMART_NFT_TABLE]); res["changed"] += 1
         return {}
-    body = have.stdout if have.returncode == 0 else ""
+    body = _t["out"] if _t["rc"] == 0 else ""
     # one-shot migration: sets created before auto-merge can't get the flag in place (they're chain-referenced),
     # so if any of ours lacks it, rebuild the whole table once — afterwards every set has auto-merge and the
     # additive dnsmasq/custom-IP paths can't be rejected by an overlap. Stamp-guarded so it can never loop even
     # if some nft version omits the flag from `list` output; sets refill (geoip/dnsmasq) on the next passes.
     _am = os.path.join(GEO_DIR, ".automerge-migrated")
-    if have.returncode == 0 and not os.path.exists(_am) and re.search(r"set \S+ {(?:(?!auto-merge|}).)*}", body, re.S):
+    if _t["rc"] == 0 and not os.path.exists(_am) and re.search(r"set \S+ {(?:(?!auto-merge|}).)*}", body, re.S):
         run(["nft", "delete", "table", "inet", SMART_NFT_TABLE]); res["changed"] += 1
         body = ""
     if not body:
@@ -845,12 +874,10 @@ def _ensure_smart_nft(smart_e, categories, res):
                 res["errors"].append("smart nft " + S + "/all: " + (r.stderr or "").strip()[:120])
             else:
                 res["changed"] += 1
-    # per-set live element counts (so _smart_geo_refresh knows which need (re)loading — e.g. empty after a reboot)
-    counts = {}
-    for sm in re.finditer(r"set (\S+) {(.*?)}", body, re.S):
-        els = re.search(r"elements = {(.*?)}", sm.group(2), re.S)
-        counts[sm.group(1)] = len([x for x in (els.group(1).split(",") if els else []) if x.strip()])
-    return counts
+    # per-set live element counts (so _smart_geo_refresh knows which need (re)loading — e.g. empty after a reboot).
+    # Reuse the shared per-loop parse; if `body` was blanked above (auto-merge migration / table absent) the sets
+    # were just dropped → report {} so every set is treated as empty and gets reloaded.
+    return dict(_t["counts"]) if body else {}
 
 
 # ── geo CIDR distribution: per-category lists fetched from upstream (Loyalsoldier geoip / ipverse ASN),
@@ -1545,16 +1572,11 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
 def smart_status():
     """Phase 3 smart-routing health for the panel UI: whether our nft table is up, per-category element
     counts (a populated set = geo data loaded), and the number of active mark rules. nft absent → inactive."""
-    r = run(["nft", "list", "table", "inet", SMART_NFT_TABLE])
-    if r.returncode != 0:
+    t = _smart_table()                                          # shared per-loop render + parse (also used by _ensure_smart_nft)
+    if t["rc"] != 0:
         return {"active": False, "sets": {}, "rules": 0}
-    out = r.stdout
-    sets = {}
-    for sm in re.finditer(r"set (\S+) {(.*?)}", out, re.S):
-        els = re.search(r"elements = {(.*?)}", sm.group(2), re.S)
-        sets[sm.group(1)] = len([x for x in (els.group(1).split(",") if els else []) if x.strip()])
-    rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", out))
-    return {"active": rules > 0, "sets": sets, "rules": rules, "dnsmasq": bool(_dnsmasq_running())}
+    rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", t["out"]))
+    return {"active": rules > 0, "sets": dict(t["counts"]), "rules": rules, "dnsmasq": bool(_dnsmasq_running())}
 
 
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
@@ -2739,6 +2761,7 @@ def main():
         threading.Thread(target=_dturn_bg_loop, daemon=True).start()   # panel immediately (cards show installing → up)
     while True:
         t0 = time.time()
+        _LOOP["n"] += 1                             # new loop → per-loop caches (nft table render) refresh
         try:
             snap = build_snapshot(node_cfg, online_max, last_samples)
             use_ip = panel_ip if (panel_ip and panel_ip != bad_pip) else ""
