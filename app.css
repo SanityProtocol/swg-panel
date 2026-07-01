@@ -1016,7 +1016,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rrfoot{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr) auto;align-items:center;gap:8px;margin-top:8px;padding:0 8px;border:1px solid transparent}
 .rrfoot-ghost{visibility:hidden;pointer-events:none}
 .rrfoot-lead{min-width:0;display:flex;align-items:center;gap:8px}
-.rrfoot-label{font-size:13.5px;color:var(--dim);font-weight:600;white-space:nowrap}
+.rrfoot-label{font-size:13.5px;color:var(--dim);font-weight:600;white-space:nowrap;margin-left:auto}   /* right-align within the column so it sits next to the → arrow */
 /* node-connection link health: a single glowing dot (green up / amber connecting / red down) */
 .lkdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown);--g:var(--unknown)}
 .lkdot.up{background:var(--online);--g:var(--online);animation:pulse 2.6s infinite}

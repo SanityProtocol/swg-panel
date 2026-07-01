@@ -3912,7 +3912,6 @@ function PanelSettingsScreen() {
             return html`<div class="catgroup hostgroup">Host <span class="req">${dis ? "— needs Force-DNS or SNI mode" : "— matched by hostname"}</span></div>
             <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "") + (catDoms(id).length ? " listwrap" : "")} title=${dis ? "Host lists need Force-DNS or SNI mode" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id))}</label>`)}</div>`; })()}
           <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— shared across all nodes</span></div>
-          <p class="hint" style="margin:0 0 10px">Your own reusable IP/domain lists. Enabled ones appear in the routing dropdown; a rule that uses a list updates automatically when you edit it.</p>
           <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row" key=${l._rid}>
             <label class="chk" title="Show in the routing dropdown"><input type="checkbox" checked=${l.enabled !== false} onChange=${e => setList(l._rid, { enabled: e.target.checked })}/></label>
             <button class="cl-name" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button>
