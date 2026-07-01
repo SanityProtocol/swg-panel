@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""swg-sni — the SNI-router classifier (routing_mode == "sni").
+
+Reads the TLS SNI off the ClientHello of new HTTPS connections from the node's smart subnets and LEARNS which
+destination IP serves which category, by adding that IP to the category's nft set (`cat_<x>` in `swg_smart`). The
+kernel then routes FUTURE connections to that IP via the existing fwmark → table → mesh path — exactly like the
+Force-DNS mode, except the source of truth is the TLS handshake instead of a hijacked DNS resolver. So the client's
+own DNS (incl. DoH/DoT) is never touched, observed, or downgraded — it stays encrypted end-to-end.
+
+Why this shape (see docs/PANEL.md routing modes): the SNI is only visible AFTER the TCP handshake, and a live
+connection's egress can't change mid-stream (the egress node SNATs to a different src IP → the peer drops it). So we
+do NOT try to reroute the connection we sniffed; we record its IP for the NEXT connection. The current connection is
+pinned to its SYN-time decision by conntrack (swg-noded's nft rules). First hit to a brand-new IP therefore routes by
+whatever that IP already matched (geoip / direct) — the same first-connection race Force-DNS has via its first DNS
+lookup. Acceptable, and self-corrects immediately.
+
+NFQUEUE is spoken directly over an AF_NETLINK socket (NETLINK_NETFILTER) — no libnetfilter_queue, no third-party
+Python: pure stdlib, single file, like the rest of the fleet. Fails OPEN: swg-noded adds the queue rule with the
+`bypass` flag, so if this process dies, new connections simply stop being learned — traffic keeps flowing.
+
+Run:  swg-sni --queue 0 --map /var/lib/swg-noded/sni-map.json --table swg_smart
+Env:  SWG_SNI_QUEUE, SWG_SNI_MAP, SWG_SNI_TABLE (flags win).
+"""
+import argparse
+import json
+import os
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+# ── netlink / nfnetlink_queue constants (linux/netfilter/nfnetlink*.h) ──
+NETLINK_NETFILTER = 12
+NFNL_SUBSYS_QUEUE = 3
+NFQNL_MSG_PACKET  = (NFNL_SUBSYS_QUEUE << 8) | 0    # kernel → us
+NFQNL_MSG_VERDICT = (NFNL_SUBSYS_QUEUE << 8) | 1    # us → kernel
+NFQNL_MSG_CONFIG  = (NFNL_SUBSYS_QUEUE << 8) | 2
+NLM_F_REQUEST = 0x01
+# config command / attribute ids
+NFQA_CFG_CMD, NFQA_CFG_PARAMS, NFQA_CFG_MASK, NFQA_CFG_FLAGS = 1, 2, 4, 5
+NFQNL_CFG_CMD_BIND = 1
+NFQNL_COPY_PACKET = 2
+NFQA_CFG_F_FAIL_OPEN = 0x0001
+# packet attribute ids
+NFQA_PACKET_HDR, NFQA_PAYLOAD = 1, 10
+# verdict
+NFQA_VERDICT_HDR = 2
+NF_ACCEPT = 1
+NLA_TYPE_MASK = 0x3fff                              # strip NLA_F_NESTED / NLA_F_NET_BYTEORDER flags
+
+
+def _nla(attr_type, payload):
+    """Pack one netlink attribute (host-order header) padded to 4 bytes."""
+    ln = 4 + len(payload)
+    return struct.pack("=HH", ln, attr_type) + payload + b"\x00" * ((4 - ln % 4) % 4)
+
+
+def _msg(msg_type, res_id, *attrs):
+    """Wrap a nfnetlink message: nlmsghdr + nfgenmsg(family=AF_UNSPEC, ver=0, res_id BE) + attrs."""
+    body = struct.pack("=BB", socket.AF_UNSPEC, 0) + struct.pack(">H", res_id) + b"".join(attrs)
+    total = 16 + len(body)
+    hdr = struct.pack("=IHHII", total, msg_type, NLM_F_REQUEST, 0, 0)
+    return hdr + body
+
+
+class NFQueue:
+    """Minimal NFQUEUE reader over raw netlink. Bind a queue, receive full packets, ACCEPT them."""
+
+    def __init__(self, qnum):
+        self.qnum = qnum
+        self.s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, NETLINK_NETFILTER)
+        self.s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
+        self.s.bind((0, 0))
+        # bind the queue to this socket
+        cmd = struct.pack("=BB", NFQNL_CFG_CMD_BIND, 0) + struct.pack(">H", socket.AF_UNSPEC)
+        self.s.send(_msg(NFQNL_MSG_CONFIG, qnum, _nla(NFQA_CFG_CMD, cmd)))
+        # copy the whole packet up to us
+        params = struct.pack(">I", 0xFFFF) + struct.pack("=B", NFQNL_COPY_PACKET)
+        # fail-open at the config layer too (belt-and-suspenders with the rule's bypass flag)
+        flags = struct.pack(">I", NFQA_CFG_F_FAIL_OPEN)
+        self.s.send(_msg(NFQNL_MSG_CONFIG, qnum,
+                         _nla(NFQA_CFG_PARAMS, params),
+                         _nla(NFQA_CFG_MASK, struct.pack(">I", NFQA_CFG_F_FAIL_OPEN)),
+                         _nla(NFQA_CFG_FLAGS, flags)))
+
+    def _accept(self, packet_id):
+        vh = struct.pack(">II", NF_ACCEPT, packet_id)
+        self.s.send(_msg(NFQNL_MSG_VERDICT, self.qnum, _nla(NFQA_VERDICT_HDR, vh)))
+
+    def loop(self, on_packet):
+        """Receive packets forever; for each, call on_packet(payload_bytes) then ACCEPT. Never drops."""
+        while True:
+            buf = self.s.recv(0x10000)
+            off = 0
+            while off + 16 <= len(buf):
+                mlen, mtype = struct.unpack("=IH", buf[off:off + 6])
+                if mlen < 16 or off + mlen > len(buf):
+                    break
+                if mtype == NFQNL_MSG_PACKET:
+                    pid, payload = self._parse_packet(buf[off + 16:off + mlen])
+                    if pid is not None:
+                        try:
+                            if payload:
+                                on_packet(payload)
+                        except Exception:
+                            pass                       # a bad packet must never stop the queue
+                        self._accept(pid)
+                off += (mlen + 3) & ~3
+
+    @staticmethod
+    def _parse_packet(body):
+        """Pull packet_id + raw L3 payload out of an NFQNL_MSG_PACKET (skip the 4-byte nfgenmsg)."""
+        pid, payload, o = None, b"", 4
+        while o + 4 <= len(body):
+            alen, atype = struct.unpack("=HH", body[o:o + 4])
+            if alen < 4 or o + alen > len(body):
+                break
+            data = body[o + 4:o + alen]
+            atype &= NLA_TYPE_MASK
+            if atype == NFQA_PACKET_HDR and len(data) >= 4:
+                pid = struct.unpack(">I", data[:4])[0]
+            elif atype == NFQA_PAYLOAD:
+                payload = data
+            o += (alen + 3) & ~3
+        return pid, payload
+
+
+# ── packet + TLS parsing ──
+def _dst_and_tcp_payload(pkt):
+    """(dst_ip_str, tcp_payload_bytes) for an IPv4/TCP packet, or (None, None). v1 is IPv4-only (matches the
+    smart-routing datapath, which is also IPv4-only)."""
+    if len(pkt) < 20 or (pkt[0] >> 4) != 4:
+        return None, None
+    ihl = (pkt[0] & 0x0F) * 4
+    if pkt[9] != 6 or len(pkt) < ihl + 20:            # proto 6 = TCP
+        return None, None
+    dst = socket.inet_ntoa(pkt[16:20])
+    toff = ((pkt[ihl + 12] >> 4) & 0x0F) * 4
+    start = ihl + toff
+    return dst, pkt[start:] if start <= len(pkt) else b""
+
+
+def parse_sni(p):
+    """Extract the SNI host_name from a TLS ClientHello record. Returns a lowercased str or None. Bounds-checked
+    throughout; any short/odd buffer → None (we just don't learn from it). v1 does not reassemble a ClientHello
+    split across TCP segments — those simply aren't learned (the connection still routes by dst IP)."""
+    try:
+        if len(p) < 43 or p[0] != 0x16:               # TLS record, content_type 22 = handshake
+            return None
+        # skip: record hdr(5) + handshake type(1)+len(3) + client_version(2) + random(32) = 43
+        i = 43
+        sid = p[i]; i += 1 + sid                       # session_id
+        cs = struct.unpack(">H", p[i:i + 2])[0]; i += 2 + cs   # cipher_suites
+        cm = p[i]; i += 1 + cm                          # compression_methods
+        if i + 2 > len(p):
+            return None
+        ext_total = struct.unpack(">H", p[i:i + 2])[0]; i += 2
+        end = min(len(p), i + ext_total)
+        while i + 4 <= end:
+            etype, elen = struct.unpack(">HH", p[i:i + 4]); i += 4
+            if etype == 0x0000:                        # server_name extension
+                # server_name_list(2) then entries: type(1)=host_name(0), name_len(2), name
+                j = i + 2
+                if j + 3 > len(p):
+                    return None
+                ntype, nlen = p[j], struct.unpack(">H", p[j + 1:j + 3])[0]
+                j += 3
+                if ntype == 0 and j + nlen <= len(p):
+                    return p[j:j + nlen].decode("ascii", "ignore").lower() or None   # SNI is ASCII (IDN sent as punycode)
+                return None
+            i += elen
+    except Exception:
+        return None
+    return None
+
+
+# ── domain → category matching + nft learning ──
+class Classifier:
+    def __init__(self, map_path, table):
+        self.map_path = map_path
+        self.table = table
+        self.mtime = 0
+        self.dom2cat = {}                              # exact domain → category
+        self.seen = set()                              # (ip, cat) already added → don't re-shell nft
+        self._last_reload = 0.0
+        self._reload()
+
+    def _reload(self):
+        try:
+            st = os.stat(self.map_path)
+        except OSError:
+            self.dom2cat = {}; return
+        if st.st_mtime == self.mtime:
+            return
+        self.mtime = st.st_mtime
+        try:
+            with open(self.map_path) as f:
+                data = json.load(f)                    # {category: [domain, ...]}
+            d2c = {}
+            for cat, doms in (data or {}).items():
+                for dom in (doms or []):
+                    d2c[str(dom).strip(".").lower()] = cat
+            self.dom2cat = d2c
+            print(f"swg-sni: loaded {len(d2c)} domains across {len(data or {})} categories", flush=True)
+        except Exception as e:
+            print("swg-sni: map reload failed:", e, flush=True)
+
+    def _match(self, host):
+        """Longest-suffix match: www.youtube.com → youtube.com. Returns a category or None."""
+        labels = host.split(".")
+        for k in range(len(labels) - 1):               # need ≥2 labels; try progressively broader suffixes
+            cat = self.dom2cat.get(".".join(labels[k:]))
+            if cat:
+                return cat
+        return None
+
+    def on_packet(self, payload):
+        now = time.time()                              # pick up map edits within a couple of seconds (mtime-gated)
+        if now - self._last_reload > 2:
+            self._last_reload = now; self._reload()
+        dst, tcp = _dst_and_tcp_payload(payload)
+        if not dst or not tcp:
+            return
+        host = parse_sni(tcp)
+        if not host:
+            return
+        cat = self._match(host)
+        if not cat:
+            return
+        key = (dst, cat)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        r = subprocess.run(["nft", "add", "element", "inet", self.table, "cat_" + cat, "{ " + dst + " }"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            self.seen.discard(key)                     # let it retry next time (set may not exist yet)
+        else:
+            print(f"swg-sni: {host} → {cat}  (+{dst})", flush=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--queue", type=int, default=int(os.environ.get("SWG_SNI_QUEUE", "0")))
+    ap.add_argument("--map", default=os.environ.get("SWG_SNI_MAP", "/var/lib/swg-noded/sni-map.json"))
+    ap.add_argument("--table", default=os.environ.get("SWG_SNI_TABLE", "swg_smart"))
+    a = ap.parse_args()
+    cls = Classifier(a.map, a.table)
+    q = NFQueue(a.queue)
+    print(f"swg-sni: bound queue {a.queue}, table {a.table}, map {a.map}", flush=True)
+    q.loop(cls.on_packet)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

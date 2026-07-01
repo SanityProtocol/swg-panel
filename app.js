@@ -3878,6 +3878,7 @@ function PanelSettingsScreen() {
   const MODES = [
     ["kernel", "Default — IP routing, supports DoH", "Matches by destination IP (GeoIP/ASN). Works no matter what DNS your clients use (DoH-proof), zero extra moving parts. Can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
     ["forcedns", "Force DNS — Host + IP routing, overrides DoH", "The node becomes your clients' resolver and blocks their encrypted DNS, so it can route by hostname too — per-service precision + domain lists. Can break a client that insists on its own DoH, and won't help under ECH/QUIC. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["sni", "SNI router — Host + IP routing, keeps DNS private", "Routes by hostname by reading the SNI from each TLS handshake — so the client's own DNS (incl. DoH/DoT) is never touched, observed, or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection, so a brand-new host routes on the next one; ECH-hidden names fall back to IP. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
   ];
   return html`<div class="screen setscreen">
     <div class="sethead"><b>Panel settings</b></div>
@@ -3898,8 +3899,8 @@ function PanelSettingsScreen() {
           <div class="catgroup">IP <span class="req">— GeoIP, works in every mode</span></div>
           <div class="catgrid">${sysCats.filter(([id]) => catCap(id).ip).map(([id, lbl]) => html`<label class=${"chk" + (catDoms(id).length ? " listwrap" : "")}><input type="checkbox" checked=${catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id), catCap(id).ip ? "+ GeoIP ranges" : null)}</label>`)}</div>
           ${(() => { const hostCats = sysCats.filter(([id]) => catHostOnly(id)); if (!hostCats.length) return null; const dis = nodeMode === "kernel";
-            return html`<div class="catgroup hostgroup">Host <span class="req">${dis ? "— needs Force-DNS mode" : "— matched by hostname"}</span></div>
-            <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "") + (catDoms(id).length ? " listwrap" : "")} title=${dis ? "Host lists need Force-DNS mode (they require DNS)" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id))}</label>`)}</div>`; })()}
+            return html`<div class="catgroup hostgroup">Host <span class="req">${dis ? "— needs Force-DNS or SNI mode" : "— matched by hostname"}</span></div>
+            <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "") + (catDoms(id).length ? " listwrap" : "")} title=${dis ? "Host lists need Force-DNS or SNI mode" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id))}</label>`)}</div>`; })()}
           <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— shared across all nodes</span></div>
           <p class="hint" style="margin:0 0 10px">Your own reusable IP/domain lists. Enabled ones appear in the routing dropdown; a rule that uses a list updates automatically when you edit it.</p>
           <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row listwrap" key=${l._rid}>

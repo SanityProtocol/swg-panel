@@ -2543,9 +2543,9 @@ def api(method, path, qs, body, deps):
                         return 400, {"ok": False, "error": k + " must be a valid IPv4 address (or blank)", "code": "bad_request"}
                 nodes[nid][k] = v
         if "routing_mode" in body:              # how THIS node matches smart traffic: kernel (geoip only, DoH-proof) |
-            rm = (body.get("routing_mode") or "kernel").strip()   # forcedns (host+IP via dnsmasq). 'sni' is Phase C —
-            if rm not in ("kernel", "forcedns"):                  # deferred + not offered in the UI, so don't accept it.
-                return 400, {"ok": False, "error": "routing_mode must be kernel|forcedns", "code": "bad_request"}
+            rm = (body.get("routing_mode") or "kernel").strip()   # forcedns (host+IP via dnsmasq, blocks client DoH) |
+            if rm not in ("kernel", "forcedns", "sni"):           # sni (host+IP via on-node SNI reader — client DNS untouched)
+                return 400, {"ok": False, "error": "routing_mode must be kernel|forcedns|sni", "code": "bad_request"}
             nodes[nid]["routing_mode"] = rm
         if "enabled_categories" in body:        # built-in categories shown for THIS node's interfaces ([]/absent = all)
             ec = body.get("enabled_categories")
@@ -3690,6 +3690,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "iface_key": node.get("iface_key") or {},   # per-iface {restore|rebaseline} keypair requests
                                 "cascade": {"forward": my_plan.get("forward") or [], "exit": my_plan.get("exit") or []},   # Phase 2: policy-route forwards + exit SNAT
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
+                                          "mode": node.get("routing_mode") or "kernel",   # kernel | forcedns | sni — the node picks its fill mechanism from this
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
                                           # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
@@ -3697,7 +3698,8 @@ class Handler(BaseHTTPRequestHandler):
                                                        **(my_plan.get("domains") or {})} if (node.get("routing_mode") or "kernel") != "kernel" else {}),
                                           "cidrs": my_plan.get("cidrs") or {},   # custom-rule raw IPs/CIDRs → always loaded (DoH-proof) regardless of mode
                                           # Force-DNS guard: the node drops smart-subnet DoH/DoT so clients can't bypass its DNS-based
-                                          # domain fill. Only in forcedns mode (kernel needs no DNS; sni is DoH-proof by design, Phase C).
+                                          # domain fill. Only in forcedns mode — kernel needs no DNS, and sni reads the TLS handshake so it
+                                          # leaves the client's DNS (incl. DoH) untouched by design.
                                           "block_doh": (node.get("routing_mode") or "kernel") == "forcedns"},
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
                                                 "panel_ip": node.get("panel_ip") or ""},
