@@ -653,7 +653,9 @@ function flipPlay(container, first) {
     setTimeout(() => { for (const el of moved) { el.style.transition = ""; el.style.transform = ""; } }, 320);
   });
 }
-function useReorder(ids, onReorder, axis = "x") {   // axis "x" = horizontal grid (left/right edges); "y" = vertical list (top/bottom)
+function useReorder(ids, onReorder, axis = "x", sel = {}) {   // axis "x" = horizontal grid (left/right edges); "y" = vertical list (top/bottom); sel = {container, card} CSS selectors
+  const CONT_SEL = sel.container || ".ifgrid, .nodegrid";   // the drop container (dragEnd has no event target for it)
+  const CARD_SEL = sel.card || ".ifcard, .ncard";           // the draggable row/card (for the floating ghost + FLIP)
   const [drag, setDrag] = useState(null);     // { id, k } — for the highlight (k = insertion index among the OTHER cards)
   const dragId = drag && drag.id;
   const prev = useRef(null);      // our floating translucent preview
@@ -703,11 +705,11 @@ function useReorder(ids, onReorder, axis = "x") {   // axis "x" = horizontal gri
       return {
         draggable: true,
         onDragStart: e => {
-          cont.current = e.currentTarget.closest(".ifgrid, .nodegrid");
+          cont.current = e.currentTarget.closest(CONT_SEL);
           idRef.current = id; liveK.current = -1; esc.current = false;
           onKey.current = ev => { if (ev.key === "Escape") esc.current = true; };
           window.addEventListener("keydown", onKey.current, true);
-          const card = e.currentTarget.closest(".ifcard, .ncard");
+          const card = e.currentTarget.closest(CARD_SEL);
           try {
             e.dataTransfer.effectAllowed = "move";
             e.dataTransfer.setData("text/plain", id);
@@ -992,7 +994,7 @@ function MeshStat({ nodeId, mode }) {
   };
   const trigger = mode === "in"
     ? html`<span class="mh-tag mh-tag-hdr"><span class="mh-lbl-hdr">This node's mesh status:</span> ${num(h.okIn, "mhn-down")}</span>`
-    : html`<span class="mh-tag"><span class="nm-l">Mesh link</span><span class="mh-grp"><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}</span><span class="mh-grp"><span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span></span>`;
+    : html`<span class="mh-tag"><span class="nm-l">Mesh</span><span class="mh-grp"><span class="mh-ar mh-down s-up">↓</span>${num(h.okIn, "mhn-down")}</span><span class="mh-grp"><span class="mh-ar mh-up s-up">↑</span>${num(h.okOut, "mhn-up")}</span></span>`;
   return html`<${Popover} cls="mh-pop" popCls="mh-bubble" alignRight=${true} trigger=${trigger}>
     <div class="onpop-h">${mode === "in" ? "Inbound links" : "Mesh connections"}</div>
     ${ordered.map(row)}
@@ -1402,7 +1404,7 @@ function NodeDetail({ node: rawName }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b><${NodeBadges} active=${name}/></div>
     <div class="detail-head">
-      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> uninstalled</span>` : live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err, !live && nrec.status === "dangling") : null}<${HealthDot} issues=${nrec.issues}/></div>
+      <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> uninstalled</span>` : live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="nstat stale"><${Ic} i="info"/> stale</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err, !live && nrec.status === "dangling") : null}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
       <div class="dh-ver">
         ${nrec.version && !nrec.uninstalled ? html`<span class=${"nm-ver" + (nrec.ahead ? " out" : "")} title=${nrec.ahead ? "Node is running a newer version than the panel — update the panel to catch up" : ""}>v${nrec.version}</span>` : null}
@@ -1434,7 +1436,7 @@ function NodeDetail({ node: rawName }) {
     </div>
 
     ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online"
-      actions=${html`<${Fragment}>${nrec.removing ? html`<span class="badge b-removing ic"><${Ic} i="trash"/>flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null}</>`}>
+      actions=${html`<${Fragment}>${nrec.removing ? html`<span class="nstat removing"><${Ic} i="trash"/> flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null}</>`}>
       <${HealthAlerts} health=${nrec.health}/>
       ${nrec.health_history
         ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} liveFine=${nrec.health_live} h=${52} head=${html`<${HealthMeters} health=${nrec.health}/>`}/>`
@@ -1599,7 +1601,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   return html`<div class="screen">
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b><${NodeBadges} active=${node}/></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${istopped ? html`<span class="badge b-unknown ic" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/>stopped</span>` : idown ? html`<span class="badge b-dangling ic" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/>down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="badge b-unknown ic"><${Ic} i="info"/>stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${istopped ? html`<span class="nstat stopped" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/> stopped</span>` : idown ? html`<span class="nstat down" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/> down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="nstat stale"><${Ic} i="info"/> stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
@@ -1771,7 +1773,7 @@ function RoutingRules({ node, rules, onChange }) {
   const allRule = rules.find(r => r.category === "all");          // the catch-all ("everything else") → footer dropdown
   const dispRules = rules.filter(r => r.category !== "all");
   const emit = drules => onChange(allRule ? [...drules, allRule] : drules);   // catch-all is always kept LAST (first-match)
-  const rs = useReorder(dispRules.map(r => r._rid), ids => emit(ids.map(id => dispRules.find(r => r._rid === id)).filter(Boolean)), "y");
+  const rs = useReorder(dispRules.map(r => r._rid), ids => emit(ids.map(id => dispRules.find(r => r._rid === id)).filter(Boolean)), "y", { container: ".rrlist", card: ".rrrow" });
   const setRule = (rid, patch) => emit(dispRules.map(r => r._rid === rid ? { ...r, ...patch } : r));
   const addRule = () => emit([...dispRules, { _rid: newRid(), enabled: true, category: "custom", action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
   const destVal = r => r.action === "exit" ? "exit|" + (r.node || "") : r.action;
@@ -1784,8 +1786,9 @@ function RoutingRules({ node, rules, onChange }) {
       const ckey = r.category === "custom" ? "custom:" + (r.targets || "") : r.category;
       const dup = seen[ckey]; seen[ckey] = true;
       const self = r.action === "exit" && r.node === node;
+      const badToks = r.category === "custom" ? invalidTargets(r.targets || "") : [];
       const it = rs.item(r._rid);
-      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self) ? " warn" : "")} data-rid=${it.rid}>
+      return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || badToks.length) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
         <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
           <option value="custom">Custom IPs / domains…</option>
@@ -1801,7 +1804,7 @@ function RoutingRules({ node, rules, onChange }) {
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => emit(dispRules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
         ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
-        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder="IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com" value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${(r.targets || "").trim() ? null : html`<span class="rrlint">add at least one IP or domain</span>`}` : null}
+        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder="IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com" value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP or domain</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : null}` : null}
       </div>`;
     })}</div>
     <div class="rrfoot"><button class="btn btn-mini" onClick=${addRule}><${Ic} i="plus"/> Add rule</button><span class="grow"></span>
@@ -1852,6 +1855,38 @@ const egressInit = m => ({ mode: m.egress_mode === "smart" ? "smart" : m.egress_
 const egressBody = eg => eg.mode === "smart"
   ? { egress_mode: "smart", routing: (eg.rules || []).map(({ _rid, ...r }) => r) }
   : { egress_mode: eg.mode === "auto" ? "direct" : eg.mode, egress_node: eg.node || "", egress_ip: eg.ip || "", wan_iface: eg.nic || "" };
+// custom-rule target validation — mirrors the backend _split_targets / _clean_targets exactly, so the UI
+// rejects anything the node would silently drop. A token is valid if it's an IPv4 (optionally /0-32) or a
+// domain (after stripping scheme/path and a leading "*."). Leading-dot / single-label names are invalid.
+const _RR_IP4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/\d{1,2})?$/;
+const _RR_LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;   // one DNS label
+const splitTargets = raw => String(raw || "").split(/[\s,]+/).filter(Boolean);
+function validTarget(tok) {
+  const t = String(tok).trim().toLowerCase(); if (!t) return false;
+  // a bare IPv4 or IPv4/CIDR — all four octets ≤255, prefix 0-32 (rejects "22.1", "22.11.5/4343", "1.1.1.1/", "1.1.1.1/555")
+  const mi = t.match(_RR_IP4);
+  if (mi) return [1, 2, 3, 4].every(i => +mi[i] <= 255) && (!mi[5] || +mi[5].slice(1) <= 32);
+  // otherwise a real domain: strip scheme + path + a leading "*."; need ≥2 labels, each a valid DNS label,
+  // and an ALPHABETIC TLD (so "22.1", "1.1.1.1", "1.1.1.1/555"→"1.1.1.1" all fail — a bare number is never a host)
+  let d = t.replace(/^https?:\/\//, "").split("/")[0];
+  if (d.startsWith("*.")) d = d.slice(2);
+  if (!d || d.length > 253) return false;
+  const labels = d.split(".");
+  return labels.length >= 2 && labels.every(l => _RR_LABEL.test(l)) && /^[a-z]{2,}$/.test(labels[labels.length - 1]);
+}
+const invalidTargets = raw => splitTargets(raw).filter(t => !validTarget(t));
+// null when the egress config is savable; otherwise a message the sheets show + disable Save on.
+function egressError(eg) {
+  if (!eg || eg.mode !== "smart") return null;
+  for (const r of (eg.rules || [])) {
+    if (r.category !== "custom") continue;
+    const toks = splitTargets(r.targets || "");
+    if (!toks.length) return "A custom rule needs at least one IP or domain.";
+    const bad = toks.filter(t => !validTarget(t));
+    if (bad.length) return "Invalid target" + (bad.length > 1 ? "s" : "") + ": " + bad.slice(0, 4).join(", ") + (bad.length > 4 ? "…" : "");
+  }
+  return null;
+}
 function LoadIfaceSheet({ node }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
@@ -1885,6 +1920,7 @@ function LoadIfaceSheet({ node }) {
       if (!nm || /[\s/]/.test(nm)) return fail("Interface name is required (no spaces or /).");
       if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(subnet.trim())) return fail("Enter the tunnel subnet as CIDR, e.g. 10.8.0.0/24.");
       if (port.trim() && !/^\d+$/.test(port.trim())) return fail("Listen port must be a number.");
+      const ee = egressError(eg); if (ee) return fail(ee);
       const hostVal = ipPickerVal(hostSel, hostCustom);
       r = await api.ifaceCreate({ node, iface: nm, protocol: proto, subnet: subnet.trim(), endpoint_host: hostVal,
         listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) });
@@ -1901,7 +1937,7 @@ function LoadIfaceSheet({ node }) {
     toast(existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync.", "ok");
   };
   return html`<${Sheet} title="Create new interface"
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>${existing ? "Adopt" : "Create"}</button></>`}>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || (!existing && !!egressError(eg))} title=${(!existing && egressError(eg)) || ""} onClick=${save}>${existing ? "Adopt" : "Create"}</button></>`}>
     <div class="field"><label>Protocol</label>
       <div class="chiprow proto3">
         <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
@@ -2137,6 +2173,7 @@ function EditIfaceSheet({ node, iface }) {
     await Store.poll();   // trackIfaceOps drives busy → done
   };
   const save = () => {
+    const ee = egressError(eg); if (ee) return toast(ee, "err");
     const portChanged = port.trim() !== String(meta.desired_port || meta.listen_port || "");
     const epChanged = host.trim() !== epHost;
     if (portChanged || epChanged) {           // client-breaking → confirm first (the editor stays open behind it)
@@ -2153,7 +2190,7 @@ function EditIfaceSheet({ node, iface }) {
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg)} title=${egressError(eg) || ""} onClick=${save}>Save</button></>`}>
     <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${meta.drift && meta.drift.public_key ? html`<div class="notice warn">
@@ -2278,7 +2315,7 @@ function TurnManageSheet({ node, tp }) {
     const a = new Uint8Array(32); crypto.getRandomValues(a);
     copy(Array.from(a, b => b.toString(16).padStart(2, "0")).join(""), "Random 64-hex key copied — paste it into the parameters");
   };
-  return html`<${Sheet} title=${turnSheetTitle(turnFork(svc), title)} width=${660}
+  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}`} width=${660}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
       ${stopped
@@ -2319,17 +2356,6 @@ function TurnManageSheet({ node, tp }) {
       <textarea class="ta mono" rows="4" value=${params} onInput=${e => setParams(e.target.value)} placeholder="-wrap-mode on -wrap-key <64 hex chars>" spellcheck="false"></textarea>
       <div class="hint">Free text appended after <span class="mono">-connect ip:port</span>. Changing the wrap key breaks every client using the old one. <button type="button" class="linkbtn" onClick=${randKey}>Copy a random 64-hex key</button></div>
     </div>
-    ${installing ? null : html`<div class="field turn-ver"><label>Installed version</label>
-      <div class="turn-ver-row">
-        <span class="mono ver">${installed || "unknown"}</span>
-        ${verChk && verChk.checking ? html`<span class="faint">checking…</span>`
-          : verChk && verChk.err ? html`<span class="tg tg-busy del" title=${verChk.err}><${Ic} i="warn"/>no connection</span>`
-          : verChk && verChk.latest ? (updateAvail
-              ? html`<button class="btn btn-mini btn-upd" disabled=${dis} onClick=${() => doReinstall("Update")}><${Ic} i="download"/> update to ${verChk.latest}</button>`
-              : html`<span class="tg tg-ok"><${Ic} i="check"/> up to date</span>`)
-          : html`<button class="btn btn-mini" disabled=${dis || !owner} onClick=${checkUpdate}>Check for update</button>`}
-      </div>
-    </div>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -3393,10 +3419,12 @@ function healthCols(health) {
 }
 function HealthMeters({ health }) {
   return html`<div class="health-cols">${healthCols(health).map(c => {
-    const p = Math.min(100, Math.max(0, c.pct || 0)), tn = htone(p);
+    const p = Math.min(100, Math.max(0, c.pct || 0));
+    const heat = c.label === "CPU load";                 // CPU bar+number: continuous green→red by load, like the graph
+    const col = heat ? loadColor(c.pct) : null;          // uncapped pct → a badly overloaded core reads full red
     return html`<div class="hcol">
-      <div class="hcol-top"><span class="hcol-l">${c.label}</span><span class="hcol-v">${c.text}</span></div>
-      <div class="hm-bar"><i class=${"hm-fill " + tn} style=${"width:" + p + "%"}></i></div>
+      <div class="hcol-top"><span class="hcol-l">${c.label}</span><span class="hcol-v" style=${col ? "color:" + col : ""}>${c.text}</span></div>
+      <div class="hm-bar"><i class=${"hm-fill" + (heat ? "" : " " + htone(p))} style=${"width:" + p + "%" + (col ? ";background:" + col : "")}></i></div>
     </div>`;
   })}</div>`;
 }
@@ -3498,7 +3526,7 @@ function NodeCard({ n, reorder }) {
   const ifTags = ifaceTags(n.id);   // every interface tag, one wrapping line
   const turnChip = tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(n.id) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`;
   const h = n.health, hasCpu = h && Array.isArray(h.load);
-  const l1 = hasCpu ? (h.load[0] || 0) : 0, cpct = Math.min(100, l1 / ((h && h.ncpu) || 1) * 100);
+  const l1 = hasCpu ? (h.load[0] || 0) : 0, cpctRaw = l1 / ((h && h.ncpu) || 1) * 100, cpct = Math.min(100, cpctRaw);   // cpctRaw (uncapped) colours the bar+number green→red like the graph; cpct caps the bar width
   const removing = n.removing;
   const ndown = st !== "online" && !inProc(n.proc_status);    // genuinely not reporting (recover state) → mirror the detail: disable card actions
   const nblocked = st !== "online" || inProc(n.proc_status);  // down OR mid convert/re-install
@@ -3508,20 +3536,20 @@ function NodeCard({ n, reorder }) {
   const procEff = (n.proc_status && !inProc(n.proc_status)) ? n.proc_status : (nUpdating ? "updating" : n.proc_status);
   const nav = () => go("#/node/" + encodeURIComponent(n.id));
   return html`<div class=${"ncard clk" + (removing ? " removing" : "") + (it ? it.cls : "")} onClick=${nav} data-rid=${it ? it.rid : null}>
-    <div class="nc-gutter">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(n.id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}
-      ${!n.uninstalled && (n.outdated || (n.local && Store.panelOutdated)) && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}</div>
+    <div class="nc-gutter">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(n.id)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}</div>
     <div class="nc-name">
+      ${!n.uninstalled && (n.outdated || (n.local && Store.panelOutdated)) && !n.updating ? html`<span class="upd-dot" title="Update available — open the node to update"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}
       <span class="nname">${n.name}</span>
       ${n.kind ? html`<span class=${"tport " + n.kind}>${n.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}
       ${n.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> uninstalled</span>`
         : st === "online" ? html`<span class="reporting">reporting</span>`
-        : st === "offline" ? html`<span class="badge b-unknown ic"><${Ic} i="info"/>offline</span>`
+        : st === "offline" ? html`<span class="nstat offline"><${Ic} i="info"/> offline</span>`
         : html`<span class="nstat enroll"><${Ic} i="clock"/> awaiting enroll</span>`}${procEff ? procTag(procEff, e => { e.stopPropagation(); e.preventDefault(); dismissNodeProc(n.id); }, n.proc_err, st !== "online" && st !== "offline") : null}
       <span style="margin-left:8px"><${HealthDot} issues=${n.issues}/></span>
-      ${removing ? html`<span class="badge b-removing ic" style="margin-left:14px"><${Ic} i="trash"/>flagged for removal</span>` : null}
+      ${removing ? html`<span class="nstat removing" style="margin-left:14px"><${Ic} i="trash"/> flagged for removal</span>` : null}
     </div>
     <div class="nc-mesh nm-item">${(n.mesh_peers || []).length ? html`<${MeshStat} nodeId=${n.id} mode="both"/>` : null}</div>
-    <div class="nc-cpu nm-item"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class=${"hm-fill " + htone(cpct)} style=${"width:" + cpct + "%"}></i></span><span class="nm-v" style=${"color:" + htcolor(cpct)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
+    <div class="nc-cpu nm-item"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class="hm-fill" style=${"width:" + cpct + "%;background:" + loadColor(cpctRaw)}></i></span><span class="nm-v" style=${"color:" + loadColor(cpctRaw)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
     <button class="iconbtn nc-ctl" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${e => { e.stopPropagation(); openNodeEdit(n); }}><${Ic} i="gear"/></button>
 
     <span class="nc-peers nm-item">${here.length
@@ -3628,6 +3656,18 @@ function PanelSettingsScreen() {
     }
     setTurnCheck(next);
     setTimeout(() => setTurnCheck(c => Object.fromEntries(Object.entries(c).map(([k, v]) => [k, v.status === "update" ? v : {}]))), 5000);   // "up to date" clears after 5s; "update" persists
+  };
+  // update every deployed instance of a fork to `latest` — reinstall (re-download binary) on each (node,service)
+  const updateFork = async (fid, latest) => {
+    const owner = (TURN_FORKS.find(x => x.id === fid) || {}).owner || "";
+    const targets = [];
+    for (const [nid, snap] of Object.entries(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid) targets.push({ node: nid, service: tp.service });
+    if (!targets.length) return;
+    setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));
+    for (const t of targets) { turnUpdating[t.node + "|" + t.service] = Date.now() + 120000; await api.turnReinstall({ node: t.node, service: t.service, owner }); }
+    await Store.poll();
+    setTurnCheck(c => ({ ...c, [fid]: {} }));
+    toast("Update requested on " + targets.length + " proxy" + (targets.length > 1 ? "ies" : "") + " — each node applies it on its next sync.", "ok");
   };
   // Security (panel login) — folded into the unified Save: credentials update on Save (if changed), and a
   // validation error blocks Save. Username is loaded from the server once on mount.
@@ -3826,13 +3866,14 @@ function PanelSettingsScreen() {
             <label class="chk" title=${"Offer " + f.label + " in the install picker"}><input type="checkbox" checked=${turnForks.has(f.id)} onChange=${e => setTurnForks(s => { const n = new Set(s); e.target.checked ? n.add(f.id) : n.delete(f.id); return n; })}/></label>
             <input type="color" class="tf-color" value=${forkColors[f.id] || f.color} title=${"Colour for " + f.label} onInput=${e => setForkColors(c => ({ ...c, [f.id]: e.target.value }))}/>
             <span class="tf-name">${f.label}</span>
-            <span class="grow"></span>
+            ${(() => { const v = forkVersions(f.id); return v.length ? html`<span class="tf-ver" title="Version(s) deployed across the fleet">${v.join(", ")}</span>` : html`<span class="tf-ver none">not yet used</span>`; })()}
             ${(() => { const cs = turnCheck[f.id]; if (!cs || !cs.status) return null;
               if (cs.status === "checking") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> checking…</span>`;
-              if (cs.status === "update") return html`<span class="tf-chk upd"><${Ic} i="refresh"/> update to ${cs.latest}</span>`;
+              if (cs.status === "updating") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;
+              if (cs.status === "update") return html`<button class="tf-chk upd tf-updbtn" title=${"Update every deployed " + f.label + " proxy to " + cs.latest} onClick=${() => updateFork(f.id, cs.latest)}><${Ic} i="download"/> update to ${cs.latest}</button>`;
               return html`<span class="tf-chk ok"><${Ic} i="check"/> up to date</span>`; })()}
-            ${(() => { const v = forkVersions(f.id); return v.length ? html`<span class="tf-ver" title="Version(s) deployed across the fleet">${v.join(", ")}</span>` : html`<span class="tf-ver none">not yet used</span>`; })()}
-            <span class="faint cl-meta">${f.wrap ? "obfuscation" : "no obfuscation"} · ${f.owner}</span>
+            <span class="grow"></span>
+            <a class="tf-repo" href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" title=${"Open " + f.owner + " on GitHub"}>${f.owner}</a>
           </div>`)}</div>
         </div>` : null}
         ${section === "geo" ? html`<div class="card">

@@ -64,10 +64,18 @@ h1,h2,h3{font-family:var(--sans)}
   color:var(--dim);font-family:var(--mono);padding:5px 11px;border:1px solid var(--line-solid);border-radius:99px;background:var(--surface-2)}
 .livepill b{color:var(--online);font-weight:600;font-size:13px;letter-spacing:-.02em}
 /* the node-detail update lifecycle pills (update to … / updating / up to date) — sized to match the reporting
-   and docker/bare-metal badges (10px, tighter padding), a touch smaller than a normal livepill */
-.updpill,.upd-busy,.upd-uptodate{font-size:10px;padding:3px 9px;gap:6px;letter-spacing:.06em;line-height:1}
+   and docker/bare-metal badges (10px, tighter padding), a touch smaller than a normal livepill.
+   Asymmetric top/bottom padding nudges the mono label ~1px down so it optically centres against the icon
+   (the icon is pulled back up 1px so it stays put). */
+.updpill,.upd-busy,.upd-uptodate{font-size:10px;padding:4px 9px 2px;gap:6px;letter-spacing:.06em;line-height:1}
 .updpill b,.upd-busy b,.upd-uptodate b{font-size:11px}
-.updpill svg,.upd-busy svg,.upd-uptodate svg{width:11px;height:11px}
+.updpill svg,.upd-busy svg,.upd-uptodate svg{width:11px;height:11px;position:relative;top:-1px}
+/* on the panel header (appbar) these pills sit next to the ONLINE / bare-metal pills — stretch to the same
+   row height so the header reads as one uniform band; align-items:center keeps the label+icon centred, and
+   the 1px padding-top bias still nudges the mono label down to sit on the icon's centre line */
+.appbar-right .updpill,.appbar-right .upd-busy,.appbar-right .upd-uptodate{font-size:11px;padding:9px 12px 8px;letter-spacing:.08em}
+.appbar-right .updpill b,.appbar-right .upd-busy b,.appbar-right .upd-uptodate b{font-size:12px}
+.appbar-right .updpill svg,.appbar-right .upd-busy svg,.appbar-right .upd-uptodate svg{width:13px;height:13px}
 .livepill .dot{width:7px;height:7px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(70,216,168,.55);animation:pulse 2.6s infinite}
 @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(70,216,168,.45)}50%{opacity:.55}70%{box-shadow:0 0 0 6px rgba(70,216,168,0)}}
 .livepill.off b{color:var(--dim)}                /* no peers online → grey count … */
@@ -172,10 +180,10 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 #host-tport{font-size:11px;letter-spacing:.08em;border-radius:99px;padding:5px 11px;margin-left:0;border:1px solid var(--line-solid)}
 #host-tport.baremetal{border-color:rgba(125,196,240,.4);background:rgba(125,196,240,.08)}
 #host-tport.docker{border-color:rgba(169,116,242,.45);background:rgba(169,116,242,.1)}
-/* glowing "reporting" pill (after the transport tag) */
-.reporting{display:inline-flex;align-items:center;gap:6px;line-height:1;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;
-  font-weight:600;color:var(--online);background:rgba(63,216,154,.12);padding:3px 9px 3px 8px;border-radius:99px;border:1px solid color-mix(in srgb,var(--online) 28%,transparent)}
-.reporting::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(63,216,154,.7);animation:blink 2.6s infinite}
+/* "reporting" — bare status tag matching .nstat (the "updating" style); the only one that keeps a glowing, blinking dot */
+.reporting{display:inline-flex;align-items:center;gap:6px;line-height:normal;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em;
+  font-weight:700;color:var(--online)}   /* line-height:normal (not 1) so the label baseline matches the .tport bare-metal/docker pill exactly */
+.reporting::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(63,216,154,.7);animation:blink 2.6s infinite}
 /* one-line node ribbon: interface/turn tags left, sync/uptime right */
 .noderibbon{display:flex;align-items:center;gap:12px;margin:0 0 22px;flex-wrap:wrap}
 .node-nodata{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;min-height:46vh;color:var(--unknown);text-align:center}   /* node not reporting + no snapshot: a single centered message instead of empty grids */
@@ -554,6 +562,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
 .sheet-head{display:flex;align-items:center;padding:18px 20px;border-bottom:1px solid var(--line)}
 .sheet-head h3{margin:0;font-size:15px;color:var(--ink);font-weight:650;letter-spacing:.01em}
+.sheet-head h3 .sheet-ver{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--ready);margin-left:4px}   /* deployed version shown right in the turn-proxy sheet title */
 .sheet-head .x{margin-left:auto;background:none;border:0;color:var(--dim);cursor:pointer;font-size:22px;line-height:1}
 .sheet-head .x:hover{color:var(--ink)}
 .sheet-body{padding:20px}
@@ -631,7 +640,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* FIXED column widths so every card's data lines up at the same x (cross-card alignment): the name/peers
    column is fixed (name spans past it into the gap), so interfaces/turn always start at the same x; the right
    cluster (mesh · cpu/throughput · icons) is fixed and right-anchored, so it's identical across cards. */
-.ncard{display:grid;grid-template-columns:32px 124px minmax(0,auto) minmax(14px,1fr) 148px 316px 28px;align-items:center;column-gap:14px;row-gap:15px;cursor:pointer;
+.ncard{display:grid;grid-template-columns:16px 124px minmax(0,auto) minmax(14px,1fr) 148px 316px 28px;align-items:center;column-gap:14px;row-gap:15px;cursor:pointer;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:background .15s;padding:16px}
 .ncard.removing{opacity:.82;border-style:dashed}
 .ncard:hover{background:var(--surface-2)}
@@ -641,8 +650,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nc-ifaces{grid-column:3;min-width:0}          /* interfaces hug peers (start at a fixed x) */
 .nc-turn{grid-column:3 / 7;min-width:0}         /* turn-proxies start by peers, room to the right */
 .nc-mesh{grid-column:5;min-width:0;justify-self:end}   /* mesh sits at the right of its col, hugging cpu */
-.nc-cpu{grid-column:6;justify-self:end;margin-left:-3px}    /* right-aligned (value by the gear); -3 → mesh↔cpu gap = 8. bar↔label = bar↔value = 8 (symmetric, from .nm-cpu gap) */
-.nc-thru{grid-column:6;justify-self:end}        /* right-aligned so the last "/s" sits under the cpu value */
+.nc-cpu.nm-item{grid-column:6;justify-self:end;gap:9px}    /* right-aligned in col6; label↔bar = 9 (needs .nm-item specificity to beat the generic .nm-item gap:8) */
+.nc-thru{grid-column:6;justify-self:end}   /* right-aligned so the upload "/s" sits exactly under the cpu number */
 .nc-ctl{grid-column:7;flex:none}
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
@@ -660,11 +669,15 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ncard .nsync{font-size:11.5px;white-space:nowrap}
 .ncard .ntop .rowarrow{color:var(--faint)}
 .ncard .grow{flex:1}
-.nstat{display:inline-flex;align-items:center;gap:6px;line-height:1;font-size:10px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;font-family:var(--mono)}
+.nstat{display:inline-flex;align-items:center;gap:6px;line-height:normal;font-size:10px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;font-family:var(--mono)}   /* line-height:normal matches .reporting + the .tport pills so every status tag's label sits on the same baseline */
 .nstat::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
 .nstat.online{color:var(--online)} .nstat.online::before{animation:pulse 2.6s infinite}
-.nstat.offline{color:var(--unknown)}
+.nstat.offline{color:var(--unknown)} .nstat.offline::before{display:none}   /* offline: GREY, info icon (no dot) */
 .nstat.dangling{color:var(--pending)}
+.nstat.stale{color:var(--unknown)} .nstat.stale::before{display:none}      /* stale / no fresh snapshot: GREY, info icon */
+.nstat.down{color:var(--dangling)} .nstat.down::before{display:none}       /* down on the node: RED, warn icon */
+.nstat.stopped{color:var(--unknown)} .nstat.stopped::before{display:none}  /* stopped by operator: GREY, stop icon */
+.nstat.removing{color:var(--dangling)} .nstat.removing::before{display:none}  /* flagged for removal: RED, trash icon */
 .nstat.proc{color:var(--partial)} .nstat.proc::before{display:none}   /* legacy in-progress fallback: YELLOW */
 .nstat.procbusy{color:var(--partial)} .nstat.procbusy::before{display:none}        /* active work (re-installing / updating / installing): YELLOW */
 .nstat.procconvert{color:var(--pending)} .nstat.procconvert::before{display:none}  /* converting: PURPLE */
@@ -700,10 +713,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-thru{display:flex;align-items:baseline;gap:8px}   /* throughput numbers, right-aligned; gap matches CPU load's label↔value spacing */
 .nm-thru .thru{display:flex;gap:16px}
 .nm-thru .down,.nm-thru .up{min-width:74px;white-space:nowrap;text-align:right}
-.nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
-.nm-cpu .hm-bar{width:210px;flex:none}
+.nm-cpu{display:flex;align-items:center;gap:5px;min-width:0}   /* bar↔value-box = 5 → bar↔value-number ≈ 6 (2px more than the 4px label↔bar gap) */
+.nm-cpu .hm-bar{width:204px;flex:none}   /* long bar; right edge sits ~6px off the cpu number, left edge 9px off the CPU LOAD title (title stays 3px-left-shifted) */
 /* reserve room for up to 333.33 and right-align, so the bar->value gap shrinks as the number grows */
-.nm-cpu .nm-v{flex:none;min-width:50px;text-align:right}
+.nm-cpu .nm-v{flex:none;min-width:31px;text-align:right}   /* sized for "9.99" (cpu load never exceeds it) — no wasted space between the bar and the number */
 /* controls: pinned to the right of the turn-proxies row */
 .nacts{display:flex;align-items:center;gap:4px;background:transparent;cursor:default}
 /* per-card controls now ride their metric line: gear on the CPU-load row, trash on the throughput row */
@@ -905,8 +918,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tf-chk.upd{color:#F0913C}
 .tf-chk.upd svg{width:13px;height:13px}
 .tf-chk.ok svg{width:13px;height:13px}
-.tf-arrow{display:inline-flex;color:var(--partial);animation:spin .8s linear infinite}
-.tf-arrow svg{width:13px;height:13px}
+button.tf-updbtn{background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:6px;line-height:1}   /* clickable "update to …" — updates every deployed instance of this fork */
+button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
+.tf-arrow{display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;line-height:0;color:var(--partial)}
+.tf-arrow svg{display:block;width:13px;height:13px;transform-box:view-box;transform-origin:center;animation:spin .8s linear infinite}   /* spin the SVG on its viewBox centre (same pattern as .updspin / .iconbtn) so it's centred even on a fresh load */
+.tf-repo{font-family:var(--mono);font-size:11.5px;color:var(--faint);white-space:nowrap;text-decoration:none}   /* right-aligned link to the fork's GitHub repo */
+.tf-repo:hover{color:var(--ready);text-decoration:underline}
 .warntext{color:var(--partial);font-weight:600}
 /* per-fork colour picker (native input, themed to a small rounded swatch) */
 .tf-color{width:24px;height:24px;flex:none;padding:0;border:1px solid var(--line-solid);border-radius:6px;background:none;cursor:pointer}
@@ -1054,12 +1071,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ipk-custom{margin-top:6px;width:100%;font-family:var(--mono);font-size:12.5px}
 /* mesh-health tag (node-detail header + nodes-list) + its hover bubble */
 .mh-pop{display:inline-flex}
-.mh-tag{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;cursor:default}   /* label↔value = throughput's 8px */
+.mh-tag{display:inline-flex;align-items:center;gap:16px;white-space:nowrap;cursor:default}   /* label↔value = value↔value = 16 (identical, roomy enough for 2-digit counts like 20/20) */
 .mh-tag-hdr{gap:7px}
 .mh-lbl-hdr{font-size:14px;font-weight:600;color:var(--ink);letter-spacing:-.01em}   /* match the panel header h3 */
 .nm-meshitem{margin-right:26px;display:inline-flex;align-items:center}   /* clear gap before CPU load */
 .mh-grp{display:inline-flex;align-items:center;gap:4px}      /* ↓ + number as one tight unit */
-.mh-grp + .mh-grp{margin-left:8px}                          /* green↔blue = 8 (tag gap) + 8 = 16px, like throughput's ↓↔↑ */
+.mh-grp + .mh-grp{margin-left:0}                            /* green↔blue = the 12px tag gap, identical to label↔value */
 .mh-num{font-family:var(--mono);font-weight:400;font-size:12px}          /* numbers NOT bold */
 .mh-num-hdr{font-family:inherit;font-size:14px;font-weight:600;letter-spacing:-.01em}   /* header number: SAME sans font/size/weight as the label text (not the mono used in the nodes-list tag) */
 /* numbers: all-up → arrow colour (inbound green · outbound blue); partial → orange; none → red */
