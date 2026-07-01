@@ -955,6 +955,7 @@ if [ "$HOST_HAS_WG" = yes ]; then
   info "This box as a node: agent + swg-noded (syncs to the local panel over HTTPS)"
   mkdir -p "$PREFIX$AGENT_DIR"; cp "$SRC/swg-agent" "$PREFIX$AGENT_DIR/"; chmod 755 "$PREFIX$AGENT_DIR/swg-agent"
   mkdir -p "$PREFIX$NODED_DIR"; cp "$SRC/swg-noded" "$PREFIX$NODED_DIR/"; chmod 755 "$PREFIX$NODED_DIR/swg-noded"
+  [ -f "$SRC/swg-sni" ] && { cp "$SRC/swg-sni" "$PREFIX$NODED_DIR/"; chmod 755 "$PREFIX$NODED_DIR/swg-sni"; }   # SNI-router classifier (routing_mode=sni)
   [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$NODED_DIR/" || true
   mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent"
 

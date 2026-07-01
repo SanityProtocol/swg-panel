@@ -39,9 +39,10 @@ COPY --from=build /out/usr/bin/awg-quick /usr/bin/awg-quick
 WORKDIR /opt
 COPY swg-agent /opt/swg-agent/swg-agent
 COPY swg-noded /opt/swg-noded/swg-noded
+COPY swg-sni /opt/swg-noded/swg-sni
 COPY VERSION /opt/swg-noded/VERSION
 COPY docker/node-entrypoint.sh /node-entrypoint.sh
-RUN chmod +x /opt/swg-agent/swg-agent /opt/swg-noded/swg-noded /node-entrypoint.sh /usr/bin/amneziawg-go /usr/bin/awg /usr/bin/awg-quick
+RUN chmod +x /opt/swg-agent/swg-agent /opt/swg-noded/swg-noded /opt/swg-noded/swg-sni /node-entrypoint.sh /usr/bin/amneziawg-go /usr/bin/awg /usr/bin/awg-quick
 
 ENV NODE_IFACE=awg0 \
     NODE_LISTEN_PORT=51820 \

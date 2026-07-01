@@ -257,6 +257,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     info "updating bare-metal swg-node ($AGENT_DIR + $NODED_DIR)"
     [ -d "$AGENT_DIR" ] && [ -f "$SRC/swg-agent" ] && { run cp "$SRC/swg-agent" "$AGENT_DIR/"; run chmod 755 "$AGENT_DIR/swg-agent"; }
     [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-noded" ] && { run cp "$SRC/swg-noded" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-noded"; }
+    [ -d "$NODED_DIR" ] && [ -f "$SRC/swg-sni" ] && { run cp "$SRC/swg-sni" "$NODED_DIR/"; run chmod 755 "$NODED_DIR/swg-sni"; }   # SNI-router classifier
     stamp "$NODED_DIR"
     if run systemctl restart swg-noded; then ok "swg-node updated + restarted"; note "bare-metal swg-node: ${nold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
