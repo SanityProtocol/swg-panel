@@ -976,7 +976,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
    round-trips its checked visual whenever the browser toggles it — e.g. a stray click near the control — even
    when our state (nodeMode) never changes, which reads as a select/unselect flicker. Rendering the dot from
    `.moderow.on` (Preact state) makes any native toggle visually inert. Same fix as the checkboxes. */
-.moderow input{appearance:none;-webkit-appearance:none;margin-top:2px;flex:none;width:15px;height:15px;border-radius:50%;
+.moderow input{appearance:none;-webkit-appearance:none;box-sizing:border-box;margin-top:2px;flex:none;width:15px;height:15px;min-width:0;min-height:0;padding:0;border-radius:50%;
   border:1.5px solid var(--line-solid);background:transparent;cursor:pointer;position:relative;transition:none}
 .moderow.on input{border-color:var(--brand)}
 .moderow.on input::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--brand)}
