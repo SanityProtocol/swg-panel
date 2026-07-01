@@ -888,6 +888,13 @@ def _ensure_smart_nft(smart_e, categories, res):
                 res["errors"].append("smart nft " + S + "/all: " + (r.stderr or "").strip()[:120])
             else:
                 res["changed"] += 1
+    # drop sets we no longer want (a category was un-ticked, or 'ru' was split into 'ru_net'/'ru_blocked'): after the
+    # chain rebuild above they're unreferenced, so delete them — else the stale set lingers with old IPs forever.
+    wanted_sn = {_smart_setname(c) for c in cats if c != "all"}
+    for sn in have_sets:
+        if sn.startswith("cat_") and sn not in wanted_sn:
+            if run(["nft", "delete", "set", "inet", SMART_NFT_TABLE, sn]).returncode == 0:   # still-referenced → fails, retried next pass
+                res["changed"] += 1
     # per-set live element counts (so _smart_geo_refresh knows which need (re)loading — e.g. empty after a reboot).
     # Reuse the shared per-loop parse; if `body` was blanked above (auto-merge migration / table absent) the sets
     # were just dropped → report {} so every set is treated as empty and gets reloaded.
@@ -911,9 +918,10 @@ _CIDR4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 # it's domain-only and only works on a DNS/SNI-mode node.)
 GEO_SOURCES = {
     "google": ["LS:google"], "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"],
-    "netflix": ["LS:netflix"], "meta": ["LS:facebook"], "twitter": ["LS:twitter"], "ru": ["LS:ru"],
+    "netflix": ["LS:netflix"], "meta": ["LS:facebook"], "twitter": ["LS:twitter"], "ru_net": ["LS:ru"],
     "yandex": ["AS:13238"], "vk": ["AS:47541", "AS:47542"],
-}
+}   # ru_net = the whole Russian IP space (geoip). The blocked-in-RU circumvention list is a SEPARATE, domain-only
+    # category (ru_blocked in DOMAIN_SOURCES) — they mean different things, so they must never share a set.
 
 
 def _geo_url(spec):
@@ -1082,7 +1090,7 @@ def _smart_load_cidrs(cidrs_map, set_counts, res):
 DOMAIN_SOURCES = {
     "google":  ["V2:google"],  "youtube": ["V2:youtube"],  "yandex":  ["V2:yandex"],
     "vk":      ["V2:vk"],       "meta":    ["V2:facebook", "V2:instagram"],
-    "twitter": ["V2:twitter"],  "netflix": ["V2:netflix"],  "ru":      ["RF:domains_all"],
+    "twitter": ["V2:twitter"],  "netflix": ["V2:netflix"],  "ru_blocked": ["RF:domains_all"],
     "spotify": ["V2:spotify"],  "twitch":  ["V2:twitch"],   "tiktok":  ["V2:tiktok"],
     "disney":  ["V2:disney"],   "reddit":  ["V2:reddit"],   "discord": ["V2:discord"],
     "github":  ["V2:github"],   "openai":  ["V2:openai"],
@@ -1570,8 +1578,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
             domains[cat] = sorted(set(domains.get(cat) or []) | set(fl))
         _DOMTIER_CACHE["v"] = (dom_sig, domains)
     # GEOIP cats fill from cached CIDR lists (TTL-gated); domain cats are owned by dnsmasq → skip them here. A
-    # cat is demoted from geoip only once it actually HAS domains, so a fetch-only cat (ru) stays geoip until its
-    # upstream list lands rather than going briefly empty.
+    # cat is demoted from geoip only once it actually HAS domains, so a geoip-only cat (ru_net) never demotes and a
+    # domain-capable cat stays geoip until its upstream domain list lands rather than going briefly empty.
     if smart_cats:
         _smart_geo_refresh(smart_cats, set_counts or {}, res, skip={c for c, v in domains.items() if v})
     _smart_load_cidrs((smart or {}).get("cidrs") or {}, set_counts or {}, res)   # custom-rule raw IPs/CIDRs → into the set

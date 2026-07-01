@@ -1736,7 +1736,9 @@ function suggestSubnet(node) {
 // Phase 3 smart-routing categories (keep in sync with SMART_CATEGORIES in swg-panel-server). A category is a
 // destination set the node routes into the chosen exit's mesh link. Domain-tier ones (Google/YouTube/Yandex/
 // VK/Meta/Twitter/Netflix) match by domain via the node's dnsmasq — so YouTube splits from the rest of Google;
-// the rest (Telegram/Cloudflare/Russia/All) match by provider IP ranges (geoip).
+// the rest (Telegram/Cloudflare/RU-net/All) match by provider IP ranges (geoip). "Russia" is TWO distinct lists:
+// ru_net = the whole Russian IP space (geoip, every mode); ru_blocked = sites blocked INSIDE Russia (circumvention
+// domains, Force-DNS/SNI only) — different meanings, so they're separate categories you route independently.
 const SMART_CATEGORIES = [
   ["google", "Google"], ["youtube", "YouTube"], ["yandex", "Yandex"], ["vk", "VK"], ["telegram", "Telegram"],
   ["cloudflare", "Cloudflare"], ["meta", "Meta (FB / IG / WA)"], ["twitter", "Twitter / X"],
@@ -1744,7 +1746,8 @@ const SMART_CATEGORIES = [
   ["disney", "Disney+"], ["reddit", "Reddit"], ["discord", "Discord"], ["github", "GitHub"],
   ["openai", "OpenAI / ChatGPT"], ["claude", "Claude (Anthropic)"], ["gemini", "Google Gemini"],
   ["grok", "Grok (xAI)"], ["perplexity", "Perplexity"], ["deepseek", "DeepSeek"], ["copilot", "Microsoft Copilot"],
-  ["ru", "Russia (country)"], ["all", "All traffic (catch-all)"],
+  ["ru_net", "Russia — network (all RU IPs)"], ["ru_blocked", "Russia — blocked / censored"],
+  ["all", "All traffic (catch-all)"],
 ];
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in

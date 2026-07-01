@@ -603,6 +603,41 @@ def migrate_node_ids(nodes_path, roster_path, store_configs, config_dir):
     print(f"migrated {len(new_nodes)} node(s) to stable ids", flush=True)
 
 
+def migrate_ru_split(nodes_path, panel_settings_path):
+    """One-time: the single 'ru' category (which meant all-RU GeoIP in Kernel mode but the blocked-in-RU
+    circumvention DOMAIN list in DNS mode — two different things) was split into 'ru_net' (GeoIP, every mode) +
+    'ru_blocked' (circumvention domains, DNS/SNI only). Rewrite the now-ambiguous 'ru' → 'ru_net' (the country/IP
+    meaning, which keeps working in every mode); 'ru_blocked' is then an explicit opt-in. Idempotent."""
+    def _sub(lst):   # replace ru→ru_net in a category-id list, order-preserving + de-duped
+        return list(dict.fromkeys("ru_net" if c == "ru" else c for c in lst))
+    changed = False
+    nodes = load_json(nodes_path, {})
+    if isinstance(nodes, dict):
+        for n in nodes.values():
+            if not isinstance(n, dict):
+                continue
+            ec = n.get("enabled_categories")
+            if isinstance(ec, list) and "ru" in ec:
+                n["enabled_categories"] = _sub(ec); changed = True
+            for ifo in (n.get("ifaces") or {}).values():
+                if not isinstance(ifo, dict):
+                    continue
+                for r in (ifo.get("routing") or []):
+                    if isinstance(r, dict) and r.get("category") == "ru":
+                        r["category"] = "ru_net"; changed = True
+        if changed:
+            nodes_save(nodes_path, nodes)
+    ps = load_json(panel_settings_path, {})
+    if isinstance(ps, dict):
+        hc = ps.get("hidden_categories")
+        if isinstance(hc, list) and "ru" in hc:
+            ps["hidden_categories"] = _sub(hc)
+            atomic_write(panel_settings_path, json.dumps(ps, indent=2) + "\n")
+            changed = True
+    if changed:
+        print("migrated 'ru' category → 'ru_net' (ru_blocked is now a separate opt-in list)", flush=True)
+
+
 def normalize_stats_files(nodes_path, stats_dir):
     """Make every node's snapshot mirror id-keyed: `stats_file` -> `stats-<id>.json`, renaming the file
     on disk if it's still under a legacy name (auto-enrolled nodes were written `stats-<hostname>.json`).
@@ -1187,7 +1222,7 @@ SWG_RT_MAX = 7099           # (one table id per egress target per node; priority
 #     bundle's domains. Domain-level, so we can separate e.g. YouTube from the rest of Google (they share IP
 #     space but not domains). Requires the interface's clients to resolve via the node.
 #   • GEOIP/ASN lists (GEO_SOURCES, node-side) — whole provider/country IP ranges. Right for IP-direct services
-#     (Telegram) and country/CDN scope (ru, cloudflare) where domains don't help.
+#     (Telegram) and country/CDN scope (ru_net, cloudflare) where domains don't help.
 SMART_CATEGORIES = {
     "google":   "Google",
     "youtube":  "YouTube",
@@ -1212,7 +1247,8 @@ SMART_CATEGORIES = {
     "perplexity": "Perplexity",
     "deepseek": "DeepSeek",
     "copilot":  "Microsoft Copilot",
-    "ru":       "Russia (country)",
+    "ru_net":     "Russia — network (all RU IPs)",     # geoip LS:ru — the whole Russian IP space (works in every mode)
+    "ru_blocked": "Russia — blocked / censored",       # RF domains_all — sites blocked INSIDE Russia (circumvention); domain-only
     "all":      "All traffic (catch-all)",   # matches everything not caught by an earlier rule (no geo set)
 }
 
@@ -1256,13 +1292,13 @@ DOMAIN_BUNDLES = {
 # panel ships such a cat in the sync `domains` map (curated domains, or [] for a fetch-only cat) so the node
 # domain-fills it; in Kernel mode none are shipped and they match by geoip instead. Keep in sync with the node's
 # DOMAIN_SOURCES.
-HOST_CATEGORIES = set(DOMAIN_BUNDLES) | {"ru"}
+HOST_CATEGORIES = set(DOMAIN_BUNDLES) | {"ru_blocked"}   # ru_blocked is fetch-only (RF list, no curated bundle), like the old ru
 
 # IP-matched (geoip/ASN) categories — mirror of the node's GEO_SOURCES keys. A category here is matchable by
 # destination IP, so it works in EVERY routing mode (kernel included). A category that is host-capable but NOT
 # here (only youtube today) needs DNS and is dead weight in kernel mode — the UI greys it out there. Keep in
 # sync with swg-noded's GEO_SOURCES.
-IP_CATEGORIES = {"google", "telegram", "cloudflare", "netflix", "meta", "twitter", "ru", "yandex", "vk"}
+IP_CATEGORIES = {"google", "telegram", "cloudflare", "netflix", "meta", "twitter", "ru_net", "yandex", "vk"}
 
 # Per-category capability map for the SPA: which match mechanisms a category supports, so the UI can group
 # built-in lists into [IP] / [Host] and grey host-only cats in kernel mode. ("all" is the catch-all → neither.)
@@ -3866,6 +3902,7 @@ def main():
     _sc = fleet.get("store_configs", True) is not False
     _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")
     migrate_node_ids(nodes_path, _rp, _sc, _cd)        # legacy name-keyed -> stable id-keyed (one-time)
+    migrate_ru_split(nodes_path, fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".", "panel-settings.json"))   # 'ru' -> 'ru_net' (ru_blocked split out; one-time)
     normalize_stats_files(nodes_path, fleet.get("stats_dir", "/var/www/wgstats"))   # stats_file -> stats-<id>.json (id-keyed health files survive convert)
     _hpp = os.path.join(os.path.dirname(nodes_path) or ".", "host_proc")   # this host's re-install/convert flag
     with contextlib.suppress(Exception):
