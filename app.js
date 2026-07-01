@@ -3534,7 +3534,7 @@ function NodeCard({ n, reorder }) {
       : html`<span class="nm-v faint">—</span>`}</span>
     <button class="iconbtn nc-ctl danger" title=${removing ? "Force remove" : "Remove node"} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>
 
-    ${turnEnabled() ? html`<div class="nc-turn nm-item"><span class="nm-l">Turn-proxies</span><span class="tags">${tps.length ? tps.map(turnChip) : html`<span class="nm-v faint">—</span>`}</span></div>` : null}
+    ${turnEnabled() && tps.length ? html`<div class="nc-turn nm-item"><span class="nm-l">Turn-proxies</span><span class="tags">${tps.map(turnChip)}</span></div>` : null}
   </div>`;
 }
 

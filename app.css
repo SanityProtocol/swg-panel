@@ -641,8 +641,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nc-ifaces{grid-column:3;min-width:0}          /* interfaces hug peers (start at a fixed x) */
 .nc-turn{grid-column:3 / 7;min-width:0}         /* turn-proxies start by peers, room to the right */
 .nc-mesh{grid-column:5;min-width:0;justify-self:end}   /* mesh sits at the right of its col, hugging cpu */
-.nc-cpu{grid-column:6;justify-self:start;margin-left:-6px}    /* -6 → mesh↔cpu gap = 8 (like throughput label↔value) */
-.nc-thru{grid-column:6;justify-self:start;margin-left:-6px;padding-left:62px}  /* indent so the "T" lands ~5px after the cpu bar's left edge */
+.nc-cpu{grid-column:6;justify-self:end;margin-left:-3px}    /* right-aligned (value by the gear); -3 → mesh↔cpu gap = 8. bar↔label = bar↔value = 8 (symmetric, from .nm-cpu gap) */
+.nc-thru{grid-column:6;justify-self:end}        /* right-aligned so the last "/s" sits under the cpu value */
 .nc-ctl{grid-column:7;flex:none}
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
