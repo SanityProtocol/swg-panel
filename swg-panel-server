@@ -1407,7 +1407,9 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=()):
         elif cat in custom_list_ids:
             pass                                           # a reusable custom list referenced by id (targets resolved at compile time)
         elif cat not in SMART_CATEGORIES:
-            return None, f"unknown category '{cat}'"
+            continue                                       # orphaned reference (e.g. a reusable custom list that was later
+                                                           # deleted, or a category removed in an upgrade) → DROP the rule
+                                                           # rather than reject the whole save and lock the interface out.
         act = (r.get("action") or "exit").strip()
         if act not in ("exit", "direct", "block"):
             return None, "rule action must be exit|direct|block"
