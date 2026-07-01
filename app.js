@@ -374,6 +374,7 @@ const Store = {
     this.stats = d.snapshots || {};
     this.storeConfigs = !!d.store_configs;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
+    applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
     this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
     this.catDomains = d.cat_domains || this.catDomains || {};   // curated domains per host category → hover tooltip
     this.env = d.env || this.env || {};
@@ -2399,6 +2400,14 @@ function turnColor(label) {
   if (ov[label]) return ov[label];
   const fk = TURN_FORKS.find(x => x.id === label); return (fk && fk.color) || "#8FA8C0";
 }
+// Drive EVERY `.tf-<fork>` element (the .tg-turn tags + .iftype.turn badges scattered across the SPA) from the
+// picker override — those use a static CSS class, so without this the colour picker would only reach the handful of
+// inline-styled sites. One injected <style> keeps the whole app in sync with turn_fork_colors after each poll.
+function applyForkColors() {
+  let el = document.getElementById("tf-colors");
+  if (!el) { el = document.createElement("style"); el.id = "tf-colors"; (document.head || document.documentElement).appendChild(el); }
+  el.textContent = TURN_FORKS.map(f => ".tf-" + f.id + "{--tfc:" + turnColor(f.id) + "}").join("");
+}
 // master switch: turn-proxy UI is shown unless explicitly disabled in Panel settings → Turn proxies.
 function turnEnabled() { return !(Store.panelSettings && Store.panelSettings.turn_enabled === false); }
 // the forks offered in the "install a fork" picker — toggled in Panel settings → Turn proxies. Disabling a fork
@@ -2413,6 +2422,7 @@ const TURN_PEND = { install: "installing", manage: "applying", rotate: "rotating
 const _turnRestartPend = {};   // "node|service" currently mid-restart (last poll)
 const turnRestarted = {};      // "node|service" -> expiry ts for the green flash
 const turnUpdating = {};        // "node|service" -> expiry ts; set on an "Update" click so the pending tag reads "updating" (not "installing")
+const turnUpdateTarget = {};    // forkId -> {ver, until}: the version a fleet-wide Update is driving to, so the version bubble can flag converged nodes "updated" (independent of the transient turnCheck state)
 const turnReady = {};          // "node|service" -> expiry ts for the blue "ready" flash (5s after it settles → then no tag)
 const turnUpdatedFlash = {};   // "node|service" -> expiry ts: settle that FOLLOWED an Update click → green "updated" (not "ready")
 const turnWasUpd = {};         // "node|service" -> was this card update-in-flight last render (→ flash "updated" when it settles)
@@ -3652,6 +3662,22 @@ function PanelSettingsScreen() {
   const forkColorOverrides = () => Object.fromEntries(TURN_FORKS.filter(f => (forkColors[f.id] || "").toLowerCase() !== f.color.toLowerCase()).map(f => [f.id, forkColors[f.id]]));
   // deployed version(s) of a fork across the fleet (from snapshots) — "" if it's never been installed
   const forkVersions = fid => { const v = new Set(); for (const snap of Object.values(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version); return [...v]; };
+  // per-NODE view of a fork for the hover bubble: one row per node carrying its version + whether it's mid-update
+  // (a shared per-fork binary → one version/node; updating if ANY of its instances is installing or Update-clicked).
+  const forkNodeStates = fid => {
+    const m = {};   // nodeId -> {version, installing (real, clears when done), updatePending (Update-clicked, 120s hint)}
+    for (const [nid, snap] of Object.entries(Store.stats || {}))
+      for (const tp of (snap.turn_proxies || [])) {
+        if (!tp.service || turnFork(tp.service) !== fid) continue;
+        const cur = m[nid] || { version: "", installing: false, updatePending: false };
+        if (tp.version) cur.version = tp.version;
+        if (tp.installing) cur.installing = true;
+        const uk = nid + "|" + tp.service;
+        if (turnUpdating[uk] && Date.now() < turnUpdating[uk]) cur.updatePending = true;
+        m[nid] = cur;
+      }
+    return Object.entries(m).map(([node, v]) => ({ node, ...v })).sort((a, b) => Store.nodeName(a.node).localeCompare(Store.nodeName(b.node)));
+  };
   const [turnCheck, setTurnCheck] = useState({});   // {forkId: {status:'checking'|'uptodate'|'update', latest}}
   const checkTurnUpdates = async () => {
     setTurnCheck(Object.fromEntries(TURN_FORKS.map(f => [f.id, { status: "checking" }])));
@@ -3672,6 +3698,7 @@ function PanelSettingsScreen() {
     for (const [nid, snap] of Object.entries(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid) targets.push({ node: nid, service: tp.service });
     if (!targets.length) return;
     setTurnCheck(c => ({ ...c, [fid]: { status: "updating", latest } }));
+    turnUpdateTarget[fid] = { ver: latest, until: Date.now() + 120000 };   // persists past the turnCheck reset so the bubble can show per-node updating→updated
     for (const t of targets) { turnUpdating[t.node + "|" + t.service] = Date.now() + 120000; await api.turnReinstall({ node: t.node, service: t.service, owner }); }
     await Store.poll();
     setTurnCheck(c => ({ ...c, [fid]: {} }));
@@ -3873,8 +3900,24 @@ function PanelSettingsScreen() {
           <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${TURN_FORKS.map(f => html`<div class="cl-row" key=${f.id}>
             <label class="chk" title=${"Offer " + f.label + " in the install picker"}><input type="checkbox" checked=${turnForks.has(f.id)} onChange=${e => setTurnForks(s => { const n = new Set(s); e.target.checked ? n.add(f.id) : n.delete(f.id); return n; })}/></label>
             <input type="color" class="tf-color" value=${forkColors[f.id] || f.color} title=${"Colour for " + f.label} onInput=${e => setForkColors(c => ({ ...c, [f.id]: e.target.value }))}/>
-            <span class="tf-name">${f.label}</span>
-            ${(() => { const v = forkVersions(f.id); return v.length ? html`<span class="tf-ver" title="Version(s) deployed across the fleet">${v.join(", ")}</span>` : html`<span class="tf-ver none">not yet used</span>`; })()}
+            <span class="tf-name" style=${"color:" + (forkColors[f.id] || f.color)}>${f.label}</span>
+            ${(() => {
+              const v = forkVersions(f.id); const col = forkColors[f.id] || f.color;
+              if (!v.length) return html`<span class="tf-ver none">not yet used</span>`;
+              const nodes = forkNodeStates(f.id); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
+              const bub = html`<span class="tf-verpop">
+                <span class="tf-verpop-h">Deployed across the fleet</span>
+                ${v.map(ver => html`<span class="tf-vg">
+                  <span class="tf-vg-v" style=${"--tfc:" + col}>${ver}</span>
+                  <span class="tf-vg-nodes">${nodes.filter(n => n.version === ver).map(n => html`<span class="tf-vg-node">
+                    <span class="tf-vg-dot" style=${"background:" + (Store.nodeColor(n.node) || "var(--ink)")}></span>
+                    <span class="tf-vg-nm">${Store.nodeName(n.node)}</span>
+                    ${n.installing ? html`<span class="tf-vg-st upd">updating…</span>` : (n.updatePending && latest && ver === latest) ? html`<span class="tf-vg-st ok"><${Ic} i="check"/>updated</span>` : null}
+                  </span>`)}</span>
+                </span>`)}
+              </span>`;
+              return html`<span class="tf-verwrap" style=${"--tfc:" + col}><span class="tf-ver">${v.join(", ")}</span>${bub}</span>`;
+            })()}
             ${(() => { const cs = turnCheck[f.id]; if (!cs || !cs.status) return null;
               if (cs.status === "checking") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> checking…</span>`;
               if (cs.status === "updating") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;
