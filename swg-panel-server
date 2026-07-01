@@ -1273,7 +1273,7 @@ SMART_CAPS = {c: {"ip": c in IP_CATEGORIES, "host": c in HOST_CATEGORIES}
 # separated; it gets a stable synthetic category id so its nft set is shared by identical lists. The DOMAINS
 # fill the set via the node's dnsmasq (a domain matches its subdomains too); the IPs/CIDRs are loaded into the
 # set directly. Same nft set, two fillers.
-_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)((?!-)[a-z0-9-]{1,63}(?<!-)\.)+[a-z]{2,}$")   # ≥2 labels + an ALPHABETIC TLD (a bare number like 22.1 / 1.1.1.1 is never a host)
 _IP4_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(/\d{1,2})?$")
 
 
@@ -3079,8 +3079,9 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {
             "checked": reached,                      # did we actually reach the repo this time?
             "latest_remote": LATEST_REMOTE.get("version"),
-            "panel_outdated": bool(LATEST_REMOTE.get("version") and VERSIONS.get("panel")
-                                   and LATEST_REMOTE["version"] != VERSIONS.get("panel"))}}
+            # strictly-newer remote only (same rule as the data bundle) — never flag a dev build that's
+            # AHEAD of main as "outdated", which would offer a downgrade and leave the header with no pill.
+            "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version"))}}
 
     if method == "POST" and path == "/api/host/update":
         # Update THIS host (panel + a co-located node) in place. The panel runs unprivileged, so it
@@ -3206,6 +3207,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         if PANEL_BASE and STATIC[key] == "index.html":   # point the SPA's <base> at the mount point
             data = data.replace(b'<base href="/">', ('<base href="%s/">' % PANEL_BASE).encode())
+        # Version-stamp the SPA entry points (?v=<panel version>). The assets are buildless (no content
+        # hash in the filename), and a CDN in front (e.g. Cloudflare) caches .js/.css for hours regardless
+        # of our no-cache header — so a browser can run a stale app.js against a freshly-updated backend.
+        # A per-release query makes each version a distinct URL: index.html/HTML is never CDN-cached, so it's
+        # always fresh and points at the current app.js?v=… , which the CDN then fetches anew on a version bump.
+        _av = (VERSIONS.get("panel") or "").strip()
+        if _av and STATIC[key] == "index.html":
+            q = ("?v=" + _av).encode()
+            data = (data.replace(b'href="app.css"', b'href="app.css' + q + b'"')
+                        .replace(b'src="app.js"', b'src="app.js' + q + b'"'))
+        elif _av and STATIC[key] == "app.js":
+            data = data.replace(b'"./reconcile.js"', b'"./reconcile.js' + ("?v=" + _av).encode() + b'"')
         _, ext = os.path.splitext(full)
         # The SPA is buildless (no content-hashed filenames), so a stale app.js/app.css served
         # against a freshly-updated backend silently breaks the UI (e.g. a schema change). Force
