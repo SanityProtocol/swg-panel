@@ -4025,16 +4025,19 @@ function CustomListSheet({ list, onSave, onDelete, onClose }) {
   const [title, setTitle] = useState(list?.title || "");
   const [targets, setTargets] = useState(list ? (list.targets ?? [...(list.domains || []), ...(list.cidrs || [])].join(", ")) : "");
   const [confirmDel, setConfirmDel] = useState(false);
-  const save = () => { onSave({ ...(list || { _rid: newRid() }), title: title.trim() || "Untitled list", targets }); onClose(); };
+  const toks = splitTargets(targets), bad = invalidTargets(targets);   // same token validation as the interface smart-rule editor
+  const err = !toks.length ? "add at least one IP or domain"
+    : bad.length ? "not a valid IP, CIDR or domain: " + bad.slice(0, 4).join(", ") + (bad.length > 4 ? "…" : "") : null;
+  const save = () => { if (err) return; onSave({ ...(list || { _rid: newRid() }), title: title.trim() || "Untitled list", targets }); onClose(); };
   const del = onDelete ? (confirmDel                                   // left-aligned delete, two-step confirm
     ? html`<span class="del-confirm"><span class="faint">Delete this list?</span><button class="btn-danger" onClick=${() => { onDelete(); onClose(); }}>Delete</button><button class="btn btn-mini" onClick=${() => setConfirmDel(false)}>Keep</button></span>`
     : html`<button class="btn btn-ghost danger del-btn" onClick=${() => setConfirmDel(true)}><${Ic} i="trash"/> Delete</button>`) : null;
-  const foot = html`${del}<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>Cancel</button><button class="btn btn-primary" onClick=${save}>${list ? "Save" : "Add"}</button>`;
+  const foot = html`${del}<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>Cancel</button><button class="btn btn-primary" disabled=${!!err} title=${err || ""} onClick=${save}>${list ? "Save" : "Add"}</button>`;
   return html`<${Sheet} title=${list ? "Edit list" : "New list"} width=${520} onClose=${onClose} foot=${foot}>
     <div class="field"><label>Title</label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder="e.g. Streaming"/></div>
     <div class="field"><label>IPs / domains</label>
       <textarea class="rrdoms" rows="1" spellcheck="false" placeholder="comma-separated — spotify.com, 1.2.3.0/24, sub.example.com" value=${targets} onInput=${e => { autoGrow(e.target); setTargets(e.target.value); }} ref=${el => autoGrow(el)}/>
-      <div class="hint">Domains match their subdomains too; IPs / CIDRs are matched directly.</div></div>
+      ${err ? html`<div class="rrlint" style="margin-top:5px">${err}</div>` : html`<div class="hint">Domains match their subdomains too; IPs / CIDRs are matched directly.</div>`}</div>
   <//>`;
 }
 
