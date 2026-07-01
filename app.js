@@ -3529,7 +3529,7 @@ function NodeCard({ n, reorder }) {
           trigger=${() => html`<span class="nm-l">Peers</span><span class="nm-v nm-peers"><b class=${"oncount" + (onl ? " on" : "")}>${onl}</b><small>/${here.length}</small></span>`}/>`
       : html`<span class="nm-l">Peers</span><span class="nm-v nm-peers faint">none</span>`}</span>
     <div class="nc-ifaces nm-item"><span class="nm-l">Interfaces</span><span class="tags">${ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
-    <span class="nc-thru nm-thru">${st === "online"
+    <span class="nc-thru nm-thru"><span class="nm-l">Throughput</span>${st === "online"
       ? html`<span class="nm-v thru"><span class="down">↓ ${rate(dlul(n.rx_speed, n.tx_speed)[0])}</span><span class="up">↑ ${rate(dlul(n.rx_speed, n.tx_speed)[1])}</span></span>`
       : html`<span class="nm-v faint">—</span>`}</span>
     <button class="iconbtn nc-ctl danger" title=${removing ? "Force remove" : "Remove node"} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>

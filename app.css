@@ -626,19 +626,21 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
    data row (col 1) and controls (col 2) share the second row, so they line up. */
 /* 4-column grid: each line's items share columns so they align vertically — name/peers, mesh/interfaces,
    cpu/throughput, gear/trash. Turn-proxies span the middle columns on a third row. */
-.ncard{display:grid;grid-template-columns:32px minmax(0,1.5fr) minmax(0,1fr) auto auto;align-items:center;column-gap:14px;row-gap:15px;cursor:pointer;
+/* 7-column grid. Left cluster: gutter · name/peers · interfaces/turn (hug peers). Flex gap. Right cluster:
+   mesh (hugs cpu) · cpu/throughput (right-aligned metric) · gear/trash. */
+.ncard{display:grid;grid-template-columns:32px minmax(0,auto) minmax(0,auto) minmax(16px,1fr) auto auto auto;align-items:center;column-gap:14px;row-gap:15px;cursor:pointer;
   background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;transition:background .15s;padding:16px}
 .ncard.removing{opacity:.82;border-style:dashed}
 .ncard:hover{background:var(--surface-2)}
 .nc-gutter{grid-column:1;display:flex;align-items:center;gap:6px}
 .nc-name{grid-column:2;display:flex;align-items:center;gap:9px;min-width:0}
-.nc-mesh{grid-column:3;min-width:0}
-.nc-cpu{grid-column:4;justify-self:end}
 .nc-peers{grid-column:2}
-.nc-ifaces{grid-column:3;min-width:0}
-.nc-thru{grid-column:4;justify-self:end}
-.nc-ctl{grid-column:5;flex:none}
-.nc-turn{grid-column:3 / 5;min-width:0}
+.nc-ifaces{grid-column:3;min-width:0}          /* interfaces hug peers (left) */
+.nc-turn{grid-column:3 / 7;min-width:0}         /* turn-proxies start by peers, room to the right */
+.nc-mesh{grid-column:5;min-width:0}             /* mesh hugs cpu (right) */
+.nc-cpu{grid-column:6;justify-self:end}
+.nc-thru{grid-column:6;justify-self:end}        /* aligns under cpu, with its label */
+.nc-ctl{grid-column:7;flex:none}
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
 .ncard:hover .nname{color:var(--brand)}
 /* CPU load lives at the right of the title row, reaching over the controls */
@@ -696,7 +698,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-thru .thru{display:flex;gap:16px}
 .nm-thru .down,.nm-thru .up{min-width:74px;white-space:nowrap;text-align:right}
 .nm-cpu{display:flex;align-items:center;gap:8px;min-width:0}
-.nm-cpu .hm-bar{width:150px;flex:none}
+.nm-cpu .hm-bar{width:210px;flex:none}
 /* reserve room for up to 333.33 and right-align, so the bar->value gap shrinks as the number grows */
 .nm-cpu .nm-v{flex:none;min-width:50px;text-align:right}
 /* controls: pinned to the right of the turn-proxies row */
