@@ -484,6 +484,20 @@ def load_turn_proxies():
             else:
                 tp.append({"service": svc, "listen": m["listen"], "connect": m["connect"],
                            "owner": m["owner"], "running": False, "installing": True})
+    with _TURN_JOBS_LOCK:                                   # async reinstall/update in flight → surface as "updating"
+        _active = {s for s, j in _TURN_JOBS.items() if not j.get("done")}
+        _fin = {s for s, j in _TURN_JOBS.items() if j.get("done")}
+        for s in [s for s in _fin if time.time() - _TURN_JOBS[s].get("at", 0) > 120]:
+            _TURN_JOBS.pop(s, None)                         # safety: don't leak a done job apply_turn never got to consume
+    for svc in _fin:
+        NODE_PROGRESS.pop(svc, None)                        # finished → drop the transient note (apply_turn reports the result)
+    for svc in _active:
+        NODE_PROGRESS[svc] = "updating…"
+        if not any(t.get("service") == svc for t in tp):
+            tp.append({"service": svc, "running": False, "installing": True})
+        for t in tp:
+            if t.get("service") == svc:
+                t["installing"] = True
     return tp
 
 _TURN_RUN = {"at": 0.0, "map": {}}
@@ -2185,6 +2199,36 @@ def _dturn_download(svc, owner):
         err = (r.stderr or "binary download failed").strip()[:160]
     return err
 
+def _dturn_force_download(svc, owner):
+    """Reinstall/update: fetch the fork binary FRESH and atomically swap it in — WITHOUT ever unlinking the live
+    shared file. A container bind-mounts this path (…:/turn-server); if it's momentarily missing when docker
+    (re)creates a container, docker creates a *directory* there and everything breaks. So: temp + os.replace only."""
+    arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+    binp = _turn_bin_local(svc)
+    try: os.makedirs(os.path.dirname(binp), exist_ok=True)
+    except OSError as e: return "mkdir: " + str(e)
+    tag = _turn_resolve_tag(owner)
+    if tag and os.path.isfile(binp):                     # a sibling instance of this fork already refreshed the
+        with contextlib.suppress(Exception):             # shared binary this round → reuse, don't re-download 22MB
+            with open(_turn_ver_path(svc)) as f:
+                if f.read().strip() == tag: return ""
+    tmp = binp + ".new." + _turn_inst(svc)
+    err = "binary download failed"
+    for url in _turn_dl_urls(owner, arch):
+        r = run(["curl", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
+                 "--retry-delay", "3", "--retry-all-errors", url, "-o", tmp], timeout=320)
+        if r.returncode == 0:
+            with contextlib.suppress(OSError): os.chmod(tmp, 0o755)
+            try: os.replace(tmp, binp)                   # atomic: the path is a valid file at every instant
+            except OSError as e:
+                with contextlib.suppress(OSError): os.remove(tmp)
+                return ("swap failed (is " + binp + " a directory? — docker bind-mount footgun): " + str(e))[:160]
+            _turn_write_version(svc, tag)                # record which release tag we just fetched
+            return ""
+        err = (r.stderr or "binary download failed").strip()[:160]
+    with contextlib.suppress(OSError): os.remove(tmp)
+    return err
+
 def _dturn_run(tp):   # (re)create the container to match tp; returns the docker-run CompletedProcess
     svc = tp["service"]; cn = _turn_cname(svc)
     run(["docker", "rm", "-f", cn], timeout=30)   # ignore errors (may not exist yet)
@@ -2282,6 +2326,35 @@ _TURN_INSTALLING = set()   # services whose container is being downloaded/(re)cr
 _TURN_FAILED = set()       # services whose last install/run attempt errored → "install failed" on the panel
 _TURN_ATTEMPTS = {}        # svc -> consecutive failed-download count; the bg reconcile STOPS retrying after
 TURN_MAX_ATTEMPTS = 4      # this many (so a stuck 502/timeout becomes "install failed", not an endless "installing"). A manual Reinstall resets it.
+# Async reinstall/update: the binary download + restart runs in a daemon thread so the sync loop STAYS RESPONSIVE
+# and keeps posting snapshots — the panel sees the proxy as "updating" for the whole download (a synchronous
+# reinstall blocks the loop, so the card can only jump pending→updated). apply_turn keeps the request in-flight
+# (no "done" reported → turn_pending stays) while the job runs, then reports the result once it finishes.
+_TURN_JOBS = {}            # svc -> {"done": bool, "err": str, "tp": dict, "at": ts}
+_TURN_JOBS_LOCK = threading.Lock()
+def _turn_job_launch(svc, tp, work):
+    """Run work() (returns an error string, "" == success) in a daemon thread; mark the job done when it returns."""
+    def _run():
+        err = ""
+        try:
+            err = work() or ""
+        except Exception as e:
+            err = str(e)[:140]
+        with _TURN_JOBS_LOCK:
+            if svc in _TURN_JOBS:
+                _TURN_JOBS[svc].update(done=True, err=err)
+    with _TURN_JOBS_LOCK:
+        _TURN_JOBS[svc] = {"done": False, "err": "", "tp": tp, "at": time.time()}
+    threading.Thread(target=_run, daemon=True).start()
+
+# Instances of the SAME fork share one binary (…/.bin/<fork>/server). Two reinstalls of that fork would race on the
+# shared download temp / removal → "server.new: No such file" and half-updated units. Serialise per fork so the
+# shared binary is refreshed by one job at a time; same-fork jobs simply queue (their cards stay "updating" while waiting).
+_TURN_FORK_LOCKS = {}
+_TURN_FORK_LOCKS_GUARD = threading.Lock()
+def _turn_fork_lock(fork):
+    with _TURN_FORK_LOCKS_GUARD:
+        return _TURN_FORK_LOCKS.setdefault(fork or "", threading.Lock())
 def _dturn_attach_running(tps):
     nowt = time.time()
     if nowt - _DTURN_RUN["at"] >= 15:
@@ -2504,28 +2577,35 @@ def apply_turn(turn, turn_onboard):
                     continue
                 if act == "delete":
                     _dturn_delete(svc, rec); rec.pop(svc, None); changed = True; good(svc, "del:" + svc); continue
-                if act == "reinstall":      # force a fresh binary (fix a failed download / update to latest) + (re)create
+                if act == "reinstall":      # force a fresh binary (fix a failed download / update to latest) + (re)create — ASYNC (see _TURN_JOBS)
+                    with _TURN_JOBS_LOCK: _job = dict(_TURN_JOBS.get(svc) or {})
+                    if _job and not _job.get("done"):
+                        continue                            # still downloading/recreating → keep it in-flight (card stays "updating")
+                    if _job and _job.get("done"):           # thread finished → report the result + clear the job
+                        with _TURN_JOBS_LOCK: _TURN_JOBS.pop(svc, None)
+                        NODE_PROGRESS.pop(svc, None); _TURN_INSTALLING.discard(svc)
+                        if _job.get("err"):
+                            _TURN_FAILED.add(svc); fail(svc, _job["err"])
+                        else:
+                            rec[svc] = _job.get("tp") or rec.get(svc); changed = True; _TURN_FAILED.discard(svc); good(svc, "rei:" + svc)
+                        continue
                     tp = rec.get(svc) or {"service": svc, "listen": req.get("listen", ""), "connect": req.get("connect", ""), "params": req.get("params", "")}
                     if req.get("owner"): tp["owner"] = req["owner"].strip()
                     if not tp.get("owner"):
                         fail(svc, "no owner repo for reinstall"); continue
                     _TURN_ATTEMPTS.pop(svc, None)   # manual retry → clear the give-up counter so the bg reconcile resumes if this one also fails
-                    with contextlib.suppress(OSError): os.remove(_turn_bin_local(svc))
-                    with contextlib.suppress(OSError): os.remove(_turn_bin_local_legacy(svc))   # so _dturn_download fetches fresh, doesn't re-migrate the stale one
-                    with contextlib.suppress(OSError): os.remove(_turn_ver_path(svc))
-                    derr = _dturn_download(svc, tp["owner"])
-                    if derr:
-                        _TURN_FAILED.add(svc); fail(svc, derr); continue
-                    r = _dturn_run(tp)
-                    if r.returncode != 0:
-                        _TURN_FAILED.add(svc); fail(svc, (r.stderr or "container start failed").strip()[:120]); continue
-                    rec[svc] = tp; changed = True
-                    verr = _dturn_verify(svc)
-                    if verr:
-                        _TURN_FAILED.add(svc); fail(svc, verr)
-                    else:
-                        _TURN_FAILED.discard(svc); good(svc, "rei:" + svc)
-                    continue
+                    _TURN_INSTALLING.add(svc)       # mark "installing/updating" for the docker card (attach_running keys off this set,
+                                                    # overriding load_turn_proxies' job flag) — cleared in the done handler below
+                    def _work(svc=svc, tp=tp):      # runs in a thread — download fresh + (re)create the container
+                        with _turn_fork_lock(_turn_fork(svc)):   # serialise same-fork refreshes; atomic-swap the shared binary
+                            with contextlib.suppress(OSError): os.remove(_turn_bin_local_legacy(svc))   # drop a stale pre-dedup copy
+                            derr = _dturn_force_download(svc, tp["owner"])
+                        if derr: return derr
+                        r = _dturn_run(tp)
+                        if r.returncode != 0: return (r.stderr or "container start failed").strip()[:120]
+                        return _dturn_verify(svc)
+                    _turn_job_launch(svc, tp, _work)
+                    continue                                 # in flight now — don't report done yet (card shows "updating")
                 if act == "title":            # cosmetic label only → update the record, DON'T touch the container
                     tp = rec.get(svc)
                     if not tp:
@@ -2586,7 +2666,15 @@ def apply_turn(turn, turn_onboard):
                 if w.returncode != 0:
                     fail(svc, (w.stderr or "remove failed").strip()[:120]); continue
                 rec.pop(svc, None); changed = True; good(svc, "del:" + svc); continue
-            if act == "reinstall":          # re-download the binary (fix/update) + restart the unit
+            if act == "reinstall":          # re-download the binary (fix/update) + restart the unit — ASYNC (see _TURN_JOBS)
+                with _TURN_JOBS_LOCK: _job = dict(_TURN_JOBS.get(svc) or {})
+                if _job and not _job.get("done"):
+                    continue                                 # download/restart running → keep in-flight (card "updating")
+                if _job and _job.get("done"):
+                    with _TURN_JOBS_LOCK: _TURN_JOBS.pop(svc, None)
+                    NODE_PROGRESS.pop(svc, None)
+                    fail(svc, _job["err"]) if _job.get("err") else good(svc, "rei:" + svc)
+                    continue
                 owner = (req.get("owner") or "").strip()
                 if not owner:               # fall back to the recorded repo.txt (shared fork dir, then pre-dedup per-instance)
                     for rp in (_turn_repo_path(svc), _turn_repo_path_legacy(svc)):
@@ -2601,20 +2689,22 @@ def apply_turn(turn, turn_onboard):
                 sbin = "/opt/vk-turn-proxy/.bin/" + fork + "/server"          # shared per-fork binary (a reinstall refreshes it for every instance of the fork)
                 binp = "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/server"    # this instance's symlink → the shared binary
                 tag = _turn_resolve_tag(owner); vp = _turn_ver_path(svc)
-                dl = " || ".join("curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "   # GitHub direct, then any SWG_TURN_MIRROR proxies
-                                 + shlex.quote(u) + " -o " + shlex.quote(sbin) for u in _turn_dl_urls(owner, arch))
-                cmd = ("mkdir -p " + shlex.quote(os.path.dirname(sbin)) + " " + shlex.quote(os.path.dirname(binp))
-                       + " && ( " + dl + " ) && chmod 755 " + shlex.quote(sbin)
+                tmp = sbin + ".new." + _turn_inst(svc)   # per-instance temp then atomically mv over the LIVE binary — curl -o onto a
+                dl = " || ".join("curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "   # running executable fails ETXTBSY ("Failure
+                                 + shlex.quote(u) + " -o " + shlex.quote(tmp) for u in _turn_dl_urls(owner, arch))          # writing output"); rename keeps the old
+                cmd = ("mkdir -p " + shlex.quote(os.path.dirname(sbin)) + " " + shlex.quote(os.path.dirname(binp))          # inode for the running proc until restart.
+                       + " && ( " + dl + " ) && chmod 755 " + shlex.quote(tmp) + " && mv -f " + shlex.quote(tmp) + " " + shlex.quote(sbin)
                        + " && ln -sfn " + shlex.quote("../.bin/" + fork + "/server") + " " + shlex.quote(binp)
                        + " && printf %s " + shlex.quote(owner) + " > " + shlex.quote(_turn_repo_path(svc)))
                 if tag:
                     cmd += " && printf %s " + shlex.quote(tag) + " > " + shlex.quote(vp) + " && chmod 644 " + shlex.quote(vp)
                 cmd += " && systemctl restart " + shlex.quote(svc)
-                w = host_sh(cmd, timeout=340)
-                if w.returncode != 0:
-                    fail(svc, (w.stderr or "reinstall failed").strip()[:140]); continue
-                verr = _turn_verify(svc)
-                fail(svc, verr) if verr else good(svc, "rei:" + svc)
+                def _work(cmd=cmd, svc=svc, fork=fork):    # runs in a thread; serialise same-fork refreshes on the shared binary
+                    with _turn_fork_lock(fork):
+                        w = host_sh(cmd, timeout=340)
+                    if w.returncode != 0: return (w.stderr or "reinstall failed").strip()[:140]
+                    return _turn_verify(svc)
+                _turn_job_launch(svc, rec.get(svc), _work)
                 continue
             if act == "title":                # cosmetic label only → update the record, DON'T restart the unit
                 tp = rec.get(svc)
@@ -2860,7 +2950,10 @@ def main():
                 print(f"sync HTTP {status}: {reply.get('error')}", flush=True)
         except Exception as e:
             print("loop error:", e, flush=True)
-        time.sleep(max(0.5, interval - (time.time() - t0)))
+        with _TURN_JOBS_LOCK:                       # while an async reinstall/update is in flight, sync fast so the
+            _busy = bool(_TURN_JOBS)                 # panel actually SEES the "updating" phase (else a sub-interval
+        _iv = 1.0 if _busy else interval            # download finishes entirely between two 5s posts → pending→updated)
+        time.sleep(max(0.5, _iv - (time.time() - t0)))
 
 
 if __name__ == "__main__":

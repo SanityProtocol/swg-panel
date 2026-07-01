@@ -468,15 +468,21 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   const k = node + "|" + tp.service;
   const justRestarted = !pend && turnRestarted[k] && Date.now() < turnRestarted[k];
   const updating = pend && turnUpdating[k] && Date.now() < turnUpdating[k];   // a pending reinstall triggered by an "Update" click
-  // in-flight label: a fresh install/reinstall reads "creating"; any other queued action (manage/rotate/…) or an
-  // Update-click reinstall reads its action word (manage → "applying") — even while the node is actively installing.
-  const pendLabel = updating ? "applying" : (pend && pend !== "install" && pend !== "reinstall") ? (TURN_PEND[pend] || "creating") : "creating";
+  // in-flight label: a fresh install/reinstall reads "creating"; any other queued action (manage/rotate/…) reads its
+  // action word. An Update-click reinstall walks pending (queued, node hasn't picked it up) → updating (node is
+  // actively downloading/recreating — signalled by the install marker or a live progress note).
+  const pendLabel = updating ? ((installing || prog) ? "updating" : "pending")
+    : (pend && pend !== "install" && pend !== "reinstall") ? (TURN_PEND[pend] || "creating") : "creating";
   const dim = converting || nodeStale(node) || (!justRestarted && (installing || queued || pend || failed || down || stopped || err));   // dim through the WHOLE 'creating' phase (installing/queued/assigned) like the pending card + attention states (failed/down/stopped/deleting) — only a settled/ready card is full-bright
   const _busy = !!(queued || installing || (pend && pend !== "delete"));   // any in-flight create / install / op
   const _bad = !!(failed || down || converting || stopped);
   const _settled = !!fronted && !_bad && !_busy;                           // up + healthy
-  if (turnWasInstalling[k] && !installing && !_bad) turnReady[k] = Date.now() + 5000;   // OPTIMISTIC: install just ended without failing → "ready" NOW (don't fall back to pending)
-  if (turnWasBusy[k] && _settled) turnReady[k] = Date.now() + 5000;        // settled to up after any in-flight state (covers no-install reuse: pending → up)
+  if (turnWasInstalling[k] && !installing && !_bad) turnReady[k] = Date.now() + 5000;   // OPTIMISTIC: install just ended without failing → "ready" NOW
+  if (turnWasBusy[k] && _settled) {                    // settled after any in-flight state
+    turnReady[k] = Date.now() + 5000;
+    if (turnWasUpd[k]) { turnUpdatedFlash[k] = Date.now() + 5000; delete turnUpdating[k]; }   // it was mid-Update → green "updated" (bare-metal reinstalls set no install marker, so key off the update flag itself)
+  }
+  turnWasUpd[k] = updating;   // remember for the next render's settle check
   turnWasInstalling[k] = !!installing;
   turnWasBusy[k] = _busy;
   const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
@@ -488,7 +494,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
       : pend === "delete"
       ? html`<${StatusTag} cls="tg-busy del" label="deleting…" msg=${err || prog} title=${err ? "Command failed on the node" : "Working on the node"}/><button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>`
       : installing ? html`<${StatusTag} cls=${"tg-busy" + (prog ? " warn" : "")} icon="clock" label=${pendLabel} msg=${prog} title="The node is setting it up right now"/>`
-      : turnReadyNow ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>`
+      : turnReadyNow ? html`<span class=${"tg " + ((turnUpdatedFlash[k] && Date.now() < turnUpdatedFlash[k]) ? "tg-ok" : "tg-ready")}><${Ic} i="check"/>${(turnUpdatedFlash[k] && Date.now() < turnUpdatedFlash[k]) ? "updated" : "ready"}</span>`
       : (pend || queued) ? html`<${StatusTag} cls="tg-busy" icon="clock" label=${pend ? pendLabel : "creating"} msg=${err} title=${pend ? "The node is setting it up" : "Queued — the node creates these one at a time"}/>${pend ? html`<button class="xbtn" title="Cancel this request" onClick=${e => { e.stopPropagation(); cancelTurn(node, { service: tp.service }); }}><${Ic} i="x"/></button>` : null}`
       : failed ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="install failed" msg=${err || "the install failed on the node"} title="Command failed on the node"/>`
       : justRestarted ? html`<span class="tg tg-ok"><${Ic} i="check"/>restarted</span>`
@@ -2408,6 +2414,8 @@ const _turnRestartPend = {};   // "node|service" currently mid-restart (last pol
 const turnRestarted = {};      // "node|service" -> expiry ts for the green flash
 const turnUpdating = {};        // "node|service" -> expiry ts; set on an "Update" click so the pending tag reads "updating" (not "installing")
 const turnReady = {};          // "node|service" -> expiry ts for the blue "ready" flash (5s after it settles → then no tag)
+const turnUpdatedFlash = {};   // "node|service" -> expiry ts: settle that FOLLOWED an Update click → green "updated" (not "ready")
+const turnWasUpd = {};         // "node|service" -> was this card update-in-flight last render (→ flash "updated" when it settles)
 const turnWasBusy = {};        // "node|service" -> was it pending/installing/op last render (settle → ready)
 const turnWasInstalling = {};  // "node|service" -> was it INSTALLING last render (install end → "ready" optimistically, never bounce to pending)
 const ifaceReady = {};         // "node|iface"   -> expiry ts for the green "ready" flash (5s after an interface comes up)
