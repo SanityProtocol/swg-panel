@@ -1257,6 +1257,7 @@ a.tg:hover{filter:brightness(1.25)}
 .urow.open{border-color:color-mix(in srgb,var(--brand) 42%,var(--line-solid));box-shadow:0 0 0 1px color-mix(in srgb,var(--brand) 18%,transparent)}
 .urow.open>.urow-head{background:color-mix(in srgb,var(--brand) 7%,transparent)}
 .editfoot{display:flex;align-items:center;gap:8px;margin-top:20px}
+.editfoot .grow{flex:1}
 /* deterministic tracks (no content-sized auto/fr-that-varies) so every row's columns line up vertically */
 .urow-head{display:grid;grid-template-columns:20px 92px minmax(180px,2.3fr) 140px 78px 150px 126px 102px;
   align-items:center;gap:12px;padding:10px 14px;cursor:pointer;transition:background .12s}

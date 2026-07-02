@@ -3037,7 +3037,13 @@ function openTurnConfigs(peer, t, conf, back) {
   <//>`);
 }
 function TurnConfigSheet({ peer, t, conf }) {
-  const tps = turnProxiesFor(t.node, t.iface);
+  // Show the turn-proxy THIS peer connects through — its observed `viaTurn` (from reconcile). Only when
+  // the peer isn't observed via any proxy (e.g. offline / just created) do we fall back to the interface's
+  // proxies so a config can still be generated.
+  const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
+  const all = turnProxiesFor(t.node, t.iface);
+  const own = lt.viaTurn ? all.filter(tp => tp.service === lt.viaTurn) : [];
+  const tps = own.length ? own : all;
   const vk = ((Store.panelSettings || {}).vk_link || "").trim();
   const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
   if (!tps.length) return html`<div class="hint">No turn-proxy forwards to this interface.</div>`;
