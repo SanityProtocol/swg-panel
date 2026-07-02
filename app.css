@@ -22,6 +22,14 @@
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;scrollbar-gutter:stable}   /* reserve the scrollbar space so the layout doesn't jump when one appears (e.g. a card re-render during a turn-proxy restart) */
+/* Thin, dark, arrow-less scrollbars everywhere (matches the inner containers like .targetpick) so the panel
+   looks the same in any browser — not the chunky classic bar some Chromium builds fall back to. */
+*{scrollbar-width:thin;scrollbar-color:var(--line-solid) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line-solid);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:var(--dim);background-clip:padding-box}
+::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}
+::-webkit-scrollbar-button{display:none;width:0;height:0}
 body{
   margin:0;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5;min-height:100vh;
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
