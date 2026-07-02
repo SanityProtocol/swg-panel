@@ -3180,7 +3180,8 @@ function TurnCfgItem({ conf, tp, vk, base, back }) {
   return html`<div class="turncfg-item">
     <div class="turncfg-head"><span class="tcf-label">${a.label}</span></div>
     ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
-    ${a.cmd ? html`<div class="tokenbox" style="margin-bottom:6px">${a.cmd}</div>` : null}
+    ${a.cmd ? html`<div class="turncfg-cmd"><div class="tokenbox">${a.cmd}</div>
+      <button class="cmd-copy" title="Copy command" onClick=${() => copy(a.cmd, "Command copied")}><${Ic} i="copy"/></button></div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
       : html`<textarea class="turncfg-ta" readonly spellcheck="false" ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
     <div class="turncfg-foot">
