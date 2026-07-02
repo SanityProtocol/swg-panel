@@ -944,6 +944,8 @@ function dismissHostProc() {   // optimistic
 }
 function Badge({ s, title }) {
   const ic = STATUS_ICON[s];
+  // online → a glowing animated dot in the status colour (green), not a check — matches the turn badge
+  if (s === "online") return html`<span class="badge b-online" title=${title || ""}><span class="sdot"></span>online</span>`;
   return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
 }
 
@@ -974,26 +976,24 @@ function turnProxyTitle(node, service) {
   const tp = ((Store.stats[node] || {}).turn_proxies || []).find(x => x && x.service === service);
   return (tp && tp.title) || "";
 }
-// The interface badge for one peer-grid row (protocol + iface name). A peer ONLINE through a turn-proxy shows
-// the badge in the turn-proxy's fork colour with a glowing dot before it, and a "Connected via <fork> <title>"
-// hover bubble (the fork as a coloured tag, the operator's proxy title after it when set).
+// The interface badge for one peer-grid row (protocol + iface name).
 function gridIfaceTag(t) {
   const kind = (t.type || "").toLowerCase() === "awg" ? "awg" : "wg";
-  if (t.online && t.viaTurn) {
-    const tn = turnLabel(t.viaTurn), tc = turnColor(tn), title = turnProxyTitle(t.node, t.viaTurn);
-    return html`<span class="turnwrap"><span class="turndot" style=${"--tfc:" + tc}></span><${Tag} kind="iface" label=${t.iface} color=${tc}/>
-      <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${title ? html` <b class="turnbub-t">${title}</b>` : null}</span></span>`;
-  }
   return html`<${Tag} kind=${kind} label=${t.iface} muted=${!t.online}/>`;
 }
-// Standalone "turn" tag for the status cell — used when the grid hides the interface column (a single
-// interface is selected, or the interface-detail grid) so the turn-connected badge would otherwise be lost.
-// Same glowing dot + "Connected via <fork> <title>" bubble as gridIfaceTag, but labelled "turn".
-function gridTurnTag(t) {
-  if (!(t.online && t.viaTurn)) return null;
-  const tn = turnLabel(t.viaTurn), tc = turnColor(tn), title = turnProxyTitle(t.node, t.viaTurn);
-  return html`<span class="turnwrap"><span class="turndot" style=${"--tfc:" + tc}></span><${Tag} kind="iface" label="turn" color=${tc}/>
-    <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${title ? html` <b class="turnbub-t">${title}</b>` : null}</span></span>`;
+// Status badge for a peer-grid row. A peer ONLINE through a turn-proxy takes the fork colour on its status
+// badge with a glowing animated dot, plus a "Connected via <fork> <title>" hover bubble — consistent in
+// every grid regardless of which columns are shown. Otherwise the normal Badge.
+function gridStatusBadge(t, p) {
+  const st = t.status || p.status;
+  const title = (t.down ? "interface " + t.iface + " is down — " + t.down : p.reason) || "";
+  if (t.online && t.viaTurn) {
+    const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
+    return html`<span class="turnwrap">
+      <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${st}</span>
+      <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
+  }
+  return html`<${Badge} s=${st} title=${title}/>`;
 }
 // rate cell, green when traffic is flowing
 // Throughput display perspective (Panel settings): node-reported rx/tx is from the NODE's view (rx=down,
@@ -1004,6 +1004,12 @@ const dlul = (rx, tx) => ((Store.panelSettings || {}).throughput_perspective ===
 function rateCell(rx, tx) {
   const live = (rx || 0) + (tx || 0) > 0; const [d, u] = dlul(rx, tx);
   return html`<span class=${"ratecell" + (live ? " live" : "")}>↓ ${rate(d)} <span class="up">↑ ${rate(u)}</span></span>`;
+}
+// cumulative transfer cell — same down/up colours as rateCell (green ↓ / blue ↑ once anything moved). Takes
+// already perspective-adjusted down/up byte totals.
+function xferCell(db, ub) {
+  const has = (db || 0) + (ub || 0) > 0;
+  return html`<span class=${"addr xfer" + (has ? " live" : "")}>↓ ${fmtBytes(db)} <span class="up">↑ ${fmtBytes(ub)}</span></span>`;
 }
 
 // "+N" pill listing a peer's other deployments. Hover OR click opens a bubble (click pins it for
@@ -2817,16 +2823,15 @@ function StoreOffBanner() {
 // drives the "+N other deployments" badge; row click opens the peer-view popup.
 function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc }) {
   return html`<div class="tablewrap"><table class="peergrid">
-    <thead><tr><th>Status</th>${loc ? html`<th>Server</th>` : (agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null)}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
+    <thead><tr><th>Status</th>${loc ? html`<th>Server</th>` : (agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null)}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th><th>Last</th><th class="h-rate">Rate ↓↑</th><th class="h-total">Total ↓↑</th><th></th></tr></thead>
     <tbody>
       ${rows.length ? rows.map(({ p, t }) => {
         const obs = t.observed;
         const u = p.user_id ? Store.user(p.user_id) : null;
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
-        const ifaceShown = loc || (agg && iface === "*");   // the location column is rendering the interface badge
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
-          <td data-label="Status"><span class="stcell"><${Badge} s=${t.status || p.status} title=${(t.down ? "interface " + t.iface + " is down — " + t.down : p.reason) || ""}/>${ifaceShown ? null : gridTurnTag(t)}</span></td>
+          <td data-label="Status">${gridStatusBadge(t, p)}</td>
           ${loc ? html`<td data-label="Server"><div class="srvcell">
             <span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
             ${gridIfaceTag(t)}
@@ -2842,7 +2847,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
           <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
           <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
           <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
-          <td data-label="Total"><span class="addr xfer">↓ ${fmtBytes(dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0)[0])} <span class="up">↑ ${fmtBytes(dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0)[1])}</span></span></td>
+          <td data-label="Total">${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</td>
           <td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
             <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>
             <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit peer"} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
@@ -3261,7 +3266,7 @@ function UserRow({ user }) {
       <span class="u-peers"><span>${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>${user.peerCount ? html`<span class="u-sub2">${user.onlineCount} online</span>` : null}</span>
       <span class="u-last"><span class="u-lbl">Online</span>${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
       <span class="u-thru"><span class="u-lbl">Rate</span>${rateCell(st.rx, st.tx)}</span>
-      <span class="u-total"><span class="u-lbl">Total</span><span class="addr xfer">↓ ${fmtBytes(db)} <span class="up">↑ ${fmtBytes(ub)}</span></span></span>
+      <span class="u-total"><span class="u-lbl">Total</span>${xferCell(db, ub)}</span>
       <span class="u-acts" onClick=${e => e.stopPropagation()}>
         <button class="iconbtn" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
         <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>

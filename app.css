@@ -834,12 +834,14 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-turn{color:var(--tfc,#B49BF7);background:color-mix(in srgb,var(--tfc,#A78BF5) 17%,transparent)}
 /* "Connected via <proxy>" hover bubble on a turn-proxied interface badge */
 .turnwrap{position:relative;display:inline-flex;align-items:center;gap:5px}
-/* glowing turn-proxy dot before a turn-connected peer's interface badge (fork colour) */
-.turndot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--tfc,var(--brand));box-shadow:0 0 6px var(--tfc,var(--brand)),0 0 2px var(--tfc,var(--brand))}
 .turnbub-t{color:var(--ink);font-weight:600}
-/* status cell: status badge + optional "turn" tag (shown when the grid hides the interface column) */
-.stcell{display:inline-flex;align-items:center;gap:7px}
-.turnbub{position:absolute;top:calc(100% + 7px);left:50%;transform:translateX(-50%);white-space:nowrap;
+/* turn-connected status badge: fork colour + a glowing animated dot in place of the normal status dot */
+.badge.b-turn{background:color-mix(in srgb,var(--tfc) 13%,transparent);color:var(--tfc);border-color:color-mix(in srgb,var(--tfc) 32%,transparent)}
+/* online + turn badges use a glowing animated dot (.sdot, in the badge's own colour) instead of the ::before dot / check */
+.badge.b-online::before,.badge.b-turn::before{display:none}
+.badge .sdot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;animation:sdotpulse 1.6s ease-in-out infinite}
+@keyframes sdotpulse{0%,100%{box-shadow:0 0 5px currentColor,0 0 2px currentColor;opacity:1}50%{box-shadow:0 0 9px currentColor,0 0 3px currentColor;opacity:.7}}
+.turnbub{position:absolute;top:calc(100% + 7px);left:0;white-space:nowrap;
   background:var(--surface-2);border:1px solid var(--line-solid);border-radius:8px;padding:6px 9px;font-size:11px;
   color:var(--dim);display:none;align-items:center;gap:6px;z-index:40;box-shadow:0 6px 22px rgba(0,0,0,.45);text-transform:none;letter-spacing:0}
 .turnwrap:hover .turnbub{display:inline-flex}
@@ -1288,8 +1290,10 @@ a.tg:hover{filter:brightness(1.25)}
 .editfoot{display:flex;align-items:center;gap:8px;margin-top:20px}
 .editfoot .grow{flex:1}
 /* deterministic tracks (no content-sized auto/fr-that-varies) so every row's columns line up vertically */
-.urow-head{display:grid;grid-template-columns:20px 92px minmax(180px,2.3fr) 140px 78px 150px 126px 102px;
+.urow-head{display:grid;grid-template-columns:20px 92px minmax(180px,2.3fr) 140px 78px 150px 144px 143px;
   align-items:center;gap:12px;padding:10px 14px;cursor:pointer;transition:background .12s}
+/* rate/total right-align so their values sit directly above the (right-aligned) peer-grid Rate/Total columns */
+.u-thru,.u-total{align-items:flex-end;text-align:right}
 .urow-head:hover{background:var(--surface-2)}
 .u-exp{display:flex;color:var(--faint);transition:transform .16s}
 .u-exp svg{width:14px;height:14px}
@@ -1384,8 +1388,13 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .notice .ic{color:var(--ready);flex:none}
 
 /* ───── peers grid ───── */
-.peergrid .xfer{font-size:11.5px;color:var(--dim);white-space:nowrap} .peergrid .xfer .up{color:var(--ready)}
+/* cumulative transfer — SAME colours as the rate cell: faint when nothing moved, green ↓ / blue ↑ once it has */
+.xfer{font-family:var(--mono);color:var(--faint);white-space:nowrap} .xfer .up{opacity:.7}
+.xfer.live{color:var(--online)} .xfer.live .up{color:var(--ready);opacity:1}
+.peergrid .xfer{font-size:11.5px}
 .peergrid td[data-label="Rate"],.peergrid td[data-label="Total"],.peergrid th{white-space:nowrap}   /* keep 4-digit rates (1023 MB/s) on one line */
+/* Rate/Total are numeric — right-align header + values so the header text ends right above where the values end */
+.peergrid th.h-rate,.peergrid th.h-total,.peergrid td[data-label="Rate"],.peergrid td[data-label="Total"]{text-align:right}
 .peergrid td.rowacts{text-align:right;white-space:nowrap}
 /* a long title / user name must not widen the table past its wrap (which clips the row actions): truncate
    with … (fits the common case) and let the wrap scroll-x as a safety net so the actions are NEVER clipped. */
@@ -1425,6 +1434,7 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .onlinetag.bare,.onlinetag.bare:hover,.onlinetag.bare.on{background:none;box-shadow:none;padding:0;margin:0;display:inline-flex;align-items:center;gap:7px}
 .onlinetag.nm-peerpop{display:inline-flex;align-items:baseline;gap:8px}
 .oncount.on{color:var(--online)}   /* first number green when any peer is online */
+.ifc-conn .oncount{font-size:12px}   /* turn-card connection count — match the interface-card "Peers N/M" size (.ifrow is 12px) */
 .onlpop{min-width:210px;max-height:50vh;overflow:auto}
 .onlpop .onpop-h{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:4px 8px 6px;text-decoration:none}
 .onlpop a.onpop-h:hover{color:var(--brand)}
