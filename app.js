@@ -2823,7 +2823,7 @@ function StoreOffBanner() {
 // drives the "+N other deployments" badge; row click opens the peer-view popup.
 function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc }) {
   return html`<div class="tablewrap"><table class="peergrid">
-    <thead><tr><th>Status</th>${loc ? html`<th>Server</th>` : (agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null)}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th><th>Last</th><th class="h-rate">Rate ↓↑</th><th class="h-total">Total ↓↑</th><th></th></tr></thead>
+    <thead><tr><th>Status</th>${loc ? html`<th>Server</th>` : (agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null)}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th><th class="h-online">Online</th><th class="h-rate">Rate ↓↑</th><th class="h-total">Total ↓↑</th><th class="h-acts"></th></tr></thead>
     <tbody>
       ${rows.length ? rows.map(({ p, t }) => {
         const obs = t.observed;
@@ -2845,7 +2845,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
                 : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>`}
           <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
           <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
-          <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
+          <td data-label="Online" class="c-online"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
           <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
           <td data-label="Total">${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</td>
           <td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
@@ -4968,8 +4968,8 @@ function PeerViewSheet({ pid, node, iface }) {
           <span><span class="k">Interface</span> ${t.iface}</span>
           <span><span class="k">Address</span> <span class="addr">${t.ip || "—"}</span></span>
           <span><span class="k">Rate</span> ${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</span>
-          <span><span class="k">Total</span> <span class="addr">↓ ${fmtBytes(dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0)[0])} ↑ ${fmtBytes(dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0)[1])}</span></span>
-          <span><span class="k">Last</span> ${seen(obs ? obs.handshake_age : null)}</span>
+          <span><span class="k">Total</span> ${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</span>
+          <span><span class="k">Online</span> ${seen(obs ? obs.handshake_age : null)}</span>
         </div></div>`;
     })}</div>
   <//>`;

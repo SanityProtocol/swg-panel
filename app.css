@@ -1290,7 +1290,7 @@ a.tg:hover{filter:brightness(1.25)}
 .editfoot{display:flex;align-items:center;gap:8px;margin-top:20px}
 .editfoot .grow{flex:1}
 /* deterministic tracks (no content-sized auto/fr-that-varies) so every row's columns line up vertically */
-.urow-head{display:grid;grid-template-columns:20px 74px minmax(180px,2.3fr) 140px 78px 150px 144px 143px;
+.urow-head{display:grid;grid-template-columns:20px 74px minmax(180px,2.3fr) 140px 64px 150px 146px 115px;
   align-items:center;gap:12px;padding:10px 14px;cursor:pointer;transition:background .12s}
 /* rate/total right-align so their values sit directly above the (right-aligned) peer-grid Rate/Total columns */
 .u-thru,.u-total{align-items:flex-end;text-align:right}
@@ -1407,6 +1407,16 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 /* Rate/Total are numeric — right-align header + values so the header text ends right above where the values end */
 .peergrid th.h-rate,.peergrid th.h-total,.peergrid td[data-label="Rate"],.peergrid td[data-label="Total"]{text-align:right}
 .peergrid td.rowacts{text-align:right;white-space:nowrap}
+/* the user-EXPANDED peer grid uses a FIXED column layout so its Online/Rate/Total/actions columns sit at
+   stable, content-independent x-positions — the user-row header is aligned to exactly these widths so the
+   two line up vertically regardless of the data. (The standalone Peers screen stays auto-width.) */
+.urow-body .peergrid{table-layout:fixed}
+.urow-body .peergrid th:nth-child(1){width:108px}   /* Status */
+.urow-body .peergrid th:nth-child(4){width:138px}   /* Address */
+.urow-body .peergrid th.h-online{width:86px}
+.urow-body .peergrid th.h-rate{width:168px}
+.urow-body .peergrid th.h-total{width:158px}
+.urow-body .peergrid th.h-acts{width:112px}
 /* a long title / user name must not widen the table past its wrap (which clips the row actions): truncate
    with … (fits the common case) and let the wrap scroll-x as a safety net so the actions are NEVER clipped. */
 .tablewrap:has(>table.peergrid){overflow-x:auto;overflow-y:hidden}
