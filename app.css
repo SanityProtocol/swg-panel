@@ -961,6 +961,13 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tf-color::-webkit-color-swatch{border:none;border-radius:4px}
 .tf-color::-moz-color-swatch{border:none;border-radius:4px}
 .cllist.dimmed{opacity:.5;pointer-events:none}
+.vklink-in{width:100%;max-width:560px}
+/* turn-proxy client configs modal */
+.turncfg{display:flex;flex-direction:column;gap:16px}
+.turncfg-item{display:flex;flex-direction:column;gap:4px}
+.turncfg-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.turncfg-ta{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--ink);
+  background:var(--surface-2);border:1px solid var(--line-solid);border-radius:8px;padding:9px 11px;resize:vertical;white-space:pre;overflow:auto}
 .turnhead{display:flex;align-items:center;gap:10px}
 .turnhead .grow{flex:1}
 /* on/off switch */

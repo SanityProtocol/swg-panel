@@ -232,6 +232,49 @@ function downloadConf(text, base) {
   a.download = base.replace(/[^\w.-]+/g, "_").replace(/\.(conf|txt)$/i, "") + ".conf"; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+function downloadNamed(text, filename) {   // download with an explicit filename+extension (turn artifacts: .conf or .txt)
+  const blob = new Blob([text], { type: "application/octet-stream" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = filename.replace(/[^\w.-]+/g, "_"); a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// Build the client-import artifact for a peer deployed BEHIND a turn-proxy, matching the DEPLOYED fork
+// (see the fork research). kiper292 → annotated WG .conf; anton48 → vkturnproxy:// link; every other
+// (sidecar) fork → a WG .conf pointed at the local client on :9000 + the client command to run alongside.
+function turnArtifact(baseConf, tp, vkLink) {
+  const fork = turnFork(tp.service);
+  const listen = tp.listen || "";
+  const vk = (vkLink || "").trim() || "<PASTE VK CALL LINK>";
+  const cf = parseFullConf(baseConf);
+  if (fork === "kiper292") {
+    const block = ["", "#@wgt:EnableTURN = true", "#@wgt:UseUDP = false", "#@wgt:IPPort = " + listen,
+      "#@wgt:VKLink = " + vk, "#@wgt:Mode = vk_link", "#@wgt:PeerType = proxy_v2",
+      "#@wgt:StreamNum = 4", "#@wgt:LocalPort = 9000", "#@wgt:StreamsPerCred = 4"].join("\n");
+    return { fork, label: "kiper292 · WireGuard-TURN (Android)", ext: "conf",
+      hint: "Import this .conf into the kiper292 WireGuard-TURN app — the TURN settings ride along as #@wgt: comments (Endpoint stays the real server).",
+      text: baseConf.replace(/\s*$/, "") + "\n" + block + "\n" };
+  }
+  if (fork === "anton48") {
+    const s = { privateKey: cf.privkey, peerPublicKey: cf.server_pubkey, presharedKey: cf.psk,
+      tunnelAddress: cf.address, dnsServers: cf.dns || [], peerAddress: listen, vkLink: vk,
+      numConnections: 10, useUDP: true, useDTLS: false, useSrtp: !tp.wrap_key,
+      useWrap: !!tp.wrap_key, useWrapA: false, wrapKeyHex: tp.wrap_key || "" };
+    const uri = "vkturnproxy://import?data=" + btoa(JSON.stringify({ settings: s, type: "connection", version: 1 }));
+    return { fork, label: "anton48 · VK TURN Proxy (iOS)", ext: "txt", uri: true,
+      hint: "Open this link on the iPhone (or the app's Settings → Import from connection link) to import into the anton48 app.",
+      text: uri };
+  }
+  // sidecar forks (WINGS-N / cacggghp / samosvalishe / Moroka8 / unknown): WG dials the local client on :9000
+  let sidecar = baseConf.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 127.0.0.1:9000");
+  sidecar = /^[ \t]*MTU[ \t]*=/m.test(sidecar) ? sidecar.replace(/^([ \t]*MTU[ \t]*=).*$/m, "$1 1280")
+    : sidecar.replace(/^([ \t]*Address[ \t]*=.*)$/m, "$1\nMTU = 1280");
+  const flags = tp.wrap_key ? (" -wrap-key " + tp.wrap_key) : "";
+  return { fork, label: fork + " · sidecar client", ext: "conf",
+    hint: "This fork runs a separate client binary. Import this .conf into WireGuard, then run the fork's client alongside it:",
+    cmd: "./client -listen 127.0.0.1:9000 -peer " + listen + " -vk-link " + vk + flags,
+    text: sidecar };
+}
 
 // ───────────────────────── QR ─────────────────────────
 function qrDataURL(text, targetPx) {
@@ -2986,6 +3029,36 @@ function openPeerConfigs(peer, back) {
 function openUserEdit(user) {
   openModal(html`<${Sheet} title=${"Edit · " + user.name}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
 }
+// Turn-proxy client configs for one deployment — one section per turn-proxy on the interface, generated
+// on the fly for the DEPLOYED fork. `conf` is the base WG config (needs the private key, so session/stored).
+function openTurnConfigs(peer, t, conf, back) {
+  openModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} onClose=${back || closeModal}>
+    <${TurnConfigSheet} peer=${peer} t=${t} conf=${conf}/>
+  <//>`);
+}
+function TurnConfigSheet({ peer, t, conf }) {
+  const tps = turnProxiesFor(t.node, t.iface);
+  const vk = ((Store.panelSettings || {}).vk_link || "").trim();
+  const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
+  if (!tps.length) return html`<div class="hint">No turn-proxy forwards to this interface.</div>`;
+  return html`<div class="turncfg">
+    ${!vk ? html`<div class="notice warn"><${Ic} i="warn"/><span>No VK call link set — configs carry a placeholder. Set it in <a href="#/panel/settings" onClick=${() => closeAllModals()}>Panel settings → Turn proxies</a>.</span></div>` : null}
+    ${tps.map(tp => {
+      const a = turnArtifact(conf, tp, vk);
+      return html`<div class="turncfg-item" key=${tp.service}>
+        <div class="turncfg-head">
+          <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(tp.service))}>${turnFork(tp.service)}</span>
+          <span class="faint">${a.label} · ${tp.listen || "—"}</span><span class="grow"></span>
+          <button class="btn btn-mini" onClick=${() => copy(a.text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
+          <button class="btn btn-mini" onClick=${() => downloadNamed(a.text, base + "-" + a.fork + "." + a.ext)}><${Ic} i="download"/> Download</button>
+        </div>
+        ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
+        ${a.cmd ? html`<div class="tokenbox" style="margin-bottom:6px">${a.cmd}</div>` : null}
+        <textarea class="turncfg-ta" readonly spellcheck="false" rows=${Math.min(16, Math.max(3, a.text.split("\n").length + 1))} onClick=${e => e.target.select()}>${a.text}</textarea>
+      </div>`;
+    })}
+  </div>`;
+}
 
 // One user as a collapsible row: status · name · tag · note · peers · last · rate · total · controls.
 // Click the row to expand its peers (the shared EmbeddedPeers grid); click again to collapse.
@@ -3181,6 +3254,7 @@ function TargetCard({ peer, t, bare }) {
     ${conf ? html`<div class="acts">
       <button class="btn btn-mini" onClick=${() => downloadConf(conf, (peer.name || "peer") + "-" + dnode)}><${Ic} i="download"/> Config</button>
       <button class="btn btn-mini" onClick=${() => copy(conf, "Config copied")}><${Ic} i="copy"/> Copy</button>
+      ${tps.length ? html`<button class="btn btn-mini" title="Generate turn-proxy client configs" onClick=${() => openTurnConfigs(peer, t, conf)}><${Ic} i="relay"/> Turn</button>` : null}
     </div>` : null}
   </div>`;
 }
@@ -3711,6 +3785,7 @@ function PanelSettingsScreen() {
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "anton48"]));   // forks offered in the install picker
   const [forkColors, setForkColors] = useState({ ...Object.fromEntries(TURN_FORKS.map(f => [f.id, f.color])), ...(ps.turn_fork_colors || {}) });   // per-fork colour (override or default)
+  const [vkLinkS, setVkLinkS] = useState(ps.vk_link || "");   // VK/Yandex call link baked into generated turn-proxy client configs
   const forkColorOverrides = () => Object.fromEntries(TURN_FORKS.filter(f => (forkColors[f.id] || "").toLowerCase() !== f.color.toLowerCase()).map(f => [f.id, forkColors[f.id]]));
   // deployed version(s) of a fork across the fleet (from snapshots) — "" if it's never been installed
   const forkVersions = fid => { const v = new Set(); for (const snap of Object.values(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version); return [...v]; };
@@ -3811,6 +3886,7 @@ function PanelSettingsScreen() {
         turn_enabled: turnEnabledS,
         enabled_turn_forks: [...turnForks],
         turn_fork_colors: forkColorOverrides(),
+        vk_link: vkLinkS.trim(),
       });
       if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
     }
@@ -3847,7 +3923,7 @@ function PanelSettingsScreen() {
     const out = [];
     if (glDirty("routing")) out.push("Routing lists — built-in / custom");
     if (secChanged()) out.push("Authentication — panel credentials");
-    if (glDirty("turn")) out.push("Turn proxies — install picker");
+    if (glDirty("turn")) out.push("Turn proxies — forks / colours / VK link");
     if (glDirty("geo")) out.push("Geo data");
     if (glDirty("defaults")) out.push("Interface defaults");
     if (glDirty("configs")) out.push("Client configs → " + (sc === "off" ? "off" : "on"));
@@ -3919,7 +3995,7 @@ function PanelSettingsScreen() {
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
-    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(ps.turn_fork_colors || {})) :
+    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(ps.turn_fork_colors || {}) || vkLinkS.trim() !== (ps.vk_link || "")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (geoMir.trim() !== (mir.geo || "") || turnMir.trim() !== (mir.turn || "") || ttlD !== String(adv.geo_ttl_days || 3)) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25)) :
@@ -4003,6 +4079,9 @@ function PanelSettingsScreen() {
             <span class="grow"></span>
             <a class="tf-repo" href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" title=${"Open " + f.owner + " on GitHub"}>${f.owner}</a>
           </div>`)}</div>
+          <div class="seclabel" style="margin-top:18px">VK / Yandex call link</div>
+          <p class="hint" style="margin:0 0 8px">Baked into the client configs a peer's <b>Turn</b> button generates — it's the call the turn-proxy relays through. Leave blank to emit a <span class="mono">&lt;PASTE VK CALL LINK&gt;</span> placeholder.</p>
+          <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/… or https://telemost.yandex.ru/j/…"/>
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>
