@@ -239,6 +239,59 @@ function downloadNamed(text, filename) {   // download with an explicit filename
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+// ── wingsv:// link (WINGS V app) ── the payload is raw protobuf, NOT JSON:
+// wingsv:// + base64url( 0x12 ‖ zlib( proto.Marshal(wingsv.Config) ) ). We hand-serialize the Config
+// message (buildless — no protobuf lib) and use the browser's CompressionStream('deflate'), which emits
+// the RFC1950 zlib stream Go's zlib.NewWriter produces. Schema: WINGS-N/wingsv-proto/wingsv.proto.
+function _pbVarint(n) { const o = []; let v = Math.floor(n); while (v > 127) { o.push((v % 128) | 0x80); v = Math.floor(v / 128); } o.push(v & 0x7f); return o; }
+function _pbKey(f, w) { return _pbVarint((f << 3) | w); }
+function _pbLen(f, arr) { return [..._pbKey(f, 2), ..._pbVarint(arr.length), ...arr]; }          // length-delimited (string / bytes / message)
+function _pbVar(f, n) { return [..._pbKey(f, 0), ..._pbVarint(n)]; }                              // varint (uint / bool / enum)
+function _pbStr(f, s) { return _pbLen(f, [...new TextEncoder().encode(String(s))]); }
+function _pbBin(f, u8) { return _pbLen(f, [...u8]); }
+function _b64ToBytes(b64) { try { const s = atob(String(b64 || "").trim()); const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; } catch (_) { return new Uint8Array(0); } }
+function _hexToBytes(h) { h = String(h || "").replace(/[^0-9a-fA-F]/g, ""); const a = new Uint8Array(h.length >> 1); for (let i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16); return a; }
+function _ipToBytes(addr) {
+  addr = String(addr || "").trim();
+  if (addr.includes(":")) {                                        // IPv6 (handles :: expansion)
+    const [head, tail] = addr.split("::");
+    const h = head ? head.split(":").filter(Boolean) : [], t = tail ? tail.split(":").filter(Boolean) : [];
+    const groups = addr.includes("::") ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t] : addr.split(":");
+    const b = new Uint8Array(16); groups.slice(0, 8).forEach((g, i) => { const v = parseInt(g || "0", 16) || 0; b[i * 2] = v >> 8; b[i * 2 + 1] = v & 0xff; }); return b;
+  }
+  const p = addr.split("."); const b = new Uint8Array(4); for (let i = 0; i < 4; i++) b[i] = (+p[i]) || 0; return b;
+}
+function _epBytes(hostport) { const s = String(hostport || ""); const i = s.lastIndexOf(":"); if (i < 0) return null; return [..._pbStr(1, s.slice(0, i)), ..._pbVar(2, +s.slice(i + 1) || 0)]; }
+function _wingsvConfigBytes(cf, tp, vk) {
+  const iface = [..._pbBin(1, _b64ToBytes(cf.privkey))];
+  (cf.address || "").split(",").map(s => s.trim()).filter(Boolean).forEach(a => iface.push(..._pbStr(2, a)));
+  (cf.dns || []).forEach(d => iface.push(..._pbStr(3, d)));
+  if (cf.mtu) iface.push(..._pbVar(4, +cf.mtu || 1280));
+  const peer = [..._pbBin(1, _b64ToBytes(cf.server_pubkey))];
+  if (cf.psk) peer.push(..._pbBin(2, _b64ToBytes(cf.psk)));
+  (cf.allowed || "").split(",").map(s => s.trim()).filter(Boolean).forEach(c => {
+    const [a, pfx] = c.split("/");
+    peer.push(..._pbLen(3, [..._pbBin(1, _ipToBytes(a)), ..._pbVar(2, pfx != null ? +pfx : (a.includes(":") ? 128 : 32))]));
+  });
+  const wg = [..._pbLen(1, iface), ..._pbLen(2, peer)];
+  const wgEp = _epBytes(cf.endpoint); if (wgEp) wg.push(..._pbLen(3, wgEp));
+  const turn = [..._pbStr(2, vk)];                                 // link
+  const lep = _epBytes(tp.listen); if (lep) turn.push(..._pbLen(6, lep));   // local_endpoint = proxy listen
+  turn.push(..._pbVar(4, 1));                                      // use_udp = true
+  turn.push(..._pbVar(18, 1));                                     // tunnel_mode = WIREGUARD
+  if (tp.wrap_key) { turn.push(..._pbVar(19, 2), ..._pbBin(20, _hexToBytes(tp.wrap_key))); }   // wrap_mode = PREFERRED + key
+  return new Uint8Array([..._pbVar(1, 1), ..._pbVar(2, 4), ..._pbLen(3, turn), ..._pbLen(4, wg), ..._pbVar(5, 7)]);   // ver=1, type=ALL, turn, wg, backend=VK_TURN
+}
+async function wingsvLink(baseConf, tp, vk) {
+  if (typeof CompressionStream === "undefined") throw new Error("this browser can't build a wingsv:// link (no CompressionStream) — copy the fields into the WINGS V app manually");
+  const proto = _wingsvConfigBytes(parseFullConf(baseConf), tp, (vk || "").trim() || "<PASTE VK CALL LINK>");
+  const cs = new CompressionStream("deflate"); const w = cs.writable.getWriter(); w.write(proto); w.close();
+  const comp = new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  const payload = new Uint8Array(1 + comp.length); payload[0] = 0x12; payload.set(comp, 1);
+  let s = ""; for (const b of payload) s += String.fromCharCode(b);
+  return "wingsv://" + btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 // Build the client-import artifact for a peer deployed BEHIND a turn-proxy, matching the DEPLOYED fork.
 // kiper292 → annotated WG .conf; anton48 → vkturnproxy:// link; every other (sidecar) fork → a WG .conf
 // pointed at the local client on :9000 + the client command to run alongside.
@@ -251,11 +304,18 @@ function downloadNamed(text, filename) {   // download with an explicit filename
 //   • samosvalishe freeturn://  JSON "v": 1   (migrated to base64url(json) at v1.2.0; obf codecs evolve)
 //   • kiper292  #@wgt: comments, PeerType is SERVER-COUPLED — proxy_v2 = kiper292 v2 server (what a
 //     "kiper292" proxy IS), proxy_v1 = cacggghp server. We key off the deployed fork, so proxy_v2 is right.
+//   • WINGS-N   wingsv:// = 0x12 ‖ zlib(protobuf Config); hand-encoded (see wingsvLink). Config.ver = 1.
+// A descriptor may carry `text` (ready) OR `buildAsync` (a promise, e.g. wingsv:// needs zlib).
 function turnArtifact(baseConf, tp, vkLink) {
   const fork = turnFork(tp.service);
   const listen = tp.listen || "";
   const vk = (vkLink || "").trim() || "<PASTE VK CALL LINK>";
   const cf = parseFullConf(baseConf);
+  if (fork === "WINGS-N") {
+    return { fork, label: "WINGS-N · WINGS V (wingsv:// link)", ext: "txt", uri: true,
+      hint: "Import this wingsv:// link into the WINGS V app (paste it, or its Settings → import from link).",
+      buildAsync: () => wingsvLink(baseConf, tp, vk) };
+  }
   if (fork === "kiper292") {
     const block = ["", "#@wgt:EnableTURN = true", "#@wgt:UseUDP = false", "#@wgt:IPPort = " + listen,
       "#@wgt:VKLink = " + vk, "#@wgt:Mode = vk_link", "#@wgt:PeerType = proxy_v2",
@@ -1122,9 +1182,9 @@ async function assignPeerToUser(peer, userId) {
 async function rotatePeerKeys(peer) {
   const key = "peer:" + peer.id;
   Store.rotating[peer.id] = Date.now();   // grid shows "rotating" until the new key is live
-  let keys, configs;
+  let keys, psk, configs;
   try {
-    keys = await genKeys(); configs = {};
+    keys = await genKeys(); psk = genPSK(); configs = {};   // rotate BOTH the keypair and the PSK
     for (const t of peer.targets) {
       const m = Store.ifaceMeta(t.node, t.iface);
       if (!m) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: Store.nodeName(t.node) + " hasn't reported " + t.iface + " yet", at: Date.now() }; Store.apply(); return; }
@@ -1132,12 +1192,12 @@ async function rotatePeerKeys(peer) {
       const s = cur ? parseFullConf(cur) : null;
       configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: (t.ip || "").split("/")[0] + "/32",
         dns: s ? s.dns : m.dns, mtu: s ? s.mtu : 1280, awg_params: m.awg_params, server_pubkey: m.public_key,
-        psk: peer.psk, endpoint: m.endpoint, allowed: s ? s.allowed : "0.0.0.0/0, ::/0", keepalive: s ? s.keepalive : 25 });
+        psk, endpoint: m.endpoint, allowed: s ? s.allowed : "0.0.0.0/0, ::/0", keepalive: s ? s.keepalive : 25 });
     }
   } catch (e) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
   await mutate({
     key,
-    call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk: peer.psk, configs }),
+    call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk, configs }),
     onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; },
   });
 }
@@ -3058,20 +3118,33 @@ function TurnConfigSheet({ peer, t, conf }) {
   if (!tps.length) return html`<div class="hint">No turn-proxy forwards to this interface.</div>`;
   return html`<div class="turncfg">
     ${!vk ? html`<div class="notice warn"><${Ic} i="warn"/><span>No VK call link set — configs carry a placeholder. Set it in <a href="#/panel/settings" onClick=${() => closeAllModals()}>Panel settings → Turn proxies</a>.</span></div>` : null}
-    ${tps.map(tp => {
-      const a = turnArtifact(conf, tp, vk);
-      return html`<div class="turncfg-item" key=${tp.service}>
-        <div class="turncfg-head">
-          <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(tp.service))}>${turnFork(tp.service)}</span>
-          <span class="faint">${a.label} · ${tp.listen || "—"}</span><span class="grow"></span>
-          <button class="btn btn-mini" onClick=${() => copy(a.text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
-          <button class="btn btn-mini" onClick=${() => downloadNamed(a.text, base + "-" + a.fork + "." + a.ext)}><${Ic} i="download"/> Download</button>
-        </div>
-        ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
-        ${a.cmd ? html`<div class="tokenbox" style="margin-bottom:6px">${a.cmd}</div>` : null}
-        <textarea class="turncfg-ta" readonly spellcheck="false" rows=${Math.min(16, Math.max(3, a.text.split("\n").length + 1))} onClick=${e => e.target.select()}>${a.text}</textarea>
-      </div>`;
-    })}
+    ${tps.map(tp => html`<${TurnCfgItem} key=${tp.service} conf=${conf} tp=${tp} vk=${vk} base=${base}/>`)}
+  </div>`;
+}
+// One turn-proxy's client artifact. Sync forks fill `text`; wingsv:// fills `buildAsync` (needs zlib), so
+// we resolve it in an effect and show "generating…" until ready (or an error if the browser can't zlib).
+function TurnCfgItem({ conf, tp, vk, base }) {
+  const a = turnArtifact(conf, tp, vk);
+  const [text, setText] = useState(a.text != null ? a.text : null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    if (a.text != null) { setText(a.text); return; }
+    let ok = true; setText(null); setErr(null);
+    Promise.resolve().then(a.buildAsync).then(t => { if (ok) setText(t); }).catch(e => { if (ok) setErr((e && e.message) || "couldn't generate"); });
+    return () => { ok = false; };
+  }, [tp.service, conf, vk]);
+  const ready = text != null;
+  return html`<div class="turncfg-item">
+    <div class="turncfg-head">
+      <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(tp.service))}>${turnFork(tp.service)}</span>
+      <span class="faint">${a.label} · ${tp.listen || "—"}</span><span class="grow"></span>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadNamed(text, base + "-" + a.fork + "." + a.ext)}><${Ic} i="download"/> Download</button>
+    </div>
+    ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
+    ${a.cmd ? html`<div class="tokenbox" style="margin-bottom:6px">${a.cmd}</div>` : null}
+    ${err ? html`<div class="hint err">${err}</div>`
+      : html`<textarea class="turncfg-ta" readonly spellcheck="false" rows=${ready ? Math.min(16, Math.max(3, text.split("\n").length + 1)) : 3} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
   </div>`;
 }
 
@@ -4581,7 +4654,6 @@ function openCreatePeer(prefill) { openModal(html`<${CreatePeerSheet} prefill=${
 function CreatePeerSheet({ prefill }) {
   const [chosen, setChosen] = useState([]);
   const [title, setTitle] = useState("");
-  const [psk, setPsk] = useState(genPSK());
   const cf = useConfigFields();
   const [userId, setUserId] = useState(prefill.user_id || "");
   const [msg, setMsg] = useState(null);
@@ -4594,12 +4666,10 @@ function CreatePeerSheet({ prefill }) {
     if (!cf.mtuTouched.current && m.mtu) cf.setMtu(String(m.mtu));
   }, [chosen]);
 
-  const pskBad = psk.trim() && !V.psk(psk);
   const validate = () => {
     if (!chosen.length) return "Pick at least one target.";
     const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
     if (badIp) return "Invalid address for " + Store.nodeName(badIp.node) + "/" + badIp.iface + ".";
-    if (pskBad) return "Preshared key must be 44-char base64 (or blank to auto-generate).";
     const ce = configErrors(cf); const k = Object.keys(ce)[0];
     if (k) return ce[k];
     return null;
@@ -4611,7 +4681,7 @@ function CreatePeerSheet({ prefill }) {
     let keys, pskV, tgts, configs, body;
     try {                                            // browser-side crypto/config build is the only awaited part
       keys = await genKeys();
-      pskV = psk.trim() || genPSK();
+      pskV = genPSK();   // PSK is panel-owned & auto-minted; change it via a peer's Rotate keys
       const dnsArr = cf.dns.split(",").map(s => s.trim()).filter(Boolean);
       tgts = []; configs = {};
       for (const t of chosen) {
@@ -4648,7 +4718,6 @@ function CreatePeerSheet({ prefill }) {
       <input value=${title} onInput=${e => setTitle(e.target.value)} maxlength="64" placeholder="iPhone, Router, Laptop…"/></div>
     <div class="field"><label>Targets <span class="faint" style="text-transform:none;letter-spacing:0">— one, or several for redundancy (same key)</span></label>
       <${TargetPicker} prefill=${prefill} onChange=${setChosen}/></div>
-    <div class="field"><label>Preshared key</label><div class="inline"><input class=${pskBad ? "bad" : ""} value=${psk} onInput=${e => setPsk(e.target.value)}/><button class="btn btn-ghost" title="Regenerate" onClick=${() => { setPsk(genPSK()); toast("New preshared key.", "info", 1500); }}>↻</button></div>${pskBad ? html`<div class="hint err">Must be 44-char base64, or blank to auto-generate.</div>` : null}</div>
     <${AdvancedFields} st=${cf}/>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -4890,7 +4959,7 @@ function EditPeerSheet({ peer, focus, done, flash }) {
   const rotate = () => {
     openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true,
       back: () => openEditPeer(peer, focus, done),   // cancel/esc returns to the edit modal
-      body: "A new keypair is generated (the PSK is kept). The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
+      body: "A fresh keypair and preshared key are generated. The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
       onConfirm: () => {
         // the user did the action they came for → return to the previous screen; report the result via a toast.
         done();
