@@ -1478,6 +1478,9 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .uc-input:focus{outline:none;border-color:var(--brand)}
 .uc-list{position:absolute;z-index:40;top:calc(100% + 4px);left:0;min-width:200px;max-height:260px;overflow:auto;
   background:var(--raise);border:1px solid var(--line-solid);border-radius:9px;box-shadow:var(--shadow);padding:4px}
+/* portaled to <body> and anchored to the input (position:fixed) so the list is never clipped by a grid/table
+   overflow:hidden; z-index above modals so it works inside a Sheet too */
+.uc-list.uc-pop{position:fixed;z-index:90}
 .uc-opt{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;color:var(--ink);cursor:pointer;
   padding:6px 8px;border-radius:6px;font:inherit;font-size:13px;text-align:left}
 .uc-opt:hover{background:var(--surface-2)}

@@ -1277,18 +1277,40 @@ function confirmDeletePeer(peer, back) {
 }
 
 // A type-to-filter user picker (the "assign to" control for unassigned peers).
+// Anchored-dropdown positioning: a fixed-position list at the trigger's rect so it escapes a grid/table's
+// overflow:hidden (and any stacking context) — the list is PORTALED to <body>. Returns refs + pos; the
+// caller renders <Portal> with the list and wires close-on-outside via the returned handlers.
+function useAnchoredList(open, setOpen, deps) {
+  const wrapRef = useRef(null), listRef = useRef(null);
+  const [pos, setPos] = useState(null);
+  const place = () => { const el = wrapRef.current; if (!el) return; const r = el.getBoundingClientRect();
+    setPos({ left: Math.round(r.left), top: Math.round(r.bottom + 4), width: Math.round(r.width) }); };
+  useEffect(() => {
+    if (!open) { setPos(null); return; }
+    place();
+    const onMove = () => place();
+    const onDoc = e => { const t = e.target;   // close when the click is outside BOTH the input and the portaled list
+      if (!((wrapRef.current && wrapRef.current.contains(t)) || (listRef.current && listRef.current.contains(t)))) setOpen(false); };
+    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
+    document.addEventListener("mousedown", onDoc, true);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
+  }, [open, ...(deps || [])]);
+  return { wrapRef, listRef, pos, popStyle: pos ? ("left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + pos.width + "px") : "" };
+}
 function UserCombo({ onPick, placeholder }) {
   const [q, setQ] = useState(""); const [open, setOpen] = useState(false);
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const ql = q.toLowerCase();
   const shown = users.filter(u => !ql || (u.name + " " + (u.tag || "")).toLowerCase().includes(ql)).slice(0, 8);
-  return html`<div class="usercombo" onfocusout=${e => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false); }}>
+  const { wrapRef, listRef, pos, popStyle } = useAnchoredList(open, setOpen, [q]);
+  const pick = uid => { setOpen(false); setQ(""); onPick(uid); };
+  return html`<div class="usercombo" ref=${wrapRef}>
     <input class="uc-input" value=${q} placeholder=${placeholder || "Assign to…"} onClick=${() => setOpen(true)}
       onInput=${e => { setQ(e.target.value); setOpen(true); }}
-      onKeyDown=${e => { if (e.key === "Enter" && shown.length === 1) { e.preventDefault(); setOpen(false); setQ(""); onPick(shown[0].id); } }}/>
-    ${open ? html`<div class="uc-list">${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id}
-      onClick=${() => { setOpen(false); setQ(""); onPick(u.id); }}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
-      : html`<div class="uc-empty">${users.length ? "no match" : "no users yet"}</div>`}</div>` : null}
+      onKeyDown=${e => { if (e.key === "Enter" && shown.length === 1) { e.preventDefault(); pick(shown[0].id); } else if (e.key === "Escape") setOpen(false); }}/>
+    ${open && pos ? html`<${Portal}><div class="uc-list uc-pop" ref=${listRef} style=${popStyle}>${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id}
+      onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
+      : html`<div class="uc-empty">${users.length ? "no match" : "no users yet"}</div>`}</div><//>` : null}
   </div>`;
 }
 
@@ -1301,17 +1323,18 @@ function UserPicker({ value, onChange, allowUnassigned, placeholder }) {
   const selText = sel ? sel.name + (sel.tag ? " · " + sel.tag : "") : "";
   const ql = q.toLowerCase();
   const shown = users.filter(u => !ql || (u.name + " " + (u.tag || "")).toLowerCase().includes(ql)).slice(0, 8);
+  const { wrapRef, listRef, pos, popStyle } = useAnchoredList(open, setOpen, [q]);
   const pick = uid => { setOpen(false); setQ(""); onChange(uid); };
-  return html`<div class="usercombo" onfocusout=${e => { if (!e.currentTarget.contains(e.relatedTarget)) { setOpen(false); setQ(""); } }}>
+  return html`<div class="usercombo" ref=${wrapRef}>
     <input class="uc-input" value=${open ? q : selText}
       placeholder=${placeholder || (allowUnassigned ? "— unassigned —" : "Assign to a user…")}
       onClick=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}
-      onKeyDown=${e => { if (e.key === "Enter" && open && q && shown.length === 1) { e.preventDefault(); pick(shown[0].id); } }}/>
-    ${open ? html`<div class="uc-list">
+      onKeyDown=${e => { if (e.key === "Enter" && open && q && shown.length === 1) { e.preventDefault(); pick(shown[0].id); } else if (e.key === "Escape") setOpen(false); }}/>
+    ${open && pos ? html`<${Portal}><div class="uc-list uc-pop" ref=${listRef} style=${popStyle}>
       ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">— unassigned —</span></button>` : null}
       ${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
         : html`<div class="uc-empty">${users.length ? "no match" : "no users yet"}</div>`}
-    </div>` : null}
+    </div><//>` : null}
   </div>`;
 }
 
