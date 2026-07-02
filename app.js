@@ -263,35 +263,45 @@ function _ipToBytes(addr) {
   const p = addr.split("."); const b = new Uint8Array(4); for (let i = 0; i < 4; i++) b[i] = (+p[i]) || 0; return b;
 }
 function _epBytes(hostport) { const s = String(hostport || ""); const i = s.lastIndexOf(":"); if (i < 0) return null; return [..._pbStr(1, s.slice(0, i)), ..._pbVar(2, +s.slice(i + 1) || 0)]; }
-function _wingsvConfigBytes(cf, tp, vk) {
-  const iface = [..._pbBin(1, _b64ToBytes(cf.privkey))];
-  (cf.address || "").split(",").map(s => s.trim()).filter(Boolean).forEach(a => iface.push(..._pbStr(2, a)));
-  (cf.dns || []).forEach(d => iface.push(..._pbStr(3, d)));
-  if (cf.mtu) iface.push(..._pbVar(4, +cf.mtu || 1280));
-  const peer = [..._pbBin(1, _b64ToBytes(cf.server_pubkey))];
-  if (cf.psk) peer.push(..._pbBin(2, _b64ToBytes(cf.psk)));
-  (cf.allowed || "").split(",").map(s => s.trim()).filter(Boolean).forEach(c => {
-    const [a, pfx] = c.split("/");
-    peer.push(..._pbLen(3, [..._pbBin(1, _ipToBytes(a)), ..._pbVar(2, pfx != null ? +pfx : (a.includes(":") ? 128 : 32))]));
-  });
-  // Sidecar model like the other configs: WG dials the LOCAL turn client on 127.0.0.1:9000; the turn engine
-  // reaches the PUBLIC proxy (Turn.endpoint = the proxy's internet ip:listen). Do NOT put the public addr in
-  // local_endpoint, and don't dial the real server directly from WG.
+function _wingsvConfigBytes(cf, tp, vk, rawConf) {
+  // Sidecar model like the other configs: the transport dials the LOCAL turn client on 127.0.0.1:9000; the
+  // turn engine reaches the PUBLIC proxy (Turn.endpoint = the proxy's internet ip:listen). Do NOT put the
+  // public addr in local_endpoint, and don't dial the real server directly.
   const LOCAL = "127.0.0.1:9000";
-  const wg = [..._pbLen(1, iface), ..._pbLen(2, peer), ..._pbLen(3, _epBytes(LOCAL))];   // wg.endpoint → local turn client
+  const isAwg = !!(cf.awg_params && Object.keys(cf.awg_params).length);   // AmneziaWG interface → ship an awg transport, not wg
   const pep = _epBytes(tp.listen);
   const turn = [];
   if (pep) turn.push(..._pbLen(1, pep));                           // endpoint = public proxy (internet ip:listen)
   turn.push(..._pbStr(2, vk));                                     // link
   turn.push(..._pbLen(6, _epBytes(LOCAL)));                        // local_endpoint = local turn listen (127.0.0.1:9000)
   turn.push(..._pbVar(4, 1));                                      // use_udp = true
-  turn.push(..._pbVar(18, 1));                                     // tunnel_mode = WIREGUARD
+  turn.push(..._pbVar(18, isAwg ? 2 : 1));                         // tunnel_mode = AMNEZIAWG : WIREGUARD (transport discriminator)
   if (tp.wrap_key) { turn.push(..._pbVar(19, 2), ..._pbBin(20, _hexToBytes(tp.wrap_key))); }   // wrap_mode = PREFERRED + key
-  return new Uint8Array([..._pbVar(1, 1), ..._pbVar(2, 4), ..._pbLen(3, turn), ..._pbLen(4, wg), ..._pbVar(5, 7)]);   // ver=1, type=ALL, turn, wg, backend=VK_TURN
+  // transport sub-message. AWG interfaces carry the full awg-quick config as a STRING in Config.awg (field 7);
+  // the WINGS V app parses it and overrides its Endpoint to the local turn client (AmneziaConfigFactory), so we
+  // still point it at LOCAL for self-consistency. WG interfaces use the binary WireGuard message (field 4).
+  let transport;
+  if (isAwg) {
+    const quick = String(rawConf || "").replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 " + LOCAL);
+    transport = _pbLen(7, _pbStr(1, quick));                       // Config.awg = AmneziaWG{ awg_quick_config }
+  } else {
+    const iface = [..._pbBin(1, _b64ToBytes(cf.privkey))];
+    (cf.address || "").split(",").map(s => s.trim()).filter(Boolean).forEach(a => iface.push(..._pbStr(2, a)));
+    (cf.dns || []).forEach(d => iface.push(..._pbStr(3, d)));
+    if (cf.mtu) iface.push(..._pbVar(4, +cf.mtu || 1280));
+    const peer = [..._pbBin(1, _b64ToBytes(cf.server_pubkey))];
+    if (cf.psk) peer.push(..._pbBin(2, _b64ToBytes(cf.psk)));
+    (cf.allowed || "").split(",").map(s => s.trim()).filter(Boolean).forEach(c => {
+      const [a, pfx] = c.split("/");
+      peer.push(..._pbLen(3, [..._pbBin(1, _ipToBytes(a)), ..._pbVar(2, pfx != null ? +pfx : (a.includes(":") ? 128 : 32))]));
+    });
+    transport = _pbLen(4, [..._pbLen(1, iface), ..._pbLen(2, peer), ..._pbLen(3, _epBytes(LOCAL))]);   // Config.wg (endpoint → local turn client)
+  }
+  return new Uint8Array([..._pbVar(1, 1), ..._pbVar(2, 4), ..._pbLen(3, turn), ...transport, ..._pbVar(5, 7)]);   // ver=1, type=ALL, turn, wg|awg, backend=VK_TURN
 }
 async function wingsvLink(baseConf, tp, vk) {
   if (typeof CompressionStream === "undefined") throw new Error("this browser can't build a wingsv:// link (no CompressionStream) — copy the fields into the WINGS V app manually");
-  const proto = _wingsvConfigBytes(parseFullConf(baseConf), tp, (vk || "").trim() || "<PASTE VK CALL LINK>");
+  const proto = _wingsvConfigBytes(parseFullConf(baseConf), tp, (vk || "").trim() || "<PASTE VK CALL LINK>", baseConf);
   const cs = new CompressionStream("deflate"); const w = cs.writable.getWriter(); w.write(proto); w.close();
   const comp = new Uint8Array(await new Response(cs.readable).arrayBuffer());
   const payload = new Uint8Array(1 + comp.length); payload[0] = 0x12; payload.set(comp, 1);
