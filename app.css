@@ -976,7 +976,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .turncfg-foot .grow{flex:1}
 .tcf-label{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
 .turncfg-cmd{position:relative;margin-bottom:6px}
-.turncfg-cmd .tokenbox{padding-bottom:30px}
+.turncfg-cmd .tokenbox{padding-bottom:30px;color:var(--dim)}
 .cmd-copy{position:absolute;right:7px;bottom:7px;width:26px;height:26px;border-radius:6px;border:1px solid var(--line-solid);
   background:var(--surface);color:var(--dim);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:all .12s}
 .cmd-copy:hover{color:var(--ink);border-color:var(--brand);background:var(--raise)}
