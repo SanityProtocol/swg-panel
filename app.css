@@ -1290,7 +1290,7 @@ a.tg:hover{filter:brightness(1.25)}
 .editfoot{display:flex;align-items:center;gap:8px;margin-top:20px}
 .editfoot .grow{flex:1}
 /* deterministic tracks (no content-sized auto/fr-that-varies) so every row's columns line up vertically */
-.urow-head{display:grid;grid-template-columns:20px 92px minmax(180px,2.3fr) 140px 78px 150px 144px 143px;
+.urow-head{display:grid;grid-template-columns:20px 74px minmax(180px,2.3fr) 140px 78px 150px 144px 143px;
   align-items:center;gap:12px;padding:10px 14px;cursor:pointer;transition:background .12s}
 /* rate/total right-align so their values sit directly above the (right-aligned) peer-grid Rate/Total columns */
 .u-thru,.u-total{align-items:flex-end;text-align:right}
@@ -1298,6 +1298,17 @@ a.tg:hover{filter:brightness(1.25)}
 .u-exp{display:flex;color:var(--faint);transition:transform .16s}
 .u-exp svg{width:14px;height:14px}
 .urow.open .u-exp{transform:rotate(90deg);color:var(--dim)}
+/* user-row status: bare node-style tag (dot + uppercase mono label), like the nodes list "reporting/offline"
+   but a touch smaller — NOT the pill Badge used inside the grids */
+.ustat{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;line-height:normal;white-space:nowrap;color:var(--unknown)}
+.ustat::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.ustat.s-online{color:var(--online)} .ustat.s-online::before{box-shadow:0 0 8px currentColor;animation:blink 2.6s infinite}
+.ustat.s-ready{color:var(--ready)}
+.ustat.s-partial{color:#F19AA4}
+.ustat.s-pending{color:var(--pending)}
+.ustat.s-creating,.ustat.s-rotating{color:var(--partial)}
+.ustat.s-dangling,.ustat.s-removing{color:var(--dangling)}
+.ustat.s-unknown,.ustat.s-empty{color:var(--unknown)}
 .u-name{display:flex;flex-direction:column;gap:1px;min-width:0;font-size:14px;font-weight:600}
 .u-nameline{display:flex;align-items:center;gap:8px;min-width:0}
 .u-nameline a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .u-nameline a:hover{color:var(--brand)}

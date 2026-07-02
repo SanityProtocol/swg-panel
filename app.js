@@ -3041,6 +3041,12 @@ const usersView = { q: "", page: 1, pageSize: 20, expanded: {} };   // expanded:
 const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20 };
 const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize } for the expanded grid
 
+// User-row status: a BARE tag (dot + uppercase mono label), same style as the node "reporting/offline"
+// status, just smaller — not the pill Badge used inside the grids.
+function userStatTag(user) {
+  const s = user.peerCount ? user.status : "empty";
+  return html`<span class=${"ustat s-" + s}>${s === "empty" ? "no peers" : s}</span>`;
+}
 // Combined live stats across ALL of a user's peers/targets — for the user row's rate/total/last columns.
 function userStats(uid) {
   let rx = 0, tx = 0, rxb = 0, txb = 0, last = null;
@@ -3261,7 +3267,7 @@ function UserRow({ user }) {
   return html`<div class=${"urow" + (expanded ? " open" : "")} id=${"urow-" + user.id}>
     <div class="urow-head" onClick=${toggle}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
-      <${Badge} s=${user.peerCount ? user.status : "empty"}/>
+      ${userStatTag(user)}
       <span class="u-name"><span class="u-nameline"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}</span>${user.note ? html`<span class="u-sub" title=${user.note}>${user.note}</span>` : null}</span>
       <span class="u-peers"><span>${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>${user.peerCount ? html`<span class="u-sub2">${user.onlineCount} online</span>` : null}</span>
       <span class="u-last"><span class="u-lbl">Online</span>${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
