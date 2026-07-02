@@ -239,9 +239,18 @@ function downloadNamed(text, filename) {   // download with an explicit filename
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-// Build the client-import artifact for a peer deployed BEHIND a turn-proxy, matching the DEPLOYED fork
-// (see the fork research). kiper292 → annotated WG .conf; anton48 → vkturnproxy:// link; every other
-// (sidecar) fork → a WG .conf pointed at the local client on :9000 + the client command to run alongside.
+// Build the client-import artifact for a peer deployed BEHIND a turn-proxy, matching the DEPLOYED fork.
+// kiper292 → annotated WG .conf; anton48 → vkturnproxy:// link; every other (sidecar) fork → a WG .conf
+// pointed at the local client on :9000 + the client command to run alongside.
+//
+// FORMAT SYNC (checked 2026-07: only anton48 ships an actual generator — quick_link.py, git-only, not a
+// release asset — so reimplementing the documented, versioned formats here is equivalent and simpler.
+// These are the schema versions we target; bump deliberately if a fork changes its format on a major
+// release (the update flow only pulls a newer server binary, it can't change these):
+//   • anton48   vkturnproxy:// JSON  "version": 1
+//   • samosvalishe freeturn://  JSON "v": 1   (migrated to base64url(json) at v1.2.0; obf codecs evolve)
+//   • kiper292  #@wgt: comments, PeerType is SERVER-COUPLED — proxy_v2 = kiper292 v2 server (what a
+//     "kiper292" proxy IS), proxy_v1 = cacggghp server. We key off the deployed fork, so proxy_v2 is right.
 function turnArtifact(baseConf, tp, vkLink) {
   const fork = turnFork(tp.service);
   const listen = tp.listen || "";
