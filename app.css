@@ -969,10 +969,6 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .swt input:checked~.knob{transform:translateX(15px);background:var(--brand)}
 /* header user-icon dropdown */
 .acct-wrap{position:relative;display:inline-flex}
-.acct-menu{position:absolute;top:calc(100% + 8px);right:0;min-width:152px;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:10px;padding:5px;z-index:60;box-shadow:0 10px 30px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:2px}
-.acct-menu[hidden]{display:none}
-.acct-menu-i{display:flex;align-items:center;gap:9px;width:100%;padding:8px 11px;background:none;border:0;border-radius:7px;color:var(--dim);font:inherit;font-size:13px;cursor:pointer;text-align:left}
-.acct-menu-i:hover{background:color-mix(in srgb,var(--ink) 6%,transparent);color:var(--ink)}
 @media (max-width:680px){.setbody{flex-direction:column}.setrail{flex-direction:row;flex-wrap:wrap;width:auto;position:static}}
 /* per-node context selector in the settings header (default + node badges) */
 .setnodes{position:absolute;top:14px;right:18px;z-index:2;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:62%}

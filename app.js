@@ -5091,8 +5091,7 @@ function App() {
       const htg = $("#hostproc-tag"); if (htg && Store.hostProcErr) htg.onclick = () => openConfirm({ title: PROC_LABEL[Store.hostProc] || Store.hostProc, log: Store.hostProcErr, confirmLabel: "Close" });
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
-    const acct = $("#acct-btn"); if (acct) acct.onclick = toggleAcctMenu;
-    const out = $("#acct-logout"); if (out) out.onclick = () => { closeAcctMenu(); doLogout(); };
+    const acct = $("#acct-btn"); if (acct) acct.onclick = () => doLogout();   // header logout icon → straight to the confirm
   });
 
   return html`<${Fragment}>
@@ -5130,22 +5129,6 @@ function doLogout() {
   openConfirm({ title: "Log out", confirmLabel: "Log out",
     body: "Are you sure you want to logout?",
     onConfirm: async () => { try { await api.logout(); } catch (_) {} location.reload(); } });
-}
-// header user-icon dropdown (just "Logout" for now) — toggled open, closes on outside-click / Esc
-function closeAcctMenu() {
-  const m = document.getElementById("acct-menu"); if (m) m.hidden = true;
-  const b = document.getElementById("acct-btn"); if (b) b.setAttribute("aria-expanded", "false");
-}
-function toggleAcctMenu(e) {
-  if (e) e.stopPropagation();
-  const m = document.getElementById("acct-menu"); if (!m) return;
-  const show = m.hidden; m.hidden = !show;
-  const b = document.getElementById("acct-btn"); if (b) b.setAttribute("aria-expanded", show ? "true" : "false");
-  if (!show) return;
-  const off = ev => { if (ev.type === "keydown" && ev.key !== "Escape") return;
-    if (ev.type === "click" && ev.target.closest(".acct-wrap")) return;
-    closeAcctMenu(); document.removeEventListener("click", off, true); document.removeEventListener("keydown", off, true); };
-  setTimeout(() => { document.addEventListener("click", off, true); document.addEventListener("keydown", off, true); }, 0);
 }
 // Account form as a modal (same chrome as the node sheets).
 function openAccount() { openModal(html`<${AccountSheet}/>`); }
