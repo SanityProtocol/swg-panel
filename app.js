@@ -2878,15 +2878,7 @@ function openUserEdit(user) {
 
 // One peer as a compact line inside a user group: identity + per-target tags + action icons.
 function PeerLine({ peer }) {
-  const single = peer.targets.length === 1;
   const flash = Store.recentlyCreated[peer.id] && Date.now() - Store.recentlyCreated[peer.id] < 3000;
-  const download = async () => {
-    if (!single) return openPeerConfigs(peer);
-    const t = peer.targets[0];
-    const c = await getConfig(peer.pubkey, t.node, t.iface);
-    if (c) downloadConf(c, (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node));
-    else toast(Store.storeConfigs ? "No stored config — re-issue this peer to enable download." : "Config is only available right after creation.", "err");
-  };
   return html`<div class=${"pline" + (flash ? " flash" : "")}>
     <div class="pl-main">
       <div class="pl-title">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr" title=${peer.pubkey}>${peer.pubkey.slice(0, 10)}…</span></div>
@@ -2896,9 +2888,7 @@ function PeerLine({ peer }) {
     <${Badge} s=${peer.status}/>
     <div class="pl-acts">
       <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(peer)}><${Ic} i="qr"/></button>
-      <button class="iconbtn" title="Download config" onClick=${download}><${Ic} i="download"/></button>
       <button class="iconbtn" title="Edit config" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/></button>
-      <button class="iconbtn" title="Manage targets — deploy to or remove from interfaces" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/></button>
       <button class="iconbtn danger" title="Unassign peer — revoke access" onClick=${() => confirmUnassign(peer)}><${Ic} i="link"/></button>
     </div>
     <${RowError} k=${"peer:" + peer.id}/>
