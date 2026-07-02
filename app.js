@@ -2650,9 +2650,9 @@ function StoreOffBanner() {
 // The shared peers grid — one row per (peer, target) deployment. Reused by the Peers screen and
 // the interface-detail screen so they're identical. `agg` adds the Server/IF column; `shownByPeer`
 // drives the "+N other deployments" badge; row click opens the peer-view popup.
-function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser }) {
+function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc }) {
   return html`<div class="tablewrap"><table class="peergrid">
-    <thead><tr><th>Status</th>${agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
+    <thead><tr><th>Status</th>${loc ? html`<th>Server</th>` : (agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null)}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
     <tbody>
       ${rows.length ? rows.map(({ p, t }) => {
         const obs = t.observed;
@@ -2660,7 +2660,11 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser })
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class="clk" onClick=${() => openPeerView(p.id, t.node, t.iface)}>
           <td data-label="Status"><${Badge} s=${t.status || p.status} title=${(t.down ? "interface " + t.iface + " is down — " + t.down : p.reason) || ""}/></td>
-          ${agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
+          ${loc ? html`<td data-label="Server"><div class="srvcell">
+            <span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
+            <${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>
+          </div></td>`
+          : agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
             ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
             ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
           </div></td>` : null}
@@ -2680,7 +2684,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser })
               : html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Unassign peer"} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
             <${RowError} k=${"peer:" + p.id}/>
           </td></tr>`;
-      }) : html`<tr><td colspan=${(agg ? 9 : 8) - (hideUser ? 1 : 0)} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
+      }) : html`<tr><td colspan=${((agg || loc) ? 9 : 8) - (hideUser ? 1 : 0)} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
     </tbody></table></div>`;
 }
 function PeersScreen() {
@@ -2891,7 +2895,7 @@ function userMatchesQ(u, q) {
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
 // unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
 // server / interface dropdown options are derived from the set itself (only servers/ifaces that have rows).
-function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar }) {
+function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse }) {
   const [, force] = useState(0);
   const bump = () => force(x => x + 1);
   const nodeSet = new Set(), ifByNode = {};
@@ -2912,17 +2916,29 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar }) 
   const q = (view.q || "").toLowerCase();
 
   let rows = [];
-  for (const p of peers) for (const t of p.targets) {
-    if (node !== "*" && t.node !== node) continue;
-    if (iface !== "*" && t.iface !== iface) continue;
-    rows.push({ p, t });
+  const shownByPeer = {};
+  if (collapse) {
+    // one row PER PEER (a representative deployment); the peer's other interfaces surface as a +N badge
+    for (const p of peers) {
+      const ts = p.targets.filter(t => (node === "*" || t.node === node) && (iface === "*" || t.iface === iface));
+      if (!ts.length) continue;
+      if (q && !((p.title || "") + " " + (p.name || "") + " " + p.targets.map(t => (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).join(" ")).toLowerCase().includes(q)) continue;
+      const rep = ts.slice().sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0))[0];   // prefer an online deployment
+      rows.push({ p, t: rep });
+      shownByPeer[p.id] = new Set([tkey(rep.node, rep.iface)]);   // only the rep is "shown" → the rest become +N
+    }
+  } else {
+    for (const p of peers) for (const t of p.targets) {
+      if (node !== "*" && t.node !== node) continue;
+      if (iface !== "*" && t.iface !== iface) continue;
+      rows.push({ p, t });
+    }
+    if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
+    for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
   }
-  if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
   rows.sort((a, b) => STATUS_RANK[a.t.status || a.p.status] - STATUS_RANK[b.t.status || b.p.status]
     || String(a.p.title || a.p.name).localeCompare(String(b.p.title || b.p.name))
     || Store.nodeName(a.t.node).localeCompare(Store.nodeName(b.t.node)));
-  const shownByPeer = {};
-  for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
 
   const pageSize = view.pageSize || 20;
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
@@ -2942,7 +2958,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar }) 
       </select>` : null}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || "New peer"}</button>` : null}
     </div>`}
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse}/>
     ${rows.length > pageSize ? html`<div class="pager">
       <label class="pager-size">Rows per page
         <select class="selwrap" value=${pageSize} onChange=${e => { view.pageSize = +e.target.value; view.page = 1; bump(); }}>
@@ -2988,8 +3004,7 @@ function UserRow({ user }) {
     <div class="urow-head" onClick=${toggle}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       <${Badge} s=${user.peerCount ? user.status : "empty"}/>
-      <span class="u-name"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.note ? html`<span class="u-sub" title=${user.note}>${user.note}</span>` : null}</span>
-      <span class="u-tag">${user.tag ? html`<span class="tagchip">${user.tag}</span>` : html`<span class="faint">—</span>`}</span>
+      <span class="u-name"><span class="u-nameline"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}</span>${user.note ? html`<span class="u-sub" title=${user.note}>${user.note}</span>` : null}</span>
       <span class="u-peers"><span>${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>${user.peerCount ? html`<span class="u-sub2">${user.onlineCount} online</span>` : null}</span>
       <span class="u-last"><span class="u-lbl">Online</span>${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
       <span class="u-thru"><span class="u-lbl">Rate</span>${rateCell(st.rx, st.tx)}</span>
@@ -3001,7 +3016,7 @@ function UserRow({ user }) {
       </span>
     </div>
     ${expanded ? html`<div class="urow-body">
-      ${user.peerCount ? html`<${EmbeddedPeers} peers=${Store.peersOfUser(user.id)} view=${view} hideUser=${true} hideToolbar=${true}/>`
+      ${user.peerCount ? html`<${EmbeddedPeers} peers=${Store.peersOfUser(user.id)} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true}/>`
         : html`<div class="ug-empty">No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.</div>`}
     </div>` : null}
     <${RowError} k=${"user:" + user.id}/>
@@ -3051,7 +3066,7 @@ function UsersScreen() {
 
     ${allUnassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">Unassigned peers</h2><span class="count">${unassigned.length}</span></div>
-      <${EmbeddedPeers} peers=${unassigned} view=${unassignedView}/>
+      <${EmbeddedPeers} peers=${unassigned} view=${unassignedView} collapse=${true}/>
     <//>` : null}
   </div>`;
 }
