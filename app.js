@@ -3075,18 +3075,28 @@ function userPageOf(uid) {
   const idx = users.findIndex(u => u.id === uid);
   return idx < 0 ? 1 : Math.floor(idx / (usersView.pageSize || 20)) + 1;
 }
-// after assigning / reassigning a peer TO a user: go to Users, land on that user's page, expand their row,
-// spark (glow) the just-assigned peer, and scroll it into view — so the admin sees exactly what happened.
-function revealAssignedPeer(userId, peerId) {
+// Land on the Users screen at the PAGE where `userId` sits, expand that user's row and scroll it into view.
+// Optionally glow a just-assigned peer's row (peerId). Shared by "click a username anywhere" and the assign
+// flow (when it started on the Users screen).
+function revealUser(userId, peerId) {
   if (!userId) return;
   usersView.q = ""; usersView.expanded[userId] = true;
   go("#/users");
-  setTimeout(() => {                          // after the mutate's poll + re-render settles
-    usersView.page = userPageOf(userId);
+  setTimeout(() => {                          // after the poll + re-render settles
+    usersView.page = userPageOf(userId);      // the page this user actually lands on (not always page 1)
     if (peerId) Store.recentlyCreated[peerId] = Date.now();   // 1.5s glow on the peer's row
     Store.apply();                            // re-render Users with the right page + expansion
     requestAnimationFrame(() => { const el = document.getElementById("urow-" + userId); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); });
   }, 240);
+}
+// after assigning a peer TO a user: glow the just-assigned peer's row wherever it is. If we're already on the
+// Users screen, ALSO reveal the user (their page + expand + scroll). But when the assignment came from the
+// Peers screen, a peer-view modal, or a node's interface, STAY on that screen (just the glow) — no jump to Users.
+function revealAssignedPeer(userId, peerId) {
+  if (!userId) return;
+  if (peerId) Store.recentlyCreated[peerId] = Date.now();   // glow the row on whatever screen shows it
+  if ((location.hash || "").startsWith("#/user")) revealUser(userId, peerId);   // already on Users → reveal
+  else Store.apply();                                       // assigned from Peers / a node interface → stay put
 }
 
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
@@ -3340,7 +3350,8 @@ function UsersScreen() {
 // just opens the Users screen with that user's row expanded. Kept so old links / bookmarks still work.
 function UserDetail({ id: rawId }) {
   const id = decodeURIComponent(rawId);
-  useEffect(() => { usersView.expanded[id] = true; usersView.q = ""; usersView.page = 1; go("#/users"); }, [id]);
+  // clicking a username anywhere lands here → reveal the user on the Users screen at their real page + expand
+  useEffect(() => { revealUser(id); }, [id]);
   return html`<div class="screen"><div class="empty">Opening…</div></div>`;
 }
 
