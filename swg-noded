@@ -827,7 +827,7 @@ def _smart_table():
     return _SMART_TABLE
 
 
-def _ensure_smart_nft(smart_e, categories, res, pin=False):
+def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
     """Phase 3 marking: keep an inet table `swg_smart` with one interval set per category (populated from
     shipped geo CIDR lists — see _smart_geo_refresh) and a prerouting chain that marks
     `ip saddr <S> ip daddr @cat_<c> meta mark set <T>`. Idempotent + drift-gated (flush+rebuild the chain
@@ -878,19 +878,28 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False):
     spec = [e for e in smart_e if e["category"] != "all"]
     allr = [e for e in smart_e if e["category"] == "all"]
     want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec + allr]
-    sig = hashlib.sha1((("pin;" if pin else "") + json.dumps(want)).encode()).hexdigest()[:16]
+    v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
+    sig = hashlib.sha1((("pin;" if pin else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|s2").encode()).hexdigest()[:16]   # s2: +QUIC drop (sni)
     _sigf = os.path.join(GEO_DIR, ".smart-sig")
     try:
         stored = open(_sigf).read().strip()
     except OSError:
         stored = ""
     chain_present = "prerouting" in re.findall(r"chain (\S+) {", body)
-    if stored != sig or not chain_present:                      # drift-gate on a signature of the whole ordered rule set
+    def _cbody(name):                                          # the rules inside one chain of our table (per-chain, so a full external flush is detected)
+        m = re.search(r"chain " + name + r" \{(.*?)\n\s*\}", body, re.S)
+        return m.group(1) if m else ""
+    expect_pre = pin or any(a != "direct" for (_, _, a, _) in want)   # exit/block rules + pin (queue/restore) all emit `ip saddr` prerouting rules
+    pre_ok = (not expect_pre) or ("saddr" in _cbody("prerouting"))
+    fwd_ok = (not v6f) or ("drop" in _cbody("forward"))
+    if stored != sig or not chain_present or not pre_ok or not fwd_ok:   # drift-gate: signature change, or a chain was emptied externally
+        stored = ""                                            # force the sig file to be rewritten below
         run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "prerouting"])
+        _ok = [True]                                            # a failed nft add must NOT persist the sig, so the rebuild retries next cycle
         def _add(*a):
             r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting", *a])
             if r.returncode != 0:
-                res["errors"].append("smart nft: " + (r.stderr or "").strip()[:120])
+                res["errors"].append("smart nft: " + (r.stderr or "").strip()[:120]); _ok[0] = False
             else:
                 res["changed"] += 1
         if pin:
@@ -898,6 +907,8 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False):
             # (dst=a local client) must stay unmarked so they route via the main table back out the user iface —
             # else the fwmark rule sends the return traffic to table 7000 (the mesh) and it never reaches the client.
             _add("ct", "direction", "original", "meta", "mark", "set", "ct", "mark")
+            for S in subnets:                                  # SNI can't parse the ENCRYPTED QUIC ClientHello → drop UDP/443 so HTTP/3 falls back to TCP (which swg-sni reads). No accuracy loss (TCP still routes by SNI/IP); just no HTTP/3 on smart ifaces.
+                _add("ip", "saddr", S, "udp", "dport", "443", "drop")
         _new = ["ct", "state", "new"] if pin else []           # pin: decide once per connection at ct state new
         for (S, cat, act, T) in want:
             if cat == "all":                                   # catch-all — no dest set, emitted last for its subnet
@@ -916,9 +927,23 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False):
         if pin:                                                 # feed each connection's first packets to swg-sni (learning), fail-open
             for S in subnets:
                 _add("ip", "saddr", S, "tcp", "dport", "443", "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
-        with contextlib.suppress(OSError):
-            os.makedirs(GEO_DIR, exist_ok=True)
-            open(_sigf, "w").write(sig)
+        # IPv6 fail-closed: the marking above is IPv4-only, so a dual-stack client's v6 traffic would bypass smart
+        # routing and leak out the entry node's WAN. DROP forwarded IPv6 on each smart interface (both directions).
+        chains_now = re.findall(r"chain (\S+) {", body)
+        if v6f:
+            if "forward" not in chains_now:
+                run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "forward", "{ type filter hook forward priority filter; policy accept; }"])
+            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "forward"])
+            for ifn in v6f:
+                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "iifname", ifn, "drop"])
+                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "oifname", ifn, "drop"])
+        elif "forward" in chains_now:
+            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "forward"])
+            run(["nft", "delete", "chain", "inet", SMART_NFT_TABLE, "forward"])
+        if _ok[0]:                                             # only stamp the sig when every rule landed → a transient nft failure retries next cycle
+            with contextlib.suppress(OSError):
+                os.makedirs(GEO_DIR, exist_ok=True)
+                open(_sigf, "w").write(sig)
     # drop sets we no longer want (a category was un-ticked, or 'ru' was split into 'ru_net'/'ru_blocked'): after the
     # chain rebuild above they're unreferenced, so delete them — else the stale set lingers with old IPs forever.
     wanted_sn = {_smart_setname(c) for c in cats if c != "all"}
@@ -1591,7 +1616,9 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     _ensure_fwd_iptables(fwd, exit_, _detect_wan(), res, default_egress_ip)
     # NFTABLES smart-routing marking (saddr+daddr@category → mark T) — drift-gated, packets stay in-kernel.
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e})
-    set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=(mode == "sni"))
+    _smart_subs = {e["subnet"] for e in smart_e}                # smart interfaces (by subnet) → IPv6 fail-closed drop
+    smart_ifs = sorted({ifn for ifn in (node_cfg.get("interfaces") or {}) if _iface_subnet(node_cfg, ifn) in _smart_subs}) if _smart_subs else []
+    set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=(mode == "sni"), v6_ifaces=smart_ifs)
     domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq-filled
     # GeoSite host tier: enrich each panel-shipped domain cat with the node-fetched upstream list (union), so the
     # curated bundle stays a guaranteed fallback. The union+sort of a ~100k-entry list is expensive to redo every

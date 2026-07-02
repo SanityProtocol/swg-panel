@@ -1788,6 +1788,14 @@ function RoutingRules({ node, rules, onChange }) {
   const addRule = () => emit([...dispRules, { _rid: newRid(), enabled: true, category: "custom", action: others[0] ? "exit" : "direct", node: (others[0] || {}).id || "" }]);
   const destVal = r => r.action === "exit" ? "exit|" + (r.node || "") : r.action;
   const onDest = (rid, v) => { const [a, n] = v.split("|"); setRule(rid, a === "exit" ? { action: "exit", node: n } : { action: a, node: "" }); };
+  // auto-mode: a domain rule can't match in kernel mode — offer a one-click switch of THIS node to Force-DNS instead of a dead-end
+  const switchToForceDns = async () => {
+    if (!confirm("Switch " + (_nrec ? _nrec.name : "this node") + " to Force-DNS mode?\n\nThis reprovisions the node (adds its DNS resolver) so domain rules can match. IP rules keep working. Save your rule changes afterwards.")) return;
+    const r = await api.nodeUpdate({ id: node, routing_mode: "forcedns" });
+    if (!r || !r.ok) return toast((r && r.error) || "Couldn't switch mode", "err");
+    await Store.poll();
+    toast("Switched to Force-DNS — domain rules now match. Save to apply.", "ok");
+  };
   const catchVal = !allRule ? "direct" : allRule.action === "exit" ? "exit|" + (allRule.node || "") : allRule.action;   // "exit|<n>" | "block" | "direct" (default = no stored catch-all)
   const setCatch = v => { const [a, n] = v.split("|");
     onChange(a === "exit" && n ? [...dispRules, { _rid: newRid(), enabled: true, category: "all", action: "exit", node: n }]
@@ -1819,7 +1827,7 @@ function RoutingRules({ node, rules, onChange }) {
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => emit(dispRules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
         ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
-        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder=${ipOnly ? "IPs / CIDRs only (Kernel mode) — e.g. 1.2.3.0/24, 5.6.7.8" : "IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com"} value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP${ipOnly ? " or CIDR" : " or domain"}</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : domToks.length ? html`<span class="rrlint">Kernel mode is IP-only — ${domToks.slice(0, 3).join(", ")}${domToks.length > 3 ? "…" : ""} ${domToks.length > 1 ? "are domains" : "is a domain"}. Use IPs/CIDRs, or switch this node to Force-DNS.</span>` : null}` : null}
+        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder=${ipOnly ? "IPs / CIDRs only (Kernel mode) — e.g. 1.2.3.0/24, 5.6.7.8" : "IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com"} value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP${ipOnly ? " or CIDR" : " or domain"}</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : domToks.length ? html`<span class="rrlint">Kernel mode is IP-only — ${domToks.slice(0, 3).join(", ")}${domToks.length > 3 ? "…" : ""} ${domToks.length > 1 ? "are domains" : "is a domain"}. Use IPs/CIDRs, or <button type="button" class="linkbtn" onClick=${switchToForceDns}>switch this node to Force-DNS</button>.</span>` : null}` : null}
       </div>`;
     })}</div>
     <div class="rrfoot">
