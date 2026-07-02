@@ -3106,45 +3106,51 @@ function openTurnConfigs(peer, t, conf, back) {
   <//>`);
 }
 function TurnConfigSheet({ peer, t, conf }) {
-  // Show the turn-proxy THIS peer connects through — its observed `viaTurn` (from reconcile). Only when
-  // the peer isn't observed via any proxy (e.g. offline / just created) do we fall back to the interface's
-  // proxies so a config can still be generated.
+  const [sel, setSel] = useState(0);
+  // The turn-proxies forwarding to this interface become selectable badges; the peer's own proxy (observed
+  // viaTurn) sorts first and is selected by default. Only the selected proxy's config is shown.
   const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
   const all = turnProxiesFor(t.node, t.iface);
-  const own = lt.viaTurn ? all.filter(tp => tp.service === lt.viaTurn) : [];
-  const tps = own.length ? own : all;
+  const tps = lt.viaTurn ? [...all].sort((a, b) => (b.service === lt.viaTurn ? 1 : 0) - (a.service === lt.viaTurn ? 1 : 0)) : all;
   const vk = ((Store.panelSettings || {}).vk_link || "").trim();
   const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
   if (!tps.length) return html`<div class="hint">No turn-proxy forwards to this interface.</div>`;
+  const i = Math.min(sel, tps.length - 1); const cur = tps[i];
+  // several proxies of the SAME fork → disambiguate the badges by listen port
+  const forkN = {}; tps.forEach(p => { const f = turnFork(p.service); forkN[f] = (forkN[f] || 0) + 1; });
+  const badge = p => { const f = turnFork(p.service); return forkN[f] > 1 ? f + " :" + portOf(p.listen) : f; };
   return html`<div class="turncfg">
+    ${tps.length > 1 ? html`<div class="turntabs">${tps.map((p, k) => html`<button key=${p.service}
+      class=${"snbadge turntab" + (k === i ? " on" : "")} style=${"--c:" + turnColor(turnFork(p.service))} onClick=${() => setSel(k)}>${badge(p)}</button>`)}</div>` : null}
     ${!vk ? html`<div class="notice warn"><${Ic} i="warn"/><span>No VK call link set — configs carry a placeholder. Set it in <a href="#/panel/settings" onClick=${() => closeAllModals()}>Panel settings → Turn proxies</a>.</span></div>` : null}
-    ${tps.map(tp => html`<${TurnCfgItem} key=${tp.service} conf=${conf} tp=${tp} vk=${vk} base=${base}/>`)}
+    <${TurnCfgItem} key=${cur.service} conf=${conf} tp=${cur} vk=${vk} base=${base}/>
   </div>`;
 }
 // One turn-proxy's client artifact. Sync forks fill `text`; wingsv:// fills `buildAsync` (needs zlib), so
-// we resolve it in an effect and show "generating…" until ready (or an error if the browser can't zlib).
+// we resolve it in an effect and show "generating…" until ready. Textarea wraps + auto-grows (no scroll).
 function TurnCfgItem({ conf, tp, vk, base }) {
   const a = turnArtifact(conf, tp, vk);
   const [text, setText] = useState(a.text != null ? a.text : null);
   const [err, setErr] = useState(null);
+  const taRef = useRef(null);
   useEffect(() => {
     if (a.text != null) { setText(a.text); return; }
     let ok = true; setText(null); setErr(null);
     Promise.resolve().then(a.buildAsync).then(t => { if (ok) setText(t); }).catch(e => { if (ok) setErr((e && e.message) || "couldn't generate"); });
     return () => { ok = false; };
   }, [tp.service, conf, vk]);
+  useEffect(() => { autoGrow(taRef.current); }, [text]);   // dynamic height to fit wrapped content, no scroll
   const ready = text != null;
   return html`<div class="turncfg-item">
     <div class="turncfg-head">
-      <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(tp.service))}>${turnFork(tp.service)}</span>
-      <span class="faint">${a.label} · ${tp.listen || "—"}</span><span class="grow"></span>
+      <span class="tcf-label">${a.label}</span><span class="grow"></span>
       <button class="btn btn-mini" disabled=${!ready} onClick=${() => copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
-      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadNamed(text, base + "-" + a.fork + "." + a.ext)}><${Ic} i="download"/> Download</button>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""))}><${Ic} i="download"/> Download .conf</button>
     </div>
     ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
     ${a.cmd ? html`<div class="tokenbox" style="margin-bottom:6px">${a.cmd}</div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
-      : html`<textarea class="turncfg-ta" readonly spellcheck="false" rows=${ready ? Math.min(16, Math.max(3, text.split("\n").length + 1)) : 3} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
+      : html`<textarea class="turncfg-ta" readonly spellcheck="false" ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
   </div>`;
 }
 
