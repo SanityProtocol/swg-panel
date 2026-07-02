@@ -126,6 +126,7 @@ function dur(sec) {
 
 const ICON = {
   arrow: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>',
+  back: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>',
   search: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>',
   copy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   pencil: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
@@ -273,10 +274,16 @@ function _wingsvConfigBytes(cf, tp, vk) {
     const [a, pfx] = c.split("/");
     peer.push(..._pbLen(3, [..._pbBin(1, _ipToBytes(a)), ..._pbVar(2, pfx != null ? +pfx : (a.includes(":") ? 128 : 32))]));
   });
-  const wg = [..._pbLen(1, iface), ..._pbLen(2, peer)];
-  const wgEp = _epBytes(cf.endpoint); if (wgEp) wg.push(..._pbLen(3, wgEp));
-  const turn = [..._pbStr(2, vk)];                                 // link
-  const lep = _epBytes(tp.listen); if (lep) turn.push(..._pbLen(6, lep));   // local_endpoint = proxy listen
+  // Sidecar model like the other configs: WG dials the LOCAL turn client on 127.0.0.1:9000; the turn engine
+  // reaches the PUBLIC proxy (Turn.endpoint = the proxy's internet ip:listen). Do NOT put the public addr in
+  // local_endpoint, and don't dial the real server directly from WG.
+  const LOCAL = "127.0.0.1:9000";
+  const wg = [..._pbLen(1, iface), ..._pbLen(2, peer), ..._pbLen(3, _epBytes(LOCAL))];   // wg.endpoint → local turn client
+  const pep = _epBytes(tp.listen);
+  const turn = [];
+  if (pep) turn.push(..._pbLen(1, pep));                           // endpoint = public proxy (internet ip:listen)
+  turn.push(..._pbStr(2, vk));                                     // link
+  turn.push(..._pbLen(6, _epBytes(LOCAL)));                        // local_endpoint = local turn listen (127.0.0.1:9000)
   turn.push(..._pbVar(4, 1));                                      // use_udp = true
   turn.push(..._pbVar(18, 1));                                     // tunnel_mode = WIREGUARD
   if (tp.wrap_key) { turn.push(..._pbVar(19, 2), ..._pbBin(20, _hexToBytes(tp.wrap_key))); }   // wrap_mode = PREFERRED + key
@@ -1171,7 +1178,7 @@ async function assignPeerToUser(peer, userId) {
   await mutate({
     key,
     call: () => api.peerRekey({ peer_id: peer.id, user_id: userId, pubkey: keys.pub, psk, configs }),
-    onOk: () => { Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; },
+    onOk: () => { Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; revealAssignedPeer(userId, peer.id); },
   });
 }
 
@@ -1228,7 +1235,8 @@ function UserCombo({ onPick, placeholder }) {
   const shown = users.filter(u => !ql || (u.name + " " + (u.tag || "")).toLowerCase().includes(ql)).slice(0, 8);
   return html`<div class="usercombo" onfocusout=${e => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false); }}>
     <input class="uc-input" value=${q} placeholder=${placeholder || "Assign to…"} onClick=${() => setOpen(true)}
-      onInput=${e => { setQ(e.target.value); setOpen(true); }}/>
+      onInput=${e => { setQ(e.target.value); setOpen(true); }}
+      onKeyDown=${e => { if (e.key === "Enter" && shown.length === 1) { e.preventDefault(); setOpen(false); setQ(""); onPick(shown[0].id); } }}/>
     ${open ? html`<div class="uc-list">${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id}
       onClick=${() => { setOpen(false); setQ(""); onPick(u.id); }}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
       : html`<div class="uc-empty">${users.length ? "no match" : "no users yet"}</div>`}</div>` : null}
@@ -1248,7 +1256,8 @@ function UserPicker({ value, onChange, allowUnassigned, placeholder }) {
   return html`<div class="usercombo" onfocusout=${e => { if (!e.currentTarget.contains(e.relatedTarget)) { setOpen(false); setQ(""); } }}>
     <input class="uc-input" value=${open ? q : selText}
       placeholder=${placeholder || (allowUnassigned ? "— unassigned —" : "Assign to a user…")}
-      onClick=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}/>
+      onClick=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}
+      onKeyDown=${e => { if (e.key === "Enter" && open && q && shown.length === 1) { e.preventDefault(); pick(shown[0].id); } }}/>
     ${open ? html`<div class="uc-list">
       ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">— unassigned —</span></button>` : null}
       ${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
@@ -1263,7 +1272,8 @@ function assignPeer(peer, userId) {
   if (!userId) return;
   return mutate({ key: "peer:" + peer.id,
     patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = userId; },
-    call: () => api.peerUpdate({ peer_id: peer.id, user_id: userId }) });
+    call: () => api.peerUpdate({ peer_id: peer.id, user_id: userId }),
+    onOk: () => revealAssignedPeer(userId, peer.id) });
 }
 
 // Reassign an ALREADY-assigned peer to a different user — this DOES rotate keys (the previous
@@ -3004,6 +3014,25 @@ function userMatchesQ(u, q) {
   if ((u.name + " " + u.tag + " " + u.note).toLowerCase().includes(q)) return true;
   return Store.peersOfUser(u.id).some(p => peerMatchesQ(p, q));
 }
+// which Users page a user lands on (mirrors UsersScreen's sort; search is cleared before we navigate)
+function userPageOf(uid) {
+  const users = Store.recon.users.slice().sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || String(a.name).localeCompare(String(b.name)));
+  const idx = users.findIndex(u => u.id === uid);
+  return idx < 0 ? 1 : Math.floor(idx / (usersView.pageSize || 20)) + 1;
+}
+// after assigning / reassigning a peer TO a user: go to Users, land on that user's page, expand their row,
+// spark (glow) the just-assigned peer, and scroll it into view — so the admin sees exactly what happened.
+function revealAssignedPeer(userId, peerId) {
+  if (!userId) return;
+  usersView.q = ""; usersView.expanded[userId] = true;
+  go("#/users");
+  setTimeout(() => {                          // after the mutate's poll + re-render settles
+    usersView.page = userPageOf(userId);
+    if (peerId) Store.recentlyCreated[peerId] = Date.now();   // 1.5s glow on the peer's row
+    Store.apply();                            // re-render Users with the right page + expansion
+    requestAnimationFrame(() => { const el = document.getElementById("urow-" + userId); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); });
+  }, 240);
+}
 
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
 // unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
@@ -3100,12 +3129,13 @@ function openUserEdit(user) {
 }
 // Turn-proxy client configs for one deployment — one section per turn-proxy on the interface, generated
 // on the fly for the DEPLOYED fork. `conf` is the base WG config (needs the private key, so session/stored).
-function openTurnConfigs(peer, t, conf, back) {
-  openModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} onClose=${back || closeModal}>
-    <${TurnConfigSheet} peer=${peer} t=${t} conf=${conf}/>
+function openTurnConfigs(peer, t, conf) {
+  const back = () => openPeerConfigs(peer);   // Turn opens FROM the QR/configs sheet → ✕/Esc/Back all return there
+  openModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} onClose=${back}>
+    <${TurnConfigSheet} peer=${peer} t=${t} conf=${conf} back=${back}/>
   <//>`);
 }
-function TurnConfigSheet({ peer, t, conf }) {
+function TurnConfigSheet({ peer, t, conf, back }) {
   const [selFork, setSelFork] = useState(0);
   const [inst, setInst] = useState({});   // fork → chosen instance index (for redundant same-fork proxies)
   // One badge PER FORK; the peer's own fork (observed viaTurn) sorts first and is selected by default. When a
@@ -3123,17 +3153,18 @@ function TurnConfigSheet({ peer, t, conf }) {
   return html`<div class="turncfg">
     ${order.length > 1 ? html`<div class="turntabs">${order.map((f, k) => html`<button key=${f}
       class=${"snbadge turntab" + (k === fi ? " on" : "")} style=${"--c:" + turnColor(f)} onClick=${() => setSelFork(k)}>${f}</button>`)}</div>` : null}
-    ${list.length > 1 ? html`<div class="field turninst"><label>Which ${fork} proxy</label>
+    ${list.length > 1 ? html`<div class="turninst">
+      <label>Which ${fork} proxy</label>
       <select class="selwrap" value=${ii} onChange=${e => setInst(m => ({ ...m, [fork]: +e.target.value }))}>
-        ${list.map((p, k) => html`<option value=${k}>${p.listen || ("proxy " + (k + 1))}</option>`)}
+        ${list.map((p, k) => html`<option value=${k}>${(p.listen || ("proxy " + (k + 1))) + (p.title ? " (" + p.title + ")" : "")}</option>`)}
       </select></div>` : null}
     ${!vk ? html`<div class="notice warn"><${Ic} i="warn"/><span>No VK call link set — configs carry a placeholder. Set it in <a href="#/panel/settings" onClick=${() => closeAllModals()}>Panel settings → Turn proxies</a>.</span></div>` : null}
-    <${TurnCfgItem} key=${cur.service} conf=${conf} tp=${cur} vk=${vk} base=${base}/>
+    <${TurnCfgItem} key=${cur.service} conf=${conf} tp=${cur} vk=${vk} base=${base} back=${back}/>
   </div>`;
 }
 // One turn-proxy's client artifact. Sync forks fill `text`; wingsv:// fills `buildAsync` (needs zlib), so
 // we resolve it in an effect and show "generating…" until ready. Textarea wraps + auto-grows (no scroll).
-function TurnCfgItem({ conf, tp, vk, base }) {
+function TurnCfgItem({ conf, tp, vk, base, back }) {
   const a = turnArtifact(conf, tp, vk);
   const [text, setText] = useState(a.text != null ? a.text : null);
   const [err, setErr] = useState(null);
@@ -3152,7 +3183,9 @@ function TurnCfgItem({ conf, tp, vk, base }) {
     ${a.cmd ? html`<div class="tokenbox" style="margin-bottom:6px">${a.cmd}</div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
       : html`<textarea class="turncfg-ta" readonly spellcheck="false" ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
-    <div class="turncfg-foot"><span class="grow"></span>
+    <div class="turncfg-foot">
+      ${back ? html`<button class="btn btn-mini" onClick=${back}><${Ic} i="back"/> Back to QR</button>` : null}
+      <span class="grow"></span>
       <button class="btn btn-mini" disabled=${!ready} onClick=${() => copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
       <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""))}><${Ic} i="download"/> Download .conf</button>
     </div>
@@ -3173,7 +3206,7 @@ function UserRow({ user }) {
     onConfirm: () => mutate({ key: "user:" + user.id,
       patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
       call: () => api.userDelete({ id: user.id }) }) });
-  return html`<div class=${"urow" + (expanded ? " open" : "")}>
+  return html`<div class=${"urow" + (expanded ? " open" : "")} id=${"urow-" + user.id}>
     <div class="urow-head" onClick=${toggle}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       <${Badge} s=${user.peerCount ? user.status : "empty"}/>
@@ -4501,7 +4534,7 @@ function AddPeersSheet({ userId, userName }) {
       }
       setBusy(false); await Store.poll();
       if (fails.length) toast("Some deployments failed: " + fails.join("; "), "err", 6000);
-      return stayExpanded();
+      closeModal(); return revealAssignedPeer(userId, selPeer.id);
     }
     if (!chosen.length) return setMsg({ k: "err", t: "Pick at least one interface." });
     const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
