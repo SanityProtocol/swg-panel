@@ -3046,14 +3046,16 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
   const multiServer = nodes.length > 1;
   if (view.node && view.node !== "*" && !nodeSet.has(view.node)) view.node = "";
   if (!view.node) view.node = multiServer ? "*" : (nodes[0] || "*");
-  const node = view.node;
+  // with no toolbar (a user's expanded grid) there's no way to change the filter, so always show ALL the
+  // set's peers — never let a stale single-server view hide peers on another node.
+  const node = hideToolbar ? "*" : view.node;
   const ifaceOpts = node === "*"
     ? [...new Set(Object.values(ifByNode).flatMap(s => [...s]))].sort()
     : [...(ifByNode[node] || [])].sort();
   const ifaceDefault = () => (node === "*" || ifaceOpts.length > 1) ? "*" : (ifaceOpts[0] || "*");
   if (!view.iface) view.iface = ifaceDefault();
   if (view.iface !== "*" && !ifaceOpts.includes(view.iface)) view.iface = ifaceDefault();
-  const iface = view.iface;
+  const iface = hideToolbar ? "*" : view.iface;
   const agg = node === "*" || iface === "*";
   const q = (view.q || "").toLowerCase();
 
