@@ -329,6 +329,10 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 @keyframes edithint{0%,100%{color:var(--faint)}45%{color:var(--brand)}}
 .ifcard-top .tg{flex:none}          /* status tags keep their full width — the name ellipsis-shrinks instead */
 .ifcard-top .onlinetag{flex:none}   /* connections count in a turn card header — don't stretch */
+/* turn-card header must NOT clip: the connection-count hover pill uses a negative-margin box (like the
+   interface-card online count) that breathes into the card's padding — overflow:hidden would shear its
+   top/right edge. The name still ellipsizes via .ifname's own overflow, so one-line layout is preserved. */
+.ifcard.tp .ifcard-top{overflow:visible}
 /* a status tag carrying a node message is clickable (opens it) — pointer + hover highlight as the affordance */
 /* any error/detail tag that opens a popup on click — on hover just brighten its text/icon colour so it
    reads as clickable (no background box; the popup carries the details, so no native title tooltip) */
@@ -829,11 +833,19 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .tg-awg{background:rgba(31,200,214,.14);color:var(--brand)}
 .tg-turn{color:var(--tfc,#B49BF7);background:color-mix(in srgb,var(--tfc,#A78BF5) 17%,transparent)}
 /* "Connected via <proxy>" hover bubble on a turn-proxied interface badge */
-.turnwrap{position:relative;display:inline-flex}
-.turnbub{position:absolute;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);white-space:nowrap;
+.turnwrap{position:relative;display:inline-flex;align-items:center;gap:5px}
+/* glowing turn-proxy dot before a turn-connected peer's interface badge (fork colour) */
+.turndot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--tfc,var(--brand));box-shadow:0 0 6px var(--tfc,var(--brand)),0 0 2px var(--tfc,var(--brand))}
+.turnbub-t{color:var(--ink);font-weight:600}
+/* status cell: status badge + optional "turn" tag (shown when the grid hides the interface column) */
+.stcell{display:inline-flex;align-items:center;gap:7px}
+.turnbub{position:absolute;top:calc(100% + 7px);left:50%;transform:translateX(-50%);white-space:nowrap;
   background:var(--surface-2);border:1px solid var(--line-solid);border-radius:8px;padding:6px 9px;font-size:11px;
   color:var(--dim);display:none;align-items:center;gap:6px;z-index:40;box-shadow:0 6px 22px rgba(0,0,0,.45);text-transform:none;letter-spacing:0}
 .turnwrap:hover .turnbub{display:inline-flex}
+/* transparent bridge over the gap so moving from the tag onto the bubble keeps it open (bubble is a
+   descendant of .turnwrap, so hovering the bridge keeps .turnwrap:hover true) */
+.turnbub::before{content:"";position:absolute;left:0;right:0;top:-9px;height:9px}
 /* status pills (busy/ok/warn/del) — ONE uniform shape; colour per state. Defined after .tg so the
    pill shape wins even when written as "tg tg-busy" on cards (the type tags .tg-wg/.tg-awg stay small). */
 /* status pills — ONE shape/size/font for all; only colour differs (busy=cyan, ok=green, warn=yellow, del=red, off=grey) */

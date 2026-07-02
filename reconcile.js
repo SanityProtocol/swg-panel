@@ -34,6 +34,11 @@ function ipOf(hostport) {
   const s = String(hostport);
   return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0];
 }
+function portOf(hostport) {
+  if (!hostport) return "";
+  const s = String(hostport); const i = s.lastIndexOf(":");
+  return i < 0 ? "" : s.slice(i + 1);
+}
 
 function reconcile(roster, stats, now, cfg) {
   now = now || Date.now();
@@ -59,15 +64,19 @@ function reconcile(roster, stats, now, cfg) {
     }
   }
 
-  // turn-proxy connect-IPs per node: a turn-proxied client reaches wg THROUGH the local
-  // proxy, so wg sees its endpoint as the proxy's connect IP (typically 127.0.0.1).
-  const turnIp = {};   // node → { connectIP: service } so a turn-proxied peer maps to the SPECIFIC proxy
+  // turn-proxy attribution per node. A turn-proxied client reaches wg THROUGH the local proxy, so wg sees its
+  // endpoint IP as the proxy's connect IP (typically 127.0.0.1) — that only says it came via SOME proxy, not
+  // which. We attribute a turn-online peer to a proxy that forwards to the peer's OWN interface (proxy connect
+  // port == the iface's wg listen port); several such proxies (redundancy) → pick the first, so exactly ONE
+  // proxy claims the connection.
+  const turnConnIps = {}, turnByPort = {};   // node → { connectIP: true } · node → { wgPort: [service] }
   for (const node of Object.keys(stats)) {
-    const map = {};
+    const ips = {}, byPort = {};
     for (const tp of ((stats[node] && stats[node].turn_proxies) || [])) {
-      const ip = ipOf(tp && tp.connect); if (ip) map[ip] = (tp && tp.service) || "turn";
+      const ip = ipOf(tp && tp.connect); if (ip) ips[ip] = true;
+      const port = portOf(tp && tp.connect); if (port) (byPort[port] = byPort[port] || []).push((tp && tp.service) || "turn");
     }
-    turnIp[node] = map;
+    turnConnIps[node] = ips; turnByPort[node] = byPort;
   }
 
   const managed = {};
@@ -87,11 +96,16 @@ function reconcile(roster, stats, now, cfg) {
       else if (obs) st = obs.online ? "online" : "ready";
       else st = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
       const epIp = (obs && obs.endpoint) ? ipOf(obs.endpoint) : "";
-      const tmap = turnIp[t.node] || {};
-      const via = epIp ? ((epIp in tmap) ? "turn" : "direct") : null;
+      const via = epIp ? ((turnConnIps[t.node] || {})[epIp] ? "turn" : "direct") : null;
+      let viaTurn = null;
+      if (via === "turn") {   // attribute to a proxy forwarding to THIS interface (connect port == iface listen port)
+        const lp = ((((((stats[t.node] || {}).interfaces || {})[t.iface] || {}).meta) || {}).listen_port);
+        const svcs = (turnByPort[t.node] || {})[String(lp)] || [];
+        viaTurn = svcs.length ? svcs[0] : null;
+      }
       return { node: t.node, iface: t.iface, ip: t.ip, type: t.type,
                status: st, online: !!(obs && obs.online), observed: obs, via: via,
-               viaTurn: via === "turn" ? tmap[epIp] : null,   // the SPECIFIC turn-proxy service the peer came in through
+               viaTurn: viaTurn,   // the SPECIFIC turn-proxy service the peer came in through (one per connection)
                down: ifDown[t.node + "|" + t.iface] || null };
     });
 

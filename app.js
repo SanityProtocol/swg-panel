@@ -615,7 +615,7 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   turnWasInstalling[k] = !!installing;
   turnWasBusy[k] = _busy;
   const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
-  const conn = fronted ? turnConnRows(node, fronted, ipOf(tp.connect)) : [];   // online peers via this proxy → header count
+  const conn = fronted ? turnConnRows(node, fronted, tp.service) : [];   // online peers via THIS specific proxy → header count
   const canOpen = nrec.turn_manage && !converting && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting (don't open a half-created proxy)
   return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} data-rid=${it ? it.rid : null}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
@@ -969,6 +969,32 @@ function targetTags(node, iface, type, via, muted, viaTurn) {
   }
   return tags;
 }
+// operator title of a turn-proxy (by service) on a node, if one was set — for the "Connected via" bubble
+function turnProxyTitle(node, service) {
+  const tp = ((Store.stats[node] || {}).turn_proxies || []).find(x => x && x.service === service);
+  return (tp && tp.title) || "";
+}
+// The interface badge for one peer-grid row (protocol + iface name). A peer ONLINE through a turn-proxy shows
+// the badge in the turn-proxy's fork colour with a glowing dot before it, and a "Connected via <fork> <title>"
+// hover bubble (the fork as a coloured tag, the operator's proxy title after it when set).
+function gridIfaceTag(t) {
+  const kind = (t.type || "").toLowerCase() === "awg" ? "awg" : "wg";
+  if (t.online && t.viaTurn) {
+    const tn = turnLabel(t.viaTurn), tc = turnColor(tn), title = turnProxyTitle(t.node, t.viaTurn);
+    return html`<span class="turnwrap"><span class="turndot" style=${"--tfc:" + tc}></span><${Tag} kind="iface" label=${t.iface} color=${tc}/>
+      <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${title ? html` <b class="turnbub-t">${title}</b>` : null}</span></span>`;
+  }
+  return html`<${Tag} kind=${kind} label=${t.iface} muted=${!t.online}/>`;
+}
+// Standalone "turn" tag for the status cell — used when the grid hides the interface column (a single
+// interface is selected, or the interface-detail grid) so the turn-connected badge would otherwise be lost.
+// Same glowing dot + "Connected via <fork> <title>" bubble as gridIfaceTag, but labelled "turn".
+function gridTurnTag(t) {
+  if (!(t.online && t.viaTurn)) return null;
+  const tn = turnLabel(t.viaTurn), tc = turnColor(tn), title = turnProxyTitle(t.node, t.viaTurn);
+  return html`<span class="turnwrap"><span class="turndot" style=${"--tfc:" + tc}></span><${Tag} kind="iface" label="turn" color=${tc}/>
+    <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${title ? html` <b class="turnbub-t">${title}</b>` : null}</span></span>`;
+}
 // rate cell, green when traffic is flowing
 // Throughput display perspective (Panel settings): node-reported rx/tx is from the NODE's view (rx=down,
 // tx=up). "peers" flips it to the client's view — the peer's download is what the node uploads (tx), etc.
@@ -1016,11 +1042,25 @@ function DepBadge({ others }) {
 }
 function peerLabel(p) { return p.unassigned ? "" : (p.name || ""); }
 
+// Minimal portal — renders children into a body-level node. A position:fixed popover that lives inside a
+// card paints BEHIND a later sibling once its own card forms a stacking context (turn cards lift with a
+// transform on hover; a `.down` card carries opacity:.5) — z-index can't rescue it across contexts.
+// Rendering at <body> escapes every ancestor context. Preact core has no createPortal, so we drive a
+// detached container with render().
+function Portal({ children }) {
+  const host = useRef(null);
+  if (!host.current) host.current = document.createElement("div");
+  useEffect(() => { const el = host.current; document.body.appendChild(el); return () => { render(null, el); el.remove(); }; }, []);
+  useEffect(() => { render(children, host.current); });
+  return null;
+}
+
 // Generic hover/click bubble (the DepBadge mechanics, reusable): hover opens, click pins (touch),
-// position:fixed anchored to the trigger so overflow:hidden can't clip it.
+// position:fixed anchored to the trigger so overflow:hidden can't clip it. The bubble is PORTALED to
+// <body> so it floats above sibling cards regardless of their stacking contexts.
 function Popover({ trigger, cls, popCls, alignRight, children }) {
   const [open, setOpen] = useState(false), [pinned, setPinned] = useState(false), [pos, setPos] = useState(null);
-  const ref = useRef(null), closeT = useRef(null);
+  const ref = useRef(null), popRef = useRef(null), closeT = useRef(null);
   const show = open || pinned;
   const cancelClose = () => clearTimeout(closeT.current);
   const scheduleClose = () => { cancelClose(); closeT.current = setTimeout(() => setOpen(false), 140); };
@@ -1031,7 +1071,7 @@ function Popover({ trigger, cls, popCls, alignRight, children }) {
   useEffect(() => {
     if (!show) return; place();
     const onMove = () => place();
-    const onDoc = e => { if (!(ref.current && ref.current.contains(e.target))) { setPinned(false); setOpen(false); } };
+    const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) { setPinned(false); setOpen(false); } };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
     if (pinned) document.addEventListener("mousedown", onDoc, true);
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); };
@@ -1040,8 +1080,8 @@ function Popover({ trigger, cls, popCls, alignRight, children }) {
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
     onClick=${e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); }}
     onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>${trigger}
-    ${show && pos ? html`<div class=${"deppop onlpop " + (popCls || "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px" + (alignRight ? ";transform:translateX(-100%)" : "")}
-      onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div>` : null}
+    ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px" + (alignRight ? ";transform:translateX(-100%)" : "")}
+      onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div><//>` : null}
   </span>`;
 }
 
@@ -1076,8 +1116,11 @@ function onlinePeerRows(nodeId, iface) {
 }
 // peers reaching `iface` THROUGH a turn-proxy: online, and the wg-observed endpoint IP == the proxy's
 // connect IP (so they came via the relay, not directly). connectIp = ipOf(turn.connect).
-function turnConnRows(nodeId, iface, connectIp) {
-  const onT = (t) => t.node === nodeId && t.iface === iface && t.online && t.observed && ipOf(t.observed.endpoint) === connectIp;
+// online peers attributed to THIS specific turn-proxy. Reconcile maps a peer's observed endpoint IP to one
+// service (turnIp), so a peer counts for exactly one proxy — several proxies sharing 127.0.0.1 no longer all
+// claim the same connection (was matched by connect IP, which is identical across proxies on one wg port).
+function turnConnRows(nodeId, iface, service) {
+  const onT = (t) => t.node === nodeId && t.iface === iface && t.online && t.viaTurn === service;
   return (Store.recon.peers || []).filter(p => p.targets.some(onT))
     .map(p => { const t = p.targets.find(onT) || {};
       return { title: p.title || p.name || "(peer)", user: p.unassigned ? "Unassigned" : (p.name || "(unnamed)"), ip: t.ip || "", unassigned: !!p.unassigned, lastAge: p.lastHandshakeAge }; })
@@ -2781,15 +2824,16 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const u = p.user_id ? Store.user(p.user_id) : null;
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
+        const ifaceShown = loc || (agg && iface === "*");   // the location column is rendering the interface badge
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
-          <td data-label="Status"><${Badge} s=${t.status || p.status} title=${(t.down ? "interface " + t.iface + " is down — " + t.down : p.reason) || ""}/></td>
+          <td data-label="Status"><span class="stcell"><${Badge} s=${t.status || p.status} title=${(t.down ? "interface " + t.iface + " is down — " + t.down : p.reason) || ""}/>${ifaceShown ? null : gridTurnTag(t)}</span></td>
           ${loc ? html`<td data-label="Server"><div class="srvcell">
             <span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
-            <${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>
+            ${gridIfaceTag(t)}
           </div></td>`
           : agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
             ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-            ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
+            ${iface === "*" ? gridIfaceTag(t) : null}
           </div></td>` : null}
           ${hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
             ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span><${Ic} i="user"/></a>`
