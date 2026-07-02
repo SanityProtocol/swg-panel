@@ -2083,7 +2083,7 @@ def api(method, path, qs, body, deps):
             cur["turn_fork_colors"] = {re.sub(r"[^A-Za-z0-9_-]", "", str(k))[:48]: str(v)
                                        for k, v in list(fc.items())[:64]
                                        if re.match(r"^#[0-9a-fA-F]{6}$", str(v))}
-        if "vk_link" in incoming:                       # VK/Yandex call link baked into generated turn-proxy client configs
+        if "vk_link" in incoming:                       # VK call link baked into generated turn-proxy client configs
             cur["vk_link"] = str(incoming.get("vk_link") or "").strip()[:512]
         cl = incoming.get("custom_lists")               # operator-defined reusable IP/domain lists
         if isinstance(cl, list):

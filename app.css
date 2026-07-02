@@ -975,7 +975,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .turncfg-foot{display:flex;align-items:center;gap:8px;margin-top:6px}
 .turncfg-foot .grow{flex:1}
 .tcf-label{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
-.turncfg-ta{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--ink);
+.turncfg-ta{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--dim);
   background:var(--surface-2);border:1px solid var(--line-solid);border-radius:8px;padding:9px 11px;
   white-space:pre-wrap;word-break:break-all;overflow:hidden;resize:none;min-height:52px}
 .turnhead{display:flex;align-items:center;gap:10px}

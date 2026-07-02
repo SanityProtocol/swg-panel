@@ -3917,7 +3917,7 @@ function PanelSettingsScreen() {
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "anton48"]));   // forks offered in the install picker
   const [forkColors, setForkColors] = useState({ ...Object.fromEntries(TURN_FORKS.map(f => [f.id, f.color])), ...(ps.turn_fork_colors || {}) });   // per-fork colour (override or default)
-  const [vkLinkS, setVkLinkS] = useState(ps.vk_link || "");   // VK/Yandex call link baked into generated turn-proxy client configs
+  const [vkLinkS, setVkLinkS] = useState(ps.vk_link || "");   // VK call link baked into generated turn-proxy client configs
   const forkColorOverrides = () => Object.fromEntries(TURN_FORKS.filter(f => (forkColors[f.id] || "").toLowerCase() !== f.color.toLowerCase()).map(f => [f.id, forkColors[f.id]]));
   // deployed version(s) of a fork across the fleet (from snapshots) — "" if it's never been installed
   const forkVersions = fid => { const v = new Set(); for (const snap of Object.values(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version); return [...v]; };
@@ -4211,9 +4211,9 @@ function PanelSettingsScreen() {
             <span class="grow"></span>
             <a class="tf-repo" href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" title=${"Open " + f.owner + " on GitHub"}>${f.owner}</a>
           </div>`)}</div>
-          <div class="seclabel" style="margin-top:18px">VK / Yandex call link</div>
-          <p class="hint" style="margin:0 0 8px">Baked into the client configs a peer's <b>Turn</b> button generates — it's the call the turn-proxy relays through. Leave blank to emit a <span class="mono">&lt;PASTE VK CALL LINK&gt;</span> placeholder.</p>
-          <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/… or https://telemost.yandex.ru/j/…"/>
+          <div class="seclabel" style="margin-top:18px">VK call link</div>
+          <p class="hint" style="margin:0 0 8px">Baked into the client configs a peer's <b>Turn</b> button generates — it's the call the turn-proxy relays through. Leave blank to emit a <span class="mono">${"<PASTE VK CALL LINK>"}</span> placeholder.</p>
+          <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/…"/>
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>
