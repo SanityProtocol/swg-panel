@@ -2891,7 +2891,7 @@ function userMatchesQ(u, q) {
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
 // unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
 // server / interface dropdown options are derived from the set itself (only servers/ifaces that have rows).
-function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser }) {
+function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar }) {
   const [, force] = useState(0);
   const bump = () => force(x => x + 1);
   const nodeSet = new Set(), ifByNode = {};
@@ -2931,7 +2931,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser }) {
   const setPage = p => { view.page = p; bump(); };
 
   return html`<div class="peerspanel">
-    <div class="toolbar sub">
+    ${hideToolbar ? null : html`<div class="toolbar sub">
       <div class="search"><${Ic} i="search"/><input placeholder="Search title, address…" value=${view.q || ""}
         onInput=${e => { view.q = e.target.value.trim(); view.page = 1; bump(); }}/></div>
       ${multiServer ? html`<select class="selwrap" value=${node} onChange=${e => { view.node = e.target.value; view.iface = ""; view.page = 1; bump(); }}>
@@ -2941,7 +2941,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser }) {
         <option value="*">All interfaces</option>${ifaceOpts.map(i => html`<option value=${i}>${i}</option>`)}
       </select>` : null}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || "New peer"}</button>` : null}
-    </div>
+    </div>`}
     <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser}/>
     ${rows.length > pageSize ? html`<div class="pager">
       <label class="pager-size">Rows per page
@@ -2988,11 +2988,10 @@ function UserRow({ user }) {
     <div class="urow-head" onClick=${toggle}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       <${Badge} s=${user.peerCount ? user.status : "empty"}/>
-      <span class="u-name"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a></span>
+      <span class="u-name"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.note ? html`<span class="u-sub" title=${user.note}>${user.note}</span>` : null}</span>
       <span class="u-tag">${user.tag ? html`<span class="tagchip">${user.tag}</span>` : html`<span class="faint">—</span>`}</span>
-      <span class="u-note" title=${user.note || ""}>${user.note || html`<span class="faint">—</span>`}</span>
-      <span class="u-peers">${user.peerCount} peer${user.peerCount === 1 ? "" : "s"} ${user.peerCount ? html`<span class="faint">(${user.onlineCount} online)</span>` : null}</span>
-      <span class="u-last">${st.last == null ? html`<span class="u-never">Never online</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
+      <span class="u-peers"><span>${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>${user.peerCount ? html`<span class="u-sub2">${user.onlineCount} online</span>` : null}</span>
+      <span class="u-last"><span class="u-lbl">Online</span>${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
       <span class="u-thru"><span class="u-lbl">Rate</span>${rateCell(st.rx, st.tx)}</span>
       <span class="u-total"><span class="u-lbl">Total</span><span class="addr xfer">↓ ${fmtBytes(db)} <span class="up">↑ ${fmtBytes(ub)}</span></span></span>
       <span class="u-acts" onClick=${e => e.stopPropagation()}>
@@ -3002,7 +3001,7 @@ function UserRow({ user }) {
       </span>
     </div>
     ${expanded ? html`<div class="urow-body">
-      ${user.peerCount ? html`<${EmbeddedPeers} peers=${Store.peersOfUser(user.id)} view=${view} hideUser=${true}/>`
+      ${user.peerCount ? html`<${EmbeddedPeers} peers=${Store.peersOfUser(user.id)} view=${view} hideUser=${true} hideToolbar=${true}/>`
         : html`<div class="ug-empty">No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.</div>`}
     </div>` : null}
     <${RowError} k=${"user:" + user.id}/>

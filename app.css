@@ -1246,20 +1246,20 @@ a.tg:hover{filter:brightness(1.25)}
 .urow{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden;transition:border-color .12s}
 .urow.open{border-color:var(--line-solid)}
 /* deterministic tracks (no content-sized auto/fr-that-varies) so every row's columns line up vertically */
-.urow-head{display:grid;grid-template-columns:20px 92px minmax(110px,1.3fr) 74px minmax(90px,1.5fr) 140px 88px 150px 126px 102px;
+.urow-head{display:grid;grid-template-columns:20px 92px minmax(150px,1.9fr) 84px 140px 78px 150px 126px 102px;
   align-items:center;gap:12px;padding:10px 14px;cursor:pointer;transition:background .12s}
 .urow-head:hover{background:var(--surface-2)}
 .u-exp{display:flex;color:var(--faint);transition:transform .16s}
 .u-exp svg{width:14px;height:14px}
 .urow.open .u-exp{transform:rotate(90deg);color:var(--dim)}
-.u-name{font-size:14px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.u-name a{color:var(--ink)} .u-name a:hover{color:var(--brand)}
+.u-name{display:flex;flex-direction:column;gap:1px;min-width:0;font-size:14px;font-weight:600}
+.u-name a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .u-name a:hover{color:var(--brand)}
+.u-sub{font-size:11.5px;font-weight:400;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .u-tag{min-width:0}
-.u-note{font-size:12px;color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.u-peers{font-size:12px;color:var(--ink-2);white-space:nowrap}
-.u-last{font-size:12px}
+.u-peers{display:flex;flex-direction:column;gap:1px;font-size:12px;color:var(--ink-2);white-space:nowrap}
+.u-peers .u-sub2{font-size:11px;color:var(--faint)}
 .u-never{font-size:11px;color:var(--faint)}
-.u-thru,.u-total{display:flex;flex-direction:column;gap:2px;font-size:11.5px;white-space:nowrap}
+.u-last,.u-thru,.u-total{display:flex;flex-direction:column;gap:2px;font-size:11.5px;white-space:nowrap}
 .u-lbl{font-size:8.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);font-family:var(--mono)}
 .u-acts{display:flex;align-items:center;gap:3px;justify-content:flex-end}
 .urow-body{border-top:1px solid var(--line);padding:12px 14px;background:var(--surface-2)}
@@ -1268,7 +1268,7 @@ a.tg:hover{filter:brightness(1.25)}
 .urow-body .peergrid{background:var(--surface)}
 @media (max-width:900px){
   .urow-head{grid-template-columns:20px auto 1fr auto;grid-auto-rows:auto}
-  .u-tag,.u-note,.u-last,.u-thru,.u-total{display:none}
+  .u-tag,.u-peers,.u-last,.u-thru,.u-total{display:none}
 }
 .pline{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);transition:background .12s}
 .pline:last-child{border-bottom:0}
