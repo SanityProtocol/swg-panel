@@ -565,14 +565,32 @@ function ifaceNotUp(node, ifn) { const s = (((Store.stats[node] || {}).interface
 function turnDown(tp) { return tp && tp.running === false; }
 // turn badges for an interface card: one fork-coloured "turn" chip per distinct forwarding fork
 // (collapses to one in the common single-fork case), greyed when that fork's proxies are all down / node stale.
+// When MORE THAN 3 turn-proxies forward here the per-fork list gets noisy, so collapse to ONE badge in the
+// general turn colour + a "×N" count; hovering opens a small portaled bubble listing each proxy as a
+// fork-coloured badge + its title.
+// hover bubble body for a set of forwarding proxies: one line each — fork badge (own colour) + title.
+function turnListRows(list) {
+  return list.map(tp => { const f = turnFork(tp.service); return html`<div class=${"turnlist-row" + (turnDown(tp) ? " muted" : "")}>
+    <span class="tg tg-turn" style=${"--tfc:" + turnColor(f)}>${f}</span>${tp.title ? html`<span class="turnlist-ttl">${tp.title}</span>` : null}</div>`; });
+}
+// each turn badge on an interface card gets a hover-only bubble listing its proxies; clicks fall through to
+// the card link (hoverOnly). ≤3 forwarding proxies → one fork-coloured chip per fork; >3 → collapse to one
+// general-colour "turn ×N" badge (the per-fork list gets noisy), same bubble listing all of them.
 function ifaceTurnBadges(node, fwdTurns, compact) {
   if (!fwdTurns || !fwdTurns.length) return null;
-  const stale = nodeStale(node), groups = {};
+  const stale = nodeStale(node);
+  const bubble = (trigger, list) => html`<${Popover} hoverOnly cls="turncollwrap" popCls="turnlist" trigger=${trigger}>${turnListRows(list)}<//>`;
+  if (fwdTurns.length > 3) {
+    const allDown = fwdTurns.every(turnDown);
+    const trigger = html`<span class=${"tg tg-turn tf-gen turncoll" + ((stale || allDown) ? " muted" : "") + (compact ? " mini" : "")}>${compact ? "t" : "turn"}<b class="turnx">×${fwdTurns.length}</b></span>`;
+    return bubble(trigger, fwdTurns);
+  }
+  const groups = {};
   fwdTurns.forEach(tp => { const f = turnFork(tp.service); (groups[f] = groups[f] || []).push(tp); });
   return Object.entries(groups).map(([f, list]) => {
     const allDown = list.every(turnDown);
-    return html`<span class=${"tg tg-turn tf-" + f + ((stale || allDown) ? " muted" : "") + (compact ? " mini" : "")}
-      title=${list.length + " " + f + " turn-prox" + (list.length > 1 ? "ies" : "y") + " forward to this interface" + (allDown ? " — down" : "")}>${compact ? "t" : "turn"}</span>`;
+    const trigger = html`<span class=${"tg tg-turn tf-" + f + ((stale || allDown) ? " muted" : "") + (compact ? " mini" : "")}>${compact ? "t" : "turn"}</span>`;
+    return bubble(trigger, list);
   });
 }
 
@@ -1076,7 +1094,9 @@ function Portal({ children }) {
 // Generic hover/click bubble (the DepBadge mechanics, reusable): hover opens, click pins (touch),
 // position:fixed anchored to the trigger so overflow:hidden can't clip it. The bubble is PORTALED to
 // <body> so it floats above sibling cards regardless of their stacking contexts.
-function Popover({ trigger, cls, popCls, alignRight, children }) {
+// hoverOnly: no click-to-pin — clicks fall through to whatever the trigger sits inside (e.g. a card link),
+// so a badge can show a hover bubble AND still navigate on click.
+function Popover({ trigger, cls, popCls, alignRight, children, hoverOnly }) {
   const [open, setOpen] = useState(false), [pinned, setPinned] = useState(false), [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null), closeT = useRef(null);
   const show = open || pinned;
@@ -1096,7 +1116,7 @@ function Popover({ trigger, cls, popCls, alignRight, children }) {
   }, [show, pinned]);
   useEffect(() => () => clearTimeout(closeT.current), []);
   return html`<span class=${(cls || "") + (show ? " on" : "")} ref=${ref}
-    onClick=${e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); }}
+    onClick=${hoverOnly ? null : (e => { e.stopPropagation(); e.preventDefault(); setPinned(p => !p); })}
     onMouseEnter=${() => { cancelClose(); setOpen(true); }} onMouseLeave=${scheduleClose}>${trigger}
     ${show && pos ? html`<${Portal}><div ref=${popRef} class=${"deppop onlpop " + (popCls || "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px" + (alignRight ? ";transform:translateX(-100%)" : "")}
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>${children}</div><//>` : null}
