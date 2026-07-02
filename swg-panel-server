@@ -964,6 +964,20 @@ def node_mesh_cfg(deps, node):
     return mc
 
 
+def is_system_iface(deps, nodes, node_id, iface):
+    """True if (node_id, iface) is a panel-managed inter-node mesh link (swg_*) — never a valid
+    user-peer target. Authoritative signal is the stored `.system` flag; fall back to the node's
+    reserved mesh prefix so a link that predates the flag is still rejected."""
+    if not iface:
+        return False
+    n = nodes.get(node_id) or {}
+    ov = (n.get("ifaces") or {}).get(iface)
+    if isinstance(ov, dict) and ov.get("system"):
+        return True
+    pfx = node_mesh_cfg(deps, n).get("iface_prefix") or "swg_"
+    return str(iface).startswith(pfx) or str(iface).startswith("swg_")
+
+
 def reserved_conflict(deps, nodes, node, subnet=None, port=None, name=None):
     """Reject user interfaces / turn-proxies that collide with the mesh's reserved ranges (subnet / port
     band / iface-name prefix) — evaluated against THIS node's EFFECTIVE mesh config (per-node overrides over
@@ -2254,6 +2268,8 @@ def api(method, path, qs, body, deps):
                     return 400, {"ok": False, "error": f"target.{f} is required", "code": "bad_request"}
             if not known(t["node"]):
                 return 400, {"ok": False, "error": f"unknown node {t['node']!r}", "code": "bad_request"}
+            if is_system_iface(deps, nodes, t["node"], t["iface"]):
+                return 400, {"ok": False, "error": f"{t['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
         seen = set()
         for t in targets:
             k = (t["node"], t["iface"])
@@ -2299,6 +2315,8 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, "error": f"target.{f} is required", "code": "bad_request"}
         if not known(target["node"]):
             return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
+        if is_system_iface(deps, nodes, target["node"], target["iface"]):
+            return 400, {"ok": False, "error": f"{target['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
         if not valid_addr(target["ip"]):
             return 400, {"ok": False, "error": f"invalid address {target['ip']!r}", "code": "bad_request"}
         roster = roster_load(roster_path)
@@ -2478,6 +2496,8 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "pubkey is required", "code": "bad_request"}
         if not known(target["node"]):
             return 400, {"ok": False, "error": f"unknown node {target['node']!r}", "code": "bad_request"}
+        if is_system_iface(deps, nodes, target["node"], target["iface"]):
+            return 400, {"ok": False, "error": f"{target['iface']} is a system mesh link — not a peer interface", "code": "system_iface"}
         if not valid_addr(target["ip"]):
             return 400, {"ok": False, "error": f"invalid address {target['ip']!r}", "code": "bad_request"}
         roster = roster_load(roster_path)

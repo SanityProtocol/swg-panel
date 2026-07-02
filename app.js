@@ -417,6 +417,15 @@ const Store = {
   nodeColor(id) { const n = this.node(id); return (n && n.color) || "#5f7569"; },
   ifacesOf(node) { return Object.keys(this.describe[node] || {}); },   // node = id (describe keyed by id)
   ifaceMeta(node, iface) { return (this.describe[node] || {})[iface] || null; },
+  // a panel-managed inter-node mesh link (swg_*): never a user-peer target / egress NIC. Authoritative
+  // signal is the backend `.system` flag; fall back to the reserved prefix for un-updated nodes.
+  ifaceIsSystem(node, iface) {
+    if (!iface) return false;
+    const m = (this.describe[node] || {})[iface] || {};
+    const pfx = (this.panelSettings || {}).reserved?.iface_prefix || "swg_";
+    return !!m.system || String(iface).startsWith(pfx) || String(iface).startsWith("swg_");
+  },
+  userIfacesOf(node) { return this.ifacesOf(node).filter(i => !this.ifaceIsSystem(node, i)); },
   peer(id) { return this.recon.peers.find(p => p.id === id); },
   user(id) { return this.recon.users.find(u => u.id === id); },
   peersOfUser(id) { return this.recon.peers.filter(p => p.user_id === id); },
@@ -2684,9 +2693,8 @@ function PeersScreen() {
   if (peersView.node !== "*" && !fleet.some(n => n.id === peersView.node)) peersView.node = multiServer ? "*" : (fleet[0] ? fleet[0].id : "");
   const node = peersView.node;   // node = id, or "*" for all servers
 
-  const allIfaces = Array.from(new Set(Object.values(Store.describe).flatMap(d => Object.keys(d || {})))).sort();
-  const snap = node !== "*" ? Store.stats[node] : null;
-  const ifaceOpts = node === "*" ? allIfaces : (snap ? Object.keys(snap.interfaces || {}) : []);
+  const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();   // user ifaces only — mesh links (swg_*) are not peer-bearing
+  const ifaceOpts = node === "*" ? allIfaces : Store.userIfacesOf(node);
   // default interface: aggregate when several exist (or all-servers); else the only one.
   const ifaceDefault = () => (node === "*" || ifaceOpts.length > 1) ? "*" : (ifaceOpts[0] || "");
   if (!peersView.iface) peersView.iface = ifaceDefault();
@@ -2792,7 +2800,7 @@ function ConnectionsScreen() {
   const sortBy = col => { if (connView.sort === col) connView.dir = -connView.dir; else { connView.sort = col; connView.dir = CONN_DEFDIR[col] || 1; } bump(); };
 
   const all = connRows();
-  const ifaceList = Array.from(new Set(Object.values(Store.describe).flatMap(d => Object.keys(d || {})))).sort();
+  const ifaceList = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const q = connView.q.toLowerCase();
   let rows = all.filter(r => {
@@ -2891,7 +2899,7 @@ function PeerLine({ peer }) {
       <button class="iconbtn" title="Download config" onClick=${download}><${Ic} i="download"/></button>
       <button class="iconbtn" title="Edit config" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/></button>
       <button class="iconbtn" title="Manage targets — deploy to or remove from interfaces" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/></button>
-      <button class="iconbtn danger" title="Delete peer (revoke + remove)" onClick=${() => openConfirm({ title: "Delete peer", confirmLabel: "Delete", danger: true, body: "This revokes access immediately and removes the peer from every interface it's deployed on. This can't be undone.", onConfirm: () => deleteAssignedPeer(peer) })}><${Ic} i="trash"/></button>
+      <button class="iconbtn danger" title="Unassign peer — revoke access" onClick=${() => confirmUnassign(peer)}><${Ic} i="link"/></button>
     </div>
     <${RowError} k=${"peer:" + peer.id}/>
   </div>`;
@@ -3062,24 +3070,14 @@ function UserTargetCard({ peer, t }) {
         key, patch: s => { const pp = s.roster.peers[peer.id]; if (pp) pp.targets = pp.targets.filter(x => !(x.node === t.node && x.iface === t.iface)); },
         call: () => api.peerRemoveTarget({ peer_id: peer.id, node: t.node, iface: t.iface }),
       })}/>` : null}
-      <${DangerButton} label="Delete" confirm="Delete peer — revoke + remove?" onConfirm=${() => deleteAssignedPeer(peer)}/>
+      <${DangerButton} label="Unassign" confirm="Unassign — revoke access?" onConfirm=${() => mutate({
+        key, patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },   // revokes (PSK rotates); delete then lives on the unassigned peer
+        call: () => api.peerUnassign({ peer_id: peer.id }),
+        onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++; },
+      })}/>
       <${RowError} k=${key}/>
     </div>
   </div>`;
-}
-
-// Delete an assigned peer from the user view: unassign (revokes via PSK rotation) then delete,
-// honouring the gate that a live credential is never one-click-deleted without revocation.
-function deleteAssignedPeer(peer) {
-  return mutate({
-    key: "peer:" + peer.id,
-    patch: s => { delete s.roster.peers[peer.id]; },
-    call: async () => {
-      const r1 = await api.peerUnassign({ peer_id: peer.id });
-      if (!r1.ok) return r1;
-      return api.peerDelete({ peer_id: peer.id });
-    },
-  });
 }
 
 function UserEditCard({ user, done }) {
@@ -4300,7 +4298,8 @@ function AddPeersSheet({ userId, userName }) {
 // All deployable (node, iface) targets known from the consolidated state.
 function allTargets() {
   const out = [];
-  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {})) out.push({ node, iface });
+  for (const node of Object.keys(Store.describe)) for (const iface of Object.keys(Store.describe[node] || {}))
+    if (!Store.ifaceIsSystem(node, iface)) out.push({ node, iface });   // never offer a mesh link (swg_*) as a peer target
   return out;
 }
 
