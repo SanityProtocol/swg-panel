@@ -995,6 +995,18 @@ function gridStatusBadge(t, p) {
   }
   return html`<${Badge} s=${st} title=${title}/>`;
 }
+// Compact live-status dot for the connections monitor. Same turn language as the peer-grid status badge,
+// scaled down to a single dot: online-via-turn → the fork-coloured glowing dot + "Connected via <fork>
+// <title>" bubble; online (direct) → a green glowing dot; otherwise a neutral idle dot.
+function connDot(r) {
+  if (r.online && r.viaTurn) {
+    const tn = turnLabel(r.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(r.node, r.viaTurn);
+    return html`<span class="turnwrap">
+      <span class="condot turn" style=${"--tfc:" + tc}></span>
+      <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
+  }
+  return html`<span class=${"condot " + (r.online ? "on" : "off")} title=${r.online ? "online" : "idle"}></span>`;
+}
 // rate cell, green when traffic is flowing
 // Throughput display perspective (Panel settings): node-reported rx/tx is from the NODE's view (rx=down,
 // tx=up). "peers" flips it to the client's view — the peer's download is what the node uploads (tx), etc.
@@ -1424,7 +1436,7 @@ function FleetNodeCard({ n }) {
     <div class="fnode-main">
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
-        <div><span class="fl">Traffic</span><span class=${"ratecell" + (nrx + ntx > 0 ? " live" : "")}>↓ ${rate(dlul(nrx, ntx)[0])} <span class="up">↑ ${rate(dlul(nrx, ntx)[1])}</span></span></div>
+        <div><span class="fl">Traffic</span>${rateCell(nrx, ntx)}</div>
         <div><span class="fl">Online</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} trigger=${c => html`${c} <span class="faint">user${c === 1 ? "" : "s"}</span>`}/></span></div>
         <div><span class="fl">Sync</span><span class="fv">${sync}</span></div>
       </div>
@@ -1464,8 +1476,11 @@ function recentActivity() {
 function Overview() {
   const peers = Store.recon.peers, users = Store.recon.users, fleet = Store.fleet, ns = Store.recon.nodeStatus;
   const online = peers.filter(p => p.online).length;
-  const partial = peers.filter(p => p.status === "partial").length;
-  const offline = peers.filter(p => ["dangling", "unknown"].includes(p.status)).length;
+  // Peer-status tile buckets: online (active handshake) · ready (deployed + reporting, idle) · attention
+  // (everything else — partial / pending / creating / rotating / dangling / unknown). Always sum to total,
+  // so a healthy-but-idle fleet reads 0·N·0 instead of a misleading 0·0·0.
+  const ready = peers.filter(p => p.status === "ready").length;
+  const attention = peers.length - online - ready;
   const liveNodes = fleet.filter(n => ns[n.id] === "live").length;
   const ifaceCount = Object.values(Store.describe).reduce((a, d) => a + Object.keys(d || {}).length, 0);
   const nodesAlerting = (Store.nodes || []).filter(n => healthAlerts(n.health).length).length;
@@ -1491,7 +1506,7 @@ function Overview() {
     .sort((a, b) => anyTraffic ? (b.rx + b.tx) - (a.rx + a.tx) : b.peers - a.peers)
     .slice(0, 6)
     .map(x => ({ label: x.name, value: anyTraffic ? x.rx + x.tx : x.peers,
-      sub: anyTraffic ? "↓ " + rate(dlul(x.rx, x.tx)[0]) + " ↑ " + rate(dlul(x.rx, x.tx)[1]) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
+      sub: anyTraffic ? rateCell(x.rx, x.tx) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
       color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.id) }));
 
   return html`<div class="screen">
@@ -1499,9 +1514,9 @@ function Overview() {
     <div class="statgrid">
       <a class="stat accent clk" href="#/connections"><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${peers.length}</small></div><div class="sub">live connections →</div></div></a>
       <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">Users</div><div class="v">${users.length}</div><div class="sub">${peers.length} peers total</div></div></a>
-      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peer status</div><div class="v" style="font-size:17px"><span style="color:var(--online)">${online}</span> · <span style="color:var(--partial)">${partial}</span> · <span style="color:var(--dangling)">${offline}</span></div><div class="sub">online · partial · offline</div></div></a>
+      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peer status</div><div class="v" style="font-size:17px"><span style="color:var(--online)">${online}</span> · <span style="color:var(--ready)">${ready}</span> · <span style=${"color:" + (attention ? "var(--dangling)" : "var(--faint)")}>${attention}</span></div><div class="sub">online · ready · attention</div></div></a>
       <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleet.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></div></a>
-      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">Throughput</div><div class="v" style="font-size:19px">↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub">↑ ${rate(dlul(rx, tx)[1])} aggregate</div></div></div>
+      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">Throughput</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span> aggregate</div></div></div>
     </div>
 
     <div class="section-title"><h2>Fleet</h2><span class="count">${fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
@@ -2354,8 +2369,8 @@ function ConnectionEditSheet({ node, iface }) {
         ${Cell("Node", html`<a href=${"#/node/" + encodeURIComponent(peer)} onClick=${closeModal}>${Store.nodeName(peer)}</a>`)}
         ${Cell("This end", meta.address || "—")}
         ${Cell("Endpoint", meta.peer_endpoint || "— (not dialed yet)")}
-        ${Cell("Rate", html`↓ ${rate(dlul(meta.rx_speed, meta.tx_speed)[0])} · ↑ ${rate(dlul(meta.rx_speed, meta.tx_speed)[1])}`)}
-        ${meta.rx_bytes != null || meta.tx_bytes != null ? Cell("Total", html`↓ ${fmtBytes(dlul(meta.rx_bytes, meta.tx_bytes)[0])} · ↑ ${fmtBytes(dlul(meta.rx_bytes, meta.tx_bytes)[1])}`) : null}
+        ${Cell("Rate", rateCell(meta.rx_speed, meta.tx_speed))}
+        ${meta.rx_bytes != null || meta.tx_bytes != null ? Cell("Total", xferCell(...dlul(meta.rx_bytes, meta.tx_bytes))) : null}
         ${Cell("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
       </div>
     </div>
@@ -2991,7 +3006,7 @@ function connRows() {
   return out;
 }
 const connView = { node: "", iface: "", user: "", q: "", online: false, sort: "rate", dir: -1 };
-const CONN_DEFDIR = { rate: -1, hs: 1, peer: 1, user: 1, node: 1 };
+const CONN_DEFDIR = { rate: -1, xfer: -1, hs: 1, peer: 1, user: 1, node: 1 };
 function ConnectionsScreen() {
   useStore();
   const [, force] = useState(0);
@@ -3010,7 +3025,7 @@ function ConnectionsScreen() {
     if (q && !((r.user + " " + r.peer + " " + Store.nodeName(r.node) + " " + r.iface + " " + r.endpoint + " " + r.ip).toLowerCase().includes(q))) return false;
     return true;
   });
-  const keyf = { rate: r => r.rx + r.tx, hs: r => (r.hs == null ? Infinity : r.hs), peer: r => r.peer.toLowerCase(), user: r => r.user.toLowerCase(), node: r => r.node + "|" + r.iface }[connView.sort] || (r => r.rx + r.tx);
+  const keyf = { rate: r => r.rx + r.tx, xfer: r => r.rxb + r.txb, hs: r => (r.hs == null ? Infinity : r.hs), peer: r => r.peer.toLowerCase(), user: r => r.user.toLowerCase(), node: r => r.node + "|" + r.iface }[connView.sort] || (r => r.rx + r.tx);
   rows = rows.sort((a, b) => { const A = keyf(a), B = keyf(b); return (A < B ? -1 : A > B ? 1 : 0) * connView.dir; });
   const onlineCount = all.filter(r => r.online).length;
   const arrow = col => connView.sort === col ? (connView.dir < 0 ? " ↓" : " ↑") : "";
@@ -3038,21 +3053,21 @@ function ConnectionsScreen() {
         <th class="clk" onClick=${() => sortBy("user")}>User${arrow("user")}</th>
         <th class="clk" onClick=${() => sortBy("node")}>Node · iface${arrow("node")}</th>
         <th>Endpoint</th>
-        <th class="clk" onClick=${() => sortBy("hs")}>Last${arrow("hs")}</th>
-        <th class="clk" onClick=${() => sortBy("rate")}>Rate ↓↑${arrow("rate")}</th>
-        <th>Transfer ↓↑</th>
+        <th class="clk" onClick=${() => sortBy("hs")}>Online${arrow("hs")}</th>
+        <th class="clk num" onClick=${() => sortBy("rate")}>Rate ↓↑${arrow("rate")}</th>
+        <th class="clk num" onClick=${() => sortBy("xfer")}>Transfer ↓↑${arrow("xfer")}</th>
       </tr></thead>
       <tbody>
         ${rows.length ? rows.map(r => html`<tr key=${r.key}>
-          <td data-label=""><span class=${"condot " + (r.online ? "on" : "off")} title=${r.online ? "online" : "idle"}></span></td>
+          <td data-label="">${connDot(r)}</td>
           <td data-label="Peer" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(r.pid))}>${r.peer ? html`<b>${r.peer}</b>` : html`<span class="faint">unassigned</span>`}</td>
           <td data-label="User">${r.uid ? html`<a href=${"#/user/" + encodeURIComponent(r.uid)}>${r.user}</a>` : html`<span class="faint">—</span>`}</td>
           <td data-label="Node" class="clk" onClick=${() => go("#/node/" + encodeURIComponent(r.node) + "/" + encodeURIComponent(r.iface))}>
-            <span class="addr" style="color:var(--ink-2)">${Store.nodeName(r.node)}</span><span class="tags">${targetTags(r.node, r.iface, r.type, r.via, !r.online, r.viaTurn)}</span></td>
+            <span class="srv-name" style=${"color:" + (Store.nodeColor(r.node) || "var(--ink)")}>${Store.nodeName(r.node)}</span><span class="tags">${gridIfaceTag({ type: r.type, iface: r.iface, online: r.online })}</span></td>
           <td data-label="Endpoint"><span class="addr">${r.endpoint || "—"}</span></td>
-          <td data-label="Last"><span class="when">${seen(r.hs)}</span></td>
+          <td data-label="Online"><span class="when">${seen(r.hs)}</span></td>
           <td data-label="Rate">${rateCell(r.rx, r.tx)}</td>
-          <td data-label="Transfer"><span class="addr">↓ ${fmtBytes(dlul(r.rxb, r.txb)[0])} ↑ ${fmtBytes(dlul(r.rxb, r.txb)[1])}</span></td>
+          <td data-label="Transfer">${xferCell(...dlul(r.rxb, r.txb))}</td>
         </tr>`) : html`<tr><td colspan="8" class="empty"><b>No connections${all.length ? " match" : " yet"}</b>${all.length ? "Clear the filters." : "Peers appear here once a node reports them."}</td></tr>`}
       </tbody></table></div>
   </div>`;
@@ -3469,7 +3484,7 @@ function TargetCard({ peer, t, bare }) {
       ${bare ? null : html`<div class="dmeta">
         <div class="row"><span class="k">address</span><span class="vv">${t.ip || "—"}</span></div>
         <div class="row"><span class="k">handshake</span><span class="vv">${obs ? seen(obs.handshake_age) : "—"}</span></div>
-        <div class="row"><span class="k">transfer</span><span class="vv">${obs ? "↓ " + rate(dlul(obs.rx_speed, obs.tx_speed)[0]) + "  ↑ " + rate(dlul(obs.rx_speed, obs.tx_speed)[1]) : "—"}</span></div>
+        <div class="row"><span class="k">rate</span><span class="vv">${obs ? rateCell(obs.rx_speed, obs.tx_speed) : "—"}</span></div>
         <div class="row"><span class="k">transport</span><span class="vv">${lt.viaTurn ? html`via <span class="tg tg-turn" style=${"--tfc:" + turnColor(turnLabel(lt.viaTurn))}>${turnLabel(lt.viaTurn)}</span>` : (lt.via === "direct" ? "direct" : "—")}</span></div>
         ${tps.map(tp => html`<div class="row"><span class="k">turn-proxy</span><span class="vv">${tp.listen || "—"}
           ${tp.wrap_key ? html`<${Fragment}> · key <span class="addr">${String(tp.wrap_key).slice(0, 8)}…</span><button class="copybtn" title="Copy wrap key" onClick=${() => copy(tp.wrap_key, "Wrap key copied")}><${Ic} i="copy"/></button></>` : null}</span></div>`)}
@@ -3926,7 +3941,7 @@ function NodeCard({ n, reorder }) {
       : html`<span class="nm-l">Peers</span><span class="nm-v nm-peers faint">none</span>`}</span>
     <div class="nc-ifaces nm-item"><span class="nm-l">Interfaces</span><span class="tags">${ifTags.length ? ifTags : html`<span class="nm-v faint">—</span>`}</span></div>
     <span class="nc-thru nm-thru"><span class="nm-l">Throughput</span>${st === "online"
-      ? html`<span class="nm-v thru"><span class="down">↓ ${rate(dlul(n.rx_speed, n.tx_speed)[0])}</span><span class="up">↑ ${rate(dlul(n.rx_speed, n.tx_speed)[1])}</span></span>`
+      ? html`<span class=${"nm-v thru" + ((n.rx_speed || 0) + (n.tx_speed || 0) > 0 ? "" : " idle")}><span class="down">↓ ${rate(dlul(n.rx_speed, n.tx_speed)[0])}</span><span class="up">↑ ${rate(dlul(n.rx_speed, n.tx_speed)[1])}</span></span>`
       : html`<span class="nm-v faint">—</span>`}</span>
     <button class="iconbtn nc-ctl danger" title=${removing ? "Force remove" : "Remove node"} onClick=${e => { e.stopPropagation(); openNodeRemove(n); }}><${Ic} i="trash"/></button>
 

@@ -725,6 +725,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-v.nm-peers{font-size:15px;color:var(--ink)}
 .nm-v.nm-peers small{font-size:.72em;color:var(--faint)}
 .nm-v .down{color:var(--online)} .nm-v .up{color:var(--ready)}
+/* idle throughput greys out like every other rate readout (rateCell/xferCell) — colour only once bytes move */
+.nm-v.thru.idle .down,.nm-v.thru.idle .up{color:var(--faint)}
 .nm-thru{display:flex;align-items:baseline;gap:8px}   /* throughput numbers, right-aligned; gap matches CPU load's label↔value spacing */
 .nm-thru .thru{display:flex;gap:16px}
 .nm-thru .down,.nm-thru .up{min-width:74px;white-space:nowrap;text-align:right}
@@ -816,8 +818,13 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .conntable th.clk{cursor:pointer;user-select:none}
 .conntable th.clk:hover{color:var(--ink)}
 .condot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--unknown)}
-.condot.on{background:var(--online);box-shadow:0 0 0 3px rgba(70,216,168,.15)}
+/* online / turn dots glow with the same animated pulse as the peer-grid status badge (.sdot) */
+.condot.on{background:var(--online);color:var(--online);animation:sdotpulse 1.6s ease-in-out infinite}
+.condot.turn{background:var(--tfc);color:var(--tfc);animation:sdotpulse 1.6s ease-in-out infinite}
 .condot.off{background:var(--faint)}
+/* Rate/Transfer are numeric — right-align header + values so the header text ends above where the values end */
+.conntable th.num,.conntable td[data-label="Rate"],.conntable td[data-label="Transfer"]{text-align:right}
+.conntable td[data-label="Rate"],.conntable td[data-label="Transfer"]{white-space:nowrap}
 .viatag{margin-left:6px;font-size:10px;font-weight:700;text-transform:uppercase;color:var(--orphan);background:rgba(192,132,232,.13);padding:1px 6px;border-radius:99px}
 .chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--dim);white-space:nowrap;cursor:pointer}
 .chk input{width:auto;margin:0}
