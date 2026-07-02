@@ -2658,7 +2658,8 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const obs = t.observed;
         const u = p.user_id ? Store.user(p.user_id) : null;
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
-        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class="clk" onClick=${() => openPeerView(p.id, t.node, t.iface)}>
+        const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
+        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
           <td data-label="Status"><${Badge} s=${t.status || p.status} title=${(t.down ? "interface " + t.iface + " is down — " + t.down : p.reason) || ""}/></td>
           ${loc ? html`<td data-label="Server"><div class="srvcell">
             <span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
@@ -3110,11 +3111,16 @@ function UserEditCard({ user, done }) {
       call: () => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note }),
     });
   };
+  const del = () => openConfirm({ title: "Delete user · " + user.name, confirmLabel: "Delete user", danger: true, back: done,
+    body: "Their peers are revoked and become unassigned. This can't be undone.",
+    onConfirm: () => mutate({ key: "user:" + user.id,
+      patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
+      call: () => api.userDelete({ id: user.id }) }) });
   return html`<div class="card" style="max-width:560px">
     <div class="field"><label>Name</label><input value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
     <div class="field"><label>Tag</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder="Friend, Family, Work…" maxlength="32"/></div>
     <div class="field"><label>Note</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder="Uses iPhone and router" maxlength="200"/></div>
-    <div style="display:flex;gap:8px;margin-top:6px"><button class="btn btn-primary" onClick=${save}>Save</button><button class="btn btn-ghost" onClick=${done}>Cancel</button></div>
+    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> Delete user</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></div>
   </div>`;
 }
 
@@ -4268,7 +4274,8 @@ function CreateUserSheet() {
     Store.recentlyCreated[r.data.id] = Date.now(); await Store.poll();
     return r.data;
   };
-  const createOnly = async () => { const u = await createUser(); if (u) { closeModal(); go("#/user/" + encodeURIComponent(u.id)); } };
+  const stayExpanded = uid => { usersView.expanded[uid] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
+  const createOnly = async () => { const u = await createUser(); if (u) stayExpanded(u.id); };
   const createAndAdd = async () => { const u = await createUser(); if (u) openModal(html`<${AddPeersSheet} userId=${u.id} userName=${u.name}/>`); };
   return html`<${Sheet} title="New user"
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-ghost" disabled=${busy} onClick=${createOnly}>Create only</button><button class="btn btn-primary" disabled=${busy} onClick=${createAndAdd}>Add peers ▸</button></>`}>
@@ -4283,15 +4290,41 @@ function CreateUserSheet() {
 // the user-detail "Add peers" button. Excludes interfaces the user is already on.
 function openAddPeers(userId, userName) { openModal(html`<${AddPeersSheet} userId=${userId} userName=${userName}/>`); }
 function AddPeersSheet({ userId, userName }) {
+  const [mode, setMode] = useState("new");   // "new" = mint peers per interface, else an existing unassigned peer id to assign
   const [chosen, setChosen] = useState([]);
   const cf = useConfigFields();
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const unassigned = Store.unassignedPeers();
+  const selPeer = mode !== "new" ? unassigned.find(p => p.id === mode) : null;
+  useEffect(() => { if (mode !== "new" && !unassigned.some(p => p.id === mode)) setMode("new"); }, [unassigned, mode]);   // chosen peer got assigned/removed elsewhere
   const have = new Set((Store.peersOfUser(userId) || []).flatMap(p => p.targets.map(t => tkey(t.node, t.iface))));
   useEffect(() => {
-    if (!cf.dnsTouched.current && chosen.length) { const m = Store.ifaceMeta(chosen[0].node, chosen[0].iface); if (m) cf.setDns((m.dns || []).join(", ")); }
-  }, [chosen]);
-  const finish = () => { closeModal(); go("#/user/" + encodeURIComponent(userId)); };
+    if (!selPeer && !cf.dnsTouched.current && chosen.length) { const m = Store.ifaceMeta(chosen[0].node, chosen[0].iface); if (m) cf.setDns((m.dns || []).join(", ")); }
+  }, [chosen, selPeer]);
+  const stayExpanded = () => { usersView.expanded[userId] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
+  const peerLabel = p => {   // title · node · <tag> iface · internal IP  (representative = first target)
+    const t = p.targets[0] || {};
+    const ty = (t.type || "").toLowerCase() === "awg" ? "AWG" : "WG";
+    return [p.title || "untitled", Store.nodeName(t.node), ty + " " + t.iface, t.ip].filter(Boolean).join(" · ");
+  };
   const create = async () => {
+    if (selPeer) {                                    // assign an existing unassigned peer (+ deploy any new interfaces, same key)
+      const existing = new Set(selPeer.targets.map(t => tkey(t.node, t.iface)));
+      const adds = chosen.filter(t => !existing.has(tkey(t.node, t.iface)) && !t.existing);
+      const badIp = adds.find(t => !V.ipv4(String(t.ip).trim()));
+      if (badIp) return setMsg({ k: "err", t: "Invalid address for " + Store.nodeName(badIp.node) + "/" + badIp.iface + "." });
+      setBusy(true); setMsg({ k: "work", t: "assigning…" });
+      const r = await api.peerUpdate({ peer_id: selPeer.id, user_id: userId });
+      if (!r.ok) { setBusy(false); return setMsg({ k: "err", t: r.error || "couldn't assign peer" }); }
+      const fails = [];
+      for (const t of adds) {
+        const rr = await api.peerAddTarget({ peer_id: selPeer.id, target: { node: t.node, iface: t.iface, ip: String(t.ip).trim().split("/")[0] } });
+        if (!rr.ok) fails.push(Store.nodeName(t.node) + "/" + t.iface + ": " + (rr.error || rr.code || "failed"));
+      }
+      setBusy(false); await Store.poll();
+      if (fails.length) toast("Some deployments failed: " + fails.join("; "), "err", 6000);
+      return stayExpanded();
+    }
     if (!chosen.length) return setMsg({ k: "err", t: "Pick at least one interface." });
     const badIp = chosen.find(t => !V.ipv4(String(t.ip).trim()));
     if (badIp) return setMsg({ k: "err", t: "Invalid address for " + Store.nodeName(badIp.node) + "/" + badIp.iface + "." });
@@ -4301,13 +4334,23 @@ function AddPeersSheet({ userId, userName }) {
     const res = await createPeersForTargets(userId, chosen, cf.opts());
     setBusy(false); await Store.poll();
     if (res.fails.length) toast("Some peers failed: " + res.fails.join("; "), "err", 6000);
-    finish();
+    stayExpanded();
   };
+  // when an existing peer is picked, its current targets get an add-target on newly-checked ifaces
+  const newAdds = selPeer ? chosen.filter(t => !t.existing && !selPeer.targets.some(x => x.node === t.node && x.iface === t.iface)).length : chosen.length;
+  const ctaLabel = selPeer ? ("Assign" + (newAdds ? " + " + newAdds + " target" + (newAdds === 1 ? "" : "s") : "")) : ("Create " + (chosen.length || "") + " peer" + (chosen.length === 1 ? "" : "s"));
   return html`<${Sheet} title=${"Add peers" + (userName ? " · " + userName : "")}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${finish}>Skip</button><button class="btn btn-primary" disabled=${busy} onClick=${create}>Create ${chosen.length || ""} peer${chosen.length === 1 ? "" : "s"}</button></>`}>
-    <div class="hint" style="margin-bottom:10px">Each interface becomes its own peer (own key) — one QR per peer. Add redundancy later with “copy to another interface”.</div>
-    <div class="field"><label>Interfaces</label><${TargetPicker} exclude=${have} onChange=${setChosen}/></div>
-    <${AdvancedFields} st=${cf}/>
+    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${create}>${ctaLabel}</button></>`}>
+    <div class="field"><label>Peer</label>
+      <select class="selwrap" value=${mode} onChange=${e => { setMode(e.target.value); setChosen([]); }}>
+        <option value="new">Create new peer</option>
+        ${unassigned.map(p => html`<option value=${p.id}>${peerLabel(p)}</option>`)}
+      </select></div>
+    ${selPeer
+      ? html`<div class="hint" style="margin-bottom:10px">Assign this unassigned peer to ${userName || "the user"} (its key is kept). Tick more interfaces to also deploy it there with the same key.</div>`
+      : html`<div class="hint" style="margin-bottom:10px">Each interface becomes its own peer (own key) — one QR per peer. Add redundancy later with “copy to another interface”.</div>`}
+    <div class="field"><label>Interfaces</label><${TargetPicker} key=${mode} exclude=${selPeer ? null : have} initial=${selPeer ? selPeer.targets : null} onChange=${setChosen}/></div>
+    ${selPeer ? null : html`<${AdvancedFields} st=${cf}/>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }

@@ -231,6 +231,9 @@ tbody tr.clk{cursor:pointer;transition:background .15s}
 tbody tr.clk:hover{background:var(--surface-2)}
 tbody tr.flash{animation:flash 2.6s var(--ease)}
 @keyframes flash{0%{background:rgba(70,216,168,.2)}100%{background:transparent}}
+/* just-created peer row — a one-shot branded glow that ramps 0 → peak → 0 over 1.5s (all peer grids) */
+.peergrid tbody tr.pcreate td{animation:pcreate 1.5s var(--ease)}
+@keyframes pcreate{0%{background:transparent}42%{background:color-mix(in srgb,var(--brand) 24%,transparent)}100%{background:transparent}}
 .c-name{color:var(--ink);font-weight:500}
 .addr{font-family:var(--mono);font-size:12.5px;color:var(--dim)}
 .when{font-family:var(--mono);font-size:12px;color:var(--dim)}
@@ -1244,7 +1247,9 @@ a.tg:hover{filter:brightness(1.25)}
 /* Users list — collapsible rows (status · name · tag · note · peers · last · rate · total · controls) */
 .urows{display:flex;flex-direction:column;gap:8px}
 .urow{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden;transition:border-color .12s}
-.urow.open{border-color:var(--line-solid)}
+.urow.open{border-color:color-mix(in srgb,var(--brand) 42%,var(--line-solid));box-shadow:0 0 0 1px color-mix(in srgb,var(--brand) 18%,transparent)}
+.urow.open>.urow-head{background:color-mix(in srgb,var(--brand) 7%,transparent)}
+.editfoot{display:flex;align-items:center;gap:8px;margin-top:20px}
 /* deterministic tracks (no content-sized auto/fr-that-varies) so every row's columns line up vertically */
 .urow-head{display:grid;grid-template-columns:20px 92px minmax(180px,2.3fr) 140px 78px 150px 126px 102px;
   align-items:center;gap:12px;padding:10px 14px;cursor:pointer;transition:background .12s}
