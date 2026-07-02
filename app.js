@@ -1889,9 +1889,10 @@ function validTarget(tok) {
   // and an ALPHABETIC TLD (so "22.1", "1.1.1.1", "1.1.1.1/555"→"1.1.1.1" all fail — a bare number is never a host)
   let d = t.replace(/^https?:\/\//, "").split("/")[0];
   if (d.startsWith("*.")) d = d.slice(2);
+  if (/[^\x00-\x7f]/.test(d)) { try { d = new URL("http://" + d).hostname; } catch { return false; } }   // IDN (Cyrillic etc.) → punycode, so it validates + matches the node's ASCII rules
   if (!d || d.length > 253) return false;
   const labels = d.split(".");
-  return labels.length >= 2 && labels.every(l => _RR_LABEL.test(l)) && /^[a-z]{2,}$/.test(labels[labels.length - 1]);
+  return labels.length >= 2 && labels.every(l => _RR_LABEL.test(l)) && /^([a-z]{2,}|xn--[a-z0-9-]+)$/.test(labels[labels.length - 1]);
 }
 const invalidTargets = raw => splitTargets(raw).filter(t => !validTarget(t));
 const isIpTarget = tok => { const m = String(tok).trim().toLowerCase().match(_RR_IP4); return !!m && [1, 2, 3, 4].every(i => +m[i] <= 255) && (!m[5] || +m[5].slice(1) <= 32); };
@@ -2270,7 +2271,8 @@ function TurnManageSheet({ node, tp }) {
   const [lport, setLport] = useState(lp);
   const snap = Store.stats[node] || {};
   const ifaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || "") })).filter(i => i.port);
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") }))
+    .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   const epIp = (() => { for (const b of Object.values(snap.interfaces || {})) { const ep = (b.meta || {}).endpoint || ""; if (ep) return ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep; } return ""; })();
   const conPort = con.includes(":") ? con.slice(con.lastIndexOf(":") + 1) : con;
   const match = ifaces.find(i => i.port === conPort);
@@ -2506,7 +2508,8 @@ function SetupTurnSheet({ node }) {
   const ips = nrec.ips || [];
   const snap = Store.stats[node] || {};
   const ifaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || "") })).filter(i => i.port);
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") }))
+    .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   const epIp = (() => {   // the node's detected public IP — the proxy BINDS to listen, so it must be local
     for (const b of Object.values(snap.interfaces || {})) {
       const ep = (b.meta || {}).endpoint || "";

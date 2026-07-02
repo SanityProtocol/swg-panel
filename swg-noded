@@ -871,43 +871,54 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False):
     # Category rules match a dest set; the "all" catch-all matches any dest but ONLY when still unmarked
     # (`meta mark 0x0`) and is emitted LAST, so specific categories win (first-match semantics).
     subnets = sorted({e["subnet"] for e in smart_e})
-    want_cat = {(e["subnet"], _smart_setname(e["category"]), int(e["table"])) for e in smart_e if e["category"] != "all"}
-    want_all = {(e["subnet"], int(e["table"])) for e in smart_e if e["category"] == "all"}
-    live_cat, live_all = set(), set()
-    for ln in body.splitlines():
-        mc = re.search((r"ip saddr (\S+) ct state new ip daddr @(\S+) .*meta mark set (0x[0-9a-fA-F]+|\d+)" if pin
-                        else r"ip saddr (\S+) ip daddr @(\S+) meta mark set (0x[0-9a-fA-F]+|\d+)"), ln)
-        if mc:
-            live_cat.add((mc.group(1), mc.group(2), int(mc.group(3), 0))); continue
-        ma = re.search((r"ip saddr (\S+) ct state new meta mark (?:0x0+|0) .*meta mark set (0x[0-9a-fA-F]+|\d+)" if pin
-                        else r"ip saddr (\S+) meta mark (?:0x0+|0) meta mark set (0x[0-9a-fA-F]+|\d+)"), ln)
-        if ma:
-            live_all.add((ma.group(1), int(ma.group(2), 0)))
-    # pin mode additionally needs the ct-mark restore prelude + an NFQUEUE learning rule per subnet; rebuild if either drifted
-    pin_ok = (not pin) or (bool(subnets) and "meta mark set ct mark" in body and "queue" in body)
-    if want_cat != live_cat or want_all != live_all or not pin_ok:
+    # Ordered, first-match rules carrying a per-rule ACTION: exit=mark→mesh, direct=leave in-kernel (default route),
+    # block=drop. Each specific rule ends in `return` so the FIRST match wins — a direct/block exception genuinely
+    # overrides a later catch-all exit, and block is a real kill-switch (not a silent fall-through to direct). "all"
+    # is the catch-all → emitted after the specific rules for its subnet. Order is preserved from the panel plan.
+    spec = [e for e in smart_e if e["category"] != "all"]
+    allr = [e for e in smart_e if e["category"] == "all"]
+    want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec + allr]
+    sig = hashlib.sha1((("pin;" if pin else "") + json.dumps(want)).encode()).hexdigest()[:16]
+    _sigf = os.path.join(GEO_DIR, ".smart-sig")
+    try:
+        stored = open(_sigf).read().strip()
+    except OSError:
+        stored = ""
+    chain_present = "prerouting" in re.findall(r"chain (\S+) {", body)
+    if stored != sig or not chain_present:                      # drift-gate on a signature of the whole ordered rule set
         run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "prerouting"])
+        def _add(*a):
+            r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting", *a])
+            if r.returncode != 0:
+                res["errors"].append("smart nft: " + (r.stderr or "").strip()[:120])
+            else:
+                res["changed"] += 1
         if pin:
-            run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "meta", "mark", "set", "ct", "mark"])   # restore the per-connection pinned mark
-        for (S, sn, T) in sorted(want_cat):                     # specific categories first
-            base = ["ip", "saddr", S] + (["ct", "state", "new"] if pin else []) + ["ip", "daddr", "@" + sn, "meta", "mark", "set", str(T)] + (["ct", "mark", "set", str(T)] if pin else [])
-            r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting"] + base)
-            if r.returncode != 0:
-                res["errors"].append("smart nft " + S + "/" + sn + ": " + (r.stderr or "").strip()[:120])
-            else:
-                res["changed"] += 1
-        for (S, T) in sorted(want_all):                         # catch-all last, guarded so it only marks the rest
-            base = ["ip", "saddr", S] + (["ct", "state", "new"] if pin else []) + ["meta", "mark", "0x0", "meta", "mark", "set", str(T)] + (["ct", "mark", "set", str(T)] if pin else [])
-            r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting"] + base)
-            if r.returncode != 0:
-                res["errors"].append("smart nft " + S + "/all: " + (r.stderr or "").strip()[:120])
-            else:
-                res["changed"] += 1
+            # restore the per-connection pinned mark ONLY on the original direction (client→dst). Reply packets
+            # (dst=a local client) must stay unmarked so they route via the main table back out the user iface —
+            # else the fwmark rule sends the return traffic to table 7000 (the mesh) and it never reaches the client.
+            _add("ct", "direction", "original", "meta", "mark", "set", "ct", "mark")
+        _new = ["ct", "state", "new"] if pin else []           # pin: decide once per connection at ct state new
+        for (S, cat, act, T) in want:
+            if cat == "all":                                   # catch-all — no dest set, emitted last for its subnet
+                if act == "exit":
+                    _add("ip", "saddr", S, *_new, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []))
+                elif act == "block":                           # kill-switch: drop everything else (pin: only the new pkt, so an allowed flow's established pkts survive)
+                    _add("ip", "saddr", S, *_new, "drop")
+                continue                                        # direct catch-all → no rule (falls to the main/default route)
+            snm = _smart_setname(cat)
+            if act == "exit":
+                _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")
+            elif act == "direct":
+                _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "return")   # explicit direct exception (wins over a later catch-all exit)
+            elif act == "block":
+                _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "drop")
         if pin:                                                 # feed each connection's first packets to swg-sni (learning), fail-open
             for S in subnets:
-                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting", "ip", "saddr", S,
-                     "tcp", "dport", "443", "ct", "state", "established", "ct", "packets", "lt", "12",
-                     "queue", "num", str(SNI_NFQUEUE), "bypass"])
+                _add("ip", "saddr", S, "tcp", "dport", "443", "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
+        with contextlib.suppress(OSError):
+            os.makedirs(GEO_DIR, exist_ok=True)
+            open(_sigf, "w").write(sig)
     # drop sets we no longer want (a category was un-ticked, or 'ru' was split into 'ru_net'/'ru_blocked'): after the
     # chain rebuild above they're unreferenced, so delete them — else the stale set lingers with old IPs forever.
     wanted_sn = {_smart_setname(c) for c in cats if c != "all"}
@@ -1544,17 +1555,18 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     fwd = plan.get("forward") or []
     exit_ = plan.get("exit") or []
     smart_e = (smart or {}).get("entries") or []
+    smart_exit = [e for e in smart_e if e.get("action", "exit") == "exit"]   # only exit rules carry a mesh table/dev; direct/block are local verdicts
     mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni — picks the set-fill mechanism
     band = _live_band_prios()
-    want_tables = {str(e["table"]) for e in (fwd + smart_e + exit_)}
-    want_sig = _cascade_want_sig(fwd, exit_, smart_e)
+    want_tables = {str(e["table"]) for e in (fwd + smart_exit + exit_)}
+    want_sig = _cascade_want_sig(fwd, exit_, smart_exit)   # only exit entries create fwmark→table policy routing
     live_sig = _cascade_live_sig({str(p) for p in band} | want_tables)
     # POLICY RULES/ROUTES — only touch them when they drift (avoids per-sync rule gaps).
     if want_sig != live_sig:
         if fwd or smart_e or exit_:                            # enable forwarding + loose rp_filter (asymmetric paths)
             run(["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"])
             wan = _detect_wan()
-            for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + smart_e + exit_)}):
+            for dev in sorted({"all", wan} | {e["via_iface"] for e in (fwd + smart_exit + exit_)}):
                 run(["sysctl", "-q", "-w", f"net.ipv4.conf.{dev}.rp_filter=2"])   # effective = max(all,dev): lower BOTH
         for pri in band:                                       # teardown our whole band (rules + tables)
             for _ in range(8):                                 # del-until-absent (a priority may carry several rules)
@@ -1566,7 +1578,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
             run(["ip", "route", "replace", "default", "dev", dev, "table", T])
             run(["ip", "rule", "add", "from", S, "lookup", T, "priority", T])
             res["changed"] += 1
-        for T, dev in sorted({(str(e["table"]), e["via_iface"]) for e in smart_e}):   # P3 ENTRY: fwmark T → table T
+        for T, dev in sorted({(str(e["table"]), e["via_iface"]) for e in smart_exit}):   # P3 ENTRY: fwmark T → table T
             run(["ip", "route", "replace", "default", "dev", dev, "table", T])
             run(["ip", "rule", "add", "fwmark", T, "lookup", T, "priority", T])
             res["changed"] += 1
