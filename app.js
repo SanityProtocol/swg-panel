@@ -2650,9 +2650,9 @@ function StoreOffBanner() {
 // The shared peers grid — one row per (peer, target) deployment. Reused by the Peers screen and
 // the interface-detail screen so they're identical. `agg` adds the Server/IF column; `shownByPeer`
 // drives the "+N other deployments" badge; row click opens the peer-view popup.
-function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked }) {
+function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser }) {
   return html`<div class="tablewrap"><table class="peergrid">
-    <thead><tr><th>Status</th>${agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null}<th>User</th><th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
+    <thead><tr><th>Status</th>${agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th><th>Last</th><th>Rate ↓↑</th><th>Total ↓↑</th><th></th></tr></thead>
     <tbody>
       ${rows.length ? rows.map(({ p, t }) => {
         const obs = t.observed;
@@ -2664,9 +2664,9 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked }) {
             ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
             ${iface === "*" ? html`<${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface} muted=${!t.online}/>` : null}
           </div></td>` : null}
-          <td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
+          ${hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
             ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span><${Ic} i="user"/></a>`
-                : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>
+                : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>`}
           <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
           <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
           <td data-label="Last"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
@@ -2680,7 +2680,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked }) {
               : html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Unassign peer"} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
             <${RowError} k=${"peer:" + p.id}/>
           </td></tr>`;
-      }) : html`<tr><td colspan=${agg ? 9 : 8} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
+      }) : html`<tr><td colspan=${(agg ? 9 : 8) - (hideUser ? 1 : 0)} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
     </tbody></table></div>`;
 }
 function PeersScreen() {
@@ -2860,7 +2860,101 @@ function ConnectionsScreen() {
 }
 
 // ═════════════════════════ SCREEN: USERS ═════════════════════════
-const usersFilter = { text: "" };
+// Independent view-state per grid so search / server / interface / page never bleed across them.
+const usersView = { q: "", page: 1, pageSize: 20, expanded: {} };   // expanded: { uid: true }
+const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20 };
+const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize } for the expanded grid
+
+// Combined live stats across ALL of a user's peers/targets — for the user row's rate/total/last columns.
+function userStats(uid) {
+  let rx = 0, tx = 0, rxb = 0, txb = 0, last = null;
+  for (const p of Store.peersOfUser(uid)) for (const t of p.targets) {
+    const o = t.observed; if (!o) continue;
+    rx += o.rx_speed || 0; tx += o.tx_speed || 0; rxb += o.rx_bytes || 0; txb += o.tx_bytes || 0;
+    if (o.handshake_age != null) last = (last == null) ? o.handshake_age : Math.min(last, o.handshake_age);
+  }
+  return { rx, tx, rxb, txb, last };
+}
+// Global Users-search match: a peer's title/name/key/address/server/interface.
+function peerMatchesQ(p, q) {
+  if (!q) return true;
+  if (((p.title || "") + " " + (p.name || "") + " " + (p.pubkey || "")).toLowerCase().includes(q)) return true;
+  return p.targets.some(t => ((t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
+}
+// A user matches if their identity OR any of their peers match — so you can find a user by a peer's IP.
+function userMatchesQ(u, q) {
+  if (!q) return true;
+  if ((u.name + " " + u.tag + " " + u.note).toLowerCase().includes(q)) return true;
+  return Store.peersOfUser(u.id).some(p => peerMatchesQ(p, q));
+}
+
+// A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
+// unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
+// server / interface dropdown options are derived from the set itself (only servers/ifaces that have rows).
+function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser }) {
+  const [, force] = useState(0);
+  const bump = () => force(x => x + 1);
+  const nodeSet = new Set(), ifByNode = {};
+  for (const p of peers) for (const t of p.targets) { nodeSet.add(t.node); (ifByNode[t.node] = ifByNode[t.node] || new Set()).add(t.iface); }
+  const nodes = [...nodeSet].sort((a, b) => Store.nodeName(a).localeCompare(Store.nodeName(b)));
+  const multiServer = nodes.length > 1;
+  if (view.node && view.node !== "*" && !nodeSet.has(view.node)) view.node = "";
+  if (!view.node) view.node = multiServer ? "*" : (nodes[0] || "*");
+  const node = view.node;
+  const ifaceOpts = node === "*"
+    ? [...new Set(Object.values(ifByNode).flatMap(s => [...s]))].sort()
+    : [...(ifByNode[node] || [])].sort();
+  const ifaceDefault = () => (node === "*" || ifaceOpts.length > 1) ? "*" : (ifaceOpts[0] || "*");
+  if (!view.iface) view.iface = ifaceDefault();
+  if (view.iface !== "*" && !ifaceOpts.includes(view.iface)) view.iface = ifaceDefault();
+  const iface = view.iface;
+  const agg = node === "*" || iface === "*";
+  const q = (view.q || "").toLowerCase();
+
+  let rows = [];
+  for (const p of peers) for (const t of p.targets) {
+    if (node !== "*" && t.node !== node) continue;
+    if (iface !== "*" && t.iface !== iface) continue;
+    rows.push({ p, t });
+  }
+  if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
+  rows.sort((a, b) => STATUS_RANK[a.t.status || a.p.status] - STATUS_RANK[b.t.status || b.p.status]
+    || String(a.p.title || a.p.name).localeCompare(String(b.p.title || b.p.name))
+    || Store.nodeName(a.t.node).localeCompare(Store.nodeName(b.t.node)));
+  const shownByPeer = {};
+  for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
+
+  const pageSize = view.pageSize || 20;
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = Math.min(Math.max(1, view.page || 1), totalPages);
+  const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
+  const setPage = p => { view.page = p; bump(); };
+
+  return html`<div class="peerspanel">
+    <div class="toolbar sub">
+      <div class="search"><${Ic} i="search"/><input placeholder="Search title, address…" value=${view.q || ""}
+        onInput=${e => { view.q = e.target.value.trim(); view.page = 1; bump(); }}/></div>
+      ${multiServer ? html`<select class="selwrap" value=${node} onChange=${e => { view.node = e.target.value; view.iface = ""; view.page = 1; bump(); }}>
+        <option value="*">All servers</option>${nodes.map(n => html`<option value=${n}>${Store.nodeName(n)}</option>`)}
+      </select>` : null}
+      ${ifaceOpts.length > 1 ? html`<select class="selwrap" value=${iface} onChange=${e => { view.iface = e.target.value; view.page = 1; bump(); }}>
+        <option value="*">All interfaces</option>${ifaceOpts.map(i => html`<option value=${i}>${i}</option>`)}
+      </select>` : null}
+      ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || "New peer"}</button>` : null}
+    </div>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser}/>
+    ${rows.length > pageSize ? html`<div class="pager">
+      <label class="pager-size">Rows per page
+        <select class="selwrap" value=${pageSize} onChange=${e => { view.pageSize = +e.target.value; view.page = 1; bump(); }}>
+          ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
+        </select></label>
+      <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, rows.length)} of ${rows.length}</span>
+      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
+      <span class="pager-pg">${page} / ${totalPages}</span>
+      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>Next ›</button>
+    </div>` : null}
+  </div>`;
+}
 // A peer's configs as a modal: one QR/download card per target (reuses TargetCard).
 function openPeerConfigs(peer, back) {
   const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per row; the modal sizes to fit
@@ -2876,48 +2970,41 @@ function openUserEdit(user) {
   openModal(html`<${Sheet} title=${"Edit · " + user.name}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
 }
 
-// One peer as a compact line inside a user group: identity + per-target tags + action icons.
-function PeerLine({ peer }) {
-  const flash = Store.recentlyCreated[peer.id] && Date.now() - Store.recentlyCreated[peer.id] < 3000;
-  return html`<div class=${"pline" + (flash ? " flash" : "")}>
-    <div class="pl-main">
-      <div class="pl-title">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr" title=${peer.pubkey}>${peer.pubkey.slice(0, 10)}…</span></div>
-      <div class="pl-targets">${peer.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}>
-        <span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online, t.viaTurn)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
-    </div>
-    <${Badge} s=${peer.status}/>
-    <div class="pl-acts">
-      <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(peer)}><${Ic} i="qr"/></button>
-      <button class="iconbtn" title="Edit config" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/></button>
-      <button class="iconbtn danger" title="Unassign peer — revoke access" onClick=${() => confirmUnassign(peer)}><${Ic} i="link"/></button>
-    </div>
-    <${RowError} k=${"peer:" + peer.id}/>
-  </div>`;
-}
-
-// One user with all their peers underneath.
-function UserGroup({ user }) {
-  const peers = Store.peersOfUser(user.id).slice().sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status]);
+// One user as a collapsible row: status · name · tag · note · peers · last · rate · total · controls.
+// Click the row to expand its peers (the shared EmbeddedPeers grid); click again to collapse.
+function UserRow({ user }) {
+  const [, force] = useState(0);
+  const expanded = !!usersView.expanded[user.id];
+  const toggle = () => { usersView.expanded[user.id] = !expanded; force(x => x + 1); };
+  const st = userStats(user.id);
+  const [db, ub] = dlul(st.rxb, st.txb);
+  const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20 });
   const delUser = () => openConfirm({ title: "Delete user · " + user.name, confirmLabel: "Delete user", danger: true,
     body: "Their peers are revoked and become unassigned. This can't be undone.",
     onConfirm: () => mutate({ key: "user:" + user.id,
       patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
       call: () => api.userDelete({ id: user.id }) }) });
-  return html`<div class="ugroup">
-    <div class="ug-head">
-      <div class="ug-id">
-        <div class="ug-name"><a href=${"#/user/" + encodeURIComponent(user.id)}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}</div>
-        ${user.note ? html`<div class="ug-note">${user.note}</div>` : null}
-      </div>
+  return html`<div class=${"urow" + (expanded ? " open" : "")}>
+    <div class="urow-head" onClick=${toggle}>
+      <span class="u-exp"><${Ic} i="arrow"/></span>
       <${Badge} s=${user.peerCount ? user.status : "empty"}/>
-      ${user.peerCount ? html`<${UsageBar} value=${user.onlineCount} total=${user.peerCount}/>` : html`<span class="faint pl-none">no peers</span>`}
-      <span class="grow"></span>
-      <button class="btn btn-mini" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/> Add peer</button>
-      <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
-      <button class="iconbtn danger" title="Delete user" onClick=${delUser}><${Ic} i="trash"/></button>
+      <span class="u-name"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a></span>
+      <span class="u-tag">${user.tag ? html`<span class="tagchip">${user.tag}</span>` : html`<span class="faint">—</span>`}</span>
+      <span class="u-note" title=${user.note || ""}>${user.note || html`<span class="faint">—</span>`}</span>
+      <span class="u-peers">${user.peerCount} peer${user.peerCount === 1 ? "" : "s"} ${user.peerCount ? html`<span class="faint">(${user.onlineCount} online)</span>` : null}</span>
+      <span class="u-last">${st.last == null ? html`<span class="u-never">Never online</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
+      <span class="u-thru"><span class="u-lbl">Rate</span>${rateCell(st.rx, st.tx)}</span>
+      <span class="u-total"><span class="u-lbl">Total</span><span class="addr xfer">↓ ${fmtBytes(db)} <span class="up">↑ ${fmtBytes(ub)}</span></span></span>
+      <span class="u-acts" onClick=${e => e.stopPropagation()}>
+        <button class="iconbtn" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
+        <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
+        <button class="iconbtn danger" title="Delete user" onClick=${delUser}><${Ic} i="trash"/></button>
+      </span>
     </div>
-    ${peers.length ? html`<div class="ug-peers">${peers.map(p => html`<${PeerLine} key=${p.id} peer=${p}/>`)}</div>`
-      : html`<div class="ug-empty">No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.</div>`}
+    ${expanded ? html`<div class="urow-body">
+      ${user.peerCount ? html`<${EmbeddedPeers} peers=${Store.peersOfUser(user.id)} view=${view} hideUser=${true}/>`
+        : html`<div class="ug-empty">No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.</div>`}
+    </div>` : null}
     <${RowError} k=${"user:" + user.id}/>
   </div>`;
 }
@@ -2925,107 +3012,58 @@ function UserGroup({ user }) {
 function UsersScreen() {
   useStore();
   const [, force] = useState(0);
-  const users = Store.recon.users.slice();
-  const q = usersFilter.text.toLowerCase();
-  const shown = users.filter(u => !q || (u.name + " " + u.tag + " " + u.note).toLowerCase().includes(q))
+  const q = usersView.q.toLowerCase();
+  const allUsers = Store.recon.users;
+  const users = allUsers.slice().filter(u => userMatchesQ(u, q))
     .sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || String(a.name).localeCompare(String(b.name)));
-  const unassigned = Store.unassignedPeers();
+  const allUnassigned = Store.unassignedPeers();
+  const unassigned = q ? allUnassigned.filter(p => peerMatchesQ(p, q)) : allUnassigned;
+
+  const pageSize = usersView.pageSize || 20;
+  const totalPages = Math.max(1, Math.ceil(users.length / pageSize));
+  const page = Math.min(Math.max(1, usersView.page || 1), totalPages);
+  const pageUsers = users.slice((page - 1) * pageSize, page * pageSize);
+  const setPage = p => { usersView.page = p; force(x => x + 1); };
 
   return html`<div class="screen">
+    <${StoreOffBanner}/>
     <div class="toolbar">
-      <div class="search"><${Ic} i="search"/><input placeholder="Search name, tag, note…" value=${usersFilter.text}
-        onInput=${e => { usersFilter.text = e.target.value.trim(); force(x => x + 1); }}/></div>
+      <div class="search"><${Ic} i="search"/><input placeholder="Search users, tags, notes, peers…" value=${usersView.q}
+        onInput=${e => { usersView.q = e.target.value.trim(); usersView.page = 1; force(x => x + 1); }}/></div>
       <span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openCreatePeer({})}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> New user</button>
     </div>
 
-    ${!users.length ? html`<div class="empty"><b>No users yet</b>Create a user, then mint peers for them — or create a peer and assign it later.</div>`
-      : !shown.length ? html`<div class="empty"><b>Nothing matches</b>Clear the search.</div>`
-      : html`<div class="ugroups">${shown.map(u => html`<${UserGroup} key=${u.id} user=${u}/>`)}</div>`}
+    <div class="section-title"><h2>Users</h2><span class="count">${users.length}</span></div>
+    ${!allUsers.length ? html`<div class="empty"><b>No users yet</b>Create a user, then mint peers for them — or create a peer and assign it later.</div>`
+      : !users.length ? html`<div class="empty"><b>Nothing matches</b>Clear the search.</div>`
+      : html`<div class="urows">${pageUsers.map(u => html`<${UserRow} key=${u.id} user=${u}/>`)}</div>`}
+    ${users.length > pageSize ? html`<div class="pager">
+      <label class="pager-size">Rows per page
+        <select class="selwrap" value=${pageSize} onChange=${e => { usersView.pageSize = +e.target.value; usersView.page = 1; force(x => x + 1); }}>
+          ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
+        </select></label>
+      <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, users.length)} of ${users.length}</span>
+      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
+      <span class="pager-pg">${page} / ${totalPages}</span>
+      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>Next ›</button>
+    </div>` : null}
 
-    ${unassigned.length ? html`<${Fragment}>
+    ${allUnassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">Unassigned peers</h2><span class="count">${unassigned.length}</span></div>
-      <div class="ugroup unassigned"><div class="ug-peers">${unassigned.map(p => html`<div class="pline" key=${p.id}>
-        <div class="pl-main">
-          <div class="pl-title">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled peer</span>`}<span class="pl-key addr">${p.pubkey.slice(0, 10)}…</span></div>
-          <div class="pl-targets">${p.targets.map(t => html`<span class="pl-t" key=${tkey(t.node, t.iface)}><span class="tags">${targetTags(t.node, t.iface, t.type, t.via, !t.online, t.viaTurn)}</span><span class="pl-ip addr">${t.ip || "—"}</span></span>`)}</div>
-        </div>
-        <${Badge} s=${p.status}/>
-        <div class="pl-acts">
-          <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>
-          <${PeerOwnerControls} peer=${p} showDelete=${true}/>
-        </div>
-      </div>`)}</div></div>
+      <${EmbeddedPeers} peers=${unassigned} view=${unassignedView}/>
     <//>` : null}
   </div>`;
 }
 
 // ═════════════════════════ SCREEN: USER DETAIL ═════════════════════════
+// The per-user detail screen is folded into the Users list: a deep link (or a peers-table user cell)
+// just opens the Users screen with that user's row expanded. Kept so old links / bookmarks still work.
 function UserDetail({ id: rawId }) {
-  useStore();
   const id = decodeURIComponent(rawId);
-  const u = Store.user(id);
-  const [edit, setEdit] = useState(false);
-  if (!u) return html`<div class="screen"><div class="crumb"><a href="#/users">Users</a><span class="sep">/</span><b>unknown</b></div>
-    <div class="empty"><b>User not found</b>It may have been removed.</div></div>`;
-  const peers = Store.peersOfUser(id);
-
-  return html`<div class="screen">
-    <div class="crumb"><a href="#/users">Users</a><span class="sep">/</span><b>${u.name}</b></div>
-
-    <div class="detail-head">
-      <div class="nameline"><h1>${u.name}</h1>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}<${Badge} s=${u.peerCount ? u.status : "empty"}/>
-        <button class="editname" title="Edit" onClick=${() => setEdit(true)}><${Ic} i="pencil"/></button></div>
-      <div class="grow"></div>
-      <button class="btn btn-ghost" onClick=${() => openAddPeers(id, u.name)}><span class="plus"><${Ic} i="plus"/></span> Add peers</button>
-      <${DangerButton} label="Delete user" confirm="Delete — peers go unassigned?" className="warn" onConfirm=${() => mutate({
-        key: "user:" + id,
-        patch: s => {                               // optimistic: drop the user, its peers go unassigned (mirrors the cascade)
-          delete s.roster.users[id];
-          for (const p of Object.values(s.roster.peers)) if (p.user_id === id) p.user_id = null;
-        },
-        call: () => api.userDelete({ id }),
-        onOk: () => go("#/users"),
-      })}/>
-    </div>
-    <${RowError} k=${"user:" + id}/>
-
-    ${edit ? html`<${UserEditCard} user=${u} done=${() => setEdit(false)}/>` : html`<div class="identity">
-      <div class="item"><div class="k">Tag</div><div class="v">${u.tag || "—"}</div></div>
-      <div class="item"><div class="k">Note</div><div class="v">${u.note || "—"}</div></div>
-      <div class="item"><div class="k">Peers</div><div class="v">${u.onlineCount}/${u.peerCount} online</div></div>
-      <div class="item"><div class="k">Added</div><div class="v">${ago(u.created_at)}</div></div>
-    </div>`}
-
-    <div class="section-title"><h2>Peers by interface</h2><span class="count">${peers.length}</span></div>
-    <${UserPeers} user=${u}/>
-  </div>`;
-}
-
-// A user's peers, grouped by the interface each deployment lands on (one QR/link per target).
-function UserPeers({ user }) {
-  const peers = Store.peersOfUser(user.id);
-  if (!peers.length) return html`<div class="empty"><b>No peers yet</b>Add peers for ${user.name} — each interface becomes its own peer.</div>`;
-  const groups = {};
-  for (const p of peers) for (const t of p.targets) {
-    const k = t.node + "|" + t.iface;
-    (groups[k] = groups[k] || { node: t.node, iface: t.iface, items: [] }).items.push({ peer: p, t });
-  }
-  return html`${Object.keys(groups).sort().map(k => {
-    const g = groups[k];
-    return html`<div class="ifgroup" key=${k}>
-      <a class="ifgroup-head" href=${"#/node/" + encodeURIComponent(g.node) + "/" + encodeURIComponent(g.iface)} title="Open interface"><span class="dot" style=${"background:" + Store.nodeColor(g.node)}></span><b>${Store.nodeName(g.node)}</b><span class="sep2">·</span><span class="ifn">${g.iface}</span><span class="tags">${(() => {
-        const ty = ((g.items[0].t || {}).type || "").toLowerCase();
-        const tags = [];
-        if (ty === "awg") tags.push(html`<${Tag} kind="awg" label="awg"/>`);
-        else if (ty === "wg") tags.push(html`<${Tag} kind="wg" label="wg"/>`);
-        if (g.items.some(it => it.t.via === "turn")) tags.push(html`<${Tag} kind="turn" label="turn"/>`);
-        return tags;
-      })()}</span><span class="count">${g.items.length}</span><span class="rowarrow"><${Ic} i="arrow"/></span></a>
-      <div class="deploys">${g.items.map(it => html`<${UserTargetCard} key=${it.peer.id + "|" + k} peer=${it.peer} t=${it.t}/>`)}</div>
-    </div>`;
-  })}`;
+  useEffect(() => { usersView.expanded[id] = true; usersView.q = ""; usersView.page = 1; go("#/users"); }, [id]);
+  return html`<div class="screen"><div class="empty">Opening…</div></div>`;
 }
 
 // Inline-editable peer title (optimistic). The operator's label to tell a user's devices apart.
@@ -3043,31 +3081,6 @@ function PeerTitle({ peer }) {
     <button class="btn btn-mini" onClick=${save}><${Ic} i="check"/></button></span>`;
   return html`<span class="ptitle">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">untitled</span>`}
     <button class="editname" title="Rename peer" onClick=${() => { setVal(peer.title || ""); setEditing(true); }}><${Ic} i="pencil"/></button></span>`;
-}
-
-// One target of a user's peer: its QR/link (TargetCard) + per-target management actions.
-function UserTargetCard({ peer, t }) {
-  const key = "peer:" + peer.id;
-  return html`<div class="utc">
-    <div class="utc-title"><${PeerTitle} peer=${peer}/></div>
-    <${TargetCard} peer=${peer} t=${t}/>
-    <div class="utc-acts">
-      <span class="addr" title=${peer.pubkey}>${peer.pubkey.slice(0, 14)}…</span>
-      <span class="grow"></span>
-      <button class="btn btn-mini" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/> Config</button>
-      <button class="btn btn-mini" onClick=${() => openAddTarget(peer)}>Targets</button>
-      ${peer.targets.length > 1 ? html`<${DangerButton} label="Remove here" confirm="Remove here?" onConfirm=${() => mutate({
-        key, patch: s => { const pp = s.roster.peers[peer.id]; if (pp) pp.targets = pp.targets.filter(x => !(x.node === t.node && x.iface === t.iface)); },
-        call: () => api.peerRemoveTarget({ peer_id: peer.id, node: t.node, iface: t.iface }),
-      })}/>` : null}
-      <${DangerButton} label="Unassign" confirm="Unassign — revoke access?" onConfirm=${() => mutate({
-        key, patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = null; },   // revokes (PSK rotates); delete then lives on the unassigned peer
-        call: () => api.peerUnassign({ peer_id: peer.id }),
-        onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.configEpoch++; },
-      })}/>
-      <${RowError} k=${key}/>
-    </div>
-  </div>`;
 }
 
 function UserEditCard({ user, done }) {
