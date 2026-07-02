@@ -3106,22 +3106,27 @@ function openTurnConfigs(peer, t, conf, back) {
   <//>`);
 }
 function TurnConfigSheet({ peer, t, conf }) {
-  const [sel, setSel] = useState(0);
-  // The turn-proxies forwarding to this interface become selectable badges; the peer's own proxy (observed
-  // viaTurn) sorts first and is selected by default. Only the selected proxy's config is shown.
+  const [selFork, setSelFork] = useState(0);
+  const [inst, setInst] = useState({});   // fork → chosen instance index (for redundant same-fork proxies)
+  // One badge PER FORK; the peer's own fork (observed viaTurn) sorts first and is selected by default. When a
+  // fork has several proxies (redundancy), a dropdown picks which one. Only the selected proxy's config shows.
   const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
   const all = turnProxiesFor(t.node, t.iface);
-  const tps = lt.viaTurn ? [...all].sort((a, b) => (b.service === lt.viaTurn ? 1 : 0) - (a.service === lt.viaTurn ? 1 : 0)) : all;
+  const sorted = lt.viaTurn ? [...all].sort((a, b) => (b.service === lt.viaTurn ? 1 : 0) - (a.service === lt.viaTurn ? 1 : 0)) : all;
+  const order = [], byFork = {};
+  sorted.forEach(p => { const f = turnFork(p.service); if (!byFork[f]) { byFork[f] = []; order.push(f); } byFork[f].push(p); });
   const vk = ((Store.panelSettings || {}).vk_link || "").trim();
   const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
-  if (!tps.length) return html`<div class="hint">No turn-proxy forwards to this interface.</div>`;
-  const i = Math.min(sel, tps.length - 1); const cur = tps[i];
-  // several proxies of the SAME fork → disambiguate the badges by listen port
-  const forkN = {}; tps.forEach(p => { const f = turnFork(p.service); forkN[f] = (forkN[f] || 0) + 1; });
-  const badge = p => { const f = turnFork(p.service); return forkN[f] > 1 ? f + " :" + portOf(p.listen) : f; };
+  if (!order.length) return html`<div class="hint">No turn-proxy forwards to this interface.</div>`;
+  const fi = Math.min(selFork, order.length - 1); const fork = order[fi];
+  const list = byFork[fork]; const ii = Math.min(inst[fork] || 0, list.length - 1); const cur = list[ii];
   return html`<div class="turncfg">
-    ${tps.length > 1 ? html`<div class="turntabs">${tps.map((p, k) => html`<button key=${p.service}
-      class=${"snbadge turntab" + (k === i ? " on" : "")} style=${"--c:" + turnColor(turnFork(p.service))} onClick=${() => setSel(k)}>${badge(p)}</button>`)}</div>` : null}
+    ${order.length > 1 ? html`<div class="turntabs">${order.map((f, k) => html`<button key=${f}
+      class=${"snbadge turntab" + (k === fi ? " on" : "")} style=${"--c:" + turnColor(f)} onClick=${() => setSelFork(k)}>${f}</button>`)}</div>` : null}
+    ${list.length > 1 ? html`<div class="field turninst"><label>Which ${fork} proxy</label>
+      <select class="selwrap" value=${ii} onChange=${e => setInst(m => ({ ...m, [fork]: +e.target.value }))}>
+        ${list.map((p, k) => html`<option value=${k}>${p.listen || ("proxy " + (k + 1))}</option>`)}
+      </select></div>` : null}
     ${!vk ? html`<div class="notice warn"><${Ic} i="warn"/><span>No VK call link set — configs carry a placeholder. Set it in <a href="#/panel/settings" onClick=${() => closeAllModals()}>Panel settings → Turn proxies</a>.</span></div>` : null}
     <${TurnCfgItem} key=${cur.service} conf=${conf} tp=${cur} vk=${vk} base=${base}/>
   </div>`;
@@ -3142,15 +3147,15 @@ function TurnCfgItem({ conf, tp, vk, base }) {
   useEffect(() => { autoGrow(taRef.current); }, [text]);   // dynamic height to fit wrapped content, no scroll
   const ready = text != null;
   return html`<div class="turncfg-item">
-    <div class="turncfg-head">
-      <span class="tcf-label">${a.label}</span><span class="grow"></span>
-      <button class="btn btn-mini" disabled=${!ready} onClick=${() => copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
-      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""))}><${Ic} i="download"/> Download .conf</button>
-    </div>
+    <div class="turncfg-head"><span class="tcf-label">${a.label}</span></div>
     ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
     ${a.cmd ? html`<div class="tokenbox" style="margin-bottom:6px">${a.cmd}</div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
       : html`<textarea class="turncfg-ta" readonly spellcheck="false" ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
+    <div class="turncfg-foot"><span class="grow"></span>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""))}><${Ic} i="download"/> Download .conf</button>
+    </div>
   </div>`;
 }
 
