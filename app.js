@@ -3194,7 +3194,9 @@ const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize, 
 
 // User-row status: a BARE tag (dot + uppercase mono label), same style as the node "reporting/offline"
 // status, just smaller — not the pill Badge used inside the grids.
-function userStatTag(user) {
+function userStatTag(user, live) {
+  // Live monitor: a user is simply online (has an online peer, green) or offline (grey) — no ready/partial/etc.
+  if (live) { const on = user.onlineCount > 0; return html`<span class=${"ustat s-" + (on ? "online" : "off")}>${on ? "online" : "offline"}</span>`; }
   const s = user.peerCount ? user.status : "empty";
   return html`<span class=${"ustat s-" + s}>${s === "empty" ? "no peers" : s}</span>`;
 }
@@ -3223,7 +3225,8 @@ function userMatchesQ(u, q) {
 // does the user have a peer deployed on this node (and interface, if given)? — for the Users node/iface filter.
 // The user LIST is filtered by this; the expanded grid still shows ALL of the user's peers.
 function userOnNodeIface(u, node, iface) {
-  if (!node && ifaceIsAll(iface)) return true;
+  const anyIface = !iface || iface === "*";   // *awg / *wg still filter (by type) — only ""/"*" mean "all interfaces"
+  if (!node && anyIface) return true;
   return Store.peersOfUser(u.id).some(p => p.targets.some(t => (!node || node === "*" || t.node === node) && ifaceMatch(t.iface, iface)));
 }
 // User-list sorting (clickable header). Callers hold sort/dir in their view-state under caller-chosen keys.
@@ -3458,7 +3461,7 @@ function UserRow({ user, live, onlineOnly }) {
   return html`<div class=${"urow" + (expanded ? " open" : "")} id=${"urow-" + user.id}>
     <div class="urow-head" onClick=${toggle}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
-      ${userStatTag(user)}
+      ${userStatTag(user, live)}
       <span class="u-name"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
       <span class="u-counts">${(() => {
         const onc = html`<span class=${"u-onc" + (user.onlineCount ? " on" : "")}>${user.onlineCount} Online</span>`;
@@ -3490,7 +3493,7 @@ function UsersScreen() {
   const allUsers = Store.recon.users;
   const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
   const ifaceOpts = usersView.node ? Store.userIfacesOf(usersView.node) : allIfaces;
-  if (usersView.iface && !ifaceOpts.includes(usersView.iface)) usersView.iface = "";
+  if (!ifaceIsAll(usersView.iface) && !ifaceOpts.includes(usersView.iface)) usersView.iface = "";
   // node/iface filter the user LIST (has a peer there); each expanded row still shows ALL of that user's peers
   const users = sortUsers(allUsers.filter(u => userMatchesQ(u, q) && userOnNodeIface(u, usersView.node, usersView.iface)), usersView.sort, usersView.dir);
   const allUnassigned = Store.unassignedPeers();

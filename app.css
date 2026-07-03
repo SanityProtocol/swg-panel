@@ -1352,7 +1352,7 @@ a.tg:hover{filter:brightness(1.25)}
 .ustat.s-pending{color:var(--pending)}
 .ustat.s-creating,.ustat.s-rotating{color:var(--partial)}
 .ustat.s-dangling,.ustat.s-removing{color:var(--dangling)}
-.ustat.s-unknown,.ustat.s-empty{color:var(--unknown)}
+.ustat.s-unknown,.ustat.s-empty,.ustat.s-off{color:var(--unknown)}   /* s-off = Live "offline" (grey, no animation) */
 /* name row: name · tag · note all on one line, name + note ellipsize */
 .u-name{display:flex;align-items:center;gap:8px;min-width:0;font-size:14px;font-weight:600}
 .u-name>a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto} .u-name>a:hover{color:var(--brand)}
