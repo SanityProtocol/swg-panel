@@ -828,6 +828,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .pm-opt:hover{color:var(--ink)}
 .pm-peers.on{background:color-mix(in srgb,var(--online) 20%,transparent);color:var(--online)}
 .pm-users.on{background:color-mix(in srgb,var(--ready) 20%,transparent);color:var(--ready)}
+/* Online filter — a single click-to-toggle pill (cyan when on, grey when off) instead of a checkbox */
+.onlbtn{appearance:none;flex:none;height:36px;padding:0 18px;border:1px solid var(--line-solid);border-radius:9px;background:var(--surface-2);color:var(--dim);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;transition:background .12s var(--ease),color .12s var(--ease),border-color .12s var(--ease)}
+.onlbtn:hover{color:var(--ink)}
+.onlbtn.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 45%,transparent)}
 /* endpoint cell: "Local turn-proxy" (fork-coloured) — hover shows the same Connected-via bubble as the dot */
 .peergrid .turnep{cursor:help}
 /* live connections monitor */

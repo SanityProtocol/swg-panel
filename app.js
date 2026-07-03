@@ -3144,7 +3144,7 @@ function ConnectionsScreen() {
     <select class="selwrap" value=${connView.iface} onChange=${e => { connView.iface = e.target.value; reset(); }}>
       <option value="">All interfaces</option>${ifaceOptGroups(ifaceOpts)}
     </select>
-    <label class="chk"><input type="checkbox" checked=${connView.online} onChange=${e => { connView.online = e.target.checked; reset(); }}/> Online</label>
+    <button class=${"onlbtn" + (connView.online ? " on" : "")} title="Show only online connections" onClick=${() => { connView.online = !connView.online; reset(); }}>Online</button>
   </div>`;
 
   if (mode === "users") {
@@ -3181,7 +3181,9 @@ function ConnectionsScreen() {
   return html`<div class="screen">
     ${toolbar}
     <div class="section-title"><h2 class="live-peers">Peers</h2><span class="count">${rows.length} shown · ${onlineCount} online</span></div>
-    <${PeerGrid} rows=${paginate(rows)} agg=${true} node="*" iface="*" shownByPeer=${shownByPeer} q=${connView.q} live=${true} sort=${connView.sort} dir=${connView.dir} onSort=${c => { peerSortBy(connView, c); connView.page = 1; bump(); }}/>
+    ${rows.length
+      ? html`<${PeerGrid} rows=${paginate(rows)} agg=${true} node="*" iface="*" shownByPeer=${shownByPeer} q=${connView.q} live=${true} sort=${connView.sort} dir=${connView.dir} onSort=${c => { peerSortBy(connView, c); connView.page = 1; bump(); }}/>`
+      : html`<div class="empty"><b>${connView.online ? "No connections online" : "Nothing matches"}</b>${connView.online ? "No peer is online with these filters." : "Clear the filters."}</div>`}
     ${pager(rows.length)}
   </div>`;
 }
