@@ -2905,7 +2905,7 @@ function SetupTurnSheet({ node }) {
 }
 
 // ═════════════════════════ SCREEN: PEERS (by node) ═════════════════════════
-const peersView = { node: "", iface: "", q: "" };
+const peersView = { node: "", iface: "", q: "", sort: "status", dir: -1 };
 // Prominent warning when the panel keeps no client configs at rest — QRs/downloads then only work
 // in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.
 function StoreOffBanner() {
@@ -2931,16 +2931,52 @@ function ifaceIsAwg(iface) {
   for (const n of Object.keys(Store.describe || {})) { const m = (Store.describe[n] || {})[iface]; if (m && Object.keys(m.awg_params || {}).length) return true; }
   return false;
 }
-// <option>s for an interface dropdown split into AmneziaWG / WireGuard optgroups (used everywhere we list ifaces)
+// interface-filter dropdown values: "" / "*" = all · "*awg" / "*wg" = all of one type · else an exact iface name.
+const ifaceIsAll = v => !v || v === "*" || v === "*awg" || v === "*wg";   // an aggregate (multi-iface) filter value
+function ifaceMatch(iface, filter) {                                       // does an interface name pass the filter value?
+  if (!filter || filter === "*") return true;
+  if (filter === "*awg") return ifaceIsAwg(iface);
+  if (filter === "*wg") return !ifaceIsAwg(iface);
+  return iface === filter;
+}
+// <option>s for an interface dropdown: "All AmneziaWG" / "All WireGuard" shortcuts, then AmneziaWG / WireGuard
+// optgroups of the individual interfaces (used everywhere we list ifaces; the caller renders "All interfaces").
 function ifaceOptGroups(names) {
   const awg = names.filter(ifaceIsAwg), wg = names.filter(n => !ifaceIsAwg(n));
-  return html`${awg.length ? html`<optgroup label="AmneziaWG">${awg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>` : null}${wg.length ? html`<optgroup label="WireGuard">${wg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>` : null}`;
+  return html`${awg.length ? html`<option value="*awg">All AmneziaWG</option>` : null}${wg.length ? html`<option value="*wg">All WireGuard</option>` : null}${awg.length ? html`<optgroup label="AmneziaWG">${awg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>` : null}${wg.length ? html`<optgroup label="WireGuard">${wg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>` : null}`;
 }
+// column sort keys for the shared peer grid — every header is clickable (order-by). Callers hold sort/dir in
+// their view-state and sort BEFORE pagination via sortPeerRows(); PeerGrid renders the clickable headers.
+const _ipKey = ip => String(ip || "").split(/[./]/).map(n => String((+n) || 0).padStart(3, "0")).join(".");
+// status order for the clickable "Status" column — online FIRST (STATUS_RANK ranks ready above online, which is
+// right for the Peers-screen default grouping but backwards for an order-by; here online is the top of the sort).
+const PEER_STATUS_RANK = { online: 8, ready: 7, partial: 6, pending: 5, creating: 5, rotating: 5, unassigned: 3, unknown: 2, dangling: 1 };
+const PEER_SORT = {
+  status: ({ p, t }) => PEER_STATUS_RANK[t.status || p.status] || 0,
+  server: ({ t }) => Store.nodeName(t.node).toLowerCase() + "|" + t.iface,
+  user: ({ p }) => { const u = p.user_id ? Store.user(p.user_id) : null; return u ? u.name.toLowerCase() : "￿"; },
+  title: ({ p }) => String(p.title || p.name || "").toLowerCase(),
+  address: ({ t }) => _ipKey(t.ip),
+  endpoint: ({ t }) => ((t.observed && t.observed.endpoint) || "￿").toLowerCase(),
+  online: ({ t }) => (t.observed && t.observed.handshake_age != null) ? t.observed.handshake_age : Infinity,
+  rate: ({ t }) => t.observed ? (t.observed.rx_speed || 0) + (t.observed.tx_speed || 0) : 0,
+  total: ({ t }) => t.observed ? (t.observed.rx_bytes || 0) + (t.observed.tx_bytes || 0) : 0,
+};
+const PEER_DEFDIR = { status: -1, rate: -1, total: -1, online: 1, title: 1, user: 1, server: 1, address: 1, endpoint: 1 };   // first-click direction per column
+function sortPeerRows(rows, sort, dir) {
+  const key = PEER_SORT[sort] || PEER_SORT.status;
+  return rows.slice().sort((a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1)
+    || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || "")));
+}
+function peerSortBy(view, col) { if (view.sort === col) view.dir = -view.dir; else { view.sort = col; view.dir = PEER_DEFDIR[col] || 1; } }
 // `live` (the Live monitor): status is the animated connDot (not the pill badge), an Endpoint column is added
 // (turn peers show "Local turn-proxy"), the row actions + assign-to-user dropdown are dropped (read-only).
-function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live }) {
-  return html`<div class="tablewrap"><table class="peergrid">
-    <thead><tr><th>${live ? "" : "Status"}</th>${loc ? html`<th>Server</th>` : (agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null)}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th>${live ? html`<th>Endpoint</th>` : null}<th class="h-online">Online</th><th class="h-rate">Rate ↓↑</th><th class="h-total">Total ↓↑</th>${live ? null : html`<th class="h-acts"></th>`}</tr></thead>
+// `sort`/`dir`/`onSort` make every column header a clickable order-by.
+function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, sort, dir, onSort }) {
+  const arrow = c => sort === c ? (dir < 0 ? " ↓" : " ↑") : "";
+  const th = (c, label, cls) => onSort ? html`<th class=${(cls ? cls + " " : "") + "clk"} onClick=${() => onSort(c)}>${label}${arrow(c)}</th>` : html`<th class=${cls || ""}>${label}</th>`;
+  return html`<div class="tablewrap"><table class=${"peergrid" + (live ? " live" : "")}>
+    <thead><tr>${th("status", live ? "" : "Status")}${loc ? th("server", "Server") : (agg ? th("server", node === "*" ? "Server" : "IF") : null)}${hideUser ? null : th("user", "User")}${th("title", "Title")}${th("address", "Address")}${live ? th("endpoint", "Endpoint") : null}${th("online", "Online", "h-online")}${th("rate", "Rate ↓↑", "h-rate")}${th("total", "Total ↓↑", "h-total")}${live ? null : html`<th class="h-acts"></th>`}</tr></thead>
     <tbody>
       ${rows.length ? rows.map(({ p, t }) => {
         const obs = t.observed;
@@ -2948,14 +2984,14 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
-          <td data-label="Status">${live ? connDot(t) : gridStatusBadge(t, p)}</td>
+          <td data-label="Status">${live ? html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>` : gridStatusBadge(t, p)}</td>
           ${loc ? html`<td data-label="Server"><div class="srvcell">
             <span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
             ${gridIfaceTag(t)}
           </div></td>`
           : agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
             ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-            ${iface === "*" ? gridIfaceTag(t) : null}
+            ${ifaceIsAll(iface) ? gridIfaceTag(t) : null}
           </div></td>` : null}
           ${hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
             ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span><${Ic} i="user"/></a>`
@@ -2992,9 +3028,9 @@ function PeersScreen() {
   // default interface: aggregate when several exist (or all-servers); else the only one.
   const ifaceDefault = () => (node === "*" || ifaceOpts.length > 1) ? "*" : (ifaceOpts[0] || "");
   if (!peersView.iface) peersView.iface = ifaceDefault();
-  if (peersView.iface !== "*" && !ifaceOpts.includes(peersView.iface)) peersView.iface = ifaceDefault();
+  if (!ifaceIsAll(peersView.iface) && !ifaceOpts.includes(peersView.iface)) peersView.iface = ifaceDefault();
   const iface = peersView.iface;
-  const agg = node === "*" || iface === "*";
+  const agg = node === "*" || ifaceIsAll(iface);
   const itype = (!agg && Store.ifaceMeta(node, iface) && Object.keys(Store.ifaceMeta(node, iface).awg_params || {}).length) ? "awg" : "wg";
 
   const q = peersView.q.toLowerCase();
@@ -3002,13 +3038,11 @@ function PeersScreen() {
   let rows = [];
   for (const p of Store.recon.peers) for (const t of p.targets) {
     if (node !== "*" && t.node !== node) continue;
-    if (iface !== "*" && t.iface !== iface) continue;
+    if (!ifaceMatch(t.iface, iface)) continue;
     rows.push({ p, t });
   }
   if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
-  rows.sort((a, b) => STATUS_RANK[a.t.status || a.p.status] - STATUS_RANK[b.t.status || b.p.status]
-    || String(a.p.title || a.p.name).localeCompare(String(b.p.title || b.p.name))
-    || Store.nodeName(a.t.node).localeCompare(Store.nodeName(b.t.node)));
+  rows = sortPeerRows(rows, peersView.sort, peersView.dir);
   // which of each peer's deployments are actually visible as rows here — so a row can flag the rest
   // (filtered out by server/interface or search) with a "+N" the operator can hover/tap.
   const shownByPeer = {};
@@ -3043,7 +3077,7 @@ function PeersScreen() {
       ${node !== "*" ? html`<${Tag} kind="iface" label=${Store.nodeName(node) || "—"} color=${Store.nodeColor(node)}/>` : null}
       ${iface !== "*" && iface ? html`<${Tag} kind=${itype} label=${iface}/>` : null}
     </span><span class="count">${rows.length}</span></div>
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${peersView.q} sort=${peersView.sort} dir=${peersView.dir} onSort=${c => { peerSortBy(peersView, c); peersView.page = 1; force(x => x + 1); }}/>
     ${rows.length > 20 ? html`<div class="pager">
       <label class="pager-size">Rows per page
         <select class="selwrap" value=${pageSize} onChange=${e => { peersView.pageSize = +e.target.value; peersView.page = 1; force(x => x + 1); }}>
@@ -3068,7 +3102,7 @@ function PeersScreen() {
 // mode — dot status, endpoint column, no controls) and the shared UserRow list (also `live`). Node/interface
 // dropdowns + a global search + an Online filter narrow both. State lives in module scope so the 5s poll
 // never loses it; Preact keeps scroll + updates cells in place.
-const connView = { mode: "peers", node: "", iface: "", q: "", online: false, page: 1, pageSize: 20 };
+const connView = { mode: "peers", node: "", iface: "", q: "", online: false, page: 1, pageSize: 20, sort: "status", dir: -1, usort: "status", udir: -1 };
 function ConnectionsScreen() {
   useStore();
   const [, force] = useState(0);
@@ -3077,7 +3111,7 @@ function ConnectionsScreen() {
   const mode = connView.mode, q = connView.q.toLowerCase();
   const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
   const ifaceOpts = connView.node ? Store.userIfacesOf(connView.node) : allIfaces;
-  if (connView.iface && !ifaceOpts.includes(connView.iface)) connView.iface = "";
+  if (!ifaceIsAll(connView.iface) && !ifaceOpts.includes(connView.iface)) connView.iface = "";
   const setMode = m => { connView.mode = m; reset(); };
   const setPage = p => { connView.page = p; bump(); };
   // shared pager (both modes) — mirrors the Peers/Users screens
@@ -3115,13 +3149,14 @@ function ConnectionsScreen() {
 
   if (mode === "users") {
     // filter the user LIST by node/iface (has a peer there) + search + Online; the expanded grid still shows ALL peers
-    const users = Store.recon.users.slice()
-      .filter(u => userMatchesQ(u, q) && userOnNodeIface(u, connView.node, connView.iface) && (!connView.online || u.onlineCount > 0))
-      .sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || String(a.name).localeCompare(String(b.name)));
+    const users = sortUsers(Store.recon.users.filter(u => userMatchesQ(u, q) && userOnNodeIface(u, connView.node, connView.iface) && (!connView.online || u.onlineCount > 0)), connView.usort, connView.udir);
     return html`<div class="screen">
       ${toolbar}
       <div class="section-title"><h2 class="live-users">Users</h2><span class="count">${users.length}</span></div>
-      ${users.length ? html`<div class="urows">${paginate(users).map(u => html`<${UserRow} key=${u.id} user=${u} live=${true} onlineOnly=${connView.online}/>`)}</div>`
+      ${users.length ? html`<${Fragment}>
+        <${UsersHeader} live=${true} sort=${connView.usort} dir=${connView.udir} onSort=${c => { sortColToggle(connView, "usort", "udir", c, USER_DEFDIR); connView.page = 1; bump(); }}/>
+        <div class="urows">${paginate(users).map(u => html`<${UserRow} key=${u.id} user=${u} live=${true} onlineOnly=${connView.online}/>`)}</div>
+      <//>`
         : html`<div class="empty"><b>${connView.online ? "No users online" : "Nothing matches"}</b>${connView.online ? "No user has an online peer right now." : "Clear the filters."}</div>`}
       ${pager(users.length)}
     </div>`;
@@ -3132,15 +3167,13 @@ function ConnectionsScreen() {
   for (const p of Store.recon.peers) for (const t of p.targets) {
     if (!t.observed) continue;                                         // only present-on-node connections
     if (connView.node && t.node !== connView.node) continue;
-    if (connView.iface && t.iface !== connView.iface) continue;
+    if (!ifaceMatch(t.iface, connView.iface)) continue;
     if (connView.online && !t.online) continue;
     rows.push({ p, t });
   }
   if (q) rows = rows.filter(({ p, t }) => { const u = p.user_id ? Store.user(p.user_id) : null; const o = t.observed || {};
     return ((p.title || "") + " " + (p.name || "") + " " + (u ? u.name : "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface + " " + (o.endpoint || "")).toLowerCase().includes(q); });
-  rows.sort((a, b) => (b.t.online ? 1 : 0) - (a.t.online ? 1 : 0)
-    || ((b.t.observed.rx_speed || 0) + (b.t.observed.tx_speed || 0)) - ((a.t.observed.rx_speed || 0) + (a.t.observed.tx_speed || 0))
-    || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || "")));
+  rows = sortPeerRows(rows, connView.sort, connView.dir);
   const shownByPeer = {};
   for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
   const onlineCount = rows.filter(r => r.t.online).length;
@@ -3148,16 +3181,16 @@ function ConnectionsScreen() {
   return html`<div class="screen">
     ${toolbar}
     <div class="section-title"><h2 class="live-peers">Peers</h2><span class="count">${rows.length} shown · ${onlineCount} online</span></div>
-    <${PeerGrid} rows=${paginate(rows)} agg=${true} node="*" iface="*" shownByPeer=${shownByPeer} q=${connView.q} live=${true}/>
+    <${PeerGrid} rows=${paginate(rows)} agg=${true} node="*" iface="*" shownByPeer=${shownByPeer} q=${connView.q} live=${true} sort=${connView.sort} dir=${connView.dir} onSort=${c => { peerSortBy(connView, c); connView.page = 1; bump(); }}/>
     ${pager(rows.length)}
   </div>`;
 }
 
 // ═════════════════════════ SCREEN: USERS ═════════════════════════
 // Independent view-state per grid so search / server / interface / page never bleed across them.
-const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, expanded: {} };   // node/iface filter the LIST (expand shows all peers)
-const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20 };
-const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize } for the expanded grid
+const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, sort: "status", dir: -1, expanded: {} };   // node/iface filter the LIST (expand shows all peers)
+const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 };
+const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize, sort, dir } for the expanded grid
 
 // User-row status: a BARE tag (dot + uppercase mono label), same style as the node "reporting/offline"
 // status, just smaller — not the pill Badge used inside the grids.
@@ -3190,12 +3223,35 @@ function userMatchesQ(u, q) {
 // does the user have a peer deployed on this node (and interface, if given)? — for the Users node/iface filter.
 // The user LIST is filtered by this; the expanded grid still shows ALL of the user's peers.
 function userOnNodeIface(u, node, iface) {
-  if (!node && !iface) return true;
-  return Store.peersOfUser(u.id).some(p => p.targets.some(t => (!node || node === "*" || t.node === node) && (!iface || iface === "*" || t.iface === iface)));
+  if (!node && ifaceIsAll(iface)) return true;
+  return Store.peersOfUser(u.id).some(p => p.targets.some(t => (!node || node === "*" || t.node === node) && ifaceMatch(t.iface, iface)));
+}
+// User-list sorting (clickable header). Callers hold sort/dir in their view-state under caller-chosen keys.
+const USER_SORT = {
+  status: u => PEER_STATUS_RANK[u.status] || 0, name: u => (u.name || "").toLowerCase(),
+  peers: u => u.peerCount || 0, online: u => u.onlineCount || 0,
+  last: u => { const s = userStats(u.id); return s.last == null ? Infinity : s.last; },
+  rate: u => { const s = userStats(u.id); return s.rx + s.tx; },
+  total: u => { const s = userStats(u.id); return s.rxb + s.txb; },
+};
+const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, name: 1 };
+function sortUsers(users, sort, dir) {
+  const key = USER_SORT[sort] || USER_SORT.status;
+  return users.slice().sort((a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1) || String(a.name).localeCompare(String(b.name)));
+}
+function sortColToggle(view, sk, dk, col, defdir) { if (view[sk] === col) view[dk] = -view[dk]; else { view[sk] = col; view[dk] = defdir[col] || 1; } }
+// The sortable header line above a users list — same grid columns as .urow-head so the titles (which the rows no
+// longer repeat inline) sit over their columns.
+function UsersHeader({ sort, dir, onSort, live }) {
+  const arrow = c => sort === c ? (dir < 0 ? " ↓" : " ↑") : "";
+  const th = (c, label, cls) => html`<span class=${"clk" + (cls ? " " + cls : "")} onClick=${() => onSort(c)}>${label}${arrow(c)}</span>`;
+  return html`<div class="uhead">
+    <span></span>${live ? html`<span></span>` : th("status", "Status")}${th("name", "User")}${th("peers", "Peers")}${th("last", "Online")}${th("rate", "Rate", "uh-r")}${th("total", "Total", "uh-r")}<span></span>
+  </div>`;
 }
 // which Users page a user lands on (mirrors UsersScreen's sort; search is cleared before we navigate)
 function userPageOf(uid) {
-  const users = Store.recon.users.slice().sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || String(a.name).localeCompare(String(b.name)));
+  const users = sortUsers(Store.recon.users, usersView.sort, usersView.dir);
   const idx = users.findIndex(u => u.id === uid);
   return idx < 0 ? 1 : Math.floor(idx / (usersView.pageSize || 20)) + 1;
 }
@@ -3243,9 +3299,9 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
     : [...(ifByNode[node] || [])].sort();
   const ifaceDefault = () => (node === "*" || ifaceOpts.length > 1) ? "*" : (ifaceOpts[0] || "*");
   if (!view.iface) view.iface = ifaceDefault();
-  if (view.iface !== "*" && !ifaceOpts.includes(view.iface)) view.iface = ifaceDefault();
+  if (!ifaceIsAll(view.iface) && !ifaceOpts.includes(view.iface)) view.iface = ifaceDefault();
   const iface = hideToolbar ? "*" : view.iface;
-  const agg = node === "*" || iface === "*";
+  const agg = node === "*" || ifaceIsAll(iface);
   const q = (view.q || "").toLowerCase();
 
   let rows = [];
@@ -3253,7 +3309,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
   if (collapse) {
     // one row PER PEER (a representative deployment); the peer's other interfaces surface as a +N badge
     for (const p of peers) {
-      let ts = p.targets.filter(t => (node === "*" || t.node === node) && (iface === "*" || t.iface === iface));
+      let ts = p.targets.filter(t => (node === "*" || t.node === node) && ifaceMatch(t.iface, iface));
       if (onlineOnly) ts = ts.filter(t => t.online);   // Online filter → only the peer's online deployments
       if (!ts.length) continue;
       if (q && !((p.title || "") + " " + (p.name || "") + " " + p.targets.map(t => (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).join(" ")).toLowerCase().includes(q)) continue;
@@ -3264,16 +3320,15 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
   } else {
     for (const p of peers) for (const t of p.targets) {
       if (node !== "*" && t.node !== node) continue;
-      if (iface !== "*" && t.iface !== iface) continue;
+      if (!ifaceMatch(t.iface, iface)) continue;
       if (onlineOnly && !t.online) continue;
       rows.push({ p, t });
     }
     if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
     for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
   }
-  rows.sort((a, b) => STATUS_RANK[a.t.status || a.p.status] - STATUS_RANK[b.t.status || b.p.status]
-    || String(a.p.title || a.p.name).localeCompare(String(b.p.title || b.p.name))
-    || Store.nodeName(a.t.node).localeCompare(Store.nodeName(b.t.node)));
+  if (!view.sort) { view.sort = "status"; view.dir = -1; }
+  rows = sortPeerRows(rows, view.sort, view.dir);
 
   const pageSize = view.pageSize || 20;
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
@@ -3293,7 +3348,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
       </select>` : null}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || "New peer"}</button>` : null}
     </div>`}
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live} sort=${view.sort} dir=${view.dir} onSort=${c => { peerSortBy(view, c); view.page = 1; bump(); }}/>
     ${rows.length > pageSize ? html`<div class="pager">
       <label class="pager-size">Rows per page
         <select class="selwrap" value=${pageSize} onChange=${e => { view.pageSize = +e.target.value; view.page = 1; bump(); }}>
@@ -3394,7 +3449,7 @@ function UserRow({ user, live, onlineOnly }) {
   const toggle = () => { usersView.expanded[user.id] = !expanded; force(x => x + 1); };
   const st = userStats(user.id);
   const [db, ub] = dlul(st.rxb, st.txb);
-  const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20 });
+  const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 });
   const delUser = () => openConfirm({ title: "Delete user · " + user.name, confirmLabel: "Delete user", danger: true,
     body: "Their peers are revoked and become unassigned. This can't be undone.",
     onConfirm: () => mutate({ key: "user:" + user.id,
@@ -3404,13 +3459,16 @@ function UserRow({ user, live, onlineOnly }) {
     <div class="urow-head" onClick=${toggle}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       ${userStatTag(user)}
-      <span class="u-name"><span class="u-nameline"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}</span>${user.note ? html`<span class="u-sub" title=${user.note}>${user.note}</span>` : null}</span>
-      <span class="u-peers">${live
-        ? html`<span class=${"u-online-top" + (user.onlineCount ? " on" : "")}>${user.onlineCount} Online</span>${user.peerCount ? html`<span class="u-sub2">${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>` : null}`
-        : html`<span>${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>${user.peerCount ? html`<span class="u-sub2">${user.onlineCount} online</span>` : null}`}</span>
-      <span class="u-last"><span class="u-lbl">Online</span>${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
-      <span class="u-thru"><span class="u-lbl">Rate</span>${rateCell(st.rx, st.tx)}</span>
-      <span class="u-total"><span class="u-lbl">Total</span>${xferCell(db, ub)}</span>
+      <span class="u-name"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
+      <span class="u-counts">${(() => {
+        const onc = html`<span class=${"u-onc" + (user.onlineCount ? " on" : "")}>${user.onlineCount} Online</span>`;
+        const pc = html`<span class="u-pc">${user.peerCount} Peer${user.peerCount === 1 ? "" : "s"}</span>`;
+        const sep = html`<span class="u-dot"> · </span>`;
+        return live ? html`${onc}${sep}${pc}` : html`${pc}${user.peerCount ? html`${sep}${onc}` : null}`;
+      })()}</span>
+      <span class="u-last">${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
+      <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
+      <span class="u-total">${xferCell(db, ub)}</span>
       <span class="u-acts" onClick=${e => e.stopPropagation()}>${live ? null : html`<${Fragment}>
         <button class="iconbtn" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
         <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
@@ -3434,8 +3492,7 @@ function UsersScreen() {
   const ifaceOpts = usersView.node ? Store.userIfacesOf(usersView.node) : allIfaces;
   if (usersView.iface && !ifaceOpts.includes(usersView.iface)) usersView.iface = "";
   // node/iface filter the user LIST (has a peer there); each expanded row still shows ALL of that user's peers
-  const users = allUsers.slice().filter(u => userMatchesQ(u, q) && userOnNodeIface(u, usersView.node, usersView.iface))
-    .sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || String(a.name).localeCompare(String(b.name)));
+  const users = sortUsers(allUsers.filter(u => userMatchesQ(u, q) && userOnNodeIface(u, usersView.node, usersView.iface)), usersView.sort, usersView.dir);
   const allUnassigned = Store.unassignedPeers();
   const unassigned = q ? allUnassigned.filter(p => peerMatchesQ(p, q)) : allUnassigned;
 
@@ -3464,7 +3521,10 @@ function UsersScreen() {
     <div class="section-title"><h2>Users</h2><span class="count">${users.length}</span></div>
     ${!allUsers.length ? html`<div class="empty"><b>No users yet</b>Create a user, then mint peers for them — or create a peer and assign it later.</div>`
       : !users.length ? html`<div class="empty"><b>Nothing matches</b>Clear the search.</div>`
-      : html`<div class="urows">${pageUsers.map(u => html`<${UserRow} key=${u.id} user=${u}/>`)}</div>`}
+      : html`<${Fragment}>
+        <${UsersHeader} sort=${usersView.sort} dir=${usersView.dir} onSort=${c => { sortColToggle(usersView, "sort", "dir", c, USER_DEFDIR); usersView.page = 1; force(x => x + 1); }}/>
+        <div class="urows">${pageUsers.map(u => html`<${UserRow} key=${u.id} user=${u}/>`)}</div>
+      <//>`}
     ${users.length > pageSize ? html`<div class="pager">
       <label class="pager-size">Rows per page
         <select class="selwrap" value=${pageSize} onChange=${e => { usersView.pageSize = +e.target.value; usersView.page = 1; force(x => x + 1); }}>

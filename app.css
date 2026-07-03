@@ -830,9 +830,6 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .pm-users.on{background:color-mix(in srgb,var(--ready) 20%,transparent);color:var(--ready)}
 /* endpoint cell: "Local turn-proxy" (fork-coloured) — hover shows the same Connected-via bubble as the dot */
 .peergrid .turnep{cursor:help}
-/* Live Users mode: online count on top, peers below. Green ONLY when actually online (>0); else neutral. */
-.u-peers .u-online-top{color:var(--dim);font-weight:600;font-size:13px}
-.u-peers .u-online-top.on{color:var(--online)}
 /* live connections monitor */
 .conntable th.clk{cursor:pointer;user-select:none}
 .conntable th.clk:hover{color:var(--ink)}
@@ -1332,11 +1329,15 @@ a.tg:hover{filter:brightness(1.25)}
 .urow.open>.urow-head{background:color-mix(in srgb,var(--brand) 7%,transparent)}
 .editfoot{display:flex;align-items:center;gap:8px;margin-top:20px}
 .editfoot .grow{flex:1}
-/* deterministic tracks (no content-sized auto/fr-that-varies) so every row's columns line up vertically */
-.urow-head{display:grid;grid-template-columns:20px 74px minmax(180px,2.3fr) 140px 64px 150px 146px 115px;
-  align-items:center;gap:12px;padding:10px 14px;cursor:pointer;transition:background .12s}
-/* rate/total right-align so their values sit directly above the (right-aligned) peer-grid Rate/Total columns */
-.u-thru,.u-total{align-items:flex-end;text-align:right}
+/* one-line rows (status · name+tag+note · peers/online · last-online · rate · total · controls). The per-row
+   labels are gone — the sortable header line carries the titles. Deterministic tracks so every row + the header
+   line up. A touch taller than a peer row, but a single line. */
+.urow-head,.uhead{display:grid;grid-template-columns:20px 74px minmax(180px,1.4fr) 150px 86px 150px 146px 90px;align-items:center;gap:12px;padding:0 14px}
+.urow-head{padding:11px 14px;cursor:pointer;transition:background .12s}
+/* sortable header line above the users list */
+.uhead{padding:2px 14px 7px;font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+.uhead .clk{cursor:pointer;user-select:none;white-space:nowrap} .uhead .clk:hover{color:var(--ink)}
+.uhead .uh-r{justify-self:end;text-align:right}
 .urow-head:hover{background:var(--surface-2)}
 .u-exp{display:flex;color:var(--faint);transition:transform .16s}
 .u-exp svg{width:14px;height:14px}
@@ -1352,24 +1353,27 @@ a.tg:hover{filter:brightness(1.25)}
 .ustat.s-creating,.ustat.s-rotating{color:var(--partial)}
 .ustat.s-dangling,.ustat.s-removing{color:var(--dangling)}
 .ustat.s-unknown,.ustat.s-empty{color:var(--unknown)}
-.u-name{display:flex;flex-direction:column;gap:1px;min-width:0;font-size:14px;font-weight:600}
-.u-nameline{display:flex;align-items:center;gap:8px;min-width:0}
-.u-nameline a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .u-nameline a:hover{color:var(--brand)}
-.u-sub{font-size:11.5px;font-weight:400;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.u-tag{min-width:0}
-.u-peers{display:flex;flex-direction:column;gap:1px;font-size:12px;color:var(--ink-2);white-space:nowrap}
-.u-peers .u-sub2{font-size:11px;color:var(--faint)}
+/* name row: name · tag · note all on one line, name + note ellipsize */
+.u-name{display:flex;align-items:center;gap:8px;min-width:0;font-size:14px;font-weight:600}
+.u-name>a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto} .u-name>a:hover{color:var(--brand)}
+.u-note{font-size:11.5px;font-weight:400;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:0 1 auto}
+/* peers / online counts on one line — online GREEN only when actually online (>0) */
+.u-counts{font-size:12.5px;white-space:nowrap}
+.u-counts .u-pc{color:var(--ink-2)}
+.u-counts .u-onc{color:var(--dim);font-weight:600} .u-counts .u-onc.on{color:var(--online)}   /* green only when >0 */
+.u-counts .u-dot{color:var(--faint)}
+/* value columns (labels removed — the header carries the titles); rate/total right-align under their headers */
+.u-last{font-size:11.5px;white-space:nowrap;color:var(--ink-2)}
+.u-thru,.u-total{justify-self:end;text-align:right;white-space:nowrap}
 .u-never{font-size:11px;color:var(--faint)}
-.u-last,.u-thru,.u-total{display:flex;flex-direction:column;gap:2px;font-size:11.5px;white-space:nowrap}
-.u-lbl{font-size:8.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);font-family:var(--mono)}
 .u-acts{display:flex;align-items:center;gap:3px;justify-content:flex-end}
 .urow-body{border-top:1px solid var(--line);padding:12px 14px;background:var(--surface-2)}
 .peerspanel{display:flex;flex-direction:column}
 .toolbar.sub{margin-bottom:10px;gap:10px}
 .urow-body .peergrid{background:var(--surface)}
 @media (max-width:900px){
-  .urow-head{grid-template-columns:20px auto 1fr auto;grid-auto-rows:auto}
-  .u-tag,.u-peers,.u-last,.u-thru,.u-total{display:none}
+  .urow-head,.uhead{grid-template-columns:20px auto 1fr auto}
+  .u-counts,.u-last,.u-thru,.u-total,.uhead .clk:nth-child(n+4){display:none}
 }
 .pline{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);transition:background .12s}
 .pline:last-child{border-bottom:0}
@@ -1442,6 +1446,12 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .notice .ic{color:var(--ready);flex:none}
 
 /* ───── peers grid ───── */
+/* clickable sortable headers (order-by) */
+.peergrid th.clk{cursor:pointer;user-select:none}
+.peergrid th.clk:hover{color:var(--ink)}
+/* Live grid: status is just a green (online) / grey (offline) dot — a tiny column; the rest shifts left */
+.peergrid.live th:first-child,.peergrid.live td[data-label="Status"]{width:26px;text-align:center;padding-left:12px;padding-right:0}
+.urow-body .peergrid.live th:first-child{width:26px}   /* override the expanded grid's 108px Status track */
 /* cumulative transfer — SAME colours as the rate cell: faint when nothing moved, green ↓ / blue ↑ once it has */
 .xfer{font-family:var(--mono);color:var(--faint);white-space:nowrap} .xfer .up{opacity:.7}
 .xfer.live{color:var(--online)} .xfer.live .up{color:var(--ready);opacity:1}
