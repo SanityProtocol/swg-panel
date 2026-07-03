@@ -11,15 +11,49 @@
   --bg:#0A0E15; --bg2:#070A10; --surface:#10151E; --surface-2:#0C1019; --raise:#161D29;
   --line:#1D2734; --line-bright:#2A3A4E55; --line-solid:#2A3A4E;
   --ink:#E7EEF6; --ink-2:#C2D0E0; --dim:#8EA0B7; --faint:#536679;
+  --glow-1:#15212F; --glow-2:#121A27;   /* the two body backdrop radial glows */
+  --track:#0A0F18;                       /* inset meter / usage-bar troughs */
+  --appbar-bg:rgba(10,14,20,.72);        /* frosted top bar */
+  --qr-scrim:rgba(0,0,0,.82);            /* full-screen QR zoom backdrop */
   --online:#3FD89A; --ready:#4FA8F0; --pending:#9A8BF0; --partial:#E2C84A; --fault:#F2994A;
+  --partial-r:#F19AA4;   /* the "partial" badge's soft-red (a problem that isn't a stopper) */
   --dangling:#F26B82; --orphan:#B79BD6; --unknown:#62748B; --removing:#E2C84A;
   --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A; --smart:#F472B6;   /* smart routing — rose/pink, distinct from cascade purple */
   --tp-rx:#1FC8D6; --tp-tx:#818CF8;   /* throughput chart: rx (down) cyan, tx (up) indigo — kept distinct */
+  --rate-up:#4FA8F0;   /* throughput UP value/arrow — a fixed blue, decoupled from the ready-status colour so it stays this light in both modes (upload reads slightly lighter than the green download) */
+  --sel-ink:var(--brand);   /* text colour for a SELECTED brand-tinted control (Online pill, etc.); darkened on light */
+  --tport-bare:#7DC4F0; --tport-dock:#A974F2;   /* deploy-method pills (bare-metal blue / docker purple) */
   --sans:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
   --r:11px; --r-sm:8px; --shadow:0 24px 60px -14px rgba(0,0,0,.62);
   --ease:cubic-bezier(.2,.7,.2,1);
 }
+/* LIGHT theme — the whole palette is variable-driven, so this only re-defines the structural surfaces / ink /
+   lines / troughs / glows / shadow. The status + brand accents (green/cyan/orange/etc.) carry across both modes;
+   the per-mode brand accent is injected by applyThemeColors(). Selected via <html data-theme="light">. */
+:root[data-theme="light"]{
+  --bg:#EDF1F7; --bg2:#E1E7F0; --surface:#FFFFFF; --surface-2:#F4F7FB; --raise:#FFFFFF;
+  --line:#DCE3EC; --line-bright:#C3D0DE99; --line-solid:#C3D0DE;
+  --ink:#101822; --ink-2:#33424F; --dim:#586878; --faint:#8695A4;
+  --glow-1:#DEE9F6; --glow-2:#E7EEF7;
+  --track:#E2E8F0;
+  --appbar-bg:rgba(255,255,255,.78);
+  --qr-scrim:rgba(226,232,240,.92);   /* light grey (the --track family) so the white QR sits on grey, not black */
+  --shadow:0 20px 50px -18px rgba(30,52,84,.22);
+  /* Status accents re-cut for a WHITE background: the dark-mode neons are too light to read here, so each is
+     deepened to hold ~4.5:1 as text while its 12–16% tint stays a soft, legible chip. Same hues, more body. */
+  --online:#0E9E63; --ready:#2B7CD3; --pending:#6A50D6; --partial:#B07A16; --fault:#D9772A;
+  --partial-r:#D65468; --dangling:#D63A55; --orphan:#8A5CC4; --unknown:#5E7085; --removing:#B07A16;
+  --smart:#D6247E;
+  --tport-bare:#2472C4; --tport-dock:#8B45D0;   /* deploy pills deepened for white (point 6) */
+  --sel-ink:color-mix(in srgb, var(--brand) 58%, #000);   /* a SELECTED control's text is a darker shade of the theme on white */
+}
+/* LIGHT-mode component tweaks that a variable swap can't express. */
+/* Hover-bubble (peers/users online list, "connected via", status "why") headers read a touch darker on white. */
+:root[data-theme="light"] .turnbub{color:var(--ink-2)}
+/* the online-peers bubble header sits on a tinted band (a bit darker than the theme) with a darker-theme label. */
+:root[data-theme="light"] .onlpop .onpop-h{color:var(--sel-ink);background:color-mix(in srgb,var(--brand) 20%,transparent);border-radius:7px}
+:root[data-theme="light"] .onlpop a.onpop-h:hover{color:var(--ink)}   /* dark on hover — always visible even if the theme colour is light (cyan-on-cyan-band washes out) */
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;scrollbar-gutter:stable}   /* reserve the scrollbar space so the layout doesn't jump when one appears (e.g. a card re-render during a turn-proxy restart) */
 /* Thin, dark, arrow-less scrollbars everywhere (matches the inner containers like .targetpick) so the panel
@@ -34,15 +68,15 @@ body{
   margin:0;color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5;min-height:100vh;
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
   background:
-    radial-gradient(1200px 560px at 88% -10%, #15212F 0%, transparent 60%),
-    radial-gradient(820px 480px at -6% -6%, #121A27 0%, transparent 55%),
+    radial-gradient(1200px 560px at 88% -10%, var(--glow-1) 0%, transparent 60%),
+    radial-gradient(820px 480px at -6% -6%, var(--glow-2) 0%, transparent 55%),
     var(--bg);
   background-attachment:fixed;
 }
 .mono{font-family:var(--mono)}
 .dim{color:var(--dim)} .faint{color:var(--faint)}
 a{color:inherit;text-decoration:none}
-::selection{background:rgba(31,200,214,.26);color:#fff}
+::selection{background:color-mix(in srgb,var(--brand) 26%,transparent);color:#fff}
 :focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:5px}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 button{font-family:inherit}
@@ -50,11 +84,11 @@ h1,h2,h3{font-family:var(--sans)}
 
 /* ───── app bar (command strip) ───── */
 .appbar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:22px;height:56px;padding:0 22px;
-  background:rgba(10,14,20,.72);backdrop-filter:blur(16px) saturate(1.3);border-bottom:1px solid var(--line)}
+  background:var(--appbar-bg);backdrop-filter:blur(16px) saturate(1.3);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px}
 /* indicator-LED mark: an amber status light */
 .brand-mark{width:18px;height:18px;border-radius:6px;background:radial-gradient(circle at 50% 38%,var(--brand-2),var(--brand));
-  box-shadow:0 0 0 1px rgba(31,200,214,.35),0 0 14px rgba(31,200,214,.5);position:relative}
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--brand) 35%,transparent),0 0 14px color-mix(in srgb,var(--brand) 50%,transparent);position:relative}
 .brand-mark::after{content:"";position:absolute;inset:6px;border-radius:50%;background:var(--bg)}
 .brand-name{font-weight:700;letter-spacing:.01em;font-size:16px;color:var(--brand)}
 .brand-name span{color:var(--ink-2);font-weight:600}
@@ -66,7 +100,7 @@ h1,h2,h3{font-family:var(--sans)}
 .tabs a:hover{color:var(--ink-2)}
 .tabs a.active{color:var(--ink)}
 .tabs a.active::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;border-radius:2px;
-  background:var(--brand);box-shadow:0 0 9px rgba(31,200,214,.55)}
+  background:var(--brand);box-shadow:0 0 9px color-mix(in srgb,var(--brand) 55%,transparent)}
 .appbar-right{margin-left:auto;display:flex;align-items:center;gap:14px}
 .livepill{display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   color:var(--dim);font-family:var(--mono);padding:5px 11px;border:1px solid var(--line-solid);border-radius:99px;background:var(--surface-2)}
@@ -84,16 +118,16 @@ h1,h2,h3{font-family:var(--sans)}
 .appbar-right .updpill,.appbar-right .upd-busy,.appbar-right .upd-uptodate{font-size:11px;padding:9px 12px 8px;letter-spacing:.08em}
 .appbar-right .updpill b,.appbar-right .upd-busy b,.appbar-right .upd-uptodate b{font-size:12px}
 .appbar-right .updpill svg,.appbar-right .upd-busy svg,.appbar-right .upd-uptodate svg{width:13px;height:13px}
-.livepill .dot{width:7px;height:7px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(70,216,168,.55);animation:pulse 2.6s infinite}
-@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(70,216,168,.45)}50%{opacity:.55}70%{box-shadow:0 0 0 6px rgba(70,216,168,0)}}
+.livepill .dot{width:7px;height:7px;border-radius:50%;background:var(--online);box-shadow:0 0 8px color-mix(in srgb,var(--online) 55%,transparent);animation:pulse 2.6s infinite}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 color-mix(in srgb,var(--online) 45%,transparent)}50%{opacity:.55}70%{box-shadow:0 0 0 6px color-mix(in srgb,var(--online) 0%,transparent)}}
 .livepill.off b{color:var(--dim)}                /* no peers online → grey count … */
 .livepill.off .dot{display:none}                 /* … and no glowing dot */
 /* this panel host is mid re-install/convert (header slot, holds through the panel's own downtime) */
-.hostproc-tag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--partial);border:1px solid var(--partial);border-radius:99px;padding:4px 11px;background:rgba(226,200,74,.1)}   /* in-progress = YELLOW (matches the .upd-busy pill, so the header tag doesn't flip yellow→purple mid-update) */
+.hostproc-tag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--partial);border:1px solid var(--partial);border-radius:99px;padding:4px 11px;background:color-mix(in srgb,var(--partial) 10%,transparent)}   /* in-progress = YELLOW (matches the .upd-busy pill, so the header tag doesn't flip yellow→purple mid-update) */
 .hostproc-tag.ok{color:var(--online);border-color:var(--online);background:rgba(63,216,154,.1)}        /* host re-install succeeded — green, auto-clears */
-.hostproc-tag.aborted{color:var(--unknown);border-color:var(--unknown);background:rgba(98,116,139,.12)}  /* host re-install aborted — grey, dismissable */
-.hostproc-tag.fail,.hostproc-tag.procuninstall{color:var(--dangling);border-color:var(--dangling);background:rgba(240,89,107,.1)}   /* failed / uninstalling — RED (error popup + × on fail) */
-.hostproc-tag.procconvert{color:var(--pending);border-color:var(--pending);background:rgba(154,139,240,.1)}   /* converting — PURPLE */
+.hostproc-tag.aborted{color:var(--unknown);border-color:var(--unknown);background:color-mix(in srgb,var(--unknown) 12%,transparent)}  /* host re-install aborted — grey, dismissable */
+.hostproc-tag.fail,.hostproc-tag.procuninstall{color:var(--dangling);border-color:var(--dangling);background:color-mix(in srgb,var(--dangling) 10%,transparent)}   /* failed / uninstalling — RED (error popup + × on fail) */
+.hostproc-tag.procconvert{color:var(--pending);border-color:var(--pending);background:color-mix(in srgb,var(--pending) 10%,transparent)}   /* converting — PURPLE */
 .hostproc-tag .xbtn{margin-left:4px;padding:1px} .hostproc-tag .errbtn{margin-right:4px;padding:1px}
 .updslot{display:inline-flex;align-items:center;gap:14px}   /* match .appbar-right gap so HC ↔ update spacing is even */
 .updpill{cursor:pointer;border-color:color-mix(in srgb,var(--ready) 42%,var(--line-solid))}
@@ -162,7 +196,7 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 .stat-ic svg{width:16px;height:16px}
 .stat-c{min-width:0}
 .stat .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:500}
-.stat.accent{border-color:rgba(31,200,214,.28)}
+.stat.accent{border-color:color-mix(in srgb,var(--brand) 28%,transparent)}
 .stat.accent .stat-ic{background:color-mix(in srgb,var(--online) 16%,transparent);color:var(--online)}
 .stat .v{font-family:var(--mono);font-size:23px;font-weight:600;color:var(--ink);margin-top:6px;letter-spacing:-.02em;line-height:1.1}
 .stat .v small{font-size:13px;color:var(--dim);font-weight:500}
@@ -186,12 +220,12 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 .dot.stale{background:var(--unknown)}
 .tport{display:inline-flex;align-items:center;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;
   padding:2px 7px;border-radius:6px;margin-left:2px}   /* same shape as the wg/awg .iftype badge; colour per .docker/.baremetal */
-.tport.baremetal{color:#7DC4F0;background:rgba(125,196,240,.14)}
-.tport.docker{color:#A974F2;background:rgba(169,116,242,.16)}
+.tport.baremetal{color:var(--tport-bare);background:color-mix(in srgb,var(--tport-bare) 14%,transparent)}
+.tport.docker{color:var(--tport-dock);background:color-mix(in srgb,var(--tport-dock) 16%,transparent)}
 /* panel-header deploy tag keeps the bordered livepill pill geometry (overrides the node-badge look above) */
 #host-tport{font-size:11px;letter-spacing:.08em;border-radius:99px;padding:5px 11px;margin-left:0;border:1px solid var(--line-solid)}
-#host-tport.baremetal{border-color:rgba(125,196,240,.4);background:rgba(125,196,240,.08)}
-#host-tport.docker{border-color:rgba(169,116,242,.45);background:rgba(169,116,242,.1)}
+#host-tport.baremetal{border-color:color-mix(in srgb,var(--tport-bare) 40%,transparent);background:color-mix(in srgb,var(--tport-bare) 9%,transparent)}
+#host-tport.docker{border-color:color-mix(in srgb,var(--tport-dock) 45%,transparent);background:color-mix(in srgb,var(--tport-dock) 10%,transparent)}
 /* "reporting" — bare status tag matching .nstat (the "updating" style); the only one that keeps a glowing, blinking dot */
 .reporting{display:inline-flex;align-items:center;gap:6px;line-height:normal;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em;
   font-weight:700;color:var(--online)}   /* line-height:normal (not 1) so the label baseline matches the .tport bare-metal/docker pill exactly */
@@ -204,10 +238,10 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 .nr-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .nr-sync{display:flex;align-items:center;gap:14px;font-family:var(--mono);font-size:11.5px;color:var(--dim);white-space:nowrap}
 .tile-rate{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:13px;display:flex;gap:14px}
-.tile-rate .up{color:var(--ready)} .tile-rate .down{color:var(--online)}
+.tile-rate .up{color:var(--rate-up)} .tile-rate .down{color:var(--online)}
 .tile-peers{font-family:var(--mono);font-size:13px;color:var(--ink-2);margin-top:9px}
 .tile-peers i{color:var(--dim);font-style:normal}
-.meter{margin-top:9px;height:4px;border-radius:3px;background:#0A0F18;overflow:hidden}
+.meter{margin-top:9px;height:4px;border-radius:3px;background:var(--track);overflow:hidden}
 .meter>i{display:block;height:100%;border-radius:3px;background:var(--m,var(--online));transition:width .6s var(--ease)}
 .tile-sync{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:11px}
 .tile-sync.warn{color:var(--partial)}
@@ -238,7 +272,7 @@ tbody tr:last-child td{border-bottom:0}
 tbody tr.clk{cursor:pointer;transition:background .15s}
 tbody tr.clk:hover{background:var(--surface-2)}
 tbody tr.flash{animation:flash 2.6s var(--ease)}
-@keyframes flash{0%{background:rgba(70,216,168,.2)}100%{background:transparent}}
+@keyframes flash{0%{background:color-mix(in srgb,var(--online) 20%,transparent)}100%{background:transparent}}
 /* just-created peer row — a one-shot branded glow that ramps 0 → peak → 0 over 1.5s (all peer grids) */
 .peergrid tbody tr.pcreate td{animation:pcreate 1.5s var(--ease)}
 @keyframes pcreate{0%{background:transparent}42%{background:color-mix(in srgb,var(--brand) 24%,transparent)}100%{background:transparent}}
@@ -258,21 +292,21 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .badge.ic{padding-left:7px}
 .badge.ic::before{display:none}
 .badge.ic svg{width:11px;height:11px}
-.b-online{background:rgba(70,216,168,.13);color:var(--online)} .b-online::before{animation:blink 2.6s infinite}
+.b-online{background:color-mix(in srgb,var(--online) 13%,transparent);color:var(--online)} .b-online::before{animation:blink 2.6s infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
-.b-ready{background:rgba(79,168,240,.12);color:var(--ready)}   /* blue — deployed everywhere, awaiting first connection */
-.b-partial{background:rgba(243,160,168,.14);color:#F19AA4}   /* LIGHT RED — a problem that isn't a stopper (present on some targets, missing on others) */
+.b-ready{background:color-mix(in srgb,var(--ready) 12%,transparent);color:var(--ready)}   /* blue — deployed everywhere, awaiting first connection */
+.b-partial{background:color-mix(in srgb,var(--partial-r) 16%,transparent);color:var(--partial-r)}   /* LIGHT RED — a problem that isn't a stopper (present on some targets, missing on others) */
 /* ORANGE faults: blocked = reaching the server but no handshake; faulty = handshake up but no inbound data */
-.b-blocked,.b-faulty{background:rgba(242,153,74,.15);color:var(--fault)}
-.b-pending{background:rgba(154,139,240,.14);color:var(--pending)}   /* violet — bg matches the --pending text/border (awaiting-enroll); was a mismatched yellow bg */
+.b-blocked,.b-faulty{background:color-mix(in srgb,var(--fault) 15%,transparent);color:var(--fault)}
+.b-pending{background:color-mix(in srgb,var(--pending) 14%,transparent);color:var(--pending)}   /* violet — bg matches the --pending text/border (awaiting-enroll); was a mismatched yellow bg */
 .b-removing{background:rgba(242,107,130,.14);color:var(--dangling)}
-.b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
+.b-dangling{background:color-mix(in srgb,var(--dangling) 14%,transparent);color:var(--dangling)}
 .b-orphan{background:rgba(95,117,105,.16);color:var(--unknown)}   /* GREY — unmanaged/external peer, informational */
 .b-creating{background:rgba(232,192,75,.16);color:var(--partial)}   /* YELLOW — being created (POST in flight or within the grace window) */
 .b-rotating{background:rgba(232,192,75,.16);color:var(--partial)}   /* YELLOW — key rotation in flight (active) */
 .ifc-orph{color:#F0913C;font-weight:600}   /* orange orphan (unmanaged) peer count on the interface card */
 .b-unknown{background:rgba(95,117,105,.16);color:var(--unknown)}
-.b-issue{background:rgba(226,200,74,.15);color:var(--partial)}
+.b-issue{background:color-mix(in srgb,var(--partial) 15%,transparent);color:var(--partial)}
 .b-unassigned{background:rgba(95,117,105,.16);color:var(--unknown)}
 .b-empty{background:rgba(95,117,105,.12);color:var(--faint)}
 
@@ -356,10 +390,10 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .ifcard-rows{display:flex;flex-direction:column;gap:6px}
 /* drag-to-reorder: grip handle + drag/drop affordances (cards, turn cards, node cards) */
 .drag-grip{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;height:18px;margin:-2px 2px -2px -3px;
-  color:var(--faint);cursor:grab;opacity:.32;border-radius:5px;transition:opacity .12s,color .12s,background .12s}
+  color:var(--dim);cursor:grab;opacity:.6;border-radius:5px;transition:opacity .12s,color .12s,background .12s}
 .drag-grip:hover{opacity:1;color:var(--ink-2);background:var(--surface-2)}
 .drag-grip:active{cursor:grabbing}
-.ifcard:hover .drag-grip,.ncard:hover .drag-grip,.ifcard.tp:hover .drag-grip{opacity:.6}
+.ifcard:hover .drag-grip,.ncard:hover .drag-grip,.ifcard.tp:hover .drag-grip{opacity:.9}
 .dragging,.ifcard.dragging,.ncard.dragging{opacity:.18}   /* the source card left in place while dragging — beat .ifcard.down's opacity */
 /* drop indicator: a cyan edge on each card flanking the gap (l/r for grids, t/b for vertical lists) */
 .drop-l{box-shadow:inset 3px 0 0 var(--brand)}
@@ -377,7 +411,7 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .iftype.wg{background:rgba(63,216,154,.14);color:var(--online)}
 .iftype.awg{background:rgba(31,200,214,.15);color:var(--brand)}
 .iftype.turn{color:var(--tfc,#B49BF7);background:color-mix(in srgb,var(--tfc,#A78BF5) 17%,transparent)}
-.iftype.muted{background:rgba(98,116,139,.13);color:var(--unknown)}
+.iftype.muted{background:color-mix(in srgb,var(--unknown) 13%,transparent);color:var(--unknown)}
 /* per-fork colour: a .tf-<fork> class sets --tfc, consumed by both the .iftype.turn badge and the
    .tg-turn tag (cards / node header / nodes list) — distinguishable violet/purple variations. */
 .tf-cacggghp{--tfc:#A974F2}
@@ -415,7 +449,7 @@ a.ifgroup-head:hover b{color:var(--brand)}
 .rowacts .btn-mini{margin-left:6px}
 /* pinned, explained failure on a row (optimistic rollback) */
 .rowerr{display:inline-flex;align-items:center;gap:5px;margin-left:8px;padding:2px 8px;border-radius:99px;
-  background:rgba(240,89,107,.13);color:var(--dangling);font-size:11px;font-weight:600;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+  background:color-mix(in srgb,var(--dangling) 13%,transparent);color:var(--dangling);font-size:11px;font-weight:600;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
 .rowerr svg{flex:none}
 .rowerr-x{background:none;border:none;color:var(--dangling);cursor:pointer;font-size:14px;line-height:1;padding:0 0 0 2px;opacity:.7}
 .rowerr-x:hover{opacity:1}
@@ -430,7 +464,7 @@ a.ifgroup-head:hover b{color:var(--brand)}
 .targetopt .topt-main{display:flex;align-items:center;gap:9px;flex:1;cursor:pointer;min-width:0}
 .targetopt.locked .topt-main{cursor:default}
 .targetopt .box{width:17px;height:17px;border:1.5px solid var(--line-solid);border-radius:5px;display:inline-flex;align-items:center;justify-content:center;flex:none;color:var(--brand)}
-.targetopt.sel .box{border-color:var(--brand);background:rgba(31,200,214,.16)}
+.targetopt.sel .box{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 16%,transparent)}
 .targetopt .nm{font-weight:600}
 .targetopt .tp{font-size:13.5px;color:var(--faint);font-family:var(--mono)}
 .targetopt .tg{flex:none;margin-right:2px}   /* wg/awg type tag sits just before the address */
@@ -456,9 +490,9 @@ a.ifgroup-head:hover b{color:var(--brand)}
 input,select{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);
   padding:9px 12px;font-family:var(--mono);font-size:13px;transition:border-color .15s,box-shadow .15s;width:100%}
 input::placeholder{color:var(--faint)}
-input:focus,select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(70,216,168,.13)}
+input:focus,select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 13%,transparent)}
 textarea.ta{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);padding:10px 12px;font-family:var(--mono);font-size:13px;width:100%;resize:vertical;line-height:1.6;min-height:84px;word-break:break-all}
-textarea.ta:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(70,216,168,.13)}
+textarea.ta:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 13%,transparent)}
 textarea.ta::placeholder{color:var(--faint)}
 textarea.ta{scrollbar-width:thin;scrollbar-color:var(--line-solid) transparent}
 textarea.ta::-webkit-scrollbar{width:10px}
@@ -476,7 +510,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .chip{font-size:12px;padding:6px 12px;border-radius:99px;cursor:pointer;background:var(--surface-2);
   border:1px solid var(--line);color:var(--dim);display:flex;align-items:center;gap:6px;transition:all .15s}
 .chip:hover{color:var(--ink)}
-.chip.on{color:var(--ink);border-color:var(--brand);background:rgba(70,216,168,.1)}
+.chip.on{color:var(--ink);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 10%,transparent)}
 /* protocol picker (Load new interface): AmneziaWG=purple, WireGuard=green, Existing=orange when selected */
 .proto3{flex-wrap:wrap}
 .chip.c-awg.on{color:#C9B6FF;border-color:#B49BF7;background:color-mix(in srgb,#B49BF7 16%,transparent)}
@@ -539,11 +573,11 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .deploy-body{padding:15px;display:flex;gap:15px}
 .deploy .qr{background:#fff;border-radius:var(--r-sm);padding:8px;line-height:0;flex:none;cursor:zoom-in}
 .deploy .qr .qrimg{display:block;width:min(300px,72vw);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
-.qr-overlay{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:24px}
+.qr-overlay{position:fixed;inset:0;z-index:9999;background:var(--qr-scrim);display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:24px}
 .qr-overlay-inner{display:flex;flex-direction:column;align-items:center;gap:16px}
 .qr-overlay-card{background:#fff;padding:18px;border-radius:12px;line-height:0}
 .qr-overlay-card .qrimg{display:block;width:min(92vw,92vh,920px);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
-.qr-overlay-cap{color:#fff;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+.qr-overlay-cap{color:var(--ink);font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
 .qr-overlay-cap .qrc-srv{font-family:var(--mono)}
 .deploy .qr-fail,.deploy .qr-none{width:240px;height:240px;max-width:60vw;display:flex;align-items:center;justify-content:center;text-align:center;
   font-size:11px;color:var(--faint);background:var(--surface-2);border-radius:var(--r-sm);padding:10px;line-height:1.4}
@@ -595,7 +629,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .field>label{display:block;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:7px}
 .field .hint{font-size:11.5px;color:var(--faint);margin-top:6px}
 /* validation: invalid field + error hint */
-input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba(240,89,107,.12)}
+input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px color-mix(in srgb,var(--dangling) 12%,transparent)}
 .hint.err{color:var(--dangling)}
 .advbad{color:var(--dangling);font-size:11px;font-weight:600;margin-left:6px}
 .inline{display:flex;gap:8px}.inline input{flex:1}
@@ -604,7 +638,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nodeopt{display:flex;align-items:center;gap:9px;padding:10px 12px;border:1px solid var(--line-solid);border-radius:var(--r-sm);
   cursor:pointer;background:var(--surface-2);transition:all .15s;user-select:none}
 .nodeopt:hover{border-color:var(--dim)}
-.nodeopt.sel{border-color:var(--brand);background:rgba(70,216,168,.09)}
+.nodeopt.sel{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 9%,transparent)}
 .nodeopt.disabled{opacity:.4;cursor:not-allowed}
 .nodeopt .box{width:16px;height:16px;border-radius:5px;border:1.5px solid var(--line-solid);flex:none;display:flex;
   align-items:center;justify-content:center;transition:all .15s}
@@ -734,7 +768,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .nm-v{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
 .nm-v.nm-peers{font-size:15px;color:var(--ink)}
 .nm-v.nm-peers small{font-size:.72em;color:var(--faint)}
-.nm-v .down{color:var(--online)} .nm-v .up{color:var(--ready)}
+.nm-v .down{color:var(--online)} .nm-v .up{color:var(--rate-up)}
 /* idle throughput greys out like every other rate readout (rateCell/xferCell) — colour only once bytes move */
 .nm-v.thru.idle .down,.nm-v.thru.idle .up{color:var(--faint)}
 .nm-thru{display:flex;align-items:baseline;gap:8px}   /* throughput numbers, right-aligned; gap matches CPU load's label↔value spacing */
@@ -750,8 +784,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .ncard .ntop .nctl{flex:none;margin-left:3px}
 .nm-row>.nctl{flex:none;align-self:center;margin-left:2px}
 @media(max-width:680px){.nmeta{grid-template-columns:1fr}}
-.btn-danger{background:rgba(240,89,107,.1);color:var(--dangling);border:1px solid rgba(240,89,107,.32);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
-.btn-danger:hover{background:rgba(240,89,107,.2)}
+.btn-danger{background:color-mix(in srgb,var(--dangling) 10%,transparent);color:var(--dangling);border:1px solid color-mix(in srgb,var(--dangling) 32%,transparent);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
+.btn-danger:hover{background:color-mix(in srgb,var(--dangling) 20%,transparent)}
 .btn-danger:disabled{opacity:.5;cursor:not-allowed}
 /* one-time token + enrollment command */
 .cmdrow{display:flex;gap:8px;align-items:stretch}
@@ -760,15 +794,10 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .copyaction{flex:none;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:var(--r-sm);color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:6px;font-size:12px;padding:0 13px;white-space:nowrap;transition:all .15s var(--ease)}
 .copyaction:hover{color:var(--ink);border-color:var(--brand)}
 .copyaction svg{flex:none}
-/* colour swatch picker */
-.swrow{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
-.swopt{width:28px;height:28px;border-radius:8px;cursor:pointer;border:2px solid transparent;box-shadow:inset 0 0 0 1px rgba(0,0,0,.25);padding:0;display:inline-flex;align-items:center;justify-content:center}
-.swopt.sel{border-color:var(--ink)}
-/* the "full palette" swatch: a larger round colour-wheel that opens the native picker */
-.swopt.custom{position:relative;width:34px;height:34px;border-radius:50%;
-  background:conic-gradient(from 90deg,#f0596b,#f0913c,#e8c04b,#a3e635,#34d399,#22d3ee,#7dd3fc,#c084e8,#f0596b);
-  box-shadow:inset 0 0 0 2px var(--surface),inset 0 0 0 3px rgba(0,0,0,.25)}
-.swopt.custom input[type=color]{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;border:0;padding:0}
+/* node name + inline colour swatch (Node settings / Add node) — the swatch opens the native palette */
+.namerow{display:flex;align-items:center;gap:9px}
+.namerow input:not(.tf-color){flex:1}
+.namerow .tf-color{width:34px;height:34px}
 
 /* node health meters */
 .health{display:flex;flex-direction:column;gap:12px}
@@ -797,7 +826,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .hm-row{display:flex;align-items:center;gap:9px}
 .hm-row .hm-bar{flex:1}
 .spark{flex:none;opacity:.85}
-.hm-bar{height:5px;border-radius:3px;background:#0A0F18;overflow:hidden}
+.hm-bar{height:5px;border-radius:3px;background:var(--track);overflow:hidden}
 .hm-fill{display:block;height:100%;border-radius:3px;background:var(--online);transition:width .6s var(--ease)}
 .hm-fill.warn{background:var(--pending)}
 .hm-fill.hot{background:var(--dangling)}
@@ -805,7 +834,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .halerts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:2px}
 .halert{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px}
 .halert svg{flex:none;width:12px;height:12px}
-.halert.hot{background:rgba(240,89,107,.14);color:var(--dangling)}
+.halert.hot{background:color-mix(in srgb,var(--dangling) 14%,transparent);color:var(--dangling)}
 .halert.warn{background:rgba(232,192,75,.14);color:var(--pending)}
 /* dashboard: fleet-health rollup + recent activity */
 .hrollup{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
@@ -823,7 +852,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .act-row .when{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
 .actkind{font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:99px}
 .actkind.user{background:rgba(125,211,252,.13);color:#7dd3fc}
-.actkind.peer{background:rgba(70,216,168,.13);color:var(--online)}
+.actkind.peer{background:color-mix(in srgb,var(--online) 13%,transparent);color:var(--online)}
 /* Live screen — Peers/Users mode toggle (segmented switch: active Peers = green, active Users = blue) */
 .pmode{display:inline-flex;flex:none;border:1px solid var(--line-solid);border-radius:9px;overflow:hidden;background:var(--surface-2);height:36px}
 .pm-opt{appearance:none;border:none;background:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;padding:0 16px;color:var(--dim);transition:background .12s var(--ease),color .12s var(--ease);white-space:nowrap}
@@ -833,7 +862,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* Online filter — a single click-to-toggle pill (cyan when on, grey when off) instead of a checkbox */
 .onlbtn{appearance:none;flex:none;height:36px;padding:0 18px;border:1px solid var(--line-solid);border-radius:9px;background:var(--surface-2);color:var(--dim);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;transition:background .12s var(--ease),color .12s var(--ease),border-color .12s var(--ease)}
 .onlbtn:hover{color:var(--ink)}
-.onlbtn.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--brand);border-color:color-mix(in srgb,var(--brand) 45%,transparent)}
+.onlbtn.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--sel-ink);border-color:color-mix(in srgb,var(--brand) 45%,transparent)}
 /* endpoint cell: "Local turn-proxy" (fork-coloured) — hover shows the same Connected-via bubble as the dot */
 .peergrid .turnep{cursor:help}
 /* live connections monitor */
@@ -893,14 +922,19 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* transparent bridge over the gap so moving from the tag onto the bubble keeps it open (bubble is a
    descendant of .turnwrap, so hovering the bridge keeps .turnwrap:hover true) */
 .turnbub::before{content:"";position:absolute;left:0;right:0;top:-9px;height:9px}
+/* blocked/faulty "why" bubble — same surface as the turn bubble but allowed to wrap onto a couple of lines,
+   with a colour-headed first line (the status name) over the explanation. */
+.turnbub.statusbub{white-space:normal;flex-direction:column;align-items:flex-start;gap:3px;width:250px;line-height:1.45}
+.statusbub-h{display:inline-flex;align-items:center;gap:5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:10.5px}
+.statusbub-h svg{width:12px;height:12px}
 /* status pills (busy/ok/warn/del) — ONE uniform shape; colour per state. Defined after .tg so the
    pill shape wins even when written as "tg tg-busy" on cards (the type tags .tg-wg/.tg-awg stay small). */
 /* status pills — ONE shape/size/font for all; only colour differs (busy=cyan, ok=green, warn=yellow, del=red, off=grey) */
 .tg-busy,.tg-ok,.tg-warn,.tg-del,.tg-off,.tg-pending,.tg-convert,.tg-ready{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:1px 8px;font-family:var(--mono);font-size:9.5px;font-weight:700;line-height:1.45;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;border:1px solid transparent}
 .tg-busy{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 32%,transparent)}   /* active work: installing / creating — YELLOW */
 .tg-pending{background:rgba(240,145,60,.13);color:#F0913C;border-color:color-mix(in srgb,#F0913C 30%,transparent)}   /* queued / awaiting the node — ORANGE */
-.tg-convert{background:rgba(154,139,240,.16);color:var(--pending);border-color:color-mix(in srgb,var(--pending) 32%,transparent)}   /* converting bare↔docker — PURPLE */
-.tg-ready{background:rgba(79,168,240,.13);color:var(--ready);border-color:color-mix(in srgb,var(--ready) 30%,transparent)}   /* just came up — BLUE (5s flash, then no tag) */
+.tg-convert{background:color-mix(in srgb,var(--pending) 16%,transparent);color:var(--pending);border-color:color-mix(in srgb,var(--pending) 32%,transparent)}   /* converting bare↔docker — PURPLE */
+.tg-ready{background:color-mix(in srgb,var(--ready) 13%,transparent);color:var(--ready);border-color:color-mix(in srgb,var(--ready) 30%,transparent)}   /* just came up — BLUE (5s flash, then no tag) */
 .tg-busy.del{background:rgba(240,90,90,.15);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 38%,transparent)}
 .tg-busy.warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 38%,transparent)}
 .tg-ok{background:rgba(63,216,154,.16);color:var(--online);border-color:color-mix(in srgb,var(--online) 30%,transparent)}
@@ -1023,6 +1057,37 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tf-color::-webkit-color-swatch{border:none;border-radius:4px}
 .tf-color::-moz-color-swatch{border:none;border-radius:4px}
 .cllist.dimmed{opacity:.5;pointer-events:none}
+/* palette pickers (Panel settings → Interfaces / Display): a concept label + a themed (dark|light) swatch pair */
+.palrow{display:flex;flex-wrap:wrap;gap:12px 22px;margin:0 0 6px}
+.palcell{display:inline-flex;align-items:center;gap:11px}
+.palcell .pallbl{font-size:13px;color:var(--ink-2);min-width:88px}
+/* themed swatch pair: two label-less pickers (dark, light); hover shows the colour previewed on that mode's bg */
+.tswrow{display:inline-flex;gap:7px;align-items:center}
+.tsw{position:relative;display:inline-flex}
+/* preview sits directly UNDER the swatch on hover; while the OS picker is OPEN (focus-within) it slides 5px to the
+   LEFT of the swatch so the picker (which opens below/over the swatch) can't cover it, then returns under on close. */
+.tsw-bub{position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);display:none;
+  flex-direction:column;align-items:center;gap:8px;padding:11px 13px 8px;border-radius:10px;
+  border:1px solid var(--line-solid);z-index:70;box-shadow:0 12px 30px rgba(0,0,0,.4);white-space:nowrap}
+.tsw:hover .tsw-bub,.tsw:focus-within .tsw-bub{display:inline-flex}
+.tsw:focus-within .tsw-bub{top:50%;left:auto;right:calc(100% + 5px);transform:translateY(-50%)}
+.tsw-bub::before{content:"";position:absolute;left:0;right:0;top:-9px;height:9px}   /* hover bridge above */
+.tsw-dark{background:#0A0E15;color:#E7EEF6}
+.tsw-light{background:#EDF1F7;color:#101822}
+.tsw-cap{font-family:var(--mono);font-size:8px;text-transform:uppercase;letter-spacing:.14em;opacity:.5}
+/* theme-accent preview: an outline button + a filled control chip, both in the picked colour */
+.tsw-theme{display:inline-flex;align-items:center;gap:8px}
+.tsw-btn{font-size:11px;padding:4px 9px;border-radius:7px;border:1px solid currentColor;font-family:var(--sans)}
+.tsw-chip{width:15px;height:15px;border-radius:4px;background:currentColor}
+/* peer-health DETECTION toggles (checkbox + example badge + explanation) — Interfaces settings */
+.condrow{display:grid;grid-template-columns:14px 88px 1fr;align-items:start;gap:16px;padding:11px 0;cursor:pointer;border-top:1px solid var(--line)}
+.condrow:first-of-type{border-top:none;padding-top:2px}
+.condrow input{appearance:none;-webkit-appearance:none;margin:4px 0 0;width:14px;height:14px;flex:none;cursor:pointer;
+  border:1.5px solid var(--line-solid);border-radius:3px;background:var(--surface-2);position:relative}
+.condrow input:checked{background:var(--brand);border-color:var(--brand)}
+.condrow input:checked::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;background:var(--brand-ink);transform:translate(-50%,-50%)}
+.cond-b{display:flex;align-items:flex-start;padding-top:3px}
+.cond-t{font-size:12.5px;color:var(--dim);line-height:1.45}
 .vklink-in{width:100%;max-width:560px}
 /* turn-proxy client configs modal */
 .turncfg{display:flex;flex-direction:column;gap:14px}
@@ -1099,7 +1164,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rrdoms{grid-column:1/-1;width:100%;box-sizing:border-box;display:block;font-family:var(--mono);font-size:12px;line-height:1.55;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink);resize:none;overflow:hidden}
 .rrdoms::placeholder{color:var(--faint)}
 .rrrow.warn{border-color:color-mix(in srgb,var(--partial) 45%,transparent)}
-.rrrow .drag-grip{cursor:grab;opacity:.4}.rrrow:hover .drag-grip{opacity:.7}
+.rrrow .drag-grip{cursor:grab;opacity:.62}.rrrow:hover .drag-grip{opacity:.95}
 .rrrow .selwrap{min-width:0}
 .rrarrow{color:var(--faint)}
 .rrrow .rrlint{grid-column:1/-1}   /* lint messages drop to their own full-width grid row */
@@ -1123,18 +1188,18 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .lkdot.up,.lkdot.connecting,.lkdot.down{box-shadow:0 0 8px -1px var(--g)}
 .tg-warn{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 35%,transparent)}
 .tg-del{background:rgba(242,107,130,.16);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 35%,transparent)}   /* interface being deleted */
-.tg-off{background:rgba(98,116,139,.16);color:var(--unknown);border-color:color-mix(in srgb,var(--unknown) 30%,transparent)}   /* stopped / stale — a deliberate, non-error state */
+.tg-off{background:color-mix(in srgb,var(--unknown) 16%,transparent);color:var(--unknown);border-color:color-mix(in srgb,var(--unknown) 30%,transparent)}   /* stopped / stale — a deliberate, non-error state */
 .tg-busy svg,.tg-ok svg,.tg-warn svg,.tg-del svg,.tg-off svg{width:11px;height:11px}
 .ifcard-top .tg-busy,.ifcard-top .tg-ok,.ifcard-top .tg-warn,.ifcard-top .tg-del,.ifcard-top .tg-off{flex:none}   /* status pills keep full width in a card header */
 .tg-iface{background:color-mix(in srgb,var(--tgc,var(--dim)) 14%,transparent);color:var(--tgc,var(--dim))}
 .tg-gen{background:var(--surface-2);color:var(--dim);box-shadow:inset 0 0 0 1px var(--line-solid)}
 /* inactive items (offline/dangling/disconnected): grey the tags out */
-.tg.muted{background:rgba(98,116,139,.13)!important;color:var(--unknown)!important;box-shadow:none!important}
+.tg.muted{background:color-mix(in srgb,var(--unknown) 13%,transparent)!important;color:var(--unknown)!important;box-shadow:none!important}
 /* rate cell: lights up when traffic is flowing */
 .ratecell{font-family:var(--mono);color:var(--faint);font-size:12px;white-space:nowrap}
 .ratecell .up{opacity:.7}
 .ratecell.live{color:var(--online)}
-.ratecell.live .up{color:var(--ready);opacity:1}
+.ratecell.live .up{color:var(--rate-up);opacity:1}
 
 /* ───── titled icon-headed panels (information grouping) ───── */
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);margin:0 0 14px;overflow:hidden}
@@ -1302,14 +1367,14 @@ a.tg:hover{filter:brightness(1.25)}
 .rb{display:grid;grid-template-columns:140px 1fr auto;align-items:center;gap:14px;padding:8px 12px;text-decoration:none;color:inherit;border-radius:7px;transition:background .12s}
 .rb:hover{background:var(--surface-2)}
 .rb-label{font-family:var(--mono);font-size:12.5px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rb-track{height:8px;border-radius:5px;background:#0A0F18;overflow:hidden}
+.rb-track{height:8px;border-radius:5px;background:var(--track);overflow:hidden}
 .rb-track i{display:block;height:100%;border-radius:5px;transition:width .6s var(--ease);opacity:.9}
 .rb-val{font-family:var(--mono);font-size:11.5px;color:var(--dim);white-space:nowrap}
 @media(max-width:640px){.rb{grid-template-columns:96px 1fr}.rb-val{display:none}}
 
 /* ───── inline usage bar (rows) ───── */
 .usebar{display:inline-flex;align-items:center;gap:9px}
-.usebar-t{width:56px;height:6px;border-radius:4px;background:#0A0F18;overflow:hidden;flex:none;display:flex;justify-content:flex-end}
+.usebar-t{width:56px;height:6px;border-radius:4px;background:var(--track);overflow:hidden;flex:none;display:flex;justify-content:flex-end}
 .usebar-t i{display:block;height:100%;border-radius:4px;transition:width .6s var(--ease)}
 .usebar-n{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
 .usebar-n small{color:var(--faint);font-size:10.5px}
@@ -1332,7 +1397,12 @@ a.tg:hover{filter:brightness(1.25)}
 
 /* Users list — collapsible rows (status · name · tag · note · peers · last · rate · total · controls) */
 .urows{display:flex;flex-direction:column;gap:8px}
-.urow{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:hidden;transition:border-color .12s}
+/* overflow VISIBLE so the Nodes hover bubble (in the header) isn't clipped; rounded corners kept via explicit
+   radii on the header (full when collapsed, top-only when open) and the body (bottom). */
+.urow{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);overflow:visible;transition:border-color .12s}
+.urow>.urow-head{border-radius:calc(var(--r) - 1px)}
+.urow.open>.urow-head{border-radius:calc(var(--r) - 1px) calc(var(--r) - 1px) 0 0}
+.urow-body{border-radius:0 0 calc(var(--r) - 1px) calc(var(--r) - 1px)}
 .urow.open{border-color:color-mix(in srgb,var(--brand) 42%,var(--line-solid));box-shadow:0 0 0 1px color-mix(in srgb,var(--brand) 18%,transparent)}
 .urow.open>.urow-head{background:color-mix(in srgb,var(--brand) 7%,transparent)}
 .editfoot{display:flex;align-items:center;gap:8px;margin-top:20px}
@@ -1340,7 +1410,16 @@ a.tg:hover{filter:brightness(1.25)}
 /* one-line rows (status · name+tag+note · peers/online · last-online · rate · total · controls). The per-row
    labels are gone — the sortable header line carries the titles. Deterministic tracks so every row + the header
    line up. A touch taller than a peer row, but a single line. */
-.urow-head,.uhead{display:grid;grid-template-columns:20px 74px minmax(180px,1.4fr) 150px 86px 150px 146px 90px;align-items:center;gap:12px;padding:0 14px}
+/* The right cluster (Online / Rate / Total / actions) is one fixed 524px track holding a GAP-FREE sub-grid whose
+   inner widths (86/168/158/112) + 14px cell padding exactly mirror the expanded peer table — so those three
+   columns land pixel-aligned above the peer grid's, regardless of the (gapped) left columns. */
+.urow-head,.uhead{display:grid;grid-template-columns:20px 74px minmax(150px,1fr) auto;align-items:center;gap:12px;padding:0 14px}
+/* the right cluster mirrors the embedded peer table's right columns EXACTLY (peers↔address 168, nodes↔node 120,
+   then online 86 / rate 168 / total 158 / acts 112) as a gap-free sub-grid, anchored to the row's right edge — so
+   Peers/Nodes/Online/Rate/Total all land pixel-aligned above the peer grid. Live drops the acts track. */
+.u-right{display:grid;grid-template-columns:168px 120px 86px 168px 158px 112px;align-items:center;min-width:0}
+.u-right.live{grid-template-columns:168px 120px 86px 168px 158px}
+.u-right>*{padding:0 14px;box-sizing:border-box;min-width:0}
 .urow-head{padding:11px 14px;cursor:pointer;transition:background .12s}
 /* sortable header line above the users list */
 .uhead{padding:2px 14px 7px;font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
@@ -1365,12 +1444,30 @@ a.tg:hover{filter:brightness(1.25)}
 /* name row: name · tag · note all on one line, name + note ellipsize */
 .u-name{display:flex;align-items:center;gap:8px;min-width:0;font-size:14px;font-weight:600}
 .u-name>a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto} .u-name>a:hover{color:var(--brand)}
+.u-name>.un{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}   /* plain (non-link) username */
 .u-note{font-size:11.5px;font-weight:400;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:0 1 auto}
 /* peers / online counts on one line — online GREEN only when actually online (>0) */
 .u-counts{font-size:12.5px;white-space:nowrap}
 .u-counts .u-pc{color:var(--ink-2)}
 .u-counts .u-onc{color:var(--dim);font-weight:600} .u-counts .u-onc.on{color:var(--online)}   /* green only when >0 */
 .u-counts .u-dot{color:var(--faint)}
+/* servers column: node badges the user has peers on (up to 3 + "N more"); hover → by-node bubble w/ iface tags */
+.u-servers{min-width:0;overflow:visible;font-size:12.5px}   /* visible so the hover bubble isn't clipped */
+.srvwrap{max-width:100%;cursor:default}
+.srvchips{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.nsrv{font-family:var(--mono);font-size:9.5px;font-weight:500;letter-spacing:.02em;padding:2px 7px;border-radius:5px;flex:none;
+  color:var(--c);background:color-mix(in srgb,var(--c) 15%,transparent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:92px}
+.nsrv-more{font-size:11.5px;color:var(--dim);white-space:nowrap;flex:none}
+/* multi-node aggregate: a theme-coloured badge with a server icon (like the "exits via" node badge) */
+.nsrv-agg{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:3px 9px;border-radius:6px;flex:none;
+  color:var(--sel-ink);background:color-mix(in srgb,var(--brand) 16%,transparent);white-space:nowrap}
+.nsrv-agg svg{width:12px;height:12px}
+/* one row per (node, interface): node badge · iface badge · peer count — as a 3-col grid so all rows align. */
+.turnbub.servbub{grid-template-columns:max-content max-content max-content;align-items:center;gap:6px 12px;white-space:nowrap;padding:10px 12px;max-width:none}
+.turnwrap:hover .turnbub.servbub{display:grid}
+.servbub-row{display:contents}
+.servbub-pc{font-size:11px;color:var(--dim);justify-self:end}
+/* .uh-srv is just a hook for the responsive-hide; the header inherits the standard .uhead .clk look (weight/colour). */
 /* value columns (labels removed — the header carries the titles); rate/total right-align under their headers */
 .u-last{font-size:11.5px;white-space:nowrap;color:var(--ink-2)}
 .u-thru,.u-total{justify-self:end;text-align:right;white-space:nowrap}
@@ -1382,7 +1479,7 @@ a.tg:hover{filter:brightness(1.25)}
 .urow-body .peergrid{background:var(--surface)}
 @media (max-width:900px){
   .urow-head,.uhead{grid-template-columns:20px auto 1fr auto}
-  .u-counts,.u-last,.u-thru,.u-total,.uhead .clk:nth-child(n+4){display:none}
+  .u-counts,.u-servers,.uh-srv,.u-last,.u-thru,.u-total,.uhead .clk:nth-child(n+4){display:none}
 }
 .pline{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);transition:background .12s}
 .pline:last-child{border-bottom:0}
@@ -1459,11 +1556,12 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .peergrid th.clk{cursor:pointer;user-select:none}
 .peergrid th.clk:hover{color:var(--ink)}
 /* Live grid: status is just a green (online) / grey (offline) dot — a tiny column; the rest shifts left */
-.peergrid.live th:first-child,.peergrid.live td[data-label="Status"]{width:26px;text-align:center;padding-left:12px;padding-right:0}
-.urow-body .peergrid.live th:first-child{width:26px}   /* override the expanded grid's 108px Status track */
+/* live grids are now always `loc` (dot + iface badge in the status) → the old bare-dot 26px rule only applies to a
+   non-loc live grid, if any. loc live status width is set by the h-status rules. */
+.peergrid.live:not(.loc) th:first-child,.peergrid.live:not(.loc) td[data-label="Status"]{width:26px;text-align:center;padding-left:12px;padding-right:0}
 /* cumulative transfer — SAME colours as the rate cell: faint when nothing moved, green ↓ / blue ↑ once it has */
 .xfer{font-family:var(--mono);color:var(--faint);white-space:nowrap} .xfer .up{opacity:.7}
-.xfer.live{color:var(--online)} .xfer.live .up{color:var(--ready);opacity:1}
+.xfer.live{color:var(--online)} .xfer.live .up{color:var(--rate-up);opacity:1}
 .peergrid .xfer{font-size:11.5px}
 .peergrid td[data-label="Rate"],.peergrid td[data-label="Total"],.peergrid th{white-space:nowrap}   /* keep 4-digit rates (1023 MB/s) on one line */
 /* Rate/Total are numeric — right-align header + values so the header text ends right above where the values end */
@@ -1472,16 +1570,49 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 /* the user-EXPANDED peer grid uses a FIXED column layout so its Online/Rate/Total/actions columns sit at
    stable, content-independent x-positions — the user-row header is aligned to exactly these widths so the
    two line up vertically regardless of the data. (The standalone Peers screen stays auto-width.) */
-.urow-body .peergrid{table-layout:fixed}
-.urow-body .peergrid th:nth-child(1){width:108px}   /* Status */
-.urow-body .peergrid th:nth-child(4){width:138px}   /* Address */
+/* All peer grids use FIXED column layout. Standalone grids (interface detail / Peers module / live Peers) get
+   balanced % widths (Title roomy, the rest even). Embedded (user-expanded) grids override with px widths that
+   mirror the user-row .u-right so Peers/Nodes/Online/Rate/Total align vertically above them. */
+.peergrid{width:100%;table-layout:fixed}
+.peergrid th.h-status{width:9%}
+.peergrid.loc th.h-status{width:11%}   /* loc grids put the iface badge next to the status → a touch wider */
+.peergrid th.h-user{width:14%}
+.peergrid th.h-title{width:17%}
+.peergrid th.h-ep{width:13%}
+.peergrid th.h-addr{width:11%}
+.peergrid th.h-node{width:10%}
+.peergrid th.h-online{width:8%}
+.peergrid th.h-rate{width:15%}
+.peergrid th.h-total{width:14%}
+.peergrid th.h-acts{width:11%}
+.urow-body .peergrid th.h-status{width:150px}
+.urow-body .peergrid th.h-title,.urow-body .peergrid th.h-ep{width:auto}   /* flexible left in the embedded fixed layout */
+.urow-body .peergrid th.h-addr{width:168px}   /* ↔ user-row Peers */
+.urow-body .peergrid th.h-node{width:120px}   /* ↔ user-row Nodes */
 .urow-body .peergrid th.h-online{width:86px}
 .urow-body .peergrid th.h-rate{width:168px}
 .urow-body .peergrid th.h-total{width:158px}
 .urow-body .peergrid th.h-acts{width:112px}
-/* a long title / user name must not widen the table past its wrap (which clips the row actions): truncate
-   with … (fits the common case) and let the wrap scroll-x as a safety net so the actions are NEVER clipped. */
-.tablewrap:has(>table.peergrid){overflow-x:auto;overflow-y:hidden}
+/* embedded (loc) grid: the interface badge sits beside the STATUS so you see which iface is online. */
+.peergrid td.c-status{white-space:nowrap}
+.peergrid td.c-status>*{vertical-align:middle}
+.peergrid.loc td.c-status>.tg{margin-left:7px}
+/* live grids (standalone + embedded): a touch more air between the status dot and the iface badge. */
+.peergrid.loc.live td.c-status>.tg{margin-left:9px}
+.peergrid.loc.live td.c-status>.turnwrap{gap:9px}
+/* in LIVE embedded the status has just a dot + iface (no wide pill) → narrower, so Title sits closer to it. */
+.urow-body .peergrid.loc.live th.h-status,.urow-body .peergrid.loc.live td.c-status{width:112px;text-align:left;padding-left:14px}
+/* a long title / user name must not widen the table past its wrap: the fixed layout ellipsis-truncates cells
+   instead of widening, so the wrap never needs to scroll — and we keep it overflow:visible so hover bubbles
+   (status "why", nodes breakdown, "connected via") are NEVER clipped by the wrap, wherever the row sits.
+   The wrap gave the rounded frame via its clip; with overflow:visible the table rounds its own corner cells
+   (peergrid cells use only bottom-borders, so border-collapse:separate renders identically). */
+.tablewrap:has(>table.peergrid){overflow:visible}
+table.peergrid{border-collapse:separate;border-spacing:0}
+.peergrid thead th:first-child{border-top-left-radius:calc(var(--r) - 1px)}
+.peergrid thead th:last-child{border-top-right-radius:calc(var(--r) - 1px)}
+.peergrid tbody tr:last-child td:first-child{border-bottom-left-radius:calc(var(--r) - 1px)}
+.peergrid tbody tr:last-child td:last-child{border-bottom-right-radius:calc(var(--r) - 1px)}
 .peergrid td.c-name>b,.peergrid td.c-name>span{display:inline-block;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 .peergrid td.usercell .namecell>span{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* fleet-wide column: server name (left) + interface tag (right) on one line */
@@ -1489,9 +1620,10 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .peergrid .srv-name{font-family:var(--mono);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* user cell is a link to the user screen — blue (matches the upload total) so admins know it navigates away */
 .peergrid .namecell{color:var(--ready);justify-content:space-between;width:100%} .peergrid .namecell:hover{text-decoration:underline}
+.peergrid .namecell.nolink{color:var(--ink-2);cursor:default} .peergrid .namecell.nolink:hover{text-decoration:none}   /* Live/Users lists: username is plain text, not a link */
 .peergrid .namecell svg{width:14px;height:14px;color:var(--ready);flex:none;opacity:0;transition:opacity .12s;position:relative;top:3px}   /* nudge down to sit on the text's baseline */
 /* hovering an assigned user's cell tints the whole row blue + reveals the user icon */
-.peergrid tbody tr.clk:has(td.usercell.linked:hover){background:rgba(79,168,240,.09)}
+.peergrid tbody tr.clk:has(td.usercell.linked:hover){background:color-mix(in srgb,var(--ready) 9%,transparent)}
 .peergrid td.usercell.linked:hover .namecell svg{opacity:1}
 /* peers-grid pagination bar */
 .pager{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:14px;padding:6px 2px;font-size:12.5px}
@@ -1502,8 +1634,8 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .pager .btn{padding:6px 12px}
 /* extra-deployment count next to the address; hover or tap opens a bubble (.deppop) of the others */
 .depmore{position:relative;margin-left:7px;padding:1px 5px;border-radius:5px;color:var(--ready);font-family:var(--mono);font-size:11px;cursor:pointer;
-  background:rgba(79,168,240,.1);border:1px solid rgba(79,168,240,.28);transition:background .12s,border-color .12s;user-select:none}
-.depmore:hover,.depmore.on{background:rgba(79,168,240,.2);border-color:rgba(79,168,240,.55)}
+  background:color-mix(in srgb,var(--ready) 10%,transparent);border:1px solid color-mix(in srgb,var(--ready) 28%,transparent);transition:background .12s,border-color .12s;user-select:none}
+.depmore:hover,.depmore.on{background:color-mix(in srgb,var(--ready) 20%,transparent);border-color:color-mix(in srgb,var(--ready) 55%,transparent)}
 .deppop{position:fixed;z-index:80;min-width:210px;padding:5px;background:var(--surface-2);border:1px solid var(--line-solid);
   border-radius:var(--r-sm);box-shadow:0 12px 34px rgba(0,0,0,.5);cursor:default}
 .deppop .deprow{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;white-space:nowrap}

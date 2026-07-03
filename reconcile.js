@@ -104,9 +104,9 @@ function reconcile(roster, stats, now, cfg) {
             const h = cfg.history, rx = obs.rx_bytes || 0, prev = h[key];
             if (!prev) h[key] = { rx: rx, flatSince: null };
             else if (rx > prev.rx) { prev.rx = rx; prev.flatSince = null; }         // data flowing → healthy
-            else { if (prev.flatSince == null) prev.flatSince = now; if ((now - prev.flatSince) >= (cfg.faultyMs || 45000)) st = "faulty"; }
+            else { if (prev.flatSince == null) prev.flatSince = now; if (cfg.detectFaulty !== false && (now - prev.flatSince) >= (cfg.faultyMs || 45000)) st = "faulty"; }
           }
-        } else if (obs.endpoint && obs.handshake_age == null && (now - createdMs) > cfg.graceMs) {
+        } else if (cfg.detectBlocked !== false && obs.endpoint && obs.handshake_age == null && (now - createdMs) > cfg.graceMs) {
           // BLOCKED: wg learned the client's endpoint (it IS sending packets) but no handshake ever completed —
           // the client reaches the server but the tunnel won't come up (DPI on the handshake, MTU, wrong params).
           st = "blocked";

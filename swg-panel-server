@@ -421,6 +421,21 @@ def gen_id():
     return uuid.uuid4().hex[:12]
 
 
+def sanitize_color(v, fallback=None):
+    """A themed colour {dark,light} (each #rrggbb). A legacy string is accepted and applied to both modes.
+    Returns `fallback` if nothing valid was supplied."""
+    hx = lambda s: bool(re.match(r"^#[0-9a-fA-F]{6}$", str(s)))
+    if isinstance(v, dict):
+        out = {}
+        if hx(v.get("dark")):  out["dark"] = str(v["dark"])
+        if hx(v.get("light")): out["light"] = str(v["light"])
+        if out:
+            return out
+    if hx(v):
+        return {"dark": str(v), "light": str(v)}
+    return fallback
+
+
 def gen_psk():
     """A WireGuard/AmneziaWG preshared key: 32 random bytes, base64 (stdlib only)."""
     return base64.b64encode(os.urandom(32)).decode()
@@ -1399,6 +1414,12 @@ PANEL_SETTINGS_DEFAULTS = {
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
     "enabled_turn_forks": ["WINGS-N", "anton48"],
     "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
+    # palette overrides — empty = the SPA's built-in defaults (wg green, awg cyan, blocked/faulty orange, brand cyan).
+    # Each colour carries a per-mode value {dark,light}.
+    "iface_colors": {},       # per-protocol interface colour overrides {"wg"|"awg": {dark,light}}
+    "status_conditions": {"blocked": True, "faulty": True},   # peer-health DETECTION toggles (both on = flag them)
+    "theme_color": "",        # brand/interface theme colour (DARK mode) replacing the default cyan ("" = default)
+    "theme_color_light": "",  # brand/interface theme colour (LIGHT mode) ("" = default)
     "geo_epoch": 0,
 }
 
@@ -2078,11 +2099,40 @@ def api(method, path, qs, body, deps):
                 if fid and fid not in seen_tf:
                     seen_tf.add(fid); out_tf.append(fid)
             cur["enabled_turn_forks"] = out_tf
-        fc = incoming.get("turn_fork_colors")           # per-fork colour overrides {id: "#rrggbb"}
+        def _hex(s):
+            return bool(re.match(r"^#[0-9a-fA-F]{6}$", str(s)))
+        def _themed_color(v):                            # {dark,light} (each hex) — a legacy string applies to both
+            if isinstance(v, dict):
+                out = {}
+                if _hex(v.get("dark")):  out["dark"] = str(v["dark"])
+                if _hex(v.get("light")): out["light"] = str(v["light"])
+                return out or None
+            if _hex(v): return {"dark": str(v), "light": str(v)}
+            return None
+        fc = incoming.get("turn_fork_colors")           # per-fork colour overrides {id: {dark,light}}
         if isinstance(fc, dict):
-            cur["turn_fork_colors"] = {re.sub(r"[^A-Za-z0-9_-]", "", str(k))[:48]: str(v)
-                                       for k, v in list(fc.items())[:64]
-                                       if re.match(r"^#[0-9a-fA-F]{6}$", str(v))}
+            out_fc = {}
+            for k, v in list(fc.items())[:64]:
+                tc = _themed_color(v)
+                if tc: out_fc[re.sub(r"[^A-Za-z0-9_-]", "", str(k))[:48]] = tc
+            cur["turn_fork_colors"] = out_fc
+        ic = incoming.get("iface_colors")               # per-protocol interface colour overrides {wg,awg: {dark,light}}
+        if isinstance(ic, dict):
+            out_ic = {}
+            for k in ("wg", "awg"):
+                tc = _themed_color(ic.get(k))
+                if tc: out_ic[k] = tc
+            cur["iface_colors"] = out_ic
+        sco = incoming.get("status_conditions")         # peer-health DETECTION toggles {blocked,faulty: bool}
+        if isinstance(sco, dict):
+            cur["status_conditions"] = {"blocked": sco.get("blocked", True) is not False,
+                                        "faulty": sco.get("faulty", True) is not False}
+        if "theme_color" in incoming:                   # brand/interface theme colour (dark mode) replacing the default cyan ("" = default)
+            tcv = str(incoming.get("theme_color") or "").strip()
+            cur["theme_color"] = tcv if re.match(r"^#[0-9a-fA-F]{6}$", tcv) else ""
+        if "theme_color_light" in incoming:              # brand/interface theme colour (light mode) ("" = default)
+            tlv = str(incoming.get("theme_color_light") or "").strip()
+            cur["theme_color_light"] = tlv if re.match(r"^#[0-9a-fA-F]{6}$", tlv) else ""
         if "vk_link" in incoming:                       # VK call link baked into generated turn-proxy client configs
             cur["vk_link"] = str(incoming.get("vk_link") or "").strip()[:512]
         cl = incoming.get("custom_lists")               # operator-defined reusable IP/domain lists
@@ -2564,7 +2614,7 @@ def api(method, path, qs, body, deps):
         while nid in nodes:
             nid = gen_id()
         token = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
-        nodes[nid] = {"id": nid, "name": name, "color": body.get("color") or "#34d399",
+        nodes[nid] = {"id": nid, "name": name, "color": sanitize_color(body.get("color"), {"dark": "#34d399", "light": "#12A46B"}),
                       "endpoint_host": (body.get("endpoint_host") or "").strip(),
                       "stats_file": f"stats-{nid}.json",
                       "token_hash": make_token_hash(token), "created": now()}
@@ -2584,7 +2634,7 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, "error": "name must be 1–40 chars: letters, digits, - or _", "code": "bad_request"}
             nodes[nid]["name"] = nm
         if "color" in body:
-            nodes[nid]["color"] = body.get("color") or nodes[nid].get("color")
+            nodes[nid]["color"] = sanitize_color(body.get("color"), nodes[nid].get("color"))
         if "endpoint_host" in body:
             nodes[nid]["endpoint_host"] = (body.get("endpoint_host") or "").strip()
         for k in ("default_egress_ip", "panel_ip"):   # node IP roles: SNAT source for direct egress / source to dial the panel

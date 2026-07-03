@@ -509,6 +509,7 @@ const Store = {
     this.storeConfigs = !!d.store_configs;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
+    applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
     this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
     this.catDomains = d.cat_domains || this.catDomains || {};   // curated domains per host category → hover tooltip
     this.env = d.env || this.env || {};
@@ -539,8 +540,10 @@ const Store = {
     const _adv = (this.panelSettings || {}).advanced || {};   // operator-tunable stale/grace thresholds
     // rx-history for FAULTY detection persists across polls (keyed node|iface|pubkey, like reconcile's `observed`)
     this._rxHistory = this._rxHistory || {};
+    const _sc = (this.panelSettings || {}).status_conditions || {};   // peer-health detection toggles (default on)
     this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
       history: this._rxHistory, faultyMs: _adv.faulty_ms || 45000,
+      detectBlocked: _sc.blocked !== false, detectFaulty: _sc.faulty !== false,
       ...(_adv.node_stale_ms ? { nodeStaleMs: _adv.node_stale_ms } : {}), ...(_adv.peer_grace_ms ? { graceMs: _adv.peer_grace_ms } : {}) });
     // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
     for (const id of Object.keys(this.rotating)) {
@@ -551,7 +554,7 @@ const Store = {
   },
   node(id) { return this.fleet.find(n => n.id === id); },              // lookup by stable id
   nodeName(id) { const n = this.node(id); return (n && n.name) || id; }, // display title (falls back to id)
-  nodeColor(id) { const n = this.node(id); return (n && n.color) || "#5f7569"; },
+  nodeColor(id) { const n = this.node(id); return pickThemed(n && n.color, NODE_COLOR_DEFAULT.dark, NODE_COLOR_DEFAULT.light); },
   ifacesOf(node) { return Object.keys(this.describe[node] || {}); },   // node = id (describe keyed by id)
   ifaceMeta(node, iface) { return (this.describe[node] || {})[iface] || null; },
   // a panel-managed inter-node mesh link (swg_*): never a user-peer target / egress NIC. Authoritative
@@ -1026,14 +1029,22 @@ const STATUS_REASON = {
 };
 function gridStatusBadge(t, p) {
   const st = t.status || p.status;
-  const title = (t.down ? "interface " + t.iface + " is down — " + t.down : (p.reason || STATUS_REASON[st])) || "";
+  const reason = (t.down ? "Interface " + t.iface + " is down — " + t.down : (p.reason || STATUS_REASON[st])) || "";
   if (t.online && t.viaTurn) {
     const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap">
       <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${st}</span>
       <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
   }
-  return html`<${Badge} s=${st} title=${title}/>`;
+  // Blocked / Faulty carry an explanation — show it in our own hover bubble (like the "Connected via" one) instead
+  // of a native title, colour-headed with the status colour so the *why* reads at a glance.
+  if ((st === "blocked" || st === "faulty") && reason) {
+    const bc = "var(--fault)";
+    return html`<span class="turnwrap">
+      <${Badge} s=${st}/>
+      <span class="turnbub statusbub"><span class="statusbub-h" style=${"color:" + bc}><${Ic} i="warn"/>${st === "blocked" ? "Blocked" : "Faulty"}</span>${reason}</span></span>`;
+  }
+  return html`<${Badge} s=${st} title=${reason}/>`;
 }
 // Compact live-status dot for the connections monitor. Same turn language as the peer-grid status badge,
 // scaled down to a single dot: online-via-turn → the fork-coloured glowing dot + "Connected via <fork>
@@ -1055,10 +1066,10 @@ function endpointCell(t) {
   if (t.online && t.viaTurn) {
     const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap">
-      <span class="addr turnep" style=${"color:" + tc}>Local turn-proxy</span>
+      <span class="addr turnep" style=${"color:" + tc}>turn-proxy</span>
       <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
   }
-  return html`<span class="addr">${(obs && obs.endpoint) || "—"}</span>`;
+  return html`<span class="addr" title=${(obs && obs.endpoint) || ""}>${(obs && ipOf(obs.endpoint)) || "—"}</span>`;
 }
 // rate cell, green when traffic is flowing
 // Throughput display perspective (Panel settings): node-reported rx/tx is from the NODE's view (rx=down,
@@ -1368,7 +1379,7 @@ function UserCombo({ onPick, placeholder }) {
   const [q, setQ] = useState(""); const [open, setOpen] = useState(false);
   const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const ql = q.toLowerCase();
-  const shown = users.filter(u => !ql || (u.name + " " + (u.tag || "")).toLowerCase().includes(ql)).slice(0, 8);
+  const shown = users.filter(u => searchMatch(u.name + " " + (u.tag || ""), ql)).slice(0, 8);
   const { wrapRef, listRef, pos, popStyle } = useAnchoredList(open, setOpen, [q]);
   const pick = uid => { setOpen(false); setQ(""); onPick(uid); };
   return html`<div class="usercombo" ref=${wrapRef}>
@@ -1389,7 +1400,7 @@ function UserPicker({ value, onChange, allowUnassigned, placeholder }) {
   const sel = users.find(u => u.id === value);
   const selText = sel ? sel.name + (sel.tag ? " · " + sel.tag : "") : "";
   const ql = q.toLowerCase();
-  const shown = users.filter(u => !ql || (u.name + " " + (u.tag || "")).toLowerCase().includes(ql)).slice(0, 8);
+  const shown = users.filter(u => searchMatch(u.name + " " + (u.tag || ""), ql)).slice(0, 8);
   const { wrapRef, listRef, pos, popStyle } = useAnchoredList(open, setOpen, [q]);
   const pick = uid => { setOpen(false); setQ(""); onChange(uid); };
   return html`<div class="usercombo" ref=${wrapRef}>
@@ -1554,7 +1565,7 @@ function Overview() {
   const nodeTraffic = fleet.map(n => {
     const snap = Store.stats[n.id]; let r = 0, t = 0;
     if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; }
-    return { id: n.id, name: n.name, color: n.color, rx: r, tx: t, peers: peers.filter(p => p.targets.some(d => d.node === n.id)).length };
+    return { id: n.id, name: n.name, color: Store.nodeColor(n.id), rx: r, tx: t, peers: peers.filter(p => p.targets.some(d => d.node === n.id)).length };
   });
   const anyTraffic = nodeTraffic.some(x => x.rx + x.tx > 0);
   const rankRows = nodeTraffic.slice()
@@ -1626,7 +1637,7 @@ function NodeBadges({ active }) {
   const ns = Store.nodes || [];
   if (ns.length < 2) return null;
   return html`<div class="node-badges">${ns.map(n => {
-    const col = n.color || Store.nodeColor(n.id);
+    const col = Store.nodeColor(n.id);
     const down = Store.recon.nodeStatus[n.id] !== "live";   // not reporting → dim it (greyed, desaturated)
     const cls = "nbadge" + (down ? " off" : "");
     return n.id === active
@@ -1875,7 +1886,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const ql = q.trim().toLowerCase();
   const ifaceFiltered = !ql ? ifaceRows : ifaceRows.filter(({ p, t }) => {
     const u = p.user_id ? Store.user(p.user_id) : null;
-    return ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + (u ? u.name : "")).toLowerCase().includes(ql);
+    return searchMatch((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + (u ? u.name : ""), ql);
   });
 
   return html`<div class="screen">
@@ -2693,13 +2704,14 @@ function DeleteTurnSheet({ node, service, label }) {
 }
 // the installable turn-proxy forks (owner repo + the fork's obfuscation flags — the node appends a
 // fresh -wrap-key). Mirrors the installer's turn_repo_owner / turn_wrap_flags.
+// each fork has a dark-mode `color` and a deeper `colorL` (light-mode default, legible on white).
 const TURN_FORKS = [
-  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", color: "#5FB0E0" },
-  { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0" },
-  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/vk-turn-proxy", wrap: "-wrap", color: "#E0A85F" },
-  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", color: "#6FD9A8" },
-  { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A" },
-  { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F" },
+  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", color: "#5FB0E0", colorL: "#2C7EC0" },
+  { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7" },
+  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/vk-turn-proxy", wrap: "-wrap", color: "#E0A85F", colorL: "#C07A1E" },
+  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", color: "#6FD9A8", colorL: "#12A46B" },
+  { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468" },
+  { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420" },
 ];
 // forks whose CLIENT is WireGuard-only — they can't front an AmneziaWG interface, so awg interfaces are hidden
 // from their "Forwards to" picker. kiper292 = plain wireguard-go + a config parser that REJECTS awg params;
@@ -2707,12 +2719,12 @@ const TURN_FORKS = [
 // forks relay UDP transparently so the standard AmneziaWG app handles it).
 const TURN_WG_ONLY = new Set(["kiper292", "anton48"]);
 function forkSupportsAwg(fork) { return !TURN_WG_ONLY.has(fork); }
-// stable colour for a turn-proxy fork (peers connected via it get their interface badge tinted this colour);
-// a Panel-settings override (turn_fork_colors) wins over the TURN_FORKS default.
+// stable colour for a turn-proxy fork in the ACTIVE mode (peers connected via it get their badge tinted this);
+// a Panel-settings override (turn_fork_colors[id] = {dark,light}) wins over the TURN_FORKS default.
 function turnColor(label) {
   const ov = (Store.panelSettings && Store.panelSettings.turn_fork_colors) || {};
-  if (ov[label]) return ov[label];
-  const fk = TURN_FORKS.find(x => x.id === label); return (fk && fk.color) || "#8FA8C0";
+  const fk = TURN_FORKS.find(x => x.id === label);
+  return pickThemed(ov[label], (fk && fk.color) || "#8FA8C0", (fk && fk.colorL) || "#5E7085");
 }
 // Drive EVERY `.tf-<fork>` element (the .tg-turn tags + .iftype.turn badges scattered across the SPA) from the
 // picker override — those use a static CSS class, so without this the colour picker would only reach the handful of
@@ -2722,6 +2734,158 @@ function applyForkColors() {
   if (!el) { el = document.createElement("style"); el.id = "tf-colors"; (document.head || document.documentElement).appendChild(el); }
   el.textContent = TURN_FORKS.map(f => ".tf-" + f.id + "{--tfc:" + turnColor(f.id) + "}").join("");
 }
+// ---- palette overrides (Panel settings → Interfaces / Display) ----
+// Interface protocol colours (wg / awg), peer-health colours (blocked / faulty) and the brand/theme colour
+// are all operator-tunable. A Panel-settings override wins over these built-in defaults; nothing is hardcoded
+// at the render sites — the wg/awg/blocked/faulty CSS classes and the --brand custom property are driven from
+// here via applyThemeColors() after every poll, exactly like applyForkColors() does for the turn tags.
+// Every operator-tunable colour carries a value PER light/dark mode ({dark,light}); the active mode's value is
+// resolved by pickThemed(). Nothing is hardcoded at the render sites — the wg/awg CSS classes and the --brand
+// property are injected by applyThemeColors() after every poll, exactly like applyForkColors() does for the tags.
+const IFACE_COLOR_DEFAULTS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" } };
+const NODE_COLOR_DEFAULT = { dark: "#5f7569", light: "#4A5C52" };   // fallback node colour when unset (per mode)
+const NODE_CREATE_DEFAULT = { dark: "#34d399", light: "#12A46B" };  // a fresh node's starting colour
+// normalize a possibly-legacy colour ({dark,light} | string | null) into a {dark,light} pair.
+function toThemed(v, def) {
+  if (v && typeof v === "object") return { dark: v.dark || def.dark, light: v.light || def.light };
+  if (typeof v === "string" && v) return { dark: v, light: v };
+  return { ...def };
+}
+const THEME_COLOR_DEFAULT = "#1FC8D6";        // brand cyan (--brand) — the dark-mode accent
+const THEME_COLOR_LIGHT_DEFAULT = "#0E9BB0";  // a deeper cyan reads better on light surfaces
+// resolve a themed colour: v may be {dark,light}, a legacy single string (used for both), or missing (→ defaults).
+function pickThemed(v, defDark, defLight) {
+  const light = resolvedTheme() === "light";
+  if (v && typeof v === "object") return (light ? v.light : v.dark) || (light ? defLight : defDark);
+  if (typeof v === "string" && v) return v;   // legacy single colour → same in both modes
+  return light ? defLight : defDark;
+}
+function ifaceColor(type) {
+  const ov = (Store.panelSettings && Store.panelSettings.iface_colors) || {};
+  const k = (type || "").toLowerCase() === "awg" ? "awg" : "wg";
+  return pickThemed(ov[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light);
+}
+// perceived brightness (0–1) of a #rrggbb / #rgb colour — used to pick a contrasting ink for text on the brand.
+function hexLum(h) {
+  h = String(h).replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join("");
+  const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
+  return (isNaN(r) ? 0.5 : 0.299 * r + 0.587 * g + 0.114 * b);
+}
+function mixHex(a, b, t) {   // blend two hex colours (t=0→a, 1→b)
+  const p = h => { h = String(h).replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join(""); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+  const A = p(a), B = p(b);
+  return "#" + A.map((x, i) => Math.max(0, Math.min(255, Math.round(x + (B[i] - x) * t))).toString(16).padStart(2, "0")).join("");
+}
+function hexToHsl(hex) {
+  let h = String(hex).replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join("");
+  const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; let hh = 0;
+  if (d) { hh = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hh /= 6; }
+  const l = (mx + mn) / 2, s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+  return [hh, s, l];
+}
+function hslToHex(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs((h * 6) % 2 - 1)), m = l - c / 2;
+  const seg = Math.floor(h * 6) % 6, r = [c, x, 0, 0, x, c][seg], g = [x, c, c, x, 0, 0][seg], b = [0, 0, x, c, c, x][seg];
+  return "#" + [r, g, b].map(v => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("");
+}
+// keep the theme accent legible against the active background by clamping LIGHTNESS in HSL (hue + saturation kept,
+// so it stays a vivid darker/lighter shade of the SAME colour, not a washed grey). Only genuinely-out-of-band
+// picks are moved; the picker snaps to this value too, so what you pick is what you see (WYSIWYG).
+function clampBrand(hex, light) {
+  if (!/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(String(hex))) return hex;
+  let [h, s, l] = hexToHsl(hex);
+  if (light && l > 0.52) l = 0.44;
+  else if (!light && l < 0.44) l = 0.54;
+  else return hex;
+  s = Math.max(s, 0.4);   // keep it saturated so the darker/lighter shade reads as the colour, not grey
+  return hslToHex(h, s, l);
+}
+// the brand accent for the ACTIVE light/dark mode — each mode has its own picker (else its built-in default).
+function themeColor() {
+  const ps = Store.panelSettings || {};
+  return resolvedTheme() === "light" ? (ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT)
+                                     : (ps.theme_color || THEME_COLOR_DEFAULT);
+}
+// Drive the whole palette from the picker overrides: set --brand (and its lighter/chart siblings) on <html> so
+// every var(--brand) site follows the theme colour, and inject one <style> overriding the static wg/awg/blocked/
+// faulty classes (they don't read a custom property, so like the turn tags they need an explicit rule).
+let _themeSig = null;
+function applyThemeColors() {
+  const theme = themeColor(), wg = ifaceColor("wg"), awg = ifaceColor("awg");
+  const sig = [resolvedTheme(), theme, wg, awg].join("|");
+  if (sig === _themeSig) return;   // nothing changed since last poll → skip the DOM write
+  _themeSig = sig;
+  const de = document.documentElement, cm = (c, p, m) => "color-mix(in srgb, " + c + " " + p + "%, " + m + ")";
+  const brand = clampBrand(theme, resolvedTheme() === "light");   // legible against the active background
+  de.style.setProperty("--brand", brand);
+  de.style.setProperty("--brand-2", cm(brand, 70, "#fff"));   // the lighter brand accent
+  de.style.setProperty("--tp-rx", brand);                      // throughput chart "down" series tracks the theme
+  // text sitting ON the brand colour (primary buttons) must contrast with whatever colour was applied — dark ink on a
+  // light brand, light ink on a dark one — so a dark theme colour doesn't make the button label invisible.
+  de.style.setProperty("--brand-ink", hexLum(brand) > 0.55 ? "#04232A" : "#EAFBFF");
+  let el = document.getElementById("theme-colors");
+  if (!el) { el = document.createElement("style"); el.id = "theme-colors"; (document.head || document.documentElement).appendChild(el); }
+  el.textContent =
+    ".iftype.wg,.tg-wg{background:" + cm(wg, 14, "transparent") + ";color:" + wg + "}" +
+    ".iftype.awg,.tg-awg{background:" + cm(awg, 15, "transparent") + ";color:" + awg + "}";
+  applyFavicon(theme);
+}
+// Rebuild the browser-tab favicon (the indicator-LED mark) in the ACTIVE mode's accent colour, with a
+// mode-matched centre so it reads on either tab background. Regenerated whenever the theme colour or mode
+// changes (called from applyThemeColors, which fires exactly on those changes).
+function applyFavicon(accent) {
+  const centre = resolvedTheme() === "light" ? "#FFFFFF" : "#0A0E15";
+  const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+    + "<rect width='32' height='32' rx='8' fill='" + accent + "'/>"
+    + "<circle cx='16' cy='14.5' r='5.5' fill='" + centre + "'/></svg>";
+  let link = document.querySelector("link[rel~='icon']");
+  if (!link) { link = document.createElement("link"); link.rel = "icon"; (document.head || document.documentElement).appendChild(link); }
+  link.setAttribute("href", "data:image/svg+xml," + encodeURIComponent(svg));
+}
+// A label-less pair of colour pickers — DARK then LIGHT — for one themed colour. Hovering a swatch pops a preview
+// of `sample(colour)` on that mode's real backdrop, so you see how it reads in that theme before committing. `val`
+// is {dark,light} (a legacy string is accepted and shown for both); onChange receives the whole updated object.
+function ThemedSwatch({ val, onChange, sample, title }) {
+  const v = (val && typeof val === "object") ? val : { dark: val || "", light: val || "" };
+  const cell = mode => html`<span class="tsw">
+    <input type="color" class="tf-color" value=${v[mode]}
+      title=${(title ? title + " · " : "") + (mode === "dark" ? "Dark theme" : "Light theme")}
+      onInput=${e => onChange({ ...v, [mode]: e.target.value })}/>
+    <span class=${"tsw-bub tsw-" + mode}>${sample(v[mode], mode)}<span class="tsw-cap">${mode}</span></span>
+  </span>`;
+  return html`<span class="tswrow">${cell("dark")}${cell("light")}</span>`;
+}
+// ---- light / dark / auto ----
+// The header switch cycles auto → light → dark. "auto" follows the OS. The resolved mode drives
+// <html data-theme>, which flips the structural palette (app.css :root[data-theme=light]); the brand
+// accent is then re-injected per mode by applyThemeColors(). Persisted in localStorage so it survives reloads;
+// an inline <head> script in index.html sets data-theme before first paint so there's no dark→light flash.
+const THEME_MODES = ["auto", "light", "dark"];
+function themeMode() { try { const m = localStorage.getItem("swg-theme"); return THEME_MODES.includes(m) ? m : "auto"; } catch (_) { return "auto"; } }
+function prefersLight() { try { return matchMedia("(prefers-color-scheme: light)").matches; } catch (_) { return false; } }
+function resolvedTheme(mode) { mode = mode || themeMode(); return mode === "auto" ? (prefersLight() ? "light" : "dark") : mode; }
+function applyThemeMode() {
+  document.documentElement.dataset.theme = resolvedTheme();
+  _themeSig = null;            // force the accent injection to re-pick this mode's brand colour
+  applyThemeColors();
+  applyForkColors();           // turn-fork tints are per-mode too
+}
+function setThemeMode(mode) { try { localStorage.setItem("swg-theme", mode); } catch (_) {} applyThemeMode(); const b = document.getElementById("theme-btn"); if (b) paintThemeBtn(b); }
+function cycleThemeMode() { const i = THEME_MODES.indexOf(themeMode()); setThemeMode(THEME_MODES[(i + 1) % THEME_MODES.length]); }
+const THEME_ICON = {   // inline SVGs — the button shows the CURRENT mode. auto = the "contrast" glyph (a circle with one
+  // half filled), the widely-used convention (GitHub et al.) for "follows the system" — clearer than a monitor.
+  light: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`,
+  dark: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>`,
+  auto: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg>`,
+};
+function paintThemeBtn(b) {
+  const m = themeMode();
+  b.innerHTML = THEME_ICON[m];
+  b.title = m === "auto" ? "Theme: Auto (follows your system) — click for Light" : m === "light" ? "Theme: Light — click for Dark" : "Theme: Dark — click for Auto";
+}
+// re-resolve on OS scheme change while in Auto
+try { matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeMode() === "auto") { applyThemeMode(); const b = document.getElementById("theme-btn"); if (b) paintThemeBtn(b); } }); } catch (_) {}
 // master switch: turn-proxy UI is shown unless explicitly disabled in Panel settings → Turn proxies.
 function turnEnabled() { return !(Store.panelSettings && Store.panelSettings.turn_enabled === false); }
 // the forks offered in the "install a fork" picker — toggled in Panel settings → Turn proxies. Disabling a fork
@@ -2976,14 +3140,32 @@ function sortPeerRows(rows, sort, dir) {
     || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || "")));
 }
 function peerSortBy(view, col) { if (view.sort === col) view.dir = -view.dir; else { view.sort = col; view.dir = PEER_DEFDIR[col] || 1; } }
+// Pager scroll: turning to the NEXT page brings the grid's TOP just under the sticky header; PREV brings its BOTTOM
+// into view — so a page turn always lands you at the fresh edge of the list. `e` targets the clicked pager button;
+// the grid is the element right before the .pager. Deferred two frames so the new page has rendered/re-sized.
+function pageScroll(e, dir) {
+  const pager = e.currentTarget && e.currentTarget.closest(".pager");
+  const grid = pager && pager.previousElementSibling;
+  if (!grid) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const r = grid.getBoundingClientRect();
+    // Next → land the grid top well below the toolbar (scroll a bit further up); Prev → keep the grid bottom
+    // clear of the pager/viewport edge (scroll a bit further down). Extra margin = more context on either side.
+    const y = dir > 0 ? window.scrollY + r.top - 120 : window.scrollY + r.bottom - window.innerHeight + 64;
+    window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
+  }));
+}
 // `live` (the Live monitor): status is the animated connDot (not the pill badge), an Endpoint column is added
 // (turn peers show "Local turn-proxy"), the row actions + assign-to-user dropdown are dropped (read-only).
 // `sort`/`dir`/`onSort` make every column header a clickable order-by.
 function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live, sort, dir, onSort }) {
-  const arrow = c => sort === c ? (dir < 0 ? " ↓" : " ↑") : "";
-  const th = (c, label, cls) => onSort ? html`<th class=${(cls ? cls + " " : "") + "clk"} onClick=${() => onSort(c)}>${label}${arrow(c)}</th>` : html`<th class=${cls || ""}>${label}</th>`;
-  return html`<div class="tablewrap"><table class=${"peergrid" + (live ? " live" : "")}>
-    <thead><tr>${th("status", live ? "" : "Status")}${loc ? th("server", "Server") : (agg ? th("server", node === "*" ? "Server" : "IF") : null)}${hideUser ? null : th("user", "User")}${th("title", "Title")}${th("address", "Address")}${live ? th("endpoint", "Endpoint") : null}${th("online", "Online", "h-online")}${th("rate", "Rate ↓↑", "h-rate")}${th("total", "Total ↓↑", "h-total")}${live ? null : html`<th class="h-acts"></th>`}</tr></thead>
+  const arrow = c => sort === c ? (dir < 0 ? "↓ " : "↑ ") : "";
+  const th = (c, label, cls) => onSort ? html`<th class=${(cls ? cls + " " : "") + "clk"} onClick=${() => onSort(c)}>${arrow(c)}${label}</th>` : html`<th class=${cls || ""}>${label}</th>`;
+  return html`<div class="tablewrap"><table class=${"peergrid" + (live ? " live" : "") + (loc ? " loc" : "")}>
+    <thead><tr>${th("status", live ? "" : "Status", "h-status")}${loc
+      ? html`${hideUser ? null : th("user", "User", "h-user")}${th("title", "Title", "h-title")}${live ? th("endpoint", "Endpoint", "h-ep") : null}${th("address", "Address", "h-addr")}${th("server", "Node", "h-node")}`
+      : html`${hideUser ? null : th("user", "User", "h-user")}${th("title", "Title", "h-title")}${agg ? th("server", node === "*" ? "Node" : "IF", "h-node") : null}${th("address", "Address", "h-addr")}${live ? th("endpoint", "Endpoint", "h-ep") : null}`
+    }${th("online", "Online", "h-online")}${th("rate", "Rate ↓↑", "h-rate")}${th("total", "Total ↓↑", "h-total")}${live ? null : html`<th class="h-acts"></th>`}</tr></thead>
     <tbody>
       ${rows.length ? rows.map(({ p, t }) => {
         const obs = t.observed;
@@ -2991,21 +3173,33 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
-          <td data-label="Status">${live ? html`<span class=${"condot " + (t.status === "faulty" ? "faulty" : t.status === "blocked" ? "blocked" : t.online ? "on" : "off")} title=${t.status === "faulty" ? "faulty — connected but no inbound data" : t.status === "blocked" ? "blocked — reaching the server, no handshake" : t.online ? "online" : "offline"}></span>` : gridStatusBadge(t, p)}</td>
-          ${loc ? html`<td data-label="Server"><div class="srvcell">
-            <span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
-            ${gridIfaceTag(t)}
-          </div></td>`
-          : agg ? html`<td data-label=${node === "*" ? "Server" : "IF"}><div class="srvcell">
-            ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
-            ${ifaceIsAll(iface) ? gridIfaceTag(t) : null}
-          </div></td>` : null}
-          ${hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
-            ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span><${Ic} i="user"/></a>`
-                : (live ? html`<span class="faint">unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`)}</td>`}
-          <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
-          <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
-          ${live ? html`<td data-label="Endpoint">${endpointCell(t)}</td>` : null}
+          <td data-label="Status" class="c-status">${(() => {
+            const ifaceB = loc ? gridIfaceTag(t) : null;
+            if (!live) return html`${gridStatusBadge(t, p)}${ifaceB}`;
+            const dot = html`<span class=${"condot " + (t.status === "faulty" ? "faulty" : t.status === "blocked" ? "blocked" : t.online ? "on" : "off")}></span>`;
+            // faulty / blocked → the "why" bubble on hovering the dot OR the interface badge (same as the peer-grid badge)
+            if (t.status === "faulty" || t.status === "blocked") {
+              return html`<span class="turnwrap">${dot}${ifaceB}
+                <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${t.status === "blocked" ? "Blocked" : "Faulty"}</span>${STATUS_REASON[t.status]}</span></span>`;
+            }
+            return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>${ifaceB}`;
+          })()}</td>
+          ${(() => {
+            const titleCell = html`<td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>`;
+            const addrCell = html`<td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
+            const epCell = html`<td data-label="Endpoint">${endpointCell(t)}</td>`;
+            const nodeCell = html`<td data-label="Node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
+            const userCell = hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
+              ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span><${Ic} i="user"/></a>`
+                  : (live ? html`<span class="faint">unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`)}</td>`;
+            // embedded / live-peers: Status · [User] · Title · [Endpoint (live)] · Address · Node — iface badge sits by the status
+            if (loc) return html`${userCell}${titleCell}${live ? epCell : null}${addrCell}${nodeCell}`;
+            const srvAgg = agg ? html`<td data-label=${node === "*" ? "Node" : "IF"}><div class="srvcell">
+              ${node === "*" ? html`<span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>` : null}
+              ${ifaceIsAll(iface) ? gridIfaceTag(t) : null}
+            </div></td>` : null;
+            return html`${userCell}${titleCell}${srvAgg}${addrCell}${live ? epCell : null}`;
+          })()}
           <td data-label="Online" class="c-online"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
           <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
           <td data-label="Total">${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</td>
@@ -3048,7 +3242,7 @@ function PeersScreen() {
     if (!ifaceMatch(t.iface, iface)) continue;
     rows.push({ p, t });
   }
-  if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
+  if (q) rows = rows.filter(({ p, t }) => searchMatch((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface, q));
   rows = sortPeerRows(rows, peersView.sort, peersView.dir);
   // which of each peer's deployments are actually visible as rows here — so a row can flag the rest
   // (filtered out by server/interface or search) with a "+N" the operator can hover/tap.
@@ -3067,9 +3261,9 @@ function PeersScreen() {
     <${StoreOffBanner}/>
     <div class="toolbar">
       <div class="search"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${peersView.q}
-        onInput=${e => { peersView.q = e.target.value.trim(); peersView.page = 1; force(x => x + 1); }}/></div>
+        onInput=${e => { peersView.q = e.target.value; peersView.page = 1; force(x => x + 1); }}/></div>
       <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}>
-        ${multiServer ? html`<option value="*">All servers</option>` : null}
+        ${multiServer ? html`<option value="*">All nodes</option>` : null}
         ${fleet.map(n => html`<option value=${n.id}>${n.name}</option>`)}
       </select>
       <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; peersView.page = 1; force(x => x + 1); }}>
@@ -3092,9 +3286,9 @@ function PeersScreen() {
         </select>
       </label>
       <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, rows.length)} of ${rows.length}</span>
-      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
+      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>‹ Prev</button>
       <span class="pager-pg">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>Next ›</button>
+      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>Next ›</button>
     </div>` : null}
 
     ${orphans.length ? html`<${Fragment}>
@@ -3144,7 +3338,7 @@ function ConnectionsScreen() {
       <button class=${"pm-opt pm-peers" + (mode === "peers" ? " on" : "")} onClick=${() => setMode("peers")}>Peers</button>
       <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "")} onClick=${() => setMode("users")}>Users</button>
     </div>
-    <div class="search"><${Ic} i="search"/><input placeholder=${mode === "users" ? "Search users, tags, peers…" : "Search peer, user, endpoint, IP…"} value=${connView.q} onInput=${e => { connView.q = e.target.value.trim(); reset(); }}/></div>
+    <div class="search"><${Ic} i="search"/><input placeholder=${mode === "users" ? "Search users, tags, peers…" : "Search peer, user, endpoint, IP…"} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/></div>
     <select class="selwrap" value=${connView.node} onChange=${e => { connView.node = e.target.value; connView.iface = ""; reset(); }}>
       <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
     </select>
@@ -3179,7 +3373,7 @@ function ConnectionsScreen() {
     rows.push({ p, t });
   }
   if (q) rows = rows.filter(({ p, t }) => { const u = p.user_id ? Store.user(p.user_id) : null; const o = t.observed || {};
-    return ((p.title || "") + " " + (p.name || "") + " " + (u ? u.name : "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface + " " + (o.endpoint || "")).toLowerCase().includes(q); });
+    return searchMatch((p.title || "") + " " + (p.name || "") + " " + (u ? u.name : "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface + " " + (o.endpoint || ""), q); });
   rows = sortPeerRows(rows, connView.sort, connView.dir);
   const shownByPeer = {};
   for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
@@ -3189,7 +3383,7 @@ function ConnectionsScreen() {
     ${toolbar}
     <div class="section-title"><h2 class="live-peers">Peers</h2><span class="count">${rows.length} shown · ${onlineCount} online</span></div>
     ${rows.length
-      ? html`<${PeerGrid} rows=${paginate(rows)} agg=${true} node="*" iface="*" shownByPeer=${shownByPeer} q=${connView.q} live=${true} sort=${connView.sort} dir=${connView.dir} onSort=${c => { peerSortBy(connView, c); connView.page = 1; bump(); }}/>`
+      ? html`<${PeerGrid} rows=${paginate(rows)} agg=${true} node="*" iface="*" shownByPeer=${shownByPeer} q=${connView.q} live=${true} loc=${true} hideUser=${false} sort=${connView.sort} dir=${connView.dir} onSort=${c => { peerSortBy(connView, c); connView.page = 1; bump(); }}/>`
       : html`<div class="empty"><b>${connView.online ? "No connections online" : "Nothing matches"}</b>${connView.online ? "No peer is online with these filters." : "Clear the filters."}</div>`}
     ${pager(rows.length)}
   </div>`;
@@ -3219,14 +3413,24 @@ function userStats(uid) {
   }
   return { rx, tx, rxb, txb, last };
 }
-// Global Users-search match: a peer's title/name/key/address/server/interface.
+// Multi-term search: split the query on whitespace and require EVERY term to appear somewhere in the (single,
+// combined) haystack — AND across terms, so "ada awg1" matches a peer whose USER is Ada and whose INTERFACE is
+// awg1 even though the two terms live in different fields. Empty query matches everything. Callers pass ONE
+// haystack that concatenates all searchable fields, so terms are free to match across them.
+function searchMatch(hay, q) {
+  if (!q) return true;
+  hay = String(hay).toLowerCase();
+  return String(q).toLowerCase().split(/\s+/).filter(Boolean).every(t => hay.includes(t));
+}
+// Global Users-search match: a peer's title/name/key/address/server/interface (one combined haystack).
 function peerMatchesQ(p, q) {
   if (!q) return true;
-  if (((p.title || "") + " " + (p.name || "") + " " + (p.pubkey || "")).toLowerCase().includes(q)) return true;
-  return p.targets.some(t => ((t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
+  const hay = (p.title || "") + " " + (p.name || "") + " " + (p.pubkey || "") + " "
+    + p.targets.map(t => (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).join(" ");
+  return searchMatch(hay, q);
 }
 // does the user's OWN identity (name/tag/note) match? — distinct from a match via one of their peers.
-function userIdentityMatchesQ(u, q) { return !q || ((u.name || "") + " " + (u.tag || "") + " " + (u.note || "")).toLowerCase().includes(q); }
+function userIdentityMatchesQ(u, q) { return searchMatch((u.name || "") + " " + (u.tag || "") + " " + (u.note || ""), q); }
 // A user matches if their identity OR any of their peers match — so you can find a user by a peer's IP.
 function userMatchesQ(u, q) {
   if (!q) return true;
@@ -3247,8 +3451,10 @@ const USER_SORT = {
   last: u => { const s = userStats(u.id); return s.last == null ? Infinity : s.last; },
   rate: u => { const s = userStats(u.id); return s.rx + s.tx; },
   total: u => { const s = userStats(u.id); return s.rxb + s.txb; },
+  // by node count first, then the total distinct interfaces across those nodes (encoded: nodes×10000 + ifaces)
+  nodes: u => { const nm = {}; let ifs = 0; for (const p of Store.peersOfUser(u.id)) for (const t of p.targets) { const s = nm[t.node] = nm[t.node] || new Set(); if (!s.has(t.iface)) { s.add(t.iface); ifs++; } } return Object.keys(nm).length * 10000 + ifs; },
 };
-const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, name: 1 };
+const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, name: 1, nodes: -1 };
 function sortUsers(users, sort, dir) {
   const key = USER_SORT[sort] || USER_SORT.status;
   return users.slice().sort((a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1) || String(a.name).localeCompare(String(b.name)));
@@ -3257,10 +3463,11 @@ function sortColToggle(view, sk, dk, col, defdir) { if (view[sk] === col) view[d
 // The sortable header line above a users list — same grid columns as .urow-head so the titles (which the rows no
 // longer repeat inline) sit over their columns.
 function UsersHeader({ sort, dir, onSort, live }) {
-  const arrow = c => sort === c ? (dir < 0 ? " ↓" : " ↑") : "";
-  const th = (c, label, cls) => html`<span class=${"clk" + (cls ? " " + cls : "")} onClick=${() => onSort(c)}>${label}${arrow(c)}</span>`;
+  const arrow = c => sort === c ? (dir < 0 ? "↓ " : "↑ ") : "";
+  const th = (c, label, cls) => html`<span class=${"clk" + (cls ? " " + cls : "")} onClick=${() => onSort(c)}>${arrow(c)}${label}</span>`;
   return html`<div class="uhead">
-    <span></span>${live ? html`<span></span>` : th("status", "Status")}${th("name", "User")}${th("peers", "Peers")}${th("last", "Online")}${th("rate", "Rate", "uh-r")}${th("total", "Total", "uh-r")}<span></span>
+    <span></span>${th("status", "Status")}${th("name", "User")}
+    <span class=${"u-right" + (live ? " live" : "")}>${th("peers", "Peers", "uh-pc")}${th("nodes", "Nodes", "uh-srv")}${th("last", "Online")}${th("rate", "Rate ↓↑", "uh-r")}${th("total", "Total ↓↑", "uh-r")}${live ? null : html`<span></span>`}</span>
   </div>`;
 }
 // which Users page a user lands on (mirrors UsersScreen's sort; search is cleared before we navigate)
@@ -3326,7 +3533,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
       let ts = p.targets.filter(t => (node === "*" || t.node === node) && ifaceMatch(t.iface, iface));
       if (onlineOnly) ts = ts.filter(t => t.online);   // Online filter → only the peer's online deployments
       if (!ts.length) continue;
-      if (q && !((p.title || "") + " " + (p.name || "") + " " + p.targets.map(t => (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).join(" ")).toLowerCase().includes(q)) continue;
+      if (!searchMatch((p.title || "") + " " + (p.name || "") + " " + p.targets.map(t => (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).join(" "), q)) continue;
       const rep = ts.slice().sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0))[0];   // prefer an online deployment
       rows.push({ p, t: rep });
       shownByPeer[p.id] = new Set([tkey(rep.node, rep.iface)]);   // only the rep is "shown" → the rest become +N
@@ -3338,7 +3545,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
       if (onlineOnly && !t.online) continue;
       rows.push({ p, t });
     }
-    if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
+    if (q) rows = rows.filter(({ p, t }) => searchMatch((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface, q));
     for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
   }
   if (!view.sort) { view.sort = "status"; view.dir = -1; }
@@ -3353,9 +3560,9 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
   return html`<div class="peerspanel">
     ${hideToolbar ? null : html`<div class="toolbar sub">
       <div class="search"><${Ic} i="search"/><input placeholder="Search title, address…" value=${view.q || ""}
-        onInput=${e => { view.q = e.target.value.trim(); view.page = 1; bump(); }}/></div>
+        onInput=${e => { view.q = e.target.value; view.page = 1; bump(); }}/></div>
       ${multiServer ? html`<select class="selwrap" value=${node} onChange=${e => { view.node = e.target.value; view.iface = ""; view.page = 1; bump(); }}>
-        <option value="*">All servers</option>${nodes.map(n => html`<option value=${n}>${Store.nodeName(n)}</option>`)}
+        <option value="*">All nodes</option>${nodes.map(n => html`<option value=${n}>${Store.nodeName(n)}</option>`)}
       </select>` : null}
       ${ifaceOpts.length > 1 ? html`<select class="selwrap" value=${iface} onChange=${e => { view.iface = e.target.value; view.page = 1; bump(); }}>
         <option value="*">All interfaces</option>${ifaceOptGroups(ifaceOpts)}
@@ -3369,9 +3576,9 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
           ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
         </select></label>
       <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, rows.length)} of ${rows.length}</span>
-      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
+      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>‹ Prev</button>
       <span class="pager-pg">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>Next ›</button>
+      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>Next ›</button>
     </div>` : null}
   </div>`;
 }
@@ -3468,6 +3675,15 @@ function UserRow({ user, live, onlineOnly, q }) {
   const toggle = () => { usersView.expanded[user.id] = !expanded; force(x => x + 1); };
   const allPeers = Store.peersOfUser(user.id);
   const shownPeers = (searching && !idMatch) ? allPeers.filter(p => peerMatchesQ(p, q)) : allPeers;
+  // nodes the user has peers on → for the hover bubble: each node's interfaces listed ONCE with a peer count, by node.
+  const _nm = {};
+  for (const p of allPeers) for (const t of p.targets) {
+    const nn = _nm[t.node] = _nm[t.node] || {};
+    if (!nn[t.iface]) nn[t.iface] = { iface: t.iface, type: (t.type || "").toLowerCase() === "awg" ? "awg" : "wg", count: 0 };
+    nn[t.iface].count++;
+  }
+  const srvNodes = Object.keys(_nm).map(nid => ({ node: nid, ifaces: Object.values(_nm[nid]).sort((a, b) => a.iface.localeCompare(b.iface)) }))
+    .sort((a, b) => Store.nodeName(a.node).localeCompare(Store.nodeName(b.node)));
   const st = userStats(user.id);
   const [db, ub] = dlul(st.rxb, st.txb);
   const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 });
@@ -3480,21 +3696,34 @@ function UserRow({ user, live, onlineOnly, q }) {
     <div class="urow-head" onClick=${toggle}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       ${userStatTag(user, live)}
-      <span class="u-name"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
-      <span class="u-counts">${(() => {
-        const onc = html`<span class=${"u-onc" + (user.onlineCount ? " on" : "")}>${user.onlineCount} Online</span>`;
-        const pc = html`<span class="u-pc">${user.peerCount} Peer${user.peerCount === 1 ? "" : "s"}</span>`;
-        const sep = html`<span class="u-dot"> · </span>`;
-        return live ? html`${onc}${sep}${pc}` : html`${pc}${user.peerCount ? html`${sep}${onc}` : null}`;
-      })()}</span>
-      <span class="u-last">${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
-      <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
-      <span class="u-total">${xferCell(db, ub)}</span>
-      <span class="u-acts" onClick=${e => e.stopPropagation()}>${live ? null : html`<${Fragment}>
-        <button class="iconbtn" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
-        <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
-        <button class="iconbtn danger" title="Delete user" onClick=${delUser}><${Ic} i="trash"/></button>
-      <//>`}</span>
+      <span class="u-name"><span class="un">${user.name}</span>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
+      <span class=${"u-right" + (live ? " live" : "")}>
+        <span class="u-counts">${(() => {
+          const onc = html`<span class=${"u-onc" + (user.onlineCount ? " on" : "")}>${user.onlineCount} Online</span>`;
+          const pc = html`<span class="u-pc">${user.peerCount} Peer${user.peerCount === 1 ? "" : "s"}</span>`;
+          const sep = html`<span class="u-dot"> · </span>`;
+          return live ? html`${onc}${sep}${pc}` : html`${pc}${user.peerCount ? html`${sep}${onc}` : null}`;
+        })()}</span>
+        <span class="u-servers">${srvNodes.length ? html`<span class="turnwrap srvwrap" onClick=${e => e.stopPropagation()}>
+          <span class="srvchips">
+            ${srvNodes.length === 1 ? html`<span class="nsrv" style=${"--c:" + Store.nodeColor(srvNodes[0].node)}>${Store.nodeName(srvNodes[0].node)}</span>`
+              : html`<span class="nsrv-agg"><${Ic} i="server"/>${srvNodes.length} Nodes</span>`}
+          </span>
+          <span class="turnbub servbub">${srvNodes.flatMap(n => n.ifaces.map(f => html`<span class="servbub-row">
+            <span class="nsrv" style=${"--c:" + Store.nodeColor(n.node)}>${Store.nodeName(n.node)}</span>
+            <${Tag} kind=${f.type} label=${f.iface}/>
+            <span class="servbub-pc">${f.count} Peer${f.count === 1 ? "" : "s"}</span>
+          </span>`))}</span>
+        </span>` : html`<span class="faint">—</span>`}</span>
+        <span class="u-last">${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
+        <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
+        <span class="u-total">${xferCell(db, ub)}</span>
+        ${live ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
+          <button class="iconbtn" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
+          <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
+          <button class="iconbtn danger" title="Delete user" onClick=${delUser}><${Ic} i="trash"/></button>
+        </span>`}
+      </span>
     </div>
     ${expanded ? html`<div class="urow-body">
       ${shownPeers.length ? html`<${EmbeddedPeers} peers=${shownPeers} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true} live=${live} onlineOnly=${onlineOnly}/>`
@@ -3527,7 +3756,7 @@ function UsersScreen() {
     <${StoreOffBanner}/>
     <div class="toolbar">
       <div class="search"><${Ic} i="search"/><input placeholder="Search users, tags, notes, peers…" value=${usersView.q}
-        onInput=${e => { usersView.q = e.target.value.trim(); usersView.page = 1; force(x => x + 1); }}/></div>
+        onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/></div>
       <select class="selwrap" value=${usersView.node} onChange=${e => { usersView.node = e.target.value; usersView.iface = ""; usersView.page = 1; force(x => x + 1); }}>
         <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
       </select>
@@ -3552,9 +3781,9 @@ function UsersScreen() {
           ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
         </select></label>
       <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, users.length)} of ${users.length}</span>
-      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
+      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${e => { setPage(page - 1); pageScroll(e, -1); }}>‹ Prev</button>
       <span class="pager-pg">${page} / ${totalPages}</span>
-      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>Next ›</button>
+      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>Next ›</button>
     </div>` : null}
 
     ${allUnassigned.length ? html`<${Fragment}>
@@ -3695,7 +3924,6 @@ function PeerDetail({ id: rawId }) {
 }
 
 // ═════════════════════════ SCREEN: NODES ═════════════════════════
-const SWATCHES = ["#34d399", "#22d3ee", "#e8c04b", "#f0913c", "#f0596b", "#c084e8", "#7dd3fc", "#a3e635"];
 function NodesScreen() {
   useStore();
   const ns = Store.nodes || [];
@@ -3775,9 +4003,10 @@ function ChartHover({ xp, dots, label }) {
 }
 // CPU-load colour ramp for the history line: green ≤60%, green→orange 60–90%, orange→red
 // 90–120%, solid red beyond. v is load-per-core as a percentage (so an overloaded box reads >100).
-const LOAD_G = [63, 216, 154], LOAD_O = [242, 163, 60], LOAD_R = [242, 84, 91];
+const LOAD_G_DARK = [63, 216, 154], LOAD_G_LIGHT = [14, 158, 99], LOAD_O = [242, 163, 60], LOAD_R = [242, 84, 91];
 function loadColor(v) {
   const mix = (a, b, t) => "rgb(" + a.map((x, i) => Math.round(x + (b[i] - x) * t)).join(",") + ")";
+  const LOAD_G = resolvedTheme() === "light" ? LOAD_G_LIGHT : LOAD_G_DARK;   // the low-load green must stay legible on white
   if (v <= 60) return mix(LOAD_G, LOAD_G, 0);
   if (v <= 90) return mix(LOAD_G, LOAD_O, (v - 60) / 30);
   if (v <= 120) return mix(LOAD_O, LOAD_R, (v - 90) / 30);
@@ -4204,9 +4433,29 @@ function PanelSettingsScreen() {
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
   const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "anton48"]));   // forks offered in the install picker
-  const [forkColors, setForkColors] = useState({ ...Object.fromEntries(TURN_FORKS.map(f => [f.id, f.color])), ...(ps.turn_fork_colors || {}) });   // per-fork colour (override or default)
   const [vkLinkS, setVkLinkS] = useState(ps.vk_link || "");   // VK call link baked into generated turn-proxy client configs
-  const forkColorOverrides = () => Object.fromEntries(TURN_FORKS.filter(f => (forkColors[f.id] || "").toLowerCase() !== f.color.toLowerCase()).map(f => [f.id, forkColors[f.id]]));
+  // ---- themed colour pickers ({dark,light} each) — Interfaces / Display / Turn sections ----
+  const asThemed = (v, dd, dl) => (v && typeof v === "object") ? { dark: v.dark || dd, light: v.light || dl } : { dark: v || dd, light: v || dl };
+  const sameThemed = (a, dd, dl) => (a.dark || "").toLowerCase() === dd.toLowerCase() && (a.light || "").toLowerCase() === dl.toLowerCase();
+  const [forkColors, setForkColors] = useState(() => Object.fromEntries(TURN_FORKS.map(f => [f.id, asThemed((ps.turn_fork_colors || {})[f.id], f.color, f.colorL)])));
+  const [ifaceColors, setIfaceColors] = useState(() => ({
+    wg: asThemed((ps.iface_colors || {}).wg, IFACE_COLOR_DEFAULTS.wg.dark, IFACE_COLOR_DEFAULTS.wg.light),
+    awg: asThemed((ps.iface_colors || {}).awg, IFACE_COLOR_DEFAULTS.awg.dark, IFACE_COLOR_DEFAULTS.awg.light) }));
+  const [themeColorS, setThemeColorS] = useState(clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false));         // dark-mode accent (shown = applied)
+  const [themeColorLightS, setThemeColorLightS] = useState(clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true));   // light-mode accent
+  const themeVal = { dark: themeColorS, light: themeColorLightS };   // the theme accent as one themed swatch
+  // peer-health DETECTION toggles (not colours): each condition ON by default; unchecking stops it flagging the status.
+  const _sc = ps.status_conditions || {};
+  const [statusConds, setStatusConds] = useState({ blocked: _sc.blocked !== false, faulty: _sc.faulty !== false });
+  // overrides derived from a raw source (state OR the stored panel-settings), normalized identically so a legacy
+  // single-colour value in panel-settings compares equal to its normalized {dark,light} form (no phantom "dirty").
+  const forkOvFrom = src => { const o = {}; for (const f of TURN_FORKS) { const t = asThemed((src || {})[f.id], f.color, f.colorL); if (!sameThemed(t, f.color, f.colorL)) o[f.id] = t; } return o; };
+  const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
+  const forkColorOverrides = () => forkOvFrom(forkColors);
+  const ifaceColorOverrides = () => ifaceOvFrom(ifaceColors);
+  const statusCondsOut = () => ({ blocked: statusConds.blocked, faulty: statusConds.faulty });
+  const themeColorOut = () => themeColorS.toLowerCase() === THEME_COLOR_DEFAULT.toLowerCase() ? "" : themeColorS;
+  const themeColorLightOut = () => themeColorLightS.toLowerCase() === THEME_COLOR_LIGHT_DEFAULT.toLowerCase() ? "" : themeColorLightS;
   // deployed version(s) of a fork across the fleet (from snapshots) — "" if it's never been installed
   const forkVersions = fid => { const v = new Set(); for (const snap of Object.values(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid && tp.version) v.add(tp.version); return [...v]; };
   // per-NODE view of a fork for the hover bubble: one row per node carrying its version + whether it's mid-update
@@ -4306,6 +4555,10 @@ function PanelSettingsScreen() {
         turn_enabled: turnEnabledS,
         enabled_turn_forks: [...turnForks],
         turn_fork_colors: forkColorOverrides(),
+        iface_colors: ifaceColorOverrides(),
+        status_conditions: statusCondsOut(),
+        theme_color: themeColorOut(),
+        theme_color_light: themeColorLightOut(),
         vk_link: vkLinkS.trim(),
       });
       if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
@@ -4345,9 +4598,9 @@ function PanelSettingsScreen() {
     if (secChanged()) out.push("Authentication — panel credentials");
     if (glDirty("turn")) out.push("Turn proxies — forks / colours / VK link");
     if (glDirty("geo")) out.push("Geo data");
-    if (glDirty("defaults")) out.push("Interface defaults");
+    if (glDirty("defaults")) out.push("Interfaces — colours / defaults");
     if (glDirty("configs")) out.push("Client configs → " + (sc === "off" ? "off" : "on"));
-    if (glDirty("display")) out.push("Display / status timing");
+    if (glDirty("display")) out.push("Display — theme / status timing");
     if (glDirty("mesh")) out.push("System mesh defaults");
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
@@ -4415,12 +4668,12 @@ function PanelSettingsScreen() {
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
-    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(ps.turn_fork_colors || {}) || vkLinkS.trim() !== (ps.vk_link || "")) :
+    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (geoMir.trim() !== (mir.geo || "") || turnMir.trim() !== (mir.turn || "") || ttlD !== String(adv.geo_ttl_days || 3)) :
-    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25)) :
+    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
-    sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000))) :
+    sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -4476,10 +4729,11 @@ function PanelSettingsScreen() {
             : html`<p class="hint" style="margin:0 0 12px">Which forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node, and each fork's colour. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>`}
           <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${TURN_FORKS.map(f => html`<div class="cl-row" key=${f.id}>
             <label class="chk" title=${"Offer " + f.label + " in the install picker"}><input type="checkbox" checked=${turnForks.has(f.id)} onChange=${e => setTurnForks(s => { const n = new Set(s); e.target.checked ? n.add(f.id) : n.delete(f.id); return n; })}/></label>
-            <input type="color" class="tf-color" value=${forkColors[f.id] || f.color} title=${"Colour for " + f.label} onInput=${e => setForkColors(c => ({ ...c, [f.id]: e.target.value }))}/>
-            <span class="tf-name" style=${"color:" + (forkColors[f.id] || f.color)}>${f.label}</span>
+            <${ThemedSwatch} val=${forkColors[f.id]} title=${"Colour for " + f.label} onChange=${nv => setForkColors(c => ({ ...c, [f.id]: nv }))}
+              sample=${(c) => html`<span class="tg tg-turn" style=${"--tfc:" + c}>${f.label}</span>`}/>
+            <span class=${"tf-name tf-" + f.id} style="color:var(--tfc)">${f.label}</span>
             ${(() => {
-              const v = forkVersions(f.id); const col = forkColors[f.id] || f.color;
+              const v = forkVersions(f.id); const col = turnColor(f.id);
               if (!v.length) return html`<span class="tf-ver none">not yet used</span>`;
               const nodes = forkNodeStates(f.id); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
               const bub = html`<span class="tf-verpop">
@@ -4520,8 +4774,25 @@ function PanelSettingsScreen() {
           <div class="georefresh"><span class="faint" style="font-size:11px">To force every node to re-fetch on its next sync</span><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh geo lists now</button></div>
         </div>` : null}
         ${section === "defaults" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">Interfaces</div>
-          <p class="hint" style="margin:0 0 12px">Defaults applied when creating a new interface — you can still override per interface.</p>
+          <div class="seclabel turnhead" style="margin-top:0">Interface colours<span class="grow"></span>
+            ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg } })}><${Ic} i="refresh"/> Reset</button>` : null}</div>
+          <p class="hint" style="margin:0 0 12px">The colour each protocol's tags take everywhere — a value per theme. Hover a swatch to preview it.</p>
+          <div class="palrow">
+            <span class="palcell"><span class="pallbl">WireGuard</span><${ThemedSwatch} val=${ifaceColors.wg} title="WireGuard" onChange=${nv => setIfaceColors(c => ({ ...c, wg: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>wg</span>`}/></span>
+            <span class="palcell"><span class="pallbl">AmneziaWG</span><${ThemedSwatch} val=${ifaceColors.awg} title="AmneziaWG" onChange=${nv => setIfaceColors(c => ({ ...c, awg: nv }))}
+              sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 15%,transparent);color:" + c}>awg</span>`}/></span>
+          </div>
+          <div class="seclabel">Peer health detection</div>
+          <p class="hint" style="margin:0 0 10px">Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in <span class="b-faulty" style="padding:1px 6px;border-radius:6px">orange</span>.</p>
+          <label class="condrow"><input type="checkbox" checked=${statusConds.blocked} onChange=${e => setStatusConds(c => ({ ...c, blocked: e.target.checked }))}/>
+            <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>blocked</span></span>
+            <span class="cond-t">Endpoint is reaching the server, but the handshake never completes (likely DPI / MTU / wrong AmneziaWG params).</span></label>
+          <label class="condrow"><input type="checkbox" checked=${statusConds.faulty} onChange=${e => setStatusConds(c => ({ ...c, faulty: e.target.checked }))}/>
+            <span class="cond-b"><span class="badge b-faulty ic"><${Ic} i="warn"/>faulty</span></span>
+            <span class="cond-t">Handshake is up but no inbound data has flowed for a while — a one-way block / DPI on the return path. (This can't tell a genuinely-stuck peer from a simply-idle one, so turn it off if idle peers bother you.)</span></label>
+          <div class="seclabel">Defaults</div>
+          <p class="hint" style="margin:0 0 12px">Applied when creating a new interface — you can still override per interface.</p>
           <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="https://8.8.8.8/dns-query, 1.1.1.1"/><div class="hint">Comma-separated</div></div>
           <div class="row2"><div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
             <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div></div>
@@ -4545,7 +4816,14 @@ function PanelSettingsScreen() {
             <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off" ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute." : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
         </div>` : null}
         ${section === "display" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">Display</div>
+          <div class="seclabel turnhead" style="margin-top:0">Interface theme<span class="grow"></span>
+            ${(themeColorS.toLowerCase() !== THEME_COLOR_DEFAULT.toLowerCase() || themeColorLightS.toLowerCase() !== THEME_COLOR_LIGHT_DEFAULT.toLowerCase()) ? html`<button class="btn btn-mini" onClick=${() => { setThemeColorS(THEME_COLOR_DEFAULT); setThemeColorLightS(THEME_COLOR_LIGHT_DEFAULT); }}><${Ic} i="refresh"/> Reset</button>` : null}</div>
+          <p class="hint" style="margin:0 0 12px">The panel's accent colour — button borders, checkboxes, focus rings, the throughput "down" series and the live / hour / day / week / month chart tabs all follow it. A separate colour for each mode; switch <b>Light / Dark / Auto</b> from the sun / moon button in the header.</p>
+          <div class="palrow">
+            <${ThemedSwatch} val=${themeVal} title="Interface theme" onChange=${nv => { setThemeColorS(clampBrand(nv.dark, false)); setThemeColorLightS(clampBrand(nv.light, true)); }}
+              sample=${(c) => html`<span class="tsw-theme"><span class="tsw-btn" style=${"color:" + c}>Button</span><span class="tsw-chip" style=${"color:" + c}></span></span>`}/>
+          </div>
+          <div class="seclabel">Display</div>
           <div class="field"><label>Throughput perspective</label>
             <select class="selwrap" value=${tput} onChange=${e => setTput(e.target.value)}>
               <option value="nodes">Nodes — what the node downloads / uploads</option>
@@ -4789,7 +5067,8 @@ function CreateUserSheet() {
 }
 
 // Mint one peer per chosen interface for a user (own key each). Used by create-user step 2 and
-// the user-detail "Add peers" button. Excludes interfaces the user is already on.
+// the user-detail "Add peers" button. Lists every interface — a user may run several devices (phone / router /
+// laptop, even a 2nd phone) on the same interface, each its own peer + IP, so occupied interfaces aren't hidden.
 function openAddPeers(userId, userName) { openModal(html`<${AddPeersSheet} userId=${userId} userName=${userName}/>`); }
 function AddPeersSheet({ userId, userName }) {
   const [mode, setMode] = useState("new");   // "new" = mint peers per interface, else an existing unassigned peer id to assign
@@ -4799,7 +5078,6 @@ function AddPeersSheet({ userId, userName }) {
   const unassigned = Store.unassignedPeers();
   const selPeer = mode !== "new" ? unassigned.find(p => p.id === mode) : null;
   useEffect(() => { if (mode !== "new" && !unassigned.some(p => p.id === mode)) setMode("new"); }, [unassigned, mode]);   // chosen peer got assigned/removed elsewhere
-  const have = new Set((Store.peersOfUser(userId) || []).flatMap(p => p.targets.map(t => tkey(t.node, t.iface))));
   useEffect(() => {
     if (!selPeer && !cf.dnsTouched.current && chosen.length) { const m = Store.ifaceMeta(chosen[0].node, chosen[0].iface); if (m) cf.setDns((m.dns || []).join(", ")); }
   }, [chosen, selPeer]);
@@ -4851,7 +5129,7 @@ function AddPeersSheet({ userId, userName }) {
     ${selPeer
       ? html`<div class="hint" style="margin-bottom:10px">Assign this unassigned peer to ${userName || "the user"} (its key is kept). Tick more interfaces to also deploy it there with the same key.</div>`
       : html`<div class="hint" style="margin-bottom:10px">Each interface becomes its own peer (own key) — one QR per peer. Add redundancy later with “copy to another interface”.</div>`}
-    <div class="field"><label>Interfaces</label><${TargetPicker} key=${mode} exclude=${selPeer ? null : have} initial=${selPeer ? selPeer.targets : null} onChange=${setChosen}/></div>
+    <div class="field"><label>Interfaces</label><${TargetPicker} key=${mode} initial=${selPeer ? selPeer.targets : null} onChange=${setChosen}/></div>
     ${selPeer ? null : html`<${AdvancedFields} st=${cf}/>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -5183,10 +5461,7 @@ function PeerViewSheet({ pid, node, iface }) {
       <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a>`
           : html`<${UserCombo} onPick=${uid => assignPeer(p, uid)} placeholder="Assign to a user…"/>`}</div></div>
       <${Badge} s=${p.unassigned ? "unassigned" : p.status}/></div>
-    <dl class="dl" style="margin:14px 0">
-      <dt>Public key</dt><dd>${p.pubkey.slice(0, 22)}… <button class="copybtn" onClick=${() => copy(p.pubkey, "Public key copied")}><${Ic} i="copy"/></button></dd>
-    </dl>
-    <div class="lbl" style="margin:4px 2px">Deployments · ${p.targets.length}</div>
+    <div class="lbl" style="margin:16px 2px 4px">Deployments · ${p.targets.length}</div>
     <div class="pv-deps">${p.targets.map(t => {
       const obs = t.observed;
       const proto = (t.type || "").toLowerCase();
@@ -5197,7 +5472,7 @@ function PeerViewSheet({ pid, node, iface }) {
             ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}
           </span></div>
         <div class="pv-dep-grid">
-          <span><span class="k">Server</span> <span style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></span>
+          <span><span class="k">Node</span> <span style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></span>
           <span><span class="k">Interface</span> ${t.iface}</span>
           <span><span class="k">Address</span> <span class="addr">${t.ip || "—"}</span></span>
           <span><span class="k">Rate</span> ${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</span>
@@ -5345,17 +5620,9 @@ function EditPeerSheet({ peer, focus, done, flash }) {
 }
 
 // ── node sheets ──
-function SwatchPicker({ value, onChange }) {
-  return html`<div class="swrow">
-    ${SWATCHES.map(c => html`<button type="button" class=${"swopt " + (c.toLowerCase() === (value || "").toLowerCase() ? "sel" : "")} style=${{ background: c }} title=${c} onClick=${() => onChange(c)}></button>`)}
-    <label class="swopt custom" title="Custom colour — full palette">
-      <input type="color" value=${value} onInput=${e => onChange(e.target.value)}/>
-    </label>
-  </div>`;
-}
 function openNodeCreate() { openModal(html`<${NodeCreateSheet}/>`); }
 function NodeCreateSheet() {
-  const [name, setName] = useState(""); const [color, setColor] = useState(SWATCHES[0]); const [msg, setMsg] = useState(null);
+  const [name, setName] = useState(""); const [color, setColor] = useState({ ...NODE_CREATE_DEFAULT }); const [msg, setMsg] = useState(null);
   const nameBad = name.trim() && !V.nodeName(name);
   const create = async () => {
     if (!name.trim()) return setMsg({ k: "err", t: "Give the node a name." });
@@ -5367,8 +5634,10 @@ function NodeCreateSheet() {
   };
   return html`<${Sheet} title="Add node"
     foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${create}>Create node</button></>`}>
-    <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — you can rename it anytime."}</div></div>
-    <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
+    <div class="field"><label>Name</label>
+      <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/>
+        <${ThemedSwatch} val=${color} title="Node colour" onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || "node"}</span>`}/></div>
+      <div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — you can rename it anytime. The swatches set its colour per theme."}</div></div>
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -5419,7 +5688,7 @@ function NodeIpPick({ ips, value, onChange, auto, customPlaceholder }) {
 function NodeEditSheet({ node }) {
   const rsv = (Store.panelSettings || {}).reserved || {};   // panel-wide defaults (used when the node has no override)
   const dSub = rsv.mesh_subnet || "10.255.0.0/16", dPort = String(rsv.mesh_port_base || 9999), dPfx = rsv.iface_prefix || "swg_";
-  const [name, setName] = useState(node.name || ""); const [color, setColor] = useState(node.color || SWATCHES[0]); const [msg, setMsg] = useState(null);
+  const [name, setName] = useState(node.name || ""); const [color, setColor] = useState(() => toThemed(node.color, NODE_COLOR_DEFAULT)); const [msg, setMsg] = useState(null);
   const [ingress, setIngress] = useState(node.endpoint_host || "");
   // mesh fields show the EFFECTIVE value in use (the node's override, else the panel default). Leaving it at
   // the default normalizes to "inherit" on save (no spurious override / re-provision).
@@ -5458,8 +5727,10 @@ function NodeEditSheet({ node }) {
   const hasAwg = AWG_KEYS.some(k => meshAwg[k] != null && meshAwg[k] !== "");
   return html`<${Sheet} title=${"Node settings · " + node.name}
     foot=${html`<${Fragment}><button class="btn btn-ghost" title="Rotate this node's enrollment token (re-enroll / re-install)" onClick=${() => openNodeRotate(node)}><${Ic} i="key"/> Rotate key</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
-    <div class="field"><label>Name</label><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/><div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes."}</div></div>
-    <div class="field"><label>Colour</label><${SwatchPicker} value=${color} onChange=${setColor}/></div>
+    <div class="field"><label>Name</label>
+      <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/>
+        <${ThemedSwatch} val=${color} title="Node colour" onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || node.name || "node"}</span>`}/></div>
+      <div class=${"hint" + (nameBad ? " err" : "")}>${nameBad ? "1–40 chars: letters, digits, - or _ only." : "A label for this node — rename anytime, nothing else changes. The swatches set its colour per theme."}</div></div>
     <div class="seclabel">Egress</div>
     <div class="field"><label>Default egress IP <span class="faint" style="text-transform:none;letter-spacing:0">— direct internet exit</span></label>
       <${NodeIpPick} ips=${ips} value=${defEgress} onChange=${setDefEgress} auto="Auto (MASQUERADE)"/>
@@ -5650,6 +5921,7 @@ function App() {
     }
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = () => doLogout();   // header logout icon → straight to the confirm
+    const tb = $("#theme-btn"); if (tb && !tb._wired) { tb._wired = true; tb.onclick = cycleThemeMode; paintThemeBtn(tb); }   // light/dark/auto switch
   });
 
   return html`<${Fragment}>
