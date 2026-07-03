@@ -959,6 +959,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .georefresh{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:16px}
 .cllist{display:flex;flex-direction:column;gap:6px}
 .cl-row{display:flex;align-items:center;gap:10px;padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+.cl-row .grow{flex:1}   /* push the owner link + wg/awg capability tags to the right edge */
 .cl-name{background:none;border:0;color:var(--ink);font:inherit;font-weight:600;cursor:pointer;padding:0;text-align:left;flex:none;white-space:nowrap}
 .cl-name:hover{color:var(--brand)}
 .cl-meta{font-size:11.5px}
@@ -997,6 +998,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tf-arrow svg{display:block;width:13px;height:13px;transform-box:view-box;transform-origin:center;animation:spin .8s linear infinite}   /* spin the SVG on its viewBox centre (same pattern as .updspin / .iconbtn) so it's centred even on a fresh load */
 .tf-repo{font-family:var(--mono);font-size:11.5px;color:var(--faint);white-space:nowrap;text-decoration:none}   /* right-aligned link to the fork's GitHub repo */
 .tf-repo:hover{color:var(--ready);text-decoration:underline}
+/* which interface types the fork's client supports — wg always; awg only for the non-WG-only forks */
+.cl-caps{display:inline-flex;align-items:center;gap:4px;flex:none;margin-left:12px;justify-content:flex-end;cursor:help}
 .warntext{color:var(--partial);font-weight:600}
 /* per-fork colour picker (native input, themed to a small rounded swatch) */
 .tf-color{width:24px;height:24px;flex:none;padding:0;border:1px solid var(--line-solid);border-radius:6px;background:none;cursor:pointer}

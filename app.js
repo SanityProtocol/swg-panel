@@ -2531,9 +2531,13 @@ function TurnManageSheet({ node, tp }) {
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? lh : "");
   const [lport, setLport] = useState(lp);
   const snap = Store.stats[node] || {};
-  const ifaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") }))
+  const allIfaces = Object.entries(snap.interfaces || {})
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
+  // this proxy's fork is fixed here; a WireGuard-only fork can't front an AmneziaWG interface → hide awg ones
+  const fork = turnFork(svc);
+  const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
+  const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
   const epIp = (() => { for (const b of Object.values(snap.interfaces || {})) { const ep = (b.meta || {}).endpoint || ""; if (ep) return ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep; } return ""; })();
   const conPort = con.includes(":") ? con.slice(con.lastIndexOf(":") + 1) : con;
   const match = ifaces.find(i => i.port === conPort);
@@ -2637,6 +2641,7 @@ function TurnManageSheet({ node, tp }) {
         ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
         <option value="__custom__">Custom IP:Port…</option>
       </select>
+      ${hideAwg ? html`<div class="hint">${fork} is WireGuard-only — AmneziaWG interfaces are hidden (its client doesn't do AmneziaWG).</div>` : null}
     </div>
     ${isCustom ? html`<${Fragment}>
       <div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>
@@ -2676,6 +2681,12 @@ const TURN_FORKS = [
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F" },
 ];
+// forks whose CLIENT is WireGuard-only — they can't front an AmneziaWG interface, so awg interfaces are hidden
+// from their "Forwards to" picker. kiper292 = plain wireguard-go + a config parser that REJECTS awg params;
+// anton48 (iOS) has no AmneziaWG fields at all. Everyone else supports awg (WINGS-N app-integrated; the sidecar
+// forks relay UDP transparently so the standard AmneziaWG app handles it).
+const TURN_WG_ONLY = new Set(["kiper292", "anton48"]);
+function forkSupportsAwg(fork) { return !TURN_WG_ONLY.has(fork); }
 // stable colour for a turn-proxy fork (peers connected via it get their interface badge tinted this colour);
 // a Panel-settings override (turn_fork_colors) wins over the TURN_FORKS default.
 function turnColor(label) {
@@ -2768,9 +2779,12 @@ function SetupTurnSheet({ node }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const ips = nrec.ips || [];
   const snap = Store.stats[node] || {};
-  const ifaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_") }))
+  const allIfaces = Object.entries(snap.interfaces || {})
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
+  // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker
+  const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
+  const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
   const epIp = (() => {   // the node's detected public IP — the proxy BINDS to listen, so it must be local
     for (const b of Object.values(snap.interfaces || {})) {
       const ep = (b.meta || {}).endpoint || "";
@@ -2798,6 +2812,10 @@ function SetupTurnSheet({ node }) {
     const cf = TURN_FORKS.find(x => x.id === fork) || TURN_FORKS[0];
     const nf = TURN_FORKS.find(x => x.id === id) || TURN_FORKS[0];
     if (params === dflParams(cf)) setParams(dflParams(nf));
+    // switching to a WG-only fork while an awg interface is selected → move to the first WG interface (or custom)
+    if (!forkSupportsAwg(id) && fwd !== "__custom__" && !allIfaces.some(i => i.name === fwd && !i.awg)) {
+      const firstWg = allIfaces.find(i => !i.awg); setFwd(firstWg ? firstWg.name : "__custom__");
+    }
     setFork(id);
   };
   const randKey = () => copy(randWrapKey(), "Random 64-hex key copied — paste it into the parameters");
@@ -2861,6 +2879,7 @@ function SetupTurnSheet({ node }) {
           ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
           <option value="__custom__">Custom IP:Port…</option>
         </select>
+        ${hideAwg ? html`<div class="hint">${fork} is WireGuard-only — AmneziaWG interfaces are hidden (its client doesn't do AmneziaWG).</div>` : null}
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
       <div class="field"><label>Additional ExecStart parameters</label>
@@ -4352,6 +4371,9 @@ function PanelSettingsScreen() {
               return html`<span class="tf-chk ok"><${Ic} i="check"/> up to date</span>`; })()}
             <span class="grow"></span>
             <a class="tf-repo" href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" title=${"Open " + f.owner + " on GitHub"}>${f.owner}</a>
+            <span class="cl-caps" title=${forkSupportsAwg(f.id) ? "Works with WireGuard and AmneziaWG interfaces" : f.label + " is WireGuard-only — its client can't front an AmneziaWG interface"}>
+              <span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}
+            </span>
           </div>`)}</div>
           <div class="seclabel" style="margin-top:18px">VK call link</div>
           <p class="hint" style="margin:0 0 8px">Baked into the client configs a peer's <b>Turn</b> button generates — it's the call the turn-proxy relays through. Leave blank to emit a <span class="mono">${"<PASTE VK CALL LINK>"}</span> placeholder.</p>
