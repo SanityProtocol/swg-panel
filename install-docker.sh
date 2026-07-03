@@ -1349,8 +1349,8 @@ EOF
 Description=poll for a swg-panel one-click update request (docker)
 
 [Timer]
-OnActiveSec=20s
-OnUnitActiveSec=20s
+OnActiveSec=30s
+OnUnitActiveSec=30s
 
 [Install]
 WantedBy=timers.target

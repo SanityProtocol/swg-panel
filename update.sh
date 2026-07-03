@@ -214,8 +214,8 @@ EOF
 Description=poll for a swg one-click update request
 
 [Timer]
-OnActiveSec=20s
-OnUnitActiveSec=20s
+OnActiveSec=30s
+OnUnitActiveSec=30s
 
 [Install]
 WantedBy=timers.target
