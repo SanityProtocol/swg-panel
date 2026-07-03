@@ -822,6 +822,16 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .actkind{font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:99px}
 .actkind.user{background:rgba(125,211,252,.13);color:#7dd3fc}
 .actkind.peer{background:rgba(70,216,168,.13);color:var(--online)}
+/* Live screen — Peers/Users mode toggle (segmented switch: active Peers = green, active Users = blue) */
+.pmode{display:inline-flex;flex:none;border:1px solid var(--line-solid);border-radius:9px;overflow:hidden;background:var(--surface-2);height:36px}
+.pm-opt{appearance:none;border:none;background:none;cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;padding:0 16px;color:var(--dim);transition:background .12s var(--ease),color .12s var(--ease);white-space:nowrap}
+.pm-opt:hover{color:var(--ink)}
+.pm-peers.on{background:color-mix(in srgb,var(--online) 20%,transparent);color:var(--online)}
+.pm-users.on{background:color-mix(in srgb,var(--ready) 20%,transparent);color:var(--ready)}
+/* endpoint cell: "Local turn-proxy" (fork-coloured) — hover shows the same Connected-via bubble as the dot */
+.peergrid .turnep{cursor:help}
+/* Live Users mode: online count on top (green), peers below */
+.u-peers .u-online-top{color:var(--online);font-weight:600;font-size:13px}
 /* live connections monitor */
 .conntable th.clk{cursor:pointer;user-select:none}
 .conntable th.clk:hover{color:var(--ink)}

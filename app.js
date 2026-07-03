@@ -1040,6 +1040,19 @@ function connDot(r) {
   }
   return html`<span class=${"condot " + (r.online ? "on" : "off")} title=${r.online ? "online" : "idle"}></span>`;
 }
+// Endpoint cell for the live grids. A peer that came IN through a turn-proxy has its endpoint on the node's
+// loopback (127.0.0.1) — the relay forwards locally — so instead of the bare IP show "Local turn-proxy" tinted
+// with the fork colour + the same "Connected via <fork>" hover bubble the status dot uses.
+function endpointCell(t) {
+  const obs = t.observed;
+  if (t.online && t.viaTurn) {
+    const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
+    return html`<span class="turnwrap">
+      <span class="addr turnep" style=${"color:" + tc}>Local turn-proxy</span>
+      <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
+  }
+  return html`<span class="addr">${(obs && obs.endpoint) || "—"}</span>`;
+}
 // rate cell, green when traffic is flowing
 // Throughput display perspective (Panel settings): node-reported rx/tx is from the NODE's view (rx=down,
 // tx=up). "peers" flips it to the client's view — the peer's download is what the node uploads (tx), etc.
@@ -2913,9 +2926,21 @@ function StoreOffBanner() {
 // The shared peers grid — one row per (peer, target) deployment. Reused by the Peers screen and
 // the interface-detail screen so they're identical. `agg` adds the Server/IF column; `shownByPeer`
 // drives the "+N other deployments" badge; row click opens the peer-view popup.
-function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc }) {
+// interface type for the grouped dropdowns — awg if any node's interface of this name carries AmneziaWG params
+function ifaceIsAwg(iface) {
+  for (const n of Object.keys(Store.describe || {})) { const m = (Store.describe[n] || {})[iface]; if (m && Object.keys(m.awg_params || {}).length) return true; }
+  return false;
+}
+// <option>s for an interface dropdown split into AmneziaWG / WireGuard optgroups (used everywhere we list ifaces)
+function ifaceOptGroups(names) {
+  const awg = names.filter(ifaceIsAwg), wg = names.filter(n => !ifaceIsAwg(n));
+  return html`${awg.length ? html`<optgroup label="AmneziaWG">${awg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>` : null}${wg.length ? html`<optgroup label="WireGuard">${wg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>` : null}`;
+}
+// `live` (the Live monitor): status is the animated connDot (not the pill badge), an Endpoint column is added
+// (turn peers show "Local turn-proxy"), the row actions + assign-to-user dropdown are dropped (read-only).
+function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, loc, live }) {
   return html`<div class="tablewrap"><table class="peergrid">
-    <thead><tr><th>Status</th>${loc ? html`<th>Server</th>` : (agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null)}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th><th class="h-online">Online</th><th class="h-rate">Rate ↓↑</th><th class="h-total">Total ↓↑</th><th class="h-acts"></th></tr></thead>
+    <thead><tr><th>${live ? "" : "Status"}</th>${loc ? html`<th>Server</th>` : (agg ? html`<th>${node === "*" ? "Server" : "IF"}</th>` : null)}${hideUser ? null : html`<th>User</th>`}<th>Title</th><th>Address</th>${live ? html`<th>Endpoint</th>` : null}<th class="h-online">Online</th><th class="h-rate">Rate ↓↑</th><th class="h-total">Total ↓↑</th>${live ? null : html`<th class="h-acts"></th>`}</tr></thead>
     <tbody>
       ${rows.length ? rows.map(({ p, t }) => {
         const obs = t.observed;
@@ -2923,7 +2948,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
-          <td data-label="Status">${gridStatusBadge(t, p)}</td>
+          <td data-label="Status">${live ? connDot(t) : gridStatusBadge(t, p)}</td>
           ${loc ? html`<td data-label="Server"><div class="srvcell">
             <span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
             ${gridIfaceTag(t)}
@@ -2934,20 +2959,21 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
           </div></td>` : null}
           ${hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
             ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span><${Ic} i="user"/></a>`
-                : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`}</td>`}
+                : (live ? html`<span class="faint">unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`)}</td>`}
           <td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>
           <td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>
+          ${live ? html`<td data-label="Endpoint">${endpointCell(t)}</td>` : null}
           <td data-label="Online" class="c-online"><span class="when">${seen(obs ? obs.handshake_age : null)}</span></td>
           <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
           <td data-label="Total">${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</td>
-          <td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
+          ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
             <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>
             <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit peer"} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
             ${p.unassigned
               ? html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Delete peer"} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
               : html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Unassign peer"} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
             <${RowError} k=${"peer:" + p.id}/>
-          </td></tr>`;
+          </td>`}</tr>`;
       }) : html`<tr><td colspan=${((agg || loc) ? 9 : 8) - (hideUser ? 1 : 0)} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
     </tbody></table></div>`;
 }
@@ -3007,7 +3033,7 @@ function PeersScreen() {
       </select>
       <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; peersView.page = 1; force(x => x + 1); }}>
         ${(node === "*" || ifaceOpts.length > 1) ? html`<option value="*">All interfaces</option>` : null}
-        ${ifaceOpts.length ? ifaceOpts.map(i => html`<option value=${i}>${i}</option>`) : (node === "*" ? null : html`<option value="">no interfaces reported</option>`)}
+        ${ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : (node === "*" ? null : html`<option value="">no interfaces reported</option>`)}
       </select>
       <span class="grow"></span>
       <button class="btn btn-primary" onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
@@ -3037,99 +3063,99 @@ function PeersScreen() {
   </div>`;
 }
 
-// ═════════════════════════ SCREEN: CONNECTIONS (live monitor) ═════════════════════════
-// Read-only over the enriched snapshot: every target the node currently knows about becomes a
-// row. Filters/sort live in module state so a 5s poll never loses them; Preact + keyed rows
-// keep scroll position and update cells in place.
-function connRows() {
-  const out = [];
-  for (const p of Store.recon.peers) {
-    const u = p.user_id ? Store.user(p.user_id) : null;
-    for (const t of p.targets) {
-      const obs = t.observed; if (!obs) continue;          // only present-on-node connections
-      out.push({
-        key: p.id + "|" + t.node + "|" + t.iface, pid: p.id, uid: u ? u.id : null,
-        user: u ? u.name : "", peer: p.title || p.name || "", unassigned: p.unassigned,
-        node: t.node, iface: t.iface, type: t.type || "", endpoint: obs.endpoint || "", ip: t.ip || "",
-        hs: (obs.handshake_age == null ? null : obs.handshake_age),
-        rxb: obs.rx_bytes || 0, txb: obs.tx_bytes || 0, rx: obs.rx_speed || 0, tx: obs.tx_speed || 0,
-        online: !!obs.online, via: t.via, viaTurn: t.viaTurn,
-      });
-    }
-  }
-  return out;
-}
-const connView = { node: "", iface: "", user: "", q: "", online: false, sort: "rate", dir: -1 };
-const CONN_DEFDIR = { rate: -1, xfer: -1, hs: 1, peer: 1, user: 1, node: 1 };
+// ═════════════════════════ SCREEN: LIVE (Peers / Users monitor) ═════════════════════════
+// Read-only over the enriched snapshot. A Peers↔Users toggle switches between the shared PeerGrid (in `live`
+// mode — dot status, endpoint column, no controls) and the shared UserRow list (also `live`). Node/interface
+// dropdowns + a global search + an Online filter narrow both. State lives in module scope so the 5s poll
+// never loses it; Preact keeps scroll + updates cells in place.
+const connView = { mode: "peers", node: "", iface: "", q: "", online: false, page: 1, pageSize: 20 };
 function ConnectionsScreen() {
   useStore();
   const [, force] = useState(0);
   const bump = () => force(x => x + 1);
-  const sortBy = col => { if (connView.sort === col) connView.dir = -connView.dir; else { connView.sort = col; connView.dir = CONN_DEFDIR[col] || 1; } bump(); };
+  const reset = () => { connView.page = 1; bump(); };   // any filter/mode change → back to page 1
+  const mode = connView.mode, q = connView.q.toLowerCase();
+  const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
+  const ifaceOpts = connView.node ? Store.userIfacesOf(connView.node) : allIfaces;
+  if (connView.iface && !ifaceOpts.includes(connView.iface)) connView.iface = "";
+  const setMode = m => { connView.mode = m; reset(); };
+  const setPage = p => { connView.page = p; bump(); };
+  // shared pager (both modes) — mirrors the Peers/Users screens
+  const pager = (total) => {
+    const pageSize = connView.pageSize || 20, totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(Math.max(1, connView.page || 1), totalPages);
+    return total > pageSize ? html`<div class="pager">
+      <label class="pager-size">Rows per page
+        <select class="selwrap" value=${pageSize} onChange=${e => { connView.pageSize = +e.target.value; reset(); }}>
+          ${[20, 30, 50, 100].map(n => html`<option value=${n}>${n}</option>`)}
+        </select></label>
+      <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}</span>
+      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
+      <span class="pager-pg">${page} / ${totalPages}</span>
+      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>Next ›</button>
+    </div>` : null;
+  };
+  const paginate = (list) => { const pageSize = connView.pageSize || 20, totalPages = Math.max(1, Math.ceil(list.length / pageSize));
+    const page = Math.min(Math.max(1, connView.page || 1), totalPages); return list.slice((page - 1) * pageSize, page * pageSize); };
 
-  const all = connRows();
-  const ifaceList = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
-  const users = Store.recon.users.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  const q = connView.q.toLowerCase();
-  let rows = all.filter(r => {
-    if (connView.node && r.node !== connView.node) return false;
-    if (connView.iface && r.iface !== connView.iface) return false;
-    if (connView.user && r.uid !== connView.user) return false;
-    if (connView.online && !r.online) return false;
-    if (q && !((r.user + " " + r.peer + " " + Store.nodeName(r.node) + " " + r.iface + " " + r.endpoint + " " + r.ip).toLowerCase().includes(q))) return false;
-    return true;
-  });
-  const keyf = { rate: r => r.rx + r.tx, xfer: r => r.rxb + r.txb, hs: r => (r.hs == null ? Infinity : r.hs), peer: r => r.peer.toLowerCase(), user: r => r.user.toLowerCase(), node: r => r.node + "|" + r.iface }[connView.sort] || (r => r.rx + r.tx);
-  rows = rows.sort((a, b) => { const A = keyf(a), B = keyf(b); return (A < B ? -1 : A > B ? 1 : 0) * connView.dir; });
-  const onlineCount = all.filter(r => r.online).length;
-  const arrow = col => connView.sort === col ? (connView.dir < 0 ? " ↓" : " ↑") : "";
+  const toolbar = html`<div class="toolbar">
+    <div class="pmode">
+      <button class=${"pm-opt pm-peers" + (mode === "peers" ? " on" : "")} onClick=${() => setMode("peers")}>Peers</button>
+      <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "")} onClick=${() => setMode("users")}>Users</button>
+    </div>
+    <div class="search"><${Ic} i="search"/><input placeholder=${mode === "users" ? "Search users, tags, peers…" : "Search peer, user, endpoint, IP…"} value=${connView.q} onInput=${e => { connView.q = e.target.value.trim(); reset(); }}/></div>
+    <select class="selwrap" value=${connView.node} onChange=${e => { connView.node = e.target.value; connView.iface = ""; reset(); }}>
+      <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
+    </select>
+    <select class="selwrap" value=${connView.iface} onChange=${e => { connView.iface = e.target.value; reset(); }}>
+      <option value="">All interfaces</option>${ifaceOptGroups(ifaceOpts)}
+    </select>
+    <label class="chk"><input type="checkbox" checked=${connView.online} onChange=${e => { connView.online = e.target.checked; reset(); }}/> Online</label>
+  </div>`;
+
+  if (mode === "users") {
+    // filter the user LIST by node/iface (has a peer there) + search + Online; the expanded grid still shows ALL peers
+    const users = Store.recon.users.slice()
+      .filter(u => userMatchesQ(u, q) && userOnNodeIface(u, connView.node, connView.iface) && (!connView.online || u.onlineCount > 0))
+      .sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || String(a.name).localeCompare(String(b.name)));
+    return html`<div class="screen">
+      ${toolbar}
+      <div class="section-title"><h2 class="live-users">Users</h2><span class="count">${users.length}</span></div>
+      ${users.length ? html`<div class="urows">${paginate(users).map(u => html`<${UserRow} key=${u.id} user=${u} live=${true} onlineOnly=${connView.online}/>`)}</div>`
+        : html`<div class="empty"><b>${connView.online ? "No users online" : "Nothing matches"}</b>${connView.online ? "No user has an online peer right now." : "Clear the filters."}</div>`}
+      ${pager(users.length)}
+    </div>`;
+  }
+
+  // peers mode — one row per OBSERVED deployment (a live connection), rendered via the shared PeerGrid in live mode
+  let rows = [];
+  for (const p of Store.recon.peers) for (const t of p.targets) {
+    if (!t.observed) continue;                                         // only present-on-node connections
+    if (connView.node && t.node !== connView.node) continue;
+    if (connView.iface && t.iface !== connView.iface) continue;
+    if (connView.online && !t.online) continue;
+    rows.push({ p, t });
+  }
+  if (q) rows = rows.filter(({ p, t }) => { const u = p.user_id ? Store.user(p.user_id) : null; const o = t.observed || {};
+    return ((p.title || "") + " " + (p.name || "") + " " + (u ? u.name : "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface + " " + (o.endpoint || "")).toLowerCase().includes(q); });
+  rows.sort((a, b) => (b.t.online ? 1 : 0) - (a.t.online ? 1 : 0)
+    || ((b.t.observed.rx_speed || 0) + (b.t.observed.tx_speed || 0)) - ((a.t.observed.rx_speed || 0) + (a.t.observed.tx_speed || 0))
+    || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || "")));
+  const shownByPeer = {};
+  for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
+  const onlineCount = rows.filter(r => r.t.online).length;
 
   return html`<div class="screen">
-    <div class="toolbar">
-      <div class="search"><${Ic} i="search"/><input placeholder="Search peer, user, endpoint, IP…" value=${connView.q} onInput=${e => { connView.q = e.target.value.trim(); bump(); }}/></div>
-      <select class="selwrap" value=${connView.node} onChange=${e => { connView.node = e.target.value; bump(); }}>
-        <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
-      </select>
-      <select class="selwrap" value=${connView.iface} onChange=${e => { connView.iface = e.target.value; bump(); }}>
-        <option value="">All interfaces</option>${ifaceList.map(i => html`<option value=${i}>${i}</option>`)}
-      </select>
-      <select class="selwrap" value=${connView.user} onChange=${e => { connView.user = e.target.value; bump(); }}>
-        <option value="">All users</option>${users.map(u => html`<option value=${u.id}>${u.name}</option>`)}
-      </select>
-      <label class="chk"><input type="checkbox" checked=${connView.online} onChange=${e => { connView.online = e.target.checked; bump(); }}/> online only</label>
-    </div>
-
-    <div class="section-title"><h2>Live connections</h2><span class="count">${rows.length} shown · ${onlineCount} online</span></div>
-    <div class="tablewrap"><table class="conntable">
-      <thead><tr>
-        <th></th>
-        <th class="clk" onClick=${() => sortBy("peer")}>Peer${arrow("peer")}</th>
-        <th class="clk" onClick=${() => sortBy("user")}>User${arrow("user")}</th>
-        <th class="clk" onClick=${() => sortBy("node")}>Node · iface${arrow("node")}</th>
-        <th>Endpoint</th>
-        <th class="clk" onClick=${() => sortBy("hs")}>Online${arrow("hs")}</th>
-        <th class="clk num" onClick=${() => sortBy("rate")}>Rate ↓↑${arrow("rate")}</th>
-        <th class="clk num" onClick=${() => sortBy("xfer")}>Transfer ↓↑${arrow("xfer")}</th>
-      </tr></thead>
-      <tbody>
-        ${rows.length ? rows.map(r => html`<tr key=${r.key}>
-          <td data-label="">${connDot(r)}</td>
-          <td data-label="Peer" class="c-name clk" onClick=${() => go("#/peer/" + encodeURIComponent(r.pid))}>${r.peer ? html`<b>${r.peer}</b>` : html`<span class="faint">unassigned</span>`}</td>
-          <td data-label="User">${r.uid ? html`<a href=${"#/user/" + encodeURIComponent(r.uid)}>${r.user}</a>` : html`<span class="faint">—</span>`}</td>
-          <td data-label="Node" class="clk" onClick=${() => go("#/node/" + encodeURIComponent(r.node) + "/" + encodeURIComponent(r.iface))}>
-            <span class="srv-name" style=${"color:" + (Store.nodeColor(r.node) || "var(--ink)")}>${Store.nodeName(r.node)}</span><span class="tags">${gridIfaceTag({ type: r.type, iface: r.iface, online: r.online })}</span></td>
-          <td data-label="Endpoint"><span class="addr">${r.endpoint || "—"}</span></td>
-          <td data-label="Online"><span class="when">${seen(r.hs)}</span></td>
-          <td data-label="Rate">${rateCell(r.rx, r.tx)}</td>
-          <td data-label="Transfer">${xferCell(...dlul(r.rxb, r.txb))}</td>
-        </tr>`) : html`<tr><td colspan="8" class="empty"><b>No connections${all.length ? " match" : " yet"}</b>${all.length ? "Clear the filters." : "Peers appear here once a node reports them."}</td></tr>`}
-      </tbody></table></div>
+    ${toolbar}
+    <div class="section-title"><h2 class="live-peers">Peers</h2><span class="count">${rows.length} shown · ${onlineCount} online</span></div>
+    <${PeerGrid} rows=${paginate(rows)} agg=${true} node="*" iface="*" shownByPeer=${shownByPeer} q=${connView.q} live=${true}/>
+    ${pager(rows.length)}
   </div>`;
 }
 
 // ═════════════════════════ SCREEN: USERS ═════════════════════════
 // Independent view-state per grid so search / server / interface / page never bleed across them.
-const usersView = { q: "", page: 1, pageSize: 20, expanded: {} };   // expanded: { uid: true }
+const usersView = { q: "", node: "", iface: "", page: 1, pageSize: 20, expanded: {} };   // node/iface filter the LIST (expand shows all peers)
 const unassignedView = { node: "", iface: "", q: "", page: 1, pageSize: 20 };
 const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize } for the expanded grid
 
@@ -3160,6 +3186,12 @@ function userMatchesQ(u, q) {
   if (!q) return true;
   if ((u.name + " " + u.tag + " " + u.note).toLowerCase().includes(q)) return true;
   return Store.peersOfUser(u.id).some(p => peerMatchesQ(p, q));
+}
+// does the user have a peer deployed on this node (and interface, if given)? — for the Users node/iface filter.
+// The user LIST is filtered by this; the expanded grid still shows ALL of the user's peers.
+function userOnNodeIface(u, node, iface) {
+  if (!node && !iface) return true;
+  return Store.peersOfUser(u.id).some(p => p.targets.some(t => (!node || node === "*" || t.node === node) && (!iface || iface === "*" || t.iface === iface)));
 }
 // which Users page a user lands on (mirrors UsersScreen's sort; search is cleared before we navigate)
 function userPageOf(uid) {
@@ -3194,7 +3226,7 @@ function revealAssignedPeer(userId, peerId) {
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
 // unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
 // server / interface dropdown options are derived from the set itself (only servers/ifaces that have rows).
-function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse }) {
+function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse, live, onlineOnly }) {
   const [, force] = useState(0);
   const bump = () => force(x => x + 1);
   const nodeSet = new Set(), ifByNode = {};
@@ -3221,7 +3253,8 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
   if (collapse) {
     // one row PER PEER (a representative deployment); the peer's other interfaces surface as a +N badge
     for (const p of peers) {
-      const ts = p.targets.filter(t => (node === "*" || t.node === node) && (iface === "*" || t.iface === iface));
+      let ts = p.targets.filter(t => (node === "*" || t.node === node) && (iface === "*" || t.iface === iface));
+      if (onlineOnly) ts = ts.filter(t => t.online);   // Online filter → only the peer's online deployments
       if (!ts.length) continue;
       if (q && !((p.title || "") + " " + (p.name || "") + " " + p.targets.map(t => (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).join(" ")).toLowerCase().includes(q)) continue;
       const rep = ts.slice().sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0))[0];   // prefer an online deployment
@@ -3232,6 +3265,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
     for (const p of peers) for (const t of p.targets) {
       if (node !== "*" && t.node !== node) continue;
       if (iface !== "*" && t.iface !== iface) continue;
+      if (onlineOnly && !t.online) continue;
       rows.push({ p, t });
     }
     if (q) rows = rows.filter(({ p, t }) => ((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
@@ -3255,11 +3289,11 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
         <option value="*">All servers</option>${nodes.map(n => html`<option value=${n}>${Store.nodeName(n)}</option>`)}
       </select>` : null}
       ${ifaceOpts.length > 1 ? html`<select class="selwrap" value=${iface} onChange=${e => { view.iface = e.target.value; view.page = 1; bump(); }}>
-        <option value="*">All interfaces</option>${ifaceOpts.map(i => html`<option value=${i}>${i}</option>`)}
+        <option value="*">All interfaces</option>${ifaceOptGroups(ifaceOpts)}
       </select>` : null}
       ${onNew ? html`<span class="grow"></span><button class="btn btn-primary btn-mini" onClick=${onNew}><${Ic} i="plus"/> ${newLabel || "New peer"}</button>` : null}
     </div>`}
-    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse}/>
+    <${PeerGrid} rows=${pageRows} agg=${agg} node=${node} iface=${iface} shownByPeer=${shownByPeer} q=${view.q} hideUser=${hideUser} loc=${collapse} live=${live}/>
     ${rows.length > pageSize ? html`<div class="pager">
       <label class="pager-size">Rows per page
         <select class="selwrap" value=${pageSize} onChange=${e => { view.pageSize = +e.target.value; view.page = 1; bump(); }}>
@@ -3354,7 +3388,7 @@ function TurnCfgItem({ conf, tp, vk, base, back }) {
 
 // One user as a collapsible row: status · name · tag · note · peers · last · rate · total · controls.
 // Click the row to expand its peers (the shared EmbeddedPeers grid); click again to collapse.
-function UserRow({ user }) {
+function UserRow({ user, live, onlineOnly }) {
   const [, force] = useState(0);
   const expanded = !!usersView.expanded[user.id];
   const toggle = () => { usersView.expanded[user.id] = !expanded; force(x => x + 1); };
@@ -3371,18 +3405,20 @@ function UserRow({ user }) {
       <span class="u-exp"><${Ic} i="arrow"/></span>
       ${userStatTag(user)}
       <span class="u-name"><span class="u-nameline"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}</span>${user.note ? html`<span class="u-sub" title=${user.note}>${user.note}</span>` : null}</span>
-      <span class="u-peers"><span>${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>${user.peerCount ? html`<span class="u-sub2">${user.onlineCount} online</span>` : null}</span>
+      <span class="u-peers">${live
+        ? html`<span class="u-online-top">${user.onlineCount} Online</span>${user.peerCount ? html`<span class="u-sub2">${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>` : null}`
+        : html`<span>${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>${user.peerCount ? html`<span class="u-sub2">${user.onlineCount} online</span>` : null}`}</span>
       <span class="u-last"><span class="u-lbl">Online</span>${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
       <span class="u-thru"><span class="u-lbl">Rate</span>${rateCell(st.rx, st.tx)}</span>
       <span class="u-total"><span class="u-lbl">Total</span>${xferCell(db, ub)}</span>
-      <span class="u-acts" onClick=${e => e.stopPropagation()}>
+      <span class="u-acts" onClick=${e => e.stopPropagation()}>${live ? null : html`<${Fragment}>
         <button class="iconbtn" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
         <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
         <button class="iconbtn danger" title="Delete user" onClick=${delUser}><${Ic} i="trash"/></button>
-      </span>
+      <//>`}</span>
     </div>
     ${expanded ? html`<div class="urow-body">
-      ${user.peerCount ? html`<${EmbeddedPeers} peers=${Store.peersOfUser(user.id)} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true}/>`
+      ${user.peerCount ? html`<${EmbeddedPeers} peers=${Store.peersOfUser(user.id)} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true} live=${live} onlineOnly=${onlineOnly}/>`
         : html`<div class="ug-empty">No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.</div>`}
     </div>` : null}
     <${RowError} k=${"user:" + user.id}/>
@@ -3394,7 +3430,11 @@ function UsersScreen() {
   const [, force] = useState(0);
   const q = usersView.q.toLowerCase();
   const allUsers = Store.recon.users;
-  const users = allUsers.slice().filter(u => userMatchesQ(u, q))
+  const allIfaces = Array.from(new Set(Object.keys(Store.describe).flatMap(n => Store.userIfacesOf(n)))).sort();
+  const ifaceOpts = usersView.node ? Store.userIfacesOf(usersView.node) : allIfaces;
+  if (usersView.iface && !ifaceOpts.includes(usersView.iface)) usersView.iface = "";
+  // node/iface filter the user LIST (has a peer there); each expanded row still shows ALL of that user's peers
+  const users = allUsers.slice().filter(u => userMatchesQ(u, q) && userOnNodeIface(u, usersView.node, usersView.iface))
     .sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || String(a.name).localeCompare(String(b.name)));
   const allUnassigned = Store.unassignedPeers();
   const unassigned = q ? allUnassigned.filter(p => peerMatchesQ(p, q)) : allUnassigned;
@@ -3410,6 +3450,12 @@ function UsersScreen() {
     <div class="toolbar">
       <div class="search"><${Ic} i="search"/><input placeholder="Search users, tags, notes, peers…" value=${usersView.q}
         onInput=${e => { usersView.q = e.target.value.trim(); usersView.page = 1; force(x => x + 1); }}/></div>
+      <select class="selwrap" value=${usersView.node} onChange=${e => { usersView.node = e.target.value; usersView.iface = ""; usersView.page = 1; force(x => x + 1); }}>
+        <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
+      </select>
+      <select class="selwrap" value=${usersView.iface} onChange=${e => { usersView.iface = e.target.value; usersView.page = 1; force(x => x + 1); }}>
+        <option value="">All interfaces</option>${ifaceOptGroups(ifaceOpts)}
+      </select>
       <span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openCreatePeer({})}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> New user</button>
