@@ -3406,7 +3406,7 @@ function UserRow({ user, live, onlineOnly }) {
       ${userStatTag(user)}
       <span class="u-name"><span class="u-nameline"><a href=${"#/user/" + encodeURIComponent(user.id)} onClick=${e => e.stopPropagation()}>${user.name}</a>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}</span>${user.note ? html`<span class="u-sub" title=${user.note}>${user.note}</span>` : null}</span>
       <span class="u-peers">${live
-        ? html`<span class="u-online-top">${user.onlineCount} Online</span>${user.peerCount ? html`<span class="u-sub2">${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>` : null}`
+        ? html`<span class=${"u-online-top" + (user.onlineCount ? " on" : "")}>${user.onlineCount} Online</span>${user.peerCount ? html`<span class="u-sub2">${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>` : null}`
         : html`<span>${user.peerCount} peer${user.peerCount === 1 ? "" : "s"}</span>${user.peerCount ? html`<span class="u-sub2">${user.onlineCount} online</span>` : null}`}</span>
       <span class="u-last"><span class="u-lbl">Online</span>${st.last == null ? html`<span class="u-never">Never</span>` : html`<span class="when">${seen(st.last)}</span>`}</span>
       <span class="u-thru"><span class="u-lbl">Rate</span>${rateCell(st.rx, st.tx)}</span>

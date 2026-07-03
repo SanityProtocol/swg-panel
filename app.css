@@ -830,8 +830,9 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 .pm-users.on{background:color-mix(in srgb,var(--ready) 20%,transparent);color:var(--ready)}
 /* endpoint cell: "Local turn-proxy" (fork-coloured) — hover shows the same Connected-via bubble as the dot */
 .peergrid .turnep{cursor:help}
-/* Live Users mode: online count on top (green), peers below */
-.u-peers .u-online-top{color:var(--online);font-weight:600;font-size:13px}
+/* Live Users mode: online count on top, peers below. Green ONLY when actually online (>0); else neutral. */
+.u-peers .u-online-top{color:var(--dim);font-weight:600;font-size:13px}
+.u-peers .u-online-top.on{color:var(--online)}
 /* live connections monitor */
 .conntable th.clk{cursor:pointer;user-select:none}
 .conntable th.clk:hover{color:var(--ink)}
