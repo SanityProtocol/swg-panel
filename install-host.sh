@@ -1241,6 +1241,26 @@ ensure_acme(){ find_acme && return 0
   info "Installing acme.sh"; run sh -c "curl -fsSL https://get.acme.sh | sh -s email=${ACME_EMAIL:-admin@$PANEL_DOMAIN}"
   find_acme && return 0; $DRYRUN && { ACME=/root/.acme.sh/acme.sh; return 0; }
   die "acme.sh not found after install — install it manually or use TLS=selfsigned/skip"; }
+# Only ONE acme cert may own $TLS_DIR. Switching the panel URL (e.g. letsencrypt-ip → a domain) leaves the old
+# entry still installing into the same path, so acme's cron reinstalls whichever renewed last — a short-lived IP
+# cert then keeps clobbering the domain cert (Cloudflare then 526s on the IP-only origin cert). Before we install
+# for $PANEL_DOMAIN, drop any OTHER acme entry whose install path is under $TLS_DIR.
+prune_stale_acme_installs(){
+  $DRYRUN && return 0
+  local h conf d rp ecc; h="$(dirname "${ACME:-/root/.acme.sh/acme.sh}")"
+  for conf in "$h"/*/*.conf; do
+    [ -f "$conf" ] || continue
+    d="$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
+    [ -n "$d" ] && [ "$d" != "$PANEL_DOMAIN" ] || continue
+    rp="$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
+    case "$rp" in "$TLS_DIR"/*)
+      ecc=""; case "$(dirname "$conf")" in *_ecc) ecc="--ecc";; esac
+      warn "removing stale acme entry $(b "$d") — it also installs into $TLS_DIR and would clobber $(b "$PANEL_DOMAIN")'s cert"
+      run "$ACME" --remove -d "$d" $ecc || true
+      rm -rf "$(dirname "$conf")" ;;
+    esac
+  done
+}
 mk_selfsigned(){ CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"; mkdir -p "$PREFIX$TLS_DIR"
   if $DRYRUN; then echo "    [skip] openssl self-signed -> $TLS_DIR (CN=$PANEL_DOMAIN)"; : > "$PREFIX$CERT_FULLCHAIN"; : > "$PREFIX$CERT_KEY"
   else run openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$CERT_KEY" -out "$CERT_FULLCHAIN" -subj "/CN=${PANEL_DOMAIN}" -addext "subjectAltName=$(san_for "$PANEL_DOMAIN")"; fi
@@ -1330,6 +1350,7 @@ obtain_cert_internal(){
         fi
       fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
+      prune_stale_acme_installs
       run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" \
           --reloadcmd "chown root:swg $TLS_DIR/fullchain.pem $TLS_DIR/key.pem; chmod 640 $TLS_DIR/key.pem; systemctl restart swg-panel-server"
       cert_perms; ok "issued + installed certificate via $TLS_MODE (auto-renews)";;
@@ -1381,6 +1402,7 @@ setup_tls_proxy(){   # issue/locate a cert into $TLS_DIR for a reverse proxy to 
         fi
       fi
       CERT_FULLCHAIN="$TLS_DIR/fullchain.pem"; CERT_KEY="$TLS_DIR/key.pem"
+      prune_stale_acme_installs
       run "$ACME" --install-cert -d "$PANEL_DOMAIN" --ecc --key-file "$CERT_KEY" --fullchain-file "$CERT_FULLCHAIN" --reloadcmd "$reload"
       cert_perms; ok "issued + installed certificate via $TLS_MODE";;
     *) die "TLS must be cloudflare|letsencrypt|letsencrypt-ip|selfsigned|skip";;

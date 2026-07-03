@@ -49,9 +49,27 @@ selfsigned(){ mkdir -p "$(dirname "$SWG_PANEL_TLS_CERT")"
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$SWG_PANEL_TLS_KEY" -out "$SWG_PANEL_TLS_CERT" \
     -subj "/CN=$PANEL_DOMAIN" -addext "subjectAltName=$san" >/dev/null 2>&1
   log "generated self-signed certificate (CN=$PANEL_DOMAIN, 10y)"; }
+# Only ONE acme entry may install to the panel's cert path. If the panel URL changed (e.g. letsencrypt-ip → a
+# domain) across restarts, the old entry still installs to the same file, so acme's renew loop reinstalls whichever
+# renewed last — a short-lived IP cert then clobbers the domain cert (Cloudflare then 526s). Drop any OTHER entry
+# that targets our cert path before installing this one.
+acme_prune_stale(){
+  local conf d rp
+  for conf in "$ACME_CFG"/*/*.conf; do
+    [ -f "$conf" ] || continue
+    d="$(sed -n "s/^Le_Domain='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
+    [ -n "$d" ] && [ "$d" != "$PANEL_DOMAIN" ] || continue
+    rp="$(sed -n "s/^Le_RealFullChainPath='\{0,1\}\([^']*\).*/\1/p" "$conf" | head -1)"
+    [ "$rp" = "$SWG_PANEL_TLS_CERT" ] || continue
+    log "removing stale acme entry $d (also installs to $SWG_PANEL_TLS_CERT — would clobber $PANEL_DOMAIN's cert)"
+    acme --remove -d "$d" --ecc >/dev/null 2>&1 || true
+    rm -rf "$(dirname "$conf")"
+  done
+}
 # --reloadcmd is stored by acme.sh and re-run on every future renewal: SIGHUP makes the
 # panel (PID 1) reload the new cert into its live TLS context with no downtime.
-acme_install(){ acme --install-cert -d "$PANEL_DOMAIN" --ecc \
+acme_install(){ acme_prune_stale
+  acme --install-cert -d "$PANEL_DOMAIN" --ecc \
   --key-file "$SWG_PANEL_TLS_KEY" --fullchain-file "$SWG_PANEL_TLS_CERT" \
   --reloadcmd 'kill -HUP 1' >/dev/null 2>&1 \
   || log "WARNING: acme --install-cert failed — the panel may fall back to no/old cert"; }
