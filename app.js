@@ -3155,7 +3155,7 @@ function ConnectionsScreen() {
       <div class="section-title"><h2 class="live-users">Users</h2><span class="count">${users.length}</span></div>
       ${users.length ? html`<${Fragment}>
         <${UsersHeader} live=${true} sort=${connView.usort} dir=${connView.udir} onSort=${c => { sortColToggle(connView, "usort", "udir", c, USER_DEFDIR); connView.page = 1; bump(); }}/>
-        <div class="urows">${paginate(users).map(u => html`<${UserRow} key=${u.id} user=${u} live=${true} onlineOnly=${connView.online}/>`)}</div>
+        <div class="urows">${paginate(users).map(u => html`<${UserRow} key=${u.id} user=${u} live=${true} onlineOnly=${connView.online} q=${q}/>`)}</div>
       <//>`
         : html`<div class="empty"><b>${connView.online ? "No users online" : "Nothing matches"}</b>${connView.online ? "No user has an online peer right now." : "Clear the filters."}</div>`}
       ${pager(users.length)}
@@ -3218,10 +3218,12 @@ function peerMatchesQ(p, q) {
   if (((p.title || "") + " " + (p.name || "") + " " + (p.pubkey || "")).toLowerCase().includes(q)) return true;
   return p.targets.some(t => ((t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface).toLowerCase().includes(q));
 }
+// does the user's OWN identity (name/tag/note) match? — distinct from a match via one of their peers.
+function userIdentityMatchesQ(u, q) { return !q || ((u.name || "") + " " + (u.tag || "") + " " + (u.note || "")).toLowerCase().includes(q); }
 // A user matches if their identity OR any of their peers match — so you can find a user by a peer's IP.
 function userMatchesQ(u, q) {
   if (!q) return true;
-  if ((u.name + " " + u.tag + " " + u.note).toLowerCase().includes(q)) return true;
+  if (userIdentityMatchesQ(u, q)) return true;
   return Store.peersOfUser(u.id).some(p => peerMatchesQ(p, q));
 }
 // does the user have a peer deployed on this node (and interface, if given)? — for the Users node/iface filter.
@@ -3448,10 +3450,17 @@ function TurnCfgItem({ conf, tp, vk, base, back }) {
 
 // One user as a collapsible row: status · name · tag · note · peers · last · rate · total · controls.
 // Click the row to expand its peers (the shared EmbeddedPeers grid); click again to collapse.
-function UserRow({ user, live, onlineOnly }) {
+function UserRow({ user, live, onlineOnly, q }) {
   const [, force] = useState(0);
-  const expanded = !!usersView.expanded[user.id];
+  // While searching, matching users auto-expand (unless the operator explicitly collapsed one). If the user
+  // matched only via some of their PEERS (not their own name/tag/note), the expanded grid shows just those
+  // matching peers — a matching child pulls in its parent, siblings stay hidden. An identity match shows all peers.
+  const searching = !!q;
+  const idMatch = userIdentityMatchesQ(user, q);
+  const expanded = searching ? (usersView.expanded[user.id] !== false) : !!usersView.expanded[user.id];
   const toggle = () => { usersView.expanded[user.id] = !expanded; force(x => x + 1); };
+  const allPeers = Store.peersOfUser(user.id);
+  const shownPeers = (searching && !idMatch) ? allPeers.filter(p => peerMatchesQ(p, q)) : allPeers;
   const st = userStats(user.id);
   const [db, ub] = dlul(st.rxb, st.txb);
   const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 });
@@ -3481,8 +3490,8 @@ function UserRow({ user, live, onlineOnly }) {
       <//>`}</span>
     </div>
     ${expanded ? html`<div class="urow-body">
-      ${user.peerCount ? html`<${EmbeddedPeers} peers=${Store.peersOfUser(user.id)} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true} live=${live} onlineOnly=${onlineOnly}/>`
-        : html`<div class="ug-empty">No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.</div>`}
+      ${shownPeers.length ? html`<${EmbeddedPeers} peers=${shownPeers} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true} live=${live} onlineOnly=${onlineOnly}/>`
+        : html`<div class="ug-empty">${user.peerCount ? "No peers match." : html`<${Fragment}>No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.<//>`}</div>`}
     </div>` : null}
     <${RowError} k=${"user:" + user.id}/>
   </div>`;
@@ -3528,7 +3537,7 @@ function UsersScreen() {
       : !users.length ? html`<div class="empty"><b>Nothing matches</b>Clear the search.</div>`
       : html`<${Fragment}>
         <${UsersHeader} sort=${usersView.sort} dir=${usersView.dir} onSort=${c => { sortColToggle(usersView, "sort", "dir", c, USER_DEFDIR); usersView.page = 1; force(x => x + 1); }}/>
-        <div class="urows">${pageUsers.map(u => html`<${UserRow} key=${u.id} user=${u}/>`)}</div>
+        <div class="urows">${pageUsers.map(u => html`<${UserRow} key=${u.id} user=${u} q=${q}/>`)}</div>
       <//>`}
     ${users.length > pageSize ? html`<div class="pager">
       <label class="pager-size">Rows per page
