@@ -11,7 +11,7 @@
   --bg:#0A0E15; --bg2:#070A10; --surface:#10151E; --surface-2:#0C1019; --raise:#161D29;
   --line:#1D2734; --line-bright:#2A3A4E55; --line-solid:#2A3A4E;
   --ink:#E7EEF6; --ink-2:#C2D0E0; --dim:#8EA0B7; --faint:#536679;
-  --online:#3FD89A; --ready:#4FA8F0; --pending:#9A8BF0; --partial:#E2C84A;
+  --online:#3FD89A; --ready:#4FA8F0; --pending:#9A8BF0; --partial:#E2C84A; --fault:#F2994A;
   --dangling:#F26B82; --orphan:#B79BD6; --unknown:#62748B; --removing:#E2C84A;
   --brand:#1FC8D6; --brand-2:#5FE2EC; --brand-ink:#04232A; --smart:#F472B6;   /* smart routing — rose/pink, distinct from cascade purple */
   --tp-rx:#1FC8D6; --tp-tx:#818CF8;   /* throughput chart: rx (down) cyan, tx (up) indigo — kept distinct */
@@ -262,6 +262,8 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
 .b-ready{background:rgba(79,168,240,.12);color:var(--ready)}   /* blue — deployed everywhere, awaiting first connection */
 .b-partial{background:rgba(243,160,168,.14);color:#F19AA4}   /* LIGHT RED — a problem that isn't a stopper (present on some targets, missing on others) */
+/* ORANGE faults: blocked = reaching the server but no handshake; faulty = handshake up but no inbound data */
+.b-blocked,.b-faulty{background:rgba(242,153,74,.15);color:var(--fault)}
 .b-pending{background:rgba(154,139,240,.14);color:var(--pending)}   /* violet — bg matches the --pending text/border (awaiting-enroll); was a mismatched yellow bg */
 .b-removing{background:rgba(242,107,130,.14);color:var(--dangling)}
 .b-dangling{background:rgba(240,89,107,.14);color:var(--dangling)}
@@ -841,6 +843,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px rgba
 /* online / turn dots glow with the same animated pulse as the peer-grid status badge (.sdot) */
 .condot.on{background:var(--online);color:var(--online);animation:sdotpulse 1.6s ease-in-out infinite}
 .condot.turn{background:var(--tfc);color:var(--tfc);animation:sdotpulse 1.6s ease-in-out infinite}
+.condot.faulty{background:var(--fault);color:var(--fault);animation:sdotpulse 1.6s ease-in-out infinite}   /* orange, pulsing — handshake up but no data */
+.condot.blocked{background:var(--fault)}   /* orange, static — reaching but no handshake */
 .condot.off{background:var(--faint)}
 /* Rate/Transfer are numeric — right-align header + values so the header text ends above where the values end */
 .conntable th.num,.conntable td[data-label="Rate"],.conntable td[data-label="Transfer"]{text-align:right}
@@ -1357,6 +1361,7 @@ a.tg:hover{filter:brightness(1.25)}
 .ustat.s-creating,.ustat.s-rotating{color:var(--partial)}
 .ustat.s-dangling,.ustat.s-removing{color:var(--dangling)}
 .ustat.s-unknown,.ustat.s-empty,.ustat.s-off{color:var(--unknown)}   /* s-off = Live "offline" (grey, no animation) */
+.ustat.s-blocked,.ustat.s-faulty{color:var(--fault)}   /* orange — a peer is blocked / faulty */
 /* name row: name · tag · note all on one line, name + note ellipsize */
 .u-name{display:flex;align-items:center;gap:8px;min-width:0;font-size:14px;font-weight:600}
 .u-name>a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto} .u-name>a:hover{color:var(--brand)}

@@ -537,7 +537,10 @@ const Store = {
       for (const ifn of Object.keys(this.describe[nid] || {}))
         if (this.describe[nid][ifn] && this.describe[nid][ifn].system) systemIfaces.add(nid + "|" + ifn);
     const _adv = (this.panelSettings || {}).advanced || {};   // operator-tunable stale/grace thresholds
+    // rx-history for FAULTY detection persists across polls (keyed node|iface|pubkey, like reconcile's `observed`)
+    this._rxHistory = this._rxHistory || {};
     this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
+      history: this._rxHistory, faultyMs: _adv.faulty_ms || 45000,
       ...(_adv.node_stale_ms ? { nodeStaleMs: _adv.node_stale_ms } : {}), ...(_adv.peer_grace_ms ? { graceMs: _adv.peer_grace_ms } : {}) });
     // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
     for (const id of Object.keys(this.rotating)) {
@@ -933,9 +936,9 @@ let _sheetStack = [];   // mounted Sheet tokens (LIFO) — only the topmost hand
 const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
 const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied" };
 const IFOP_FAIL = { start: "failed to start", stop: "failed to stop", restart: "failed to restart", apply: "failed to apply" };
-const STATUS_RANK = { dangling: 0, partial: 1, pending: 2, creating: 2, rotating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
+const STATUS_RANK = { dangling: 0, blocked: 1, faulty: 1, partial: 1, pending: 2, creating: 2, rotating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
-  dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
+  blocked: "warn", faulty: "warn", dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
 // a node/panel host that's mid re-install or method conversion (signalled before it goes down)
 const PROC_LABEL = {
   reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker", updating: "updating", uninstalling: "uninstalling",
@@ -1017,9 +1020,13 @@ function gridIfaceTag(t) {
 // Status badge for a peer-grid row. A peer ONLINE through a turn-proxy takes the fork colour on its status
 // badge with a glowing animated dot, plus a "Connected via <fork> <title>" hover bubble — consistent in
 // every grid regardless of which columns are shown. Otherwise the normal Badge.
+const STATUS_REASON = {
+  blocked: "reaching the server but the handshake never completes — likely DPI / MTU / wrong AmneziaWG params",
+  faulty: "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path",
+};
 function gridStatusBadge(t, p) {
   const st = t.status || p.status;
-  const title = (t.down ? "interface " + t.iface + " is down — " + t.down : p.reason) || "";
+  const title = (t.down ? "interface " + t.iface + " is down — " + t.down : (p.reason || STATUS_REASON[st])) || "";
   if (t.online && t.viaTurn) {
     const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap">
@@ -2950,7 +2957,7 @@ function ifaceOptGroups(names) {
 const _ipKey = ip => String(ip || "").split(/[./]/).map(n => String((+n) || 0).padStart(3, "0")).join(".");
 // status order for the clickable "Status" column — online FIRST (STATUS_RANK ranks ready above online, which is
 // right for the Peers-screen default grouping but backwards for an order-by; here online is the top of the sort).
-const PEER_STATUS_RANK = { online: 8, ready: 7, partial: 6, pending: 5, creating: 5, rotating: 5, unassigned: 3, unknown: 2, dangling: 1 };
+const PEER_STATUS_RANK = { online: 10, faulty: 9, ready: 8, blocked: 7, partial: 6, pending: 5, creating: 5, rotating: 5, unassigned: 3, unknown: 2, dangling: 1 };
 const PEER_SORT = {
   status: ({ p, t }) => PEER_STATUS_RANK[t.status || p.status] || 0,
   server: ({ t }) => Store.nodeName(t.node).toLowerCase() + "|" + t.iface,
@@ -2984,7 +2991,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
-          <td data-label="Status">${live ? html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>` : gridStatusBadge(t, p)}</td>
+          <td data-label="Status">${live ? html`<span class=${"condot " + (t.status === "faulty" ? "faulty" : t.status === "blocked" ? "blocked" : t.online ? "on" : "off")} title=${t.status === "faulty" ? "faulty — connected but no inbound data" : t.status === "blocked" ? "blocked — reaching the server, no handshake" : t.online ? "online" : "offline"}></span>` : gridStatusBadge(t, p)}</td>
           ${loc ? html`<td data-label="Server"><div class="srvcell">
             <span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
             ${gridIfaceTag(t)}

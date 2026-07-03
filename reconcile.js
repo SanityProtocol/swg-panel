@@ -26,8 +26,9 @@
 
 const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000 };
 
-// status priority for rolling several targets/peers into one (most-alive wins)
-const RANK = { online: 6, ready: 5, partial: 4, pending: 3, creating: 3, rotating: 3, dangling: 2, unknown: 1 };
+// status priority for rolling several targets/peers into one (most-alive wins). faulty (handshake up, no data)
+// sits just under online; blocked (reaching but no handshake) is a fault above the plain-missing states.
+const RANK = { online: 8, faulty: 7, ready: 6, blocked: 5, partial: 4, pending: 3, creating: 3, rotating: 3, dangling: 2, unknown: 1 };
 
 function ipOf(hostport) {
   if (!hostport) return "";
@@ -93,7 +94,24 @@ function reconcile(roster, stats, now, cfg) {
       const obs = observed[key] || null;
       let st;
       if (nodeStatus[t.node] !== "live") st = "unknown";
-      else if (obs) st = obs.online ? "online" : "ready";
+      else if (obs) {
+        if (obs.online) {
+          st = "online";
+          // FAULTY: handshake is up but the node has received NO new bytes FROM the client for a while — the
+          // tunnel is established yet inbound data isn't flowing (one-way block / DPI / broken return path).
+          // Needs rx history across polls, kept by the caller in cfg.history (keyed like `observed`).
+          if (cfg.history) {
+            const h = cfg.history, rx = obs.rx_bytes || 0, prev = h[key];
+            if (!prev) h[key] = { rx: rx, flatSince: null };
+            else if (rx > prev.rx) { prev.rx = rx; prev.flatSince = null; }         // data flowing → healthy
+            else { if (prev.flatSince == null) prev.flatSince = now; if ((now - prev.flatSince) >= (cfg.faultyMs || 45000)) st = "faulty"; }
+          }
+        } else if (obs.endpoint && obs.handshake_age == null && (now - createdMs) > cfg.graceMs) {
+          // BLOCKED: wg learned the client's endpoint (it IS sending packets) but no handshake ever completed —
+          // the client reaches the server but the tunnel won't come up (DPI on the handshake, MTU, wrong params).
+          st = "blocked";
+        } else st = "ready";
+      }
       else st = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
       const epIp = (obs && obs.endpoint) ? ipOf(obs.endpoint) : "";
       const via = epIp ? ((turnConnIps[t.node] || {})[epIp] ? "turn" : "direct") : null;
@@ -117,7 +135,7 @@ function reconcile(roster, stats, now, cfg) {
     else if (targets.length === 0 || live.length === 0) status = "unknown";
     else if (present.length === 0) status = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
     else if (present.length < live.length) status = "partial";
-    else status = onlineAny ? "online" : "ready";
+    else { status = "ready"; present.forEach(d => { if ((RANK[d.status] || 0) > (RANK[status] || 0)) status = d.status; }); }   // all present → best of the targets' states (online/faulty/blocked/ready)
 
     // a key rotation in flight: the new key isn't on the wire yet — show "rotating", not dangling
     if (cfg.rotating && cfg.rotating.has(pid) && (status === "dangling" || status === "creating" || status === "unknown")) status = "rotating";
@@ -128,7 +146,8 @@ function reconcile(roster, stats, now, cfg) {
       reason = dt ? ("interface " + dt.iface + " is down — " + dt.down)
                   : (status === "dangling" ? "missing on every server"
                      : status === "partial" ? "missing on some live servers" : "created — not seen on a node yet");
-    }
+    } else if (status === "blocked") reason = "reaching the server but the handshake never completes — likely DPI / MTU / wrong AmneziaWG params";
+    else if (status === "faulty") reason = "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path";
 
     let lastAge = null;
     targets.forEach(d => {
