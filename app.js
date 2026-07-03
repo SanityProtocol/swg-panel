@@ -297,7 +297,12 @@ function _wingsvConfigBytes(cf, tp, vk, rawConf) {
     });
     transport = _pbLen(4, [..._pbLen(1, iface), ..._pbLen(2, peer), ..._pbLen(3, _epBytes(LOCAL))]);   // Config.wg (endpoint → local turn client)
   }
-  return new Uint8Array([..._pbVar(1, 1), ..._pbVar(2, 4), ..._pbLen(3, turn), ...transport, ..._pbVar(5, 7)]);   // ver=1, type=ALL, turn, wg|awg, backend=VK_TURN
+  // type: WG uses ALL (4) and works. AWG uses VK_TURN_PROFILE (10) — the type WINGS itself emits for a single
+  // VK-TURN profile share link (buildTurnProfileLink), which embeds + links the awg transport to the active VK
+  // TURN profile. ALL is a bulk-settings import and doesn't link the awg transport (the xray-userspace-WG engine
+  // reads flat wg settings so WG survives it; the native AmneziaWG engine needs the linked profile).
+  const type = isAwg ? 10 : 4;
+  return new Uint8Array([..._pbVar(1, 1), ..._pbVar(2, type), ..._pbLen(3, turn), ...transport, ..._pbVar(5, 7)]);   // ver=1, type, turn, wg|awg, backend=VK_TURN
 }
 async function wingsvLink(baseConf, tp, vk) {
   if (typeof CompressionStream === "undefined") throw new Error("this browser can't build a wingsv:// link (no CompressionStream) — copy the fields into the WINGS V app manually");
