@@ -126,6 +126,9 @@ function dur(sec) {
 
 const ICON = {
   arrow: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>',
+  dots: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.1"/><circle cx="12" cy="12" r="2.1"/><circle cx="19" cy="12" r="2.1"/></svg>',
+  waves: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 8q3.5-4 7 0t7 0"/><path d="M3 13q3.5-4 7 0t7 0"/><path d="M3 18q3.5-4 7 0t7 0"/></svg>',
+  off: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>',
   back: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>',
   search: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>',
   copy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
@@ -417,6 +420,7 @@ const api = {
   state() { return this.get("/api/state"); },
   events(limit) { return this.get("/api/events?limit=" + (limit || 12)); },
   nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&range=" + encodeURIComponent(range)); },
+  meshHistory(range) { return this.get("/api/mesh-history?range=" + encodeURIComponent(range)); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -495,7 +499,11 @@ const Store = {
   rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
   async init() {
     await this.poll();
-    setInterval(() => this.poll().catch(() => {}), 5000);
+    // Poll every 5s, but SKIP while the tab is HIDDEN — a background tab needs no live data, and each poll
+    // makes the (often 1-CPU) panel rebuild the /api/state bundle. Resume with an immediate poll the moment
+    // the operator returns, so they never look at stale numbers.
+    setInterval(() => { if (document.visibilityState !== "hidden") this.poll().catch(() => {}); }, 5000);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") this.poll().catch(() => {}); });
   },
   // One round trip: /api/state bundles roster + nodes (incl. health_history) + per-node
   // interface meta + raw snapshots. Status is still derived in the browser via reconcile.js.
@@ -550,6 +558,7 @@ const Store = {
       const pr = this.recon.peers.find(p => p.id === id);
       if ((pr && (pr.status === "online" || pr.status === "ready" || pr.status === "partial")) || (Date.now() - this.rotating[id] > 45000)) delete this.rotating[id];
     }
+    try { recordDashTick(); } catch (_) {}   // accumulate the dashboard's live-only trend series (online counts)
     bus.emit();
   },
   node(id) { return this.fleet.find(n => n.id === id); },              // lookup by stable id
@@ -1538,34 +1547,640 @@ function recentActivity() {
   return ev.filter(e => e.ts).sort((a, b) => b.ts - a.ts).slice(0, 7);
 }
 
+// ─────────── Dashboard controls: node selector + time range ───────────
+// Two module-level controls drive every Overview widget. The NODE selector filters the fleet the
+// dashboard aggregates over (default = ALL, stored as null); unselecting nodes re-renders every widget
+// for the remaining set (all-but-one = a single-node view). The RANGE selector chooses the history
+// window for the range-driven visuals (doughnuts + flow map); live derives from the /api/state bundle,
+// the rest read the per-node RRD on demand. Both live in module state + localStorage so a re-render or
+// the 5s poll never clobbers the operator's selection (it's not derived from server data).
+const DASH_RANGES = [["live", "Live"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];
+const dashState = { nodes: null, range: "day" };   // nodes: null = whole fleet, else a Set of node ids
+(function () {
+  try {
+    const raw = JSON.parse(localStorage.getItem("swg-dash") || "{}");
+    if (Array.isArray(raw.nodes)) dashState.nodes = new Set(raw.nodes);
+    if (DASH_RANGES.some(r => r[0] === raw.range)) dashState.range = raw.range;
+  } catch (_) {}
+})();
+function dashSave() {
+  try { localStorage.setItem("swg-dash", JSON.stringify({ nodes: dashState.nodes ? [...dashState.nodes] : null, range: dashState.range })); } catch (_) {}
+}
+// Effective selected node ids, reconciled against the CURRENT fleet (ids for departed nodes drop out).
+// An empty selection collapses back to the whole fleet — the dashboard is never blank.
+function dashNodes() {
+  const fleet = (Store.fleet || []).map(n => n.id);
+  if (!dashState.nodes) return fleet;
+  const sel = fleet.filter(id => dashState.nodes.has(id));
+  return sel.length ? sel : fleet;
+}
+function dashNodeOn(id) { return !dashState.nodes || dashState.nodes.has(id); }
+function dashAllOn() { const f = (Store.fleet || []).length; return !dashState.nodes || dashNodes().length >= f; }
+function dashToggleNode(id) {
+  const fleet = (Store.fleet || []).map(n => n.id);
+  const sel = new Set(dashState.nodes ? [...dashState.nodes].filter(x => fleet.includes(x)) : fleet);
+  if (sel.has(id)) sel.delete(id); else sel.add(id);
+  dashState.nodes = (sel.size === 0 || sel.size >= fleet.length) ? null : sel;   // all/none → canonical "fleet"
+  dashSave(); bus.emit();
+}
+function dashSetAll() { dashState.nodes = null; dashSave(); bus.emit(); }
+function dashSetRange(r) { if (DASH_RANGES.some(x => x[0] === r)) { dashState.range = r; dashSave(); bus.emit(); } }
+
+// Merge the SELECTED nodes' 15s health-ring series (server-provided, bucket-aligned) into one fleet
+// series summed per timestamp — powers the live fleet-throughput hero without a client accumulator, and
+// survives a reload (the ring is on the panel). Only rx/tx are summed (counts aren't in the ring yet).
+function mergeFleetSeries(selIds) {
+  const byT = new Map();
+  selIds.forEach(id => {
+    const n = (Store.nodes || []).find(x => x.id === id); const h = n && n.health_history;
+    if (!h || !h.t) return;
+    // client throughput = total − mesh, so relayed traffic isn't counted against the fleet's user throughput
+    h.t.forEach((t, i) => { const r = byT.get(t) || { rx: 0, tx: 0 };
+      r.rx += Math.max(0, ((h.rx || [])[i] || 0) - ((h.mrx || [])[i] || 0));
+      r.tx += Math.max(0, ((h.tx || [])[i] || 0) - ((h.mtx || [])[i] || 0)); byT.set(t, r); });
+  });
+  const t = [...byT.keys()].sort((a, b) => a - b);
+  return { t, rx: t.map(x => byT.get(x).rx), tx: t.map(x => byT.get(x).tx) };
+}
+// Client-side live accumulator for series the RRD ring doesn't keep yet (online-peer counts). One point
+// per poll, per node, pushed in lockstep so selected nodes sum by index. Bounded; empty on reload, fills as
+// you watch (Phase B will move online counts into the ring so they survive a reload). Cheap — runs each apply().
+const DASH_TICK_MAX = 180;
+const dashLive = { t: [], on: {} };
+function recordDashTick() {
+  const rec = Store.recon; if (!rec) return;
+  const now = Math.floor(Date.now() / 1000);
+  if (dashLive.t.length && now - dashLive.t[dashLive.t.length - 1] < 3) return;   // dedup optimistic re-applies
+  const byNode = {};
+  rec.peers.forEach(p => p.targets.forEach(t => { if (t.online) byNode[t.node] = (byNode[t.node] || 0) + 1; }));
+  const L = dashLive.t.length;
+  (Store.fleet || []).forEach(n => { const a = dashLive.on[n.id] || (dashLive.on[n.id] = new Array(L).fill(0)); while (a.length < L) a.push(0); a.push(byNode[n.id] || 0); });
+  dashLive.t.push(now);
+  if (dashLive.t.length > DASH_TICK_MAX) { dashLive.t.shift(); Object.values(dashLive.on).forEach(a => a.shift()); }
+}
+function dashOnlineTrend(selIds) {
+  const t = dashLive.t; if (t.length < 2) return null;
+  return { t, pts: t.map((_, i) => selIds.reduce((a, id) => a + ((dashLive.on[id] || [])[i] || 0), 0)) };
+}
+
+// The dashboard toolbar: a multi-select node filter (themed chips) + a live/day/week/month range toggle.
+function DashControls() {
+  const fleet = Store.fleet || [];
+  const range = dashState.range;
+  return html`<div class="dashbar">
+    ${fleet.length > 1 ? html`<div class="dash-nodes">
+      <span class="dash-lbl">Nodes</span>
+      <button class=${"dchip all" + (dashAllOn() ? " on" : "")} onClick=${dashSetAll} title="Show the whole fleet">All</button>
+      ${fleet.map(n => {
+        const on = dashNodeOn(n.id);
+        const down = Store.recon.nodeStatus[n.id] !== "live";
+        return html`<button key=${n.id} class=${"dchip" + (on ? " on" : "") + (down ? " down" : "")} style=${"--c:" + Store.nodeColor(n.id)}
+          onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name + (down ? " · not reporting" : "")}>
+          <span class="dchip-dot"></span>${n.name}</button>`;
+      })}
+    </div>` : html`<div></div>`}
+    <div class="dash-range">
+      <span class="dash-lbl">Range</span>
+      <div class="dseg">${DASH_RANGES.map(([k, lbl]) => html`<button key=${k} class=${"dseg-opt" + (range === k ? " on" : "")} onClick=${() => dashSetRange(k)}>${lbl}</button>`)}</div>
+    </div>
+  </div>`;
+}
+
+// On-demand history for the range-driven visuals. Fetches per-node RRD (/api/node-history) for the
+// SELECTED nodes only when the range is NOT "live" — off the 5s hot path, re-run only when the range or
+// the selection changes. Returns { loading, byNode:{id:{t,rx,tx,cpu,…}}, range }. Live → empty (widgets
+// read the /api/state bundle instead). One fetch burst per range change; results are held until it changes.
+const RANGE_STEP = { hour: 15, day: 300, week: 1800, month: 7200 };   // seconds/bucket → volume = Σ(mean B/s)·step
+// One fetch burst per range/selection change, shared by the doughnuts AND the flow map (lifted to Overview so
+// they don't each hit the API). Pulls per-node RRD + per-pair mesh means. Live → empty (widgets use the bundle).
+function useRangeHistory(range, selIds) {
+  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], range: "live" });
+  const key = range + "|" + selIds.slice().sort().join(",");
+  useEffect(() => {
+    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], range: "live" }); return; }
+    let alive = true; setSt(s => ({ ...s, loading: true }));
+    Promise.all([
+      Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, (r && r.data) || null]).catch(() => [id, null]))),
+      api.meshHistory(range).then(r => (r && r.data && r.data.pairs) || []).catch(() => []),
+    ]).then(([rows, mesh]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, range }); });
+    return () => { alive = false; };
+  }, [key]);
+  return st;
+}
+// total bytes moved over a range window = Σ(per-bucket mean B/s) × bucket step
+function histVolume(d, range) { const step = RANGE_STEP[range] || 1, s = a => (a || []).reduce((x, v) => x + (v || 0), 0) * step; return { rx: s(d && d.rx), tx: s(d && d.tx) }; }
+
+// The 4 concentric-ring doughnuts. All respect the node selector AND the time range: live comes from the
+// /api/state bundle; day/week/month read the per-node RRD (client rx/tx = total−mesh, awg-client rx/tx, and
+// peer online/total counts) fetched on demand off the hot path. Traffic → volume over the window; counts →
+// mean over the window.
+function DashDoughnuts({ selIds, range, hist }) {
+  const sel = new Set(selIds);
+  const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
+  const live = range === "live";
+  const ranged = !live && !hist.loading && hist.range === range;   // history is loaded for this range
+  const STEP = RANGE_STEP[range] || 1;
+  const isSys = (nid, ifn) => !!(Store.describe[nid] && Store.describe[nid][ifn] && Store.describe[nid][ifn].system);
+  const ifType = (nid, ifn) => { const m = Store.describe[nid] && Store.describe[nid][ifn]; return (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
+  const sPeers = Store.recon.peers.filter(p => p.targets.some(t => sel.has(t.node)));
+  const _sum = a => (a || []).reduce((x, v) => x + (v || 0), 0);
+  const _mean = a => (a && a.length) ? _sum(a) / a.length : 0;
+  // per-node history-derived aggregates (client volume, awg volume, mean peer counts)
+  const clientVol = d => { let rx = 0, tx = 0; const R = (d && d.rx) || [], T = (d && d.tx) || [], MR = (d && d.mrx) || [], MT = (d && d.mtx) || [];
+    for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); } return { rx: rx * STEP, tx: tx * STEP }; };
+  const awgVol = d => ({ rx: _sum(d && d.arx) * STEP, tx: _sum(d && d.atx) * STEP });
+
+  // ── traffic by node + by iface type ──
+  const nodeTraf = {}, typeTraf = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 } };
+  fleet.forEach(n => {
+    if (ranged) {
+      const d = hist.byNode[n.id]; const cv = clientVol(d), av = awgVol(d);
+      nodeTraf[n.id] = cv;
+      typeTraf.awg.rx += av.rx; typeTraf.awg.tx += av.tx;
+      typeTraf.wg.rx += Math.max(0, cv.rx - av.rx); typeTraf.wg.tx += Math.max(0, cv.tx - av.tx);
+    } else {
+      let rx = 0, tx = 0; const snap = Store.stats[n.id];
+      if (snap) for (const [ifn, blk] of Object.entries(snap.interfaces || {})) {
+        if (isSys(n.id, ifn)) continue;
+        const ty = ifType(n.id, ifn); let r = 0, t = 0;
+        for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; }
+        typeTraf[ty].rx += r; typeTraf[ty].tx += t; rx += r; tx += t;
+      }
+      nodeTraf[n.id] = { rx, tx };
+    }
+  });
+  const trafFmt = ranged ? fmtBytes : rate;
+
+  // ── peer deployments by node + by iface type (live = current count; ranged = mean over window) ──
+  const nodeCnt = {}, typeCnt = { wg: { tot: 0, on: 0 }, awg: { tot: 0, on: 0 } };
+  fleet.forEach(n => nodeCnt[n.id] = { tot: 0, on: 0 });
+  if (ranged) {
+    fleet.forEach(n => { const d = hist.byNode[n.id] || {};
+      nodeCnt[n.id] = { tot: Math.round(_mean(d.ptot)), on: Math.round(_mean(d.pon)) };
+      const at = Math.round(_mean(d.patot)), ao = Math.round(_mean(d.paon));
+      typeCnt.awg.tot += at; typeCnt.awg.on += ao;
+      typeCnt.wg.tot += Math.max(0, Math.round(_mean(d.ptot)) - at); typeCnt.wg.on += Math.max(0, Math.round(_mean(d.pon)) - ao);
+    });
+  } else {
+    sPeers.forEach(p => p.targets.forEach(t => {
+      if (!sel.has(t.node)) return;
+      const ty = (t.type === "awg" || t.type === "wg") ? t.type : ifType(t.node, t.iface);
+      nodeCnt[t.node].tot++; if (t.online) nodeCnt[t.node].on++;
+      (typeCnt[ty] = typeCnt[ty] || { tot: 0, on: 0 }).tot++; if (t.online) typeCnt[ty].on++;
+    }));
+  }
+
+  const nodeName = id => Store.nodeName(id), nodeColor = id => Store.nodeColor(id);
+  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"]];
+  const segNodes = kind => fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: (nodeTraf[n.id] || {})[kind] || 0, color: nodeColor(n.id) }));
+  const segTypes = kind => TYPES.map(([t, nm]) => ({ key: t, name: nm, value: typeTraf[t][kind] || 0, color: ifaceColor(t) }));
+  const sum = (o, k) => Object.values(o).reduce((a, v) => a + (v[k] || 0), 0);
+
+  // centre readouts
+  const trafCenter = (down, up) => html`<div class="mrc-def"><span class="mrc-k">total</span>
+    <span class="mrc-tot dn">↓ ${trafFmt(down)}</span><span class="mrc-tot up" style="font-size:14px">↑ ${trafFmt(up)}</span></div>`;
+  const cntCenter = (on, tot) => html`<div class="mrc-def"><span class="mrc-k">online</span>
+    <span class="mrc-tot dn">${on}<small style="color:var(--faint)"> / ${tot}</small></span></div>`;
+
+  const totDownN = sum(nodeTraf, "rx"), totUpN = sum(nodeTraf, "tx");
+  const totDownT = typeTraf.wg.rx + typeTraf.awg.rx, totUpT = typeTraf.wg.tx + typeTraf.awg.tx;
+  const nodeOn = Object.values(nodeCnt).reduce((a, v) => a + v.on, 0), nodeTot = Object.values(nodeCnt).reduce((a, v) => a + v.tot, 0);
+  const typeOn = typeCnt.wg.on + typeCnt.awg.on, typeTot = typeCnt.wg.tot + typeCnt.awg.tot;
+
+  const trafLegNodes = fleet.map(n => ({ key: n.id, name: nodeName(n.id), color: nodeColor(n.id),
+    right: html`<span style="color:var(--online)">↓${trafFmt((nodeTraf[n.id] || {}).rx || 0)}</span> <span style="color:var(--rate-up)">↑${trafFmt((nodeTraf[n.id] || {}).tx || 0)}</span>` }));
+  const trafLegTypes = TYPES.filter(([t]) => typeTraf[t].rx + typeTraf[t].tx > 0).map(([t, nm]) => ({ key: t, name: nm, color: ifaceColor(t),
+    right: html`<span style="color:var(--online)">↓${trafFmt(typeTraf[t].rx)}</span> <span style="color:var(--rate-up)">↑${trafFmt(typeTraf[t].tx)}</span>` }));
+  const cntLegNodes = fleet.map(n => ({ key: n.id, name: nodeName(n.id), color: nodeColor(n.id), right: nodeCnt[n.id].on + " / " + nodeCnt[n.id].tot }));
+  const cntLegTypes = TYPES.filter(([t]) => (typeCnt[t] || { tot: 0 }).tot > 0).map(([t, nm]) => ({ key: t, name: nm, color: ifaceColor(t), right: typeCnt[t].on + " / " + typeCnt[t].tot }));
+
+  const rlabel = DASH_RANGES.find(r => r[0] === range);
+  const rname = rlabel ? rlabel[1].toLowerCase() : range;
+  const loadingNote = (!live && hist.loading) ? html`<div class="donut-note">loading ${rname} history…</div>` : null;
+  const volNote = ranged ? html`<div class="donut-note">volume over the ${rname}</div>` : null;
+  const avgNote = ranged ? html`<div class="donut-note">avg over the ${rname}</div>` : null;
+  const card = (title, ringsOf, body, note) => html`<div class="donutcard">
+    <div class="donutcard-h"><h3>${title}</h3><span class="rings-of">${ringsOf}</span></div>
+    <div class=${"donut-body" + ((!live && hist.loading) ? " loading" : "")}>${body}</div>${note || null}</div>`;
+
+  return html`<div class="donutgrid">
+    ${card("Traffic by node", ranged ? "vol ↓ / ↑" : "↓ / ↑ B/s",
+      html`<${MultiRing} rings=${[{ label: "Download", fmt: trafFmt, segments: segNodes("rx") }, { label: "Upload", fmt: trafFmt, segments: segNodes("tx") }]} center=${trafCenter(totDownN, totUpN)}/>
+        <${RingLegend} items=${trafLegNodes}/>`,
+      loadingNote || volNote)}
+
+    ${card("Traffic by interface", ranged ? "vol ↓ / ↑" : "↓ / ↑ B/s",
+      html`<${MultiRing} rings=${[{ label: "Download", fmt: trafFmt, segments: segTypes("rx") }, { label: "Upload", fmt: trafFmt, segments: segTypes("tx") }]} center=${trafCenter(totDownT, totUpT)}/>
+        <${RingLegend} items=${trafLegTypes}/>`,
+      loadingNote || volNote)}
+
+    ${card("Peers online by node", "online / total",
+      html`<${MultiRing} rings=${[{ label: "Total peers", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].tot, color: nodeColor(n.id) })) },
+                                   { label: "Online", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].on, color: nodeColor(n.id) })) }]} center=${cntCenter(nodeOn, nodeTot)}/>
+        <${RingLegend} items=${cntLegNodes}/>`,
+      loadingNote || avgNote)}
+
+    ${card("Peers online by interface", "online / total",
+      html`<${MultiRing} rings=${[{ label: "Total peers", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).tot || 0, color: ifaceColor(t) })) },
+                                   { label: "Online", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).on || 0, color: ifaceColor(t) })) }]} center=${cntCenter(typeOn, typeTot)}/>
+        <${RingLegend} items=${cntLegTypes}/>`,
+      loadingNote || avgNote)}
+  </div>`;
+}
+
+// ═══════════════ Signal-flow map (redesign, P1: categorized model + static split/merge render) ═══════════════
+// Per selected server, live rx/tx split into endpoint KINDS: clients (direct wg/awg peers), turn (per VK fork),
+// internet (direct exit — approximate until the node SNAT counter), mesh (per peer server). Each is a bidirectional
+// pair (ingress = rx, egress = tx); 0-value flows dropped. Every flow is drawn source→dest as blue(egress)→green(ingress).
+const FLOW_EG = "#2E90FF", FLOW_IN = "#22D07A", FLOW_GLOBE = "#38BDF8", FLOW_MESH = "#9B8AFF";   // egress blue · ingress green · internet blue · off-fleet mesh violet
+function flowGraph(selIds, range, hist) {
+  const sel = new Set(selIds);
+  const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
+  const ranged = range && range !== "live" && hist && !hist.loading && hist.range === range;   // history loaded → show totals
+  const STEP = RANGE_STEP[range] || 1;
+  const acc = {};
+  fleet.forEach(n => acc[n.id] = { cl: { rx: 0, tx: 0 }, turn: {}, mesh: {}, offmesh: { rx: 0, tx: 0, n: new Set() } });   // offmesh = traffic to fleet nodes NOT selected (n = which ones)
+  if (ranged) {
+    // ── ranged: TOTAL bytes over the window from the RRD. Client = Σ max(0, rx−mesh)·step (turn can't be split out
+    //    of the history → folded into clients; there's no per-fork turn lane over a window); mesh from per-pair means. ──
+    fleet.forEach(n => { const d = hist.byNode[n.id]; if (!d) return;
+      const R = d.rx || [], T = d.tx || [], MR = d.mrx || [], MT = d.mtx || []; let rx = 0, tx = 0;
+      for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); }
+      acc[n.id].cl.rx = rx * STEP; acc[n.id].cl.tx = tx * STEP; });
+    // mesh/offmesh values are per-pair MEAN rates (B/s) over the window — convert to total bytes with the FULL window
+    // duration (samples·step), NOT one step, so they're on the same scale as the client volume (Σ mean·step above). Using
+    // STEP alone under-counted mesh by the sample count (~300 for a day), flooring every mesh edge to a uniform hairline.
+    const winSec = Math.max(1, ...fleet.map(n => { const d = hist.byNode[n.id]; return d && d.rx ? d.rx.length : 0; })) * STEP;
+    (hist.mesh || []).forEach(p => { const aSel = sel.has(p.a), bSel = sel.has(p.b); if (!aSel && !bSel) return;
+      if (aSel && bSel) {
+        if (p.ab > 0) (acc[p.a].mesh[p.b] = acc[p.a].mesh[p.b] || { rx: 0, tx: 0 }).tx = p.ab * winSec;
+        if (p.ba > 0) (acc[p.b].mesh[p.a] = acc[p.b].mesh[p.a] || { rx: 0, tx: 0 }).tx = p.ba * winSec;
+      } else if (aSel) { acc[p.a].offmesh.tx += (p.ab || 0) * winSec; acc[p.a].offmesh.rx += (p.ba || 0) * winSec; acc[p.a].offmesh.n.add(p.b); }   // a→off, off→a
+      else { acc[p.b].offmesh.tx += (p.ba || 0) * winSec; acc[p.b].offmesh.rx += (p.ab || 0) * winSec; acc[p.b].offmesh.n.add(p.a); } });
+  } else {
+    Store.recon.peers.forEach(p => p.targets.forEach(t => {
+      if (!acc[t.node]) return; const o = t.observed; if (!o) return;
+      const rx = o.rx_speed || 0, tx = o.tx_speed || 0; if (!rx && !tx) return;
+      const a = acc[t.node];
+      if (t.viaTurn) { const fk = turnFork(t.viaTurn); (a.turn[fk] = a.turn[fk] || { rx: 0, tx: 0 }); a.turn[fk].rx += rx; a.turn[fk].tx += tx; }
+      else { a.cl.rx += rx; a.cl.tx += tx; }
+    }));
+    fleet.forEach(n => { const snap = Store.stats[n.id]; if (!snap) return;
+      for (const [ifn, blk] of Object.entries(snap.interfaces || {})) {
+        const meta = (Store.describe[n.id] || {})[ifn] || blk.meta || {};
+        const peer = meta.egress_node; if (!(meta.system && peer)) continue;
+        let rx = 0, tx = 0; for (const pp of blk.peers || []) { rx += pp.rx_speed || 0; tx += pp.tx_speed || 0; }
+        if (sel.has(peer)) acc[n.id].mesh[peer] = { rx, tx };
+        else { acc[n.id].offmesh.rx += rx; acc[n.id].offmesh.tx += tx; acc[n.id].offmesh.n.add(peer); }   // peer not shown → fold into the mesh satellite
+      }
+    });
+  }
+  const flows = [], sats = [];
+  const satId = (n, k) => n + "|" + k;
+  fleet.forEach(n => {
+    const a = acc[n.id];
+    const turnRx = Object.values(a.turn).reduce((s, v) => s + v.rx, 0), turnTx = Object.values(a.turn).reduce((s, v) => s + v.tx, 0);
+    if (a.cl.rx || a.cl.tx) { const s = satId(n.id, "clients"); sats.push({ id: s, node: n.id, kind: "clients", label: "clients", color: "var(--online)", ic: "users" });
+      if (a.cl.rx) flows.push({ from: s, to: n.id, bps: a.cl.rx }); if (a.cl.tx) flows.push({ from: n.id, to: s, bps: a.cl.tx }); }
+    Object.entries(a.turn).forEach(([fk, v]) => { if (!(v.rx || v.tx)) return;
+      const s = satId(n.id, "turn:" + fk); sats.push({ id: s, node: n.id, kind: "turn", fork: fk, label: fk, color: turnColor(fk), ic: "relay" });
+      if (v.rx) flows.push({ from: s, to: n.id, bps: v.rx }); if (v.tx) flows.push({ from: n.id, to: s, bps: v.tx }); });
+    const inetOut = a.cl.rx + turnRx, inetIn = a.cl.tx + turnTx;
+    if (inetOut || inetIn) { const s = satId(n.id, "internet"); sats.push({ id: s, node: n.id, kind: "internet", label: "internet", color: FLOW_GLOBE, ic: "globe" });
+      if (inetOut) flows.push({ from: n.id, to: s, bps: inetOut }); if (inetIn) flows.push({ from: s, to: n.id, bps: inetIn }); }
+    Object.entries(a.mesh).forEach(([peer, v]) => { if (v.tx) flows.push({ from: n.id, to: peer, bps: v.tx }); });
+    if (a.offmesh.rx || a.offmesh.tx) {   // aggregate of mesh traffic to fleet nodes NOT in the diagram
+      const s = satId(n.id, "mesh"), oc = a.offmesh.n.size; sats.push({ id: s, node: n.id, kind: "mesh", label: "Other " + oc + " node" + (oc === 1 ? "" : "s"), color: FLOW_MESH, ic: "server" });
+      if (a.offmesh.tx) flows.push({ from: n.id, to: s, bps: a.offmesh.tx }); if (a.offmesh.rx) flows.push({ from: s, to: n.id, bps: a.offmesh.rx });
+    }
+  });
+  const inTot = {}, outTot = {};
+  fleet.forEach(n => { inTot[n.id] = 0; outTot[n.id] = 0; });
+  flows.forEach(f => { if (outTot[f.from] != null) outTot[f.from] += f.bps; if (inTot[f.to] != null) inTot[f.to] += f.bps; });
+  return { fleet, sats, flows, inTot, outTot, ranged };
+}
+const FLOW_ANIMS = [   // travelling-current styles for the flow lines (the ORIGINAL beautiful versions); "off" for anyone who wants no motion
+  { id: "dots", ic: "dots", label: "Dots" },
+  { id: "chevrons", ic: "arrow", label: "Arrows" },
+  { id: "pulse", ic: "activity", label: "Pulse" },
+  { id: "gradient", ic: "waves", label: "Flow" },
+  { id: "off", ic: "off", label: "Off" },
+];
+function FlowMap2({ selIds, range, hist }) {
+  const [hov, setHov] = useState(null);
+  const anim = (Store.panelSettings || {}).flow_anim || "dots";   // HOST-WIDE setting — shared by every operator, persists across logins (default = the original dots)
+  const setAnim = m => { Store.panelSettings = { ...(Store.panelSettings || {}), flow_anim: m }; bus.emit(); api.panelSettings({ flow_anim: m }).catch(() => {}); };
+  const G = flowGraph(selIds, range, hist);
+  const { fleet, sats, flows, ranged } = G;
+  const fmt = ranged ? fmtBytes : rate;                    // Live → speed (K/s…); a range → total bytes (KB, MB…)
+  const N = fleet.length;
+  if (!N) return html`<div class="allclear">No nodes selected.</div>`;
+  const W = 960, H = 520, cx = W / 2, cy = H / 2;
+  const nodeIds = new Set(fleet.map(n => n.id));
+  const satTot = {}; sats.forEach(s => { let ib = 0, ob = 0; flows.forEach(f => { if (f.to === s.id) ib += f.bps; if (f.from === s.id) ob += f.bps; }); satTot[s.id] = { ib, ob, tot: ib + ob }; });
+  const nameLen = id => (Store.nodeName(id) || id).length;
+  const busy = id => (G.inTot[id] || 0) + (G.outTot[id] || 0);
+  // ── LINE THICKNESS + ELEMENT SIZE — ONE perception-first model, all in REFERENCE PX (the whole diagram then scales to fit
+  //    the card, so line↔node ratios hold at every count). Data spans ~100× but the eye resolves ~24 ratio-based levels, so
+  //    each metric maps through a CURVE (sqrt) from a low-tail cutoff → its max onto a fixed px FLOOR→CEILING; values below
+  //    the cutoff clamp to the floor ("present, but negligible"). Nodes & satellites fit to THEIR OWN throughput, then grow
+  //    if needed so their perimeter can SEAT the incident lines (Σ widths). ──
+  const LOQ = 0.15;   // fraction of the low tail clamped to the floor ("present, but negligible")
+  const curve = Math.sqrt;   // perceptual compression: spreads mid-range off the floor while a lone giant can't crush it
+  const mapper = (vals, floor, ceil, loq) => { const s = vals.filter(v => v > 0).sort((a, b) => a - b);   // value distribution → [floor,ceil] px via the curve
+    if (!s.length) return () => floor;
+    const lo = s[Math.min(s.length - 1, Math.round((loq == null ? LOQ : loq) * (s.length - 1)))], hi = s[s.length - 1];
+    if (hi <= lo) return () => ceil;                                     // all values ~equal (incl. a lone element) → full size, not floor
+    const cLo = curve(Math.max(lo, 1)), cHi = curve(Math.max(hi, 1));
+    return v => v <= lo ? floor : floor + Math.min(1, (curve(v) - cLo) / Math.max(1e-9, cHi - cLo)) * (ceil - floor); };
+  const wMap = mapper(flows.map(f => f.bps), 2, 25, LOQ);                // line width px: floor 2 · ceiling 25 (per direction)
+  const wOf = bps => wMap(bps);                                          // line width, reference px
+  const NODE_FLOOR = 12, SAT_FLOOR = 11, ICON_R = 1.3;                   // ICON_R = sat icon size ÷ radius (circle & icon grow together)
+  const fontMap = mapper(fleet.map(n => busy(n.id)), NODE_FLOOR, 21, 0);       // nodes: few & all meaningful → no tail clamp
+  const satMap = mapper(sats.map(s => (satTot[s.id] || {}).tot || 0), SAT_FLOOR, 22, 0);
+  const seatNeed = id => flows.reduce((a, f) => (f.from === id || f.to === id) ? a + wOf(f.bps) + 4 : a, 0);   // Σ incident line widths + gaps (ref px)
+  // a satellite's lines all enter from ONE side (toward its parent), so its DIAMETER must span the line stack → r ≥ Σ/2
+  const satR = id => Math.max(satMap((satTot[id] || {}).tot || 0), seatNeed(id) / 2);
+  const nodeFont = id => Math.max(fontMap(busy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85));    // pill perimeter 4·(hw+hh) ≥ Σ lines
+  const nR = id => (0.31 * nameLen(id) + 0.85) * nodeFont(id) + 2;        // ≈ pill half-width
+  const nmeta = id => { if (!nodeIds.has(id)) { const r = satR(id); return { hw: r, hh: r }; }   // sat = circle; node = pill (est.)
+    const fs = nodeFont(id), L = nameLen(id); return { hw: (0.31 * L + 0.85) * fs + 2, hh: fs + 3 }; };
+  const rimDist = (id, ux, uy) => { const m = nmeta(id); return 1 / Math.max(Math.abs(ux) / m.hw, Math.abs(uy) / m.hh, 1e-6); };   // ray→border in a given direction
+  // "connected" = has a node↔node mesh line to ANOTHER shown node. A node with NO in-diagram peer is an "island" (single-node
+  // view, or e.g. two entries that only mesh to exits): it fans its satellites internet-UP / rest-DOWN instead of outward.
+  const connected = id => flows.some(f => (f.from === id && nodeIds.has(f.to)) || (f.to === id && nodeIds.has(f.from)));
+  // ── ADAPTIVE LAYOUT. CONNECTED nodes → landscape oval (few sit close, many spread only as needed; sats face outward).
+  //    ISLANDS (no in-diagram peer) fan their sats up/down, so a polygon would collide AND waste space — instead pack them into
+  //    a GRID sized to the frame aspect, so a wall of islands stays readable. The frame scales the whole thing to fit either way. ──
+  const maxNR = Math.max(24, ...fleet.map(n => nR(n.id)));
+  const allIsle = N >= 2 && fleet.every(n => !connected(n.id)), maxSatR = Math.max(12, ...sats.map(s => satR(s.id)));
+  const sep = 2 * maxNR + 50, Rc = N <= 1 ? 0 : sep / (2 * Math.sin(Math.PI / N));   // ring circumradius (connected layout)
+  const start = N === 2 ? 0 : N === 4 ? -Math.PI / 4 : -Math.PI / 2, Rx = Rc * 1.34, Ry = Rc * 0.70;   // 2→left/right · 4→square corners · else polygon from top
+  const ranked = fleet.slice().sort((p, q) => (busy(q.id) - busy(p.id)) || (p.id < q.id ? -1 : 1));   // biggest traffic first
+  const spos = {};
+  if (allIsle) {
+    // grid of independent island "stars": cell = down-fan width × (internet-up + node + fan-down) height; columns chosen to
+    // roughly match the frame's landscape aspect (≈√(1.3·N)) so a wall of islands doesn't shrink more than necessary.
+    const REACH = 108, cellW = 2 * (REACH * 0.85 + maxSatR) + 0.6 * maxNR + 34, cellH = 2 * REACH + 2 * maxSatR + 64;
+    const rows = Math.ceil(N / 3), cols = Math.ceil(N / rows);   // ≤3 per row, balanced: 1–3 → one row · 4 → 2×2 · 5 → 3+2 · 6 → 3+3
+    ranked.forEach((n, i) => { const rI = Math.floor(i / cols), cN = Math.min(cols, N - rI * cols), cI = i - rI * cols;
+      spos[n.id] = { x: cx + (cI - (cN - 1) / 2) * cellW, y: cy + (rI - (rows - 1) / 2) * cellH }; });
+  } else {
+    // busiest → the TOP(-left) slot; then each next-busiest → the free slot FURTHEST from the previously placed one, so busy
+    // nodes spread far apart instead of clustering.
+    const ringSlots = fleet.map((n, i) => { const a = N === 1 ? 0 : start + i * 2 * Math.PI / N; return { x: cx + Rx * Math.cos(a), y: cy + Ry * Math.sin(a) }; });
+    let startIdx = 0; ringSlots.forEach((p, i) => { const s = ringSlots[startIdx]; if (p.y < s.y - 0.5 || (Math.abs(p.y - s.y) <= 0.5 && p.x < s.x)) startIdx = i; });
+    const used = new Array(ringSlots.length).fill(false);
+    let prev = startIdx; used[startIdx] = true; spos[ranked[0].id] = ringSlots[startIdx];
+    for (let k = 1; k < ranked.length; k++) { let best = -1, bd = -1;
+      ringSlots.forEach((p, i) => { if (used[i]) return; const d = (p.x - ringSlots[prev].x) ** 2 + (p.y - ringSlots[prev].y) ** 2; if (d > bd) { bd = d; best = i; } });
+      used[best] = true; spos[ranked[k].id] = ringSlots[best]; prev = best; }
+  }
+  // satellite reach (node-border → sat line length) capped at HALF the shortest node↔node line, so sat lines never
+  // dominate the mesh lines. (N=1 has no node↔node line → use the default.)
+  let minNN = Infinity;
+  flows.forEach(f => { if (nodeIds.has(f.from) && nodeIds.has(f.to)) { const A = spos[f.from], B = spos[f.to]; minNN = Math.min(minNN, Math.hypot(B.x - A.x, B.y - A.y) - nR(f.from) - nR(f.to)); } });
+  const satReach = isFinite(minNN) ? Math.max(90, Math.min(120, minNN * 0.6)) : 108;   // shrinks with crowding (mesh room) but gently — 6+ nodes stay reasonable
+  // satellites fan outward from each server, then relax so DIFFERENT nodes' satellites don't overlap each other or a node
+  const satpos = {};
+  fleet.forEach(n => { const mine = sats.filter(s => s.node === n.id), P = spos[n.id];
+    const place = (s, a) => { const D = rimDist(n.id, Math.cos(a), Math.sin(a)) + satR(s.id) + satReach; satpos[s.id] = { x: P.x + D * Math.cos(a), y: P.y + D * Math.sin(a) }; };   // gap measured from the node's EDGE in THIS direction → consistent line length all around
+    // satellites go ABOVE / BELOW the node — NEVER on its LEFT or RIGHT — so a wide (long-name) badge never stretches a side
+    // satellite's line. Cone limited to ±CONE of vertical.
+    // satellites face AWAY from the mesh centre (outward) but never sit directly LEFT/RIGHT of the (possibly long) badge:
+    // top/bottom arcs whose centre is TILTED toward the node's outward horizontal side, kept clear of pure horizontal.
+    const HB = 0.42;                                                          // forbidden horizontal half-band (~24°)
+    const hfrac = Rx > 0 ? Math.max(-1, Math.min(1, (P.x - cx) / Rx)) : 0;    // −1 left … +1 right
+    const vfrac = Ry > 0 ? (P.y - cy) / Ry : 0;                               // −1 top … +1 bottom
+    const arc = (grp, sideSign) => {   // sideSign −1 = top arc, +1 = bottom arc
+      const sp = Math.min(Math.PI - 2 * HB - 0.15, 0.5 + grp.length * 0.42);
+      const tilt = hfrac * Math.max(0, Math.PI / 2 - HB - sp / 2);            // lean toward outward side, only as far as room allows
+      const center = sideSign < 0 ? -Math.PI / 2 + tilt : Math.PI / 2 - tilt;
+      grp.forEach((s, i) => place(s, center + (grp.length === 1 ? 0 : (i / (grp.length - 1) - 0.5) * sp)));
+    };
+    if (allIsle || N === 1) {                             // ISLAND STAR (single node, or a grid of all-islands): internet STRAIGHT UP over the
+      const up = mine.filter(s => s.kind === "internet"), down = mine.filter(s => s.kind !== "internet");   // centre, everything else fanned evenly straight DOWN. In a MIXED selection an island instead fans OUTWARD (below) so its
+      up.forEach(s => place(s, -Math.PI / 2));            // fan doesn't point at neighbouring nodes / cross their mesh lines.
+      const sp = Math.min(Math.PI - 2 * HB - 0.15, 0.5 + down.length * 0.42);
+      down.forEach((s, i) => place(s, Math.PI / 2 + (down.length === 1 ? 0 : (i / (down.length - 1) - 0.5) * sp)));
+    }
+    else if (vfrac < -0.32) arc(mine, -1);                // clearly-upper node → top arc
+    else if (vfrac > 0.32) arc(mine, 1);                  // clearly-lower node → bottom arc
+    else { const h = Math.ceil(mine.length / 2); arc(mine.slice(0, h), -1); arc(mine.slice(h), 1); }   // side/central → split top+bottom
+  });
+  for (let it = 0; it < 70; it++) {                        // anti-collision relaxation (deterministic → stable across renders)
+    sats.forEach(s => { const P = satpos[s.id]; if (!P) return; const r = satR(s.id); let dx = 0, dy = 0;
+      sats.forEach(o => { if (o.id === s.id) return; const Q = satpos[o.id]; if (!Q) return; const ex = P.x - Q.x, ey = P.y - Q.y, d = Math.hypot(ex, ey) || 1, md = r + satR(o.id) + 10; if (d < md) { const k = (md - d) / d * 0.5; dx += ex * k; dy += ey * k; } });
+      fleet.forEach(m => { if (m.id === s.node) return; const Q = spos[m.id], ex = P.x - Q.x, ey = P.y - Q.y, d = Math.hypot(ex, ey) || 1, md = r + nR(m.id) + 12; if (d < md) { const k = (md - d) / d * 0.5; dx += ex * k; dy += ey * k; } });
+      P.x += dx; P.y += dy; });
+    sats.forEach(s => { const P = satpos[s.id]; if (!P) return; const A = spos[s.node], r = satR(s.id);   // leash to parent → stays connected, roughly outward
+      const ex = P.x - A.x, ey = P.y - A.y, d = Math.hypot(ex, ey) || 1, base = rimDist(s.node, ex / d, ey / d) + r, minL = base + Math.max(30, satReach * 0.7), maxL = base + satReach;
+      if (d < minL) { P.x = A.x + ex / d * minL; P.y = A.y + ey / d * minL; } else if (d > maxL) { P.x = A.x + ex / d * maxL; P.y = A.y + ey / d * maxL; } });
+  }
+  const epPos = id => spos[id] || satpos[id];
+  const epR = id => spos[id] ? nR(id) : satR(id);
+  const epName = id => { if (spos[id]) return Store.nodeName(id); const s = sats.find(x => x.id === id) || {}; return s.kind === "turn" ? s.fork : s.label || s.kind || id; };
+  // ── viewBox — fit the frame to the content, then centre it in ONE fixed section (fixed aspect + min frame) so the card
+  //    never resizes and sparse diagrams render at a consistent scale instead of being blown up to fill the width. All sizes
+  //    (line widths, node/sat dims) are already in reference px, so this single scale carries the whole diagram. ──
+  let vx0 = 1e9, vy0 = 1e9, vx1 = -1e9, vy1 = -1e9;
+  fleet.forEach(n => { const P = spos[n.id], m = nmeta(n.id); vx0 = Math.min(vx0, P.x - m.hw); vx1 = Math.max(vx1, P.x + m.hw); vy0 = Math.min(vy0, P.y - m.hh); vy1 = Math.max(vy1, P.y + m.hh); });
+  sats.forEach(s => { const P = satpos[s.id]; if (!P) return; const r = satR(s.id); vx0 = Math.min(vx0, P.x - r); vx1 = Math.max(vx1, P.x + r); vy0 = Math.min(vy0, P.y - r); vy1 = Math.max(vy1, P.y + r); });
+  const PAD = 22; vx0 -= PAD; vy0 -= PAD; vx1 += PAD; vy1 += PAD;
+  const FRAME_AR = 1.8, FRAME_W = 1060;
+  const cw = vx1 - vx0, ch = vy1 - vy0, ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
+  const vbW = Math.max(FRAME_W, cw, ch * FRAME_AR), vbH = vbW / FRAME_AR;
+  vx0 = ccx - vbW / 2; vy0 = ccy - vbH / 2;
+  // ── Geometry: each flow is a STROKED curve (never a filled ribbon → it can't hourglass/twist). On EVERY endpoint
+  //    each touching flow gets its OWN attach ANGLE around the rim — ordered by bearing to the far end, then spread
+  //    so thick lines don't overlap — i.e. a fan. Different connections therefore enter at different rim points and
+  //    NEVER cross where they meet a node, regardless of node size or flow width. The two directions of a pair land
+  //    on adjacent slots → a tight parallel pair. Both ends tuck just INSIDE the opaque badge (butt cap, always
+  //    hidden), which clips the line at its TRUE border. ──
+  // ONE fan slot per CONNECTION (keyed by the other endpoint) — both its directions share it. PACKED BY ARC-LENGTH on the
+  // element's perimeter (rect for a pill, ~square for a sat): each connection reserves a span = its total pixel width (+gap),
+  // and overlaps are pushed apart ALONG the perimeter (wrap-around). Because we pack in real pixels, no two lines ever
+  // overlap where they meet the element — one line occupies X→Y, the next is moved to Y→Z. The packed position is then
+  // converted back to an attach ANGLE (direction to that perimeter point) for the existing centre-endpoint geometry.
+  const slot = {};   // `${epId}|${otherId}` → attach angle (radians)
+  [...fleet.map(n => n.id), ...sats.map(s => s.id)].forEach(id => {
+    const P = epPos(id); if (!P) return; const m = nmeta(id), hw = m.hw, hh = m.hh, Peri = 4 * (hw + hh), byOther = {};
+    flows.forEach(f => { if (f.from !== id && f.to !== id) return; const o = f.from === id ? f.to : f.from; if (!epPos(o)) return; (byOther[o] = byOther[o] || { o, w: 0 }).w += wOf(f.bps); });
+    const arcOf = (ux, uy) => { const t = 1 / Math.max(Math.abs(ux) / hw, Math.abs(uy) / hh, 1e-9), qx = ux * t, qy = uy * t, onV = Math.abs(qx) > hw - 0.5;
+      return !onV && qy < 0 ? qx + hw : onV && qx > 0 ? 2 * hw + (qy + hh) : !onV && qy > 0 ? 2 * hw + 2 * hh + (hw - qx) : 4 * hw + 2 * hh + (hh - qy); };
+    const items = Object.values(byOther).map(c => { const O = epPos(c.o), d = Math.hypot(O.x - P.x, O.y - P.y) || 1; return { key: c.o, s: arcOf((O.x - P.x) / d, (O.y - P.y) / d), half: c.w / 2 + 4 }; });
+    if (!items.length) return;
+    items.sort((a, b) => a.s - b.s); items.forEach(it => it.c = it.s);
+    for (let iter = 0; iter < 40; iter++) for (let k = 0; k < items.length; k++) { const a = items[k], b = items[(k + 1) % items.length];
+      let gap = b.c - a.c; if (k === items.length - 1) gap += Peri; const need = a.half + b.half;
+      if (gap < need) { const push = (need - gap) / 2; a.c -= push; b.c += push; } }
+    items.forEach(it => { let s = ((it.c % Peri) + Peri) % Peri, x, y;
+      if (s <= 2 * hw) { x = -hw + s; y = -hh; } else if (s -= 2 * hw, s <= 2 * hh) { x = hw; y = -hh + s; } else if (s -= 2 * hh, s <= 2 * hw) { x = hw - s; y = hh; } else { s -= 2 * hw; x = -hw; y = hh - s; }
+      slot[id + "|" + it.key] = Math.atan2(y, x); });
+  });
+  const pkey = f => [f.from, f.to].slice().sort().join("~");
+  const pairFlows = {}; flows.forEach((f, i) => { const k = pkey(f); (pairFlows[k] = pairFlows[k] || []).push(i); });
+  const ribbons = flows.map((f, idx) => {
+    const sa = slot[f.from + "|" + f.to], sb = slot[f.to + "|" + f.from]; if (sa == null || sb == null) return null;
+    const Pa = epPos(f.from), Pb = epPos(f.to);
+    const [lo, hi] = [f.from, f.to].slice().sort(), Lo = epPos(lo), Hi = epPos(hi);
+    const cdx = Hi.x - Lo.x, cdy = Hi.y - Lo.y, cd = Math.hypot(cdx, cdy) || 1, cpx = -cdy / cd, cpy = cdx / cd;   // SHARED perp (sorted lo→hi) → siblings stay parallel
+    // offset each direction by ½·(gap + the SIBLING's width) so the pair's outer-edge midline is centred on the connection
+    // axis (through both endpoints' centres) even when ingress/egress widths differ — pair enters a badge dead-centre.
+    const w = wOf(f.bps), sibs = pairFlows[pkey(f)], sibIdx = sibs.length > 1 ? sibs.find(i => i !== idx) : null;
+    // pair offset centres the two directions on the axis; CLAMP it to the smaller endpoint's rim so a tiny satellite can't be
+    // pushed off the line (endpoint outside its circle → occlusion can't clip it → looks disconnected).
+    const GAP = 2, baseOff = sibIdx != null ? (GAP + wOf(flows[sibIdx].bps)) / 2 : 0;
+    const off = sibIdx != null ? (f.from === lo ? 1 : -1) * Math.min(baseOff, 0.62 * Math.min(epR(f.from), epR(f.to))) : 0;
+    const aux = Math.cos(sa), auy = Math.sin(sa), bux = Math.cos(sb), buy = Math.sin(sb);
+    const ra = rimDist(f.from, aux, auy), rb = rimDist(f.to, bux, buy);
+    const dist = Math.hypot(Pb.x - Pa.x, Pb.y - Pa.y), isMesh = spos[f.from] && spos[f.to];
+    const ext = isMesh ? Math.min(52, dist * 0.2) : Math.min(16, dist * 0.11);
+    // endpoint sits on the slot RAY, DEEP inside the badge (0.28·rim) — the initial bezier direction is still purely radial
+    // (endpoint & control share the same perpendicular `off`, so they differ only along the ray → no bend toward centre), but
+    // the deeper tuck guarantees the badge occludes the whole junction even when a wide pair-offset nudges an end toward an
+    // edge/rounded corner. The `off` clamp keeps a tiny satellite's offset end inside its circle. Control = further out (fan).
+    const ax = Pa.x + aux * ra * 0.28 + cpx * off, ay = Pa.y + auy * ra * 0.28 + cpy * off, bx = Pb.x + bux * rb * 0.28 + cpx * off, by = Pb.y + buy * rb * 0.28 + cpy * off;
+    const c1x = Pa.x + aux * (ra + ext) + cpx * off, c1y = Pa.y + auy * (ra + ext) + cpy * off, c2x = Pb.x + bux * (rb + ext) + cpx * off, c2y = Pb.y + buy * (rb + ext) + cpy * off;
+    const path = `M ${ax.toFixed(1)} ${ay.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)} ${c2x.toFixed(1)} ${c2y.toFixed(1)} ${bx.toFixed(1)} ${by.toFixed(1)}`;
+    // hover hit-area: widen it, but ONLY on the OUTER side (away from the parallel sibling) — shift the transparent
+    // stroke outward by HITEXT/2 so its inner edge stays on the line and the extra reach is all on the free side.
+    const HITEXT = 16, hsh = (off === 0 ? 0 : off > 0 ? 1 : -1) * HITEXT / 2, hx = cpx * hsh, hy = cpy * hsh, hitW = Math.max(w, 3) + HITEXT;
+    const hitPath = `M ${(ax + hx).toFixed(1)} ${(ay + hy).toFixed(1)} C ${(c1x + hx).toFixed(1)} ${(c1y + hy).toFixed(1)} ${(c2x + hx).toFixed(1)} ${(c2y + hy).toFixed(1)} ${(bx + hx).toFixed(1)} ${(by + hy).toFixed(1)}`;
+    return { idx, f, path, hitPath, hitW, w, sx: ax, sy: ay, ex: bx, ey: by, mid: { x: (c1x + c2x) / 2, y: (c1y + c2y) / 2 } };
+  }).filter(Boolean);
+  const gid = "fg" + (FlowMap2._n = (FlowMap2._n || 0) + 1);
+  const satC = id => (sats.find(s => s.id === id) || {}).color;
+  const flowLit = idx => hov && (hov.fi === idx || (hov.id != null && (flows[idx].from === hov.id || flows[idx].to === hov.id)));
+  const badgeLit = id => !hov || hov.id === id || (hov.fi != null && (flows[hov.fi].from === id || flows[hov.fi].to === id));
+  // when hovering a node/sat, its CONNECTED nodes stay dimmed but show their NAME at full colour (so you can read where it links)
+  const relOf = id => hov && hov.id != null && hov.id !== id && flows.some(f => (f.from === hov.id && f.to === id) || (f.to === hov.id && f.from === id));
+  // ── Bubble placement: sit near the element but inside its biggest ANGULAR GAP, so it never covers a lit line.
+  //    `occ` = directions of the lines to dodge; the box then grows AWAY from the element (translate by quadrant). ──
+  const bubbleSpot = (P, occ, r) => {
+    const M = 15;
+    if (!occ.length) return { x: P.x, y: P.y - r - M, tx: "-50%", ty: "-100%" };
+    const s = occ.slice().sort((a, b) => a - b); let best = -1, dir = -Math.PI / 2;
+    for (let i = 0; i < s.length; i++) { const a = s[i], b = i + 1 < s.length ? s[i + 1] : s[0] + 2 * Math.PI, g = b - a; if (g > best) { best = g; dir = a + g / 2; } }
+    const R = r + M, ax = Math.cos(dir), ay = Math.sin(dir);
+    return { x: P.x + ax * R, y: P.y + ay * R, tx: ax > 0.35 ? "0" : ax < -0.35 ? "-100%" : "-50%", ty: ay > 0.35 ? "0" : ay < -0.35 ? "-100%" : "-50%" };
+  };
+  let hv = null, spot = null;
+  if (hov && hov.id != null) {
+    const P = epPos(hov.id); if (P) {
+      const occ = flows.filter(f => f.from === hov.id || f.to === hov.id).map(f => { const O = epPos(f.from === hov.id ? f.to : f.from); return O ? Math.atan2(O.y - P.y, O.x - P.x) : null; }).filter(a => a != null);
+      spot = bubbleSpot(P, occ, epR(hov.id));
+      if (spos[hov.id]) hv = { type: "ep", name: Store.nodeName(hov.id), ib: G.inTot[hov.id], ob: G.outTot[hov.id], sub: "server", col: Store.nodeColor(hov.id) };
+      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? sm.fork : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? "internet · estimated" : sm.kind === "turn" ? "turn-proxy" : sm.kind === "mesh" ? "fleet nodes not shown" : "clients", col: sm.color }; } }
+    }
+  } else if (hov && hov.fi != null) {
+    const f = flows[hov.fi], r = ribbons.find(x => x.idx === hov.fi);
+    if (r) { const ang = Math.atan2(r.ey - r.sy, r.ex - r.sx); spot = bubbleSpot(r.mid, [ang, ang + Math.PI], 4);
+      hv = { type: "flow", a: epName(f.from), b: epName(f.to), v: f.bps, ca: spos[f.from] ? Store.nodeColor(f.from) : satC(f.from), cb: spos[f.to] ? Store.nodeColor(f.to) : satC(f.to) }; }
+  }
+  // viewBox (vx0/vy0/vbW/vbH) was computed above. PX/PY map reference-px coords → % of the frame.
+  const PX = x => (x - vx0) / vbW * 100, PY = y => (y - vy0) / vbH * 100;
+  // Badges are HTML over the SVG. The SVG scales its user units to the container width (scale = containerW/vbW ≠ 1). To keep
+  // the badges the SAME size the GEOMETRY assumes (else line ends poke past small badges — worse with few nodes / big scale),
+  // size them in container units: 1 user unit = (100/vbW) cqw. So a font of `f` user units → `f·U` cqw.
+  const U = 100 / vbW;
+  const bubStyle = "left:" + (spot ? PX(spot.x) : 0) + "%;top:" + (spot ? PY(spot.y) : 0) + "%;transform:translate(" + (spot ? spot.tx : "-50%") + "," + (spot ? spot.ty : "-100%") + ")";
+  return html`<div class="flowcard">
+    <div class="flowmap2" style=${"aspect-ratio:" + vbW.toFixed(0) + "/" + vbH.toFixed(0)} onMouseLeave=${() => setHov(null)}>
+      <svg viewBox=${vx0.toFixed(1) + " " + vy0.toFixed(1) + " " + vbW.toFixed(1) + " " + vbH.toFixed(1)} preserveAspectRatio="xMidYMid meet">
+        <defs>${ribbons.map(r => { if (anim === "gradient") {   // "Flow" mode: the LINE itself is a repeating egress→ingress gradient sliding source→dest (no overlay)
+            const dx = r.ex - r.sx, dy = r.ey - r.sy, len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len, P = 64, lit = !hov || flowLit(r.idx);
+            return html`<linearGradient key=${gid + r.idx} id=${gid + "-" + r.idx} gradientUnits="userSpaceOnUse" spreadMethod="repeat" x1=${r.sx} y1=${r.sy} x2=${(r.sx + ux * P).toFixed(1)} y2=${(r.sy + uy * P).toFixed(1)}>
+              <stop offset="0" stop-color=${FLOW_EG}/><stop offset="0.5" stop-color=${FLOW_IN}/><stop offset="1" stop-color=${FLOW_EG}/>
+              ${lit ? html`<animateTransform attributeName="gradientTransform" type="translate" from="0 0" to=${(ux * P).toFixed(1) + " " + (uy * P).toFixed(1)} dur=${Math.max(0.9, 2.8 - r.w * 0.12).toFixed(2) + "s"} repeatCount="indefinite"/>` : null}
+            </linearGradient>`;
+          }
+          return html`<linearGradient key=${gid + r.idx} id=${gid + "-" + r.idx} gradientUnits="userSpaceOnUse" x1=${r.sx} y1=${r.sy} x2=${r.ex} y2=${r.ey}>
+            <stop offset="0" stop-color=${FLOW_EG}/><stop offset="0.2" stop-color=${FLOW_EG}/><stop offset="0.8" stop-color=${FLOW_IN}/><stop offset="1" stop-color=${FLOW_IN}/>
+          </linearGradient>`; })}</defs>
+        ${ribbons.map(r => html`<path key=${"r" + r.idx} id=${gid + "-p" + r.idx} d=${r.path} fill="none" stroke=${"url(#" + gid + "-" + r.idx + ")"} stroke-width=${r.w.toFixed(1)} stroke-linecap="butt"
+          class=${"fm2-flow" + (hov && !flowLit(r.idx) ? " dim" : flowLit(r.idx) ? " lit" : "")} style="pointer-events:none"/>`)}
+        ${anim === "dots" ? ribbons.filter(r => !hov || flowLit(r.idx)).map(r => html`<path key=${"a" + r.idx} d=${r.path} fill="none" stroke="var(--flowdot)" stroke-width=${Math.max(1.3, Math.min(r.w * 0.5, 4.5)).toFixed(1)} stroke-linecap="round"
+          class=${"fm2-flowdot" + (hov && !flowLit(r.idx) ? " dim" : "")} style=${"animation-duration:" + Math.max(0.8, 2.6 - r.w * 0.11).toFixed(2) + "s;pointer-events:none"}/>`) : null}
+        ${anim === "pulse" ? ribbons.filter(r => !hov || flowLit(r.idx)).map(r => { const L = Math.hypot(r.ex - r.sx, r.ey - r.sy) || 1, nc = Math.max(1, Math.round(L / 240)), hl = Math.max(9, Math.min(L * 0.16, 24)),   // a short round-capped glow SEGMENT gliding along the path (animateMotion → cheap, like the arrows) instead of animating the whole line's dash
+          w = Math.max(2.4, r.w * 0.7), dotDur = Math.max(0.8, 2.6 - r.w * 0.11), dur = L * dotDur / 22;   // speed tied to thickness (like dots/arrows), length-independent
+          return html`<g key=${"pl" + r.idx} class=${"fm2-pulse" + (hov && !flowLit(r.idx) ? " dim" : "")} style="pointer-events:none">
+            ${Array.from({ length: nc }, (_, k) => html`<path key=${k} d=${"M" + (-hl).toFixed(1) + ",0 L" + hl.toFixed(1) + ",0"} fill="none" stroke="var(--flowdot)" stroke-width=${w.toFixed(1)} stroke-linecap="round">
+              <animateMotion dur=${dur.toFixed(2) + "s"} begin=${(-k * dur / nc).toFixed(2) + "s"} repeatCount="indefinite" rotate="auto"><mpath href=${"#" + gid + "-p" + r.idx}/></animateMotion></path>`)}
+          </g>`; }) : null}
+        ${anim === "chevrons" ? ribbons.filter(r => !hov || flowLit(r.idx)).map(r => { const L = Math.hypot(r.ex - r.sx, r.ey - r.sy) || 1, nc = Math.max(2, Math.round(L / 70)), sz = Math.max(3, Math.min(r.w * 0.55, 6.5)),
+          dotDur = Math.max(0.8, 2.6 - r.w * 0.11), dur = L * dotDur / 45;   // travel SPEED (px/s) tied to thickness (like dots), length-independent; /45 = 3× the dot speed
+          return html`<g key=${"cv" + r.idx} class=${"fm2-chev" + (hov && !flowLit(r.idx) ? " dim" : "")} style="pointer-events:none">
+            ${Array.from({ length: nc }, (_, k) => html`<path key=${k} d=${"M" + (-sz).toFixed(1) + "," + (-sz).toFixed(1) + " L0,0 L" + (-sz).toFixed(1) + "," + sz.toFixed(1)} fill="none" stroke="var(--flowdot)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <animateMotion dur=${dur.toFixed(2) + "s"} begin=${(-k * dur / nc).toFixed(2) + "s"} repeatCount="indefinite" rotate="auto"><mpath href=${"#" + gid + "-p" + r.idx}/></animateMotion></path>`)}
+          </g>`; }) : null}
+        ${ribbons.map(r => html`<path key=${"h" + r.idx} d=${r.hitPath} fill="none" stroke="transparent" stroke-width=${r.hitW.toFixed(0)} stroke-linecap="butt"
+          style="pointer-events:stroke;cursor:pointer" onMouseEnter=${() => setHov({ fi: r.idx })} onMouseLeave=${() => setHov(null)}/>`)}
+      </svg>
+      ${fleet.map(n => { const P = spos[n.id];
+        return html`<button key=${n.id} class=${"fm2-nb" + (badgeLit(n.id) ? "" : relOf(n.id) ? " reldim" : " dim")} style=${"left:" + PX(P.x) + "%;top:" + PY(P.y) + "%;--c:" + Store.nodeColor(n.id) + ";font-size:" + (nodeFont(n.id) * U).toFixed(3) + "cqw"}
+          onMouseEnter=${() => setHov({ id: n.id })} onMouseLeave=${() => setHov(null)}>${n.name}</button>`; })}
+      ${sats.map(s => { const P = satpos[s.id]; if (!P) return null; const rr = satR(s.id), isz = ICON_R * rr;   // icon grows PROPORTIONALLY with the circle (fixed ratio), so a bigger sat = bigger icon
+        return html`<button key=${s.id} class=${"fm2-sb sb-" + s.kind + (badgeLit(s.id) ? "" : relOf(s.id) ? " reldim" : " dim")} style=${"left:" + PX(P.x) + "%;top:" + PY(P.y) + "%;--c:" + s.color + ";--isz:" + (isz * U).toFixed(3) + "cqw;width:" + (rr * 2 * U).toFixed(3) + "cqw;height:" + (rr * 2 * U).toFixed(3) + "cqw"}
+          onMouseEnter=${() => setHov({ id: s.id })} onMouseLeave=${() => setHov(null)}><${Ic} i=${s.ic}/></button>`; })}
+      ${hv && hv.type === "flow" ? html`<div class="fm2-bub" style=${bubStyle}>
+        <div class="fm2-bub-h" style="flex-direction:row;gap:6px;align-items:center;flex-wrap:wrap"><span style=${"color:" + hv.ca}>${hv.a}</span><span style="color:var(--faint)">→</span><span style=${"color:" + hv.cb}>${hv.b}</span></div>
+        <div class="fm2-bub-r"><span style="color:var(--dim)">${ranged ? "volume" : "throughput"}</span><b>${fmt(hv.v)}</b></div>
+      </div>` : hv ? html`<div class="fm2-bub" style=${bubStyle}>
+        <div class="fm2-bub-h" style=${"color:" + hv.col}>${hv.name}<span class="fm2-bub-k">${hv.sub}</span></div>
+        <div class="fm2-bub-r"><span style=${"color:" + FLOW_IN}>↓ ingress</span><b>${fmt(hv.ib || 0)}</b></div>
+        <div class="fm2-bub-r"><span style=${"color:" + FLOW_EG}>↑ egress</span><b>${fmt(hv.ob || 0)}</b></div>
+      </div>` : null}
+    </div>
+    <div class="fm2-anim" title="Flow animation (saved for everyone)">${FLOW_ANIMS.map(a => html`<button key=${a.id} class=${"fm2-anim-b" + (anim === a.id ? " on" : "")} title=${a.label} onClick=${() => setAnim(a.id)}><${Ic} i=${a.ic}/></button>`)}</div>
+    <div class="flow-foot"><span class="flow-sum"><i class="fm2-key" style=${"background:" + FLOW_EG}></i>egress <i class="fm2-key" style=${"background:" + FLOW_IN}></i>ingress</span><span class="grow"></span>
+      <span class="donut-note">${(!ranged && range && range !== "live") ? "loading history…" : ranged ? "total over the window · width ∝ volume · hover" : "live · width ∝ rate · hover"}</span></div>
+  </div>`;
+}
+
 // ═════════════════════════ SCREEN: OVERVIEW ═════════════════════════
 function Overview() {
+  useStore();
   const peers = Store.recon.peers, users = Store.recon.users, fleet = Store.fleet, ns = Store.recon.nodeStatus;
-  const online = peers.filter(p => p.online).length;
-  // Peer-status tile buckets: online (active handshake) · ready (deployed + reporting, idle) · attention
-  // (everything else — partial / pending / creating / rotating / dangling / unknown). Always sum to total,
-  // so a healthy-but-idle fleet reads 0·N·0 instead of a misleading 0·0·0.
-  const ready = peers.filter(p => p.status === "ready").length;
-  const attention = peers.length - online - ready;
-  const liveNodes = fleet.filter(n => ns[n.id] === "live").length;
-  const ifaceCount = Object.values(Store.describe).reduce((a, d) => a + Object.keys(d || {}).length, 0);
-  const nodesAlerting = (Store.nodes || []).filter(n => healthAlerts(n.health).length).length;
-  let rx = 0, tx = 0;
-  fleet.forEach(n => { const snap = Store.stats[n.id]; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { rx += pp.rx_speed || 0; tx += pp.tx_speed || 0; } });
+  // Every widget aggregates over the SELECTED node set (default = whole fleet). A peer is "in scope" if
+  // it has at least one target on a selected node; its counts/traffic come only from selected nodes.
+  const selIds = dashNodes(), sel = new Set(selIds);
+  const rangeHist = useRangeHistory(dashState.range, selIds);   // one fetch, shared by the doughnuts + flow map
+  const fleetSel = fleet.filter(n => sel.has(n.id));
+  const scoped = selIds.length < fleet.length;   // a subset is active → section labels say "selected"
+  const isSys = (nid, ifn) => !!(Store.describe[nid] && Store.describe[nid][ifn] && Store.describe[nid][ifn].system);
+  const onSel = p => p.targets.some(t => sel.has(t.node));   // peer touches a selected node
+  const sPeers = peers.filter(onSel);
+  // client (non-mesh) throughput summed over selected nodes — excludes system link ifaces so relayed
+  // traffic isn't double-counted against a node's own client throughput.
+  const nodeRate = id => { const snap = Store.stats[id]; let r = 0, t = 0;
+    if (snap) for (const [ifn, blk] of Object.entries(snap.interfaces || {})) { if (isSys(id, ifn)) continue; for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; } }
+    return [r, t]; };
 
-  const probs = peers.filter(p => ["dangling", "partial", "pending", "unknown"].includes(p.status))
+  const online = sPeers.filter(p => p.targets.some(t => sel.has(t.node) && t.online)).length;
+  // Peer-status tile buckets: online (active handshake) · ready (deployed + reporting, idle) · attention
+  // (everything else — partial / pending / creating / rotating / dangling / unknown). Always sum to total.
+  const ready = sPeers.filter(p => p.status === "ready").length;
+  const attention = sPeers.length - online - ready;
+  const sUsers = users.filter(u => sPeers.some(p => p.user_id === u.id));
+  const liveNodes = fleetSel.filter(n => ns[n.id] === "live").length;
+  const ifaceCount = selIds.reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length, 0);
+  const nodesAlerting = fleetSel.filter(n => healthAlerts(((Store.nodes || []).find(x => x.id === n.id) || {}).health).length).length;
+  let rx = 0, tx = 0;
+  fleetSel.forEach(n => { const [r, t] = nodeRate(n.id); rx += r; tx += t; });
+
+  const probs = sPeers.filter(p => ["dangling", "partial", "pending", "unknown"].includes(p.status))
     .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
-  const unassigned = Store.unassignedPeers();
-  const orphans = Store.recon.orphans;
+  const unassigned = Store.unassignedPeers().filter(onSel);
+  const orphans = Store.recon.orphans.filter(o => sel.has(o.node));
   const why = { dangling: "missing on every server", partial: "missing on some servers", pending: "just created, not seen yet", unknown: "server stale — can't confirm" };
 
   const recent = recentActivity();
 
-  // ranked nodes — by live traffic, or by peer count when the fleet is idle
-  const nodeTraffic = fleet.map(n => {
-    const snap = Store.stats[n.id]; let r = 0, t = 0;
-    if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; }
-    return { id: n.id, name: n.name, color: Store.nodeColor(n.id), rx: r, tx: t, peers: peers.filter(p => p.targets.some(d => d.node === n.id)).length };
+  // ranked nodes — by live traffic, or by peer count when the fleet is idle (selected nodes only)
+  const nodeTraffic = fleetSel.map(n => {
+    const [r, t] = nodeRate(n.id);
+    return { id: n.id, name: n.name, color: Store.nodeColor(n.id), rx: r, tx: t, peers: sPeers.filter(p => p.targets.some(d => d.node === n.id)).length };
   });
   const anyTraffic = nodeTraffic.some(x => x.rx + x.tx > 0);
   const rankRows = nodeTraffic.slice()
@@ -1575,23 +2190,81 @@ function Overview() {
       sub: anyTraffic ? rateCell(x.rx, x.tx) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
       color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.id) }));
 
+  // ── live core-row series (all from the bundle; no server hit on the hot path) ──
+  const fleetSeries = mergeFleetSeries(selIds);          // fleet rx/tx over the 15s ring (survives reload)
+  const onlineTrend = dashOnlineTrend(selIds);           // client-accumulated online-peer count trend
+  // top talkers — peers by live rx+tx across the selected nodes
+  const talkers = sPeers.map(p => {
+    let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return; const o = tg.observed; if (o) { r += o.rx_speed || 0; t += o.tx_speed || 0; } });
+    return { p, rx: r, tx: t };
+  }).filter(x => x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, 6);
+  const talkerRows = talkers.map(x => ({ label: x.p.name || x.p.title || "peer", value: x.rx + x.tx, sub: rateCell(x.rx, x.tx),
+    color: Store.nodeColor((x.p.targets.find(t => sel.has(t.node)) || {}).node) || "var(--brand)", href: "#/peer/" + encodeURIComponent(x.p.id) }));
+  // turn-proxy load across the selected nodes (hidden when the fleet runs none)
+  const turnRows = [];
+  if (turnEnabled()) fleetSel.forEach(n => { const snap = Store.stats[n.id]; ((snap && snap.turn_proxies) || []).forEach(tp => turnRows.push({ node: n.id, tp })); });
+
   return html`<div class="screen">
     <${StoreOffBanner}/>
+    <${DashControls}/>
     <div class="statgrid">
-      <a class="stat accent clk" href="#/connections"><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${peers.length}</small></div><div class="sub">live connections →</div></div></a>
-      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">Users</div><div class="v">${users.length}</div><div class="sub">${peers.length} peers total</div></div></a>
-      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peer status</div><div class="v" style="font-size:17px"><span style="color:var(--online)">${online}</span> · <span style="color:var(--ready)">${ready}</span> · <span style=${"color:" + (attention ? "var(--dangling)" : "var(--faint)")}>${attention}</span></div><div class="sub">online · ready · attention</div></div></a>
-      <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleet.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></div></a>
-      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">Throughput</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span> aggregate</div></div></div>
+      <a class="stat accent clk" href="#/connections"><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">live connections →</div></div></a>
+      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">Users</div><div class="v">${sUsers.length}</div><div class="sub">${sPeers.length} peers${scoped ? " here" : " total"}</div></div></a>
+      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peer status</div><div class="v" style="font-size:19px"><span style="color:var(--online)">${online}</span> · <span style="color:var(--ready)">${ready}</span> · <span style=${"color:" + (attention ? "var(--dangling)" : "var(--faint)")}>${attention}</span></div><div class="sub">online · ready · attention</div></div></a>
+      <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleetSel.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></div></a>
+      <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">Throughput</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span>${scoped ? " selected" : " aggregate"}</div></div></div>
     </div>
 
-    <div class="section-title"><h2>Fleet</h2><span class="count">${fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
-    ${fleet.length ? html`<div class="fleet2">${fleet.map(n => html`<${FleetNodeCard} key=${n.id} n=${n}/>`)}</div>`
+    ${fleetSel.length ? html`<div class="trends">
+      <div class="trendcard wide">
+        <div class="donutcard-h"><h3>Fleet throughput</h3><span class="rings-of">${scoped ? "selected" : "fleet"} · last hour</span></div>
+        ${(fleetSeries.t || []).length > 1
+          ? html`<${ThroughputChart} rx=${fleetSeries.rx} tx=${fleetSeries.tx} times=${fleetSeries.t} range="hour" cap=${RANGE_CAP.hour} h=${70}/>`
+          : html`<div class="harea-empty">gathering — no history yet</div>`}
+      </div>
+      <div class="trendcard">
+        <div class="donutcard-h"><h3>Online peers</h3><span class="rings-of">live trend</span><span class="grow"></span><span class="trend-now">${online}</span></div>
+        ${onlineTrend
+          ? html`<${TrendArea} points=${onlineTrend.pts} times=${onlineTrend.t} color="var(--online)" h=${70} cap=${0} fmt=${v => v + " online"} range="live"/>`
+          : html`<div class="harea-empty">gathering — fills as it polls</div>`}
+      </div>
+    </div>` : null}
+
+    <div class="section-title"><h2>Fleet</h2><span class="count">${scoped ? fleetSel.length + " of " + fleet.length : fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
+    ${fleetSel.length ? html`<div class="fleet2">${fleetSel.map(n => html`<${FleetNodeCard} key=${n.id} n=${n}/>`)}</div>`
       : html`<div class="allclear">No servers configured in fleet.json.</div>`}
 
-    ${fleet.length > 1 ? html`<${Fragment}>
+    ${fleetSel.length ? html`<${Fragment}>
+      <div class="section-title"><h2>Distribution</h2><span class="count">${scoped ? "selected nodes" : "whole fleet"} · ${DASH_RANGES.find(r => r[0] === dashState.range)[1].toLowerCase()}</span><span class="grow"></span></div>
+      <${DashDoughnuts} selIds=${selIds} range=${dashState.range} hist=${rangeHist}/>
+    <//>` : null}
+
+    ${fleetSel.length ? html`<${Fragment}>
+      <div class="section-title"><h2>Traffic flow</h2><span class="count">signal flow · by category</span><span class="grow"></span></div>
+      <${FlowMap2} selIds=${selIds} range=${dashState.range} hist=${rangeHist}/>
+    <//>` : null}
+
+    ${fleetSel.length > 1 ? html`<${Fragment}>
       <div class="section-title"><h2>${anyTraffic ? "Top nodes by traffic" : "Top nodes by peers"}</h2><span class="grow"></span></div>
       <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
+    <//>` : null}
+
+    ${talkerRows.length ? html`<${Fragment}>
+      <div class="section-title"><h2>Top talkers</h2><span class="count">by live throughput</span><span class="grow"></span></div>
+      <div class="rankcard"><${RankBars} rows=${talkerRows}/></div>
+    <//>` : null}
+
+    ${turnRows.length ? html`<${Fragment}>
+      <div class="section-title"><h2>Turn-proxy load</h2><span class="count">${turnRows.length} prox${turnRows.length === 1 ? "y" : "ies"}</span><span class="grow"></span></div>
+      <div class="turnload">${turnRows.map(({ node, tp }) => {
+        const fork = turnFork(tp.service), down = nodeStale(node) || turnDown(tp);
+        return html`<a class="turnload-row" key=${node + tp.service} href=${"#/node/" + encodeURIComponent(node)}>
+          <span class=${"tg tg-turn tf-" + fork + (down ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>
+          <span class="tl-node" style=${"color:" + Store.nodeColor(node)}>${Store.nodeName(node)}</span>
+          <span class="grow"></span>
+          <span class=${"tl-stat " + (down ? "down" : "up")}>${down ? "down" : "up"}</span>
+          ${tp.version ? html`<span class="tl-ver">${tp.version}</span>` : null}</a>`;
+      })}</div>
     <//>` : null}
 
     ${recent.length ? html`<${Fragment}>
@@ -3942,7 +4615,7 @@ function NodesScreen() {
 }
 // load/util tone: green under 70%, amber to 90%, red above.
 function htone(pct) { return pct >= 90 ? "hot" : (pct >= 70 ? "warn" : "ok"); }
-function htcolor(pct) { return pct >= 90 ? "var(--dangling)" : (pct >= 70 ? "var(--pending)" : "var(--online)"); }   // matches the hm-fill bar tones
+function htcolor(pct) { return pct >= 90 ? "var(--dangling)" : (pct >= 70 ? "var(--fault)" : "var(--online)"); }   // green→amber→red util ramp (matches hm-fill + the CPU loadColor ramp)
 // Threshold alerts for a node: disk/memory > 90%, CPU saturated (load-per-core > 1.5).
 function healthAlerts(health) {
   const out = [];
@@ -3965,7 +4638,7 @@ function Sparkline({ points, color, w, h }) {
     <circle cx=${(w - 1).toFixed(1)} cy=${(h - 1 - Math.min(max, Math.max(0, last)) / max * (h - 2)).toFixed(1)} r="1.6" fill=${color || "var(--online)"}/>
   </svg>`;
 }
-const toneColor = t => t === "hot" ? "var(--dangling)" : t === "warn" ? "var(--pending)" : "var(--online)";
+const toneColor = t => t === "hot" ? "var(--dangling)" : t === "warn" ? "var(--fault)" : "var(--online)";
 function HealthMeter({ label, pct, text, tone, spark }) {
   const p = Math.min(100, Math.max(0, pct || 0));
   const tn = tone || htone(p);
@@ -4116,6 +4789,89 @@ function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
         dots=${[{ yp: Y(R[hov] || 0) / h * 100, color: "var(--brand)" }, { yp: Y(T[hov] || 0) / h * 100, color: "var(--tp-tx)" }]}
         label=${histTime(TT[hov], range) + " · ↓ " + rate(R[hov] || 0) + " · ↑ " + rate(T[hov] || 0)}/>` : null}
     </div>
+  </div>`;
+}
+
+// Concentric-ring doughnut (hand-rolled SVG, no deps). `rings` = outer→inner; each ring is
+//   { label, fmt, segments:[{ key, name, value, color }] }.
+// Each ring's segments are drawn as arcs of a single circle via pathLength=100 (so dash maths is in
+// percent, independent of radius). A tiny gap separates segments. Hovering a segment swaps the centre
+// readout to that segment (name · ring-label value · % of ring); leaving restores the `center` node.
+// Re-renders are cheap: only arc dash values + the centre text change per poll, no full rebuild.
+function MultiRing({ rings, size, thick, gap, center, onHover }) {
+  const [hov, setHov] = useState(null);   // {ri, si}
+  size = size || 168; thick = thick || 15; gap = gap == null ? 1.1 : gap;
+  const cx = size / 2, cy = size / 2;
+  const rings2 = (rings || []).filter(Boolean);
+  // outer ring radius leaves a thick/2 margin; each inner ring steps in by thick + a 4px groove
+  const step = thick + 5;
+  const arcs = [];
+  rings2.forEach((ring, ri) => {
+    const r = (size / 2) - thick / 2 - ri * step;
+    const segs = (ring.segments || []).filter(s => s && s.value > 0);
+    const total = segs.reduce((a, s) => a + s.value, 0) || (ring.total || 0);
+    arcs.push({ ri, r, track: true });
+    if (total <= 0) return;
+    let acc = 0;
+    segs.forEach((s, si) => {
+      const pct = s.value / total * 100;
+      arcs.push({ ri, si, r, pct, off: acc, seg: s, ring, total });
+      acc += pct;
+    });
+  });
+  const active = hov ? (arcs.find(a => a.ri === hov.ri && a.si === hov.si) || null) : null;
+  return html`<div class="mring" style=${"width:" + size + "px;height:" + size + "px"}>
+    <svg width=${size} height=${size} viewBox=${"0 0 " + size + " " + size}>
+      <g transform=${"rotate(-90 " + cx + " " + cy + ")"}>
+        ${arcs.map((a, i) => a.track
+          ? html`<circle key=${"t" + i} cx=${cx} cy=${cy} r=${a.r} fill="none" stroke="var(--track)" stroke-width=${thick} pathLength="100"/>`
+          : html`<circle key=${"a" + a.ri + "-" + a.si} cx=${cx} cy=${cy} r=${a.r} fill="none" stroke=${a.seg.color} stroke-width=${thick}
+              pathLength="100" stroke-dasharray=${Math.max(0, a.pct - gap) + " " + (100 - Math.max(0, a.pct - gap))} stroke-dashoffset=${-a.off}
+              class=${"mring-seg" + (active && active !== a ? " dim" : "")}
+              onMouseEnter=${() => { setHov({ ri: a.ri, si: a.si }); onHover && onHover(a); }}
+              onMouseLeave=${() => { setHov(null); onHover && onHover(null); }}/>`)}
+      </g>
+    </svg>
+    <div class="mring-center">
+      ${active ? html`<div class="mrc-hov">
+          <div class="mrc-name" style=${"color:" + active.seg.color}>${active.seg.name}</div>
+          <div class="mrc-val">${(active.ring.fmt || (v => v))(active.seg.value)}</div>
+          <div class="mrc-sub">${active.ring.label} · ${Math.round(active.pct)}%</div>
+        </div>`
+        : center}
+    </div>
+  </div>`;
+}
+// Legend for a doughnut: one keyed swatch row per entry {name,color,value,fmt}. Optional second value.
+function RingLegend({ items, cols }) {
+  return html`<div class=${"mring-leg" + (cols ? " c" + cols : "")}>${(items || []).map(it => html`<div class="mrl-row" key=${it.key || it.name}>
+    <span class="mrl-sw" style=${"background:" + it.color}></span><span class="mrl-nm">${it.name}</span>
+    <span class="grow"></span>${it.right != null ? html`<span class="mrl-v">${it.right}</span>` : null}</div>`)}</div>`;
+}
+
+// A simple single-colour filled-area trend (for count series like online-peers, where MiniArea's
+// load-colour ramp would be semantically wrong). Fixed y-scale from 0 to the series peak; right-anchored
+// and fills leftward like the other charts; hover shows the value via `fmt`.
+function TrendArea({ points, times, color, h, cap, fmt, range, label }) {
+  const [hov, setHov] = useState(null); const wref = useRef(null);
+  const pts = (points || []).map(v => v || 0); h = h || 46; const w = 100, n = pts.length;
+  color = color || "var(--online)"; fmt = fmt || (v => v);
+  const C = Math.max(cap || n || 1, 2), xAt = i => w - (n - 1 - i) * (w / (C - 1)), T = times || [];
+  const onMove = e => { const el = wref.current; if (!el) return; const r = el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width * w, i = Math.round((n - 1) - (w - x) * (C - 1) / w); setHov(i >= 0 && i < n ? i : null); };
+  if (n === 0) return html`<div class="harea-wrap" style=${"height:" + h + "px"}></div>`;
+  const hi = Math.max(1, ...pts), scaleMax = hi * 1.15, vpad = h * 0.08;
+  const Y = v => h - vpad - (Math.min(Math.max(v, 0), scaleMax) / scaleMax) * (h - 2 * vpad);
+  const xy = pts.map((v, i) => [xAt(i), Y(v)]);
+  const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  const area = xy[0][0].toFixed(1) + "," + h + " " + line + " " + xy[n - 1][0].toFixed(1) + "," + h;
+  const id = "ta" + (TrendArea._n = (TrendArea._n || 0) + 1);
+  return html`<div class="harea-wrap" ref=${wref} style=${"height:" + h + "px"} onMouseMove=${onMove} onMouseLeave=${() => setHov(null)}>
+    <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
+      <defs><linearGradient id=${id} x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color=${color} stop-opacity="0.28"/><stop offset="1" stop-color=${color} stop-opacity="0"/></linearGradient></defs>
+      ${n >= 2 ? html`<polygon points=${area} fill=${"url(#" + id + ")"}/><polyline points=${line} fill="none" stroke=${color} stroke-width="1.4" vector-effect="non-scaling-stroke"/>` : null}
+    </svg>
+    ${(hov != null && hov < n) ? html`<${ChartHover} xp=${xy[hov][0]} dots=${[{ yp: xy[hov][1] / h * 100, color }]} label=${histTime(T[hov], range || "live") + " · " + fmt(pts[hov]) + (label ? " " + label : "")}/>` : null}
   </div>`;
 }
 

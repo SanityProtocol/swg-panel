@@ -8,6 +8,7 @@
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-600.woff2) format("woff2");font-weight:600;font-style:normal;font-display:swap}
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-700.woff2) format("woff2");font-weight:700;font-style:normal;font-display:swap}
 :root{
+  --flowdot:rgba(240,248,255,.82);   /* travelling signal-flow dots (dark) */
   --bg:#0A0E15; --bg2:#070A10; --surface:#10151E; --surface-2:#0C1019; --raise:#161D29;
   --line:#1D2734; --line-bright:#2A3A4E55; --line-solid:#2A3A4E;
   --ink:#E7EEF6; --ink-2:#C2D0E0; --dim:#8EA0B7; --faint:#536679;
@@ -32,6 +33,7 @@
    lines / troughs / glows / shadow. The status + brand accents (green/cyan/orange/etc.) carry across both modes;
    the per-mode brand accent is injected by applyThemeColors(). Selected via <html data-theme="light">. */
 :root[data-theme="light"]{
+  --flowdot:rgba(255,255,255,.9);   /* travelling signal-flow dots (light) — bright pips on the coloured lines */
   --bg:#EDF1F7; --bg2:#E1E7F0; --surface:#FFFFFF; --surface-2:#F4F7FB; --raise:#FFFFFF;
   --line:#DCE3EC; --line-bright:#C3D0DE99; --line-solid:#C3D0DE;
   --ink:#101822; --ink-2:#33424F; --dim:#586878; --faint:#8695A4;
@@ -181,8 +183,133 @@ a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var
 .section-title h2{margin:0;font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);font-weight:500}
 .section-title .count{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .section-title .nodehint{font-size:11.5px;color:var(--faint);font-weight:400;letter-spacing:normal;text-transform:none;margin-left:8px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grow{flex:1}   /* generic flex spacer — several rows (activity, flow footer, turn load) relied on this and only had it scoped */
 .section-title .grow{flex:1}
 @media(max-width:860px){.section-title .nodehint{display:none}}
+
+/* ───── dashboard controls (overview): node selector + range ───── */
+.dashbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.dash-nodes{display:flex;align-items:center;gap:7px;flex-wrap:wrap;flex:1;min-width:0}
+.dash-range{display:flex;align-items:center;gap:9px;margin-left:auto}
+.dash-lbl{font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);flex:none}
+.dchip{--c:var(--brand);display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;line-height:1;
+  padding:6px 11px;border-radius:99px;border:1px solid var(--line);background:var(--surface-2);color:var(--dim);cursor:pointer;
+  transition:color .12s,border-color .12s,background .12s,opacity .12s,transform .1s;white-space:nowrap}
+.dchip-dot{width:7px;height:7px;border-radius:50%;background:var(--c);flex:none;transition:background .12s}
+.dchip:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c) 55%,transparent);transform:translateY(-1px)}
+.dchip.on{color:var(--ink);font-weight:600;border-color:color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 18%,transparent)}
+.dchip:not(.on){opacity:.5}
+.dchip:not(.on) .dchip-dot{background:var(--faint)}
+.dchip.down{filter:grayscale(.7)}
+.dchip.all{--c:var(--ink-2)}
+.dchip.all .dchip-dot{display:none}
+.dchip.all{padding:6px 13px}
+.dseg{display:inline-flex;flex:none;border:1px solid var(--line-solid);border-radius:9px;overflow:hidden;background:var(--surface-2);height:32px}
+.dseg-opt{appearance:none;border:none;background:none;cursor:pointer;font:inherit;font-size:12px;font-weight:600;padding:0 13px;color:var(--dim);transition:background .12s var(--ease),color .12s var(--ease)}
+.dseg-opt:hover{color:var(--ink)}
+.dseg-opt.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--sel-ink)}
+
+/* ───── doughnuts (overview) ───── */
+.donutgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media(max-width:720px){.donutgrid{grid-template-columns:1fr}}
+.donutcard{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);padding:14px 16px 16px}
+.donutcard-h{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.donutcard-h h3{font-size:12.5px;font-weight:600;color:var(--ink);margin:0;letter-spacing:.01em}
+.donutcard-h .rings-of{font-family:var(--mono);font-size:10px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
+.donut-body{display:flex;align-items:center;gap:16px}
+.donut-body.loading{opacity:.5}
+.mring{position:relative;flex:none}
+.mring svg{display:block}
+.mring-seg{cursor:pointer;transition:opacity .12s}
+.mring-seg.dim{opacity:.28}
+.mring-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none;padding:0 16%}
+.mrc-def{display:flex;flex-direction:column;gap:1px}
+.mrc-def .mrc-k{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.mrc-def .mrc-tot{font-size:19px;font-weight:600;color:var(--ink);font-family:var(--mono)}
+.mrc-def .mrc-tot.up{color:var(--rate-up)}.mrc-def .mrc-tot.dn{color:var(--online)}
+.mrc-hov .mrc-name{font-size:12px;font-weight:600;line-height:1.15;margin-bottom:2px}
+.mrc-hov .mrc-val{font-size:15px;font-weight:600;color:var(--ink);font-family:var(--mono)}
+.mrc-hov .mrc-sub{font-size:10.5px;color:var(--dim);margin-top:1px}
+.mring-leg{display:flex;flex-direction:column;gap:5px;flex:1;min-width:0;font-size:12px}
+.mrl-row{display:flex;align-items:center;gap:7px;min-width:0}
+.mrl-sw{width:9px;height:9px;border-radius:2px;flex:none}
+.mrl-nm{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrl-v{font-family:var(--mono);font-size:11px;color:var(--ink-2);flex:none}
+.donut-note{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:10px;letter-spacing:.02em}
+
+/* ───── live trend cards (overview) ───── */
+.trends{display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-top:10px}
+@media(max-width:760px){.trends{grid-template-columns:1fr}}
+.trendcard{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);padding:12px 14px 10px}
+.trend-now{font-family:var(--mono);font-size:18px;font-weight:600;color:var(--online)}
+.harea-empty{display:flex;align-items:center;justify-content:center;height:70px;color:var(--faint);font-size:12px;font-family:var(--mono)}
+/* ───── turn-proxy load (overview) ───── */
+.turnload{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px}
+.turnload-row{display:flex;align-items:center;gap:9px;padding:9px 12px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);text-decoration:none}
+.turnload-row:hover{border-color:var(--line-solid);background:var(--surface-2)}
+.tl-node{font-family:var(--mono);font-size:12px;font-weight:600}
+.tl-stat{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.06em;padding:2px 7px;border-radius:99px}
+.tl-stat.up{color:var(--online);background:color-mix(in srgb,var(--online) 16%,transparent)}
+.tl-stat.down{color:var(--fault);background:color-mix(in srgb,var(--fault) 16%,transparent)}
+.tl-ver{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+
+/* ───── traffic-flow node map (overview) ───── */
+.flowcard{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);padding:8px 10px 6px;position:relative}
+/* signal-flow map (redesign P1) — SVG flows + HTML badges (like the wg/awg tags) + hover bubbles */
+.flowmap2{position:relative;width:100%;max-width:960px;margin:0 auto;container-type:inline-size}
+.flowmap2 svg{display:block;width:100%;height:auto}
+/* animated "signal flow" — round dashes travelling along each line in its flow direction (egress out / ingress in); speed ∝ traffic (set inline) */
+.fm2-flowdot{stroke-dasharray:0.01 15;stroke-linejoin:round;animation:fm2flow linear infinite;pointer-events:none}   /* dense round pips (the original look) */
+@keyframes fm2flow{from{stroke-dashoffset:0}to{stroke-dashoffset:-15}}
+.fm2-flowdot.dim{opacity:.08}
+.fm2-pulse{stroke:var(--flowdot);opacity:.5}           /* soft travelling segment (SMIL dashoffset, no blur → cheap) */
+.fm2-pulse.dim{opacity:.06}
+.fm2-chev{opacity:.9}                                   /* travelling arrows (SMIL animateMotion — cheapest of the three) */
+.fm2-chev.dim{opacity:.08}
+@media (prefers-reduced-motion:reduce){.fm2-flowdot,.fm2-pulse,.fm2-chev{animation:none;visibility:hidden}}
+/* flow-animation picker (top-right of the map) — faint until you hover the map */
+.fm2-anim{position:absolute;top:9px;right:9px;display:flex;gap:2px;padding:2px;border-radius:8px;background:color-mix(in srgb,var(--surface) 82%,transparent);border:1px solid var(--line);z-index:4;opacity:.4;transition:opacity .15s}
+.flowcard:hover .fm2-anim{opacity:1}
+.fm2-anim-b{display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:none;background:none;border-radius:6px;color:var(--faint);cursor:pointer;transition:color .12s,background .12s}
+.fm2-anim-b:hover{background:color-mix(in srgb,var(--brand) 12%,transparent);color:var(--ink)}
+.fm2-anim-b.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--brand)}
+.fm2-anim-b svg{width:15px;height:15px;display:block}
+.fm2-flow{opacity:.72;cursor:pointer;transition:opacity .12s}   /* dark: original balance (looked best on dark) */
+.fm2-flow.dim{opacity:.12}
+.fm2-flow.lit{opacity:.98}
+:root[data-theme="light"] .fm2-flow{opacity:.86}                /* light: pull resting/dimmed lines closer to the lit colour */
+:root[data-theme="light"] .fm2-flow.dim{opacity:.26}
+:root[data-theme="light"] .fm2-flow.lit{opacity:1}
+/* node badge — pill in the node colour, like an interface tag; sized by traffic via inline font-size */
+.fm2-nb{position:absolute;transform:translate(-50%,-50%);cursor:pointer;appearance:none;
+  font-family:var(--mono);font-weight:600;line-height:1;letter-spacing:.01em;padding:.5em .78em;border-radius:8px;
+  border:1.5px solid color-mix(in srgb,var(--c) 70%,transparent);background:color-mix(in srgb,var(--c) 22%,var(--surface));
+  color:var(--c);white-space:nowrap;box-shadow:0 0 0 4px color-mix(in srgb,var(--c) 9%,transparent),0 2px 8px rgba(0,0,0,.3);
+  transition:opacity .12s,transform .1s;z-index:2}
+.fm2-nb:hover{transform:translate(-50%,-50%) scale(1.05)}
+.fm2-sb{position:absolute;transform:translate(-50%,-50%);cursor:pointer;appearance:none;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;padding:0;
+  border:1.5px solid color-mix(in srgb,var(--c) 68%,transparent);background:color-mix(in srgb,var(--c) 20%,var(--surface));
+  color:var(--c);box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 8%,transparent),0 2px 8px rgba(0,0,0,.3);transition:opacity .12s,transform .1s;z-index:2}
+.fm2-sb svg{width:var(--isz,62%);height:var(--isz,62%);display:block}   /* icon size set inline; grows proportionally with the circle */
+.fm2-sb::before{content:"";position:absolute;inset:-6px;border-radius:50%}   /* hit area a touch larger than the circle; icon stays centred (circle is centred in it) */
+.fm2-sb:hover{transform:translate(-50%,-50%) scale(1.12)}
+/* dim = darken but stay OPAQUE, so a de-emphasised badge still covers (hides) the flow ends cut off inside it */
+.fm2-nb.dim,.fm2-sb.dim{filter:brightness(.48) saturate(.55)}
+/* related to the hovered element: badge recedes (subdued opaque bg) but its NAME / ICON stays full colour so you can read the link */
+.fm2-nb.reldim{background:color-mix(in srgb,var(--c) 8%,var(--surface));border-color:color-mix(in srgb,var(--c) 30%,transparent);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.fm2-sb.reldim{background:color-mix(in srgb,var(--c) 8%,var(--surface));border-color:color-mix(in srgb,var(--c) 30%,transparent);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.fm2-bub{position:absolute;transform:translate(-50%,-118%);pointer-events:none;z-index:5;background:var(--surface-2);
+  border:1px solid var(--line-solid);border-radius:9px;padding:8px 11px;min-width:130px;box-shadow:0 6px 22px rgba(0,0,0,.42)}
+.fm2-bub-h{margin-bottom:7px;display:flex;flex-direction:column;gap:2px;font:600 12.5px/1.1 var(--sans)}
+.fm2-bub-k{font:9px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.fm2-bub-r{display:flex;justify-content:space-between;gap:18px;font:11.5px/1.7 var(--mono)}
+.fm2-bub-r b{color:var(--ink)}
+.fm2-key{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin:0 5px 0 12px}
+.fm2-key:first-child{margin-left:0}
+.flow-foot{display:flex;align-items:center;gap:8px;padding:2px 6px 2px}
+.flow-sum{font-size:12px;color:var(--dim)}
+.flow-foot .donut-note{margin-top:0}
 
 /* ───── hero stats (overview) ───── */
 .statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
@@ -805,7 +932,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .health-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
 .hcol{display:flex;flex-direction:column;gap:6px;min-width:0}
 .hcol-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
-.hcol-l{font-size:11px;color:var(--dim);letter-spacing:.02em;white-space:nowrap}
+.hcol-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}
 .hcol-v{font-family:var(--mono);color:var(--ink-2);font-size:11px;white-space:nowrap}
 .health-hist{position:relative}
 .health-hist .hist-cap{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);display:block;margin-bottom:3px}
@@ -828,7 +955,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .spark{flex:none;opacity:.85}
 .hm-bar{height:5px;border-radius:3px;background:var(--track);overflow:hidden}
 .hm-fill{display:block;height:100%;border-radius:3px;background:var(--online);transition:width .6s var(--ease)}
-.hm-fill.warn{background:var(--pending)}
+.hm-fill.warn{background:var(--fault)}
 .hm-fill.hot{background:var(--dangling)}
 .hm-foot{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:1px}
 .halerts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:2px}

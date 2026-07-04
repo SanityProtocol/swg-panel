@@ -1659,20 +1659,72 @@ def mesh_unlink_node(nodes, nid):
 # survives restart, ~20 KB/node. Lock guards concurrent node syncs.
 
 HRRD_MAGIC = b"SWGH"
-HRRD_VER = 5            # v5: 4-tier averages-of-averages (was 2 rings, peak/last consolidation)
+HRRD_VER = 6            # v6: widened slot — adds awg-client rx/tx, mesh rx/tx, peer online/total counts
 #                 (step seconds, slot count) per ring, finest first; slots == plotted points
 HRRD_RINGS = [(15, 250), (300, 300), (1800, 350), (7200, 400)]
 HRRD_RATIO = [1, 20, 6, 4]          # children each tier folds from the one below (= step ratio); ring0 reads raw
 HRRD_VIEW = 250         # default read = the hour ring's window (also feeds the overview sparkline)
 LIVE_MAX = 200          # in-memory raw samples kept per node for the LIVE view (one per sync; ~16.7min@5s)
+MESH_THROTTLE_S = 60    # per node-PAIR mesh ring: fold at most one sample/min (flow-map ranges are day+; keeps it cheap)
+
+
+def mesh_rrd_path(stats_dir, a, b):   # canonical per-pair file (a<b); rx slot = a→b, tx slot = b→a
+    x, y = sorted((a, b))
+    return os.path.join(stats_dir, f"mesh-{x}-{y}.rrd")
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, ring0_step, ring0_slots
-HRRD_SLOT = struct.Struct("<IBBBBII")         # bucket, cpu, mem, disk, count, rx, tx  (16 bytes)
+# One slot's metrics live as a flat vector M (below), plus a bucket id + write-time sample count. All extra
+# fields are DERIVED PANEL-SIDE from the snapshot the node already sends (snap_aggregates) — no node change.
+#   M = [cpu, mem, disk,  rx, tx, arx, atx, mrx, mtx,  pon, ptot, paon, patot]
+#        └ health % ┘    └────── B/s means (total, awg-client, mesh) ──────┘  └ peer counts (client, awg) ┘
+# rx/tx = TOTAL across all ifaces (unchanged, = snap_traffic → node-detail throughput); client = rx-mrx,
+# wg-client = client-arx. pon/ptot = client peer deployments online/total; paon/patot = the awg subset.
+HRRD_MNAMES = ["cpu", "mem", "disk", "rx", "tx", "arx", "atx", "mrx", "mtx", "pon", "ptot", "paon", "patot"]
+HRRD_NM = len(HRRD_MNAMES)
+_PCT_IDX = (0, 1, 2)                           # NA-aware percentage bytes
+_U32_IDX = (3, 4, 5, 6, 7, 8)                  # rx/tx-style counters (mean-consolidated)
+_U16_IDX = (9, 10, 11, 12)                     # peer counts (mean-consolidated)
+HRRD_SLOT = struct.Struct("<IBBBBIIIIIIHHHH")  # bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx, pon,ptot,paon,patot (40 B)
+HRRD_SLOT_V5 = struct.Struct("<IBBBBII")       # legacy 16-byte slot — read only, to migrate a pre-v6 file's history
 HRRD_NA = 255
 HRRD_U32 = 0xFFFFFFFF
+HRRD_U16 = 0xFFFF
 HRRD_TOTAL = sum(n for _, n in HRRD_RINGS)
 def _ring_base(i):                  # byte offset of ring i within the file
     return HRRD_HEAD.size + sum(n for _, n in HRRD_RINGS[:i]) * HRRD_SLOT.size
 _hrrd_lock = threading.Lock()
+
+def _pctb(v):  return HRRD_NA if v == HRRD_NA else max(0, min(254, int(v)))
+def _u32b(v):  return max(0, min(HRRD_U32, int(v)))
+def _u16b(v):  return max(0, min(HRRD_U16, int(v)))
+
+
+def snap_aggregates(snap, node_cfg):
+    """Per-node dashboard aggregates from a snapshot the node already POSTs (no node change). Splits client
+    vs mesh (system link ifaces) and wg vs awg, and counts client peer deployments online/total. Which ifaces
+    are system comes from the node's panel-side `ifaces` overrides; wg/awg from the reported awg_params."""
+    ov = (node_cfg or {}).get("ifaces") or {}
+    a = {k: 0 for k in ("rx", "tx", "arx", "atx", "mrx", "mtx", "pon", "ptot", "paon", "patot")}
+    for ifn, blk in ((snap or {}).get("interfaces") or {}).items():
+        meta = blk.get("meta") or {}
+        o = ov.get(ifn) or {}
+        is_sys = bool(o.get("system") or meta.get("system"))
+        is_awg = bool(meta.get("awg_params") or o.get("awg_params"))
+        irx = itx = on = tot = 0
+        for p in (blk.get("peers") or []):
+            irx += p.get("rx_speed", 0) or 0
+            itx += p.get("tx_speed", 0) or 0
+            if not is_sys:
+                tot += 1
+                if p.get("online"):
+                    on += 1
+        a["rx"] += irx; a["tx"] += itx                          # total across every iface (= snap_traffic)
+        if is_sys:
+            a["mrx"] += irx; a["mtx"] += itx                     # mesh link traffic
+        else:
+            a["pon"] += on; a["ptot"] += tot
+            if is_awg:
+                a["arx"] += irx; a["atx"] += itx; a["paon"] += on; a["patot"] += tot
+    return a
 
 
 def snap_traffic(snap):
@@ -1733,80 +1785,81 @@ def _avg_pct(old, new, cnt):      # incremental mean of two pct bytes, NA-aware 
     return max(0, min(254, round((old * cnt + new) / (cnt + 1))))
 
 
-def _avg_u32(old, new, cnt):      # incremental mean of an rx/tx counter (no NA sentinel)
-    new = min(max(int(new), 0), HRRD_U32)
+def _avg_u(old, new, cnt, cap):   # incremental mean of a counter (no NA sentinel)
+    new = min(max(int(new), 0), cap)
     if cnt <= 0: return new
-    return min(round((old * cnt + new) / (cnt + 1)), HRRD_U32)
+    return min(round((old * cnt + new) / (cnt + 1)), cap)
 
 
-def _slot_write(f, base, slots, bucket, cpu, mem, disk, cnt, rx, tx):
+def _slot_write(f, base, slots, bucket, M, cnt):
+    """Write the metric vector M (HRRD_NM values) + sample count into `bucket`'s slot."""
+    vals = ([bucket & 0xFFFFFFFF, _pctb(M[0]), _pctb(M[1]), _pctb(M[2]), min(max(cnt, 0), 255) & 0xFF]
+            + [_u32b(M[i]) for i in _U32_IDX] + [_u16b(M[i]) for i in _U16_IDX])
     f.seek(base + (bucket % slots) * HRRD_SLOT.size)
-    f.write(HRRD_SLOT.pack(bucket & 0xFFFFFFFF, cpu & 0xFF, mem & 0xFF, disk & 0xFF, min(max(cnt, 0), 255) & 0xFF,
-                           min(max(int(rx), 0), HRRD_U32), min(max(int(tx), 0), HRRD_U32)))
+    f.write(HRRD_SLOT.pack(*vals))
 
 
 def _slot_read(f, base, slots, bucket):
-    """(cpu, mem, disk, rx, tx) if the slot for `bucket` currently holds it, else None."""
+    """(M, cnt) if the slot for `bucket` currently holds it, else None. M = HRRD_NM-value metric vector."""
     f.seek(base + (bucket % slots) * HRRD_SLOT.size)
     cur = f.read(HRRD_SLOT.size)
     if len(cur) == HRRD_SLOT.size:
-        b0, c0, m0, d0, n0, rx0, tx0 = HRRD_SLOT.unpack(cur)
-        if b0 == (bucket & 0xFFFFFFFF):
-            return (c0, m0, d0, rx0, tx0)
+        u = HRRD_SLOT.unpack(cur)
+        if u[0] == (bucket & 0xFFFFFFFF):
+            # u = bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx, pon,ptot,paon,patot
+            M = [u[1], u[2], u[3]] + list(u[5:5 + len(_U32_IDX)]) + list(u[5 + len(_U32_IDX):])
+            return (M, u[4])
     return None
 
 
-def _hrrd_put_raw(f, base, slots, bucket, cpu, mem, disk, rx, tx):
+def _hrrd_put_raw(f, base, slots, bucket, M):
     # ring0 only: fold a raw sample into its 15s bucket as an incremental mean (~3 samples/bucket,
     # so no rounding drift). A new bucket resets the slot, overwriting the stale wrap value.
     bucket &= 0xFFFFFFFF
-    cnt = 0
-    f.seek(base + (bucket % slots) * HRRD_SLOT.size)
-    cur = f.read(HRRD_SLOT.size)
-    if len(cur) == HRRD_SLOT.size:
-        b0, c0, m0, d0, n0, rx0, tx0 = HRRD_SLOT.unpack(cur)
-        if b0 == bucket:                          # same bucket → fold into the existing mean
-            cnt = n0
-            cpu, mem, disk = _avg_pct(c0, cpu, cnt), _avg_pct(m0, mem, cnt), _avg_pct(d0, disk, cnt)
-            rx, tx = _avg_u32(rx0, rx, cnt), _avg_u32(tx0, tx, cnt)
-    _slot_write(f, base, slots, bucket, cpu, mem, disk, cnt + 1, rx, tx)
+    cur = _slot_read(f, base, slots, bucket)
+    if cur is not None:                          # same bucket → fold into the existing mean
+        M0, cnt = cur
+        for j in _PCT_IDX: M[j] = _avg_pct(M0[j], M[j], cnt)
+        for j in _U32_IDX: M[j] = _avg_u(M0[j], M[j], cnt, HRRD_U32)
+        for j in _U16_IDX: M[j] = _avg_u(M0[j], M[j], cnt, HRRD_U16)
+        _slot_write(f, base, slots, bucket, M, cnt + 1)
+    else:
+        _slot_write(f, base, slots, bucket, M, 1)
 
 
 def _hrrd_consolidate(f, i, ts):
     # ring i (>=1): recompute its CURRENT bucket as the fresh mean of the (already-averaged) children
-    # it covers in ring i-1. One rounding per metric, NA-aware; rx/tx straight mean.
+    # it covers in ring i-1. One rounding per metric, NA-aware for pct; counters straight mean.
     step, slots = HRRD_RINGS[i]
-    cstep, cslots = HRRD_RINGS[i - 1]
-    cbase = _ring_base(i - 1)
+    cbase = _ring_base(i - 1); cslots = HRRD_RINGS[i - 1][1]
     ratio = HRRD_RATIO[i]
     bucket = _bucket_of(ts, step)
-    kids = [v for k in range(bucket * ratio, bucket * ratio + ratio)
-            if (v := _slot_read(f, cbase, cslots, k)) is not None]
+    kids = [r[0] for k in range(bucket * ratio, bucket * ratio + ratio)
+            if (r := _slot_read(f, cbase, cslots, k)) is not None]
     if not kids:
         return
-    def mean_pct(j):
+    out = [0] * HRRD_NM
+    for j in _PCT_IDX:
         vs = [k[j] for k in kids if k[j] != HRRD_NA]
-        return round(sum(vs) / len(vs)) if vs else HRRD_NA
-    def mean_u(j):
-        return round(sum(k[j] for k in kids) / len(kids))
-    _slot_write(f, _ring_base(i), slots, bucket,
-                mean_pct(0), mean_pct(1), mean_pct(2), len(kids), mean_u(3), mean_u(4))
+        out[j] = round(sum(vs) / len(vs)) if vs else HRRD_NA
+    for j in _U32_IDX + _U16_IDX:
+        out[j] = round(sum(k[j] for k in kids) / len(kids))
+    _slot_write(f, _ring_base(i), slots, bucket, out, len(kids))
 
 
-def _hrrd_feed(f, ts, cpu, mem, disk, rx, tx):
-    # one sample → ring0 (raw incremental mean) then recompute the coarser rings for ts.
+def _hrrd_feed(f, ts, M):
+    # one sample (metric vector M) → ring0 (raw incremental mean) then recompute the coarser rings for ts.
     step0, slots0 = HRRD_RINGS[0]
-    _hrrd_put_raw(f, _ring_base(0), slots0, _bucket_of(ts, step0), cpu, mem, disk, rx, tx)
+    _hrrd_put_raw(f, _ring_base(0), slots0, _bucket_of(ts, step0), list(M))
     for i in range(1, len(HRRD_RINGS)):              # 5min ← 15s, 30min ← 5min, 2h ← 30min
         _hrrd_consolidate(f, i, ts)
 
 
 def _hrrd_salvage(path):
     """Read an OLDER-layout RRD's finest ring before we recreate it, so a format-version change MIGRATES
-    history into the new rings instead of wiping the graph. Returns [(ts, cpu, mem, disk, rx, tx), …] from
-    the file's header-declared ring0, or None if there's nothing salvageable. The slot struct's metric bytes
-    (cpu/mem/disk) + rx/tx have lived at the same offsets across every version (only the pad/count byte at
-    offset 7 differs), so reading old slots with the current struct is correct."""
+    history into the new rings instead of wiping the graph. Returns [(ts, M), …] from the file's header-declared
+    ring0, or None if nothing is salvageable. A pre-v6 file's slots are the legacy 16-byte layout (cpu/mem/disk +
+    rx/tx); its new fields (awg/mesh/counts) carry as 0 and refill over time."""
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -1819,19 +1872,27 @@ def _hrrd_salvage(path):
         return None                                  # same layout (would've passed _hrrd_ok) → nothing to do
     if not (0 < step0 <= 86400 and 0 < slots0 <= 100000):
         return None                                  # implausible header → don't trust the body
+    sst = HRRD_SLOT_V5 if ver <= 5 else HRRD_SLOT
     pts = []
     for i in range(slots0):                          # the file's own ring0 = its finest history
-        off = HRRD_HEAD.size + i * HRRD_SLOT.size
-        if off + HRRD_SLOT.size > len(data):
+        off = HRRD_HEAD.size + i * sst.size
+        if off + sst.size > len(data):
             break
-        b, c, m, d, n, rx, tx = HRRD_SLOT.unpack_from(data, off)
-        if b:
-            pts.append((b * step0, c, m, d, rx, tx))
-    pts.sort()
+        u = sst.unpack_from(data, off)
+        b = u[0]
+        if not b:
+            continue
+        if ver <= 5:                                 # b, cpu,mem,disk,count, rx,tx  → pad new fields with 0
+            M = [u[1], u[2], u[3], u[5], u[6]] + [0] * (HRRD_NM - 5)
+        else:
+            M = [u[1], u[2], u[3]] + list(u[5:5 + len(_U32_IDX)]) + list(u[5 + len(_U32_IDX):])
+        pts.append((b * step0, M))
+    pts.sort(key=lambda x: x[0])
     return pts or None
 
 
-def hrrd_update(path, ts, cpu, mem, disk, rx=0, tx=0):
+def hrrd_update(path, ts, M):
+    """Append one metric vector M (HRRD_NM values) at time ts to the per-node ring."""
     ts = int(ts)
     with _hrrd_lock:
         if not _hrrd_ok(path):                    # (re)create: header + all rings zeroed (also upgrades older versions)
@@ -1844,16 +1905,18 @@ def hrrd_update(path, ts, cpu, mem, disk, rx=0, tx=0):
                     f.write(b"\x00" * (HRRD_SLOT.size * HRRD_TOTAL))
                 if carry:
                     with open(path, "r+b") as f:
-                        for (cts, ccpu, cmem, cdisk, crx, ctx) in carry:
-                            _hrrd_feed(f, cts, ccpu, cmem, cdisk, crx, ctx)
+                        for (cts, cM) in carry:
+                            _hrrd_feed(f, cts, cM)
         with contextlib.suppress(OSError):
             with open(path, "r+b") as f:
-                _hrrd_feed(f, ts, cpu, mem, disk, rx, tx)
+                _hrrd_feed(f, ts, M)
 
 
-def hrrd_read(path, ring=0, want=HRRD_VIEW):
-    """Most recent `want` buckets from ring index `ring` as {t, cpu, mem, disk, rx, tx} (NA -> None).
-    Timestamps are the real epoch of each bucket's local-time boundary."""
+def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False):
+    """Most recent `want` buckets from ring index `ring`. slim=True returns only the legacy fields
+    {t,cpu,mem,disk,rx,tx} (for the /api/state bundle — keeps the 5s hot path small); slim=False adds the
+    dashboard fields {arx,atx,mrx,mtx,pon,ptot,paon,patot}. NA percentages → None. Timestamps are the real
+    epoch of each bucket's local-time boundary."""
     with _hrrd_lock:
         try:
             with open(path, "rb") as f:
@@ -1872,17 +1935,23 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW):
         off = base + i * HRRD_SLOT.size
         if off + HRRD_SLOT.size > len(data):
             break
-        b, c, m, d, n, rx, tx = HRRD_SLOT.unpack_from(data, off)   # n = per-bucket sample count (write-time only)
-        if b:
-            rows.append((b, c, m, d, rx, tx))
+        u = HRRD_SLOT.unpack_from(data, off)         # bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx, pon,ptot,paon,patot
+        if u[0]:
+            rows.append(u)
     if not rows:
         return None
-    rows.sort()
+    rows.sort(key=lambda r: r[0])
     rows = rows[-want:]
     na = lambda v: None if v == HRRD_NA else v
-    return {"t": [_bucket_epoch(r[0], step) for r in rows],
-            "cpu": [na(r[1]) for r in rows], "mem": [na(r[2]) for r in rows], "disk": [na(r[3]) for r in rows],
-            "rx": [r[4] for r in rows], "tx": [r[5] for r in rows]}
+    out = {"t": [_bucket_epoch(r[0], step) for r in rows],
+           "cpu": [na(r[1]) for r in rows], "mem": [na(r[2]) for r in rows], "disk": [na(r[3]) for r in rows],
+           "rx": [r[5] for r in rows], "tx": [r[6] for r in rows]}
+    if slim:                                          # keep the /api/state bundle small; mrx/mtx let the hero net out mesh
+        out["mrx"] = [r[9] for r in rows]; out["mtx"] = [r[10] for r in rows]
+        return out
+    out.update({"arx": [r[7] for r in rows], "atx": [r[8] for r in rows], "mrx": [r[9] for r in rows], "mtx": [r[10] for r in rows],
+                "pon": [r[11] for r in rows], "ptot": [r[12] for r in rows], "paon": [r[13] for r in rows], "patot": [r[14] for r in rows]})
+    return out
 
 
 # ───────────────────────── API ─────────────────────────
@@ -1924,7 +1993,7 @@ def api(method, path, qs, body, deps):
                 pc += len(ps)
                 rx += sum(p.get("rx_speed", 0) or 0 for p in ps)
                 tx += sum(p.get("tx_speed", 0) or 0 for p in ps)
-            hh = hrrd_read(os.path.join(stats_dir, f"health-{nid}.rrd")) if stats_dir else None
+            hh = hrrd_read(os.path.join(stats_dir, f"health-{nid}.rrd"), slim=True) if stats_dir else None   # slim: keep the 5s bundle small
             lb = (deps.get("live_samples") or {}).get(nid) or []   # raw 5s-granular buffer (one point/sync)
             na = lambda v: None if v == HRRD_NA else v
             hl = ({"t": [s[0] for s in lb], "cpu": [na(s[1]) for s in lb], "mem": [na(s[2]) for s in lb],
@@ -2135,6 +2204,9 @@ def api(method, path, qs, body, deps):
             cur["theme_color_light"] = tlv if re.match(r"^#[0-9a-fA-F]{6}$", tlv) else ""
         if "vk_link" in incoming:                       # VK call link baked into generated turn-proxy client configs
             cur["vk_link"] = str(incoming.get("vk_link") or "").strip()[:512]
+        if "flow_anim" in incoming:                     # Overview flow-map line animation style (host-wide, shared by all operators)
+            fa = str(incoming.get("flow_anim") or "")
+            cur["flow_anim"] = fa if fa in ("chevrons", "pulse", "dots", "gradient", "off") else "dots"
         cl = incoming.get("custom_lists")               # operator-defined reusable IP/domain lists
         if isinstance(cl, list):
             out_lists, seen = [], set()
@@ -2247,6 +2319,28 @@ def api(method, path, qs, body, deps):
         ring, want = spec
         data = hrrd_read(rrd, ring=ring, want=want) if rrd else None
         return 200, {"ok": True, "data": data or {"t": [], "cpu": [], "mem": [], "disk": [], "rx": [], "tx": []}}
+
+    if method == "GET" and path == "/api/mesh-history":
+        # Per node-PAIR directed mesh flow over a range — drives the flow-map ranges. Reads each pair's tiny ring
+        # (rx slot = a→b, tx slot = b→a) and returns the MEAN rate over the window (the map shows one value/edge).
+        rng = (qs.get("range") or ["day"])[0]
+        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        if not spec:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        ring, want = spec
+        mean = lambda xs: (round(sum(xs) / len(xs)) if xs else 0)
+        pairs, seen = [], set()
+        for anid, c in nodes.items():
+            for peer in (c.get("links") or {}):
+                if peer not in nodes:
+                    continue
+                a, b = sorted((anid, peer)); key = f"{a}|{b}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                d = hrrd_read(mesh_rrd_path(stats_dir, a, b), ring=ring, want=want) if stats_dir else None
+                pairs.append({"a": a, "b": b, "ab": mean((d or {}).get("rx") or []), "ba": mean((d or {}).get("tx") or [])})
+        return 200, {"ok": True, "data": {"range": rng, "pairs": pairs}}
 
     if method == "GET" and path == "/api/next-ip":
         sel = [n for n in (qs.get("nodes") or [""])[0].split(",") if n]
@@ -3553,9 +3647,11 @@ class Handler(BaseHTTPRequestHandler):
             with contextlib.suppress(Exception):
                 atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)
             cpu, mem, disk = health_pcts(snap.get("health")) or (HRRD_NA, HRRD_NA, HRRD_NA)
-            rx, tx = snap_traffic(snap)              # append one point to the per-node RRD ring
+            agg = snap_aggregates(snap, node)        # rx/tx (total) + awg/mesh split + peer counts, panel-derived
+            rx, tx = agg["rx"], agg["tx"]            # == snap_traffic — total across every iface
+            M = [cpu, mem, disk, rx, tx, agg["arx"], agg["atx"], agg["mrx"], agg["mtx"], agg["pon"], agg["ptot"], agg["paon"], agg["patot"]]
             with contextlib.suppress(Exception):
-                hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), cpu, mem, disk, rx, tx)
+                hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), M)
             # also keep a short raw buffer (one sample per sync) for a 5s-granular LIVE view. Mirrored to
             # disk so it survives a panel restart/update — otherwise LIVE appears to "reset to scratch"
             # after every update (the RRD-backed ranges already persist; this makes LIVE persist too).
@@ -3565,6 +3661,27 @@ class Handler(BaseHTTPRequestHandler):
                 del buf[:len(buf) - LIVE_MAX]
             with contextlib.suppress(Exception):
                 atomic_write(os.path.join(stats_dir, f"live-{nid}.json"), json.dumps(buf), mode=0o644)
+            # Per-PAIR mesh history for the flow-map ranges: each mesh link's directional rate, stored in a tiny
+            # per-pair ring (reuses the node ring — rx slot = a→b, tx slot = b→a). Throttled per pair (≤1/min) so
+            # both link ends dedup onto one write and it stays negligible. Panel-derived → no node change.
+            now_i = int(time.time())
+            mlast = Handler.deps.setdefault("_mesh_last", {})
+            ov_ifaces = node.get("ifaces") or {}
+            for ifn, blk in (snap.get("interfaces") or {}).items():
+                meta = blk.get("meta") or {}; o = ov_ifaces.get(ifn) or {}
+                peer = o.get("egress_node") or meta.get("egress_node")
+                if not ((o.get("system") or meta.get("system")) and peer and peer in nodes):
+                    continue
+                a, b = sorted((nid, peer)); key = f"{a}|{b}"
+                if now_i - mlast.get(key, 0) < MESH_THROTTLE_S:
+                    continue                              # another end (or this one) wrote recently
+                lrx = sum((p.get("rx_speed", 0) or 0) for p in (blk.get("peers") or []))
+                ltx = sum((p.get("tx_speed", 0) or 0) for p in (blk.get("peers") or []))
+                ab, ba = (ltx, lrx) if nid == a else (lrx, ltx)   # a→b, b→a from this node's perspective
+                mM = [0, 0, 0, ab, ba, 0, 0, 0, 0, 0, 0, 0, 0]    # ab→rx slot, ba→tx slot
+                with contextlib.suppress(Exception):
+                    hrrd_update(mesh_rrd_path(stats_dir, a, b), now_i, mM)
+                mlast[key] = now_i
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.
