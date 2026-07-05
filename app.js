@@ -421,6 +421,7 @@ const api = {
   events(limit) { return this.get("/api/events?limit=" + (limit || 12)); },
   nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&range=" + encodeURIComponent(range)); },
   meshHistory(range) { return this.get("/api/mesh-history?range=" + encodeURIComponent(range)); },
+  categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -1654,15 +1655,16 @@ const RANGE_STEP = { hour: 15, day: 300, week: 1800, month: 7200 };   // seconds
 // One fetch burst per range/selection change, shared by the doughnuts AND the flow map (lifted to Overview so
 // they don't each hit the API). Pulls per-node RRD + per-pair mesh means. Live → empty (widgets use the bundle).
 function useRangeHistory(range, selIds) {
-  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], range: "live" });
+  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], range: "live" });
   const key = range + "|" + selIds.slice().sort().join(",");
   useEffect(() => {
-    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], range: "live" }); return; }
+    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], range: "live" }); return; }
     let alive = true; setSt(s => ({ ...s, loading: true }));
     Promise.all([
       Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, (r && r.data) || null]).catch(() => [id, null]))),
       api.meshHistory(range).then(r => (r && r.data && r.data.pairs) || []).catch(() => []),
-    ]).then(([rows, mesh]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, range }); });
+      api.categoryHistory(range).then(r => (r && r.data && r.data.cats) || []).catch(() => []),
+    ]).then(([rows, mesh, cats]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, range }); });
     return () => { alive = false; };
   }, [key]);
   return st;
@@ -2227,6 +2229,18 @@ function Overview() {
   // turn-proxy load across the selected nodes (hidden when the fleet runs none)
   const turnRows = [];
   if (turnEnabled()) fleetSel.forEach(n => { const snap = Store.stats[n.id]; ((snap && snap.turn_proxies) || []).forEach(tp => turnRows.push({ node: n.id, tp })); });
+  // traffic by DESTINATION CATEGORY — each category's FULL total. Categories NEST (youtube ⊂ google, yandex ⊂ ru_net),
+  // so a byte counts in EVERY category it matches: they OVERLAP on purpose and do NOT sum to the total (the distinct
+  // total is the CLIENT traffic below). Live = per-node `cats` rates (panel-derived from the node's nft counters);
+  // ranged = per-(node,cat) volume from /api/category-history.
+  const catAgg = {};
+  const _cadd = (cat, up, dn) => { const a = catAgg[cat] = catAgg[cat] || { up: 0, dn: 0 }; a.up += up || 0; a.dn += dn || 0; };
+  if (dRanged) (rangeHist.cats || []).forEach(e => { if (sel.has(e.node)) _cadd(e.cat, e.up, e.dn); });
+  else fleetSel.forEach(n => { for (const [cat, v] of Object.entries(n.cats || {})) _cadd(cat, v.up, v.dn); });
+  const catRows = Object.entries(catAgg).filter(([, v]) => v.up + v.dn > 0)
+    .sort((a, b) => (b[1].dn + b[1].up) - (a[1].dn + a[1].up)).slice(0, 10)
+    .map(([cat, v]) => ({ label: catLabelOf(cat), value: v.dn + v.up, sub: dRanged ? xferCell(v.dn, v.up) : rateCell(v.dn, v.up), color: catColor(cat) }));
+  const totClientDn = nodeTraffic.reduce((a, x) => a + (x.rx || 0), 0);   // distinct total (client download) — categories are a subset/overlap of this
 
   return html`<div class="screen">
     <${StoreOffBanner}/>
@@ -2271,6 +2285,11 @@ function Overview() {
     ${fleetSel.length > 1 ? html`<${Fragment}>
       <div class="section-title"><h2>${anyTraffic ? "Top nodes by traffic" : "Top nodes by peers"}</h2><span class="count">${anyTraffic ? (DASH_RANGES.find(r => r[0] === dashState.range) || ["", "live"])[1].toLowerCase() : ""}</span><span class="grow"></span></div>
       <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
+    <//>` : null}
+
+    ${catRows.length ? html`<${Fragment}>
+      <div class="section-title"><h2>Traffic by destination</h2><span class="count">${dRanged ? (DASH_RANGES.find(r => r[0] === dashState.range) || ["", "live"])[1].toLowerCase() : "live"} · categories overlap${totClientDn ? " · of " + (dRanged ? fmtBytes(totClientDn) : rate(totClientDn)) + " total ↓" : ""}</span><span class="grow"></span></div>
+      <div class="rankcard"><${RankBars} rows=${catRows}/></div>
     <//>` : null}
 
     ${talkerRows.length ? html`<${Fragment}>
@@ -2731,6 +2750,20 @@ const SMART_CATEGORIES = [
   ["all", "All traffic (catch-all)"],
 ];
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
+// destination-stats palette: a fixed hue per category (built-ins by their SMART_CATEGORIES order; custom lists by a
+// stable hash) so a category keeps its colour across renders. ≤10 hues → many-category fleets can repeat, but an
+// operator routes only a handful at once. custom_<hash>/inline → "Custom".
+const CAT_COLORS = ["#5B8FF9", "#61DDAA", "#F6BD16", "#E8684A", "#9270CA", "#269A99", "#FF9D4D", "#6DC8EC", "#FF99C3", "#D66BF0"];
+const _CAT_IDX = Object.fromEntries(SMART_CATEGORIES.map(([id], i) => [id, i]));
+function catColor(c) {
+  if (_CAT_IDX[c] != null) return CAT_COLORS[_CAT_IDX[c] % CAT_COLORS.length];
+  let h = 0; for (const ch of String(c)) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
+  return CAT_COLORS[h % CAT_COLORS.length];
+}
+function catLabelOf(c) {   // built-in label · saved custom-list title · inline/hash custom → "Custom" · else the id
+  const lt = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
+  return SMART_CAT_LABEL[c] || lt[c] || (String(c).startsWith("custom") ? "Custom" : c);
+}
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
 // EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns). A
 // host-ONLY category (youtube today) is dead weight in kernel mode, so the UI greys/hides it there.

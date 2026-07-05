@@ -1671,6 +1671,8 @@ MESH_THROTTLE_S = 60    # per node-PAIR mesh ring: fold at most one sample/min (
 def mesh_rrd_path(stats_dir, a, b):   # canonical per-pair file (a<b); rx slot = a→b, tx slot = b→a
     x, y = sorted((a, b))
     return os.path.join(stats_dir, f"mesh-{x}-{y}.rrd")
+def cat_rrd_path(stats_dir, nid, cat):   # per-(node,category) destination-traffic ring (up slot = rx, dn slot = tx)
+    return os.path.join(stats_dir, "cat-" + nid + "-" + re.sub(r"[^a-z0-9_]", "_", str(cat).lower()) + ".rrd")
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, ring0_step, ring0_slots
 # One slot's metrics live as a flat vector M (below), plus a bucket id + write-time sample count. All extra
 # fields are DERIVED PANEL-SIDE from the snapshot the node already sends (snap_aggregates) — no node change.
@@ -2043,6 +2045,7 @@ def api(method, path, qs, body, deps):
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
+                        "cats": (deps.get("_cat_rate") or {}).get(nid) or {},   # live per-category dest traffic {cat:{up,dn}} B/s (panel-derived from the node's nft counters)
                         "hostname": snap.get("hostname"),
                         "health": snap.get("health"),     # per-node load/mem/disk/uptime (additive)
                         "health_history": hh,             # recent cpu/mem/disk % series (RRD-style ring)
@@ -2347,6 +2350,37 @@ def api(method, path, qs, body, deps):
                 d = hrrd_read(mesh_rrd_path(stats_dir, a, b), ring=ring, want=want) if stats_dir else None
                 pairs.append({"a": a, "b": b, "ab": mean((d or {}).get("rx") or []), "ba": mean((d or {}).get("tx") or [])})
         return 200, {"ok": True, "data": {"range": rng, "pairs": pairs}}
+
+    if method == "GET" and path == "/api/category-history":
+        # Per-(node,category) destination traffic over a range — drives the "Traffic by category" doughnut. Reads
+        # each cat-<nid>-<cat>.rrd (up slot = rx, dn slot = tx) → MEAN rate over the window; the SPA converts to
+        # volume (× window secs) and sums across the selected nodes. Category ids are sanitised → no '-', so the
+        # filename splits on the LAST '-' even when a node id contains one.
+        rng = (qs.get("range") or ["day"])[0]
+        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        if not spec:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        ring, want = spec
+        step = HRRD_RINGS[ring][0]                              # seconds/bucket → volume = Σ(per-bucket mean B/s)·step
+        vol = lambda xs: int(sum(xs or []) * step)
+        out = []
+        try:
+            files = os.listdir(stats_dir) if stats_dir else []
+        except OSError:
+            files = []
+        for fn in files:
+            if not (fn.startswith("cat-") and fn.endswith(".rrd")):
+                continue
+            body = fn[4:-4]
+            if "-" not in body:
+                continue
+            nid, cat = body.rsplit("-", 1)
+            if nid not in nodes:
+                continue
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want)
+            if d:
+                out.append({"node": nid, "cat": cat, "up": vol(d.get("rx")), "dn": vol(d.get("tx"))})   # total bytes over the window
+        return 200, {"ok": True, "data": {"range": rng, "cats": out}}
 
     if method == "GET" and path == "/api/next-ip":
         sel = [n for n in (qs.get("nodes") or [""])[0].split(",") if n]
@@ -3691,6 +3725,27 @@ class Handler(BaseHTTPRequestHandler):
                 with contextlib.suppress(Exception):
                     hrrd_update(mesh_rrd_path(stats_dir, a, b), now_i, mM)
                 mlast[key] = now_i
+            # DESTINATION STATS: per-category cumulative bytes (snap["smartroute"]["bytes"] = {cat:{up,dn}}) →
+            # positive-delta rate (reset/vanish-safe) → per-(node,cat) RRD, lazily created + throttled ≤1/min like
+            # mesh. Live rate cached in _cat_rate[nid] for /api/state; ranges read the RRDs (see /api/category-history).
+            cat_bytes = ((snap.get("smartroute") or {}).get("bytes")) or {}
+            clast = Handler.deps.setdefault("_cat_last", {})       # (nid,cat) → (t, up_bytes, dn_bytes)
+            clast_w = Handler.deps.setdefault("_cat_last_w", {})   # (nid,cat) → last RRD write time
+            crate = Handler.deps.setdefault("_cat_rate", {}).setdefault(nid, {})   # cat → {up,dn} B/s (live)
+            for cat, v in cat_bytes.items():
+                ub = int(v.get("up") or 0); db = int(v.get("dn") or 0)
+                k = (nid, cat); prev = clast.get(k); clast[k] = (now_i, ub, db)
+                if prev and now_i > prev[0]:
+                    dt = now_i - prev[0]
+                    rup = max(0, ub - prev[1]) / dt; rdn = max(0, db - prev[2]) / dt   # positive-delta: a counter reset shows as a drop → 0
+                    crate[cat] = {"up": rup, "dn": rdn}
+                    if (ub or db) and now_i - clast_w.get(k, 0) >= MESH_THROTTLE_S:   # lazy: only categories that have moved bytes get a ring
+                        cM = [0] * HRRD_NM; cM[3] = rup; cM[4] = rdn                  # up→rx slot, dn→tx slot
+                        with contextlib.suppress(Exception):
+                            hrrd_update(cat_rrd_path(stats_dir, nid, cat), now_i, cM)
+                        clast_w[k] = now_i
+            for cat in [c for c in crate if c not in cat_bytes]:   # a category was disabled → its counter vanished; drop it (not a reset spike)
+                del crate[cat]; clast.pop((nid, cat), None)
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.

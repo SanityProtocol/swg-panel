@@ -966,24 +966,18 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
     # prerouting → never reach FORWARD → correctly count 0. Own drift-gate so it rebuilds only when (subnet,cat) changes;
     # the rebuild flushes RULES, never the counters. ──
     if body:                                                     # table exists this cycle
-        # FIRST-MATCH, in the ROUTING plan's order (spec order, deduped) + a `return` per rule: geo sets overlap
-        # (a yandex IP is also in the broad ru_net set), so without first-match a byte double-counts. First-match
-        # attributes each byte to the category that actually ROUTED the flow (same order the marking chain uses),
-        # so Σ categories ≤ client traffic and the "Other" bucket stays non-negative.
-        _seen = set(); catw = []
-        for e in spec:
-            if e.get("action") == "block":                     # dropped in prerouting → never reaches FORWARD
-                continue
-            k = (e["subnet"], e["category"])
-            if k not in _seen:
-                _seen.add(k); catw.append(k)
+        # ALL-MATCH (no `return`): categories NEST (a yandex IP is also in the broad ru_net set; youtube ⊂ google),
+        # and each category must show its FULL total — youtube 3GB AND google 6GB-incl-youtube, both real. So a byte
+        # is counted in EVERY category it belongs to (overlap on purpose). The DISTINCT fleet total is the measured
+        # CLIENT traffic, never Σ categories (which double-counts). Order is irrelevant without `return`.
+        catw = sorted({(e["subnet"], e["category"]) for e in spec if e.get("action") != "block"})   # block → dropped in prerouting → never reaches FORWARD
         have_cnt = set(re.findall(r"counter (\S+) {", body))
         for c in {c for (_, c) in catw}:
             cn = "c_" + _smart_setname(c)[4:]                   # cat_<x> → c_<x>
             for d in ("up", "dn"):
                 if cn + "_" + d not in have_cnt:
                     run(["nft", "add", "counter", "inet", SMART_NFT_TABLE, cn + "_" + d])
-        csig = hashlib.sha1((json.dumps(catw) + "|c2").encode()).hexdigest()[:16]   # c2: first-match (+return), plan order
+        csig = hashlib.sha1((json.dumps(catw) + "|c3").encode()).hexdigest()[:16]   # c3: all-match (no return)
         _csigf = os.path.join(GEO_DIR, ".catcount-sig")
         try:
             cstored = open(_csigf).read().strip()
@@ -996,10 +990,10 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
                      "{ type filter hook forward priority mangle; policy accept; }"])
             run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catcount"])
             cok = True
-            for (S, c) in catw:                                 # `return` → first category wins (matches routing)
+            for (S, c) in catw:                                 # no `return` → a byte counts in EVERY category it matches
                 snm = _smart_setname(c); cn = "c_" + snm[4:]
-                r1 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + snm, "counter", "name", cn + "_up", "return"])
-                r2 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + snm, "counter", "name", cn + "_dn", "return"])
+                r1 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + snm, "counter", "name", cn + "_up"])
+                r2 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + snm, "counter", "name", cn + "_dn"])
                 if r1.returncode or r2.returncode:
                     cok = False
             if cok:
