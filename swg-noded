@@ -799,7 +799,7 @@ def _smart_setname(cat):
 
 
 _LOOP = {"n": 0}                       # reconcile-loop counter — drives per-loop caches (bumped at the top of main's loop)
-_SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set()}
+_SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set(), "bytes": {}}
 
 
 def _smart_table():
@@ -812,7 +812,7 @@ def _smart_table():
     if _SMART_TABLE["n"] != _LOOP["n"]:
         r = run(["nft", "list", "table", "inet", SMART_NFT_TABLE])
         out = r.stdout or ""
-        counts, setnames = {}, set()
+        counts, setnames, cbytes = {}, set(), {}
         if r.returncode == 0:
             setnames = set(re.findall(r"set (\S+) {", out))
             counts = {c: 0 for c in setnames}
@@ -823,7 +823,14 @@ def _smart_table():
             for m in re.finditer(r"set (\S+) {(?:[^}]*?elements = {([^}]*)})?", out, re.S):
                 el = m.group(2)
                 counts[m.group(1)] = len([x for x in el.split(",") if x.strip()]) if el else 0
-        _SMART_TABLE.update(n=_LOOP["n"], rc=r.returncode, out=out, counts=counts, setnames=setnames)
+            # DESTINATION STATS (free harvest): per-category named counters `counter c_<cat>_<up|dn> { packets P
+            # bytes B }` — cumulative bytes since the counter object was created (survives chain rebuilds). See
+            # _ensure_smart_nft's forward count chain. cat is the sanitised category id (== _smart_setname minus cat_).
+            for cm in re.finditer(r"counter (c_[a-z0-9_]+) \{\s*packets \d+ bytes (\d+)", out):
+                mm = re.match(r"c_(.+)_(up|dn)$", cm.group(1))
+                if mm:
+                    cbytes.setdefault(mm.group(1), {"up": 0, "dn": 0})[mm.group(2)] = int(cm.group(2))
+        _SMART_TABLE.update(n=_LOOP["n"], rc=r.returncode, out=out, counts=counts, setnames=setnames, bytes=cbytes)
     return _SMART_TABLE
 
 
@@ -951,6 +958,56 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
         if sn.startswith("cat_") and sn not in wanted_sn:
             if run(["nft", "delete", "set", "inet", SMART_NFT_TABLE, sn]).returncode == 0:   # still-referenced → fails, retried next pass
                 res["changed"] += 1
+    # ── DESTINATION STATS: per-category named byte counters + their own FORWARD count chain (harvested free by
+    # _smart_table). Named counters are TABLE OBJECTS → they survive the marking-chain rebuilds above (bytes accrue;
+    # reset only on full-table teardown/reboot). Counting lives in the FORWARD hook (priority mangle, count-only,
+    # policy accept → falls through) so addresses are post-un-SNAT (download) / pre-SNAT (upload) — accurate for BOTH
+    # direct and mesh-forwarded categories, exactly like the measured-internet lane. Blocked categories are dropped in
+    # prerouting → never reach FORWARD → correctly count 0. Own drift-gate so it rebuilds only when (subnet,cat) changes;
+    # the rebuild flushes RULES, never the counters. ──
+    if body:                                                     # table exists this cycle
+        # FIRST-MATCH, in the ROUTING plan's order (spec order, deduped) + a `return` per rule: geo sets overlap
+        # (a yandex IP is also in the broad ru_net set), so without first-match a byte double-counts. First-match
+        # attributes each byte to the category that actually ROUTED the flow (same order the marking chain uses),
+        # so Σ categories ≤ client traffic and the "Other" bucket stays non-negative.
+        _seen = set(); catw = []
+        for e in spec:
+            if e.get("action") == "block":                     # dropped in prerouting → never reaches FORWARD
+                continue
+            k = (e["subnet"], e["category"])
+            if k not in _seen:
+                _seen.add(k); catw.append(k)
+        have_cnt = set(re.findall(r"counter (\S+) {", body))
+        for c in {c for (_, c) in catw}:
+            cn = "c_" + _smart_setname(c)[4:]                   # cat_<x> → c_<x>
+            for d in ("up", "dn"):
+                if cn + "_" + d not in have_cnt:
+                    run(["nft", "add", "counter", "inet", SMART_NFT_TABLE, cn + "_" + d])
+        csig = hashlib.sha1((json.dumps(catw) + "|c2").encode()).hexdigest()[:16]   # c2: first-match (+return), plan order
+        _csigf = os.path.join(GEO_DIR, ".catcount-sig")
+        try:
+            cstored = open(_csigf).read().strip()
+        except OSError:
+            cstored = ""
+        cc_present = "catcount" in re.findall(r"chain (\S+) {", body)
+        if catw and (cstored != csig or not cc_present):
+            if not cc_present:
+                run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "catcount",
+                     "{ type filter hook forward priority mangle; policy accept; }"])
+            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catcount"])
+            cok = True
+            for (S, c) in catw:                                 # `return` → first category wins (matches routing)
+                snm = _smart_setname(c); cn = "c_" + snm[4:]
+                r1 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + snm, "counter", "name", cn + "_up", "return"])
+                r2 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + snm, "counter", "name", cn + "_dn", "return"])
+                if r1.returncode or r2.returncode:
+                    cok = False
+            if cok:
+                with contextlib.suppress(OSError):
+                    open(_csigf, "w").write(csig)
+        elif not catw and cc_present:                           # no smart categories left → drop the count chain (counters can linger, harmless)
+            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catcount"])
+            run(["nft", "delete", "chain", "inet", SMART_NFT_TABLE, "catcount"])
     # per-set live element counts (so _smart_geo_refresh knows which need (re)loading — e.g. empty after a reboot).
     # Reuse the shared per-loop parse; if `body` was blanked above (auto-merge migration / table absent) the sets
     # were just dropped → report {} so every set is treated as empty and gets reloaded.
@@ -1707,7 +1764,8 @@ def smart_status():
     if t["rc"] != 0:
         return {"active": False, "sets": {}, "rules": 0}
     rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", t["out"]))
-    return {"active": rules > 0, "sets": dict(t["counts"]), "rules": rules, "dnsmasq": bool(_dnsmasq_running())}
+    return {"active": rules > 0, "sets": dict(t["counts"]), "rules": rules, "dnsmasq": bool(_dnsmasq_running()),
+            "bytes": dict(t["bytes"])}   # destination stats: {cat:{up,dn}} cumulative bytes (harvested from the same dump)
 
 
 # ───────────────────────── internet egress volume (measured, not estimated) ─────────────────────────
