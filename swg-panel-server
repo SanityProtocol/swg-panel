@@ -2120,6 +2120,8 @@ def api(method, path, qs, body, deps):
             "panel_settings": panel_settings,            # Panel settings screen: interface defaults, mirrors, advanced thresholds
             "smart_caps": SMART_CAPS,                     # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying
             "cat_domains": DOMAIN_BUNDLES,                # curated domains per host category → UI hover tooltip (ru/geoip cats absent)
+            "cat_labels": {custom_cat_id(cl.get("domains") or [], cl.get("cidrs") or []): cl.get("title")   # custom_<hash> → list title, so the destination bars name custom lists (node counter carries the synthetic id)
+                           for cl in (panel_settings.get("custom_lists") or []) if cl.get("title")},
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)

@@ -967,17 +967,22 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
     # the rebuild flushes RULES, never the counters. ──
     if body:                                                     # table exists this cycle
         # ALL-MATCH (no `return`): categories NEST (a yandex IP is also in the broad ru_net set; youtube ⊂ google),
-        # and each category must show its FULL total — youtube 3GB AND google 6GB-incl-youtube, both real. So a byte
-        # is counted in EVERY category it belongs to (overlap on purpose). The DISTINCT fleet total is the measured
-        # CLIENT traffic, never Σ categories (which double-counts). Order is irrelevant without `return`.
-        catw = sorted({(e["subnet"], e["category"]) for e in spec if e.get("action") != "block"})   # block → dropped in prerouting → never reaches FORWARD
+        # and each must show its FULL total, so a byte counts in EVERY category it matches (overlap on purpose).
+        # DESTINATION VIEW: count every category whose SET is POPULATED (enabled OR routed) on every smart-routed
+        # subnet — DECOUPLED from the routing rules, so catch-all-forwarded YouTube still counts as YouTube; only
+        # "unknown to every set" is uncategorized. Skip empty sets (no wasted per-packet lookup). The DISTINCT total
+        # is the measured CLIENT traffic, never Σ categories. Cost ≈ 1 nftset lookup per populated category per
+        # forwarded packet (all-match), bounded by how many categories you enable. Order irrelevant without `return`.
+        subnets = sorted({e["subnet"] for e in smart_e})           # every client subnet under smart routing (incl catch-all)
+        count_cats = sorted(c for c in cats if c != "all" and _t["counts"].get(_smart_setname(c), 0) > 0)
+        catw = [(S, c) for S in subnets for c in count_cats]
         have_cnt = set(re.findall(r"counter (\S+) {", body))
-        for c in {c for (_, c) in catw}:
+        for c in count_cats:
             cn = "c_" + _smart_setname(c)[4:]                   # cat_<x> → c_<x>
             for d in ("up", "dn"):
                 if cn + "_" + d not in have_cnt:
                     run(["nft", "add", "counter", "inet", SMART_NFT_TABLE, cn + "_" + d])
-        csig = hashlib.sha1((json.dumps(catw) + "|c3").encode()).hexdigest()[:16]   # c3: all-match (no return)
+        csig = hashlib.sha1((json.dumps(catw) + "|d1").encode()).hexdigest()[:16]   # d1: destination view (populated sets)
         _csigf = os.path.join(GEO_DIR, ".catcount-sig")
         try:
             cstored = open(_csigf).read().strip()

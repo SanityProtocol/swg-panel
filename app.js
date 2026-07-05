@@ -521,6 +521,7 @@ const Store = {
     applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
     this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
     this.catDomains = d.cat_domains || this.catDomains || {};   // curated domains per host category → hover tooltip
+    this.catLabels = d.cat_labels || this.catLabels || {};   // custom_<hash> → custom-list title (for the destination bars)
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
@@ -2760,9 +2761,9 @@ function catColor(c) {
   let h = 0; for (const ch of String(c)) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
   return CAT_COLORS[h % CAT_COLORS.length];
 }
-function catLabelOf(c) {   // built-in label · saved custom-list title · inline/hash custom → "Custom" · else the id
+function catLabelOf(c) {   // built-in label · custom-list title (via the panel's custom_<hash>→title map) · inline custom → "Custom" · else the id
   const lt = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
-  return SMART_CAT_LABEL[c] || lt[c] || (String(c).startsWith("custom") ? "Custom" : c);
+  return SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || (String(c).startsWith("custom") ? "Custom" : c);
 }
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
 // EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns). A
