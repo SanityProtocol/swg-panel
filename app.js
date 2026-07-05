@@ -2237,7 +2237,8 @@ function Overview() {
   const catAgg = {};
   const _cadd = (cat, up, dn) => { const a = catAgg[cat] = catAgg[cat] || { up: 0, dn: 0 }; a.up += up || 0; a.dn += dn || 0; };
   if (dRanged) (rangeHist.cats || []).forEach(e => { if (sel.has(e.node)) _cadd(e.cat, e.up, e.dn); });
-  else fleetSel.forEach(n => { for (const [cat, v] of Object.entries(n.cats || {})) _cadd(cat, v.up, v.dn); });
+  else { const cById = Object.fromEntries((Store.nodes || []).map(n => [n.id, n.cats || {}]));   // Store.fleet is a slim {id,name,color} projection — the live `cats` field lives on the full Store.nodes objects
+    fleetSel.forEach(n => { for (const [cat, v] of Object.entries(cById[n.id] || {})) _cadd(cat, v.up, v.dn); }); }
   const catRows = Object.entries(catAgg).filter(([, v]) => v.up + v.dn > 0)
     .sort((a, b) => (b[1].dn + b[1].up) - (a[1].dn + a[1].up)).slice(0, 10)
     .map(([cat, v]) => ({ label: catLabelOf(cat), value: v.dn + v.up, sub: dRanged ? xferCell(v.dn, v.up) : rateCell(v.dn, v.up), color: catColor(cat) }));

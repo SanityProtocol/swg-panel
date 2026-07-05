@@ -2045,7 +2045,7 @@ def api(method, path, qs, body, deps):
                         "last_seen": ls,
                         "status": "online" if online else ("dangling" if ls is None else "offline"),
                         "peer_count": pc, "rx_speed": rx, "tx_speed": tx,
-                        "cats": (deps.get("_cat_rate") or {}).get(nid) or {},   # live per-category dest traffic {cat:{up,dn}} B/s (panel-derived from the node's nft counters)
+                        "cats": snap.get("cat_rate") or {},   # LIVE per-category dest throughput {cat:{up,dn}} B/s (node-reported, latest push)
                         "hostname": snap.get("hostname"),
                         "health": snap.get("health"),     # per-node load/mem/disk/uptime (additive)
                         "health_history": hh,             # recent cpu/mem/disk % series (RRD-style ring)
@@ -3727,27 +3727,18 @@ class Handler(BaseHTTPRequestHandler):
                 with contextlib.suppress(Exception):
                     hrrd_update(mesh_rrd_path(stats_dir, a, b), now_i, mM)
                 mlast[key] = now_i
-            # DESTINATION STATS: per-category cumulative bytes (snap["smartroute"]["bytes"] = {cat:{up,dn}}) →
-            # positive-delta rate (reset/vanish-safe) → per-(node,cat) RRD, lazily created + throttled ≤1/min like
-            # mesh. Live rate cached in _cat_rate[nid] for /api/state; ranges read the RRDs (see /api/category-history).
-            cat_bytes = ((snap.get("smartroute") or {}).get("bytes")) or {}
-            clast = Handler.deps.setdefault("_cat_last", {})       # (nid,cat) → (t, up_bytes, dn_bytes)
+            # DESTINATION STATS: the node reports the LATEST per-category rate directly (snap["cat_rate"] = {cat:
+            # {up,dn}} B/s — it does the delta, like snap["inet"]). LIVE reads it straight through (nodes_view.cats);
+            # ranges come from the per-(node,cat) RRD written here (lazily created + throttled ≤1/min like mesh).
+            cat_rate = snap.get("cat_rate") or {}
             clast_w = Handler.deps.setdefault("_cat_last_w", {})   # (nid,cat) → last RRD write time
-            crate = Handler.deps.setdefault("_cat_rate", {}).setdefault(nid, {})   # cat → {up,dn} B/s (live)
-            for cat, v in cat_bytes.items():
-                ub = int(v.get("up") or 0); db = int(v.get("dn") or 0)
-                k = (nid, cat); prev = clast.get(k); clast[k] = (now_i, ub, db)
-                if prev and now_i > prev[0]:
-                    dt = now_i - prev[0]
-                    rup = max(0, ub - prev[1]) / dt; rdn = max(0, db - prev[2]) / dt   # positive-delta: a counter reset shows as a drop → 0
-                    crate[cat] = {"up": rup, "dn": rdn}
-                    if (ub or db) and now_i - clast_w.get(k, 0) >= MESH_THROTTLE_S:   # lazy: only categories that have moved bytes get a ring
-                        cM = [0] * HRRD_NM; cM[3] = rup; cM[4] = rdn                  # up→rx slot, dn→tx slot
-                        with contextlib.suppress(Exception):
-                            hrrd_update(cat_rrd_path(stats_dir, nid, cat), now_i, cM)
-                        clast_w[k] = now_i
-            for cat in [c for c in crate if c not in cat_bytes]:   # a category was disabled → its counter vanished; drop it (not a reset spike)
-                del crate[cat]; clast.pop((nid, cat), None)
+            for cat, v in cat_rate.items():
+                rup = max(0, int(v.get("up") or 0)); rdn = max(0, int(v.get("dn") or 0))
+                if (rup or rdn) and now_i - clast_w.get((nid, cat), 0) >= MESH_THROTTLE_S:   # lazy: only categories moving bytes get a ring
+                    cM = [0] * HRRD_NM; cM[3] = rup; cM[4] = rdn                             # up→rx slot, dn→tx slot
+                    with contextlib.suppress(Exception):
+                        hrrd_update(cat_rrd_path(stats_dir, nid, cat), now_i, cM)
+                    clast_w[(nid, cat)] = now_i
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.

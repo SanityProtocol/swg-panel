@@ -1767,6 +1767,33 @@ def smart_status():
             "bytes": dict(t["bytes"])}   # destination stats: {cat:{up,dn}} cumulative bytes (harvested from the same dump)
 
 
+_CATS = {"t": 0.0, "cum": {}, "rate": {}}
+
+
+def sample_cats():
+    """LATEST per-category throughput {cat:{up,dn}} B/s — the delta of the cumulative nft category counters
+    (harvested by _smart_table) over the last interval. The LIVE 'traffic by destination' figure: the most
+    recent push, not a window average. Reset/vanish-safe; cheap (reuses the per-loop dump — no new subprocess)."""
+    t = _smart_table()
+    if t["rc"] != 0:
+        _CATS["rate"] = {}
+        return {}
+    cum = t["bytes"]
+    now = time.time()
+    prev, pt = _CATS["cum"], _CATS["t"]
+    if prev and now > pt:
+        dt = now - pt
+        r = {}
+        for cat, v in cum.items():
+            p = prev.get(cat) or {}
+            r[cat] = {"up": max(0.0, v.get("up", 0) - p.get("up", 0)) / dt,   # counter reset (rebuild/reboot) → drop → 0
+                      "dn": max(0.0, v.get("dn", 0) - p.get("dn", 0)) / dt}
+        _CATS["rate"] = r
+    _CATS["cum"] = cum
+    _CATS["t"] = now
+    return dict(_CATS["rate"])
+
+
 # ───────────────────────── internet egress volume (measured, not estimated) ─────────────────────────
 # The exact bytes this node forwards to/from the INTERNET, read off the per-iface FORWARD ACCEPT counters
 # the agent installs in every interface's PostUp (`-i <iface> -o <wan>` = upload · `-i <wan> -o <iface>` =
@@ -1928,6 +1955,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     snap["inet"] = sample_inet(node_cfg, now)   # measured internet up/down (B/s); cached, refreshed off the 5s path
+    snap["cat_rate"] = sample_cats()            # LIVE per-category throughput {cat:{up,dn}} B/s (latest push, delta of the nft counters)
     return snap
 
 
