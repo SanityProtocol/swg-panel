@@ -1554,7 +1554,7 @@ function recentActivity() {
 // window for the range-driven visuals (doughnuts + flow map); live derives from the /api/state bundle,
 // the rest read the per-node RRD on demand. Both live in module state + localStorage so a re-render or
 // the 5s poll never clobbers the operator's selection (it's not derived from server data).
-const DASH_RANGES = [["live", "Live"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];
+const DASH_RANGES = [["live", "Live"], ["hour", "Hour"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];
 const dashState = { nodes: null, range: "day" };   // nodes: null = whole fleet, else a Set of node ids
 (function () {
   try {
