@@ -4212,6 +4212,22 @@ def main():
     if fleet is None:
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
     nodes_path = fleet.get("nodes_path", "/var/lib/swg-panel/nodes.json")
+    # Single-instance-per-state-dir guard: two swg-panel-servers sharing one state dir keep INDEPENDENT in-memory
+    # copies of nodes.json and clobber each other's writes → node-token desync → sync 401 → no config propagates.
+    # (A stray no-auth :8091 test panel on the live state dir did exactly this.) A dryrun/test panel with its OWN
+    # state dir (SWG_PANEL_FLEET → different nodes_path) takes a different lock, so it is unaffected. flock releases
+    # automatically on exit/crash.
+    _statedir = os.path.dirname(nodes_path) or "."
+    _lp = os.path.join(_statedir, ".panel.lock")
+    try:
+        _lockfd = os.open(_lp, os.O_WRONLY | os.O_CREAT, 0o600)
+        fcntl.flock(_lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        raise SystemExit(f"refusing to start: another swg-panel-server already holds {_lp} (state dir {_statedir}). "
+                         f"Two panels on one state dir clobber nodes.json (desyncs node tokens → sync 401). "
+                         f"Stop the other instance first, or point this one at a separate state dir.")
+    os.ftruncate(_lockfd, 0); os.write(_lockfd, (str(os.getpid()) + "\n").encode())
+    globals()["_STATE_LOCK_FD"] = _lockfd     # keep the fd open for the process lifetime → lock held until exit
     _rp = fleet.get("roster_path", "/var/lib/swg-panel/users.json")
     _sc = fleet.get("store_configs", True) is not False
     _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")

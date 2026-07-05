@@ -19,6 +19,7 @@ Config (/etc/swg-agent/config.json), see config.example.json:
 """
 
 import contextlib
+import fcntl
 import hashlib
 import http.client
 import json
@@ -3201,7 +3202,27 @@ def report_proc(panel, state, err=None):
 # never gated — the panel keeps seeing the node live every interval.
 ROUTING_RECONCILE_EVERY_S = 60
 
+_STATE_LOCK_FD = None          # held for the process lifetime → single-instance-per-state-dir guard
+def _lock_state_dir():
+    """Refuse to start a SECOND swg-noded on the same state dir. Two nodeds sharing /var/lib/swg-noded fight over
+    the reconcile/interface state (and, on a master, can clobber the panel's view) — the same class of bug as two
+    panels sharing one state dir. A node with a DIFFERENT state dir (SWG_NODED_STATE) uses its own lock → unaffected."""
+    global _STATE_LOCK_FD
+    with contextlib.suppress(OSError):
+        os.makedirs(STATE_DIR, exist_ok=True)
+    lp = os.path.join(STATE_DIR, ".noded.lock")
+    try:
+        fd = os.open(lp, os.O_WRONLY | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(f"refusing to start: another swg-noded already holds {lp} (state dir {STATE_DIR}). "
+                 f"Stop the other instance first, or point this one at a separate SWG_NODED_STATE dir.")
+    os.ftruncate(fd, 0); os.write(fd, (str(os.getpid()) + "\n").encode())
+    _STATE_LOCK_FD = fd
+
+
 def main():
+    _lock_state_dir()
     node_cfg = json.load(open(CONFIG_PATH))
     panel = node_cfg.get("panel") or {}
     nd = node_cfg.get("node") or {}
