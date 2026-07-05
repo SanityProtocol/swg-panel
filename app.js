@@ -1799,7 +1799,7 @@ function flowGraph(selIds, range, hist) {
   const ranged = range && range !== "live" && hist && !hist.loading && hist.range === range;   // history loaded → show totals
   const STEP = RANGE_STEP[range] || 1;
   const acc = {};
-  fleet.forEach(n => acc[n.id] = { cl: { rx: 0, tx: 0 }, turn: {}, mesh: {}, offmesh: { rx: 0, tx: 0, n: new Set() } });   // offmesh = traffic to fleet nodes NOT selected (n = which ones)
+  fleet.forEach(n => acc[n.id] = { cl: { rx: 0, tx: 0 }, turn: {}, mesh: {}, offmesh: { rx: 0, tx: 0, n: new Set() }, inet: null });   // offmesh = traffic to fleet nodes NOT selected (n = which ones) · inet = MEASURED internet {out,in} B/s (node counter), null = fall back to the client-derived estimate
   if (ranged) {
     // ── ranged: TOTAL bytes over the window from the RRD. Client = Σ max(0, rx−mesh)·step (turn can't be split out
     //    of the history → folded into clients; there's no per-fork turn lane over a window); mesh from per-pair means. ──
@@ -1826,6 +1826,7 @@ function flowGraph(selIds, range, hist) {
       else { a.cl.rx += rx; a.cl.tx += tx; }
     }));
     fleet.forEach(n => { const snap = Store.stats[n.id]; if (!snap) return;
+      if (snap.inet) acc[n.id].inet = { out: snap.inet.up || 0, in: snap.inet.down || 0 };   // exact internet egress measured by the node (FORWARD counters) — replaces the client estimate
       for (const [ifn, blk] of Object.entries(snap.interfaces || {})) {
         const meta = (Store.describe[n.id] || {})[ifn] || blk.meta || {};
         const peer = meta.link_node || meta.egress_node;   // a system mesh link identifies its peer via link_node (egress_node is the user-iface forward target, blank here)
@@ -1846,8 +1847,11 @@ function flowGraph(selIds, range, hist) {
     Object.entries(a.turn).forEach(([fk, v]) => { if (!(v.rx || v.tx)) return;
       const s = satId(n.id, "turn:" + fk); sats.push({ id: s, node: n.id, kind: "turn", fork: fk, label: fk, color: turnColor(fk), ic: "relay" });
       if (v.rx) flows.push({ from: s, to: n.id, bps: v.rx }); if (v.tx) flows.push({ from: n.id, to: s, bps: v.tx }); });
-    const inetOut = a.cl.rx + turnRx, inetIn = a.cl.tx + turnTx;
-    if (inetOut || inetIn) { const s = satId(n.id, "internet"); sats.push({ id: s, node: n.id, kind: "internet", label: "internet", color: FLOW_GLOBE, ic: "globe" });
+    // internet lane: the node's MEASURED egress (a.inet) when present — exact and multi-hop-correct (an exit's
+    // relayed traffic shows here; an entry's forwarded traffic does NOT, it rode the mesh lane). Falls back to the
+    // client+turn estimate only for a node that doesn't report a counter yet (older noded / no iptables).
+    const inetOut = a.inet ? a.inet.out : a.cl.rx + turnRx, inetIn = a.inet ? a.inet.in : a.cl.tx + turnTx;
+    if (inetOut || inetIn) { const s = satId(n.id, "internet"); sats.push({ id: s, node: n.id, kind: "internet", label: "internet", color: FLOW_GLOBE, ic: "globe", measured: !!a.inet });
       if (inetOut) flows.push({ from: n.id, to: s, bps: inetOut }); if (inetIn) flows.push({ from: s, to: n.id, bps: inetIn }); }
     Object.entries(a.mesh).forEach(([peer, v]) => { if (v.tx) flows.push({ from: n.id, to: peer, bps: v.tx }); });
     if (a.offmesh.rx || a.offmesh.tx) {   // aggregate of mesh traffic to fleet nodes NOT in the diagram
@@ -1900,9 +1904,13 @@ function FlowMap2({ selIds, range, hist }) {
   const fontMap = mapper(fleet.map(n => busy(n.id)), NODE_FLOOR, 21, 0);       // nodes: few & all meaningful → no tail clamp
   const satMap = mapper(sats.map(s => (satTot[s.id] || {}).tot || 0), SAT_FLOOR, 22, 0);
   const seatNeed = id => flows.reduce((a, f) => (f.from === id || f.to === id) ? a + wOf(f.bps) + 4 : a, 0);   // Σ incident line widths + gaps (ref px)
+  // the thickest SINGLE connection's pair (both lanes + gap) — a bidirectional link lands as a tight parallel pair on one
+  // rim point, so the node's cross-dimension must span it even if the total perimeter (seatNeed) looks roomy.
+  const pairThick = id => { const bo = {}; flows.forEach(f => { const o = f.from === id ? f.to : f.to === id ? f.from : null; if (o == null) return; bo[o] = (bo[o] || 0) + wOf(f.bps); }); let mx = 0; for (const k in bo) if (bo[k] > mx) mx = bo[k]; return mx ? mx + 2 : 0; };
   // a satellite's lines all enter from ONE side (toward its parent), so its DIAMETER must span the line stack → r ≥ Σ/2
   const satR = id => Math.max(satMap((satTot[id] || {}).tot || 0), seatNeed(id) / 2);
-  const nodeFont = id => Math.max(fontMap(busy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85));    // pill perimeter 4·(hw+hh) ≥ Σ lines
+  // node height is 2·hh = 2·fs+6, so fs ≥ pairThick/2−3 keeps the pill no thinner than the thickest parallel pair touching it
+  const nodeFont = id => Math.max(fontMap(busy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85), pairThick(id) / 2 - 3);    // pill perimeter 4·(hw+hh) ≥ Σ lines · height ≥ thickest pair
   const nR = id => (0.31 * nameLen(id) + 0.85) * nodeFont(id) + 2;        // ≈ pill half-width
   const nmeta = id => { if (!nodeIds.has(id)) { const r = satR(id); return { hw: r, hh: r }; }   // sat = circle; node = pill (est.)
     const fs = nodeFont(id), L = nameLen(id); return { hw: (0.31 * L + 0.85) * fs + 2, hh: fs + 3 }; };
@@ -2072,7 +2080,7 @@ function FlowMap2({ selIds, range, hist }) {
       const occ = flows.filter(f => f.from === hov.id || f.to === hov.id).map(f => { const O = epPos(f.from === hov.id ? f.to : f.from); return O ? Math.atan2(O.y - P.y, O.x - P.x) : null; }).filter(a => a != null);
       spot = bubbleSpot(P, occ, epR(hov.id));
       if (spos[hov.id]) hv = { type: "ep", name: Store.nodeName(hov.id), ib: G.inTot[hov.id], ob: G.outTot[hov.id], sub: "server", col: Store.nodeColor(hov.id) };
-      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? sm.fork : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? "internet · estimated" : sm.kind === "turn" ? "turn-proxy" : sm.kind === "mesh" ? "fleet nodes not shown" : "clients", col: sm.color }; } }
+      else { const sm = sats.find(x => x.id === hov.id); if (sm) { const t = satTot[hov.id] || {}; hv = { type: "ep", name: sm.kind === "turn" ? sm.fork : sm.label || sm.kind, ib: t.ib, ob: t.ob, sub: sm.kind === "internet" ? (sm.measured ? "internet · measured" : "internet · estimated") : sm.kind === "turn" ? "turn-proxy" : sm.kind === "mesh" ? "fleet nodes not shown" : "clients", col: sm.color }; } }
     }
   } else if (hov && hov.fi != null) {
     const f = flows[hov.fi], r = ribbons.find(x => x.idx === hov.fi);

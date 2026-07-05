@@ -1710,6 +1710,65 @@ def smart_status():
     return {"active": rules > 0, "sets": dict(t["counts"]), "rules": rules, "dnsmasq": bool(_dnsmasq_running())}
 
 
+# ───────────────────────── internet egress volume (measured, not estimated) ─────────────────────────
+# The exact bytes this node forwards to/from the INTERNET, read off the per-iface FORWARD ACCEPT counters
+# the agent installs in every interface's PostUp (`-i <iface> -o <wan>` = upload · `-i <wan> -o <iface>` =
+# download). Counting is free (kernel keeps these counters always-on); we only READ them, and only on a slow
+# gate (~15s) — NEVER on the 5s snapshot path — caching the rate so build_snapshot just attaches the cache.
+# Correct for multi-hop by construction: at an ENTRY forwarded traffic goes iface→mesh (both tunnels, no `-o
+# <wan>` match), so only DIRECT client traffic counts; at an EXIT the mesh iface forwards to the WAN
+# (`-i swg_… -o <wan>`), so the relayed volume is attributed to the node that actually reaches the internet.
+INET_SAMPLE_EVERY_S = 15
+_INET = {"t": 0.0, "cum": None, "rate": {"up": 0.0, "down": 0.0}}
+
+
+def read_inet_bytes(managed_ifaces):
+    """Cumulative internet-forwarded bytes {up, down} from the filter FORWARD counters. A rule counts only
+    when EXACTLY ONE of its `-i`/`-o` is a managed tunnel iface and the other is a physical NIC — so
+    tunnel↔tunnel forwards (mesh relay) and the `swg-fwd-acl` rules (no `-o`) are excluded automatically.
+    One cheap `iptables-save -c -t filter` (small: geo sets live in a separate nft table). None → unreadable."""
+    r = run(["iptables-save", "-c", "-t", "filter"])
+    if r.returncode != 0 or not r.stdout:
+        return None
+    up = down = 0
+    for ln in r.stdout.splitlines():
+        if not ln.startswith("["):
+            continue
+        m = re.match(r"\[\d+:(\d+)\]\s+-A\s+FORWARD\s+(.*)", ln)
+        if not m:
+            continue
+        by = int(m.group(1)); body = m.group(2)
+        mi = re.search(r"-i (\S+)", body); mo = re.search(r"-o (\S+)", body)
+        if not (mi and mo):
+            continue
+        i, o = mi.group(1), mo.group(1)
+        if i in managed_ifaces and o not in managed_ifaces:
+            up += by
+        elif o in managed_ifaces and i not in managed_ifaces:
+            down += by
+    return {"up": up, "down": down}
+
+
+def sample_inet(node_cfg, now):
+    """Return the cached internet {up, down} rate (B/s), refreshing the counters at most every
+    INET_SAMPLE_EVERY_S. First read only sets the baseline (rate stays 0 until the next sample)."""
+    if _INET["cum"] is not None and (now - _INET["t"]) < INET_SAMPLE_EVERY_S:
+        return _INET["rate"]
+    managed = set((node_cfg.get("interfaces") or {}).keys())
+    if not managed:
+        return _INET["rate"]
+    cur = read_inet_bytes(managed)
+    if cur is None:                                    # no iptables (some containers) → leave last known
+        return _INET["rate"]
+    prev, pt = _INET["cum"], _INET["t"]
+    if prev is not None and now > pt:                  # counter reset (iface flap) → clamp the negative delta to 0
+        dt = now - pt
+        _INET["rate"] = {"up": max(0.0, (cur["up"] - prev["up"]) / dt),
+                         "down": max(0.0, (cur["down"] - prev["down"]) / dt)}
+    _INET["cum"] = cur; _INET["t"] = now
+    return dict(_INET["rate"])
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -1765,6 +1824,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status()}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
+    snap["inet"] = sample_inet(node_cfg, now)   # measured internet up/down (B/s); cached, refreshed off the 5s path
     return snap
 
 
