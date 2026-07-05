@@ -1718,7 +1718,7 @@ def smart_status():
 # Correct for multi-hop by construction: at an ENTRY forwarded traffic goes iface→mesh (both tunnels, no `-o
 # <wan>` match), so only DIRECT client traffic counts; at an EXIT the mesh iface forwards to the WAN
 # (`-i swg_… -o <wan>`), so the relayed volume is attributed to the node that actually reaches the internet.
-INET_SAMPLE_EVERY_S = 15
+INET_SAMPLE_EVERY_S = 5    # match the client/mesh lanes' 5s cadence — a mangle-table iptables-save is ~1-3ms (geo sets live in a separate nft table), measured negligible on a 1-CPU node
 SWG_INET_TABLE = "mangle"        # count in MANGLE FORWARD, not filter — see reconcile_inet_chain
 SWG_INET_CHAIN = "SWG_INET"      # our own chain, jumped from mangle FORWARD: counts tunnel↔wan bytes
 _INET = {"t": 0.0, "cum": None, "rate": {"up": 0.0, "down": 0.0}}

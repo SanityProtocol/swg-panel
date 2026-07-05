@@ -1792,7 +1792,7 @@ function DashDoughnuts({ selIds, range, hist }) {
 // Per selected server, live rx/tx split into endpoint KINDS: clients (direct wg/awg peers), turn (per VK fork),
 // internet (direct exit — approximate until the node SNAT counter), mesh (per peer server). Each is a bidirectional
 // pair (ingress = rx, egress = tx); 0-value flows dropped. Every flow is drawn source→dest as blue(egress)→green(ingress).
-const FLOW_EG = "#2E90FF", FLOW_IN = "#22D07A", FLOW_GLOBE = "#38BDF8", FLOW_MESH = "#9B8AFF";   // egress blue · ingress green · internet blue · off-fleet mesh violet
+const FLOW_EG = "#2E90FF", FLOW_IN = "#22D07A", FLOW_GLOBE = "#12BECE", FLOW_MESH = "#9B8AFF";   // egress blue · ingress green · internet cyan-teal (distinct from egress blue) · off-fleet mesh violet
 function flowGraph(selIds, range, hist) {
   const sel = new Set(selIds);
   const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
@@ -1904,7 +1904,11 @@ function FlowMap2({ selIds, range, hist }) {
   const wMap = mapper(flows.map(f => f.bps), 2, 25, LOQ);                // line width px: floor 2 · ceiling 25 (per direction)
   const wOf = bps => wMap(bps);                                          // line width, reference px
   const NODE_FLOOR = 12, SAT_FLOOR = 11, ICON_R = 1.3;                   // ICON_R = sat icon size ÷ radius (circle & icon grow together)
-  const fontMap = mapper(fleet.map(n => busy(n.id)), NODE_FLOOR, 21, 0);       // nodes: few & all meaningful → no tail clamp
+  // size a node by the traffic it VISIBLY shows — Σ of its incident line widths — NOT raw bps. Line widths are
+  // sqrt-compressed and capped at 25px, so two nodes whose lines all read "max" look equally busy; sizing by raw
+  // bps would still blow one up 10× for having more underlying Mbps behind those same-looking lines.
+  const visBusy = id => flows.reduce((a, f) => (f.from === id || f.to === id) ? a + wOf(f.bps) : a, 0);
+  const fontMap = mapper(fleet.map(n => visBusy(n.id)), NODE_FLOOR, 21, 0);    // nodes: few & all meaningful → no tail clamp
   const satMap = mapper(sats.map(s => (satTot[s.id] || {}).tot || 0), SAT_FLOOR, 22, 0);
   const seatNeed = id => flows.reduce((a, f) => (f.from === id || f.to === id) ? a + wOf(f.bps) + 4 : a, 0);   // Σ incident line widths + gaps (ref px)
   // the thickest SINGLE connection's pair (both lanes + gap) — a bidirectional link lands as a tight parallel pair on one
@@ -1914,7 +1918,7 @@ function FlowMap2({ selIds, range, hist }) {
   const satR = id => Math.max(satMap((satTot[id] || {}).tot || 0), seatNeed(id) / 2);
   // node height is 2·hh = 2·fs+6; the pill's 8px rounded CORNERS eat into the straight edge a pair can seat on, so
   // require the straight run (2fs+6 − 2·8) ≥ pairThick (which already includes the inter-lane gap) → fs ≥ pairThick/2+5.
-  const nodeFont = id => Math.max(fontMap(busy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85), pairThick(id) / 2 + 5);    // pill perimeter 4·(hw+hh) ≥ Σ lines · straight edge ≥ thickest pair
+  const nodeFont = id => Math.max(fontMap(visBusy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85), pairThick(id) / 2 + 5);    // size by VISIBLE traffic · pill perimeter 4·(hw+hh) ≥ Σ lines · straight edge ≥ thickest pair
   const nR = id => (0.31 * nameLen(id) + 0.85) * nodeFont(id) + 2;        // ≈ pill half-width
   const nmeta = id => { if (!nodeIds.has(id)) { const r = satR(id); return { hw: r, hh: r }; }   // sat = circle; node = pill (est.)
     const fs = nodeFont(id), L = nameLen(id); return { hw: (0.31 * L + 0.85) * fs + 2, hh: fs + 3 }; };
