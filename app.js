@@ -422,6 +422,8 @@ const api = {
   nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&range=" + encodeURIComponent(range)); },
   meshHistory(range) { return this.get("/api/mesh-history?range=" + encodeURIComponent(range)); },
   categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
+  catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
+  catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -2789,6 +2791,84 @@ const newRid = () => "rr" + (++_ruleSeq);
 // grow a textarea to fit its content (starts at one row like a textbox, expands as lines wrap)
 const autoGrow = el => { if (!el) return; el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; };
 
+// Searchable provider-catalog category picker — replaces the native <select> for routing rules. The
+// catalog holds ~1800 categories (far too many for a dropdown), so this is a combobox: a button showing
+// the current label, opening a portal'd popover with a live search box (queries /api/catalog, paginated)
+// plus the operator's own custom lists pinned on top. caps ({ip,host}) drive kernel greying — a host-only
+// category can't match by dest IP, so it's disabled (not hidden) in kernel mode with a "needs Force-DNS" note.
+function CatPicker({ value, mode, customLists, listTitle, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(0);
+  const [res, setRes] = useState(null);       // {items,total,page,per} | null while loading
+  const [pos, setPos] = useState(null);
+  const ref = useRef(null), popRef = useRef(null), inRef = useRef(null);
+  const curLabel = value === "custom" ? "Custom IPs / domains…"
+    : (SMART_CAT_LABEL[value] || (listTitle || {})[value] || (Store.catLabels || {})[value] || value || "Choose a category…");
+  const usable = caps => mode === "kernel" ? !!(caps && caps.ip) : !!(caps && (caps.ip || caps.host));
+  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
+    const flip = below < 300 && above > below;                 // not enough room under the trigger → open upward
+    setPos({ left: Math.round(r.left), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width),
+      flip, maxh: Math.max(200, Math.round(flip ? above : below)) }); };   // list caps to the space actually available
+  useEffect(() => {   // fetch on open + query/page change; debounce keystrokes, immediate on open/page
+    if (!open) return; let live = true;
+    const t = setTimeout(() => api.catalog(q, page).then(r => { if (live && r && r.data) setRes(r.data); }).catch(() => {}), q && page === 0 ? 180 : 0);
+    return () => { live = false; clearTimeout(t); };
+  }, [open, q, page]);
+  useEffect(() => {   // position + outside-click/Esc/scroll handling while open
+    if (!open) return; place();
+    const onMove = () => place();
+    const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) setOpen(false); };
+    const onKey = e => { if (e.key === "Escape") { setOpen(false); ref.current && ref.current.focus(); } };
+    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
+    document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
+    setTimeout(() => inRef.current && inRef.current.focus(), 0);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  const pick = id => { onChange(id); setOpen(false); setQ(""); setPage(0); };
+  const capBadge = caps => html`<span class="capbs">
+    ${caps && caps.ip ? html`<span class="capb ip" title="Matchable by IP range — works in every mode">IP</span>` : null}
+    ${caps && caps.host ? html`<span class="capb host" title="Matchable by domain — needs Force-DNS or SNI mode">Host</span>` : null}</span>`;
+  const items = (res && res.items) || [];
+  const per = (res && res.per) || 40, total = (res && res.total) || 0;
+  const pages = Math.max(1, Math.ceil(total / per));
+  const lists = customLists || [];
+  return html`<div class="catpick" ref=${ref}>
+    <button type="button" class=${"catpick-btn" + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}>
+      <span class="catpick-lbl">${curLabel}</span><span class="catpick-caret">▾</span>
+    </button>
+    ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop" + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + Math.max(pos.width, 320) + "px;--catpick-maxh:" + (pos.maxh - 160) + "px"}>
+      <div class="catpick-search">
+        <${Ic} i="search"/>
+        <input ref=${inRef} type="text" placeholder="Search ${(res && res.total) || ""} categories — netflix, steam, ru…" value=${q}
+          onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"/>
+      </div>
+      <div class="catpick-list">
+        ${!q ? html`<button type="button" class=${"catpick-row" + (value === "custom" ? " sel" : "")} onClick=${() => pick("custom")}>
+          <span class="catpick-rlbl"><${Ic} i="pencil"/> Custom IPs / domains…</span></button>` : null}
+        ${!q && lists.length ? html`<div class="catpick-grp">Your lists</div>
+          ${lists.map(l => html`<button type="button" class=${"catpick-row" + (value === l.id ? " sel" : "")} onClick=${() => pick(l.id)}>
+            <span class="catpick-rlbl">${l.title}</span></button>`)}
+          <div class="catpick-grp">Provider catalog</div>` : null}
+        ${res == null ? html`<div class="catpick-empty">Loading…</div>`
+          : items.length === 0 ? html`<div class="catpick-empty">No category matches “${q}”.</div>`
+          : items.map(it => { const ok = usable(it.caps); return html`<button type="button" disabled=${!ok}
+              class=${"catpick-row" + (value === it.id ? " sel" : "") + (ok ? "" : " off")} onClick=${() => ok && pick(it.id)}
+              title=${ok ? "" : "Host-only list — switch this node to Force-DNS to use it"}>
+              <span class="catpick-rlbl">${it.label}${SMART_CAT_LABEL[it.id] ? html`<span class="catpick-builtin">built-in</span>` : null}</span>
+              ${capBadge(it.caps)}</button>`; })}
+      </div>
+      ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is in <b>Kernel</b> (IP) mode. Switch it to Force-DNS or SNI to use them.</div>` : null}
+      ${total > per ? html`<div class="catpick-foot">
+        <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => setPage(p => Math.max(0, p - 1))}>‹ Prev</button>
+        <span class="catpick-count">${page * per + 1}–${Math.min(total, (page + 1) * per)} of ${total}</span>
+        <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => setPage(p => Math.min(pages - 1, p + 1))}>Next ›</button>
+      </div>` : null}
+    </div><//>` : null}
+  </div>`;
+}
+
 // One smart-routing rule row: a category → a destination (exit node / direct / block). Reuses the
 // drag-reorder hook; order is priority (first match wins on the node).
 function RoutingRules({ node, rules, onChange }) {
@@ -2834,12 +2914,8 @@ function RoutingRules({ node, rules, onChange }) {
       const it = rs.item(r._rid);
       return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || badToks.length || domToks.length) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
-        <select class="selwrap" value=${r.category} onChange=${e => setRule(r._rid, { category: e.target.value })}>
-          <option value="custom">Custom IPs / domains…</option>
-          ${customLists.length ? html`<optgroup label="Custom lists">${customLists.map(l => html`<option value=${l.id}>${l.title}</option>`)}</optgroup>` : null}
-          <optgroup label="Pre-defined lists">${SMART_CATEGORIES.filter(([id]) => id !== "all" && !hiddenCats.has(id)).map(([id, lbl]) => html`<option value=${id}>${lbl}</option>`)}</optgroup>
-          ${(() => { const shown = new Set(["custom", ...SMART_CATEGORIES.filter(([id]) => id !== "all" && !hiddenCats.has(id)).map(([id]) => id), ...customLists.map(l => l.id)]); return r.category && !shown.has(r.category) ? html`<option value=${r.category}>${catLabel(r.category)} (hidden)</option>` : null; })()}
-        </select>
+        <${CatPicker} value=${r.category} mode=${_mode} customLists=${customLists} listTitle=${listTitle}
+          onChange=${v => setRule(r._rid, { category: v })}/>
         <span class="rrarrow">→</span>
         <select class="selwrap" value=${destVal(r)} onChange=${e => onDest(r._rid, e.target.value)}>
           <option value="direct">Direct (this node)</option>

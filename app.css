@@ -1293,7 +1293,44 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rrrow.warn{border-color:color-mix(in srgb,var(--partial) 45%,transparent)}
 .rrrow .drag-grip{cursor:grab;opacity:.62}.rrrow:hover .drag-grip{opacity:.95}
 .rrrow .selwrap{min-width:0}
+.rrrow .catpick{min-width:0}
 .rrarrow{color:var(--faint)}
+/* Searchable provider-catalog category picker (CatPicker) — the button mirrors .selwrap; the popover is portal'd to <body>. */
+.catpick{position:relative;min-width:0}
+.catpick-btn{display:flex;align-items:center;gap:6px;width:100%;min-width:0;padding:7px 9px;font-family:inherit;font-size:13px;
+  color:var(--ink);background:var(--bg);border:1px solid var(--line-solid);border-radius:7px;cursor:pointer;text-align:left;transition:border-color .12s}
+.catpick-btn:hover{border-color:color-mix(in srgb,var(--brand) 40%,var(--line-solid))}
+.catpick-btn.on{border-color:var(--brand)}
+.catpick-lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.catpick-caret{color:var(--faint);font-size:11px;flex-shrink:0}
+.catpick-pop{position:fixed;z-index:90;max-width:min(440px,92vw);background:var(--surface-2);border:1px solid var(--line-solid);
+  border-radius:var(--r-sm);box-shadow:0 12px 34px rgba(0,0,0,.5);overflow:hidden;display:flex;flex-direction:column}
+.catpick-pop.flip{transform:translateY(-100%)}   /* opened upward: anchor the popover's bottom to the trigger's top */
+.catpick-search{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:1px solid var(--line)}
+.catpick-search .ic{color:var(--faint);flex-shrink:0}
+.catpick-search input{flex:1;min-width:0;border:0;background:none;color:var(--ink);font-family:inherit;font-size:13px;outline:none}
+.catpick-search input::placeholder{color:var(--faint)}
+.catpick-list{max-height:var(--catpick-maxh,min(46vh,380px));overflow-y:auto;padding:5px}
+.catpick-grp{font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--dim);padding:8px 8px 4px}
+.catpick-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:6px;background:none;
+  color:var(--ink);font-family:inherit;font-size:13px;text-align:left;cursor:pointer}
+.catpick-row:hover:not(:disabled){background:var(--surface)}
+.catpick-row.sel{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--sel-ink)}
+.catpick-row.off{cursor:not-allowed;color:var(--faint)}
+.catpick-row.off .capb{opacity:.5}
+.catpick-rlbl{flex:1;min-width:0;display:flex;align-items:center;gap:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.catpick-rlbl .ic{color:var(--faint);flex-shrink:0}
+.catpick-builtin{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  padding:1px 5px;border:1px solid var(--line-solid);border-radius:5px;flex-shrink:0}
+.catpick-empty{padding:16px 10px;text-align:center;color:var(--faint);font-size:12.5px}
+.capbs{display:flex;gap:4px;flex-shrink:0}
+.capb{font-family:var(--mono);font-size:9px;letter-spacing:.05em;font-weight:600;padding:1px 5px;border-radius:5px}
+.capb.ip{color:var(--brand);background:color-mix(in srgb,var(--brand) 15%,transparent)}
+.capb.host{color:var(--smart);background:color-mix(in srgb,var(--smart) 15%,transparent)}
+.catpick-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 11px;border-top:1px solid var(--line)}
+.catpick-count{font-family:var(--mono);font-size:10.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+.catpick-note{padding:8px 11px;border-top:1px solid var(--line);font-size:11px;line-height:1.45;color:var(--dim);background:color-mix(in srgb,var(--smart) 6%,transparent)}
+.catpick-note b{color:var(--ink-2);font-weight:600}
 .rrrow .rrlint{grid-column:1/-1}   /* lint messages drop to their own full-width grid row */
 .rrlint{font-size:10px;color:var(--partial);font-family:var(--mono)}
 /* the catch-all footer reuses the row's grid template + the row's content inset (transparent padding+border) so

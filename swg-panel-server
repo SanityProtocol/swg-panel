@@ -2187,6 +2187,26 @@ def api(method, path, qs, body, deps):
         # One consolidated read: everything the UI polls for, in a single round trip.
         # Status is NOT computed here — the browser derives it from roster + snapshots via
         # reconcile.js (the single source of truth), so this stays a raw-data bundle.
+        # Catalog categories (not one of the 26 built-ins, not a custom_* list) referenced in any
+        # node's routing → ship their {ip,host} caps + label so the picker can render/grey them
+        # without a per-cat lookup. Only touch the catalog when at least one such id is in use, so
+        # a fleet that never uses one never triggers a catalog build on the 5s poll.
+        _inuse_cat = set()
+        for _n in nodes.values():
+            if not isinstance(_n, dict):
+                continue
+            for _if in (_n.get("ifaces") or {}).values():
+                for _r in ((_if or {}).get("routing") or []):
+                    _c = _r.get("category") if isinstance(_r, dict) else None
+                    if _c and _c not in SMART_CATEGORIES and not str(_c).startswith("custom"):
+                        _inuse_cat.add(_c)
+        _cat_caps_extra, _cat_labels_extra = {}, {}
+        if _inuse_cat:
+            _cix = catalog_index()
+            for _c in _inuse_cat:
+                if _c in _cix:
+                    _cat_caps_extra[_c] = _cix[_c]
+                    _cat_labels_extra[_c] = catalog_label(_c)
         _hp = ""; _hp_at = 0; _hp_err = None
         with contextlib.suppress(Exception):
             _hpf = deps.get("host_proc_path") or ""
@@ -2205,10 +2225,12 @@ def api(method, path, qs, body, deps):
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
             "panel_settings": panel_settings,            # Panel settings screen: interface defaults, mirrors, advanced thresholds
-            "smart_caps": SMART_CAPS,                     # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying
+            "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
             "cat_domains": DOMAIN_BUNDLES,                # curated domains per host category → UI hover tooltip (ru/geoip cats absent)
-            "cat_labels": {custom_cat_id(cl.get("domains") or [], cl.get("cidrs") or []): cl.get("title")   # custom_<hash> → list title, so the destination bars name custom lists (node counter carries the synthetic id)
+            "cat_labels": {**{custom_cat_id(cl.get("domains") or [], cl.get("cidrs") or []): cl.get("title")   # custom_<hash> → list title, so the destination bars name custom lists (node counter carries the synthetic id)
                            for cl in (panel_settings.get("custom_lists") or []) if cl.get("title")},
+                           **_cat_labels_extra},         # + catalog cats in use → their provider label
+
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
