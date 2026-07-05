@@ -1069,6 +1069,8 @@ def _geo_url(spec):
         return "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/" + spec[3:] + ".txt"
     if spec.startswith("AS:"):
         return "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/" + spec[3:] + "/ipv4-aggregated.txt"
+    if spec.startswith("MC:"):                                 # MetaCubeX catalog geoip (plain CIDR list)
+        return "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/" + spec[3:] + ".list"
     return spec
 
 
@@ -1272,6 +1274,8 @@ def _domain_url(spec):
         return "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/" + spec[3:]
     if spec.startswith("RF:"):
         return "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/" + spec[3:] + ".lst"
+    if spec.startswith("MC:"):                                 # MetaCubeX catalog geosite (plain domains + `+.suffix`)
+        return "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/" + spec[3:] + ".list"
     return spec
 
 
@@ -1342,6 +1346,9 @@ def _domain_fetch(cat):
                 return None
             for raw in text.splitlines():
                 ln = raw.split("#", 1)[0].strip().lower()
+                if ln.startswith("+."):                        # MetaCubeX/clash suffix form `+.google.com` → dnsmasq already suffix-matches a bare domain
+                    ln = ln[2:]
+                ln = ln.lstrip(".")
                 if _DOM_RE.match(ln):
                     doms.add(ln)
     return sorted(doms) or None

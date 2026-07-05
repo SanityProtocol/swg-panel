@@ -1347,6 +1347,89 @@ IP_CATEGORIES = {"google", "telegram", "cloudflare", "netflix", "meta", "twitter
 SMART_CAPS = {c: {"ip": c in IP_CATEGORIES, "host": c in HOST_CATEGORIES}
               for c in SMART_CATEGORIES if c != "all"}
 
+# ── Category catalog (dynamic, provider-backed) ───────────────────────────────────────────────────
+# Beyond the curated built-ins above, the panel exposes a large SEARCHABLE catalog fetched from a provider
+# (MetaCubeX/meta-rules-dat: geosite/<id>.list domains ≈1800 host cats + geoip/<id>.list CIDRs ≈260 ip cats).
+# We cache only the INDEX (id + caps) on disk; a category's actual domain/CIDR DATA is fetched lazily by the
+# NODE when the category is pulled. Built-ins merge in (their curated caps win). See docs/SMART-CATEGORIES-SPEC.md.
+CATALOG_PROVIDER = "metacubex"
+CATALOG_URLS = {"metacubex": {
+    "geosite_tree": "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geosite",
+    "geoip_tree":   "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geoip",
+    "geosite_raw":  "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/{id}.list",
+    "geoip_raw":    "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/{id}.list"}}
+# ID-STABILITY alias: our_id → provider_id, only where the upstream file name differs. Unlisted ids resolve to
+# themselves. Never rename an id that already has RRD data without carrying the files forward (see spec §11).
+CATALOG_ALIAS = {"meta": "facebook", "ru_net": "ru"}
+CATALOG_TTL = 86400
+CATALOG_PATH = "/var/lib/swg-panel/catalog-index.json"          # overridden from the state dir in main()
+_CATALOG = {"idx": None, "at": 0, "err": ""}                    # in-memory cache
+
+def catalog_src(cid, tier):
+    """Raw-list URL for a category's IP (geoip) or Host (geosite) data at the active provider, id-aliased."""
+    pid = CATALOG_ALIAS.get(cid, cid)
+    key = "geoip_raw" if tier == "ip" else "geosite_raw"
+    return CATALOG_URLS[CATALOG_PROVIDER][key].format(id=pid)
+
+def _catalog_gh(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+def _catalog_build():
+    """Fetch the provider's geosite + geoip id lists → {id:{ip,host}}. Two git-tree calls; heavy-ish, cached."""
+    u = CATALOG_URLS[CATALOG_PROVIDER]; idx = {}
+    for tier, key in (("host", "geosite_tree"), ("ip", "geoip_tree")):
+        t = _catalog_gh(u[key])
+        for e in (t.get("tree") or []):
+            p = e.get("path", "")
+            if e.get("type") == "blob" and p.endswith(".list") and "@" not in p:   # skip @attribute sub-views
+                idx.setdefault(p[:-5], {"ip": False, "host": False})[tier] = True
+    for cid in SMART_CATEGORIES:                                # merge built-ins — curated caps win, aliases resolve upstream
+        if cid == "all":
+            continue
+        e = idx.setdefault(cid, {"ip": False, "host": False})
+        if cid in IP_CATEGORIES:   e["ip"] = True
+        if cid in HOST_CATEGORIES: e["host"] = True
+    return idx
+
+def catalog_index(force=False):
+    """Cached catalog index (id→caps). Memory → disk → (re)build. Never raises; falls back to last-good on error."""
+    now = int(time.time())
+    if not force and _CATALOG["idx"] is not None and now - _CATALOG["at"] < CATALOG_TTL:
+        return _CATALOG["idx"]
+    if not force:
+        try:
+            d = json.load(open(CATALOG_PATH))
+            if now - int(d.get("at") or 0) < CATALOG_TTL and d.get("idx"):
+                _CATALOG.update(idx=d["idx"], at=int(d["at"]), err=""); return d["idx"]
+        except Exception:
+            pass
+    try:
+        idx = _catalog_build()
+    except Exception as ex:
+        _CATALOG["err"] = str(ex)[:200]
+        if _CATALOG["idx"]:                                     # keep serving last-good on a fetch failure
+            return _CATALOG["idx"]
+        try:    return json.load(open(CATALOG_PATH))["idx"]
+        except Exception: return {}
+    _CATALOG.update(idx=idx, at=now, err="")
+    with contextlib.suppress(Exception):
+        atomic_write(CATALOG_PATH, json.dumps({"idx": idx, "at": now}))
+    return idx
+
+def catalog_label(cid):
+    return SMART_CATEGORIES.get(cid) or cid.replace("_", " ").replace("-", " ").strip().title() or cid
+
+def catalog_search(q, page, per=40):
+    idx = catalog_index(); q = (q or "").strip().lower()
+    items = [(c, catalog_label(c), caps) for c, caps in idx.items()
+             if not q or q in c.lower() or q in catalog_label(c).lower()]
+    items.sort(key=lambda x: (x[0] not in SMART_CATEGORIES, x[1].lower()))   # built-ins first, then A→Z
+    total = len(items); sl = items[page * per:(page + 1) * per]
+    return {"total": total, "page": page, "per": per, "provider": CATALOG_PROVIDER,
+            "items": [{"id": c, "label": l, "caps": caps} for c, l, caps in sl]}
+
 # A custom rule (category "custom") carries its own list of IPs/CIDRs AND domains, mixed and comma/space
 # separated; it gets a stable synthetic category id so its nft set is shared by identical lists. The DOMAINS
 # fill the set via the node's dnsmasq (a domain matches its subdomains too); the IPs/CIDRs are loaded into the
@@ -2252,6 +2335,15 @@ def api(method, path, qs, body, deps):
         with contextlib.suppress(Exception):
             atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
         return 200, {"ok": True, "data": {"geo_epoch": cur["geo_epoch"]}}
+
+    if method == "GET" and path == "/api/catalog":              # searchable provider catalog (id/label/caps), paginated
+        try:    _pg = max(0, int((qs.get("page") or ["0"])[0] or 0))
+        except Exception: _pg = 0
+        return 200, {"ok": True, "data": catalog_search((qs.get("search") or [""])[0], _pg)}
+
+    if method == "POST" and path == "/api/catalog/refresh":     # force a catalog re-fetch ("Check for updates now")
+        idx = catalog_index(force=True)
+        return 200, {"ok": True, "data": {"total": len(idx), "provider": CATALOG_PROVIDER, "error": _CATALOG.get("err") or ""}}
 
     if method == "GET" and path == "/api/roster":
         return 200, {"ok": True, "data": roster_load(roster_path)}
@@ -4218,6 +4310,7 @@ def main():
     # state dir (SWG_PANEL_FLEET → different nodes_path) takes a different lock, so it is unaffected. flock releases
     # automatically on exit/crash.
     _statedir = os.path.dirname(nodes_path) or "."
+    globals()["CATALOG_PATH"] = os.path.join(_statedir, "catalog-index.json")   # catalog cache lives in the state dir
     _lp = os.path.join(_statedir, ".panel.lock")
     try:
         _lockfd = os.open(_lp, os.O_WRONLY | os.O_CREAT, 0o600)
