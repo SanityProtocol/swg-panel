@@ -1542,6 +1542,8 @@ def _validate_routing(routing, nodes, nid, custom_list_ids=()):
             tgt = (doms, cidrs)
         elif cat in custom_list_ids:
             pass                                           # a reusable custom list referenced by id (targets resolved at compile time)
+        elif cat in catalog_index():
+            pass                                           # a provider-catalog category (node fetches it from MetaCubeX via caps)
         elif cat not in SMART_CATEGORIES:
             continue                                       # orphaned reference (e.g. a reusable custom list that was later
                                                            # deleted, or a category removed in an upgrade) → DROP the rule
@@ -4086,6 +4088,10 @@ class Handler(BaseHTTPRequestHandler):
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
                                           "mode": node.get("routing_mode") or "kernel",   # kernel | forcedns | sni — the node picks its fill mechanism from this
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
+                                          # per-CATALOG-category caps (built-ins use their curated GEO_SOURCES/DOMAIN_SOURCES; custom cats ship
+                                          # their own cidrs/domains) — lets the node fetch a catalog cat's data from MetaCubeX by id + tier.
+                                          "cat_caps": {c: catalog_index().get(c) for c in {e["category"] for e in (my_plan.get("smart") or [])}
+                                                       if c in catalog_index() and c not in SMART_CATEGORIES},
                                           # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
                                           "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in HOST_CATEGORIES},

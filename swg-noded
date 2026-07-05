@@ -1085,7 +1085,7 @@ def _geo_fetch(cat):
     prefixes). Returns a sorted CIDR list, or None if any source couldn't be fetched (don't half-populate)."""
     mirrors = (os.environ.get("SWG_GEO_MIRROR") or "").split()
     cidrs = set()
-    for spec in GEO_SOURCES.get(cat, []):
+    for spec in _cat_geo_sources(cat):
         url = _geo_url(spec)
         data = None
         for u in [url] + [m.rstrip("/") + "/" + url for m in mirrors]:
@@ -1264,6 +1264,16 @@ DOMAIN_SOURCES = {
     # single provider's domain set is small + precise, so there's nothing to enrich and no risk of an
     # overly-broad upstream category pulling in shared/parent domains.
 }
+
+# CATALOG categories (anything beyond the curated built-ins above) resolve to MetaCubeX by id — the panel ships
+# each smart category's caps ({ip,host}) in the sync so the node knows which tier to fetch. Built-ins keep their
+# curated sources; a catalog cat with no built-in source falls back to MC:<id>.
+_CAT_CAPS = {}   # {cat:{ip,host}} — refreshed from the sync `smart.cat_caps` at the top of every reconcile
+def _cat_geo_sources(cat):
+    return GEO_SOURCES.get(cat) or (["MC:" + cat] if _CAT_CAPS.get(cat, {}).get("ip") else [])
+def _cat_dom_sources(cat):
+    return DOMAIN_SOURCES.get(cat) or (["MC:" + cat] if _CAT_CAPS.get(cat, {}).get("host") else [])
+
 _DOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
 _DOM_INCLUDE_MAX = 256         # failsafe vs a pathological include tree (cycles already guarded by `seen`);
 #                                set well above any real v2fly category so it never silently truncates one
@@ -1330,7 +1340,7 @@ def _v2fly_category(name, seen):
 def _domain_fetch(cat):
     """All domains for a category from DOMAIN_SOURCES[cat], deduped + sorted. None if the TOP-LEVEL source of
     any spec couldn't be fetched, so a source outage keeps the last-good cache instead of shrinking the set."""
-    specs = DOMAIN_SOURCES.get(cat)
+    specs = _cat_dom_sources(cat)
     if not specs:
         return None
     doms = set()
@@ -1371,7 +1381,7 @@ def _smart_domain_refresh(cats, res):
     except OSError as e:
         res["errors"].append("smart domain dir: " + str(e)); return out
     for cat in cats:
-        if cat not in DOMAIN_SOURCES:
+        if not _cat_dom_sources(cat):                          # built-in (DOMAIN_SOURCES) OR a catalog host cat (MC:) — else nothing to fetch
             continue
         try:
             path = os.path.join(GEO_DIR, cat + ".doms")
@@ -1706,6 +1716,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     smart_e = (smart or {}).get("entries") or []
     smart_exit = [e for e in smart_e if e.get("action", "exit") == "exit"]   # only exit rules carry a mesh table/dev; direct/block are local verdicts
     mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni — picks the set-fill mechanism
+    _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → lets _cat_*_sources fetch CATALOG cats from MetaCubeX
     band = _live_band_prios()
     want_tables = {str(e["table"]) for e in (fwd + smart_exit + exit_)}
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit)   # only exit entries create fwmark→table policy routing
@@ -1744,13 +1755,17 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     smart_ifs = sorted({ifn for ifn in (node_cfg.get("interfaces") or {}) if _iface_subnet(node_cfg, ifn) in _smart_subs}) if _smart_subs else []
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=(mode == "sni"), v6_ifaces=smart_ifs)
     domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq-filled
+    if mode != "kernel":                                       # CATALOG host cats (no curated bundle) → seed empty so the node domain-fills them from MetaCubeX
+        for _c, _caps in _CAT_CAPS.items():
+            if _caps.get("host") and _c not in domains and _c in smart_cats:
+                domains[_c] = []
     # GeoSite host tier: enrich each panel-shipped domain cat with the node-fetched upstream list (union), so the
     # curated bundle stays a guaranteed fallback. The union+sort of a ~100k-entry list is expensive to redo every
     # cycle, so cache the enriched dict on a CHEAP signature of the inputs — subnets + the raw panel bundles (small)
     # + each fetched cat's geo-file (mtime,size) — never touching the big lists. Unchanged inputs reuse the enriched
     # dict AND tell _ensure_smart_dnsmasq to skip its (equally expensive) config rebuild. This keeps domains[cat]
     # populated either way, so the geoip↔domain split below (skip=...) stays correct.
-    _fetched = _smart_domain_refresh([c for c in domains if c in DOMAIN_SOURCES], res)
+    _fetched = _smart_domain_refresh([c for c in domains if c in DOMAIN_SOURCES or _CAT_CAPS.get(c, {}).get("host")], res)
     dom_sig = (tuple(sorted({e["subnet"] for e in smart_e})), json.dumps(domains, sort_keys=True),
                tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in _fetched)))
     _dt = _DOMTIER_CACHE.get("v")
