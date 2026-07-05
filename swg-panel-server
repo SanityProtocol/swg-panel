@@ -1659,7 +1659,7 @@ def mesh_unlink_node(nodes, nid):
 # survives restart, ~20 KB/node. Lock guards concurrent node syncs.
 
 HRRD_MAGIC = b"SWGH"
-HRRD_VER = 6            # v6: widened slot — adds awg-client rx/tx, mesh rx/tx, peer online/total counts
+HRRD_VER = 7            # v7: + measured internet up/down (node FORWARD counters); v6 added awg-client/mesh/counts
 #                 (step seconds, slot count) per ring, finest first; slots == plotted points
 HRRD_RINGS = [(15, 250), (300, 300), (1800, 350), (7200, 400)]
 HRRD_RATIO = [1, 20, 6, 4]          # children each tier folds from the one below (= step ratio); ring0 reads raw
@@ -1674,16 +1674,19 @@ def mesh_rrd_path(stats_dir, a, b):   # canonical per-pair file (a<b); rx slot =
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, ring0_step, ring0_slots
 # One slot's metrics live as a flat vector M (below), plus a bucket id + write-time sample count. All extra
 # fields are DERIVED PANEL-SIDE from the snapshot the node already sends (snap_aggregates) — no node change.
-#   M = [cpu, mem, disk,  rx, tx, arx, atx, mrx, mtx,  pon, ptot, paon, patot]
-#        └ health % ┘    └────── B/s means (total, awg-client, mesh) ──────┘  └ peer counts (client, awg) ┘
+#   M = [cpu, mem, disk,  rx, tx, arx, atx, mrx, mtx, inet_up, inet_down,  pon, ptot, paon, patot]
+#        └ health % ┘    └───── B/s means (total, awg-client, mesh, internet) ─────┘  └ peer counts (client, awg) ┘
 # rx/tx = TOTAL across all ifaces (unchanged, = snap_traffic → node-detail throughput); client = rx-mrx,
-# wg-client = client-arx. pon/ptot = client peer deployments online/total; paon/patot = the awg subset.
-HRRD_MNAMES = ["cpu", "mem", "disk", "rx", "tx", "arx", "atx", "mrx", "mtx", "pon", "ptot", "paon", "patot"]
+# wg-client = client-arx. inet_up/down = the node's MEASURED internet egress (snap["inet"]). pon/ptot = client
+# peer deployments online/total; paon/patot = the awg subset. inet sits in the u32 group so _slot_read's
+# [pcts | u32s | u16s] split stays contiguous (do NOT append it at the tail).
+HRRD_MNAMES = ["cpu", "mem", "disk", "rx", "tx", "arx", "atx", "mrx", "mtx", "inet_up", "inet_down", "pon", "ptot", "paon", "patot"]
 HRRD_NM = len(HRRD_MNAMES)
-_PCT_IDX = (0, 1, 2)                           # NA-aware percentage bytes
-_U32_IDX = (3, 4, 5, 6, 7, 8)                  # rx/tx-style counters (mean-consolidated)
-_U16_IDX = (9, 10, 11, 12)                     # peer counts (mean-consolidated)
-HRRD_SLOT = struct.Struct("<IBBBBIIIIIIHHHH")  # bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx, pon,ptot,paon,patot (40 B)
+_PCT_IDX = (0, 1, 2)                            # NA-aware percentage bytes
+_U32_IDX = (3, 4, 5, 6, 7, 8, 9, 10)           # rx/tx-style counters incl. inet up/down (mean-consolidated)
+_U16_IDX = (11, 12, 13, 14)                    # peer counts (mean-consolidated)
+HRRD_SLOT = struct.Struct("<IBBBBIIIIIIIIHHHH")  # bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx,inet_up,inet_down, pon,ptot,paon,patot (48 B)
+HRRD_SLOT_V6 = struct.Struct("<IBBBBIIIIIIHHHH") # pre-v7 40-byte slot — read only, to migrate v6 history (inserts inet as 0)
 HRRD_SLOT_V5 = struct.Struct("<IBBBBII")       # legacy 16-byte slot — read only, to migrate a pre-v6 file's history
 HRRD_NA = 255
 HRRD_U32 = 0xFFFFFFFF
@@ -1806,7 +1809,7 @@ def _slot_read(f, base, slots, bucket):
     if len(cur) == HRRD_SLOT.size:
         u = HRRD_SLOT.unpack(cur)
         if u[0] == (bucket & 0xFFFFFFFF):
-            # u = bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx, pon,ptot,paon,patot
+            # u = bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx,inet_up,inet_down, pon,ptot,paon,patot
             M = [u[1], u[2], u[3]] + list(u[5:5 + len(_U32_IDX)]) + list(u[5 + len(_U32_IDX):])
             return (M, u[4])
     return None
@@ -1872,7 +1875,7 @@ def _hrrd_salvage(path):
         return None                                  # same layout (would've passed _hrrd_ok) → nothing to do
     if not (0 < step0 <= 86400 and 0 < slots0 <= 100000):
         return None                                  # implausible header → don't trust the body
-    sst = HRRD_SLOT_V5 if ver <= 5 else HRRD_SLOT
+    sst = HRRD_SLOT_V5 if ver <= 5 else HRRD_SLOT_V6 if ver == 6 else HRRD_SLOT
     pts = []
     for i in range(slots0):                          # the file's own ring0 = its finest history
         off = HRRD_HEAD.size + i * sst.size
@@ -1884,6 +1887,8 @@ def _hrrd_salvage(path):
             continue
         if ver <= 5:                                 # b, cpu,mem,disk,count, rx,tx  → pad new fields with 0
             M = [u[1], u[2], u[3], u[5], u[6]] + [0] * (HRRD_NM - 5)
+        elif ver == 6:                               # v6: 6 u32 (rx,tx,arx,atx,mrx,mtx) + 4 u16 (pon..patot) —
+            M = [u[1], u[2], u[3]] + list(u[5:11]) + [0, 0] + list(u[11:15])   # insert inet_up/down (0) after mtx
         else:
             M = [u[1], u[2], u[3]] + list(u[5:5 + len(_U32_IDX)]) + list(u[5 + len(_U32_IDX):])
         pts.append((b * step0, M))
@@ -1935,7 +1940,7 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False):
         off = base + i * HRRD_SLOT.size
         if off + HRRD_SLOT.size > len(data):
             break
-        u = HRRD_SLOT.unpack_from(data, off)         # bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx, pon,ptot,paon,patot
+        u = HRRD_SLOT.unpack_from(data, off)         # bucket, cpu,mem,disk,count, rx,tx,arx,atx,mrx,mtx,inet_up,inet_down, pon,ptot,paon,patot
         if u[0]:
             rows.append(u)
     if not rows:
@@ -1950,7 +1955,8 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False):
         out["mrx"] = [r[9] for r in rows]; out["mtx"] = [r[10] for r in rows]
         return out
     out.update({"arx": [r[7] for r in rows], "atx": [r[8] for r in rows], "mrx": [r[9] for r in rows], "mtx": [r[10] for r in rows],
-                "pon": [r[11] for r in rows], "ptot": [r[12] for r in rows], "paon": [r[13] for r in rows], "patot": [r[14] for r in rows]})
+                "inet_up": [r[11] for r in rows], "inet_down": [r[12] for r in rows],   # measured internet up/down (B/s means)
+                "pon": [r[13] for r in rows], "ptot": [r[14] for r in rows], "paon": [r[15] for r in rows], "patot": [r[16] for r in rows]})
     return out
 
 
@@ -3649,7 +3655,10 @@ class Handler(BaseHTTPRequestHandler):
             cpu, mem, disk = health_pcts(snap.get("health")) or (HRRD_NA, HRRD_NA, HRRD_NA)
             agg = snap_aggregates(snap, node)        # rx/tx (total) + awg/mesh split + peer counts, panel-derived
             rx, tx = agg["rx"], agg["tx"]            # == snap_traffic — total across every iface
-            M = [cpu, mem, disk, rx, tx, agg["arx"], agg["atx"], agg["mrx"], agg["mtx"], agg["pon"], agg["ptot"], agg["paon"], agg["patot"]]
+            _in = snap.get("inet") or {}             # node-measured internet up/down (B/s); absent on older noded → 0
+            M = [cpu, mem, disk, rx, tx, agg["arx"], agg["atx"], agg["mrx"], agg["mtx"],
+                 max(0, int(_in.get("up") or 0)), max(0, int(_in.get("down") or 0)),
+                 agg["pon"], agg["ptot"], agg["paon"], agg["patot"]]
             with contextlib.suppress(Exception):
                 hrrd_update(os.path.join(stats_dir, f"health-{nid}.rrd"), int(time.time()), M)
             # also keep a short raw buffer (one sample per sync) for a 5s-granular LIVE view. Mirrored to
@@ -3678,7 +3687,7 @@ class Handler(BaseHTTPRequestHandler):
                 lrx = sum((p.get("rx_speed", 0) or 0) for p in (blk.get("peers") or []))
                 ltx = sum((p.get("tx_speed", 0) or 0) for p in (blk.get("peers") or []))
                 ab, ba = (ltx, lrx) if nid == a else (lrx, ltx)   # a→b, b→a from this node's perspective
-                mM = [0, 0, 0, ab, ba, 0, 0, 0, 0, 0, 0, 0, 0]    # ab→rx slot, ba→tx slot
+                mM = [0] * HRRD_NM; mM[3] = ab; mM[4] = ba        # ab→rx slot, ba→tx slot (rest incl. inet = 0)
                 with contextlib.suppress(Exception):
                     hrrd_update(mesh_rrd_path(stats_dir, a, b), now_i, mM)
                 mlast[key] = now_i

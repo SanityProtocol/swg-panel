@@ -1806,7 +1806,10 @@ function flowGraph(selIds, range, hist) {
     fleet.forEach(n => { const d = hist.byNode[n.id]; if (!d) return;
       const R = d.rx || [], T = d.tx || [], MR = d.mrx || [], MT = d.mtx || []; let rx = 0, tx = 0;
       for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); }
-      acc[n.id].cl.rx = rx * STEP; acc[n.id].cl.tx = tx * STEP; });
+      acc[n.id].cl.rx = rx * STEP; acc[n.id].cl.tx = tx * STEP;
+      const IU = d.inet_up || [], ID = d.inet_down || [];   // MEASURED internet total over the window (Σ per-bucket mean · step), same scale as the client volume
+      let iu = 0, id = 0; for (let i = 0; i < IU.length; i++) iu += IU[i] || 0; for (let i = 0; i < ID.length; i++) id += ID[i] || 0;
+      if (iu || id) acc[n.id].inet = { out: iu * STEP, in: id * STEP }; });
     // mesh/offmesh values are per-pair MEAN rates (B/s) over the window — convert to total bytes with the FULL window
     // duration (samples·step), NOT one step, so they're on the same scale as the client volume (Σ mean·step above). Using
     // STEP alone under-counted mesh by the sample count (~300 for a day), flooring every mesh edge to a uniform hairline.
