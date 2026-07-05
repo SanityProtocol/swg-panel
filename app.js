@@ -2194,17 +2194,24 @@ function Overview() {
 
   const recent = recentActivity();
 
-  // ranked nodes — by live traffic, or by peer count when the fleet is idle (selected nodes only)
+  // ranked nodes — by traffic over the SELECTED RANGE (live rate, or windowed client volume = Σ(rx−mesh)·step,
+  // matching the doughnuts), or by peer count when the fleet is idle (selected nodes only)
+  const dRanged = dashState.range !== "live" && !rangeHist.loading && rangeHist.range === dashState.range;
+  const dStep = RANGE_STEP[dashState.range] || 1;
+  const nodeVol = id => { const d = rangeHist.byNode[id]; if (!d) return { rx: 0, tx: 0 };
+    let rx = 0, tx = 0; const R = d.rx || [], T = d.tx || [], MR = d.mrx || [], MT = d.mtx || [];
+    for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); }
+    return { rx: rx * dStep, tx: tx * dStep }; };
   const nodeTraffic = fleetSel.map(n => {
-    const [r, t] = nodeRate(n.id);
-    return { id: n.id, name: n.name, color: Store.nodeColor(n.id), rx: r, tx: t, peers: sPeers.filter(p => p.targets.some(d => d.node === n.id)).length };
+    const [lr, lt] = nodeRate(n.id); const v = dRanged ? nodeVol(n.id) : { rx: lr, tx: lt };
+    return { id: n.id, name: n.name, color: Store.nodeColor(n.id), rx: v.rx, tx: v.tx, peers: sPeers.filter(p => p.targets.some(d => d.node === n.id)).length };
   });
   const anyTraffic = nodeTraffic.some(x => x.rx + x.tx > 0);
   const rankRows = nodeTraffic.slice()
     .sort((a, b) => anyTraffic ? (b.rx + b.tx) - (a.rx + a.tx) : b.peers - a.peers)
     .slice(0, 6)
     .map(x => ({ label: x.name, value: anyTraffic ? x.rx + x.tx : x.peers,
-      sub: anyTraffic ? rateCell(x.rx, x.tx) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
+      sub: anyTraffic ? (dRanged ? xferCell(x.rx, x.tx) : rateCell(x.rx, x.tx)) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
       color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.id) }));
 
   // ── live core-row series (all from the bundle; no server hit on the hot path) ──
@@ -2262,7 +2269,7 @@ function Overview() {
     <//>` : null}
 
     ${fleetSel.length > 1 ? html`<${Fragment}>
-      <div class="section-title"><h2>${anyTraffic ? "Top nodes by traffic" : "Top nodes by peers"}</h2><span class="grow"></span></div>
+      <div class="section-title"><h2>${anyTraffic ? "Top nodes by traffic" : "Top nodes by peers"}</h2><span class="count">${anyTraffic ? (DASH_RANGES.find(r => r[0] === dashState.range) || ["", "live"])[1].toLowerCase() : ""}</span><span class="grow"></span></div>
       <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
     <//>` : null}
 
