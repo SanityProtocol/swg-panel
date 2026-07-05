@@ -982,7 +982,10 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
             for d in ("up", "dn"):
                 if cn + "_" + d not in have_cnt:
                     run(["nft", "add", "counter", "inet", SMART_NFT_TABLE, cn + "_" + d])
-        csig = hashlib.sha1((json.dumps(catw) + "|d1").encode()).hexdigest()[:16]   # d1: destination view (populated sets)
+        for d in ("up", "dn"):                                  # UNCATEGORIZED bucket: client traffic matching no category set
+            if count_cats and "c_uncat_" + d not in have_cnt:   # only meaningful when ≥1 category exists to be "un" of
+                run(["nft", "add", "counter", "inet", SMART_NFT_TABLE, "c_uncat_" + d])
+        csig = hashlib.sha1((json.dumps(catw) + "|d2").encode()).hexdigest()[:16]   # d2: + catany (uncategorised) chain
         _csigf = os.path.join(GEO_DIR, ".catcount-sig")
         try:
             cstored = open(_csigf).read().strip()
@@ -1001,12 +1004,36 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
                 r2 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + snm, "counter", "name", cn + "_dn"])
                 if r1.returncode or r2.returncode:
                     cok = False
+            # catany: FIRST-MATCH mirror — a client byte that matches NO populated category set falls through to
+            # c_uncat → the "Uncategorised" bar. Categorised bytes `return` early (already tallied in catcount). Ordered
+            # per subnet: up cat-returns, then the up uncat catch-all; then the same for down. Subnet-scoped like catcount
+            # (transit from other nodes not counted). Overlap can't derive this by subtraction, hence a dedicated pass.
+            if "catany" not in re.findall(r"chain (\S+) {", body):
+                run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "catany",
+                     "{ type filter hook forward priority mangle; policy accept; }"])
+            run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catany"])
+            subs = sorted({S for (S, _c) in catw})
+            cats_here = sorted({c for (_S, c) in catw})
+            for S in subs:
+                for c in cats_here:
+                    snm = _smart_setname(c)
+                    r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + snm, "return"])
+                    if r.returncode: cok = False
+                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "counter", "name", "c_uncat_up", "return"])
+                for c in cats_here:
+                    snm = _smart_setname(c)
+                    r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + snm, "return"])
+                    if r.returncode: cok = False
+                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "counter", "name", "c_uncat_dn", "return"])
             if cok:
                 with contextlib.suppress(OSError):
                     open(_csigf, "w").write(csig)
-        elif not catw and cc_present:                           # no smart categories left → drop the count chain (counters can linger, harmless)
+        elif not catw and cc_present:                           # no smart categories left → drop the count chains (counters can linger, harmless)
             run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catcount"])
             run(["nft", "delete", "chain", "inet", SMART_NFT_TABLE, "catcount"])
+            if "catany" in re.findall(r"chain (\S+) {", body):
+                run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "catany"])
+                run(["nft", "delete", "chain", "inet", SMART_NFT_TABLE, "catany"])
     # per-set live element counts (so _smart_geo_refresh knows which need (re)loading — e.g. empty after a reboot).
     # Reuse the shared per-loop parse; if `body` was blanked above (auto-merge migration / table absent) the sets
     # were just dropped → report {} so every set is treated as empty and gets reloaded.
@@ -1430,14 +1457,28 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False):
             "port=" + str(SMART_DNS_PORT), "listen-address=127.0.0.1", "bind-interfaces",
             "no-resolv", "no-hosts", "cache-size=2000", "pid-file=" + DNSMASQ_PID]
     conf += ["server=1.1.1.1", "server=8.8.8.8"]
-    for cat in sorted(domains):                                # nftset=/d1/d2/.../4#inet#swg_smart#cat_<c>
-        doms = sorted({d for d in domains[cat] if d})          # sorted → deterministic body (no needless restart)
+    # PER-DOMAIN, not per-category. dnsmasq applies only the FIRST nftset directive that lists a given domain, so a
+    # domain shared by several categories (e.g. google.com in BOTH a custom list and the built-in Google set) would
+    # land in only one set — silently corrupting the other set's routing + stats, and hostage to config order. Instead
+    # map each domain to EVERY set it belongs to and emit it once, targeting all those sets at once (dnsmasq accepts a
+    # comma-joined target list; verified it fills all of them). This makes population order- and overlap-independent:
+    # any admin edit — new list, host added to an existing list, lists that overlap each other or a built-in category —
+    # just recomputes the map, no glitch possible. (CIDRs bypass dnsmasq entirely — nft adds them to their set directly,
+    # which is already per-set, so only domains need this.)
+    dom_sets = {}
+    for cat in domains:
         sn = _smart_setname(cat)
-        suffix = "/4#inet#" + SMART_NFT_TABLE + "#" + sn        # chunk by BYTE length: dnsmasq's config parser caps
-        cur, clen = [], 0                                       # a line at ~1024 chars (MAXDNAME), and host-tier lists
-        for d in doms:                                         # (e.g. cat_ru) have long names — chunking by count
-            if cur and 8 + clen + len(suffix) + 1 + len(d) > 900:   # ("nftset=/"=8, "/"=1) overflows that and dnsmasq
-                conf.append("nftset=/" + "/".join(cur) + suffix)    # FAILS to start. Keep each line < ~900 bytes.
+        for d in domains[cat]:
+            if d: dom_sets.setdefault(d, set()).add(sn)
+    groups = {}                                                # group by exact set-membership so same-membership domains
+    for d, sns in dom_sets.items():                            # still share a directive (keeps the config compact)
+        groups.setdefault(tuple(sorted(sns)), []).append(d)
+    for sns in sorted(groups):                                 # sorted here + below → deterministic body (no needless restart)
+        suffix = "/" + ",".join("4#inet#" + SMART_NFT_TABLE + "#" + sn for sn in sns)   # every set this group's domains join
+        cur, clen = [], 0                                      # chunk by BYTE length: dnsmasq's parser caps a line at
+        for d in sorted(groups[sns]):                          # ~1024 chars (MAXDNAME); overflow → dnsmasq FAILS to start
+            if cur and 8 + clen + len(suffix) + 1 + len(d) > 900:   # ("nftset=/"=8, "/"=1). Keep each line < ~900 bytes.
+                conf.append("nftset=/" + "/".join(cur) + suffix)
                 cur, clen = [], 0
             cur.append(d); clen += len(d) + (1 if clen else 0)
         if cur:

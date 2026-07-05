@@ -2239,9 +2239,11 @@ function Overview() {
   if (dRanged) (rangeHist.cats || []).forEach(e => { if (sel.has(e.node)) _cadd(e.cat, e.up, e.dn); });
   else { const cById = Object.fromEntries((Store.nodes || []).map(n => [n.id, n.cats || {}]));   // Store.fleet is a slim {id,name,color} projection — the live `cats` field lives on the full Store.nodes objects
     fleetSel.forEach(n => { for (const [cat, v] of Object.entries(cById[n.id] || {})) _cadd(cat, v.up, v.dn); }); }
-  const catRows = Object.entries(catAgg).filter(([, v]) => v.up + v.dn > 0)
+  const catRows = Object.entries(catAgg).filter(([c, v]) => c !== "uncat" && v.up + v.dn > 0)
     .sort((a, b) => (b[1].dn + b[1].up) - (a[1].dn + a[1].up)).slice(0, 10)
     .map(([cat, v]) => ({ label: catLabelOf(cat), value: v.dn + v.up, sub: dRanged ? xferCell(v.dn, v.up) : rateCell(v.dn, v.up), color: catColor(cat) }));
+  const _un = catAgg.uncat;   // the first-match "matched no set" bucket — always pinned last (a catch-all, not ranked), even if it's the largest
+  if (_un && _un.up + _un.dn > 0) catRows.push({ label: catLabelOf("uncat"), value: _un.dn + _un.up, sub: dRanged ? xferCell(_un.dn, _un.up) : rateCell(_un.dn, _un.up), color: catColor("uncat") });
   const totClientDn = nodeTraffic.reduce((a, x) => a + (x.rx || 0), 0);   // distinct total (client download) — categories are a subset/overlap of this
 
   return html`<div class="screen">
@@ -2757,12 +2759,15 @@ const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 // operator routes only a handful at once. custom_<hash>/inline → "Custom".
 const CAT_COLORS = ["#5B8FF9", "#61DDAA", "#F6BD16", "#E8684A", "#9270CA", "#269A99", "#FF9D4D", "#6DC8EC", "#FF99C3", "#D66BF0"];
 const _CAT_IDX = Object.fromEntries(SMART_CATEGORIES.map(([id], i) => [id, i]));
+const CAT_UNCAT_COLOR = "#8A94A6";   // muted slate — the "everything else" bucket, deliberately not a category hue
 function catColor(c) {
+  if (c === "uncat") return CAT_UNCAT_COLOR;
   if (_CAT_IDX[c] != null) return CAT_COLORS[_CAT_IDX[c] % CAT_COLORS.length];
   let h = 0; for (const ch of String(c)) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
   return CAT_COLORS[h % CAT_COLORS.length];
 }
 function catLabelOf(c) {   // built-in label · custom-list title (via the panel's custom_<hash>→title map) · inline custom → "Custom" · else the id
+  if (c === "uncat") return "Uncategorised";
   const lt = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
   return SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || (String(c).startsWith("custom") ? "Custom" : c);
 }
