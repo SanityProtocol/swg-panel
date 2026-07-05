@@ -1828,7 +1828,8 @@ function flowGraph(selIds, range, hist) {
     fleet.forEach(n => { const snap = Store.stats[n.id]; if (!snap) return;
       for (const [ifn, blk] of Object.entries(snap.interfaces || {})) {
         const meta = (Store.describe[n.id] || {})[ifn] || blk.meta || {};
-        const peer = meta.egress_node; if (!(meta.system && peer)) continue;
+        const peer = meta.link_node || meta.egress_node;   // a system mesh link identifies its peer via link_node (egress_node is the user-iface forward target, blank here)
+        if (!(meta.system && peer)) continue;
         let rx = 0, tx = 0; for (const pp of blk.peers || []) { rx += pp.rx_speed || 0; tx += pp.tx_speed || 0; }
         if (sel.has(peer)) acc[n.id].mesh[peer] = { rx, tx };
         else { acc[n.id].offmesh.rx += rx; acc[n.id].offmesh.tx += tx; acc[n.id].offmesh.n.add(peer); }   // peer not shown → fold into the mesh satellite
