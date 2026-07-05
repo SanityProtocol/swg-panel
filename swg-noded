@@ -1719,29 +1719,41 @@ def smart_status():
 # <wan>` match), so only DIRECT client traffic counts; at an EXIT the mesh iface forwards to the WAN
 # (`-i swg_… -o <wan>`), so the relayed volume is attributed to the node that actually reaches the internet.
 INET_SAMPLE_EVERY_S = 15
-SWG_INET_CHAIN = "SWG_INET"     # our own filter chain, jumped from FORWARD's head: counts tunnel↔wan bytes
+SWG_INET_TABLE = "mangle"        # count in MANGLE FORWARD, not filter — see reconcile_inet_chain
+SWG_INET_CHAIN = "SWG_INET"      # our own chain, jumped from mangle FORWARD: counts tunnel↔wan bytes
 _INET = {"t": 0.0, "cum": None, "rate": {"up": 0.0, "down": 0.0}}
 
 
 def reconcile_inet_chain(node_cfg):
     """Maintain the SWG_INET counting chain: one up (iface→wan) + one down (wan→iface) rule per managed
-    tunnel iface, tagged with a comment, jumped from the TOP of FORWARD. The rules carry NO target, so they
-    only COUNT and fall through — the packet's verdict is unchanged (no datapath effect). Being at the head,
-    they see every forwarded packet BEFORE the mesh forward-ACL (`-i swg_… -j ACCEPT`, no `-o`) would accept
-    it and shadow a plain `-i swg_ -o wan` rule — which is why an EXIT's relayed egress is otherwise unseen.
-    We rebuild only when the iface-set/WAN signature changes, so byte counters keep accruing between edits.
+    tunnel iface, tagged with a comment, jumped from mangle FORWARD. The rules carry NO target, so they only
+    COUNT and fall through — the packet's verdict is unchanged (no datapath effect).
+
+    Why MANGLE FORWARD (not filter): netfilter traverses the mangle FORWARD hook BEFORE the filter table, so
+    the counters see every forwarded packet regardless of the server's firewall. On a box running firewalld/
+    ufw the filter FORWARD chain often starts with `ctstate ESTABLISHED,RELATED -j ACCEPT`, which would accept
+    the return (download) traffic before any filter-level counter — undercounting there. Counting in mangle is
+    config-independent: it works the same on a bare Debian box, a firewalld CentOS, an lxc/kvm guest, or the
+    host-netns docker node. Mangle has no ACCEPT/DROP that terminates, so our fall-through rules never disturb
+    the smart-routing marks either. WAN is the default-route egress (`ip route get 1.1.1.1`) — generic across
+    providers/NIC names. Rebuilt only when the iface-set/WAN signature changes, so counters keep accruing.
     Best-effort (a node without iptables just no-ops)."""
+    T = SWG_INET_TABLE
     managed = sorted((node_cfg.get("interfaces") or {}).keys())
     if not managed:
         return
     wan = _detect_wan()
     if not wan:
         return
-    if run(["iptables", "-t", "filter", "-nL", SWG_INET_CHAIN]).returncode != 0:
-        run(["iptables", "-t", "filter", "-N", SWG_INET_CHAIN])          # create the chain (idempotent)
-    if ("-j " + SWG_INET_CHAIN) not in (run(["iptables", "-t", "filter", "-S", "FORWARD"]).stdout or ""):
-        run(["iptables", "-t", "filter", "-I", "FORWARD", "1", "-j", SWG_INET_CHAIN])   # jump ahead of the ACL
-    cur = run(["iptables", "-t", "filter", "-S", SWG_INET_CHAIN]).stdout.splitlines()
+    if run(["iptables", "-t", "filter", "-nL", SWG_INET_CHAIN]).returncode == 0:   # migrate: earlier builds
+        run(["iptables", "-t", "filter", "-D", "FORWARD", "-j", SWG_INET_CHAIN])    # put this chain in FILTER;
+        run(["iptables", "-t", "filter", "-F", SWG_INET_CHAIN])                     # drop it so counts don't
+        run(["iptables", "-t", "filter", "-X", SWG_INET_CHAIN])                     # split across two tables
+    if run(["iptables", "-t", T, "-nL", SWG_INET_CHAIN]).returncode != 0:
+        run(["iptables", "-t", T, "-N", SWG_INET_CHAIN])          # create the chain (idempotent)
+    if ("-j " + SWG_INET_CHAIN) not in (run(["iptables", "-t", T, "-S", "FORWARD"]).stdout or ""):
+        run(["iptables", "-t", T, "-I", "FORWARD", "1", "-j", SWG_INET_CHAIN])   # count before anything else
+    cur = run(["iptables", "-t", T, "-S", SWG_INET_CHAIN]).stdout.splitlines()
     cursig = set()
     for ln in cur:
         m = re.search(r'--comment "?(swg-inet-(?:up|dn)):([^"\s]+)', ln)   # `-S` QUOTES the comment — tolerate it, else cursig is always empty → constant flush → counters never accrue
@@ -1754,19 +1766,18 @@ def reconcile_inet_chain(node_cfg):
         wantsig.add(("swg-inet-up", ifn, ifn, wan)); wantsig.add(("swg-inet-dn", ifn, wan, ifn))
     if cursig == wantsig:
         return                                              # unchanged → leave the counters accumulating
-    run(["iptables", "-t", "filter", "-F", SWG_INET_CHAIN])   # iface set / WAN changed → rebuild
+    run(["iptables", "-t", T, "-F", SWG_INET_CHAIN])          # iface set / WAN changed → rebuild
     for ifn in managed:
-        run(["iptables", "-t", "filter", "-A", SWG_INET_CHAIN, "-i", ifn, "-o", wan,
+        run(["iptables", "-t", T, "-A", SWG_INET_CHAIN, "-i", ifn, "-o", wan,
              "-m", "comment", "--comment", "swg-inet-up:" + ifn])
-        run(["iptables", "-t", "filter", "-A", SWG_INET_CHAIN, "-i", wan, "-o", ifn,
+        run(["iptables", "-t", T, "-A", SWG_INET_CHAIN, "-i", wan, "-o", ifn,
              "-m", "comment", "--comment", "swg-inet-dn:" + ifn])
 
 
 def read_inet_bytes(managed_ifaces=None):
     """Cumulative internet-forwarded bytes {up, down} from the SWG_INET chain counters (see
-    reconcile_inet_chain). One cheap `iptables-save -c -t filter` (small: geo sets live in a separate nft
-    table). None → unreadable / chain not built yet."""
-    r = run(["iptables-save", "-c", "-t", "filter"])
+    reconcile_inet_chain). One cheap `iptables-save -c -t mangle`. None → unreadable / chain not built yet."""
+    r = run(["iptables-save", "-c", "-t", SWG_INET_TABLE])
     if r.returncode != 0 or not r.stdout:
         return None
     up = down = 0
