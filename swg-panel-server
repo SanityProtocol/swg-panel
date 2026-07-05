@@ -3669,7 +3669,7 @@ class Handler(BaseHTTPRequestHandler):
             ov_ifaces = node.get("ifaces") or {}
             for ifn, blk in (snap.get("interfaces") or {}).items():
                 meta = blk.get("meta") or {}; o = ov_ifaces.get(ifn) or {}
-                peer = o.get("egress_node") or meta.get("egress_node")
+                peer = o.get("link_node") or meta.get("link_node") or o.get("egress_node") or meta.get("egress_node")   # a system mesh link's peer is link_node; egress_node is the user-iface forward target
                 if not ((o.get("system") or meta.get("system")) and peer and peer in nodes):
                     continue
                 a, b = sorted((nid, peer)); key = f"{a}|{b}"
