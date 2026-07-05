@@ -1744,7 +1744,7 @@ def reconcile_inet_chain(node_cfg):
     cur = run(["iptables", "-t", "filter", "-S", SWG_INET_CHAIN]).stdout.splitlines()
     cursig = set()
     for ln in cur:
-        m = re.search(r"--comment (swg-inet-(?:up|dn)):(\S+)", ln)
+        m = re.search(r'--comment "?(swg-inet-(?:up|dn)):([^"\s]+)', ln)   # `-S` QUOTES the comment — tolerate it, else cursig is always empty → constant flush → counters never accrue
         if not m:
             continue
         mi = re.search(r"-i (\S+)", ln); mo = re.search(r"-o (\S+)", ln)
