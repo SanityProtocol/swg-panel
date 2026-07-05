@@ -1909,8 +1909,9 @@ function FlowMap2({ selIds, range, hist }) {
   const pairThick = id => { const bo = {}; flows.forEach(f => { const o = f.from === id ? f.to : f.to === id ? f.from : null; if (o == null) return; bo[o] = (bo[o] || 0) + wOf(f.bps); }); let mx = 0; for (const k in bo) if (bo[k] > mx) mx = bo[k]; return mx ? mx + 2 : 0; };
   // a satellite's lines all enter from ONE side (toward its parent), so its DIAMETER must span the line stack → r ≥ Σ/2
   const satR = id => Math.max(satMap((satTot[id] || {}).tot || 0), seatNeed(id) / 2);
-  // node height is 2·hh = 2·fs+6, so fs ≥ pairThick/2−3 keeps the pill no thinner than the thickest parallel pair touching it
-  const nodeFont = id => Math.max(fontMap(busy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85), pairThick(id) / 2 - 3);    // pill perimeter 4·(hw+hh) ≥ Σ lines · height ≥ thickest pair
+  // node height is 2·hh = 2·fs+6; the pill's 8px rounded CORNERS eat into the straight edge a pair can seat on, so
+  // require the straight run (2fs+6 − 2·8) ≥ pairThick (which already includes the inter-lane gap) → fs ≥ pairThick/2+5.
+  const nodeFont = id => Math.max(fontMap(busy(id)), (seatNeed(id) / 4 - 5) / (0.31 * nameLen(id) + 1.85), pairThick(id) / 2 + 5);    // pill perimeter 4·(hw+hh) ≥ Σ lines · straight edge ≥ thickest pair
   const nR = id => (0.31 * nameLen(id) + 0.85) * nodeFont(id) + 2;        // ≈ pill half-width
   const nmeta = id => { if (!nodeIds.has(id)) { const r = satR(id); return { hw: r, hh: r }; }   // sat = circle; node = pill (est.)
     const fs = nodeFont(id), L = nameLen(id); return { hw: (0.31 * L + 0.85) * fs + 2, hh: fs + 3 }; };

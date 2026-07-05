@@ -1719,32 +1719,67 @@ def smart_status():
 # <wan>` match), so only DIRECT client traffic counts; at an EXIT the mesh iface forwards to the WAN
 # (`-i swg_… -o <wan>`), so the relayed volume is attributed to the node that actually reaches the internet.
 INET_SAMPLE_EVERY_S = 15
+SWG_INET_CHAIN = "SWG_INET"     # our own filter chain, jumped from FORWARD's head: counts tunnel↔wan bytes
 _INET = {"t": 0.0, "cum": None, "rate": {"up": 0.0, "down": 0.0}}
 
 
-def read_inet_bytes(managed_ifaces):
-    """Cumulative internet-forwarded bytes {up, down} from the filter FORWARD counters. A rule counts only
-    when EXACTLY ONE of its `-i`/`-o` is a managed tunnel iface and the other is a physical NIC — so
-    tunnel↔tunnel forwards (mesh relay) and the `swg-fwd-acl` rules (no `-o`) are excluded automatically.
-    One cheap `iptables-save -c -t filter` (small: geo sets live in a separate nft table). None → unreadable."""
+def reconcile_inet_chain(node_cfg):
+    """Maintain the SWG_INET counting chain: one up (iface→wan) + one down (wan→iface) rule per managed
+    tunnel iface, tagged with a comment, jumped from the TOP of FORWARD. The rules carry NO target, so they
+    only COUNT and fall through — the packet's verdict is unchanged (no datapath effect). Being at the head,
+    they see every forwarded packet BEFORE the mesh forward-ACL (`-i swg_… -j ACCEPT`, no `-o`) would accept
+    it and shadow a plain `-i swg_ -o wan` rule — which is why an EXIT's relayed egress is otherwise unseen.
+    We rebuild only when the iface-set/WAN signature changes, so byte counters keep accruing between edits.
+    Best-effort (a node without iptables just no-ops)."""
+    managed = sorted((node_cfg.get("interfaces") or {}).keys())
+    if not managed:
+        return
+    wan = _detect_wan()
+    if not wan:
+        return
+    if run(["iptables", "-t", "filter", "-nL", SWG_INET_CHAIN]).returncode != 0:
+        run(["iptables", "-t", "filter", "-N", SWG_INET_CHAIN])          # create the chain (idempotent)
+    if ("-j " + SWG_INET_CHAIN) not in (run(["iptables", "-t", "filter", "-S", "FORWARD"]).stdout or ""):
+        run(["iptables", "-t", "filter", "-I", "FORWARD", "1", "-j", SWG_INET_CHAIN])   # jump ahead of the ACL
+    cur = run(["iptables", "-t", "filter", "-S", SWG_INET_CHAIN]).stdout.splitlines()
+    cursig = set()
+    for ln in cur:
+        m = re.search(r"--comment (swg-inet-(?:up|dn)):(\S+)", ln)
+        if not m:
+            continue
+        mi = re.search(r"-i (\S+)", ln); mo = re.search(r"-o (\S+)", ln)
+        cursig.add((m.group(1), m.group(2), mi.group(1) if mi else "", mo.group(1) if mo else ""))
+    wantsig = set()
+    for ifn in managed:
+        wantsig.add(("swg-inet-up", ifn, ifn, wan)); wantsig.add(("swg-inet-dn", ifn, wan, ifn))
+    if cursig == wantsig:
+        return                                              # unchanged → leave the counters accumulating
+    run(["iptables", "-t", "filter", "-F", SWG_INET_CHAIN])   # iface set / WAN changed → rebuild
+    for ifn in managed:
+        run(["iptables", "-t", "filter", "-A", SWG_INET_CHAIN, "-i", ifn, "-o", wan,
+             "-m", "comment", "--comment", "swg-inet-up:" + ifn])
+        run(["iptables", "-t", "filter", "-A", SWG_INET_CHAIN, "-i", wan, "-o", ifn,
+             "-m", "comment", "--comment", "swg-inet-dn:" + ifn])
+
+
+def read_inet_bytes(managed_ifaces=None):
+    """Cumulative internet-forwarded bytes {up, down} from the SWG_INET chain counters (see
+    reconcile_inet_chain). One cheap `iptables-save -c -t filter` (small: geo sets live in a separate nft
+    table). None → unreadable / chain not built yet."""
     r = run(["iptables-save", "-c", "-t", "filter"])
     if r.returncode != 0 or not r.stdout:
         return None
     up = down = 0
     for ln in r.stdout.splitlines():
-        if not ln.startswith("["):
+        if "swg-inet-" not in ln:
             continue
-        m = re.match(r"\[\d+:(\d+)\]\s+-A\s+FORWARD\s+(.*)", ln)
+        m = re.match(r"\[\d+:(\d+)\]\s+-A\s+" + SWG_INET_CHAIN + r"\b(.*)", ln)
         if not m:
             continue
-        by = int(m.group(1)); body = m.group(2)
-        mi = re.search(r"-i (\S+)", body); mo = re.search(r"-o (\S+)", body)
-        if not (mi and mo):
-            continue
-        i, o = mi.group(1), mo.group(1)
-        if i in managed_ifaces and o not in managed_ifaces:
+        by = int(m.group(1))
+        if "swg-inet-up:" in m.group(2):
             up += by
-        elif o in managed_ifaces and i not in managed_ifaces:
+        elif "swg-inet-dn:" in m.group(2):
             down += by
     return {"up": up, "down": down}
 
@@ -3111,6 +3146,8 @@ def main():
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
                     cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress)   # P2 forward + P3 smart + exit SNAT
+                    with contextlib.suppress(Exception):
+                        reconcile_inet_chain(node_cfg)   # keep the SWG_INET byte-counting chain in step with the iface set (measured internet lane)
                     last_route_sig = _route_sig; last_route_t = time.time()
                 else:
                     eg = {"changed": 0, "errors": []}; cas = {"changed": 0, "errors": []}   # unchanged routing → skip the ip/iptables/nft drift-check shell-outs
