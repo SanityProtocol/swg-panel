@@ -2120,6 +2120,7 @@ def api(method, path, qs, body, deps):
                         "default_egress_ip": c.get("default_egress_ip") or "", "panel_ip": c.get("panel_ip") or "",
                         "routing_mode": c.get("routing_mode") or "kernel",   # smart-routing match mode for this node (kernel|forcedns|sni)
                         "enabled_categories": c.get("enabled_categories"),   # built-in categories shown for this node ([]/None = all)
+                        "catalog_cats": c.get("catalog_cats") or [],          # provider-catalog categories opted into on this node (node-lens)
                         "mesh_port": c.get("mesh_port") or "", "mesh_subnet": c.get("mesh_subnet") or "", "mesh_prefix": c.get("mesh_prefix") or "",
                         "removing": bool(c.get("removing")), "removing_at": c.get("removing_at"),
                         "uninstalled": c.get("uninstalled"),   # unsolicited uninstall → grey "Uninstalled" tag; recover by re-installing with the same token
@@ -2195,6 +2196,9 @@ def api(method, path, qs, body, deps):
         for _n in nodes.values():
             if not isinstance(_n, dict):
                 continue
+            for _c in (_n.get("catalog_cats") or []):     # node-lens opt-ins → render their label/caps in Settings
+                if _c and _c not in SMART_CATEGORIES:
+                    _inuse_cat.add(_c)
             for _if in (_n.get("ifaces") or {}).values():
                 for _r in ((_if or {}).get("routing") or []):
                     _c = _r.get("category") if isinstance(_r, dict) else None
@@ -2910,6 +2914,11 @@ def api(method, path, qs, body, deps):
             ec = body.get("enabled_categories")
             if isinstance(ec, list):
                 nodes[nid]["enabled_categories"] = [c for c in ec if c in SMART_CATEGORIES and c != "all"]
+        if "catalog_cats" in body:              # provider-catalog categories the operator opted THIS node into (node-lens);
+            cc = body.get("catalog_cats")       # separate from enabled_categories (which gates only the 26 built-ins)
+            if isinstance(cc, list):
+                _cix = catalog_index()          # keep only real, non-built-in catalog ids (built-ins live in enabled_categories)
+                nodes[nid]["catalog_cats"] = [c for c in dict.fromkeys(cc) if c in _cix and c not in SMART_CATEGORIES]
         # per-node mesh overrides — a CHANGE re-provisions THIS node's links (it briefly drops off the mesh
         # while peers reconnect with the new config); a blank value falls back to the panel default.
         _mesh_before = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")

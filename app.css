@@ -1331,6 +1331,17 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .catpick-count{font-family:var(--mono);font-size:10.5px;color:var(--dim);font-variant-numeric:tabular-nums}
 .catpick-note{padding:8px 11px;border-top:1px solid var(--line);font-size:11px;line-height:1.45;color:var(--dim);background:color-mix(in srgb,var(--smart) 6%,transparent)}
 .catpick-note b{color:var(--ink-2);font-weight:600}
+.catpick-tick{display:inline-flex;justify-content:center;width:14px;color:var(--brand);font-size:12px;flex-shrink:0}
+.catpick-add .btn-mini.on{border-color:var(--brand);color:var(--brand)}
+/* node-lens catalog opt-in chips (Settings › Routing) */
+.ccchips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:2px}
+.ccchip{display:inline-flex;align-items:center;gap:7px;padding:4px 5px 4px 10px;border:1px solid var(--line-solid);border-radius:20px;background:color-mix(in srgb,var(--ink) 3%,transparent)}
+.ccchip.off{opacity:.6}
+.ccchip-lbl{font-size:12.5px;color:var(--ink)}
+.ccchip-caps{display:flex;gap:3px}
+.ccchip-x{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;background:none;color:var(--faint);cursor:pointer}
+.ccchip-x:hover{background:color-mix(in srgb,var(--danger) 18%,transparent);color:var(--danger)}
+.ccchip-x .ic svg{width:12px;height:12px}
 .rrrow .rrlint{grid-column:1/-1}   /* lint messages drop to their own full-width grid row */
 .rrlint{font-size:10px;color:var(--partial);font-family:var(--mono)}
 /* the catch-all footer reuses the row's grid template + the row's content inset (transparent padding+border) so
