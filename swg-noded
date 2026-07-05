@@ -1096,6 +1096,35 @@ def _geo_fetch(cat):
     return sorted(cidrs) or None
 
 
+_FETCH_INFLIGHT = set()        # keys with a background fetch running → don't double-spawn
+_FETCH_INFLIGHT_LOCK = threading.Lock()
+def _bg_fetch(key, path, fetch_fn):
+    """Run a (blocking, up to 40s PER url × sources × mirrors) list fetch in a DAEMON THREAD and atomically drop
+    the result at `path`. The reconcile loop must NEVER block on network I/O — a slow/hung fetch would otherwise
+    stall everything after it in the same pass: new custom-list sets wouldn't load, dnsmasq wouldn't tear down on
+    a mode switch, geo-epoch bumps would freeze the node. The set/cache stays at last-good (or empty) until the
+    file lands; the next reconcile loads it. Deduped per key so a stuck fetch can't pile up threads (the `.attempt`
+    stamp still rate-limits respawns). Used by BOTH the geoip (CIDR) and domain (GeoSite) tiers."""
+    with _FETCH_INFLIGHT_LOCK:
+        if key in _FETCH_INFLIGHT:
+            return
+        _FETCH_INFLIGHT.add(key)
+    def _work():
+        try:
+            data = fetch_fn()
+            if data:
+                tmp = path + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write("\n".join(data) + "\n")
+                os.replace(tmp, path)
+        except Exception:
+            pass                                               # leave last-good; retry next TTL
+        finally:
+            with _FETCH_INFLIGHT_LOCK:
+                _FETCH_INFLIGHT.discard(key)
+    threading.Thread(target=_work, daemon=True).start()
+
+
 def _nft_load_set(setname, cidrs):
     """Atomically replace an nft interval set's elements (flush + chunked add via `nft -f`). Overlapping or
     adjacent ranges are COLLAPSED first — an `interval` set without auto-merge rejects an overlapping add and
@@ -1167,12 +1196,7 @@ def _smart_geo_refresh(categories, set_counts, res, skip=()):
             if due:
                 with contextlib.suppress(OSError):                 # stamp BEFORE fetching → a hang still backs off
                     open(ap, "w").write(str(int(time.time())))
-                data = _geo_fetch(cat)
-                if data:
-                    tmp = path + ".tmp"
-                    with open(tmp, "w") as f:
-                        f.write("\n".join(data) + "\n")
-                    os.replace(tmp, path)
+                _bg_fetch("geo:" + cat, path, lambda c=cat: _geo_fetch(c))   # BACKGROUND — never stall the reconcile on network I/O
             try:
                 st = os.stat(path)                             # no data yet → set stays empty (inert), retry next TTL
             except OSError:
@@ -1355,12 +1379,7 @@ def _smart_domain_refresh(cats, res):
             if due:
                 with contextlib.suppress(OSError):                 # stamp BEFORE fetching → a hang still backs off
                     open(ap, "w").write(str(int(time.time())))
-                data = _domain_fetch(cat)
-                if data:
-                    tmp = path + ".tmp"
-                    with open(tmp, "w") as f:
-                        f.write("\n".join(data) + "\n")
-                    os.replace(tmp, path)
+                _bg_fetch("dom:" + cat, path, lambda c=cat: _domain_fetch(c))   # BACKGROUND — never stall the reconcile on network I/O
             try:
                 st = os.stat(path)
             except OSError:

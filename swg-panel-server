@@ -1563,6 +1563,8 @@ def cascade_plan(nodes, snaps, custom_lists=None):
                         extra = (doms, cidrs)
                     elif custom_lists and cat in custom_lists:  # a reusable custom list referenced by id → its targets
                         cl = custom_lists[cat]
+                        if cl.get("enabled", True) is False or nid in (cl.get("disabled_nodes") or []):
+                            continue                           # list toggled off globally, or disabled on THIS node → don't route it
                         doms, cidrs = list(cl.get("domains") or []), list(cl.get("cidrs") or [])
                         if not doms and not cidrs:
                             continue
