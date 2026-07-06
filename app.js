@@ -1638,7 +1638,6 @@ function DashControls() {
   const range = dashState.range;
   return html`<div class="dashbar">
     ${fleet.length > 1 ? html`<div class="dash-nodes">
-      <span class="dash-lbl">Nodes</span>
       <button class=${"dchip all" + (dashAllOn() ? " on" : "")} onClick=${dashSetAll} title="Show the whole fleet">All</button>
       ${fleet.map(n => {
         const on = dashNodeOn(n.id);
@@ -2915,22 +2914,27 @@ const CAT_PROVIDER_DEFAULTS = { mc: { color: "#5B8FF9", colorL: "#2C6FD6" }, v2:
   ls: { color: "#F6BD16", colorL: "#B8890A" }, rf: { color: "#E8684A", colorL: "#C2452A" }, bm: { color: "#B07BE0", colorL: "#8347C0" } };
 function providerColor(prov) {
   const ov = (Store.panelSettings && Store.panelSettings.provider_colors) || {};
-  const d = CAT_PROVIDER_DEFAULTS[prov] || { color: "#8FA8C0", colorL: "#5E7085" };
+  const d = CAT_PROVIDER_DEFAULTS[prov] || (prov === "custom" ? { color: "#8A94A6", colorL: "#5E6875" } : { color: "#8FA8C0", colorL: "#5E7085" });
   return pickThemed(ov[prov], d.color, d.colorL);
 }
+// The app-wide on/off switch (34×19). Used for every enable/disable toggle in Settings.
+const Switch = ({ on, onChange, title, disabled }) => html`<label class=${"swt" + (disabled ? " swt-off" : "")} title=${title || ""}>
+  <input type="checkbox" checked=${!!on} disabled=${!!disabled} onChange=${e => onChange(e.target.checked)}/><span class="track"></span><span class="knob"></span></label>`;
 // Provider source tag — colour-coded by provider (or a neutral "Custom"/"built-in" chip when plain).
 function ProvTag({ id, label, plain }) {
   if (plain || !isProviderCat(id)) return html`<span class="catpick-src legacy">${label}</span>`;
   return html`<span class="catpick-src" style=${"--pc:" + providerColor(String(id).split(":")[0])}>${label || provLabelOf(id)}</span>`;
 }
 // Routing-mode metadata: icon + labels + the full explanation (shown in the mode banner).
+// NOTE: all three modes are kernel-based — there is NO "Kernel" mode. The IP-only mode is "Default". (Stored value
+// stays "kernel"|"forcedns"|"sni" — the node reads it — but never DISPLAY the word "Kernel".) See MODES for the text.
 const MODE_META = {
-  kernel:   { icon: "cpu",    label: "Kernel — IP only", short: "IP only",
-    exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google). Lists: IP only." },
-  forcedns: { icon: "server", label: "Force DNS — Host + IP", short: "Host + IP",
-    exp: "The node becomes your clients' resolver and blocks their encrypted DNS (DoH + DoT), so it can route by hostname too — per-service precise. Trade-off: it sees and downgrades the client's DNS, and a DoH server it doesn't recognise can slip past. Lists: Host + IP." },
-  sni:      { icon: "shield", label: "SNI router — Host + IP", short: "Host + IP",
-    exp: "Routes by hostname by reading the SNI from each TLS handshake — your clients' DNS is never touched, observed or downgraded. Learns each destination on its first connection; ECH-hidden names and QUIC/HTTP3 fall back to IP. Lists: Host + IP." },
+  kernel:   { icon: "globe",  label: "Default — IP only, DNS is not involved", short: "IP only",
+    exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs." },
+  forcedns: { icon: "server", label: "Force DNS — Host + IP, overrides encrypted DNS", short: "Host + IP",
+    exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
+  sni:      { icon: "shield", label: "SNI router — Host + IP, DNS stays private", short: "Host + IP",
+    exp: "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
 };
 // "on N/M nodes ▾" fleet-assignment popover — toggle a list on each node. disabledFor(nid) → a reason string greys it.
 function FleetAssign({ nodes, isOn, onToggle, disabledFor }) {
@@ -2938,9 +2942,9 @@ function FleetAssign({ nodes, isOn, onToggle, disabledFor }) {
   return html`<${Popover} cls="fleetassign" popCls="fleetpop"
     trigger=${html`<span class="fleet-trig">on <b>${on}</b>/${(nodes || []).length} <span class="fleet-caret">▾</span></span>`}
     children=${html`<div class="fleetlist"><div class="fleetlist-h">Enabled on</div>${(nodes || []).map(n => { const dis = disabledFor && disabledFor(n.id);
-      return html`<label class=${"fleetrow" + (dis ? " off" : "")} title=${dis || ""}>
-        <input type="checkbox" checked=${isOn(n.id)} disabled=${!!dis} onChange=${e => onToggle(n.id, e.target.checked)}/>
-        <span class="fleet-dot" style=${"--c:" + Store.nodeColor(n.id)}></span><span class="fleet-nm">${n.name}</span></label>`; })}</div>`}/>`;
+      return html`<div class=${"fleetrow" + (dis ? " off" : "")} title=${dis || ""}>
+        <span class="fleet-dot" style=${"--c:" + Store.nodeColor(n.id)}></span><span class="fleet-nm">${n.name}</span><span class="grow"></span>
+        <${Switch} on=${isOn(n.id)} disabled=${!!dis} onChange=${v => onToggle(n.id, v)}/></div>`; })}</div>`}/>`;
 }
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
 // EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns). A
@@ -2980,7 +2984,7 @@ function loadCatalogIndex() {
 // addMode: the picker becomes a multi-select "Add from catalog" affordance — it stays open on each pick,
 // shows a ✓ on already-added ids (from `selected`), and hides the Custom row, custom lists, and the 26
 // built-ins (those are managed by the checkboxes above it). Used by the Settings node-lens.
-function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange, addMode, selected, triggerLabel }) {
+function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange, addMode, selected, triggerLabel, primary }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
@@ -2994,6 +2998,14 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   const usable = caps => mode === "kernel" ? !!(caps && caps.ip) : !!(caps && (caps.ip || caps.host));
   const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
     const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
+    if (addMode) {   // the catalog browser spans the FULL card width (grid-wide), anchored under its header row
+      const card = el.closest(".card") || el.closest(".setpane");
+      const cr = card ? card.getBoundingClientRect() : r; const pad = 18;
+      const flip = below < 360 && above > below;
+      setPos({ left: Math.round(cr.left + pad), top: Math.round(flip ? r.top - 4 : r.bottom + 6),
+        width: Math.round(cr.width - pad * 2), flip, wide: true, maxh: Math.max(300, Math.round(flip ? above : below)) });
+      return;
+    }
     const flip = below < 300 && above > below;                 // not enough room under the trigger → open upward
     setPos({ left: Math.round(r.left), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width),
       flip, maxh: Math.max(200, Math.round(flip ? above : below)) }); };   // list caps to the space actually available
@@ -3007,9 +3019,12 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     const onKey = e => { if (e.key === "Escape") { setOpen(false); ref.current && ref.current.focus(); } };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
     document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
-    requestAnimationFrame(() => { const el = inRef.current; if (el) el.focus(); });   // focus the search box on open so the operator can type right away
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
   }, [open]);
+  // Focus the search box on open — keyed on the input actually being MOUNTED (the popover only renders once `pos`
+  // is set, which is a tick after `open` flips; focusing on `[open]` alone missed the first open). !!pos toggles
+  // false→true exactly once per open, so this fires when the input first exists and never re-steals focus on scroll.
+  useEffect(() => { if (open && pos && inRef.current) requestAnimationFrame(() => inRef.current && inRef.current.focus()); }, [open, !!pos]);
   const pick = id => { onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add
   const capBadge = capBadges;   // shared Host-first renderer (defined near catLabelOf)
   // addMode: filter the full index by title/id/description, sort by readable title, paginate 40/page locally.
@@ -3037,15 +3052,16 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   ].filter(g => g.rows.length);
   const localEmpty = !addMode && !localGroups.length && !!_ql;
   return html`<div class=${"catpick" + (addMode ? " catpick-add" : "")} ref=${ref}>
-    ${addMode ? html`<button type="button" class=${"btn btn-mini" + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}><${Ic} i="plus"/> ${curLabel}</button>`
+    ${addMode ? html`<button type="button" class=${(primary ? "btn btn-add" : "btn btn-mini") + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}><${Ic} i="plus"/> ${curLabel}</button>`
       : html`<button type="button" class=${"catpick-btn" + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}>
       <span class="catpick-lbl">${curLabel}</span><span class="catpick-caret">▾</span>
     </button>`}
-    ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop" + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + Math.max(pos.width, 320) + "px;--catpick-maxh:" + (pos.maxh - 160) + "px"}>
+    ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop" + (pos.flip ? " flip" : "") + (pos.wide ? " wide" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;" + (pos.wide ? "width:" + pos.width + "px;" : "min-width:" + Math.max(pos.width, 320) + "px;") + "--catpick-maxh:" + (pos.maxh - 108) + "px"}>
       <div class="catpick-search">
         <${Ic} i="search"/>
         <input ref=${inRef} type="text" placeholder=${addMode ? "Search " + ((cidx && cidx.length) || "") + " lists — name, country, service…" : "Filter this node's lists…"} value=${q}
-          onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"/>
+          onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"
+          onKeyDown=${e => { if (e.key === "Enter" && addMode && total === 1 && items[0]) { e.preventDefault(); pick(items[0].id); } }}/>
       </div>
       <div class="catpick-list">
         ${!addMode ? html`
@@ -5559,9 +5575,11 @@ function PanelSettingsScreen() {
   // ---- themed colour pickers ({dark,light} each) — Interfaces / Display / Turn sections ----
   const asThemed = (v, dd, dl) => (v && typeof v === "object") ? { dark: v.dark || dd, light: v.light || dl } : { dark: v || dd, light: v || dl };
   const sameThemed = (a, dd, dl) => (a.dark || "").toLowerCase() === dd.toLowerCase() && (a.light || "").toLowerCase() === dl.toLowerCase();
-  const _provColDefault = p => { const d = CAT_PROVIDER_DEFAULTS[p] || { color: "#8FA8C0", colorL: "#5E7085" }; return { dark: d.color, light: d.colorL }; };
-  const [provColors, setProvColors] = useState(() => Object.fromEntries(_provReg.map(p => [p.id, asThemed((ps.provider_colors || {})[p.id], _provColDefault(p.id).dark, _provColDefault(p.id).light)])));
-  const provColorOverrides = () => { const o = {}; for (const p of _provReg) { const d = _provColDefault(p.id); const t = asThemed(provColors[p.id], d.dark, d.light); if (!sameThemed(t, d.dark, d.light)) o[p.id] = t; } return o; };
+  const _provColDefault = p => { const d = CAT_PROVIDER_DEFAULTS[p] || (p === "custom" ? { color: "#8A94A6", colorL: "#5E6875" } : { color: "#8FA8C0", colorL: "#5E7085" }); return { dark: d.color, light: d.colorL }; };
+  const _provColKeys = [..._provReg.map(p => p.id), "custom"];
+  const [provColors, setProvColors] = useState(() => Object.fromEntries(_provColKeys.map(k => [k, asThemed((ps.provider_colors || {})[k], _provColDefault(k).dark, _provColDefault(k).light)])));
+  const provColorOverrides = () => { const o = {}; for (const k of _provColKeys) { const d = _provColDefault(k); const t = asThemed(provColors[k], d.dark, d.light); if (!sameThemed(t, d.dark, d.light)) o[k] = t; } return o; };
+  const [customEnabled, setCustomEnabled] = useState(ps.custom_lists_enabled !== false);
   const [forkColors, setForkColors] = useState(() => Object.fromEntries(TURN_FORKS.map(f => [f.id, asThemed((ps.turn_fork_colors || {})[f.id], f.color, f.colorL)])));
   const [ifaceColors, setIfaceColors] = useState(() => ({
     wg: asThemed((ps.iface_colors || {}).wg, IFACE_COLOR_DEFAULTS.wg.dark, IFACE_COLOR_DEFAULTS.wg.light),
@@ -5662,6 +5680,7 @@ function PanelSettingsScreen() {
     mesh_awg: (n.mesh_awg_set && Object.keys(n.mesh_awg_set).length) ? { ...n.mesh_awg_set } : {} });   // per-node mesh obfuscation override ({} = inherit/auto)
   const [nodeEdits, setNodeEdits] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
   const [orig, setOrig] = useState(() => Object.fromEntries((Store.nodes || []).map(n => [n.id, nFields(n)])));
+  const [gridKeep, setGridKeep] = useState([]);   // provider-list rows kept visible after toggling to 0/N nodes (until × removes them)
   const setNV = (nid, patch) => setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
   const nv = (nid, f) => (nodeEdits[nid] || {})[f];
   const [saved, setSaved] = useState(0);   // timestamp; the green "All settings saved" flash shows while now < saved
@@ -5673,6 +5692,7 @@ function PanelSettingsScreen() {
         mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
         providers: provEnabled,
         provider_colors: provColorOverrides(),
+        custom_lists_enabled: customEnabled,
         geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
         store_configs: sc === "off" ? false : true,
         throughput_perspective: tput,
@@ -5768,7 +5788,10 @@ function PanelSettingsScreen() {
     setLists(((Store.panelSettings || {}).custom_lists || []).map(l => ({ ...l, _rid: ridById[l.id] || newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
     setSaved(Date.now() + 2500);
   };
-  const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => persistLists(l ? lists.map(x => x._rid === nl._rid ? nl : x) : [...lists, nl])} onDelete=${l ? () => persistLists(lists.filter(x => x._rid !== l._rid)) : null} onClose=${closeModal}/>`);
+  const openList = l => openModal(html`<${CustomListSheet} list=${l} onSave=${nl => persistLists(l ? lists.map(x => x._rid === nl._rid ? nl : x) : [...lists, nl])} onClose=${closeModal}/>`);
+  const confirmDeleteList = l => openConfirm({ title: "Delete custom list", confirmLabel: "Delete", danger: true,
+    body: html`Delete <b>${l.title || "Untitled list"}</b>? It's removed from <b>every node</b> it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.`,
+    onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
   const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
   const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
@@ -5796,14 +5819,23 @@ function PanelSettingsScreen() {
   const ccOf = nid => nv(nid, "catalog_cats") || [];
   const addCatalogCat = id => { if (!id || SMART_CAT_LABEL[id] || (lists || []).some(l => l.id === id) || id === "custom") return; setNV(selNode, { catalog_cats: [...new Set([...ccOf(selNode), id])] }); };
   const removeCatalogCat = id => setNV(selNode, { catalog_cats: ccOf(selNode).filter(c => c !== id) });
-  // Fleet-wide provider-list grid: rows = the union of every node's opted-in provider cats; per-node PULL + fleet toggle.
+  // Fleet-wide provider-list grid: rows = the union of every node's opted-in provider cats. gridKeep holds ids that
+  // must stay visible even at 0/N nodes (so toggling PULL off doesn't make the row vanish — only × removes it).
   const fleetNodes = Store.nodes || [];
   const catOnNode = (id, nid) => ccOf(nid).includes(id);
   const setCatOnNode = (id, nid, on) => setNV(nid, { catalog_cats: on ? [...new Set([...ccOf(nid), id])] : ccOf(nid).filter(c => c !== id) });
-  const removeCatFleet = id => fleetNodes.forEach(n => { if (ccOf(n.id).includes(id)) setCatOnNode(id, n.id, false); });   // × drops a list from EVERY node
-  const provFleetCats = [...new Set(fleetNodes.flatMap(n => ccOf(n.id)))].sort((a, b) => catLabelOf(a).toLowerCase().localeCompare(catLabelOf(b).toLowerCase()));
-  const enableAllCompatible = () => setNV(selNode, { catalog_cats: [...new Set([...ccOf(selNode), ...provFleetCats.filter(id => nodeMode !== "kernel" || catCap(id).ip)])] });
-  const clearNodeCats = () => setNV(selNode, { catalog_cats: [] });
+  const pullCatOnNode = (id, on) => { setCatOnNode(id, selNode, on); if (!on) setGridKeep(g => g.includes(id) ? g : [...g, id]); };   // keep the row even at 0/N
+  const fleetToggleCat = (id, nid, on) => { setCatOnNode(id, nid, on); if (!on) setGridKeep(g => g.includes(id) ? g : [...g, id]); };   // fleet popover toggle: keep the row visible at 0/N
+  const removeCatFleet = id => { fleetNodes.forEach(n => { if (ccOf(n.id).includes(id)) setCatOnNode(id, n.id, false); }); setGridKeep(g => g.filter(x => x !== id)); };   // × drops it everywhere + hides the row
+  const provFleetCats = [...new Set([...fleetNodes.flatMap(n => ccOf(n.id)), ...gridKeep])].sort((a, b) => catLabelOf(a).toLowerCase().localeCompare(catLabelOf(b).toLowerCase()));
+  const compatCats = () => provFleetCats.filter(id => nodeMode !== "kernel" || catCap(id).ip);   // usable on selNode in its mode
+  const allCompatOn = () => compatCats().length > 0 && compatCats().every(id => catOnNode(id, selNode));
+  const toggleAllCompat = () => { const off = allCompatOn();
+    if (off) setGridKeep(g => [...new Set([...g, ...compatCats()])]);              // Disable all: keep the rows visible (0/N)
+    setNV(selNode, { catalog_cats: off ? ccOf(selNode).filter(id => !compatCats().includes(id)) : [...new Set([...ccOf(selNode), ...compatCats()])] }); };
+  const confirmRemoveCat = id => openConfirm({ title: "Remove list from the fleet", confirmLabel: "Remove", danger: true,
+    body: html`Remove <b>${catLabelOf(id)}</b> <span class="faint">(${provLabelOf(id)})</span> from <b>every node</b>? Interface rules that use it stop matching, and each node drops its records on the next sync. You can add it back from the catalog any time.`,
+    onConfirm: () => removeCatFleet(id) });
   const customOnNode = (l, nid) => !(l.disabled_nodes || []).includes(nid);
   const setCustomOnNode = (l, nid, on) => persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: on ? (x.disabled_nodes || []).filter(z => z !== nid) : [...new Set([...(x.disabled_nodes || []), nid])] } : x));
   // dirty tracking — per global section + per node-per-section, drives the rail dots and badge glow
@@ -5814,7 +5846,7 @@ function PanelSettingsScreen() {
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "")) :
     sec === "security" ? secChanged() :
-    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
+    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
@@ -5844,60 +5876,60 @@ function PanelSettingsScreen() {
       <div class="setpane">
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
+          <p class="hint rmode-intro">Select how <b>${nodeRec ? nodeRec.name : "this node"}</b> matches smart-routing traffic — by destination <b>IP</b>, or by <b>hostname</b> (via the node's DNS, or read from the TLS handshake). In every mode the traffic stays in-kernel (no userspace proxy); the modes differ only in match precision and in whether they touch your clients' DNS. Changing the mode reconfigures the node (adds or removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</p>
           <div class=${"rmode-banner m-" + nodeMode}>
-            <span class="rmode-icon"><${Ic} i=${MODE_META[nodeMode].icon}/></span>
-            <div class="rmode-body">
-              <div class="rmode-head"><b>${nodeRec ? nodeRec.name : "Node"}</b><span class="rmode-pill">${MODE_META[nodeMode].short}</span></div>
-              <div class="rmode-desc">${MODE_META[nodeMode].exp}</div>
+            <div class="rmode-top">
+              <span class="rmode-icon"><${Ic} i=${MODE_META[nodeMode].icon}/></span>
+              <div class="rmode-head"><b class="rmode-node">${nodeRec ? nodeRec.name : "Node"}</b><span class="rmode-pill">${MODE_META[nodeMode].short}</span></div>
+              <span class="grow"></span>
+              <label class="rmode-picker"><span class="rmode-plbl">Match mode</span>
+                <select class="selwrap" value=${nodeMode} onChange=${e => setMode(e.target.value)}>
+                  ${["kernel", "forcedns", "sni"].map(m => html`<option value=${m}>${MODE_META[m].label}</option>`)}
+                </select></label>
             </div>
-            <label class="rmode-picker"><span class="rmode-plbl">Match mode</span>
-              <select class="selwrap" value=${nodeMode} onChange=${e => setMode(e.target.value)}>
-                ${["kernel", "forcedns", "sni"].map(m => html`<option value=${m}>${MODE_META[m].label}</option>`)}
-              </select></label>
+            <div class="rmode-desc">${MODE_META[nodeMode].exp}</div>
           </div>
 
           <div class="lgrid-head">
-            <div class="seclabel" style="margin:0">Provider lists <span class="lg-count">${provFleetCats.length}</span></div>
-            <span class="faint lg-sub">provider-maintained · read-only</span><span class="grow"></span>
-            <button class="btn btn-mini" disabled=${!provFleetCats.length} onClick=${enableAllCompatible}>Enable all compatible</button>
-            <button class="btn btn-mini" disabled=${!ccOf(selNode).length} onClick=${clearNodeCats}>Clear</button>
-            <${CatPicker} addMode=${true} mode=${nodeMode} triggerLabel="Add category" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/>
+            <div class="lg-htitle"><span class="seclabel" style="margin:0">Provider lists</span><span class="lg-count">${provFleetCats.length}</span><span class="faint lg-sub">provider-maintained · read-only</span></div>
+            <span class="grow"></span>
+            ${compatCats().length ? html`<button class="btn btn-mini" onClick=${toggleAllCompat}>${allCompatOn() ? "Disable all" : "Enable all"}</button>` : null}
+            <${CatPicker} addMode=${true} primary=${true} mode=${nodeMode} triggerLabel="Add preset list" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/>
           </div>
-          ${provFleetCats.length ? html`<table class="lgrid">
-            <thead><tr><th class="lg-pull">Pull</th><th>Category</th><th>Matches by</th><th>List size</th><th class="lg-fleet">Fleet</th><th></th></tr></thead>
-            <tbody>${provFleetCats.map(id => { const cap = catCap(id); const usable = nodeMode !== "kernel" || cap.ip; const sz = (Store.catSizes || {})[id] || {};
-              return html`<tr class=${usable ? "" : "lg-lock"} key=${id}>
-                <td class="lg-pull"><label class="lg-chk" title=${usable ? "Pull this list on " + (nodeRec ? nodeRec.name : "this node") : "Host-only — needs Force-DNS or SNI on this node"}><input type="checkbox" checked=${catOnNode(id, selNode)} disabled=${!usable} onChange=${e => setCatOnNode(id, selNode, e.target.checked)}/></label></td>
-                <td class="lg-cat"><span class="lg-title">${catLabelOf(id)}</span><span class="lg-id">${catRawId(id)}</span>${provLabelOf(id) ? html`<${ProvTag} id=${id}/>` : null}</td>
-                <td>${capBadges(cap)}</td>
-                <td class="lg-size">${sizeSummary(sz.host || 0, sz.ip || 0) || html`<span class="faint">—</span>`}</td>
-                <td class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => catOnNode(id, nid)} onToggle=${(nid, on) => setCatOnNode(id, nid, on)} disabledFor=${nid => (nv(nid, "routing_mode") || "kernel") === "kernel" && !cap.ip ? "Host-only — this node is IP-only" : null}/></td>
-                <td class="lg-act">${catListUrl(id, cap) ? html`<a class="ccchip-info" href=${catListUrl(id, cap)} target="_blank" rel="noopener" title="View on GitHub"><${Ic} i="info"/></a>` : null}<button class="ccchip-x" title="Remove from the whole fleet" onClick=${() => removeCatFleet(id)}><${Ic} i="x"/></button></td>
-              </tr>`; })}</tbody>
-          </table>` : html`<div class="hint" style="margin:2px 0 0">No provider lists yet — use <b>Add category</b> to pull lists from the catalog.</div>`}
+          ${provFleetCats.length ? html`<div class="lgrid">
+            ${provFleetCats.map(id => { const cap = catCap(id); const usable = nodeMode !== "kernel" || cap.ip; const sz = (Store.catSizes || {})[id] || {};
+              return html`<div class=${"lgrow" + (usable ? "" : " lg-lock")} key=${id}>
+                <div class="lg-pull"><${Switch} on=${catOnNode(id, selNode)} disabled=${!usable} title=${usable ? "Pull this list on " + (nodeRec ? nodeRec.name : "this node") : "Host-only — needs Force-DNS or SNI on this node"} onChange=${v => pullCatOnNode(id, v)}/></div>
+                <div class="lg-cat"><span class="lg-title">${catLabelOf(id)}</span><span class="lg-id">${catRawId(id)}</span>${provLabelOf(id) ? html`<${ProvTag} id=${id}/>` : null}</div>
+                <div class="lg-size">${sizeSummary(sz.host || 0, sz.ip || 0) || html`<span class="faint">—</span>`}</div>
+                <div class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => catOnNode(id, nid)} onToggle=${(nid, on) => fleetToggleCat(id, nid, on)} disabledFor=${nid => (nv(nid, "routing_mode") || "kernel") === "kernel" && !cap.ip ? "Host-only — this node is IP-only" : null}/></div>
+                <div class="lg-caps">${capBadges(cap)}</div>
+                <div class="lg-act">${catListUrl(id, cap) ? html`<a class="ccchip-info" href=${catListUrl(id, cap)} target="_blank" rel="noopener" title="View this list on GitHub"><${Ic} i="info"/></a>` : null}<button class="ccchip-x" title="Remove from the fleet" onClick=${() => confirmRemoveCat(id)}><${Ic} i="x"/></button></div>
+              </div>`; })}
+          </div>` : html`<div class="hint" style="margin:2px 0 0">No preset lists yet — use <b>Add preset list</b> to pull from the catalog.</div>`}
 
-          <div class="lgrid-head" style="margin-top:24px">
-            <div class="seclabel" style="margin:0">Custom lists <span class="lg-count">${lists.length}</span></div>
-            <span class="faint lg-sub">your own IPs / domains · editable · apply immediately</span><span class="grow"></span>
-            <button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> New custom list</button>
+          ${(Store.panelSettings || {}).custom_lists_enabled !== false ? html`
+          <div class="lgrid-head" style="margin-top:26px">
+            <div class="lg-htitle"><span class="seclabel" style="margin:0">Custom lists</span><span class="lg-count">${lists.length}</span><span class="faint lg-sub">your own IPs / domains · editable · apply immediately</span></div>
+            <span class="grow"></span>
+            <button class="btn btn-add" onClick=${() => openList(null)}><${Ic} i="plus"/> New custom list</button>
           </div>
-          ${lists.length ? html`<table class="lgrid">
-            <thead><tr><th class="lg-pull">Pull</th><th>List</th><th>Matches by</th><th>Entries</th><th class="lg-fleet">Fleet</th><th></th></tr></thead>
-            <tbody>${[...lists].sort((a, b) => (a.title || "").toLowerCase().localeCompare((b.title || "").toLowerCase())).map(l => { const cap = customCaps(l);
-              return html`<tr key=${l._rid}>
-                <td class="lg-pull"><label class="lg-chk" title=${"Enable on " + (nodeRec ? nodeRec.name : "this node")}><input type="checkbox" checked=${customOnNode(l, selNode)} onChange=${e => setCustomOnNode(l, selNode, e.target.checked)}/></label></td>
-                <td class="lg-cat"><button class="lg-title asbtn" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button><button class="lg-id asbtn" onClick=${() => openList(l)}>edit</button><span class="catpick-src legacy">Custom</span></td>
-                <td>${capBadges(cap)}</td>
-                <td class="lg-size"><${ListInfo} list=${l}/></td>
-                <td class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => customOnNode(l, nid)} onToggle=${(nid, on) => setCustomOnNode(l, nid, on)}/></td>
-                <td class="lg-act"><button class="ccchip-x" title="Edit" onClick=${() => openList(l)}><${Ic} i="pencil"/></button></td>
-              </tr>`; })}</tbody>
-          </table>` : html`<div class="hint" style="margin:2px 0 0">No custom lists yet.</div>`}
+          ${lists.length ? html`<div class="lgrid">
+            ${[...lists].sort((a, b) => (a.title || "").toLowerCase().localeCompare((b.title || "").toLowerCase())).map(l => { const cap = customCaps(l);
+              return html`<div class="lgrow" key=${l._rid}>
+                <div class="lg-pull"><${Switch} on=${customOnNode(l, selNode)} title=${"Enable on " + (nodeRec ? nodeRec.name : "this node")} onChange=${v => setCustomOnNode(l, selNode, v)}/></div>
+                <div class="lg-cat"><button class="lg-title asbtn" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button><button class="lg-id asbtn" onClick=${() => openList(l)}>edit</button><span class="catpick-src" style=${"--pc:" + providerColor("custom")}>Custom</span></div>
+                <div class="lg-size"><${ListInfo} list=${l}/></div>
+                <div class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => customOnNode(l, nid)} onToggle=${(nid, on) => setCustomOnNode(l, nid, on)}/></div>
+                <div class="lg-caps">${capBadges(cap)}</div>
+                <div class="lg-act"><button class="ccchip-x" title="Delete this list" onClick=${() => confirmDeleteList(l)}><${Ic} i="x"/></button></div>
+              </div>`; })}
+          </div>` : html`<div class="hint" style="margin:2px 0 0">No custom lists yet.</div>`}` : null}
 
           <div class="lg-legend">
-            <span><span class="capb host">Host</span> by domain — needs Force-DNS or SNI</span>
-            <span><span class="capb ip">IP</span> by address range — every mode</span>
-            <span class="faint">A greyed row is host-only on an IP-only node — the pull is remembered, just inactive.</span>
+            <div class="lg-leg-row"><span class="capb ip">IP</span> matched by address range (GeoIP / ASN) — works in every mode.</div>
+            <div class="lg-leg-row"><span class="capb host">Host</span> matched by domain name — needs Force-DNS or SNI mode.</div>
+            ${provFleetCats.some(id => nodeMode === "kernel" && !catCap(id).ip) ? html`<div class="lg-leg-row faint">Greyed rows are Host-only — this node is IP-only, so they can't match here. The pull stays remembered; switch to Force-DNS or SNI to activate them.</div>` : null}
           </div>
         </div>` : null}
         ${section === "turn" ? html`<div class="card">
@@ -5907,7 +5939,7 @@ function PanelSettingsScreen() {
           ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">Turn proxies are off.</b> Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.</p>`
             : html`<p class="hint" style="margin:0 0 12px">Which forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node, and each fork's colour. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>`}
           <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${TURN_FORKS.map(f => html`<div class="cl-row" key=${f.id}>
-            <label class="chk" title=${"Offer " + f.label + " in the install picker"}><input type="checkbox" checked=${turnForks.has(f.id)} onChange=${e => setTurnForks(s => { const n = new Set(s); e.target.checked ? n.add(f.id) : n.delete(f.id); return n; })}/></label>
+            <${Switch} on=${turnForks.has(f.id)} title=${"Offer " + f.label + " in the install picker"} onChange=${v => setTurnForks(s => { const n = new Set(s); v ? n.add(f.id) : n.delete(f.id); return n; })}/>
             <${ThemedSwatch} val=${forkColors[f.id]} title=${"Colour for " + f.label} onChange=${nv => setForkColors(c => ({ ...c, [f.id]: nv }))}
               sample=${(c) => html`<span class="tg tg-turn" style=${"--tfc:" + c}>${f.label}</span>`}/>
             <span class=${"tf-name tf-" + f.id} style="color:var(--tfc)">${f.label}</span>
@@ -5943,8 +5975,7 @@ function PanelSettingsScreen() {
           <div class="seclabel" style="margin-top:0">List providers</div>
           <p class="hint" style="margin:0 0 12px">The public GitHub sources the routing-list catalog draws from. Each node fetches the lists you route directly over HTTPS. <b>Disable</b> a provider to hide its lists from the routing picker — anything already routed from it is <b>kept but greyed</b> (deactivated), and the nodes drop those records until you re-enable it.</p>
           <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = provEnabled[p.id] !== false; return html`<div class=${"provrow" + (on ? "" : " off")} key=${p.id}>
-            <label class="swt" title=${on ? "Enabled — its lists are selectable" : "Disabled — its lists are hidden and deactivated on nodes"}>
-              <input type="checkbox" checked=${on} onChange=${e => setProvEnabled(m => ({ ...m, [p.id]: e.target.checked }))}/><span class="track"></span><span class="knob"></span></label>
+            <${Switch} on=${on} title=${on ? "Enabled — its lists are selectable" : "Disabled — its lists are hidden and deactivated on nodes"} onChange=${v => setProvEnabled(m => ({ ...m, [p.id]: v }))}/>
             <${ThemedSwatch} val=${provColors[p.id]} title=${p.label + " tag colour"} onChange=${nv => setProvColors(c => ({ ...c, [p.id]: nv }))}
               sample=${(c) => html`<span class="catpick-src" style=${"--pc:" + c}>${p.label}</span>`}/>
             <div class="prov-meta">
@@ -5960,7 +5991,16 @@ function PanelSettingsScreen() {
               if (s === "failed" || p.error) return html`<span class="prov-st err" title=${p.error || ""}><${Ic} i="warn"/> failed to update</span>`;
               return null; })()}
             <a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${"Open " + p.label + " on GitHub"}>${(p.url || "").replace(/^https?:\/\/github\.com\//, "")}</a>
-          </div>`; })}${!_provReg.length ? html`<div class="hint">Loading providers…</div>` : null}</div>
+          </div>`; })}${!_provReg.length ? html`<div class="hint">Loading providers…</div>` : null}
+            <div class=${"provrow" + (customEnabled ? "" : " off")}>
+              <${Switch} on=${customEnabled} title=${customEnabled ? "On — you can create custom lists" : "Off — the Custom lists section is hidden"} onChange=${v => setCustomEnabled(v)}/>
+              <${ThemedSwatch} val=${provColors.custom} title="Custom-list tag colour" onChange=${nv => setProvColors(c => ({ ...c, custom: nv }))}
+                sample=${(c) => html`<span class="catpick-src" style=${"--pc:" + c}>Custom</span>`}/>
+              <div class="prov-meta"><span class="prov-name">Custom lists</span></div>
+              <span class="grow"></span>
+              <span class="prov-desc">Your own IP / domain lists — turn off to hide the Custom lists section in routing</span>
+            </div>
+          </div>
 
           <div class="seclabel">Update schedule</div>
           <p class="hint" style="margin:0 0 10px">When each node re-fetches its lists. Refreshing briefly reloads the node's match sets, which clients can feel — so schedule it for a <b>quiet hour</b>. (A failed fetch retries on the next sync; existing lists keep working meanwhile.)</p>
@@ -5991,12 +6031,12 @@ function PanelSettingsScreen() {
           </div>
           <div class="seclabel">Peer health detection</div>
           <p class="hint" style="margin:0 0 10px">Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in <span class="b-faulty" style="padding:1px 6px;border-radius:6px">orange</span>.</p>
-          <label class="condrow"><input type="checkbox" checked=${statusConds.blocked} onChange=${e => setStatusConds(c => ({ ...c, blocked: e.target.checked }))}/>
+          <div class="condrow"><${Switch} on=${statusConds.blocked} onChange=${v => setStatusConds(c => ({ ...c, blocked: v }))}/>
             <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>blocked</span></span>
-            <span class="cond-t">Endpoint is reaching the server, but the handshake never completes (likely DPI / MTU / wrong AmneziaWG params).</span></label>
-          <label class="condrow"><input type="checkbox" checked=${statusConds.faulty} onChange=${e => setStatusConds(c => ({ ...c, faulty: e.target.checked }))}/>
+            <span class="cond-t">Endpoint is reaching the server, but the handshake never completes (likely DPI / MTU / wrong AmneziaWG params).</span></div>
+          <div class="condrow"><${Switch} on=${statusConds.faulty} onChange=${v => setStatusConds(c => ({ ...c, faulty: v }))}/>
             <span class="cond-b"><span class="badge b-faulty ic"><${Ic} i="warn"/>faulty</span></span>
-            <span class="cond-t">Handshake is up but no inbound data has flowed for a while — a one-way block / DPI on the return path. (This can't tell a genuinely-stuck peer from a simply-idle one, so turn it off if idle peers bother you.)</span></label>
+            <span class="cond-t">Handshake is up but no inbound data has flowed for a while — a one-way block / DPI on the return path. (This can't tell a genuinely-stuck peer from a simply-idle one, so turn it off if idle peers bother you.)</span></div>
           <div class="seclabel">Defaults</div>
           <p class="hint" style="margin:0 0 12px">Applied when creating a new interface — you can still override per interface.</p>
           <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="https://8.8.8.8/dns-query, 1.1.1.1"/><div class="hint">Comma-separated</div></div>
@@ -6059,18 +6099,14 @@ function PanelSettingsScreen() {
   </div>`;
 }
 
-function CustomListSheet({ list, onSave, onDelete, onClose }) {
+function CustomListSheet({ list, onSave, onClose }) {
   const [title, setTitle] = useState(list?.title || "");
   const [targets, setTargets] = useState(list ? (list.targets ?? [...(list.domains || []), ...(list.cidrs || [])].join(", ")) : "");
-  const [confirmDel, setConfirmDel] = useState(false);
   const toks = splitTargets(targets), bad = invalidTargets(targets);   // same token validation as the interface smart-rule editor
   const err = !toks.length ? "add at least one IP or domain"
     : bad.length ? "not a valid IP, CIDR or domain: " + bad.slice(0, 4).join(", ") + (bad.length > 4 ? "…" : "") : null;
   const save = () => { if (err) return; onSave({ ...(list || { _rid: newRid() }), title: title.trim() || "Untitled list", targets }); onClose(); };
-  const del = onDelete ? (confirmDel                                   // left-aligned delete, two-step confirm
-    ? html`<span class="del-confirm"><span class="faint">Delete this list?</span><button class="btn-danger" onClick=${() => { onDelete(); onClose(); }}>Delete</button><button class="btn btn-mini" onClick=${() => setConfirmDel(false)}>Keep</button></span>`
-    : html`<button class="btn btn-ghost danger del-btn" onClick=${() => setConfirmDel(true)}><${Ic} i="trash"/> Delete</button>`) : null;
-  const foot = html`${del}<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>Cancel</button><button class="btn btn-primary" disabled=${!!err} title=${err || ""} onClick=${save}>${list ? "Save" : "Add"}</button>`;
+  const foot = html`<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>Cancel</button><button class="btn btn-primary" disabled=${!!err} title=${err || ""} onClick=${save}>${list ? "Save" : "Add"}</button>`;
   return html`<${Sheet} title=${list ? "Edit list" : "New list"} width=${520} onClose=${onClose} foot=${foot}>
     <div class="field"><label>Title</label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder="e.g. Streaming"/></div>
     <div class="field"><label>IPs / domains</label>

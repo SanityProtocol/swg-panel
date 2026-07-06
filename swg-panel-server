@@ -1844,6 +1844,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "enabled_turn_forks": ["WINGS-N", "anton48"],
     "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
     "provider_colors": {},    # per-provider source-tag colour overrides {prov_id: {dark,light}} (else CAT_PROVIDER_DEFAULTS)
+    "custom_lists_enabled": True,   # Geo-data toggle: off → the routing UI hides the Custom lists section entirely
     # palette overrides — empty = the SPA's built-in defaults (wg green, awg cyan, blocked/faulty orange, brand cyan).
     # Each colour carries a per-mode value {dark,light}.
     "iface_colors": {},       # per-protocol interface colour overrides {"wg"|"awg": {dark,light}}
@@ -2693,14 +2694,16 @@ def api(method, path, qs, body, deps):
                 tc = _themed_color(ic.get(k))
                 if tc: out_ic[k] = tc
             cur["iface_colors"] = out_ic
-        pc = incoming.get("provider_colors")            # per-provider source-tag colour overrides {prov_id: {dark,light}}
+        pc = incoming.get("provider_colors")            # per-provider source-tag colour overrides {prov_id: {dark,light}}; "custom" allowed too
         if isinstance(pc, dict):
             out_pc = {}
             for k, v in list(pc.items())[:16]:
-                if k in CATALOG_PROVIDERS:
+                if k in CATALOG_PROVIDERS or k == "custom":
                     tc = _themed_color(v)
                     if tc: out_pc[k] = tc
             cur["provider_colors"] = out_pc
+        if "custom_lists_enabled" in incoming:          # Geo-data "Custom lists" toggle — when off, the routing UI hides the custom section
+            cur["custom_lists_enabled"] = bool(incoming.get("custom_lists_enabled"))
         sco = incoming.get("status_conditions")         # peer-health DETECTION toggles {blocked,faulty: bool}
         if isinstance(sco, dict):
             cur["status_conditions"] = {"blocked": sco.get("blocked", True) is not False,

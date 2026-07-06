@@ -1142,7 +1142,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .provrow:first-child{border-top:none}
 .provrow.off{opacity:.55}
 .prov-meta{display:flex;align-items:center;gap:9px;min-width:0}
-.prov-name{font-size:13.5px;font-weight:600;color:var(--ink);text-decoration:none}
+.prov-name{font-size:13.5px;font-weight:600;color:var(--ink);text-decoration:none;white-space:nowrap}
+.prov-desc{font-size:11.5px;color:var(--dim);text-align:right;margin-left:auto;white-space:nowrap}
 .prov-name:hover{color:var(--brand)}
 .prov-tiers{display:flex;gap:4px}
 .prov-err{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--partial)}
@@ -1234,13 +1235,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tsw-btn{font-size:11px;padding:4px 9px;border-radius:7px;border:1px solid currentColor;font-family:var(--sans)}
 .tsw-chip{width:15px;height:15px;border-radius:4px;background:currentColor}
 /* peer-health DETECTION toggles (checkbox + example badge + explanation) — Interfaces settings */
-.condrow{display:grid;grid-template-columns:14px 88px 1fr;align-items:start;gap:16px;padding:11px 0;cursor:pointer;border-top:1px solid var(--line)}
+.condrow{display:grid;grid-template-columns:34px 88px 1fr;align-items:center;gap:16px;padding:11px 0;border-top:1px solid var(--line)}
 .condrow:first-of-type{border-top:none;padding-top:2px}
-.condrow input{appearance:none;-webkit-appearance:none;margin:4px 0 0;width:14px;height:14px;flex:none;cursor:pointer;
-  border:1.5px solid var(--line-solid);border-radius:3px;background:var(--surface-2);position:relative}
-.condrow input:checked{background:var(--brand);border-color:var(--brand)}
-.condrow input:checked::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;background:var(--brand-ink);transform:translate(-50%,-50%)}
-.cond-b{display:flex;align-items:flex-start;padding-top:5px;padding-left:10px}   /* nudge the blocked/faulty badge right of + vertically centred on the checkbox */
+.cond-b{display:flex;align-items:center}
 .cond-t{font-size:12.5px;color:var(--dim);line-height:1.45}
 .vklink-in{width:100%;max-width:560px}
 /* turn-proxy client configs modal */
@@ -1375,49 +1372,69 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .catrow-size{font-size:11px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
 /* "view this list on GitHub" info link, on catalog rows + chips — clearer colour + a larger hit area */
 .catrow-info,.ccchip-info{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;margin:-4px -2px;
-  color:var(--dim);flex-shrink:0;border-radius:6px;transition:color .12s,background .12s}
-.catrow-info:hover,.ccchip-info:hover{color:var(--brand);background:color-mix(in srgb,var(--brand) 12%,transparent)}
+  color:var(--brand);flex-shrink:0;border-radius:6px;transition:color .12s,background .12s}
+.catrow-info:hover,.ccchip-info:hover{color:var(--brand);background:color-mix(in srgb,var(--brand) 14%,transparent)}
 .catrow-info .ic svg,.ccchip-info .ic svg{width:16px;height:16px}
 /* ── Routing lists redesign: mode banner + two list grids + fleet popover ── */
-.rmode-banner{display:flex;gap:13px;align-items:flex-start;padding:13px 15px;border-radius:10px;margin-bottom:20px;
+.rmode-banner{padding:14px 16px;border-radius:10px;margin-bottom:22px;
   border:1px solid var(--line-solid);background:color-mix(in srgb,var(--mc,var(--brand)) 6%,var(--surface-2));border-left:3px solid var(--mc,var(--brand))}
-.rmode-banner.m-kernel{--mc:#5FA0E0}.rmode-banner.m-forcedns{--mc:#F6BD16}.rmode-banner.m-sni{--mc:#9270CA}
+.rmode-intro{margin:0 0 14px;line-height:1.55}
+.rmode-top{display:flex;align-items:center;gap:12px;flex-wrap:nowrap;min-width:0}
+.rmode-node{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+/* mode colours — mid-tones legible on BOTH light and dark grounds (bright amber washed out on white) */
+.rmode-banner.m-kernel{--mc:#3E8FC4}.rmode-banner.m-forcedns{--mc:#C0821A}.rmode-banner.m-sni{--mc:#8A5CD0}
+:root[data-theme="dark"] .rmode-banner.m-kernel{--mc:#5FB0E8}
+:root[data-theme="dark"] .rmode-banner.m-forcedns{--mc:#EBB43C}
+:root[data-theme="dark"] .rmode-banner.m-sni{--mc:#B08CE8}
 .rmode-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:none;border-radius:8px;
   color:var(--mc);background:color-mix(in srgb,var(--mc) 15%,transparent)}
 .rmode-icon .ic svg{width:17px;height:17px}
-.rmode-body{flex:1;min-width:0}
 .rmode-head{display:flex;align-items:center;gap:9px}
-.rmode-head b{font-size:14px;color:var(--ink)}
+.rmode-head b{font-size:14.5px;color:var(--ink)}
 .rmode-pill{font-family:var(--mono);font-size:10px;color:var(--mc);padding:2px 7px;border-radius:20px;background:color-mix(in srgb,var(--mc) 15%,transparent)}
-.rmode-desc{font-size:11.5px;color:var(--dim);line-height:1.5;margin-top:4px}
-.rmode-picker{display:flex;flex-direction:column;gap:4px;flex:none}
-.rmode-plbl{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
-.rmode-picker .selwrap{min-width:190px}
-.lgrid-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.rmode-desc{font-size:12px;color:var(--dim);line-height:1.55;margin-top:11px;max-width:none}
+.rmode-head{flex:0 1 auto;min-width:0}   /* node name truncates before the picker shrinks */
+.rmode-picker{display:flex;align-items:center;gap:9px;flex:1 1 auto;min-width:0;justify-content:flex-end}
+.rmode-plbl{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);flex:none}
+.rmode-picker .selwrap{min-width:0;flex:1 1 auto;max-width:400px}   /* shrinks (truncating its text) rather than wrapping to a new line */
+.lgrid-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.lg-htitle{display:flex;align-items:center;gap:9px}   /* title · count · sub — all vertically centred on one line */
+.lg-htitle .seclabel{border-bottom:none;padding-bottom:0;margin:0}   /* no underline under Provider/Custom list headers */
 .lg-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:18px;padding:0 6px;font-family:var(--mono);
   font-size:11px;color:var(--dim);background:color-mix(in srgb,var(--ink) 9%,transparent);border-radius:20px}
 .lg-sub{font-size:11px}
-.lgrid{width:100%;border-collapse:collapse;font-size:13px}
-.lgrid thead th{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
-  text-align:left;font-weight:500;padding:6px 10px;border-bottom:1px solid var(--line)}
-.lgrid tbody td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
-.lgrid tbody tr:hover{background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
-.lgrid tr.lg-lock{opacity:.5}
-.lg-pull{width:44px;text-align:center}
-.lg-chk input{appearance:none;-webkit-appearance:none;width:16px;height:16px;margin:0;border:1.5px solid var(--line-solid);border-radius:4px;background:var(--bg);cursor:pointer;position:relative;vertical-align:middle}
-.lg-chk input:checked{background:var(--brand);border-color:var(--brand)}
-.lg-chk input:checked::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid var(--brand-ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
-.lg-chk input:disabled{opacity:.4;cursor:not-allowed}
-.lg-cat{display:flex;align-items:baseline;gap:8px;min-width:0}
-.lg-title{font-weight:600;color:var(--ink);white-space:nowrap}
+/* list grid — flex rows (no header), every cell vertically centred, clean separators */
+.lgrid{display:flex;flex-direction:column}
+.lgrow{display:grid;grid-template-columns:40px minmax(0,1fr) 148px 96px 88px 58px;align-items:center;gap:12px;
+  padding:9px 4px;border-top:1px solid var(--line)}   /* pull · category · size · fleet · caps · actions */
+.lgrow:first-child{border-top:none}
+.lgrow:hover{background:color-mix(in srgb,var(--ink) 2.5%,transparent)}
+.lgrow.lg-lock{opacity:.5}
+/* dot checkbox — the app-wide style (a filled square with a centre dot when on) */
+.dotchk{display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.dotchk input{position:absolute;opacity:0;width:0;height:0}
+.dotchk .dot{width:16px;height:16px;border:1.5px solid var(--line-solid);border-radius:5px;background:var(--bg);position:relative;transition:background .12s,border-color .12s}
+.dotchk input:checked+.dot{background:var(--brand);border-color:var(--brand)}
+.dotchk input:checked+.dot::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;background:var(--brand-ink);transform:translate(-50%,-50%)}
+.dotchk input:disabled+.dot{opacity:.45;cursor:not-allowed}
+.lg-pull{justify-self:start;display:flex;align-items:center}
+.lg-cat{display:flex;align-items:center;gap:8px;min-width:0}
+.lg-title{font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button.lg-title{border:0;background:none;padding:0;font:inherit;font-weight:600;color:var(--ink);cursor:pointer}
 button.lg-title:hover{color:var(--brand)}
-.lg-id{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+.lg-id{font-family:var(--mono);font-size:10.5px;color:var(--faint);flex-shrink:0}
 button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hover{color:var(--brand)}
-.lg-size{color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
-.lg-act{width:60px;text-align:right;white-space:nowrap}
-.lg-legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:16px;padding-top:12px;border-top:1px solid var(--line);font-size:11px;color:var(--dim)}
-.lg-legend .capb{margin-right:4px}
+.lg-caps{display:flex;justify-content:flex-end}
+.lg-size{color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums;font-size:12px;text-align:right;justify-self:end}
+.lg-act{display:flex;align-items:center;justify-content:flex-end;gap:10px}
+.lg-act .ccchip-info,.lg-act .ccchip-x{margin:0}
+.lg-legend{margin-top:18px;padding-top:13px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:11.5px;color:var(--dim)}
+.lg-leg-row{display:flex;align-items:baseline;gap:0}
+.lg-leg-row .capb{margin-right:7px}
+.btn-add{background:var(--brand);color:var(--brand-ink);font-weight:600;padding:6px 12px;font-size:12.5px;border-radius:7px;display:inline-flex;align-items:center;gap:5px;border:0}
+.btn-add:hover{filter:brightness(1.07)}
+.btn-add .ic svg{width:14px;height:14px}
+.catpick-pop.wide{max-width:none}
 /* fleet-assignment popover */
 .fleet-trig{cursor:pointer;font-size:12px;color:var(--dim);white-space:nowrap;padding:3px 8px;border:1px solid var(--line-solid);border-radius:20px;display:inline-flex;align-items:center;gap:5px}
 .fleet-trig:hover{color:var(--ink);border-color:color-mix(in srgb,var(--brand) 40%,var(--line-solid))}
@@ -1426,10 +1443,10 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .fleetpop{padding:6px}
 .fleetlist{display:flex;flex-direction:column;gap:1px;min-width:170px}
 .fleetlist-h{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);padding:3px 8px 5px}
-.fleetrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;cursor:pointer;white-space:nowrap}
+.fleetrow{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;white-space:nowrap}
 .fleetrow:hover{background:var(--surface)}
 .fleetrow.off{opacity:.5;cursor:not-allowed}
-.fleetrow input{width:14px;height:14px;flex:none;accent-color:var(--brand)}
+.swt-off{opacity:.5;cursor:not-allowed}
 .fleet-dot{width:7px;height:7px;border-radius:50%;background:var(--c);flex:none}
 .fleet-nm{font-size:12.5px;color:var(--ink)}
 .catpick-empty{padding:16px 10px;text-align:center;color:var(--faint);font-size:12.5px}
