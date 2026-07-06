@@ -426,6 +426,7 @@ const api = {
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
   listInfo(cat) { return this.get("/api/list-info?cat=" + encodeURIComponent(cat)); },
   geoUpdate() { return this.post("/api/geo/update", {}); },
+  geoProviderRetry(provider) { return this.post("/api/geo/provider-retry", { provider }); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -2749,16 +2750,18 @@ function suggestSubnet(node) {
 // the rest (Telegram/Cloudflare/RU-net/All) match by provider IP ranges (geoip). "Russia" is TWO distinct lists:
 // ru_net = the whole Russian IP space (geoip, every mode); ru_blocked = sites blocked INSIDE Russia (circumvention
 // domains, Force-DNS only) — different meanings, so they're separate categories you route independently.
+// Curated "Recommended presets" — MUST stay in sync with CURATED_PRESETS in swg-panel-server (id + label + order).
 const SMART_CATEGORIES = [
-  ["google", "Google"], ["youtube", "YouTube"], ["yandex", "Yandex"], ["vk", "VK"], ["telegram", "Telegram"],
-  ["cloudflare", "Cloudflare"], ["meta", "Meta (FB / IG / WA)"], ["twitter", "Twitter / X"],
-  ["netflix", "Netflix"], ["spotify", "Spotify"], ["twitch", "Twitch"], ["tiktok", "TikTok"],
-  ["disney", "Disney+"], ["reddit", "Reddit"], ["discord", "Discord"], ["github", "GitHub"],
-  ["openai", "OpenAI / ChatGPT"], ["claude", "Claude (Anthropic)"], ["gemini", "Google Gemini"],
-  ["grok", "Grok (xAI)"], ["perplexity", "Perplexity"], ["deepseek", "DeepSeek"], ["copilot", "Microsoft Copilot"],
-  ["ru_net", "Russia (all RU IPs)"], ["ru_blocked", "Russia (all blocked)"],
+  ["google", "Google"], ["youtube", "YouTube"], ["telegram", "Telegram"], ["netflix", "Netflix"],
+  ["meta", "Meta (FB / IG / WA)"], ["twitter", "X (Twitter)"], ["tiktok", "TikTok"], ["discord", "Discord"],
+  ["yandex", "Yandex"], ["vk", "VK"], ["openai", "ChatGPT (OpenAI)"], ["claude", "Claude (Anthropic)"],
+  ["grok", "Grok (xAI)"], ["gemini", "Gemini (Google AI)"], ["copilot", "Microsoft Copilot"], ["signal", "Signal"],
+  ["spotify", "Spotify"], ["twitch", "Twitch"], ["disney", "Disney+"], ["reddit", "Reddit"], ["github", "GitHub"],
+  ["ru_net", "Russia — all IPs"], ["ru_gov", "Russia — Government"], ["ru_banks", "Russia — Banks"],
+  ["ru_blocked", "Russia — Blocked (all)"], ["ru_blocked_media", "Russia — Blocked (media)"],
   ["all", "All traffic (catch-all)"],
 ];
+const CURATED_HEAVY = { ru_blocked: 1, ru_net: 1 };   // UI weight flag — large lists
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
 // destination-stats palette: a fixed hue per category (built-ins by their SMART_CATEGORIES order; custom lists by a
 // stable hash) so a category keeps its colour across renders. ≤10 hues → many-category fleets can repeat, but an
@@ -2832,8 +2835,17 @@ const CAT_DESC = {
   spotify: "Spotify audio", twitch: "Twitch live streaming", reddit: "Reddit", discord: "Discord voice & chat",
   cloudflare: "Cloudflare CDN / edge network", vk: "VKontakte", yandex: "Yandex services",
   ru_gov: "Russian government sites", ru_banks: "Russian banks", ru_social: "Russian social (VK / OK)",
+  claude: "Claude & the Anthropic API", grok: "Grok (xAI) — grok.com & x.ai",
+  gemini: "Google Gemini AI — kept separate from the rest of Google", copilot: "Microsoft & GitHub Copilot",
+  signal: "Signal private messenger",
+  ru_net: "The whole Russian IP space (GeoIP) — works in every mode",
+  ru_blocked: "Sites blocked inside Russia — comprehensive (~86k domains, heavy)",
+  ru_blocked_media: "News / media blocked inside Russia — light subset (~130)",
 };
 const catDescOf = id => CAT_DESC[catRawId(id).toLowerCase()] || "";
+// Info icon that shows a description bubble on hover — used for curated presets (which have no external URL to link).
+const DescInfo = ({ text }) => text ? html`<span class="catrow-info descinfo" tabindex="0" role="note" onClick=${e => e.stopPropagation()}>
+  <${Ic} i="info"/><span class="descbub" role="tooltip">${text}</span></span>` : null;
 // The provider's GitHub page for a specific list — where the operator can see exactly what it contains (the raw
 // file, or blackmatrix7's folder with its README). Built from the same paths we fetch, as human github.com URLs.
 function catListUrl(id, caps) {
@@ -2901,12 +2913,13 @@ function CatalogRow({ it, added, onPick }) {
   return html`<button type="button" class=${"catrow" + (added ? " sel" : "") + (empty ? " off" : "")} disabled=${empty} title=${empty ? "This list has no routable records" : ""} onClick=${() => !empty && onPick(it.id)}>
     <span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>
     <div class="catrow-main">
-      <div class="catrow-l1"><span class="catrow-title">${title}</span>${rid.toLowerCase() !== title.toLowerCase() ? html`<span class="catrow-id">${rid}</span>` : null}</div>
+      <div class="catrow-l1"><span class="catrow-title">${title}</span>${rid.toLowerCase() !== title.toLowerCase() ? html`<span class="catrow-id">${rid}</span>` : null}${CURATED_HEAVY[it.id] ? html`<span class="catrow-heavy" title="Large list — noticeable memory / reload on any node that routes it">heavy</span>` : null}</div>
       ${sub ? html`<div class="catrow-l2">${desc ? html`<span class="catrow-desc">${desc}</span>` : null}${desc && samples.length ? html`<span class="catrow-eg"> · e.g. ${samples.join(", ")}${more ? "…" : ""}</span>` : (!desc ? html`<span class="catrow-eg">${sub}</span>` : null)}</div>` : null}
     </div>
     <div class="catrow-right">
       <${ProvTag} id=${it.id} label=${it.provider_label || provLabelOf(it.id)}/>${capBadges(it.caps)}${summary ? html`<span class="catrow-size">${summary}</span>` : null}
-      ${catListUrl(it.id, it.caps) ? html`<a class="catrow-info" href=${catListUrl(it.id, it.caps)} target="_blank" rel="noopener" title="View this list on GitHub" onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>` : null}</div>
+      ${catListUrl(it.id, it.caps) ? html`<a class="catrow-info" href=${catListUrl(it.id, it.caps)} target="_blank" rel="noopener" title="View this list on GitHub" onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>`
+        : html`<${DescInfo} text=${catDescOf(it.id)}/>`}</div>
   </button>`;
 }
 function provLabelOf(c) {
@@ -3028,7 +3041,7 @@ function loadCatalogIndex() {
 // addMode: the picker becomes a multi-select "Add from catalog" affordance — it stays open on each pick,
 // shows a ✓ on already-added ids (from `selected`), and hides the Custom row, custom lists, and the 26
 // built-ins (those are managed by the checkboxes above it). Used by the Settings node-lens.
-function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange, addMode, selected, triggerLabel, primary }) {
+function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange, onAdd, addMode, selected, triggerLabel, primary }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
@@ -3060,7 +3073,16 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     if (!open) return; place();
     const onMove = () => place();
     const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) setOpen(false); };
-    const onKey = e => { if (e.key === "Escape") { setOpen(false); ref.current && ref.current.focus(); } };
+    const onKey = e => {
+      if (e.key === "Escape") { setOpen(false); ref.current && ref.current.focus(); return; }
+      // start typing anywhere while the dropdown is open (focus outside the box) → clear the box + focus it + start a
+      // FRESH search with the typed char, so you can search → select → search again without re-clicking the field.
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && inRef.current && document.activeElement !== inRef.current) {
+        e.preventDefault();
+        inRef.current.focus();
+        setQ(e.key); setPage(0);
+      }
+    };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
     document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
@@ -3069,12 +3091,19 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   // Portal render timing that made `[open]`/`[pos]` effects miss the very first open). `focusGuard` fires it once
   // per open. Reset when the popover closes.
   const focusGuard = useRef(false);
-  useEffect(() => { if (!open) focusGuard.current = false; }, [open]);
-  const pick = id => { onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add
+  const sessionPicked = useRef(false);   // addMode: did the operator add/toggle anything this open session? (drives Enter-to-close)
+  useEffect(() => { if (!open) { focusGuard.current = false; sessionPicked.current = false; } }, [open]);
+  const pick = id => { if (addMode) sessionPicked.current = true; onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add
   const capBadge = capBadges;   // shared Host-first renderer (defined near catLabelOf)
   // addMode: filter the full index by title/id/description, sort by readable title, paginate 40/page locally.
   const per = 40;
   const _aq = q.trim().toLowerCase();
+  // Curated "Recommended presets" — pinned above the provider catalog, always shown in full (only ~26).
+  const _curatedAll = addMode ? SMART_CATEGORIES.filter(([id]) => id !== "all")
+    .map(([id, label]) => ({ id, provider: "curated", provider_label: "Curated", caps: catCap(id), recommended: true, disp: label })) : [];
+  const curatedFiltered = _curatedAll.filter(it => !_aq || it.id.toLowerCase().includes(_aq)
+    || it.disp.toLowerCase().includes(_aq) || catDescOf(it.id).toLowerCase().includes(_aq))
+    .sort((a, b) => a.disp.toLowerCase().localeCompare(b.disp.toLowerCase()));
   const filtered = addMode && cidx ? cidx.filter(it => { if (!_aq) return true;
     return it.id.toLowerCase().includes(_aq) || catRawId(it.id).toLowerCase().includes(_aq)
       || prettyCatLabel(it.id, "").toLowerCase().includes(_aq) || catDescOf(it.id).toLowerCase().includes(_aq); })
@@ -3082,6 +3111,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   const total = filtered.length;
   const pages = Math.max(1, Math.ceil(total / per));
   const items = filtered.slice(page * per, (page + 1) * per);
+  const _matchTotal = curatedFiltered.length + total, _firstMatch = curatedFiltered[0] || items[0];
   const lists = customLists || [];
   // Routing picker (non-addMode): TWO sections — Provider lists (the node's opted-in provider-catalog cats, each
   // source-tagged) and Custom lists (your own). Never the full catalog — filtered client-side; add more via Settings.
@@ -3106,7 +3136,11 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
         <${Ic} i="search"/>
         <input ref=${el => { inRef.current = el; if (el && open && !focusGuard.current) { focusGuard.current = true; requestAnimationFrame(() => el.focus()); } }} type="text" placeholder=${addMode ? "Search " + ((cidx && cidx.length) || "") + " lists — name, country, service…" : "Filter this node's lists…"} value=${q}
           onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"
-          onKeyDown=${e => { if (e.key === "Enter" && addMode) { e.preventDefault(); if (total === 1 && items[0]) pick(items[0].id); setOpen(false); } }}/>
+          onKeyDown=${e => { if (e.key === "Enter" && addMode && _matchTotal === 1 && _firstMatch) {   // ONLY when exactly one result:
+            e.preventDefault(); e.stopPropagation();
+            (onAdd || pick)(_firstMatch.id);   // add-only (never toggles off)
+            setOpen(false);
+          } /* any other case (0 or many results): Enter does nothing */ }}/>
       </div>
       <div class="catpick-list">
         ${!addMode ? html`
@@ -3118,12 +3152,16 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
               title=${ok ? "" : "Host-only list — switch this node to Force-DNS to use it"}>
               <span class="catpick-rlbl">${it.label}${it.src ? html`<${ProvTag} id=${it.id} label=${it.src} plain=${it.legacy || it.src === "Custom"}/>` : null}</span>
               ${it.caps ? capBadge(it.caps) : null}${it.list ? html`<${ListInfo} list=${it.list}/>` : (isProviderCat(it.id) ? html`<${ListInfo} cat=${it.id}/>` : null)}
-              ${isProviderCat(it.id) && catListUrl(it.id, it.caps) ? html`<a class="catrow-info" href=${catListUrl(it.id, it.caps)} target="_blank" rel="noopener" title="View this list on GitHub" onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>` : null}</button>`; })}`)}
+              ${isProviderCat(it.id) && catListUrl(it.id, it.caps) ? html`<a class="catrow-info" href=${catListUrl(it.id, it.caps)} target="_blank" rel="noopener" title="View this list on GitHub" onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>`
+                : (!isProviderCat(it.id) && catDescOf(it.id)) ? html`<${DescInfo} text=${catDescOf(it.id)}/>` : null}</button>`; })}`)}
           ${localEmpty ? html`<div class="catpick-empty">No list on this node matches “${q}”. Add more in Settings → Routing lists.</div>` : null}
         ` : html`
-          ${cidx == null ? html`<div class="catpick-empty">Loading catalog…</div>`
-            : items.length === 0 ? html`<div class="catpick-empty">No list matches “${q}”.</div>`
-            : items.map(it => html`<${CatalogRow} key=${it.id} it=${it} added=${selSet.has(it.id)} onPick=${pick}/>`)}
+          ${page === 0 && curatedFiltered.length ? html`<div class="catpick-grp">Recommended presets</div>
+            ${curatedFiltered.map(it => html`<${CatalogRow} key=${it.id} it=${it} added=${selSet.has(it.id)} onPick=${pick}/>`)}` : null}
+          ${total ? html`<div class="catpick-grp">Provider catalog</div>
+            ${items.map(it => html`<${CatalogRow} key=${it.id} it=${it} added=${selSet.has(it.id)} onPick=${pick}/>`)}` : null}
+          ${cidx == null && !curatedFiltered.length ? html`<div class="catpick-empty">Loading catalog…</div>`
+            : _matchTotal === 0 ? html`<div class="catpick-empty">No list matches “${q}”.${cidx && cidx.length === 0 ? html`<br/><span class="faint">Enable a provider in Settings → Geo data to search its catalog.</span>` : ""}</div>` : null}
         `}
       </div>
       ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is in <b>Kernel</b> (IP) mode. Switch it to Force-DNS or SNI to use them.</div>` : null}
@@ -3791,8 +3829,8 @@ const TURN_FORKS = [
   { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", color: "#5FB0E0", colorL: "#2C7EC0" },
   { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7" },
   { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/vk-turn-proxy", wrap: "-wrap", color: "#E0A85F", colorL: "#C07A1E" },
-  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", color: "#6FD9A8", colorL: "#12A46B" },
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468" },
+  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", color: "#6FD9A8", colorL: "#12A46B" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420" },
 ];
 // forks whose CLIENT is WireGuard-only — they can't front an AmneziaWG interface, so awg interfaces are hidden
@@ -5608,6 +5646,36 @@ function PanelSettingsScreen() {
       setGeoUpdating(false); };
     setTimeout(tick, 1500);
   };
+  const retryProvider = async (pid) => {   // manual retry after a provider's automatic fetch retries (4×, backoff) all failed
+    const r = await api.geoProviderRetry(pid);
+    if (!r || !r.ok) return toast((r && r.error) || "Couldn't retry", "err");
+    const t0 = Date.now();
+    const tick = async () => { await Store.poll();
+      const busy = (Store.catalogProviders || []).some(p => p.id === pid && p.status === "downloading");
+      if (busy && Date.now() - t0 < 25000) return setTimeout(tick, 1500); };
+    setTimeout(tick, 1500);
+  };
+  // Transient "updated" / "up to date" — show for 5s AFTER a busy→done transition, then hide. In-progress
+  // (downloading/updating) always shows; failed persists (with Retry). No flash on first load (statuses stay hidden).
+  const [provFlash, setProvFlash] = useState({});   // pid -> expiry ts
+  const _provSeen = useRef({});
+  useEffect(() => {
+    const now = Date.now(), seen = _provSeen.current; let next = null;
+    for (const p of (Store.catalogProviders || [])) {
+      const prev = seen[p.id];
+      if (p.status !== prev) {
+        if (prev !== undefined && (p.status === "updated" || p.status === "uptodate")) { next = next || { ...provFlash }; next[p.id] = now + 5000; }
+        seen[p.id] = p.status;
+      }
+    }
+    if (next) setProvFlash(next);
+  }, [Store.catalogProviders]);
+  useEffect(() => {
+    const exps = Object.values(provFlash).filter(t => t > Date.now());
+    if (!exps.length) return;
+    const t = setTimeout(() => setProvFlash(f => ({ ...f })), Math.min(...exps) - Date.now() + 50);
+    return () => clearTimeout(t);
+  }, [provFlash]);
   const [sc, setSc] = useState(ps.store_configs === false ? "off" : "on");   // ON and "default" merged — both keep configs
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
@@ -5863,7 +5931,7 @@ function PanelSettingsScreen() {
   const toggleNodeCat = (id, on) => { if (nodeMode === "kernel" && catHostOnly(id)) return; const all = sysCats.map(([c]) => c); let ec = ecOf(selNode); if (ec == null) ec = all.slice(); ec = on ? [...new Set([...ec, id])] : ec.filter(c => c !== id); setNV(selNode, { enabled_categories: ec.length >= all.length ? null : ec }); };
   // node-lens for the provider catalog: catalog_cats[] = the categories the operator opted THIS node into (staged; commits on Save)
   const ccOf = nid => nv(nid, "catalog_cats") || [];
-  const addCatalogCat = id => { if (!id || SMART_CAT_LABEL[id] || (lists || []).some(l => l.id === id) || id === "custom") return; setNV(selNode, { catalog_cats: [...new Set([...ccOf(selNode), id])] }); };
+  const addCatalogCat = id => { if (!id || id === "all" || (lists || []).some(l => l.id === id) || id === "custom") return; setNV(selNode, { catalog_cats: [...new Set([...ccOf(selNode), id])] }); };   // provider cats + curated presets (bare id) are both first-class opt-ins
   const removeCatalogCat = id => setNV(selNode, { catalog_cats: ccOf(selNode).filter(c => c !== id) });
   // Fleet-wide provider-list grid: rows = the union of every node's opted-in provider cats. gridKeep holds ids that
   // must stay visible even at 0/N nodes (so toggling PULL off doesn't make the row vanish — only × removes it).
@@ -5938,7 +6006,7 @@ function PanelSettingsScreen() {
             <div class="lg-htitle"><span class="seclabel" style="margin:0">Provider lists</span><span class="lg-count">${provFleetCats.length}</span><span class="faint lg-sub">provider-maintained · read-only</span></div>
             <span class="grow"></span>
             ${compatCats().length ? html`<button class="btn btn-mini" onClick=${toggleAllCompat}>${allCompatOn() ? "Disable all" : "Enable all"}</button>` : null}
-            <${CatPicker} addMode=${true} primary=${true} mode=${nodeMode} triggerLabel="Add preset list" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/>
+            <${CatPicker} addMode=${true} primary=${true} mode=${nodeMode} triggerLabel="Add preset list" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)} onAdd=${id => { if (!ccOf(selNode).includes(id)) addCatalogCat(id); }}/>
           </div>
           ${provFleetCats.length ? html`<div class="lgrid">
             ${provFleetCats.map(id => { const cap = catCap(id); const usable = nodeMode !== "kernel" || cap.ip; const sz = (Store.catSizes || {})[id] || {};
@@ -5948,7 +6016,8 @@ function PanelSettingsScreen() {
                 <div class="lg-size">${sizeSummary(sz.host || 0, sz.ip || 0) || html`<span class="faint">—</span>`}</div>
                 <div class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => catOnNode(id, nid)} onToggle=${(nid, on) => fleetToggleCat(id, nid, on)} disabledFor=${nid => (nv(nid, "routing_mode") || "kernel") === "kernel" && !cap.ip ? "Host-only — this node is IP-only" : null}/></div>
                 <div class="lg-caps">${capBadges(cap)}</div>
-                <div class="lg-act">${catListUrl(id, cap) ? html`<a class="ccchip-info" href=${catListUrl(id, cap)} target="_blank" rel="noopener" title="View this list on GitHub"><${Ic} i="info"/></a>` : null}<button class="ccchip-x" title="Remove from the fleet" onClick=${() => confirmRemoveCat(id)}><${Ic} i="x"/></button></div>
+                <div class="lg-act">${catListUrl(id, cap) ? html`<a class="ccchip-info" href=${catListUrl(id, cap)} target="_blank" rel="noopener" title="View this list on GitHub"><${Ic} i="info"/></a>`
+                  : catDescOf(id) ? html`<${DescInfo} text=${catDescOf(id)}/>` : null}<button class="ccchip-x" title="Remove from the fleet" onClick=${() => confirmRemoveCat(id)}><${Ic} i="x"/></button></div>
               </div>`; })}
           </div>` : html`<div class="hint" style="margin:2px 0 0">No preset lists yet — use <b>Add preset list</b> to pull from the catalog.</div>`}
 
@@ -5982,13 +6051,16 @@ function PanelSettingsScreen() {
             <label class="swt" title=${turnEnabledS ? "Turn proxies are on" : "Turn proxies are off"}><input type="checkbox" checked=${turnEnabledS} onChange=${e => setTurnEnabledS(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
           ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">Turn proxies are off.</b> Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.</p>`
             : html`<p class="hint" style="margin:0 0 12px">Which forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node, and each fork's colour. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>`}
-          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${TURN_FORKS.map(f => html`<div class="cl-row" key=${f.id}>
+          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${TURN_FORKS.map(f => { const fcol = pickThemed(forkColors[f.id], f.color, f.colorL); return html`<div class=${"cl-row" + (turnForks.has(f.id) ? "" : " off")} key=${f.id}>
             <${Switch} on=${turnForks.has(f.id)} title=${"Offer " + f.label + " in the install picker"} onChange=${v => setTurnForks(s => { const n = new Set(s); v ? n.add(f.id) : n.delete(f.id); return n; })}/>
             <${ThemedSwatch} val=${forkColors[f.id]} title=${"Colour for " + f.label} onChange=${nv => setForkColors(c => ({ ...c, [f.id]: nv }))}
               sample=${(c) => html`<span class="tg tg-turn" style=${"--tfc:" + c}>${f.label}</span>`}/>
-            <span class=${"tf-name tf-" + f.id} style="color:var(--tfc)">${f.label}</span>
+            <span class=${"tf-name tf-" + f.id} style=${"color:" + fcol}>${f.label}</span>
+            <span class="cl-caps" title=${forkSupportsAwg(f.id) ? "Works with WireGuard and AmneziaWG interfaces" : f.label + " is WireGuard-only — its client can't front an AmneziaWG interface"}>
+              <span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}
+            </span>
             ${(() => {
-              const v = forkVersions(f.id); const col = turnColor(f.id);
+              const v = forkVersions(f.id); const col = fcol;
               if (!v.length) return html`<span class="tf-ver none">not yet used</span>`;
               const nodes = forkNodeStates(f.id); const ut = turnUpdateTarget[f.id]; const latest = (ut && Date.now() < ut.until) ? ut.ver : ((turnCheck[f.id] || {}).latest || null);
               const bub = html`<span class="tf-verpop">
@@ -6000,49 +6072,46 @@ function PanelSettingsScreen() {
               </span>`;
               return html`<span class="tf-verwrap" style=${"--tfc:" + col}><span class="tf-ver">${v.join(", ")}</span>${bub}</span>`;
             })()}
-            ${(() => { const cs = turnCheck[f.id]; if (!cs || !cs.status) return null;
+            <span class="grow"></span>
+            ${(() => { const cs = turnCheck[f.id]; if (!cs || !cs.status) return null;   // update status — right-aligned, just before the repo URL (like Geo data)
               if (cs.status === "checking") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> checking…</span>`;
               if (cs.status === "updating") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;
               if (cs.status === "update") return html`<button class="tf-chk upd tf-updbtn" title=${"Update every deployed " + f.label + " proxy to " + cs.latest} onClick=${() => updateFork(f.id, cs.latest)}><${Ic} i="download"/> update to ${cs.latest}</button>`;
               return html`<span class="tf-chk ok"><${Ic} i="check"/> up to date</span>`; })()}
-            <span class="grow"></span>
             <a class="tf-repo" href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" title=${"Open " + f.owner + " on GitHub"}>${f.owner}</a>
-            <span class="cl-caps" title=${forkSupportsAwg(f.id) ? "Works with WireGuard and AmneziaWG interfaces" : f.label + " is WireGuard-only — its client can't front an AmneziaWG interface"}>
-              <span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}
-            </span>
-          </div>`)}</div>
+          </div>`; })}</div>
           <div class="seclabel" style="margin-top:18px">VK call link</div>
           <p class="hint" style="margin:0 0 8px">Baked into the client configs a peer's <b>Turn</b> button generates — it's the call the turn-proxy relays through. Leave blank to emit a <span class="mono">${"<PASTE VK CALL LINK>"}</span> placeholder.</p>
           <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/…"/>
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">List providers</div>
-          <p class="hint" style="margin:0 0 12px">The public GitHub sources the routing-list catalog draws from. Each node fetches the lists you route directly over HTTPS. <b>Disable</b> a provider to hide its lists from the routing picker — anything already routed from it is <b>kept but greyed</b> (deactivated), and the nodes drop those records until you re-enable it.</p>
-          <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = p.builtin || provEnabled[p.id] !== false; return html`<div class=${"provrow" + (on ? "" : " off") + (p.builtin ? " builtin" : "")} key=${p.id}>
-            ${p.builtin
-              ? html`<span class="prov-lock" title="Curated lists ship with the panel — always available, can't be disabled"><${Ic} i="check"/></span>`
-              : html`<${Switch} on=${on} title=${on ? "Enabled — its lists are selectable" : "Disabled — its lists are hidden and deactivated on nodes"} onChange=${v => setProvEnabled(m => ({ ...m, [p.id]: v }))}/>`}
+          <p class="hint" style="margin:0 0 12px"><b>Curated</b> presets are on by default — recommended, ready-to-route lists maintained by the panel. Turn on any public <b>provider</b> below to also search its raw catalog; the panel fetches it (<b>Downloading…</b>) so its lists appear in the picker. Disabling a provider hides its lists and <b>deactivates</b> anything already routed from it until you re-enable it.</p>
+          <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = provEnabled[p.id] !== false; return html`<div class=${"provrow" + (on ? "" : " off") + (p.builtin ? " builtin" : "")} key=${p.id}>
+            <${Switch} on=${on} title=${on ? (p.builtin ? "On — presets are selectable" : "Enabled — its lists are selectable") : "Off — its lists are hidden and deactivated on nodes"} onChange=${v => setProvEnabled(m => ({ ...m, [p.id]: v }))}/>
             <${ThemedSwatch} val=${provColors[p.id]} title=${p.label + " tag colour"} onChange=${nv => setProvColors(c => ({ ...c, [p.id]: nv }))}
-              sample=${(c) => html`<span class="catpick-src" style=${"--pc:" + c}>${p.label}</span>`}/>
+              sample=${(c) => html`<span class="sw-sample" style=${"--pc:" + c}>${p.label}</span>`}/>
             <div class="prov-meta">
-              <span class="prov-name">${p.label}</span>
+              <span class="prov-name" style=${"color:" + pickThemed(provColors[p.id], _provColDefault(p.id).dark, _provColDefault(p.id).light)}>${p.label}</span>
               <span class="prov-tiers">${capBadges({ host: (p.tiers || []).includes("host"), ip: (p.tiers || []).includes("ip") })}</span>
-              ${p.builtin ? null : html`<span class=${"prov-upd" + (p.last_updated ? "" : " never")} title=${p.last_updated ? "When this provider's data was last pulled to the panel" : "No list from this provider has been routed yet — nothing pulled"}>${p.last_updated ? html`updated ${ago(p.last_updated)}` : "never updated"}</span>`}
+              ${p.builtin || p.enabled === false ? null : html`<span class=${"prov-upd" + (p.last_updated ? "" : " never")} title=${p.last_updated ? "When this provider's data was last pulled to the panel" : "No list from this provider has been routed yet — nothing pulled"}>${p.last_updated ? html`updated ${ago(p.last_updated)}` : "never updated"}</span>`}
             </div>
             <span class="grow"></span>
-            ${p.builtin ? html`<span class="prov-st ok" title="Maintained by the panel and shipped with each update — no external fetch"><${Ic} i="check"/> panel-maintained</span>`
-              : (() => { const s = p.status;
+            ${p.builtin ? html`<span class="prov-desc">${p.desc || "Built-in recommended presets for common services"}</span>`
+              : p.enabled === false ? null
+              : (() => { const s = p.status, flashing = provFlash[p.id] > Date.now();
+              if (s === "downloading") return html`<span class="prov-st upd"><span class="tf-arrow"><${Ic} i="refresh"/></span> Downloading…</span>`;
               if (s === "updating") return html`<span class="prov-st upd"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;
-              if (s === "updated") return html`<span class="prov-st ok"><${Ic} i="check"/> updated</span>`;
-              if (s === "uptodate") return html`<span class="prov-st ok"><${Ic} i="check"/> up to date</span>`;
-              if (s === "failed" || p.error) return html`<span class="prov-st err" title=${p.error || ""}><${Ic} i="warn"/> failed to update</span>`;
+              if (s === "updated") return flashing ? html`<span class="prov-st ok"><${Ic} i="check"/> updated</span>` : null;
+              if (s === "uptodate") return flashing ? html`<span class="prov-st ok"><${Ic} i="check"/> up to date</span>` : null;
+              if (s === "failed" || p.error) return html`<${Fragment}><span class="prov-st err" title=${p.error || ""}><${Ic} i="warn"/> ${p.last_updated ? "update failed" : "download failed"}</span><button class="btn btn-mini" style="margin-left:8px" onClick=${() => retryProvider(p.id)}>Retry</button></>`;
               return null; })()}
-            <a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${"Open " + p.label + " on GitHub"}>${(p.url || "").replace(/^https?:\/\/github\.com\//, "")}</a>
+            ${p.builtin ? null : html`<a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${"Open " + p.label + " on GitHub"}>${(p.url || "").replace(/^https?:\/\/github\.com\//, "")}</a>`}
           </div>`; })}${!_provReg.length ? html`<div class="hint">Loading providers…</div>` : null}
             <div class=${"provrow" + (customEnabled ? "" : " off")}>
               <${Switch} on=${customEnabled} title=${customEnabled ? "On — you can create custom lists" : "Off — the Custom lists section is hidden"} onChange=${v => setCustomEnabled(v)}/>
               <${ThemedSwatch} val=${provColors.custom} title="Custom-list tag colour" onChange=${nv => setProvColors(c => ({ ...c, custom: nv }))}
-                sample=${(c) => html`<span class="catpick-src" style=${"--pc:" + c}>Custom</span>`}/>
+                sample=${(c) => html`<span class="sw-sample" style=${"--pc:" + c}>Custom</span>`}/>
               <div class="prov-meta"><span class="prov-name">Custom lists</span></div>
               <span class="grow"></span>
               <span class="prov-desc">Your own IP / domain lists — turn off to hide the Custom lists section in routing</span>

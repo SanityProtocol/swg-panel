@@ -1136,10 +1136,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .geosrc li{list-style:disc}
 .georefresh{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:16px}
 /* Geo data → list providers + update schedule */
-.provlist{display:flex;flex-direction:column;gap:2px;margin-bottom:6px}
-.provrow{display:flex;align-items:center;gap:12px;padding:9px 4px;border-top:1px solid var(--line)}
-.provrow:first-child{border-top:none}
-.provrow.off{opacity:.55}
+.provlist{display:flex;flex-direction:column;gap:6px;margin-bottom:6px}
+.provrow{display:flex;align-items:center;gap:12px;padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
+/* disabled row: dim the content but NOT the colour swatch (.tswrow) — opacity on the whole row would wash out its
+   picker + preview bubbles, so exclude them so the colours stay solid/visible */
+.provrow.off > :not(.tswrow){opacity:.55}
+.cl-row.off > :not(.tswrow){opacity:.55}
 /* Curated (panel-maintained) provider: a locked check where the enable switch would be — same 34px column so rows stay aligned */
 .prov-lock{display:inline-flex;align-items:center;justify-content:center;width:34px;height:19px;flex:none;color:var(--online)}
 .prov-lock .ic svg{width:15px;height:15px}
@@ -1157,8 +1159,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .prov-st.upd{color:var(--dim)}
 .prov-st.ok{color:var(--online)}
 .prov-st.err{color:var(--partial)}
-.prov-repo{font-size:11px;color:var(--faint);text-decoration:none;white-space:nowrap;max-width:210px;overflow:hidden;text-overflow:ellipsis}
-.prov-repo:hover{color:var(--brand)}
+.prov-repo{font-family:var(--mono);font-size:11.5px;color:var(--faint);white-space:nowrap;text-decoration:none}   /* match .tf-repo (turn-proxies) */
+.prov-repo:hover{color:var(--ready);text-decoration:underline}
 .provrow .tf-arrow{display:inline-flex;animation:spin 1s linear infinite}
 .provrow .tf-arrow .ic svg{width:13px;height:13px}
 .schedrow{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
@@ -1207,7 +1209,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tf-repo{font-family:var(--mono);font-size:11.5px;color:var(--faint);white-space:nowrap;text-decoration:none}   /* right-aligned link to the fork's GitHub repo */
 .tf-repo:hover{color:var(--ready);text-decoration:underline}
 /* which interface types the fork's client supports — wg always; awg only for the non-WG-only forks */
-.cl-caps{display:inline-flex;align-items:center;gap:4px;flex:none;margin-left:12px;justify-content:flex-end;cursor:help}
+.cl-caps{display:inline-flex;align-items:center;gap:4px;flex:none;margin-left:-2px;cursor:help}
 .warntext{color:var(--partial);font-weight:600}
 /* per-fork colour picker (native input, themed to a small rounded swatch) */
 .tf-color{width:24px;height:24px;flex:none;padding:0;border:1px solid var(--line-solid);border-radius:6px;background:none;cursor:pointer}
@@ -1353,6 +1355,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
   color:var(--pc,var(--ink-2));border:1px solid color-mix(in srgb,var(--pc,var(--line-solid)) 40%,transparent);
   background:color-mix(in srgb,var(--pc,var(--ink)) 13%,var(--surface))}
 .catpick-src.legacy{color:var(--dim);border-color:var(--line-solid);background:var(--surface)}
+/* swatch preview pill — transparent base so it adapts to the dark/light preview cells (like .tg-turn) */
+.sw-sample{font-family:var(--mono);font-size:9px;letter-spacing:.03em;padding:1px 6px;border-radius:5px;white-space:nowrap;
+  color:var(--pc);border:1px solid color-mix(in srgb,var(--pc) 38%,transparent);background:color-mix(in srgb,var(--pc) 16%,transparent)}
 /* the provider's raw id shown next to the friendly title ("Telegram  telegram") */
 .catpick-rid{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
 /* rich catalog-browse row (Add from catalog): title + dimmed id + provider · description/sample · counts · caps */
@@ -1367,6 +1372,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .catrow-l1{display:flex;align-items:baseline;gap:8px;min-width:0}
 .catrow-title{font-size:13.5px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .catrow-id{font-family:var(--mono);font-size:10.5px;color:var(--faint);flex-shrink:0}
+.catrow-heavy{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--partial);border:1px solid color-mix(in srgb,var(--partial) 45%,transparent);border-radius:4px;padding:0 4px;flex-shrink:0}
 .catrow-l1 .catpick-src{margin-left:auto}
 .catrow-l2{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .catrow-desc{color:var(--ink-2)}
@@ -1378,6 +1384,12 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
   color:var(--brand);flex-shrink:0;border-radius:6px;transition:color .12s,background .12s}
 .catrow-info:hover,.ccchip-info:hover{color:var(--brand);background:color-mix(in srgb,var(--brand) 14%,transparent)}
 .catrow-info .ic svg,.ccchip-info .ic svg{width:16px;height:16px}
+/* curated preset info icon → hover bubble with the list's description (no external URL to link) */
+.descinfo{position:relative;cursor:help;outline:none}
+.descbub{position:absolute;bottom:calc(100% + 8px);right:0;display:none;z-index:90;width:max-content;max-width:240px;
+  padding:7px 10px;border-radius:8px;background:var(--surface);border:1px solid var(--line-solid);color:var(--ink);
+  font-size:11.5px;line-height:1.45;font-weight:500;text-align:left;white-space:normal;box-shadow:0 10px 26px rgba(0,0,0,.4)}
+.descinfo:hover .descbub,.descinfo:focus .descbub,.descinfo:focus-within .descbub{display:block}
 /* ── Routing lists redesign: mode banner + two list grids + fleet popover ── */
 .rmode-banner{padding:14px 16px;border-radius:10px;margin-bottom:22px;
   border:1px solid var(--line-solid);background:color-mix(in srgb,var(--mc,var(--brand)) 6%,var(--surface-2));border-left:3px solid var(--mc,var(--brand))}

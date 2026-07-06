@@ -666,6 +666,23 @@ def migrate_ru_split(nodes_path, panel_settings_path):
         print("migrated 'ru' category → 'ru_net' (ru_blocked is now a separate opt-in list)", flush=True)
 
 
+def migrate_provider_defaults(nodes_path, panel_settings_path):
+    """One-time: providers now default OFF (a fresh fleet opts in). To keep an EXISTING fleet's routing working
+    across that flip, explicitly enable every provider a node already routes. Idempotent — runs once (marked by
+    `providers_defaulted`), only adds True entries, never disables, and respects later manual toggles."""
+    ps = load_json(panel_settings_path, {})
+    if not isinstance(ps, dict) or ps.get("providers_defaulted"):
+        return
+    prov = dict(ps.get("providers") or {})
+    inuse = {c.split(":", 1)[0] for c in routed_catalog_cats(load_json(nodes_path, {}) or {}) if ":" in c}
+    for pid in inuse:
+        prov.setdefault(pid, True)                              # keep an already-routed provider enabled
+    ps["providers"] = prov
+    ps["providers_defaulted"] = True
+    atomic_write(panel_settings_path, json.dumps(ps, indent=2) + "\n")
+    print("provider defaults: kept %d in-use provider(s) enabled; new providers now default off" % len(inuse), flush=True)
+
+
 def normalize_stats_files(nodes_path, stats_dir):
     """Make every node's snapshot mirror id-keyed: `stats_file` -> `stats-<id>.json`, renaming the file
     on disk if it's still under a legacy name (auto-enrolled nodes were written `stats-<hostname>.json`).
@@ -1265,87 +1282,57 @@ SWG_RT_MAX = 7099           # (one table id per egress target per node; priority
 #     space but not domains). Requires the interface's clients to resolve via the node.
 #   • GEOIP/ASN lists (GEO_SOURCES, node-side) — whole provider/country IP ranges. Right for IP-direct services
 #     (Telegram) and country/CDN scope (ru_net, cloudflare) where domains don't help.
-SMART_CATEGORIES = {
-    "google":   "Google",
-    "youtube":  "YouTube",
-    "yandex":   "Yandex",
-    "vk":       "VK",
-    "telegram": "Telegram",
-    "cloudflare": "Cloudflare",
-    "meta":     "Meta (Facebook / Instagram / WhatsApp)",
-    "twitter":  "Twitter / X",
-    "netflix":  "Netflix",
-    "spotify":  "Spotify",
-    "twitch":   "Twitch",
-    "tiktok":   "TikTok",
-    "disney":   "Disney+",
-    "reddit":   "Reddit",
-    "discord":  "Discord",
-    "github":   "GitHub",
-    "openai":   "OpenAI / ChatGPT",
-    "claude":   "Claude (Anthropic)",
-    "gemini":   "Google Gemini",
-    "grok":     "Grok (xAI)",
-    "perplexity": "Perplexity",
-    "deepseek": "DeepSeek",
-    "copilot":  "Microsoft Copilot",
-    "ru_net":     "Russia (all RU IPs)",     # geoip LS:ru — the whole Russian IP space (works in every mode)
-    "ru_blocked": "Russia (all blocked)",    # RF domains_all — sites blocked INSIDE Russia (circumvention); domain-only
-    "all":      "All traffic (catch-all)",   # matches everything not caught by an earlier rule (no geo set)
+# ── Curated "Recommended presets" — the single source of truth ──────────────────────────────────────────────
+# A preset is an opinionated, mode-complete, friendly-named category assembled ENTIRELY from provider sources (no
+# hand-maintained domain/IP lists) — this is what makes it different from raw provider lists: it pairs the right
+# host + ip source per service so it "just works" in every routing mode, bundles multi-part services (Meta =
+# facebook+instagram+whatsapp), and gives a discoverable name. Resolved on the panel (see _curated_resolve) and
+# pulled by nodes like any provider list. Each entry: (label, host sources, ip sources, extra host domains).
+#   sources are catalog ids (<prov>:<id>, resolved via list_resolve) or "AS:<n>" (ipverse ASN, for yandex/vk IP).
+#   extra host domains are a tiny curated add-on unioned onto the provider list (only where a service needs it).
+CURATED_PRESETS = {
+    # id             label                       host sources                     ip sources                     extra host
+    "google":       ("Google",                   ["mc:google"],                   ["ls:google"],                 []),
+    "youtube":      ("YouTube",                  ["v2:youtube"],                  [],                            []),
+    "telegram":     ("Telegram",                 ["v2:telegram"],                 ["ls:telegram"],               []),
+    "netflix":      ("Netflix",                  ["v2:netflix"],                  ["ls:netflix"],                []),
+    "meta":         ("Meta (FB / IG / WA)",      ["mc:meta"],                     ["ls:facebook"],               []),
+    "twitter":      ("X (Twitter)",              ["v2:twitter"],                  ["ls:twitter"],                []),
+    "tiktok":       ("TikTok",                   ["v2:tiktok"],                   [],                            []),
+    "discord":      ("Discord",                  ["v2:discord"],                  ["rf:discord_ips"],            []),
+    "yandex":       ("Yandex",                   ["v2:yandex"],                   ["AS:13238"],                  []),
+    "vk":           ("VK",                       ["v2:vk"],                       ["AS:47541", "AS:47542"],      []),
+    "openai":       ("ChatGPT (OpenAI)",         ["v2:openai"],                   [],                            []),
+    "claude":       ("Claude (Anthropic)",       ["v2:anthropic"],                [],                            []),
+    "grok":         ("Grok (xAI)",               ["v2:xai"],                      [],                            []),
+    "gemini":       ("Gemini (Google AI)",       ["v2:google-gemini"],            [],                            # NB: NOT bare google.com (would swallow all Google) — Gemini-specific subdomains only
+                     ["gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com",
+                      "makersuite.google.com", "bard.google.com", "ai.google.dev", "notebooklm.google.com"]),
+    "copilot":      ("Microsoft Copilot",        ["v2:github-copilot"],           [],                            []),
+    "signal":       ("Signal",                   ["v2:signal"],                   [],                            []),
+    "spotify":      ("Spotify",                  ["v2:spotify"],                  [],                            []),
+    "twitch":       ("Twitch",                   ["v2:twitch"],                   [],                            []),
+    "disney":       ("Disney+",                  ["v2:disney"],                   [],                            []),
+    "reddit":       ("Reddit",                   ["v2:reddit"],                   [],                            []),
+    "github":       ("GitHub",                   ["v2:github"],                   [],                            []),
+    "ru_net":       ("Russia — all IPs",         [],                              ["ls:ru"],                     []),
+    "ru_gov":       ("Russia — Government",       ["v2:category-gov-ru"],          [],                            []),
+    "ru_banks":     ("Russia — Banks",           ["mc:category-bank-ru"],         [],                            []),
+    "ru_blocked":   ("Russia — Blocked (all)",    ["rf:domains_all"],              [],                            []),   # heavy — ~86k domains
+    "ru_blocked_media": ("Russia — Blocked (media)", ["v2:category-media-ru-blocked"], [],                        []),
 }
+CURATED_HEAVY = {"ru_blocked", "ru_net"}   # UI weight flag — large lists (86k domains / whole-RU geoip)
+CURATED_ORDER = list(CURATED_PRESETS.keys())
 
-# Domain-filled categories (the domain tier): curated bundles shipped to the node, which configures dnsmasq to
-# add each domain's resolved IPs into the category's nft set. A category present here is domain-filled and does
-# NOT geo-fetch — so `google` here is google-the-domains, disjoint from `youtube`'s googlevideo et al.
-DOMAIN_BUNDLES = {
-    "google":  ["google.com", "gstatic.com", "googleapis.com", "googleusercontent.com", "google-analytics.com",
-                "googletagmanager.com", "googlesyndication.com", "googleadservices.com", "gmail.com", "withgoogle.com"],
-    "youtube": ["youtube.com", "youtu.be", "googlevideo.com", "ytimg.com", "ggpht.com", "youtubei.googleapis.com",
-                "youtube-nocookie.com", "yt.be"],
-    "yandex":  ["yandex.ru", "yandex.net", "yandex.com", "yastatic.net", "ya.ru", "mc.yandex.ru", "yandexcloud.net", "dzen.ru"],
-    "vk":      ["vk.com", "vk.ru", "userapi.com", "vk-cdn.net", "vkuservideo.net", "mycdn.me", "vkuser.net", "vkvideo.ru"],
-    "meta":    ["facebook.com", "fbcdn.net", "instagram.com", "cdninstagram.com", "whatsapp.com", "whatsapp.net",
-                "fb.com", "fbsbx.com", "facebook.net"],
-    "twitter": ["twitter.com", "x.com", "twimg.com", "t.co", "periscope.tv", "twitterstat.us"],
-    "netflix": ["netflix.com", "nflxext.com", "nflximg.net", "nflxvideo.net", "nflxso.net"],
-    "spotify": ["spotify.com", "scdn.co", "spotifycdn.com", "pscdn.co", "spotify.map.fastly.net", "audio-fa.scdn.co"],
-    "twitch":  ["twitch.tv", "ttvnw.net", "jtvnw.net", "twitchcdn.net", "twitch.map.fastly.net", "twitchsvc.net"],
-    "tiktok":  ["tiktok.com", "tiktokcdn.com", "tiktokv.com", "byteoversea.com", "ibytedtos.com", "tiktokcdn-us.com",
-                "muscdn.com", "tiktokcdn-eu.com", "ttwstatic.com", "byteeffecttos.com"],
-    "disney":  ["disneyplus.com", "disney-plus.net", "dssott.com", "bamgrid.com", "disneyplus.disney.com", "dnitv.com"],
-    "reddit":  ["reddit.com", "redd.it", "redditstatic.com", "redditmedia.com", "redditinc.com"],
-    "discord": ["discord.com", "discordapp.com", "discordapp.net", "discord.gg", "discord.media", "discordcdn.com"],
-    "github":  ["github.com", "githubusercontent.com", "githubassets.com", "github.io", "ghcr.io"],
-    # AI services — one list per provider. dnsmasq matches a domain AND all its subdomains. Gemini et al. live
-    # partly on shared Google infra (google.com / googleapis.com), so the provider-specific subdomains below are
-    # isolable, but where they share an IP with the parent they can't be split (same caveat as YouTube vs Google).
-    "openai":  ["openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com", "openai.fm"],
-    "claude":  ["claude.ai", "anthropic.com", "claudeusercontent.com", "claude.com"],
-    "gemini":  ["gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com",
-                "makersuite.google.com", "bard.google.com", "ai.google.dev", "deepmind.google", "notebooklm.google.com"],
-    "grok":    ["grok.com", "x.ai"],
-    "perplexity": ["perplexity.ai", "pplx.ai", "perplexitycdn.com"],
-    "deepseek": ["deepseek.com", "deepseek.ai"],
-    "copilot": ["copilot.microsoft.com", "copilot.cloud.microsoft", "githubcopilot.com"],
-}
-
-# The GeoSite host tier: categories that are DOMAIN-matched when a node runs in a DNS/SNI mode — the curated
-# bundles above PLUS country/aggregate lists the NODE fetches itself (ru → Re-filter; no curated bundle). The
-# panel ships such a cat in the sync `domains` map (curated domains, or [] for a fetch-only cat) so the node
-# domain-fills it; in Kernel mode none are shipped and they match by geoip instead. Keep in sync with the node's
-# DOMAIN_SOURCES.
-HOST_CATEGORIES = set(DOMAIN_BUNDLES) | {"ru_blocked"}   # ru_blocked is fetch-only (RF list, no curated bundle), like the old ru
-
-# IP-matched (geoip/ASN) categories — mirror of the node's GEO_SOURCES keys. A category here is matchable by
-# destination IP, so it works in EVERY routing mode (kernel included). A category that is host-capable but NOT
-# here (only youtube today) needs DNS and is dead weight in kernel mode — the UI greys it out there. Keep in
-# sync with swg-noded's GEO_SOURCES.
-IP_CATEGORIES = {"google", "telegram", "cloudflare", "netflix", "meta", "twitter", "ru_net", "yandex", "vk"}
-
-# Per-category capability map for the SPA: which match mechanisms a category supports, so the UI can group
-# built-in lists into [IP] / [Host] and grey host-only cats in kernel mode. ("all" is the catch-all → neither.)
-SMART_CAPS = {c: {"ip": c in IP_CATEGORIES, "host": c in HOST_CATEGORIES}
-              for c in SMART_CATEGORIES if c != "all"}
+# Derived views (keep the rest of the code + the node protocol unchanged):
+SMART_CATEGORIES = {cid: v[0] for cid, v in CURATED_PRESETS.items()}
+SMART_CATEGORIES["all"] = "All traffic (catch-all)"          # matches everything not caught by an earlier rule (no geo set)
+# extra host domains → the tiny curated add-ons; shipped inline as a guaranteed baseline (the node also pulls the full list)
+DOMAIN_BUNDLES = {cid: list(v[3]) for cid, v in CURATED_PRESETS.items() if v[3]}
+HOST_CATEGORIES = {cid for cid, v in CURATED_PRESETS.items() if v[1] or v[3]}
+IP_CATEGORIES = {cid for cid, v in CURATED_PRESETS.items() if v[2]}
+SMART_CAPS = {cid: {"ip": cid in IP_CATEGORIES, "host": cid in HOST_CATEGORIES}
+              for cid in CURATED_PRESETS}
 
 # ── Category catalog (dynamic, provider-backed) ───────────────────────────────────────────────────
 # Beyond the curated built-ins above, the panel exposes a large SEARCHABLE catalog fetched from a provider
@@ -1402,6 +1389,34 @@ def _prov_status_save():
     with contextlib.suppress(Exception):
         atomic_write(PROV_STATUS_PATH, json.dumps(_PROV_STATUS))
 
+_PROV_DOWNLOADING = {"on": False}
+def provider_download(pids):
+    """A provider was just ENABLED → refresh its catalog so its lists show (fresh) in the picker search. Shows
+    status 'downloading' while the git-tree index re-fetches, then clears to uptodate/failed. Background; the UI
+    polls /api/state for the status."""
+    pids = [p for p in pids if p in CATALOG_PROVIDERS]
+    if not pids or _PROV_DOWNLOADING["on"]:
+        return
+    _PROV_DOWNLOADING["on"] = True
+    for p in pids:
+        _PROV_STATUS.setdefault(p, {})["status"] = "downloading"
+    _prov_status_save()
+    def _work():
+        try:
+            catalog_index(force=True)                          # re-fetch provider git-trees → fresh id index for search
+        except Exception:
+            pass
+        finally:
+            for p in pids:
+                st = _PROV_STATUS.setdefault(p, {})
+                perr = (_CATALOG.get("perr") or {}).get(p, "")
+                st["status"] = "failed" if perr else "uptodate"
+                if perr: st["error"] = perr[:120]
+                else:    st.pop("error", None)
+            _prov_status_save()
+            _PROV_DOWNLOADING["on"] = False
+    threading.Thread(target=_work, daemon=True).start()
+
 def catalog_provider_label(prov):
     return (CATALOG_PROVIDERS.get(prov) or {}).get("label", prov)
 
@@ -1413,7 +1428,7 @@ def catalog_providers_view(enabled, nodes=None):
     # newest stored-list `at` per provider, from the on-disk list meta (captures the initial pull, not only changes)
     pulled = {}
     for cat in routed_catalog_cats(nodes or {}):
-        pid = cat.split(":", 1)[0]
+        pid = _cat_provider(cat)
         for tier in ("host", "ip"):
             at = int((list_meta(cat, tier) or {}).get("at") or 0)
             if at > pulled.get(pid, 0):
@@ -1424,31 +1439,41 @@ def catalog_providers_view(enabled, nodes=None):
         tiers = ["host", "ip"] if cfg.get("recursive_clash") else (sorted({t for t, _ in cfg["trees"]} - {"auto"}) or ["ip", "host"])
         st = _PROV_STATUS.get(pid) or {}
         out.append({"id": pid, "label": cfg["label"], "url": cfg.get("url", ""),
-                    "tiers": tiers, "enabled": bool((enabled or {}).get(pid, True)),
+                    "tiers": tiers, "enabled": bool((enabled or {}).get(pid, False)),   # providers default OFF (operator opts in)
                     "error": (_CATALOG.get("perr") or {}).get(pid, "") or st.get("error", ""),
                     "status": st.get("status", "idle"),          # idle|updating|updated|uptodate|failed
                     "last_updated": max(pulled.get(pid, 0), int(st.get("last_updated", 0) or 0))})   # newest pull, else 0 = never
-    # "Curated" — the panel's own hand-maintained category set (SMART_CATEGORIES / DOMAIN_BUNDLES). It's a first-class
-    # provider in the UI, but shipped WITH the panel rather than fetched from GitHub: it can't be disabled and has no
-    # update status (it moves only when the panel is updated). builtin=True tells the SPA to render it that way.
-    out.append({"id": "curated", "label": "Curated", "url": "https://github.com/SanityProtocol/swg-panel",
-                "tiers": ["host", "ip"], "enabled": True, "builtin": True, "locked": True,
-                "error": "", "status": "builtin", "last_updated": 0})
+    # "Curated" — the panel's own "Recommended presets" set (CURATED_PRESETS, assembled from provider sources). A
+    # first-class, toggleable provider shown FIRST + enabled by default; its data is resolved on the panel (`builtin`
+    # tells the SPA to tint it + show the presets note). Disabling hides its presets from the picker + deactivates on nodes.
+    _cst = _PROV_STATUS.get("curated") or {}
+    out.insert(0, {"id": "curated", "label": "Curated", "url": "https://github.com/SanityProtocol/swg-panel",
+                   "tiers": ["host", "ip"], "enabled": bool((enabled or {}).get("curated", True)), "builtin": True,
+                   "desc": "Built-in recommended presets for common services — panel-maintained, ready to route.",
+                   "error": _cst.get("error", ""), "status": _cst.get("status", "idle"),
+                   "last_updated": max(pulled.get("curated", 0), int(_cst.get("last_updated", 0) or 0))})
     return out
 
+def _is_routed_list_cat(c):
+    return isinstance(c, str) and (":" in c or (c in SMART_CATEGORIES and c != "all"))   # provider cat OR curated built-in
+
+def _cat_provider(c):
+    return c.split(":", 1)[0] if ":" in str(c) else "curated"    # bare curated id → the "curated" pseudo-provider
+
 def routed_catalog_cats(nodes):
-    """Every provider-catalog cat (<prov>:<id>) any node routes or has opted into → {cat}."""
+    """Every panel-served list cat any node routes or has opted into → {cat}. Includes provider cats (<prov>:<id>)
+    AND curated built-ins (bare id) — both are resolved on the panel and pulled by the node."""
     out = set()
     for n in (nodes or {}).values():
         if not isinstance(n, dict):
             continue
         for c in (n.get("catalog_cats") or []):
-            if isinstance(c, str) and ":" in c:
+            if _is_routed_list_cat(c):
                 out.add(c)
         for ifo in (n.get("ifaces") or {}).values():
             for r in ((ifo or {}).get("routing") or []):
                 c = r.get("category") if isinstance(r, dict) else None
-                if isinstance(c, str) and ":" in c:
+                if _is_routed_list_cat(c):
                     out.add(c)
     return out
 
@@ -1599,7 +1624,7 @@ def catalog_search(q, page, per=40, enabled=None):
     items = []
     for cid, e in idx.items():
         prov = e.get("p", "")
-        if enabled is not None and not enabled.get(prov, True):
+        if enabled is not None and not enabled.get(prov, False):   # providers default OFF → hidden from search until enabled
             continue
         lbl = catalog_label(cid)
         if q and q not in cid.lower() and q not in lbl.lower():
@@ -1725,64 +1750,49 @@ def _norm_host_v2(rid, seen, prov="v2"):
             out.append(d)
     return out
 
-# ── Curated categories, resolved ON THE PANEL (Phase 2) ──────────────────────────────────────────────────────
-# The 26 built-ins used to be fetched by each NODE from GitHub. The panel now resolves them exactly like a
-# provider list and ships them via list_manifest, so a node pulls them from the panel (outbound-only, no GitHub
-# dependency on the node). Mirrors of swg-noded's old GEO_SOURCES / DOMAIN_SOURCES — keep them in sync.
-CURATED_GEO_SOURCES = {   # ip tier (geoip / ASN CIDRs)
-    "google": ["LS:google"], "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"],
-    "netflix": ["LS:netflix"], "meta": ["LS:facebook"], "twitter": ["LS:twitter"], "ru_net": ["LS:ru"],
-    "yandex": ["AS:13238"], "vk": ["AS:47541", "AS:47542"],
-}
-CURATED_DOMAIN_SOURCES = {   # host tier — v2fly/RF enrichment UNIONed onto the curated DOMAIN_BUNDLES baseline
-    "google": ["V2:google"], "youtube": ["V2:youtube"], "yandex": ["V2:yandex"], "vk": ["V2:vk"],
-    "meta": ["V2:facebook", "V2:instagram"], "twitter": ["V2:twitter"], "netflix": ["V2:netflix"],
-    "spotify": ["V2:spotify"], "twitch": ["V2:twitch"], "tiktok": ["V2:tiktok"], "disney": ["V2:disney"],
-    "reddit": ["V2:reddit"], "discord": ["V2:discord"], "github": ["V2:github"], "openai": ["V2:openai"],
-    "ru_blocked": ["RF:domains_all"],
-}
-def _curated_url(spec):
-    if spec.startswith("LS:"):
-        return "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/" + spec[3:] + ".txt"
-    if spec.startswith("AS:"):
-        return "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/" + spec[3:] + "/ipv4-aggregated.txt"
-    if spec.startswith("V2:"):
-        return (CATALOG_PROVIDERS.get("v2", {}).get("raw_host") or "").format(id=spec[3:])
-    if spec.startswith("RF:"):
-        return "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/" + spec[3:] + ".lst"
-    return spec
+# ── Curated presets, resolved ON THE PANEL ───────────────────────────────────────────────────────────────────
+# A preset's tiers are assembled entirely from provider sources (see CURATED_PRESETS). Each source is a catalog id
+# (<prov>:<id>, resolved via list_resolve) or "AS:<n>" (ipverse ASN → the only non-catalog source, for yandex/vk
+# IP). The node pulls the resolved list via list_manifest, exactly like any provider list.
+def _ipverse_asn_url(asn):
+    return "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/" + str(asn) + "/ipv4-aggregated.txt"
+
+def _preset_source_resolve(spec, tier):
+    """Resolve ONE preset source at a tier → list (or None on fetch failure)."""
+    prov = spec.split(":", 1)[0] if ":" in spec else ""
+    if prov in CATALOG_PROVIDERS:                              # a catalog list id (v2:/mc:/ls:/rf:/bm:)
+        return list_resolve(spec, tier)
+    if spec.startswith("AS:") and tier == "ip":               # ipverse ASN (yandex/vk IP)
+        try:    return _norm_ip(_list_fetch_text(_ipverse_asn_url(spec[3:])))
+        except Exception: return None
+    return None
 
 def _curated_resolve(cat, tier):
-    """Resolve one built-in category on the panel. ip = union of its GEO_SOURCES specs (fail-closed — no curated
-    IP fallback exists, so a fetch error keeps last-good). host = the hand-curated DOMAIN_BUNDLES baseline UNIONed
-    with best-effort v2fly/RF enrichment (enrichment failure just falls back to the bundle — the bundle is the
-    censorship-robust guarantee, shipped with the panel, needing no external fetch)."""
-    if tier == "ip":
-        specs = CURATED_GEO_SOURCES.get(cat) or []
-        if not specs:
-            return None                                        # host-only curated cat → no ip tier
-        nets = []
-        for spec in specs:
-            try:    txt = _list_fetch_text(_curated_url(spec))
-            except Exception: return None                      # fail-closed: don't half-populate an IP list
-            nets += _norm_ip(txt)
-        return _norm_ip("\n".join(nets))                       # re-collapse the union of sources
-    doms = set(DOMAIN_BUNDLES.get(cat) or [])
-    for spec in (CURATED_DOMAIN_SOURCES.get(cat) or []):
-        got = _norm_host_v2(spec[3:], set(), "v2") if spec.startswith("V2:") else None
-        if got is None and not spec.startswith("V2:"):
-            try:    got = _norm_host_plain(_list_fetch_text(_curated_url(spec)))
-            except Exception: got = None
-        if got:                                                # enrichment succeeded → fold it in; else keep the bundle baseline
-            doms |= set(got)
-    return sorted(doms) or None
+    """Resolve one curated preset by unioning its provider sources for the tier (+ extra host domains). Best-effort:
+    a source that fails to fetch is skipped, not fatal — but if NOTHING resolves (and no extras), return None so the
+    caller keeps last-good instead of shipping an empty list."""
+    spec = CURATED_PRESETS.get(cat)
+    if not spec:
+        return None
+    _label, host_srcs, ip_srcs, extra_host = spec
+    srcs = ip_srcs if tier == "ip" else host_srcs
+    acc, got_any = set(), False
+    for s in srcs:
+        r = _preset_source_resolve(s, tier)
+        if r is not None:
+            acc |= set(r); got_any = True
+    if tier == "host":
+        acc |= set(extra_host or [])                          # tiny curated add-ons (e.g. Gemini's Google subdomains)
+    if not acc and not got_any:
+        return None                                            # total failure → keep last-good
+    return _norm_ip("\n".join(acc)) if tier == "ip" else sorted(acc)
 
 def list_resolve(cat, tier):
-    """Fetch + normalize one <prov>:<id> category (or a bare curated built-in) at a tier → plain list (CIDRs for
-    ip, domains for host). None on any failure so the caller keeps last-good."""
+    """Fetch + normalize one <prov>:<id> category (or a bare curated preset) at a tier → plain list (CIDRs for ip,
+    domains for host). None on any failure so the caller keeps last-good."""
     if ":" not in cat:
-        if cat in SMART_CATEGORIES and cat != "all":
-            return _curated_resolve(cat, tier)                 # built-in → resolved here, shipped via list_manifest
+        if cat in CURATED_PRESETS:
+            return _curated_resolve(cat, tier)                 # curated preset → resolved here, shipped via list_manifest
         return None
     prov, rid = cat.split(":", 1)
     cfg = CATALOG_PROVIDERS.get(prov)
@@ -1941,9 +1951,9 @@ PANEL_SETTINGS_DEFAULTS = {
     "theme_color": "",        # brand/interface theme colour (DARK mode) replacing the default cyan ("" = default)
     "theme_color_light": "",  # brand/interface theme colour (LIGHT mode) ("" = default)
     "geo_epoch": 0,
-    # routing-list catalog providers the fleet may use {prov_id: bool}; a missing/unknown provider defaults ON.
-    # Disabling one greys its already-picked categories (retained) and drops them from the node desired set → the
-    # node deletes those cat sets; re-enabling restores them.
+    # routing-list catalog providers the fleet may use {prov_id: bool}; a missing/unknown provider defaults OFF
+    # (the operator enables what they want; Curated presets + custom lists are on by default). Enabling one fetches
+    # its catalog. Disabling greys its already-picked categories (retained) + drops them from the node desired set.
     "providers": {},
     # scheduled list refresh (node-LOCAL time): how often (days) + at what time-of-day. Nodes re-fetch geo/host
     # lists only when this window is due — so the brief per-update disruption lands at a chosen quiet hour, not
@@ -2657,7 +2667,7 @@ def api(method, path, qs, body, deps):
                     _cat_caps_extra[_c] = _cix[_c]
                     _cat_labels_extra[_c] = catalog_label(_c)
         _cat_sizes = {}                                   # {cat: {ip,host}} resolved-list record counts (from state/lists/*.meta)
-        for _c in _inuse_cat:
+        for _c in routed_catalog_cats(nodes):             # provider cats AND curated presets (bare id) — both resolved on the panel
             _sz = {}
             for _t in ("ip", "host"):
                 _m = list_meta(_c, _t)
@@ -2712,8 +2722,19 @@ def api(method, path, qs, body, deps):
         if isinstance(mir, dict):
             cur["mirrors"] = {"geo": (mir.get("geo") or "").strip(), "turn": (mir.get("turn") or "").strip()}
         prov = incoming.get("providers")
-        if isinstance(prov, dict):                              # {prov_id: bool} — only known providers, coerced to bool
-            cur["providers"] = {p: bool(prov[p]) for p in prov if p in CATALOG_PROVIDERS}
+        if isinstance(prov, dict):                              # {prov_id: bool} — known providers + the "curated" pseudo-provider
+            _prov_before = cur.get("providers") or {}
+            cur["providers"] = {p: bool(prov[p]) for p in prov if p in CATALOG_PROVIDERS or p == "curated"}
+            _newly_on = [p for p in cur["providers"] if cur["providers"][p]
+                         and not _prov_before.get(p, False) and p in CATALOG_PROVIDERS]
+            _newly_off = [p for p in cur["providers"] if not cur["providers"][p]
+                          and _prov_before.get(p, False) and p in CATALOG_PROVIDERS]
+            if _newly_off:                                     # disabling clears the status → re-enabling shows a clean "Downloading", not a stale "up to date"
+                for p in _newly_off:
+                    _PROV_STATUS.pop(p, None)
+                _prov_status_save()
+            if _newly_on:
+                provider_download(_newly_on)                   # fetch just-enabled providers' catalogs → "Downloading" + fresh search
         gu = incoming.get("geo_update")
         if isinstance(gu, dict):
             try:    _ed = max(0, min(30, int(gu.get("every_days"))))
@@ -2857,18 +2878,25 @@ def api(method, path, qs, body, deps):
         provider_update_all(deps["nodes_path"])
         return 200, {"ok": True, "data": {"updating": True}}
 
+    if method == "POST" and path == "/api/geo/provider-retry":  # retry a single provider after its download/update failed
+        pid = (body.get("provider") or "").strip()
+        if pid not in CATALOG_PROVIDERS:
+            return 400, {"ok": False, "error": "unknown provider", "code": "bad_request"}
+        provider_download([pid])                                 # re-index (→ "downloading"); routed lists refresh on the geo schedule
+        return 200, {"ok": True, "data": {"downloading": True}}
+
     if method == "GET" and path == "/api/catalog/index":        # the FULL catalog (enabled providers) → client searches by title/desc + paginates locally
         idx = catalog_index()
         en = (deps.get("panel_settings") or {}).get("providers") or {}
         items = [{"id": c, "provider": e.get("p", ""), "caps": {"host": e.get("host", False), "ip": e.get("ip", False)}}
-                 for c, e in idx.items() if en.get(e.get("p", ""), True)]
+                 for c, e in idx.items() if en.get(e.get("p", ""), False)]   # providers default OFF → only enabled ones are searchable
         return 200, {"ok": True, "data": {"items": items, "provider_labels": {p: catalog_provider_label(p) for p in CATALOG_PROVIDER_ORDER}}}
 
-    if method == "GET" and path == "/api/list-info":            # hover tooltip: a provider list's record count + a sample (resolve-on-hover)
+    if method == "GET" and path == "/api/list-info":            # hover tooltip: a list's record count + a sample (resolve-on-hover)
         cat = (qs.get("cat") or [""])[0].strip()
-        if ":" not in cat:
+        if ":" not in cat and cat not in CURATED_PRESETS:
             return 400, {"ok": False, "error": "bad cat", "code": "bad_request"}
-        caps = catalog_index().get(cat) or {}
+        caps = SMART_CAPS.get(cat) if cat in CURATED_PRESETS else (catalog_index().get(cat) or {})
         out = {}
         for tier in ("host", "ip"):                             # Host first (house rule)
             if not caps.get(tier):
@@ -3433,11 +3461,19 @@ def api(method, path, qs, body, deps):
             ec = body.get("enabled_categories")
             if isinstance(ec, list):
                 nodes[nid]["enabled_categories"] = [c for c in ec if c in SMART_CATEGORIES and c != "all"]
-        if "catalog_cats" in body:              # provider-catalog categories the operator opted THIS node into (node-lens);
-            cc = body.get("catalog_cats")       # separate from enabled_categories (which gates only the 26 built-ins)
+        if "catalog_cats" in body:              # categories the operator opted THIS node into (node-lens): provider-catalog
+            cc = body.get("catalog_cats")       # ids (<prov>:<id>) AND curated built-ins (bare id) — both first-class + pullable
             if isinstance(cc, list):
-                _cix = catalog_index()          # keep only real, non-built-in catalog ids (built-ins live in enabled_categories)
-                nodes[nid]["catalog_cats"] = [c for c in dict.fromkeys(cc) if c in _cix and c not in SMART_CATEGORIES]
+                _cix = catalog_index()          # keep real catalog ids OR curated built-ins; drop unknown/"all"/custom_*
+                _was = set(nodes[nid].get("catalog_cats") or [])
+                nodes[nid]["catalog_cats"] = [c for c in dict.fromkeys(cc)
+                                              if (c in _cix and c not in SMART_CATEGORIES) or (c in SMART_CATEGORIES and c != "all")]
+                for _c in nodes[nid]["catalog_cats"]:          # newly opted-in → resolve now so its size/lists are ready (non-blocking)
+                    if _c not in _was:
+                        _caps = SMART_CAPS.get(_c, {}) if ":" not in _c else (_cix.get(_c) or {})
+                        for _t in ("ip", "host"):
+                            if _caps.get(_t) and not list_meta(_c, _t):
+                                list_ensure(_c, _t)
         # per-node mesh overrides — a CHANGE re-provisions THIS node's links (it briefly drops off the mesh
         # while peers reconnect with the new config); a blank value falls back to the panel default.
         _mesh_before = (nodes[nid].get("mesh_subnet") or "", str(nodes[nid].get("mesh_port") or ""), nodes[nid].get("mesh_prefix") or "")
@@ -4641,7 +4677,7 @@ class Handler(BaseHTTPRequestHandler):
             _curated = ":" not in _c and _c in SMART_CATEGORIES and _c != "all"   # built-in → panel-resolved + panel-pulled (Phase 2)
             if ":" not in _c and not _curated:                     # custom_<hash> / "all" → not panel-served (ship inline)
                 continue
-            if not _curated and not _enabled_prov.get(_c.split(":", 1)[0], True):   # provider disabled → omit (node deletes the set)
+            if not _curated and not _enabled_prov.get(_c.split(":", 1)[0], False):   # provider not enabled → omit (node deletes the set)
                 continue
             _caps = SMART_CAPS.get(_c, {}) if _curated else (_cix.get(_c) or {})
             _ent = {}
@@ -4799,8 +4835,8 @@ class Handler(BaseHTTPRequestHandler):
         _curated = ":" not in cat and cat in SMART_CATEGORIES and cat != "all"   # built-in → panel-resolved, always served
         if tier not in ("ip", "host") or (":" not in cat and not _curated):
             return self._send(400, {"error": "bad cat/tier"})
-        if not _curated and not ((Handler.deps.get("panel_settings") or {}).get("providers") or {}).get(cat.split(":", 1)[0], True):
-            return self._send(403, {"error": "provider disabled"})   # never serve a disabled provider's list
+        if not _curated and not ((Handler.deps.get("panel_settings") or {}).get("providers") or {}).get(cat.split(":", 1)[0], False):
+            return self._send(403, {"error": "provider disabled"})   # never serve a not-enabled provider's list
         meta = list_meta(cat, tier)
         try:
             with open(_list_path(cat, tier), "rb") as f:
@@ -4957,7 +4993,9 @@ def main():
     _sc = fleet.get("store_configs", True) is not False
     _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")
     migrate_node_ids(nodes_path, _rp, _sc, _cd)        # legacy name-keyed -> stable id-keyed (one-time)
-    migrate_ru_split(nodes_path, fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".", "panel-settings.json"))   # 'ru' -> 'ru_net' (ru_blocked split out; one-time)
+    _psp = fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".", "panel-settings.json")
+    migrate_ru_split(nodes_path, _psp)   # 'ru' -> 'ru_net' (ru_blocked split out; one-time)
+    migrate_provider_defaults(nodes_path, _psp)   # providers default OFF, but keep already-routed ones enabled (one-time)
     normalize_stats_files(nodes_path, fleet.get("stats_dir", "/var/www/wgstats"))   # stats_file -> stats-<id>.json (id-keyed health files survive convert)
     _hpp = os.path.join(os.path.dirname(nodes_path) or ".", "host_proc")   # this host's re-install/convert flag
     with contextlib.suppress(Exception):
