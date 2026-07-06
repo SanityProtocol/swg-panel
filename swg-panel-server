@@ -1361,14 +1361,23 @@ SMART_CAPS = {c: {"ip": c in IP_CATEGORIES, "host": c in HOST_CATEGORIES}
 CATALOG_PROVIDERS = {
     "mc": {"label": "MetaCubeX", "url": "https://github.com/MetaCubeX/meta-rules-dat", "strip": ".list", "skip_at": True,
            "trees": [("host", "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geosite"),
-                     ("ip",   "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geoip")]},
+                     ("ip",   "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geoip")],
+           "raw_host": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/{id}.list",
+           "raw_ip":   "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/{id}.list",
+           "fmt_host": "plain"},
     "v2": {"label": "v2fly", "url": "https://github.com/v2fly/domain-list-community", "strip": "",
-           "trees": [("host", "https://api.github.com/repos/v2fly/domain-list-community/git/trees/master:data")]},
+           "trees": [("host", "https://api.github.com/repos/v2fly/domain-list-community/git/trees/master:data")],
+           "raw_host": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/{id}",
+           "fmt_host": "v2fly"},
     "ls": {"label": "Loyalsoldier", "url": "https://github.com/Loyalsoldier/geoip", "strip": ".txt",
-           "trees": [("ip", "https://api.github.com/repos/Loyalsoldier/geoip/git/trees/release:text")]},
+           "trees": [("ip", "https://api.github.com/repos/Loyalsoldier/geoip/git/trees/release:text")],
+           "raw_ip": "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/{id}.txt"},
     "rf": {"label": "Re-filter", "url": "https://github.com/1andrevich/Re-filter-lists", "strip": ".lst",
-           "trees": [("auto", "https://api.github.com/repos/1andrevich/Re-filter-lists/git/trees/main")]},
-    # blackmatrix7 (per-app host + IP) — planned; needs recursive folder indexing + classical-format parse on the node.
+           "trees": [("auto", "https://api.github.com/repos/1andrevich/Re-filter-lists/git/trees/main")],
+           "raw_host": "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/{id}.lst",
+           "raw_ip":   "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/{id}.lst",
+           "fmt_host": "plain"},
+    # blackmatrix7 (per-app host + IP) — planned; needs recursive folder indexing + classical-format normalize here.
 }
 CATALOG_PROVIDER_ORDER = ["mc", "v2", "ls", "rf"]
 CATALOG_TTL = 86400
@@ -1470,6 +1479,154 @@ def catalog_search(q, page, per=40, enabled=None):
     return {"total": total, "page": page, "per": per,
             "items": [{"id": c, "label": l, "provider": p, "provider_label": catalog_provider_label(p), "caps": caps}
                       for c, l, p, caps in sl]}
+
+# ── Panel-side list resolution ──────────────────────────────────────────────────────────────────────────────
+# The PANEL fetches each routed category from its provider ONCE, normalizes it to a plain list (CIDRs for the
+# ip tier, bare domains for the host tier — v2fly include: expansion, MetaCubeX `+.` strip, CIDR collapse all
+# happen here), caches it with a content version hash, and serves it to nodes over the sync channel. Nodes never
+# touch GitHub — critical because many entry nodes live in networks where GitHub is blocked/throttled — and a
+# node pulls a category only when its version changed (or it's newly routed). One fetch feeds the whole fleet.
+LIST_DIR = "/var/lib/swg-panel/lists"          # overridden from the state dir in main(); one .txt + .meta per (cat,tier)
+_LIST_META = {}                                # {"<cat>|<tier>": {"v","n","at"}} — in-memory mirror of the .meta files
+_LIST_INFLIGHT = set(); _LIST_LOCK = threading.Lock()
+_PDOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+
+def _list_key(cat, tier): return re.sub(r"[^a-z0-9]", "_", cat.lower()) + "__" + tier
+def _list_path(cat, tier): return os.path.join(LIST_DIR, _list_key(cat, tier) + ".txt")
+def _list_metapath(cat, tier): return os.path.join(LIST_DIR, _list_key(cat, tier) + ".meta")
+
+def _list_fetch_text(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "swg-panel"})
+    with urllib.request.urlopen(req, timeout=40) as r:
+        return r.read().decode("utf-8", "replace")
+
+def _norm_ip(text):
+    nets = []
+    for ln in text.splitlines():
+        s = ln.split("#", 1)[0].strip()
+        if not s:
+            continue
+        try:
+            n = ipaddress.ip_network(s, strict=False)
+            if n.version == 4:
+                nets.append(n)
+        except Exception:
+            continue
+    return [str(n) for n in ipaddress.collapse_addresses(nets)]   # collapse overlaps/adjacency (nft interval sets need it)
+
+def _norm_host_plain(text):
+    out = set()
+    for raw in text.splitlines():
+        ln = raw.split("#", 1)[0].strip().lower()
+        if ln.startswith("+."):                                 # MetaCubeX/clash suffix form → bare domain (dnsmasq already suffix-matches)
+            ln = ln[2:]
+        ln = ln.lstrip(".")
+        if _PDOM_RE.match(ln):
+            out.add(ln)
+    return sorted(out)
+
+def _norm_host_v2(rid, seen, prov="v2"):
+    """v2fly data/<rid> → domains; resolves include: recursively (cycle-guarded, bounded). Fail-closed: any fetch
+    error → None so a transient blip keeps last-good instead of shipping a truncated list."""
+    if rid in seen:
+        return []
+    if len(seen) >= 300:
+        return None
+    seen.add(rid)
+    tmpl = CATALOG_PROVIDERS.get(prov, {}).get("raw_host") or ""
+    try:
+        text = _list_fetch_text(tmpl.format(id=rid))
+    except Exception:
+        return None
+    out = []
+    for raw in text.splitlines():
+        ln = raw.split("#", 1)[0].strip()
+        if not ln:
+            continue
+        val = ln.split()[0]                                     # token 0 = value; the rest are @attributes (route all)
+        if val.startswith("include:"):
+            inc = _norm_host_v2(val[8:].strip().lower(), seen, prov)
+            if inc is None:
+                return None
+            out += inc
+            continue
+        if ":" in val:
+            kind, _, v = val.partition(":")
+            if kind in ("keyword", "regexp"):                   # dnsmasq suffix matching can't express these
+                continue
+            val = v
+        d = val.strip().lower()
+        if _PDOM_RE.match(d):
+            out.append(d)
+    return out
+
+def list_resolve(cat, tier):
+    """Fetch + normalize one <prov>:<id> category at a tier → plain list (CIDRs for ip, domains for host).
+    None on any failure so the caller keeps last-good."""
+    if ":" not in cat:
+        return None
+    prov, rid = cat.split(":", 1)
+    cfg = CATALOG_PROVIDERS.get(prov)
+    if not cfg:
+        return None
+    if tier == "ip":
+        tmpl = cfg.get("raw_ip") or ""
+        if not tmpl:
+            return None
+        try:    return _norm_ip(_list_fetch_text(tmpl.format(id=rid)))
+        except Exception: return None
+    if cfg.get("fmt_host") == "v2fly":                          # v2fly needs include expansion
+        return _norm_host_v2(rid, set(), prov)
+    tmpl = cfg.get("raw_host") or ""
+    if not tmpl:
+        return None
+    try:    return _norm_host_plain(_list_fetch_text(tmpl.format(id=rid)))
+    except Exception: return None
+
+def _list_write(cat, tier, items):
+    body = "\n".join(items) + ("\n" if items else "")
+    ver = hashlib.sha1(body.encode()).hexdigest()[:12]         # content hash = the version a node compares against
+    meta = {"v": ver, "n": len(items), "at": int(time.time())}
+    with contextlib.suppress(Exception):
+        os.makedirs(LIST_DIR, exist_ok=True)
+        atomic_write(_list_path(cat, tier), body)
+        atomic_write(_list_metapath(cat, tier), json.dumps(meta))
+        _LIST_META[cat + "|" + tier] = meta
+    return meta
+
+def list_meta(cat, tier):
+    m = _LIST_META.get(cat + "|" + tier)
+    if m:
+        return m
+    try:
+        m = json.load(open(_list_metapath(cat, tier)))
+        _LIST_META[cat + "|" + tier] = m
+        return m
+    except Exception:
+        return None
+
+def list_ensure(cat, tier, force=False):
+    """Return the cached meta ({v,n,at}) for a (cat,tier), kicking off a BACKGROUND resolve when it's missing or
+    `force`d (schedule refresh). Never blocks the request — a newly-routed category resolves on its own thread and
+    lands within a couple of seconds; until then its meta is None (the node just waits for the next manifest)."""
+    m = list_meta(cat, tier)
+    if m and not force:
+        return m
+    k = cat + "|" + tier
+    with _LIST_LOCK:
+        if k in _LIST_INFLIGHT:
+            return m
+        _LIST_INFLIGHT.add(k)
+    def _work():
+        try:
+            items = list_resolve(cat, tier)
+            if items is not None:
+                _list_write(cat, tier, items)
+        finally:
+            with _LIST_LOCK:
+                _LIST_INFLIGHT.discard(k)
+    threading.Thread(target=_work, daemon=True).start()
+    return m
 
 # A custom rule (category "custom") carries its own list of IPs/CIDRs AND domains, mixed and comma/space
 # separated; it gets a stable synthetic category id so its nft set is shared by identical lists. The DOMAINS
@@ -4412,6 +4569,7 @@ def main():
     # automatically on exit/crash.
     _statedir = os.path.dirname(nodes_path) or "."
     globals()["CATALOG_PATH"] = os.path.join(_statedir, "catalog-index.json")   # catalog cache lives in the state dir
+    globals()["LIST_DIR"] = os.path.join(_statedir, "lists")                    # resolved per-category lists served to nodes
     _lp = os.path.join(_statedir, ".panel.lock")
     try:
         _lockfd = os.open(_lp, os.O_WRONLY | os.O_CREAT, 0o600)
