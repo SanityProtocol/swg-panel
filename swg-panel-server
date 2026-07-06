@@ -4327,6 +4327,37 @@ class Handler(BaseHTTPRequestHandler):
                 with contextlib.suppress(Exception):
                     nodes_save(Handler.deps["nodes_path"], nodes)
         interval = (Handler.deps.get("fleet") or {}).get("node_interval", 5)
+        # ── Provider-list manifest ──────────────────────────────────────────────────────────────────────
+        # For each PROVIDER-catalog category (<prov>:<id>) this node routes, ship the current resolved-list
+        # version per tier so the node pulls a list from the panel ONLY when its version changed (and pulls a
+        # newly-routed one immediately). Disabled-provider cats are omitted → the node GC drops their sets.
+        # Built-ins (legacy) and custom cats are NOT here (they keep their existing inline/GitHub paths). The
+        # panel re-resolves a routed list in the background when its cache is older than the schedule cadence.
+        _node_mode = node.get("routing_mode") or "kernel"
+        _enabled_prov = _ps.get("providers") or {}
+        _gu = _ps.get("geo_update") or {}
+        _cadence = max(1, int(_gu.get("every_days") or 1)) * 86400   # panel re-resolve cadence (0/continuous → daily fetch is fine)
+        _cix = catalog_index()
+        _list_manifest = {}
+        for _c in {e["category"] for e in (my_plan.get("smart") or [])}:
+            if ":" not in _c or _c in SMART_CATEGORIES:            # legacy built-in / custom → not panel-served
+                continue
+            if not _enabled_prov.get(_c.split(":", 1)[0], True):   # provider disabled → omit (node deletes the set)
+                continue
+            _caps = _cix.get(_c) or {}
+            _ent = {}
+            for _tier in ("ip", "host"):
+                if not _caps.get(_tier):
+                    continue
+                if _tier == "host" and _node_mode == "kernel":    # kernel matches by IP only → no host lists
+                    continue
+                _mt = list_meta(_c, _tier)
+                _due = (not _mt) or (int(time.time()) - int((_mt or {}).get("at") or 0) > _cadence)
+                _mt = list_ensure(_c, _tier, force=_due) or _mt    # background (re)resolve; ships current (old) version until the new one lands
+                if _mt:
+                    _ent[_tier] = _mt["v"]
+            if _ent:
+                _list_manifest[_c] = _ent
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
                                 "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
                                 "delete": list((node.get("delete") or {}).keys()),
@@ -4348,6 +4379,7 @@ class Handler(BaseHTTPRequestHandler):
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
                                           "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in HOST_CATEGORIES},
                                                        **(my_plan.get("domains") or {})} if (node.get("routing_mode") or "kernel") != "kernel" else {}),
+                                          "list_manifest": _list_manifest,   # provider-catalog cats → {tier: version}; node pulls each list from the panel on version change
                                           "cidrs": my_plan.get("cidrs") or {},   # custom-rule raw IPs/CIDRs → always loaded (DoH-proof) regardless of mode
                                           # Force-DNS guard: the node drops smart-subnet DoH/DoT so clients can't bypass its DNS-based
                                           # domain fill. Only in forcedns mode — kernel needs no DNS, and sni reads the TLS handshake so it
@@ -4358,6 +4390,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "panel": {"geo_mirror": (_ps.get("mirrors") or {}).get("geo") or "",   # Panel settings → node (Part 5)
                                           "turn_mirror": (_ps.get("mirrors") or {}).get("turn") or "",
                                           "geo_ttl_days": (_ps.get("advanced") or {}).get("geo_ttl_days") or 3,
+                                          "geo_update": {"every_days": int((_gu.get("every_days") if _gu.get("every_days") is not None else 1)),
+                                                         "at": _gu.get("at") or "04:00"},   # node applies a CHANGED provider list only in this quiet-hour window (new lists apply immediately)
                                           "geo_epoch": _ps.get("geo_epoch") or 0},
                                 "update": upd or None, "interval": interval})
 
@@ -4448,6 +4482,39 @@ class Handler(BaseHTTPRequestHandler):
             "created": node.get("created"),
             "last_seen": (Handler.deps.get("node_seen") or {}).get(nid)}})
 
+    def _node_list(self, u):
+        # Serve a resolved provider list (raw text: one CIDR/domain per line) for a routed category+tier.
+        # Node-token auth; the node pulls this only for cats named in its own list_manifest, on version change.
+        nodes = nodes_load(Handler.deps["nodes_path"])
+        hdr = self.headers.get("Authorization", "")
+        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
+        nid, _node = find_node_by_token(nodes, token)
+        if not nid:
+            return self._send(401, {"error": "invalid node token"})
+        q = parse_qs(u.query)
+        cat = (q.get("cat") or [""])[0].strip()
+        tier = (q.get("tier") or [""])[0].strip()
+        if tier not in ("ip", "host") or ":" not in cat:
+            return self._send(400, {"error": "bad cat/tier"})
+        prov = cat.split(":", 1)[0]
+        if not ((Handler.deps.get("panel_settings") or {}).get("providers") or {}).get(prov, True):
+            return self._send(403, {"error": "provider disabled"})   # never serve a disabled provider's list
+        meta = list_meta(cat, tier)
+        try:
+            with open(_list_path(cat, tier), "rb") as f:
+                data = f.read()
+        except OSError:
+            list_ensure(cat, tier)                                    # kick a resolve; node retries next sync
+            return self._send(404, {"error": "not resolved yet"})
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-List-Version", (meta or {}).get("v", ""))
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        with contextlib.suppress(BrokenPipeError):
+            self.wfile.write(data)
+
     def _node_rename(self):
         # A node renames ITSELF (node-token auth) — so a re-install/convert can push a box-name change the
         # operator entered in the installer. name is a free display field (id-keyed store); no refs to migrate.
@@ -4485,6 +4552,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(path)
         if path == "/api/node/whoami":     # node-token auth (not a session) — lets a re-installer identify a leftover token
             return self._node_whoami()
+        if path == "/api/node/list":       # node-token auth — serve a resolved provider list (raw text) for a routed cat/tier
+            return self._node_list(u)
         if not self._require_auth():       # everything else (data) needs a session
             return
         if path.startswith("/wgstats/"):
