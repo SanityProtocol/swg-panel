@@ -1725,10 +1725,64 @@ def _norm_host_v2(rid, seen, prov="v2"):
             out.append(d)
     return out
 
+# ── Curated categories, resolved ON THE PANEL (Phase 2) ──────────────────────────────────────────────────────
+# The 26 built-ins used to be fetched by each NODE from GitHub. The panel now resolves them exactly like a
+# provider list and ships them via list_manifest, so a node pulls them from the panel (outbound-only, no GitHub
+# dependency on the node). Mirrors of swg-noded's old GEO_SOURCES / DOMAIN_SOURCES — keep them in sync.
+CURATED_GEO_SOURCES = {   # ip tier (geoip / ASN CIDRs)
+    "google": ["LS:google"], "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"],
+    "netflix": ["LS:netflix"], "meta": ["LS:facebook"], "twitter": ["LS:twitter"], "ru_net": ["LS:ru"],
+    "yandex": ["AS:13238"], "vk": ["AS:47541", "AS:47542"],
+}
+CURATED_DOMAIN_SOURCES = {   # host tier — v2fly/RF enrichment UNIONed onto the curated DOMAIN_BUNDLES baseline
+    "google": ["V2:google"], "youtube": ["V2:youtube"], "yandex": ["V2:yandex"], "vk": ["V2:vk"],
+    "meta": ["V2:facebook", "V2:instagram"], "twitter": ["V2:twitter"], "netflix": ["V2:netflix"],
+    "spotify": ["V2:spotify"], "twitch": ["V2:twitch"], "tiktok": ["V2:tiktok"], "disney": ["V2:disney"],
+    "reddit": ["V2:reddit"], "discord": ["V2:discord"], "github": ["V2:github"], "openai": ["V2:openai"],
+    "ru_blocked": ["RF:domains_all"],
+}
+def _curated_url(spec):
+    if spec.startswith("LS:"):
+        return "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/" + spec[3:] + ".txt"
+    if spec.startswith("AS:"):
+        return "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/" + spec[3:] + "/ipv4-aggregated.txt"
+    if spec.startswith("V2:"):
+        return (CATALOG_PROVIDERS.get("v2", {}).get("raw_host") or "").format(id=spec[3:])
+    if spec.startswith("RF:"):
+        return "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/" + spec[3:] + ".lst"
+    return spec
+
+def _curated_resolve(cat, tier):
+    """Resolve one built-in category on the panel. ip = union of its GEO_SOURCES specs (fail-closed — no curated
+    IP fallback exists, so a fetch error keeps last-good). host = the hand-curated DOMAIN_BUNDLES baseline UNIONed
+    with best-effort v2fly/RF enrichment (enrichment failure just falls back to the bundle — the bundle is the
+    censorship-robust guarantee, shipped with the panel, needing no external fetch)."""
+    if tier == "ip":
+        specs = CURATED_GEO_SOURCES.get(cat) or []
+        if not specs:
+            return None                                        # host-only curated cat → no ip tier
+        nets = []
+        for spec in specs:
+            try:    txt = _list_fetch_text(_curated_url(spec))
+            except Exception: return None                      # fail-closed: don't half-populate an IP list
+            nets += _norm_ip(txt)
+        return _norm_ip("\n".join(nets))                       # re-collapse the union of sources
+    doms = set(DOMAIN_BUNDLES.get(cat) or [])
+    for spec in (CURATED_DOMAIN_SOURCES.get(cat) or []):
+        got = _norm_host_v2(spec[3:], set(), "v2") if spec.startswith("V2:") else None
+        if got is None and not spec.startswith("V2:"):
+            try:    got = _norm_host_plain(_list_fetch_text(_curated_url(spec)))
+            except Exception: got = None
+        if got:                                                # enrichment succeeded → fold it in; else keep the bundle baseline
+            doms |= set(got)
+    return sorted(doms) or None
+
 def list_resolve(cat, tier):
-    """Fetch + normalize one <prov>:<id> category at a tier → plain list (CIDRs for ip, domains for host).
-    None on any failure so the caller keeps last-good."""
+    """Fetch + normalize one <prov>:<id> category (or a bare curated built-in) at a tier → plain list (CIDRs for
+    ip, domains for host). None on any failure so the caller keeps last-good."""
     if ":" not in cat:
+        if cat in SMART_CATEGORIES and cat != "all":
+            return _curated_resolve(cat, tier)                 # built-in → resolved here, shipped via list_manifest
         return None
     prov, rid = cat.split(":", 1)
     cfg = CATALOG_PROVIDERS.get(prov)
@@ -4584,11 +4638,12 @@ class Handler(BaseHTTPRequestHandler):
         _cix = catalog_index()
         _list_manifest = {}
         for _c in {e["category"] for e in (my_plan.get("smart") or [])}:
-            if ":" not in _c or _c in SMART_CATEGORIES:            # legacy built-in / custom → not panel-served
+            _curated = ":" not in _c and _c in SMART_CATEGORIES and _c != "all"   # built-in → panel-resolved + panel-pulled (Phase 2)
+            if ":" not in _c and not _curated:                     # custom_<hash> / "all" → not panel-served (ship inline)
                 continue
-            if not _enabled_prov.get(_c.split(":", 1)[0], True):   # provider disabled → omit (node deletes the set)
+            if not _curated and not _enabled_prov.get(_c.split(":", 1)[0], True):   # provider disabled → omit (node deletes the set)
                 continue
-            _caps = _cix.get(_c) or {}
+            _caps = SMART_CAPS.get(_c, {}) if _curated else (_cix.get(_c) or {})
             _ent = {}
             for _tier in ("ip", "host"):
                 if not _caps.get(_tier):
@@ -4615,10 +4670,13 @@ class Handler(BaseHTTPRequestHandler):
                                 "smart": {"entries": my_plan.get("smart") or [],   # Phase 3: per-destination category routing (entry marking)
                                           "mode": node.get("routing_mode") or "kernel",   # kernel | forcedns | sni — the node picks its fill mechanism from this
                                           "categories": sorted({e["category"] for e in (my_plan.get("smart") or [])}),
-                                          # per-CATALOG-category caps (built-ins use their curated GEO_SOURCES/DOMAIN_SOURCES; custom cats ship
-                                          # their own cidrs/domains) — lets the node fetch a catalog cat's data from MetaCubeX by id + tier.
-                                          "cat_caps": {c: catalog_index().get(c) for c in {e["category"] for e in (my_plan.get("smart") or [])}
-                                                       if c in catalog_index() and c not in SMART_CATEGORIES},
+                                          # per-category caps {ip,host}: provider cats from the catalog index, built-ins from SMART_CAPS.
+                                          # The node reads its <cat>.txt/.doms (pulled from the panel via list_manifest) using these — a
+                                          # curated cat's host cap is what gets its pulled .doms loaded into dnsmasq (custom cats ship inline).
+                                          "cat_caps": {**{c: SMART_CAPS[c] for c in {e["category"] for e in (my_plan.get("smart") or [])}
+                                                          if c in SMART_CAPS},
+                                                       **{c: catalog_index().get(c) for c in {e["category"] for e in (my_plan.get("smart") or [])}
+                                                          if c in catalog_index() and c not in SMART_CATEGORIES}},
                                           # domain tier: active bundles + custom-rule domain lists → node fills these via dnsmasq. ONLY for a
                                           # DNS/SNI-mode node; a Kernel-only node (the default) gets no domains and matches purely by geoip.
                                           "domains": ({**{c: DOMAIN_BUNDLES.get(c, []) for c in {e["category"] for e in (my_plan.get("smart") or [])} if c in HOST_CATEGORIES},
@@ -4738,10 +4796,10 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         cat = (q.get("cat") or [""])[0].strip()
         tier = (q.get("tier") or [""])[0].strip()
-        if tier not in ("ip", "host") or ":" not in cat:
+        _curated = ":" not in cat and cat in SMART_CATEGORIES and cat != "all"   # built-in → panel-resolved, always served
+        if tier not in ("ip", "host") or (":" not in cat and not _curated):
             return self._send(400, {"error": "bad cat/tier"})
-        prov = cat.split(":", 1)[0]
-        if not ((Handler.deps.get("panel_settings") or {}).get("providers") or {}).get(prov, True):
+        if not _curated and not ((Handler.deps.get("panel_settings") or {}).get("providers") or {}).get(cat.split(":", 1)[0], True):
             return self._send(403, {"error": "provider disabled"})   # never serve a disabled provider's list
         meta = list_meta(cat, tier)
         try:

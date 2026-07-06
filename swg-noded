@@ -1056,12 +1056,13 @@ _CIDR4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
 # (panel DOMAIN_BUNDLES → dnsmasq) is layered ON TOP only for nodes in a DNS/SNI mode; in Kernel-only mode the
 # panel ships no domains, so these sets fill purely from geoip. (youtube has no geoip — it shares Google's IPs;
 # it's domain-only and only works on a DNS/SNI-mode node.)
-GEO_SOURCES = {
-    "google": ["LS:google"], "telegram": ["LS:telegram"], "cloudflare": ["LS:cloudflare"],
-    "netflix": ["LS:netflix"], "meta": ["LS:facebook"], "twitter": ["LS:twitter"], "ru_net": ["LS:ru"],
-    "yandex": ["AS:13238"], "vk": ["AS:47541", "AS:47542"],
-}   # ru_net = the whole Russian IP space (geoip). The blocked-in-RU circumvention list is a SEPARATE, domain-only
-    # category (ru_blocked in DOMAIN_SOURCES) — they mean different things, so they must never share a set.
+# Phase 2: built-in categories are now resolved ON THE PANEL (CURATED_GEO_SOURCES / CURATED_DOMAIN_SOURCES there)
+# and PULLED from it via list_manifest — exactly like provider-catalog cats. The node no longer fetches ANY routing
+# list from GitHub; its only network dependency is the panel (outbound-only), which is the censorship-robust goal.
+# These dicts are kept empty so `_cat_geo_sources`/`_cat_dom_sources` return [] (no GitHub fetch); the panel-pull
+# populates the same <cat>.txt/.doms files the loaders read. The _geo_fetch/_domain_fetch helpers below are now
+# unreachable (kept as inert dead code for one release, then removed).
+GEO_SOURCES = {}       # was: the curated geoip/ASN specs — moved to the panel (CURATED_GEO_SOURCES)
 
 
 def _geo_url(spec):
@@ -1362,17 +1363,7 @@ def _smart_load_cidrs(cidrs_map, set_counts, res):
 #    DNS/SNI-mode node fetches these (the panel ships a domain cat only off Kernel mode); a Kernel node matches
 #    the same cats by geoip. Cached under GEO_DIR as <cat>.doms, TTL/retry-gated, mirror-able via SWG_GEO_MIRROR.
 #    "V2:<name>" = v2fly data/<name>; "RF:<name>" = Re-filter <name>.lst. Keep in sync with the panel's HOST_CATEGORIES.
-DOMAIN_SOURCES = {
-    "google":  ["V2:google"],  "youtube": ["V2:youtube"],  "yandex":  ["V2:yandex"],
-    "vk":      ["V2:vk"],       "meta":    ["V2:facebook", "V2:instagram"],
-    "twitter": ["V2:twitter"],  "netflix": ["V2:netflix"],  "ru_blocked": ["RF:domains_all"],
-    "spotify": ["V2:spotify"],  "twitch":  ["V2:twitch"],   "tiktok":  ["V2:tiktok"],
-    "disney":  ["V2:disney"],   "reddit":  ["V2:reddit"],   "discord": ["V2:discord"],
-    "github":  ["V2:github"],   "openai":  ["V2:openai"],
-    # other AI providers (claude/gemini/grok/perplexity/deepseek/copilot) are curated-only on the panel — a
-    # single provider's domain set is small + precise, so there's nothing to enrich and no risk of an
-    # overly-broad upstream category pulling in shared/parent domains.
-}
+DOMAIN_SOURCES = {}    # was: the curated GeoSite host specs — moved to the panel (CURATED_DOMAIN_SOURCES); node pulls the resolved .doms
 
 # Only the legacy built-ins fetch from GitHub (their curated GEO_SOURCES/DOMAIN_SOURCES). PROVIDER-catalog cats
 # (namespaced "<prov>:<id>") are resolved on the PANEL and PULLED from it by _panel_list_refresh — the node never
@@ -1494,7 +1485,10 @@ def _smart_domain_refresh(cats, res):
         res["errors"].append("smart domain dir: " + str(e)); return out
     for cat in cats:
         srcs = _cat_dom_sources(cat)
-        prov = _is_provider_cat(cat)                           # panel-pulled: read its <cat>.doms, never GitHub-fetch here
+        path = os.path.join(GEO_DIR, cat + ".doms")
+        # Panel-pulled = a provider cat, OR a built-in whose .doms the panel now ships (Phase 2). Either way: read
+        # the file, never GitHub-fetch. A cat with no srcs and no pulled file is a custom_<hash> (domains inline).
+        prov = _is_provider_cat(cat) or (not srcs and os.path.exists(path))
         if not srcs and not prov:                              # custom_<hash> etc. → domains come inline from the panel
             continue
         try:
