@@ -1360,6 +1360,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
   color:var(--ink);font:inherit;text-align:left;cursor:pointer}
 .catrow:hover{background:var(--surface)}
 .catrow.sel{background:color-mix(in srgb,var(--brand) 14%,transparent)}
+.catrow.off{opacity:.5;cursor:not-allowed}
+.catrow.off:hover{background:none}
 .catrow .catpick-tick{margin-top:2px}
 .catrow-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
 .catrow-l1{display:flex;align-items:baseline;gap:8px;min-width:0}

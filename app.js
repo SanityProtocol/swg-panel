@@ -2798,6 +2798,8 @@ const _titleize = s => String(s).replace(/[-_]+/g, " ").trim().replace(/\b([a-z]
 // names / prefix expansion / title-case. Keyed by the provider's raw id (after the "<prov>:").
 const CAT_FRIENDLY = {
   meta: "Meta / Facebook", facebook: "Meta / Facebook", openai: "ChatGPT / OpenAI", twitter: "Twitter / X",
+  xai: "Grok / xAI", grok: "Grok / xAI", anthropic: "Claude / Anthropic", claude: "Claude / Anthropic",
+  gemini: "Gemini (Google AI)", perplexity: "Perplexity AI", deepseek: "DeepSeek", copilot: "Microsoft Copilot",
   google: "Google", youtube: "YouTube", netflix: "Netflix", telegram: "Telegram", whatsapp: "WhatsApp",
   instagram: "Instagram", tiktok: "TikTok", github: "GitHub", disney: "Disney+", spotify: "Spotify",
   twitch: "Twitch", reddit: "Reddit", discord: "Discord", vk: "VK", yandex: "Yandex", cloudflare: "Cloudflare",
@@ -2876,25 +2878,23 @@ function ListInfo({ cat, list }) {
 // provider tag, a description (curated, else a live sample of records), "N hosts · M nets", and Host/IP tags.
 // Eager-loads /api/list-info (session-cached) for the counts + samples. Providers ship no descriptions, so the
 // second line falls back to "e.g. <first few records>" — self-explanatory from the list's own contents.
-const _isPending = d => !!(d && d.tiers && Object.keys(d.tiers).some(t => (d.tiers[t] || {}).pending));
 function CatalogRow({ it, added, onPick }) {
-  const [info, setInfo] = useState(() => { const c = _LIST_INFO_CACHE[it.id]; return c && !_isPending(c) ? c : null; });
-  useEffect(() => {   // fetch counts+samples; if the panel is still resolving the list, poll a few times until it lands
-    let live = true, tries = 0, timer = null;
-    const go = () => api.listInfo(it.id).then(r => { const d = r && r.ok ? r.data : { err: true }; _LIST_INFO_CACHE[it.id] = d;
-      if (!live) return; setInfo(d);
-      if (_isPending(d) && tries++ < 8) timer = setTimeout(go, 1800); }).catch(() => live && setInfo({ err: true }));
-    if (!info || _isPending(_LIST_INFO_CACHE[it.id])) go();
-    return () => { live = false; clearTimeout(timer); }; }, [it.id]);
+  const [info, setInfo] = useState(() => _LIST_INFO_CACHE[it.id] || null);
+  useEffect(() => {   // one synchronous (server-side, retried) fetch → counts + samples; caches so paging is instant
+    if (info) return; let live = true;
+    api.listInfo(it.id).then(r => { const d = r && r.ok ? r.data : { err: true }; _LIST_INFO_CACHE[it.id] = d; if (live) setInfo(d); })
+      .catch(() => live && setInfo({ err: true }));
+    return () => { live = false; }; }, [it.id]);
   const title = prettyCatLabel(it.id, it.label), rid = catRawId(it.id), desc = catDescOf(it.id);
   const hostD = info && info.tiers && info.tiers.host, ipD = info && info.tiers && info.tiers.ip;
   const summary = sizeSummary((hostD && hostD.n) || 0, (ipD && ipD.n) || 0);
   const samples = ((hostD && hostD.sample) || (ipD && ipD.sample) || []).slice(0, 4);
   const more = (((hostD && hostD.n) || (ipD && ipD.n) || 0) > samples.length);
-  const pending = !info || _isPending(info);
+  const anyFailed = info && info.tiers && Object.keys(info.tiers).some(t => info.tiers[t].failed);
+  const empty = info && !info.err && !summary && !samples.length && !anyFailed;   // resolved to 0 routable records
   const sub = desc || (samples.length ? "e.g. " + samples.join(", ") + (more ? "…" : "")
-    : (pending ? "loading…" : (info && info.err ? "couldn't load" : "")));
-  return html`<button type="button" class=${"catrow" + (added ? " sel" : "")} onClick=${() => onPick(it.id)}>
+    : (!info ? "loading…" : anyFailed ? "couldn't load — will retry" : empty ? "no routable records" : "—"));
+  return html`<button type="button" class=${"catrow" + (added ? " sel" : "") + (empty ? " off" : "")} disabled=${empty} title=${empty ? "This list has no routable records" : ""} onClick=${() => !empty && onPick(it.id)}>
     <span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>
     <div class="catrow-main">
       <div class="catrow-l1"><span class="catrow-title">${title}</span>${rid.toLowerCase() !== title.toLowerCase() ? html`<span class="catrow-id">${rid}</span>` : null}</div>
@@ -2988,7 +2988,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     const onKey = e => { if (e.key === "Escape") { setOpen(false); ref.current && ref.current.focus(); } };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
     document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
-    setTimeout(() => inRef.current && inRef.current.focus(), 0);
+    requestAnimationFrame(() => { const el = inRef.current; if (el) el.focus(); });   // focus the search box on open so the operator can type right away
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
   }, [open]);
   const pick = id => { onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add

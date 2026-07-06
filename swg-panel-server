@@ -1484,10 +1484,24 @@ def provider_update_all(nodes_path):
             _PROV_UPDATING["on"] = False
     threading.Thread(target=_work, daemon=True).start()
 
+def _http_retry(fn, tries=4, backoff=1.2):
+    """Retry a fetch through transient failures (TLS EOF, timeouts, 5xx) — the whole product targets networks
+    where GitHub is flaky/throttled, so one blip must not blank a provider or hang a list. Raises the last error."""
+    last = None
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            time.sleep(backoff * (i + 1))
+    raise last
+
 def _catalog_gh(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    def _do():
+        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+    return _http_retry(_do)
 
 def _catalog_build():
     """Fetch every provider's id list(s) → {"<prov>:<rawid>": {p,ip,host}}. One git-tree call per tree; cached
@@ -1594,9 +1608,11 @@ def _list_path(cat, tier): return os.path.join(LIST_DIR, _list_key(cat, tier) + 
 def _list_metapath(cat, tier): return os.path.join(LIST_DIR, _list_key(cat, tier) + ".meta")
 
 def _list_fetch_text(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "swg-panel"})
-    with urllib.request.urlopen(req, timeout=40) as r:
-        return r.read().decode("utf-8", "replace")
+    def _do():
+        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel"})
+        with urllib.request.urlopen(req, timeout=40) as r:
+            return r.read().decode("utf-8", "replace")
+    return _http_retry(_do)
 
 def _norm_ip(text):
     nets = []
@@ -2766,10 +2782,12 @@ def api(method, path, qs, body, deps):
             if not caps.get(tier):
                 continue
             m = list_meta(cat, tier)
-            if not m:                                           # not resolved yet → resolve in the background, report pending
-                list_ensure(cat, tier)
-                out[tier] = {"n": None, "sample": [], "pending": True}
-                continue
+            if not m:                                           # not resolved yet → resolve SYNCHRONOUSLY now (retried),
+                items = list_resolve(cat, tier)                 # so the row shows real counts instead of hanging on "pending"
+                if items is None:
+                    out[tier] = {"n": 0, "sample": [], "failed": True}   # fetch failed after retries → the row degrades to "—"
+                    continue
+                m = _list_write(cat, tier, items)
             sample = []
             with contextlib.suppress(Exception):
                 with open(_list_path(cat, tier)) as _f:
