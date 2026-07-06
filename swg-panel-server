@@ -2469,6 +2469,15 @@ def api(method, path, qs, body, deps):
                 if _c in _cix:
                     _cat_caps_extra[_c] = _cix[_c]
                     _cat_labels_extra[_c] = catalog_label(_c)
+        _cat_sizes = {}                                   # {cat: {ip,host}} resolved-list record counts (from state/lists/*.meta)
+        for _c in _inuse_cat:
+            _sz = {}
+            for _t in ("ip", "host"):
+                _m = list_meta(_c, _t)
+                if _m and _m.get("n"):
+                    _sz[_t] = _m["n"]
+            if _sz:
+                _cat_sizes[_c] = _sz
         _hp = ""; _hp_at = 0; _hp_err = None
         with contextlib.suppress(Exception):
             _hpf = deps.get("host_proc_path") or ""
@@ -2488,6 +2497,7 @@ def api(method, path, qs, body, deps):
             "store_configs": store_configs, "versions": VERSIONS,
             "panel_settings": panel_settings,            # Panel settings screen: interface defaults, mirrors, advanced thresholds
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {})),   # Geo-data provider registry + enabled state (source tags + toggles)
+            "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
             "cat_domains": DOMAIN_BUNDLES,                # curated domains per host category → UI hover tooltip (ru/geoip cats absent)
             "cat_labels": {**{custom_cat_id(cl.get("domains") or [], cl.get("cidrs") or []): cl.get("title")   # custom_<hash> → list title, so the destination bars name custom lists (node counter carries the synthetic id)
@@ -2645,6 +2655,33 @@ def api(method, path, qs, body, deps):
         idx = catalog_index(force=True)
         return 200, {"ok": True, "data": {"total": len(idx), "providers": CATALOG_PROVIDER_ORDER,
                                           "perr": _CATALOG.get("perr") or {}, "error": _CATALOG.get("err") or ""}}
+
+    if method == "GET" and path == "/api/list-info":            # hover tooltip: a provider list's record count + a sample (resolve-on-hover)
+        cat = (qs.get("cat") or [""])[0].strip()
+        if ":" not in cat:
+            return 400, {"ok": False, "error": "bad cat", "code": "bad_request"}
+        caps = catalog_index().get(cat) or {}
+        out = {}
+        for tier in ("host", "ip"):                             # Host first (house rule)
+            if not caps.get(tier):
+                continue
+            m = list_meta(cat, tier)
+            if not m:                                           # not resolved yet → resolve in the background, report pending
+                list_ensure(cat, tier)
+                out[tier] = {"n": None, "sample": [], "pending": True}
+                continue
+            sample = []
+            with contextlib.suppress(Exception):
+                with open(_list_path(cat, tier)) as _f:
+                    for _ln in _f:
+                        _ln = _ln.strip()
+                        if _ln:
+                            sample.append(_ln)
+                        if len(sample) >= 8:
+                            break
+            out[tier] = {"n": m.get("n", 0), "sample": sample}
+        return 200, {"ok": True, "data": {"cat": cat, "label": catalog_label(cat),
+                                          "provider": catalog_provider_label(cat.split(":", 1)[0]), "tiers": out}}
 
     if method == "GET" and path == "/api/roster":
         return 200, {"ok": True, "data": roster_load(roster_path)}

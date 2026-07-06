@@ -1267,7 +1267,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .acct-wrap{position:relative;display:inline-flex}
 @media (max-width:680px){.setbody{flex-direction:column}.setrail{flex-direction:row;flex-wrap:wrap;width:auto;position:static}}
 /* per-node context selector in the settings header (default + node badges) */
-.setnodes{position:absolute;top:14px;right:18px;z-index:2;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:62%}
+/* per-node selector: a clean wrapping row ABOVE the section card (was an absolute overlay that collided with the header) */
+.setnodes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
 .snbadge{font:inherit;font-size:11.5px;font-family:var(--mono);cursor:pointer;padding:4px 10px;border-radius:99px;border:1px solid color-mix(in srgb,var(--c,var(--brand)) 55%,var(--line));background:none;color:var(--dim);transition:color .12s,border-color .12s,background .12s,box-shadow .12s}
 .snbadge:hover{color:var(--ink);border-color:var(--c,var(--brand))}
 .snbadge.on{color:var(--ink);border-color:var(--c,var(--brand));background:color-mix(in srgb,var(--c,var(--brand)) 16%,transparent)}
@@ -1361,6 +1362,24 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .ccchip-x{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;background:none;color:var(--faint);cursor:pointer}
 .ccchip-x:hover{background:color-mix(in srgb,var(--danger) 18%,transparent);color:var(--danger)}
 .ccchip-x .ic svg{width:12px;height:12px}
+.ccchip-tick{display:inline-flex;align-items:center}
+.ccchip-tick input{appearance:none;-webkit-appearance:none;width:14px;height:14px;margin:0;border:1.5px solid var(--line-solid);border-radius:4px;background:var(--bg);cursor:pointer;position:relative;flex:none}
+.ccchip-tick input:checked{background:var(--brand);border-color:var(--brand)}
+.ccchip-tick input:checked::after{content:"";position:absolute;left:50%;top:50%;width:5px;height:5px;border-radius:50%;background:var(--brand-ink);transform:translate(-50%,-50%)}
+.ccchip-lbl.asbtn{border:0;background:none;padding:0;color:var(--ink);font:inherit;cursor:pointer}
+.ccchip-lbl.asbtn:hover{color:var(--brand)}
+/* list-size pill + hover tooltip (records / sample) */
+.listsize{cursor:default;font-family:var(--mono);font-size:10px;color:var(--dim);padding:1px 5px;border-radius:5px;
+  background:color-mix(in srgb,var(--ink) 7%,transparent);font-variant-numeric:tabular-nums}
+.listsize:hover{color:var(--ink-2)}
+.listsize.unknown{color:var(--faint);font-size:11px}
+.listtippop{padding:0}
+.listtip{display:flex;flex-direction:column;gap:8px;padding:9px 11px;min-width:180px;max-width:280px}
+.lti-tier{display:flex;flex-direction:column;gap:4px}
+.lti-h{font-size:11.5px;color:var(--ink-2)}
+.lti-samp{display:flex;flex-wrap:wrap;gap:3px 8px}
+.lti-e{font-family:var(--mono);font-size:10.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px}
+.lti-e.faint{color:var(--faint)}
 .rrrow .rrlint{grid-column:1/-1}   /* lint messages drop to their own full-width grid row */
 .rrlint{font-size:10px;color:var(--partial);font-family:var(--mono)}
 /* the catch-all footer reuses the row's grid template + the row's content inset (transparent padding+border) so

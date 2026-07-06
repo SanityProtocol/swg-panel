@@ -424,6 +424,7 @@ const api = {
   categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
   catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
+  listInfo(cat) { return this.get("/api/list-info?cat=" + encodeURIComponent(cat)); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -525,6 +526,7 @@ const Store = {
     this.catDomains = d.cat_domains || this.catDomains || {};   // curated domains per host category → hover tooltip
     this.catLabels = d.cat_labels || this.catLabels || {};   // custom_<hash> → custom-list title (for the destination bars)
     this.catalogProviders = d.catalog_providers || this.catalogProviders || [];   // Geo-data provider registry [{id,label,url,tiers,enabled,error}]
+    this.catSizes = d.cat_sizes || this.catSizes || {};   // {cat:{ip,host}} resolved-list record counts → list-size display
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
@@ -2777,8 +2779,45 @@ function catLabelOf(c) {   // built-in label · custom-list title (via the panel
   const lt = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
   return SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || _CATALOG_LABEL_CACHE[c] || (String(c).startsWith("custom") ? "Custom" : c);
 }
+// Host/IP capability flags for a list — ALWAYS Host first, IP second (house rule).
+const capBadges = caps => html`<span class="capbs">
+  ${caps && caps.host ? html`<span class="capb host" title="Matchable by domain — needs Force-DNS or SNI mode">Host</span>` : null}
+  ${caps && caps.ip ? html`<span class="capb ip" title="Matchable by IP range — works in every mode">IP</span>` : null}</span>`;
 // A provider-catalog id is "<prov>:<rawid>"; return the provider's display label (MetaCubeX / v2fly / …) for the source tag.
 const isProviderCat = c => typeof c === "string" && c.includes(":") && !String(c).startsWith("custom");
+// Custom-list caps + size from its targets (domains → Host, IPs/CIDRs → IP). Accepts a targets string or a list obj.
+const customTargets = l => (typeof l === "string") ? l : (l && (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", "))) || "";
+function customCaps(l) { const raw = customTargets(l); const doms = domainTargets(raw), ips = splitTargets(raw).filter(isIpTarget);
+  return { host: doms.length > 0, ip: ips.length > 0 }; }
+const customSize = l => { const raw = customTargets(l); return splitTargets(raw).filter(validTarget).length; };
+// Record count for a provider-catalog cat (Host+IP tiers), shipped by the panel in Store.catSizes {cat:{ip,host}}.
+const catSize = c => { const s = (Store.catSizes || {})[c] || {}; return (s.host || 0) + (s.ip || 0); };
+const fmtCount = n => n == null ? "…" : n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n);
+// A small size pill that, on hover, shows the list's record counts (Host hosts · IP nets) + the first few entries.
+// Provider cats lazy-fetch /api/list-info; custom lists read their own targets. `sizeHint` avoids a flash before load.
+function ListInfo({ cat, list, sizeHint }) {
+  const [info, setInfo] = useState(null);
+  const load = () => {
+    if (info) return;
+    if (list) {                                                // custom list — build locally
+      const raw = customTargets(list); const doms = domainTargets(raw), ips = splitTargets(raw).filter(isIpTarget);
+      setInfo({ tiers: { host: { n: doms.length, sample: doms.slice(0, 8) }, ip: { n: ips.length, sample: ips.slice(0, 8) } } });
+    } else if (cat) {
+      api.listInfo(cat).then(r => setInfo(r && r.ok ? r.data : { err: true })).catch(() => setInfo({ err: true }));
+    }
+  };
+  const size = list ? customSize(list) : (cat ? catSize(cat) : 0);
+  const shown = size || sizeHint || 0;
+  const tierRow = (t, lbl, unit) => { const d = (info && info.tiers && info.tiers[t]) || null; if (!d || !d.n) return null;
+    return html`<div class="lti-tier"><span class="lti-h"><span class=${"capb " + t}>${lbl}</span> ${fmtCount(d.n)} ${unit}</span>
+      <div class="lti-samp">${(d.sample || []).map(s => html`<span class="lti-e">${s}</span>`)}${d.pending ? html`<span class="lti-e faint">resolving…</span>` : null}</div></div>`; };
+  const bubble = html`<div class="listtip">
+    ${info && info.err ? html`<div class="lti-e faint">couldn't load details</div>`
+      : info ? html`${tierRow("host", "Host", "domains")}${tierRow("ip", "IP", "nets")}${!(info.tiers && (info.tiers.host || info.tiers.ip)) ? html`<div class="lti-e faint">empty</div>` : null}`
+      : html`<div class="lti-e faint">loading…</div>`}</div>`;
+  return html`<${Popover} cls=${"listsize" + (shown ? "" : " unknown")} popCls="listtippop" hoverOnly=${true}
+    trigger=${html`<span onMouseEnter=${load}>${shown ? fmtCount(shown) : "ⓘ"}</span>`} children=${bubble}/>`;
+}
 function provLabelOf(c) {
   if (!isProviderCat(c)) return "";
   const pid = c.split(":")[0];
@@ -2843,9 +2882,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
   }, [open]);
   const pick = id => { onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add
-  const capBadge = caps => html`<span class="capbs">
-    ${caps && caps.ip ? html`<span class="capb ip" title="Matchable by IP range — works in every mode">IP</span>` : null}
-    ${caps && caps.host ? html`<span class="capb host" title="Matchable by domain — needs Force-DNS or SNI mode">Host</span>` : null}</span>`;
+  const capBadge = capBadges;   // shared Host-first renderer (defined near catLabelOf)
   const items = (res && res.items) || [];
   const per = (res && res.per) || 40, total = (res && res.total) || 0;
   const pages = Math.max(1, Math.ceil(total / per));
@@ -2859,8 +2896,8 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   if (!addMode && value && !isProviderCat(value) && value !== "custom" && !lists.some(l => l.id === value) && !_provRows.some(r => r.id === value))
     _provRows.push({ id: value, label: catLabelOf(value), caps: catCap(value), src: "built-in", legacy: true });   // keep a legacy built-in rule visible/editable
   const localGroups = addMode ? [] : [
-    { grp: "Provider lists", rows: _provRows.filter(r => _match(r.id, r.label)) },
-    { grp: "Custom lists", rows: lists.filter(l => _match(l.id, l.title)).map(l => ({ id: l.id, label: l.title, caps: null })) },
+    { grp: "Provider lists", rows: _provRows.filter(r => _match(r.id, r.label)).sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase())) },
+    { grp: "Custom lists", rows: lists.filter(l => _match(l.id, l.title)).map(l => ({ id: l.id, label: l.title, caps: customCaps(l), src: "Custom", list: l })).sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase())) },
   ].filter(g => g.rows.length);
   const localEmpty = !addMode && !localGroups.length && !!_ql;
   return html`<div class=${"catpick" + (addMode ? " catpick-add" : "")} ref=${ref}>
@@ -2882,8 +2919,8 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
             ${g.rows.map(it => { const ok = it.caps ? usable(it.caps) : true; return html`<button type="button" disabled=${!ok}
               class=${"catpick-row" + (value === it.id ? " sel" : "") + (ok ? "" : " off")} onClick=${() => ok && pick(it.id)}
               title=${ok ? "" : "Host-only list — switch this node to Force-DNS to use it"}>
-              <span class="catpick-rlbl">${it.label}${it.src ? html`<span class=${"catpick-src" + (it.legacy ? " legacy" : "")}>${it.src}</span>` : null}</span>
-              ${it.caps ? capBadge(it.caps) : null}</button>`; })}`)}
+              <span class="catpick-rlbl">${it.label}${it.src ? html`<span class=${"catpick-src" + (it.legacy || it.src === "Custom" ? " legacy" : "")}>${it.src}</span>` : null}</span>
+              ${it.caps ? capBadge(it.caps) : null}${it.list ? html`<${ListInfo} list=${it.list}/>` : (isProviderCat(it.id) ? html`<${ListInfo} cat=${it.id} sizeHint=${catSize(it.id)}/>` : null)}</button>`; })}`)}
           ${localEmpty ? html`<div class="catpick-empty">No list on this node matches “${q}”. Add more in Settings → Routing lists.</div>` : null}
         ` : html`
           ${(() => { const rows = items;
@@ -2892,7 +2929,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
             : rows.map(it => { const added = selSet.has(it.id); return html`<button type="button"
                 class=${"catpick-row" + (added ? " sel" : "")} onClick=${() => pick(it.id)}>
                 <span class="catpick-rlbl"><span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>${it.label}<span class="catpick-src">${it.provider_label || provLabelOf(it.id)}</span></span>
-                ${capBadge(it.caps)}</button>`; }); })()}
+                ${capBadge(it.caps)}<${ListInfo} cat=${it.id} sizeHint=${catSize(it.id)}/></button>`; }); })()}
         `}
       </div>
       ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is in <b>Kernel</b> (IP) mode. Switch it to Force-DNS or SNI to use them.</div>` : null}
@@ -5654,21 +5691,23 @@ function PanelSettingsScreen() {
             <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
           <div class="seclabel">Provider lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— added to <b>${nodeRec ? nodeRec.name : "this node"}</b> from the public catalogs</span></div>
           <p class="hint" style="margin:0 0 8px">Search the catalog (across every enabled provider — manage which in <b>Geo data</b>) and add the lists you want routable on <b>${nodeRec ? nodeRec.name : "this node"}</b>. The same service often comes from several providers; each shows its <b>source</b>, so you can pick who you trust. Added lists appear in this node's interface routing dropdowns. ${nodeMode === "kernel" ? html`In Kernel mode only IP-matchable lists route; domain-only lists stay greyed until you switch to Force-DNS or SNI.` : null}</p>
-          <div class="ccchips">${ccOf(selNode).length ? ccOf(selNode).map(id => { const cap = catCap(id); const greyed = nodeMode === "kernel" && !cap.ip;
+          <div class="ccchips">${ccOf(selNode).length ? [...ccOf(selNode)].sort((a, b) => catLabelOf(a).toLowerCase().localeCompare(catLabelOf(b).toLowerCase())).map(id => { const cap = catCap(id); const greyed = nodeMode === "kernel" && !cap.ip;
             return html`<span class=${"ccchip" + (greyed ? " off" : "")} key=${id} title=${greyed ? "Domain-only — needs Force-DNS or SNI on this node" : ""}>
               <span class="ccchip-lbl">${catLabelOf(id)}</span>
               ${provLabelOf(id) ? html`<span class="catpick-src">${provLabelOf(id)}</span>` : null}
-              <span class="ccchip-caps">${cap.ip ? html`<span class="capb ip">IP</span>` : null}${cap.host ? html`<span class="capb host">Host</span>` : null}</span>
+              ${capBadges(cap)}<${ListInfo} cat=${id} sizeHint=${catSize(id)}/>
               <button class="ccchip-x" title="Remove from this node" onClick=${() => removeCatalogCat(id)}><${Ic} i="x"/></button>
             </span>`; }) : html`<span class="hint" style="margin:0">No provider lists added to this node yet.</span>`}</div>
           <div style="margin-top:10px"><${CatPicker} addMode=${true} mode=${nodeMode} triggerLabel="Add from catalog" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/></div>
           <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— your own IPs / domains; the tick enables each on <b>${nodeRec ? nodeRec.name : "this node"}</b></span></div>
           <p class="hint" style="margin:0 0 8px">Shared across the fleet. Edits apply immediately (no schedule) on every node a list is enabled for.</p>
-          <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row" key=${l._rid}>
-            <label class="chk" title=${"Available on " + (nodeRec ? nodeRec.name : "this node") + " — untick to hide it in this node's routing dropdown"}><input type="checkbox" checked=${!(l.disabled_nodes || []).includes(selNode)} onChange=${e => { const on = e.target.checked; persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: on ? (x.disabled_nodes || []).filter(n => n !== selNode) : [...new Set([...(x.disabled_nodes || []), selNode])] } : x)); }}/></label>
-            <button class="cl-name" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button>
-            ${(() => { const p = entryPreview(l.targets); return html`<button class="cl-preview" onClick=${() => openList(l)} title="Click to edit">${p.text ? html`<span class="cl-ptext">${p.text}</span>` : html`<span class="faint">empty</span>`}${p.more ? html`<span class="cl-more">(${p.more} more)</span>` : null}</button>`; })()}
-          </div>`) : html`<div class="hint">No custom lists yet.</div>`}</div>
+          <div class="ccchips">${lists.length ? [...lists].sort((a, b) => (a.title || "").toLowerCase().localeCompare((b.title || "").toLowerCase())).map(l => { const on = !(l.disabled_nodes || []).includes(selNode); const cap = customCaps(l);
+            return html`<span class=${"ccchip" + (on ? "" : " off")} key=${l._rid}>
+              <label class="ccchip-tick" title=${on ? "Enabled on " + (nodeRec ? nodeRec.name : "this node") + " — untick to hide" : "Disabled on this node"}><input type="checkbox" checked=${on} onChange=${e => { const v = e.target.checked; persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: v ? (x.disabled_nodes || []).filter(n => n !== selNode) : [...new Set([...(x.disabled_nodes || []), selNode])] } : x)); }}/></label>
+              <button class="ccchip-lbl asbtn" onClick=${() => openList(l)} title="Click to edit">${l.title || "Untitled list"}</button>
+              <span class="catpick-src legacy">Custom</span>
+              ${capBadges(cap)}<${ListInfo} list=${l}/>
+            </span>`; }) : html`<span class="hint" style="margin:0">No custom lists yet.</span>`}</div>
           <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
         </div>` : null}
         ${section === "turn" ? html`<div class="card">
@@ -5718,7 +5757,7 @@ function PanelSettingsScreen() {
               <input type="checkbox" checked=${on} onChange=${e => setProvEnabled(m => ({ ...m, [p.id]: e.target.checked }))}/><span class="track"></span><span class="knob"></span></label>
             <div class="prov-meta">
               <a class="prov-name" href=${p.url} target="_blank" rel="noopener">${p.label}</a>
-              <span class="prov-tiers">${(p.tiers || []).map(t => html`<span class=${"capb " + (t === "ip" ? "ip" : "host")}>${t === "ip" ? "IP" : "Host"}</span>`)}</span>
+              <span class="prov-tiers">${capBadges({ host: (p.tiers || []).includes("host"), ip: (p.tiers || []).includes("ip") })}</span>
               ${p.error ? html`<span class="prov-err" title=${p.error}><${Ic} i="warn"/> last fetch failed</span>` : null}
             </div>
           </div>`; })}${!_provReg.length ? html`<div class="hint">Loading providers…</div>` : null}</div>
