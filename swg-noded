@@ -1151,7 +1151,38 @@ def _in_quiet_window(sched):
     start = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
     return start <= now < start + datetime.timedelta(minutes=60)
 
-def _bg_pull(cat, tier, ver, url_base, token, dest, pver_path):
+def _panel_get(url, token, panel, timeout=60):
+    """GET a URL from the panel using the SAME TLS posture as post_json (fingerprint pin / verify / self-signed).
+    Returns (status, bytes, x_list_version). status 0 = the request never completed."""
+    u = urllib.parse.urlparse(url)
+    host = u.hostname; port = u.port or (443 if u.scheme == "https" else 80)
+    path = (u.path or "/") + (("?" + u.query) if u.query else "")
+    fp = ((panel or {}).get("fingerprint") or "").replace(":", "").lower().strip()
+    conn = None
+    try:
+        if u.scheme == "http":
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        else:
+            ctx = ssl.create_default_context() if ((panel or {}).get("verify", False) and not fp) else ssl._create_unverified_context()
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+            if fp:
+                conn.connect()
+                der = conn.sock.getpeercert(True)
+                if not der or hashlib.sha256(der).hexdigest() != fp:
+                    return 0, b"", ""                          # pin mismatch — fail closed
+        conn.request("GET", path, headers={"Authorization": "Bearer " + token})
+        resp = conn.getresponse(); data = resp.read()
+        if resp.status >= 400:
+            return resp.status, b"", ""
+        return resp.status, data, resp.getheader("X-List-Version", "")
+    except Exception:
+        return 0, b"", ""
+    finally:
+        if conn:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+def _bg_pull(cat, tier, ver, base, panel, dest, pver_path):
     """Background pull of one resolved list from the panel → dest, then stamp its version. Deduped per (cat,tier)."""
     k = cat + "|" + tier
     with _PULL_LOCK:
@@ -1160,16 +1191,15 @@ def _bg_pull(cat, tier, ver, url_base, token, dest, pver_path):
         _PULL_INFLIGHT.add(k)
     def _work():
         try:
-            url = url_base + "?cat=" + urllib.parse.quote(cat, safe="") + "&tier=" + tier
-            req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                data = r.read().decode("utf-8", "replace")
-            tmp = dest + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(data)
-            os.replace(tmp, dest)
-            with contextlib.suppress(OSError):
-                open(pver_path, "w").write(ver)
+            url = base + "?cat=" + urllib.parse.quote(cat, safe="") + "&tier=" + tier
+            st, data, _hv = _panel_get(url, (panel or {}).get("token") or "", panel)
+            if st == 200:
+                tmp = dest + ".tmp"
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, dest)
+                with contextlib.suppress(OSError):
+                    open(pver_path, "w").write(ver)
         except Exception:
             pass                                               # keep last-good; retry next sync
         finally:
@@ -1177,17 +1207,18 @@ def _bg_pull(cat, tier, ver, url_base, token, dest, pver_path):
                 _PULL_INFLIGHT.discard(k)
     threading.Thread(target=_work, daemon=True).start()
 
-def _panel_list_refresh(manifest, sched, panel_base, token, res):
+def _panel_list_refresh(manifest, sched, panel, res):
     """For each provider-catalog list this node routes (from the sync `list_manifest`), pull it from the panel
     when its version changed — new cat now, changed cat only in the quiet window. Writes <cat>.txt / <cat>.doms
     so the existing geoip/domain loaders pick them up. Non-blocking (each pull runs on its own daemon thread)."""
-    if not manifest or not panel_base or not token:
+    base_url = (panel or {}).get("url") or ""
+    if not manifest or not base_url or not (panel or {}).get("token"):
         return
     try:
         os.makedirs(GEO_DIR, exist_ok=True)
     except OSError:
         return
-    base = panel_base.rstrip("/") + "/api/node/list"
+    base = base_url.rstrip("/") + "/api/node/list"
     in_window = _in_quiet_window(sched)
     for cat, tiers in manifest.items():
         for tier, want_v in (tiers or {}).items():
@@ -1202,7 +1233,7 @@ def _panel_list_refresh(manifest, sched, panel_base, token, res):
                 continue                                       # unchanged upstream → nothing to pull
             if not (not have or not cur_v) and not in_window:  # a CHANGED existing list waits for the quiet hour
                 continue
-            _bg_pull(cat, tier, want_v, base, token, dest, pv)
+            _bg_pull(cat, tier, want_v, base, panel, dest, pv)
 
 
 def _nft_load_set(setname, cidrs):
@@ -1785,7 +1816,7 @@ def apply_panel_settings(pan):
         pass
 
 
-def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_base="", node_token="", panel_cfg=None):
+def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_conn=None, panel_cfg=None):
     """Phase 2 cascade + Phase 3 smart routing. ENTRY (P2 forward): `ip rule from S lookup T`; ENTRY
     (P3 smart): nftables marks `ip saddr S ip daddr @<category> meta mark set T` then `ip rule fwmark T
     lookup T` — both route into `default dev <link> table T`. EXIT (shared): `ip rule to S lookup T` +
@@ -1804,7 +1835,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_ba
     # PROVIDER lists: pull each routed one from the PANEL (not GitHub) when its version changed — writes the same
     # <cat>.txt / <cat>.doms the loaders below consume. New cat → now; changed cat → only in the quiet window.
     _panel_list_refresh((smart or {}).get("list_manifest") or {}, (panel_cfg or {}).get("geo_update") or {},
-                        panel_base, node_token, res)
+                        panel_conn, res)
     band = _live_band_prios()
     want_tables = {str(e["table"]) for e in (fwd + smart_exit + exit_)}
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit)   # only exit entries create fwmark→table policy routing
@@ -3433,7 +3464,7 @@ def main():
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
                     cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress,
-                                            panel_base=panel["url"], node_token=token, panel_cfg=reply.get("panel"))   # P2 forward + P3 smart + exit SNAT (+ panel-pull provider lists)
+                                            panel_conn=panel, panel_cfg=reply.get("panel"))   # P2 forward + P3 smart + exit SNAT (+ panel-pull provider lists)
                     with contextlib.suppress(Exception):
                         reconcile_inet_chain(node_cfg)   # keep the SWG_INET byte-counting chain in step with the iface set (measured internet lane)
                     last_route_sig = _route_sig; last_route_t = time.time()
