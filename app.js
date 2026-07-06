@@ -2936,6 +2936,30 @@ const MODE_META = {
   sni:      { icon: "shield", label: "SNI router — Host + IP, DNS stays private", short: "Host + IP",
     exp: "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
 };
+// Custom match-mode dropdown. CLOSED it shows only the label up to the comma ("Force DNS — Host + IP") so it stays
+// compact and never squeezes the node name; OPEN (the list) shows the full label. A native <select> can't style the
+// selected text differently from its options, hence this.
+function ModeSelect({ value, onChange }) {
+  const [open, setOpen] = useState(false), [pos, setPos] = useState(null);
+  const ref = useRef(null), popRef = useRef(null);
+  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect(); setPos({ left: Math.round(r.left), top: Math.round(r.bottom + 4), width: Math.round(r.width) }); };
+  useEffect(() => { if (!open) return; place();
+    const onMove = () => place();
+    const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) setOpen(false); };
+    const onKey = e => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
+    document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  const shortLabel = m => (MODE_META[m].label.split(",")[0]).trim();
+  return html`<div class="modesel" ref=${ref}>
+    <button type="button" class=${"selwrap modesel-btn" + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}>
+      <span class="modesel-lbl">${shortLabel(value)}</span><span class="catpick-caret">▾</span></button>
+    ${open && pos ? html`<${Portal}><div ref=${popRef} class="modesel-pop" style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + pos.width + "px"}>
+      ${["kernel", "forcedns", "sni"].map(m => html`<button type="button" class=${"modesel-opt" + (m === value ? " sel" : "")} onClick=${() => { onChange(m); setOpen(false); }}>${MODE_META[m].label}</button>`)}
+    </div><//>` : null}
+  </div>`;
+}
 // "on N/M nodes ▾" fleet-assignment popover — toggle a list on each node. disabledFor(nid) → a reason string greys it.
 function FleetAssign({ nodes, isOn, onToggle, disabledFor }) {
   const on = (nodes || []).filter(n => isOn(n.id)).length;
@@ -3021,10 +3045,11 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
   }, [open]);
-  // Focus the search box on open — keyed on the input actually being MOUNTED (the popover only renders once `pos`
-  // is set, which is a tick after `open` flips; focusing on `[open]` alone missed the first open). !!pos toggles
-  // false→true exactly once per open, so this fires when the input first exists and never re-steals focus on scroll.
-  useEffect(() => { if (open && pos && inRef.current) requestAnimationFrame(() => inRef.current && inRef.current.focus()); }, [open, !!pos]);
+  // Focus-on-open is done via the input's ref-callback (fires exactly when the input MOUNTS — robust against the
+  // Portal render timing that made `[open]`/`[pos]` effects miss the very first open). `focusGuard` fires it once
+  // per open. Reset when the popover closes.
+  const focusGuard = useRef(false);
+  useEffect(() => { if (!open) focusGuard.current = false; }, [open]);
   const pick = id => { onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add
   const capBadge = capBadges;   // shared Host-first renderer (defined near catLabelOf)
   // addMode: filter the full index by title/id/description, sort by readable title, paginate 40/page locally.
@@ -3059,7 +3084,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop" + (pos.flip ? " flip" : "") + (pos.wide ? " wide" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;" + (pos.wide ? "width:" + pos.width + "px;" : "min-width:" + Math.max(pos.width, 320) + "px;") + "--catpick-maxh:" + (pos.maxh - 108) + "px"}>
       <div class="catpick-search">
         <${Ic} i="search"/>
-        <input ref=${inRef} type="text" placeholder=${addMode ? "Search " + ((cidx && cidx.length) || "") + " lists — name, country, service…" : "Filter this node's lists…"} value=${q}
+        <input ref=${el => { inRef.current = el; if (el && open && !focusGuard.current) { focusGuard.current = true; requestAnimationFrame(() => el.focus()); } }} type="text" placeholder=${addMode ? "Search " + ((cidx && cidx.length) || "") + " lists — name, country, service…" : "Filter this node's lists…"} value=${q}
           onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"
           onKeyDown=${e => { if (e.key === "Enter" && addMode && total === 1 && items[0]) { e.preventDefault(); pick(items[0].id); } }}/>
       </div>
@@ -5883,9 +5908,7 @@ function PanelSettingsScreen() {
               <div class="rmode-head"><b class="rmode-node">${nodeRec ? nodeRec.name : "Node"}</b><span class="rmode-pill">${MODE_META[nodeMode].short}</span></div>
               <span class="grow"></span>
               <label class="rmode-picker"><span class="rmode-plbl">Match mode</span>
-                <select class="selwrap" value=${nodeMode} onChange=${e => setMode(e.target.value)}>
-                  ${["kernel", "forcedns", "sni"].map(m => html`<option value=${m}>${MODE_META[m].label}</option>`)}
-                </select></label>
+                <${ModeSelect} value=${nodeMode} onChange=${setMode}/></label>
             </div>
             <div class="rmode-desc">${MODE_META[nodeMode].exp}</div>
           </div>

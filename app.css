@@ -198,11 +198,9 @@ a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var
 .dchip,.snbadge{--c:var(--brand);display:inline-flex;align-items:center;gap:6px;font:inherit;font-family:var(--mono);font-size:11.5px;line-height:1;
   padding:5px 11px;border-radius:99px;border:1px solid var(--line);background:none;color:var(--dim);cursor:pointer;
   transition:color .12s,border-color .12s,background .12s,box-shadow .12s;white-space:nowrap}
-.dchip-dot,.ndot{width:7px;height:7px;border-radius:50%;background:var(--c);flex:none;transition:opacity .12s}
-.dchip:not(.on) .dchip-dot,.snbadge:not(.on) .ndot{opacity:.55}   /* off: keep the node colour, just dim the dot */
+.dchip-dot,.ndot{width:7px;height:7px;border-radius:50%;background:var(--c);flex:none}   /* dot ALWAYS full node colour (on + off) — identical on both screens */
 .dchip:hover,.snbadge:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c) 50%,var(--line))}
 .dchip.on,.snbadge.on{color:var(--ink);font-weight:600;border-color:color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 15%,transparent)}
-.dchip.down{filter:grayscale(.7)}
 .dchip.all{--c:var(--ink-2)}
 .dchip.all .dchip-dot{display:none}
 .dchip.all{padding:5px 13px}
@@ -1396,7 +1394,16 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-head{flex:0 1 auto;min-width:0}   /* node name truncates before the picker shrinks */
 .rmode-picker{display:flex;align-items:center;gap:9px;flex:1 1 auto;min-width:0;justify-content:flex-end}
 .rmode-plbl{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);flex:none}
-.rmode-picker .selwrap{min-width:0;flex:1 1 auto;max-width:400px}   /* shrinks (truncating its text) rather than wrapping to a new line */
+.rmode-picker .modesel{min-width:0;flex:0 1 auto}   /* compact — the closed label is short (before the comma) */
+/* custom mode dropdown: compact closed (short label), full labels in the open list */
+.modesel{position:relative}
+.modesel-btn{display:flex;align-items:center;gap:8px;width:100%;min-width:0;justify-content:space-between}
+.modesel-lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.modesel-pop{position:fixed;z-index:90;max-width:min(460px,92vw);background:var(--surface-2);border:1px solid var(--line-solid);
+  border-radius:var(--r-sm);box-shadow:0 12px 34px rgba(0,0,0,.5);overflow:hidden;padding:5px}
+.modesel-opt{display:block;width:100%;text-align:left;padding:8px 10px;border:0;border-radius:6px;background:none;color:var(--ink);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+.modesel-opt:hover{background:var(--surface)}
+.modesel-opt.sel{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--sel-ink)}
 .lgrid-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
 .lg-htitle{display:flex;align-items:center;gap:9px}   /* title · count · sub — all vertically centred on one line */
 .lg-htitle .seclabel{border-bottom:none;padding-bottom:0;margin:0}   /* no underline under Provider/Custom list headers */
