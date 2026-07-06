@@ -1213,7 +1213,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
   border:1.5px solid var(--line-solid);border-radius:3px;background:var(--surface-2);position:relative}
 .condrow input:checked{background:var(--brand);border-color:var(--brand)}
 .condrow input:checked::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;background:var(--brand-ink);transform:translate(-50%,-50%)}
-.cond-b{display:flex;align-items:flex-start;padding-top:3px}
+.cond-b{display:flex;align-items:flex-start;padding-top:3px;padding-left:10px}   /* nudge the blocked/faulty badge slightly right of the checkbox */
 .cond-t{font-size:12.5px;color:var(--dim);line-height:1.45}
 .vklink-in{width:100%;max-width:560px}
 /* turn-proxy client configs modal */

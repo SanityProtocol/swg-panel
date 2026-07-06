@@ -2802,7 +2802,7 @@ const autoGrow = el => { if (!el) return; el.style.height = "auto"; el.style.hei
 // addMode: the picker becomes a multi-select "Add from catalog" affordance — it stays open on each pick,
 // shows a ✓ on already-added ids (from `selected`), and hides the Custom row, custom lists, and the 26
 // built-ins (those are managed by the checkboxes above it). Used by the Settings node-lens.
-function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange, addMode, selected, triggerLabel }) {
+function CatPicker({ value, mode, customLists, catalogCats, builtins, listTitle, onChange, addMode, selected, triggerLabel }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
@@ -2819,11 +2819,11 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     const flip = below < 300 && above > below;                 // not enough room under the trigger → open upward
     setPos({ left: Math.round(r.left), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width),
       flip, maxh: Math.max(200, Math.round(flip ? above : below)) }); };   // list caps to the space actually available
-  useEffect(() => {   // fetch on open + query/page change; debounce keystrokes, immediate on open/page
-    if (!open) return; let live = true;
+  useEffect(() => {   // ONLY addMode hits the full catalog API; the routing picker works off the node's own lists (below)
+    if (!open || !addMode) return; let live = true;
     const t = setTimeout(() => api.catalog(q, page).then(r => { if (live && r && r.data) { (r.data.items || []).forEach(it => { _CATALOG_LABEL_CACHE[it.id] = it.label; }); setRes(r.data); } }).catch(() => {}), q && page === 0 ? 180 : 0);
     return () => { live = false; clearTimeout(t); };
-  }, [open, q, page]);
+  }, [open, q, page, addMode]);
   useEffect(() => {   // position + outside-click/Esc/scroll handling while open
     if (!open) return; place();
     const onMove = () => place();
@@ -2842,6 +2842,16 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   const per = (res && res.per) || 40, total = (res && res.total) || 0;
   const pages = Math.max(1, Math.ceil(total / per));
   const lists = customLists || [];
+  // Routing picker (non-addMode): show ONLY the lists AVAILABLE on this node — enabled built-ins + custom lists +
+  // opted-in catalog cats — never the full ~1769 catalog. Filtered client-side; to add more, use Settings → Routing.
+  const _ql = q.trim().toLowerCase();
+  const _match = (id, label) => !_ql || String(label).toLowerCase().includes(_ql) || String(id).toLowerCase().includes(_ql);
+  const localGroups = addMode ? [] : [
+    { grp: "Built-in lists", rows: (builtins || []).filter(b => _match(b.id, b.label)).map(b => ({ id: b.id, label: b.label, caps: catCap(b.id), builtin: true })) },
+    { grp: "Your lists", rows: lists.filter(l => _match(l.id, l.title)).map(l => ({ id: l.id, label: l.title, caps: null })) },
+    { grp: "Catalog lists on this node", rows: (catalogCats || []).filter(c => _match(c.id, c.title)).map(c => ({ id: c.id, label: c.title, caps: catCap(c.id) })) },
+  ].filter(g => g.rows.length);
+  const localEmpty = !addMode && !localGroups.length && !!_ql;
   return html`<div class=${"catpick" + (addMode ? " catpick-add" : "")} ref=${ref}>
     ${addMode ? html`<button type="button" class=${"btn btn-mini" + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}><${Ic} i="plus"/> ${curLabel}</button>`
       : html`<button type="button" class=${"catpick-btn" + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}>
@@ -2850,32 +2860,32 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop" + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + Math.max(pos.width, 320) + "px;--catpick-maxh:" + (pos.maxh - 160) + "px"}>
       <div class="catpick-search">
         <${Ic} i="search"/>
-        <input ref=${inRef} type="text" placeholder="Search ${(res && res.total) || ""} categories — netflix, steam, ru…" value=${q}
+        <input ref=${inRef} type="text" placeholder=${addMode ? "Search " + ((res && res.total) || "") + " categories — netflix, steam, ru…" : "Filter this node's lists…"} value=${q}
           onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"/>
       </div>
       <div class="catpick-list">
-        ${!addMode && !q ? html`<button type="button" class=${"catpick-row" + (value === "custom" ? " sel" : "")} onClick=${() => pick("custom")}>
-          <span class="catpick-rlbl"><${Ic} i="pencil"/> Custom IPs / domains…</span></button>` : null}
-        ${!addMode && !q && lists.length ? html`<div class="catpick-grp">Your lists</div>
-          ${lists.map(l => html`<button type="button" class=${"catpick-row" + (value === l.id ? " sel" : "")} onClick=${() => pick(l.id)}>
-            <span class="catpick-rlbl">${l.title}</span></button>`)}` : null}
-        ${!addMode && !q && (catalogCats || []).length ? html`<div class="catpick-grp">Catalog lists on this node</div>
-          ${catalogCats.map(c => { const ok = usable(catCap(c.id)); return html`<button type="button" disabled=${!ok}
-            class=${"catpick-row" + (value === c.id ? " sel" : "") + (ok ? "" : " off")} onClick=${() => ok && pick(c.id)}
-            title=${ok ? "" : "Host-only list — switch this node to Force-DNS to use it"}>
-            <span class="catpick-rlbl">${c.title}</span>${capBadge(catCap(c.id))}</button>`; })}` : null}
-        ${!addMode && !q ? html`<div class="catpick-grp">Provider catalog</div>` : null}
-        ${(() => { const rows = addMode ? items.filter(it => !SMART_CAT_LABEL[it.id]) : items;   // addMode hides built-ins (managed by the checkboxes above)
-          return res == null ? html`<div class="catpick-empty">Loading…</div>`
-          : rows.length === 0 ? html`<div class="catpick-empty">No ${addMode ? "catalog category" : "category"} matches “${q}”.</div>`
-          : rows.map(it => { const ok = usable(it.caps), added = selSet.has(it.id); return html`<button type="button" disabled=${!ok && !addMode}
-              class=${"catpick-row" + ((added || value === it.id) ? " sel" : "") + ((ok || addMode) ? "" : " off")} onClick=${() => (ok || addMode) && pick(it.id)}
+        ${!addMode ? html`
+          ${!_ql ? html`<button type="button" class=${"catpick-row" + (value === "custom" ? " sel" : "")} onClick=${() => pick("custom")}>
+            <span class="catpick-rlbl"><${Ic} i="pencil"/> Custom IPs / domains…</span></button>` : null}
+          ${localGroups.map(g => html`<div class="catpick-grp">${g.grp}</div>
+            ${g.rows.map(it => { const ok = it.caps ? usable(it.caps) : true; return html`<button type="button" disabled=${!ok}
+              class=${"catpick-row" + (value === it.id ? " sel" : "") + (ok ? "" : " off")} onClick=${() => ok && pick(it.id)}
               title=${ok ? "" : "Host-only list — switch this node to Force-DNS to use it"}>
-              <span class="catpick-rlbl">${addMode ? html`<span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>` : null}${it.label}${SMART_CAT_LABEL[it.id] ? html`<span class="catpick-builtin">built-in</span>` : null}</span>
-              ${capBadge(it.caps)}</button>`; }); })()}
+              <span class="catpick-rlbl">${it.label}${it.builtin ? html`<span class="catpick-builtin">built-in</span>` : null}</span>
+              ${it.caps ? capBadge(it.caps) : null}</button>`; })}`)}
+          ${localEmpty ? html`<div class="catpick-empty">No list on this node matches “${q}”. Add more in Settings → Routing.</div>` : null}
+        ` : html`
+          ${(() => { const rows = items.filter(it => !SMART_CAT_LABEL[it.id]);   // addMode hides built-ins (managed by the checkboxes above)
+            return res == null ? html`<div class="catpick-empty">Loading…</div>`
+            : rows.length === 0 ? html`<div class="catpick-empty">No catalog category matches “${q}”.</div>`
+            : rows.map(it => { const added = selSet.has(it.id); return html`<button type="button"
+                class=${"catpick-row" + (added ? " sel" : "")} onClick=${() => pick(it.id)}>
+                <span class="catpick-rlbl"><span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>${it.label}</span>
+                ${capBadge(it.caps)}</button>`; }); })()}
+        `}
       </div>
       ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is in <b>Kernel</b> (IP) mode. Switch it to Force-DNS or SNI to use them.</div>` : null}
-      ${total > per ? html`<div class="catpick-foot">
+      ${addMode && total > per ? html`<div class="catpick-foot">
         <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => setPage(p => Math.max(0, p - 1))}>‹ Prev</button>
         <span class="catpick-count">${page * per + 1}–${Math.min(total, (page + 1) * per)} of ${total}</span>
         <button type="button" class="btn btn-mini" disabled=${page >= pages - 1} onClick=${() => setPage(p => Math.min(pages - 1, p + 1))}>Next ›</button>
@@ -2895,6 +2905,7 @@ function RoutingRules({ node, rules, onChange }) {
   const hiddenCats = { has: id => (_ec ? !_ec.has(id) : false) || !catUsableInMode(id, _mode) };   // node-scoped: hidden = not enabled, OR not matchable in this mode
   const customLists = (_ps.custom_lists || []).filter(l => !(l.disabled_nodes || []).includes(node));   // per-node: hide lists the operator disabled on THIS node
   const catalogCats = (_nrec && _nrec.catalog_cats || []).map(id => ({ id, title: catLabelOf(id) }));   // provider-catalog cats opted into this node → pinned in the picker
+  const builtins = SMART_CATEGORIES.filter(([id]) => id !== "all" && (!_ec || _ec.has(id))).map(([id, label]) => ({ id, label }));   // the 26 built-ins ENABLED on this node (mode-greying handled in the picker)
   const listTitle = Object.fromEntries([...(_ps.custom_lists || []).map(l => [l.id, l.title]), ...catalogCats.map(c => [c.id, c.title])]);
   const catLabel = c => c === "custom" ? "Custom IPs / domains" : (SMART_CAT_LABEL[c] || listTitle[c] || c);
   const allRule = rules.find(r => r.category === "all");          // the catch-all ("everything else") → footer dropdown
@@ -2930,7 +2941,7 @@ function RoutingRules({ node, rules, onChange }) {
       const it = rs.item(r._rid);
       return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || badToks.length || domToks.length) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
-        <${CatPicker} value=${r.category} mode=${_mode} customLists=${customLists} catalogCats=${catalogCats} listTitle=${listTitle}
+        <${CatPicker} value=${r.category} mode=${_mode} customLists=${customLists} catalogCats=${catalogCats} builtins=${builtins} listTitle=${listTitle}
           onChange=${v => setRule(r._rid, { category: v })}/>
         <span class="rrarrow">→</span>
         <select class="selwrap" value=${destVal(r)} onChange=${e => onDest(r._rid, e.target.value)}>
