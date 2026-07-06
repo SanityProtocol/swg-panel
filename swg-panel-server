@@ -1405,8 +1405,19 @@ def _prov_status_save():
 def catalog_provider_label(prov):
     return (CATALOG_PROVIDERS.get(prov) or {}).get("label", prov)
 
-def catalog_providers_view(enabled):
-    """The provider registry for the Geo-data UI: id, label, repo url, tiers, enabled, last error + update status."""
+def catalog_providers_view(enabled, nodes=None):
+    """The provider registry for the Geo-data UI: id, label, repo url, tiers, enabled, last error + update status.
+    `last_updated` = the newest `at` across this provider's routed lists' stored meta — i.e. the last time its data
+    was actually PULLED to the panel (the first pull when a category was enabled counts; a later change moves it).
+    0 → never pulled (no category from this provider is routed anywhere)."""
+    # newest stored-list `at` per provider, from the on-disk list meta (captures the initial pull, not only changes)
+    pulled = {}
+    for cat in routed_catalog_cats(nodes or {}):
+        pid = cat.split(":", 1)[0]
+        for tier in ("host", "ip"):
+            at = int((list_meta(cat, tier) or {}).get("at") or 0)
+            if at > pulled.get(pid, 0):
+                pulled[pid] = at
     out = []
     for pid in CATALOG_PROVIDER_ORDER:
         cfg = CATALOG_PROVIDERS[pid]
@@ -1416,7 +1427,13 @@ def catalog_providers_view(enabled):
                     "tiers": tiers, "enabled": bool((enabled or {}).get(pid, True)),
                     "error": (_CATALOG.get("perr") or {}).get(pid, "") or st.get("error", ""),
                     "status": st.get("status", "idle"),          # idle|updating|updated|uptodate|failed
-                    "last_updated": st.get("last_updated", 0)})   # epoch of the last actual content change
+                    "last_updated": max(pulled.get(pid, 0), int(st.get("last_updated", 0) or 0))})   # newest pull, else 0 = never
+    # "Curated" — the panel's own hand-maintained category set (SMART_CATEGORIES / DOMAIN_BUNDLES). It's a first-class
+    # provider in the UI, but shipped WITH the panel rather than fetched from GitHub: it can't be disabled and has no
+    # update status (it moves only when the panel is updated). builtin=True tells the SPA to render it that way.
+    out.append({"id": "curated", "label": "Curated", "url": "https://github.com/SanityProtocol/swg-panel",
+                "tiers": ["host", "ip"], "enabled": True, "builtin": True, "locked": True,
+                "error": "", "status": "builtin", "last_updated": 0})
     return out
 
 def routed_catalog_cats(nodes):
@@ -1463,12 +1480,14 @@ def provider_update_all(nodes_path):
                             continue
                         touched += 1
                         before = (list_meta(c, tier) or {}).get("v", "")
-                        items = list_resolve(c, tier)            # the actual list re-fetch (raw file) — the "host bucket" update
-                        if items is None:
+                        meta, status = list_store(c, tier)       # resolve + collapse-guard + store (host bucket)
+                        if status == "fetch-failed":
                             failed = True; err = "couldn't fetch " + c
                             continue
-                        meta = _list_write(c, tier, items)
-                        if meta.get("v") != before:
+                        if status == "collapsed":
+                            failed = True; err = "kept " + c + " — a re-fetch returned far fewer records"
+                            continue
+                        if meta and meta.get("v") != before:
                             changed = True
                 # status reflects the LIST re-fetch (host bucket), not the id-index blip. No routed lists → up to date.
                 st["status"] = "failed" if failed else ("updated" if changed else "uptodate")
@@ -1742,6 +1761,24 @@ def _list_write(cat, tier, items):
         _LIST_META[cat + "|" + tier] = meta
     return meta
 
+_LIST_SUSPECT = {}   # "<cat>|<tier>" -> reason, for a resolve that was REJECTED to protect last-good (surfaced in the UI)
+
+def list_store(cat, tier):
+    """Resolve + validate + store one list, returning (meta, status). GUARD: a fetch failure keeps last-good; a
+    resolve that COLLAPSES a previously-healthy list (drops to 0, or below half its prior count) is rejected — a
+    partial fetch or an upstream format change must never silently shrink a list the nodes then load. status ∈
+    ok | fetch-failed | collapsed."""
+    items = list_resolve(cat, tier)
+    key = cat + "|" + tier
+    if items is None:
+        return list_meta(cat, tier), "fetch-failed"           # network/parse error → keep last-good, retry later
+    prev = list_meta(cat, tier); prev_n = int((prev or {}).get("n") or 0)
+    if prev_n >= 20 and len(items) < prev_n * 0.5:            # healthy list suddenly halved/emptied → distrust this pull
+        _LIST_SUSPECT[key] = "resolved to %d, was %d — kept the previous list" % (len(items), prev_n)
+        return prev, "collapsed"
+    _LIST_SUSPECT.pop(key, None)
+    return _list_write(cat, tier, items), "ok"
+
 def list_meta(cat, tier):
     m = _LIST_META.get(cat + "|" + tier)
     if m:
@@ -1767,9 +1804,7 @@ def list_ensure(cat, tier, force=False):
         _LIST_INFLIGHT.add(k)
     def _work():
         try:
-            items = list_resolve(cat, tier)
-            if items is not None:
-                _list_write(cat, tier, items)
+            list_store(cat, tier)                              # resolve + collapse-guard + store (keeps last-good on a bad pull)
         finally:
             with _LIST_LOCK:
                 _LIST_INFLIGHT.discard(k)
@@ -2594,7 +2629,7 @@ def api(method, path, qs, body, deps):
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
             "panel_settings": panel_settings,            # Panel settings screen: interface defaults, mirrors, advanced thresholds
-            "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {})),   # Geo-data provider registry + enabled state (source tags + toggles)
+            "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
             "cat_domains": DOMAIN_BUNDLES,                # curated domains per host category → UI hover tooltip (ru/geoip cats absent)
@@ -2698,7 +2733,7 @@ def api(method, path, qs, body, deps):
         if isinstance(pc, dict):
             out_pc = {}
             for k, v in list(pc.items())[:16]:
-                if k in CATALOG_PROVIDERS or k == "custom":
+                if k in CATALOG_PROVIDERS or k in ("custom", "curated"):
                     tc = _themed_color(v)
                     if tc: out_pc[k] = tc
             cur["provider_colors"] = out_pc
@@ -2785,12 +2820,11 @@ def api(method, path, qs, body, deps):
             if not caps.get(tier):
                 continue
             m = list_meta(cat, tier)
-            if not m:                                           # not resolved yet → resolve SYNCHRONOUSLY now (retried),
-                items = list_resolve(cat, tier)                 # so the row shows real counts instead of hanging on "pending"
-                if items is None:
+            if not m:                                           # not resolved yet → resolve SYNCHRONOUSLY now (retried + collapse-guarded)
+                m, status = list_store(cat, tier)               # so the row shows real counts instead of hanging on "pending"
+                if not m:
                     out[tier] = {"n": 0, "sample": [], "failed": True}   # fetch failed after retries → the row degrades to "—"
                     continue
-                m = _list_write(cat, tier, items)
             sample = []
             with contextlib.suppress(Exception):
                 with open(_list_path(cat, tier)) as _f:

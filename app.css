@@ -23,6 +23,7 @@
   --tp-rx:#1FC8D6; --tp-tx:#818CF8;   /* throughput chart: rx (down) cyan, tx (up) indigo — kept distinct */
   --rate-up:#4FA8F0;   /* throughput UP value/arrow — a fixed blue, decoupled from the ready-status colour so it stays this light in both modes (upload reads slightly lighter than the green download) */
   --sel-ink:var(--brand);   /* text colour for a SELECTED brand-tinted control (Online pill, etc.); darkened on light */
+  --dd-hover:color-mix(in srgb,var(--brand) 14%,transparent); --dd-sel:color-mix(in srgb,var(--brand) 22%,transparent);   /* ONE hover/selected tint for every dropdown row app-wide */
   --tport-bare:#7DC4F0; --tport-dock:#A974F2;   /* deploy-method pills (bare-metal blue / docker purple) */
   --sans:"Hanken Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
@@ -1139,6 +1140,9 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .provrow{display:flex;align-items:center;gap:12px;padding:9px 4px;border-top:1px solid var(--line)}
 .provrow:first-child{border-top:none}
 .provrow.off{opacity:.55}
+/* Curated (panel-maintained) provider: a locked check where the enable switch would be — same 34px column so rows stay aligned */
+.prov-lock{display:inline-flex;align-items:center;justify-content:center;width:34px;height:19px;flex:none;color:var(--online)}
+.prov-lock .ic svg{width:15px;height:15px}
 .prov-meta{display:flex;align-items:center;gap:9px;min-width:0}
 .prov-name{font-size:13.5px;font-weight:600;color:var(--ink);text-decoration:none;white-space:nowrap}
 .prov-desc{font-size:11.5px;color:var(--dim);text-align:right;margin-left:auto;white-space:nowrap}
@@ -1147,6 +1151,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .prov-err{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--partial)}
 .prov-err .ic svg{width:12px;height:12px}
 .prov-upd{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+.prov-upd.never{opacity:.6;font-style:italic}
 .prov-st{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;white-space:nowrap}
 .prov-st .ic svg{width:13px;height:13px}
 .prov-st.upd{color:var(--dim)}
@@ -1334,8 +1339,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .catpick-grp{font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--dim);padding:8px 8px 4px}
 .catpick-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:6px;background:none;
   color:var(--ink);font-family:inherit;font-size:13px;text-align:left;cursor:pointer}
-.catpick-row:hover:not(:disabled){background:var(--surface)}
-.catpick-row.sel{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--sel-ink)}
+.catpick-row:hover:not(:disabled){background:var(--dd-hover);color:var(--ink)}
+.catpick-row.sel{background:var(--dd-sel);color:var(--sel-ink)}
 .catpick-row.off{cursor:not-allowed;color:var(--faint)}
 .catpick-row.off .capb{opacity:.5}
 .catpick-rlbl{flex:1;min-width:0;display:flex;align-items:center;gap:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1353,8 +1358,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 /* rich catalog-browse row (Add from catalog): title + dimmed id + provider · description/sample · counts · caps */
 .catrow{display:flex;align-items:flex-start;gap:9px;width:100%;padding:8px 9px;border:0;border-radius:7px;background:none;
   color:var(--ink);font:inherit;text-align:left;cursor:pointer}
-.catrow:hover{background:var(--surface)}
-.catrow.sel{background:color-mix(in srgb,var(--brand) 14%,transparent)}
+.catrow:hover{background:var(--dd-hover)}
+.catrow.sel{background:var(--dd-sel)}
 .catrow.off{opacity:.5;cursor:not-allowed}
 .catrow.off:hover{background:none}
 .catrow .catpick-tick{margin-top:2px}
@@ -1395,15 +1400,25 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-picker{display:flex;align-items:center;gap:9px;flex:1 1 auto;min-width:0;justify-content:flex-end}
 .rmode-plbl{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);flex:none}
 .rmode-picker .modesel{min-width:0;flex:0 1 auto}   /* compact — the closed label is short (before the comma) */
-/* custom mode dropdown: compact closed (short label), full labels in the open list */
-.modesel{position:relative}
-.modesel-btn{display:flex;align-items:center;gap:8px;width:100%;min-width:0;justify-content:space-between}
-.modesel-lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.modesel-pop{position:fixed;z-index:90;max-width:min(460px,92vw);background:var(--surface-2);border:1px solid var(--line-solid);
-  border-radius:var(--r-sm);box-shadow:0 12px 34px rgba(0,0,0,.5);overflow:hidden;padding:5px}
-.modesel-opt{display:block;width:100%;text-align:left;padding:8px 10px;border:0;border-radius:6px;background:none;color:var(--ink);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
-.modesel-opt:hover{background:var(--surface)}
-.modesel-opt.sel{background:color-mix(in srgb,var(--brand) 16%,transparent);color:var(--sel-ink)}
+/* Reusable styled dropdown (Dropdown/ModeSelect) — one look everywhere, replacing native <select> option lists. */
+.dropdown{position:relative;min-width:0}
+.field .dropdown{width:100%}   /* field dropdowns fill their column like the native selects did */
+.ddbtn{display:flex;align-items:center;gap:8px;width:100%;min-width:0;justify-content:space-between;text-align:left;cursor:pointer;
+  background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);
+  padding:9px 12px;font-family:var(--mono);font-size:13px;transition:border-color .15s,box-shadow .15s}
+.ddbtn:hover,.ddbtn.on{border-color:color-mix(in srgb,var(--brand) 45%,var(--line-solid))}
+.ddbtn .catpick-caret{color:var(--dim);font-size:11px}
+.ddbtn:disabled{opacity:.55;cursor:not-allowed}
+.ddlbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ddbtn .catpick-caret{flex:none}
+.ddpop{position:fixed;z-index:90;max-width:min(480px,92vw);max-height:var(--ddmaxh,320px);overflow-y:auto;
+  background:var(--surface-2);border:1px solid var(--line-solid);border-radius:var(--r-sm);box-shadow:0 12px 34px rgba(0,0,0,.5);padding:5px}
+.ddpop.flip{transform:translateY(-100%)}
+.ddgrp{font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--dim);padding:8px 8px 4px}
+.ddopt{display:block;width:100%;text-align:left;padding:8px 10px;border:0;border-radius:6px;background:none;color:var(--ink);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ddopt:hover:not(:disabled){background:var(--dd-hover);color:var(--ink)}
+.ddopt.sel{background:var(--dd-sel);color:var(--sel-ink);font-weight:600}
+.ddopt.off{color:var(--faint);cursor:not-allowed}
 .lgrid-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
 .lg-htitle{display:flex;align-items:center;gap:9px}   /* title · count · sub — all vertically centred on one line */
 .lg-htitle .seclabel{border-bottom:none;padding-bottom:0;margin:0}   /* no underline under Provider/Custom list headers */

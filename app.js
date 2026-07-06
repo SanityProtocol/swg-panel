@@ -52,10 +52,9 @@ function randWrapKey() { const a = new Uint8Array(32); crypto.getRandomValues(a)
 // sel/custom state; resolve the chosen value with ipPickerVal(sel, custom).
 function IpPicker({ ips, sel, setSel, custom, setCustom, placeholder }) {
   return html`<${Fragment}>
-    <select class="selwrap" value=${sel} onChange=${e => setSel(e.target.value)}>
-      ${(ips || []).filter(ip => !isPrivIp(ip)).map(ip => html`<option value=${ip}>${ip}</option>`)}
-      <option value="__custom__">Custom IP / Host…</option>
-    </select>
+    <${Dropdown} value=${sel} onChange=${v => setSel(v)} options=${[
+      ...(ips || []).filter(ip => !isPrivIp(ip)).map(ip => ({ value: ip, label: ip })),
+      { value: "__custom__", label: "Custom IP / Host…" }]}/>
     ${sel === "__custom__" ? html`<input style="margin-top:6px" value=${custom} onInput=${e => setCustom(e.target.value)} placeholder=${placeholder || "203.0.113.7"} autocomplete="off"/>` : null}
   <//>`;
 }
@@ -949,8 +948,9 @@ let _modalSeq = 0;   // bumps on every open/close — lets a confirm tell if onC
 function _applyStack(next) { _stack = next; _modalSeq++; _setStack(next); }
 function openModal(node) { _applyStack(_stack.length ? [..._stack.slice(0, -1), node] : [node]); }
 function pushModal(node) { _applyStack([..._stack, node]); }
-function closeModal() { _applyStack(_stack.slice(0, -1)); }
-function closeAllModals() { _applyStack([]); }
+function _blurActive() { requestAnimationFrame(() => { const a = document.activeElement; if (a && a.blur && a.tagName !== "BODY") a.blur(); }); }
+function closeModal() { _applyStack(_stack.slice(0, -1)); _blurActive(); }   // drop the focus ring the trigger regains on ESC/close
+function closeAllModals() { _applyStack([]); _blurActive(); }
 let _sheetStack = [];   // mounted Sheet tokens (LIFO) — only the topmost handles Esc/Enter/Tab
 
 // ───────────────────────── shared bits ─────────────────────────
@@ -2787,6 +2787,11 @@ const capBadges = caps => html`<span class="capbs">
   ${caps && caps.ip ? html`<span class="capb ip" title="Matchable by IP range — works in every mode">IP</span>` : null}</span>`;
 // A provider-catalog id is "<prov>:<rawid>"; return the provider's display label (MetaCubeX / v2fly / …) for the source tag.
 const isProviderCat = c => typeof c === "string" && c.includes(":") && !String(c).startsWith("custom");
+// A "Curated" category = one of the panel's own hand-maintained built-in sets (bare id, no ":"). These are presented
+// as the first-class "Curated" provider — the old "built-in" concept, retired. ("all" is the catch-all, not a list.)
+const isCuratedCat = c => typeof c === "string" && !c.includes(":") && c !== "all" && c !== "custom" && !String(c).startsWith("custom") && SMART_CAT_LABEL[c] != null;
+// The provider a category belongs to: "<prov>" for a namespaced catalog id, "curated" for a built-in, else "".
+const providerOf = c => isProviderCat(c) ? String(c).split(":")[0] : (isCuratedCat(c) ? "curated" : "");
 // Provider list ids are cryptic (bare ISO country codes "ad"/"ae", "category-ads-all", "tld-cn"). Make them human:
 // 2-letter codes → the country name via the browser's built-in Intl.DisplayNames (no hardcoded country table);
 // known prefixes get expanded; everything else is title-cased. `fallback` = the panel's plain label.
@@ -2905,13 +2910,14 @@ function CatalogRow({ it, added, onPick }) {
   </button>`;
 }
 function provLabelOf(c) {
-  if (!isProviderCat(c)) return "";
-  const pid = c.split(":")[0];
-  return ((Store.catalogProviders || []).find(p => p.id === pid) || {}).label || pid;
+  const pid = providerOf(c);
+  if (!pid) return "";
+  return ((Store.catalogProviders || []).find(p => p.id === pid) || {}).label || (pid === "curated" ? "Curated" : pid);
 }
 // Each provider gets a distinct colour (default palette + a Panel-settings per-mode override, like turn forks).
 const CAT_PROVIDER_DEFAULTS = { mc: { color: "#5B8FF9", colorL: "#2C6FD6" }, v2: { color: "#61DDAA", colorL: "#1E9E6E" },
-  ls: { color: "#F6BD16", colorL: "#B8890A" }, rf: { color: "#E8684A", colorL: "#C2452A" }, bm: { color: "#B07BE0", colorL: "#8347C0" } };
+  ls: { color: "#F6BD16", colorL: "#B8890A" }, rf: { color: "#E8684A", colorL: "#C2452A" }, bm: { color: "#B07BE0", colorL: "#8347C0" },
+  curated: { color: "#E85D9E", colorL: "#C43B7E" } };   // "Curated" — the panel's own maintained set (rose; distinct from every fetched provider)
 function providerColor(prov) {
   const ov = (Store.panelSettings && Store.panelSettings.provider_colors) || {};
   const d = CAT_PROVIDER_DEFAULTS[prov] || (prov === "custom" ? { color: "#8A94A6", colorL: "#5E6875" } : { color: "#8FA8C0", colorL: "#5E7085" });
@@ -2920,10 +2926,12 @@ function providerColor(prov) {
 // The app-wide on/off switch (34×19). Used for every enable/disable toggle in Settings.
 const Switch = ({ on, onChange, title, disabled }) => html`<label class=${"swt" + (disabled ? " swt-off" : "")} title=${title || ""}>
   <input type="checkbox" checked=${!!on} disabled=${!!disabled} onChange=${e => onChange(e.target.checked)}/><span class="track"></span><span class="knob"></span></label>`;
-// Provider source tag — colour-coded by provider (or a neutral "Custom"/"built-in" chip when plain).
+// Provider source tag — colour-coded by provider. Curated built-ins and catalog cats both get a coloured chip;
+// only genuinely source-less chips (a raw "Custom" label) stay plain. `plain` forces the neutral chip.
 function ProvTag({ id, label, plain }) {
-  if (plain || !isProviderCat(id)) return html`<span class="catpick-src legacy">${label}</span>`;
-  return html`<span class="catpick-src" style=${"--pc:" + providerColor(String(id).split(":")[0])}>${label || provLabelOf(id)}</span>`;
+  const prov = providerOf(id);
+  if (plain || !prov) return html`<span class="catpick-src legacy">${label}</span>`;
+  return html`<span class="catpick-src" style=${"--pc:" + providerColor(prov)}>${label || provLabelOf(id)}</span>`;
 }
 // Routing-mode metadata: icon + labels + the full explanation (shown in the mode banner).
 // NOTE: all three modes are kernel-based — there is NO "Kernel" mode. The IP-only mode is "Default". (Stored value
@@ -2936,29 +2944,41 @@ const MODE_META = {
   sni:      { icon: "shield", label: "SNI router — Host + IP, DNS stays private", short: "Host + IP",
     exp: "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
 };
-// Custom match-mode dropdown. CLOSED it shows only the label up to the comma ("Force DNS — Host + IP") so it stays
-// compact and never squeezes the node name; OPEN (the list) shows the full label. A native <select> can't style the
-// selected text differently from its options, hence this.
-function ModeSelect({ value, onChange }) {
+// Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
+// OS-rendered <select> option list can't be styled, hence this). `options` is a flat [{value,label,disabled}] or
+// grouped [{group,items:[…]}]. `short(label)` optionally shortens the CLOSED label (e.g. cut at a comma).
+function Dropdown({ value, onChange, options, className, placeholder, disabled, short }) {
   const [open, setOpen] = useState(false), [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null);
-  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect(); setPos({ left: Math.round(r.left), top: Math.round(r.bottom + 4), width: Math.round(r.width) }); };
+  const flat = (options || []).flatMap(o => o.items ? o.items : [o]);
+  const cur = flat.find(o => String(o.value) === String(value));
+  const curLabel = cur ? (short ? short(cur.label) : cur.label) : (placeholder || "");
+  const place = () => { const el = ref.current; if (!el) return; const r = el.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom - 12, above = r.top - 12; const flip = below < 240 && above > below;
+    setPos({ left: Math.round(r.left), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width), flip, maxh: Math.max(180, Math.round(flip ? above : below) - 16) }); };
   useEffect(() => { if (!open) return; place();
     const onMove = () => place();
     const onDoc = e => { const t = e.target; if (!((ref.current && ref.current.contains(t)) || (popRef.current && popRef.current.contains(t)))) setOpen(false); };
-    const onKey = e => { if (e.key === "Escape") setOpen(false); };
+    const onKey = e => { if (e.key === "Escape") { setOpen(false); _blurActive(); } };
     window.addEventListener("scroll", onMove, true); window.addEventListener("resize", onMove);
     document.addEventListener("mousedown", onDoc, true); document.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("scroll", onMove, true); window.removeEventListener("resize", onMove); document.removeEventListener("mousedown", onDoc, true); document.removeEventListener("keydown", onKey); };
   }, [open]);
-  const shortLabel = m => (MODE_META[m].label.split(",")[0]).trim();
-  return html`<div class="modesel" ref=${ref}>
-    <button type="button" class=${"selwrap modesel-btn" + (open ? " on" : "")} onClick=${() => setOpen(o => !o)}>
-      <span class="modesel-lbl">${shortLabel(value)}</span><span class="catpick-caret">▾</span></button>
-    ${open && pos ? html`<${Portal}><div ref=${popRef} class="modesel-pop" style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + pos.width + "px"}>
-      ${["kernel", "forcedns", "sni"].map(m => html`<button type="button" class=${"modesel-opt" + (m === value ? " sel" : "")} onClick=${() => { onChange(m); setOpen(false); }}>${MODE_META[m].label}</button>`)}
+  const opt = o => html`<button type="button" disabled=${o.disabled} class=${"ddopt" + (String(o.value) === String(value) ? " sel" : "") + (o.disabled ? " off" : "")}
+    onClick=${() => { if (o.disabled) return; onChange(o.value); setOpen(false); }}>${o.label}</button>`;
+  return html`<div class=${"dropdown " + (className || "")} ref=${ref}>
+    <button type="button" class=${"ddbtn" + (open ? " on" : "")} disabled=${disabled} onClick=${() => !disabled && setOpen(o => !o)}>
+      <span class="ddlbl">${curLabel}</span><span class="catpick-caret">▾</span></button>
+    ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"ddpop" + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + pos.width + "px;--ddmaxh:" + pos.maxh + "px"}>
+      ${(options || []).map(o => o.items ? html`<div class="ddgrp">${o.group}</div>${o.items.map(opt)}` : opt(o))}
     </div><//>` : null}
   </div>`;
+}
+// Match-mode dropdown — the shared Dropdown, with the closed label shortened at the comma ("Force DNS — Host + IP")
+// so it stays compact and never squeezes the node name; the open list shows the full label.
+function ModeSelect({ value, onChange }) {
+  return html`<${Dropdown} className="modesel" value=${value} onChange=${onChange} short=${l => l.split(",")[0].trim()}
+    options=${["kernel", "forcedns", "sni"].map(m => ({ value: m, label: MODE_META[m].label }))}/>`;
 }
 // "on N/M nodes ▾" fleet-assignment popover — toggle a list on each node. disabledFor(nid) → a reason string greys it.
 function FleetAssign({ nodes, isOn, onToggle, disabledFor }) {
@@ -3070,7 +3090,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   const _match = (id, label) => !_ql || String(label).toLowerCase().includes(_ql) || String(id).toLowerCase().includes(_ql);
   const _provRows = (catalogCats || []).map(c => ({ id: c.id, label: c.title, caps: catCap(c.id), src: provLabelOf(c.id) }));
   if (!addMode && value && !isProviderCat(value) && value !== "custom" && !lists.some(l => l.id === value) && !_provRows.some(r => r.id === value))
-    _provRows.push({ id: value, label: catLabelOf(value), caps: catCap(value), src: "built-in", legacy: true });   // keep a legacy built-in rule visible/editable
+    _provRows.push({ id: value, label: catLabelOf(value), caps: catCap(value), src: provLabelOf(value) || "Curated" });   // keep a curated/legacy rule visible + editable, tagged by its provider
   const localGroups = addMode ? [] : [
     { grp: "Provider lists", rows: _provRows.filter(r => _match(r.id, r.label)).sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase())) },
     { grp: "Custom lists", rows: lists.filter(l => _match(l.id, l.title)).map(l => ({ id: l.id, label: l.title, caps: customCaps(l), src: "Custom", list: l })).sort((a, b) => a.label.toLowerCase().localeCompare(b.label.toLowerCase())) },
@@ -3086,7 +3106,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
         <${Ic} i="search"/>
         <input ref=${el => { inRef.current = el; if (el && open && !focusGuard.current) { focusGuard.current = true; requestAnimationFrame(() => el.focus()); } }} type="text" placeholder=${addMode ? "Search " + ((cidx && cidx.length) || "") + " lists — name, country, service…" : "Filter this node's lists…"} value=${q}
           onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"
-          onKeyDown=${e => { if (e.key === "Enter" && addMode && total === 1 && items[0]) { e.preventDefault(); pick(items[0].id); } }}/>
+          onKeyDown=${e => { if (e.key === "Enter" && addMode) { e.preventDefault(); if (total === 1 && items[0]) pick(items[0].id); setOpen(false); } }}/>
       </div>
       <div class="catpick-list">
         ${!addMode ? html`
@@ -3459,6 +3479,7 @@ function ConnectionEditSheet({ node, iface }) {
   const prec = (Store.nodes || []).find(n => n.id === peer) || {};
   const [dialSrc, setDialSrc] = useState(meta.dial_src || "");
   const [dialEp, setDialEp] = useState(meta.dial_endpoint || "");
+  const nodeDown = nodeStale(node) || inProc(nrec.proc_status);   // node not reporting / mid re-install → can't apply a dial change
   const lk = nodeStale(node) ? "down" : (meta.handshake_age == null ? "connecting" : (meta.handshake_age < 180 ? "up" : "down"));
   const lkLabel = { up: "connected", connecting: "connecting", down: "down" }[lk];
   const proto = (meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
@@ -3486,7 +3507,7 @@ function ConnectionEditSheet({ node, iface }) {
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`;
   const peerNm = html`<b style=${"color:" + Store.nodeColor(peer)}>${Store.nodeName(peer)}</b>`;
   return html`<${Sheet} title=${"Connection to " + Store.nodeName(peer)} width=${680} onClose=${closeModal}
-      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${saveDial}>Save</button></>`}>
+      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${nodeDown} title=${nodeDown ? Store.nodeName(node) + " isn't reporting — reconnect it before changing this link" : ""} onClick=${saveDial}>Save</button></>`}>
     <div class="conncard">
       <div class="conncard-top">
         <span class=${"iftype " + proto}>System ${proto.toUpperCase()}</span>
@@ -5768,7 +5789,7 @@ function PanelSettingsScreen() {
   const REPROV_WARN = "Heads up: changing a node's mesh subnet, interface prefix, or AWG params re-provisions its mesh links — it briefly drops off the mesh while every peer pulls the new config and reconnects.";
   const diffList = () => {
     const out = [];
-    if (glDirty("routing")) out.push("Routing lists — built-in / custom");
+    if (glDirty("routing")) out.push("Routing lists — presets / custom");
     if (secChanged()) out.push("Authentication — panel credentials");
     if (glDirty("turn")) out.push("Turn proxies — forks / colours / VK link");
     if (glDirty("geo")) out.push("Geo data");
@@ -5997,17 +6018,20 @@ function PanelSettingsScreen() {
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">List providers</div>
           <p class="hint" style="margin:0 0 12px">The public GitHub sources the routing-list catalog draws from. Each node fetches the lists you route directly over HTTPS. <b>Disable</b> a provider to hide its lists from the routing picker — anything already routed from it is <b>kept but greyed</b> (deactivated), and the nodes drop those records until you re-enable it.</p>
-          <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = provEnabled[p.id] !== false; return html`<div class=${"provrow" + (on ? "" : " off")} key=${p.id}>
-            <${Switch} on=${on} title=${on ? "Enabled — its lists are selectable" : "Disabled — its lists are hidden and deactivated on nodes"} onChange=${v => setProvEnabled(m => ({ ...m, [p.id]: v }))}/>
+          <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = p.builtin || provEnabled[p.id] !== false; return html`<div class=${"provrow" + (on ? "" : " off") + (p.builtin ? " builtin" : "")} key=${p.id}>
+            ${p.builtin
+              ? html`<span class="prov-lock" title="Curated lists ship with the panel — always available, can't be disabled"><${Ic} i="check"/></span>`
+              : html`<${Switch} on=${on} title=${on ? "Enabled — its lists are selectable" : "Disabled — its lists are hidden and deactivated on nodes"} onChange=${v => setProvEnabled(m => ({ ...m, [p.id]: v }))}/>`}
             <${ThemedSwatch} val=${provColors[p.id]} title=${p.label + " tag colour"} onChange=${nv => setProvColors(c => ({ ...c, [p.id]: nv }))}
               sample=${(c) => html`<span class="catpick-src" style=${"--pc:" + c}>${p.label}</span>`}/>
             <div class="prov-meta">
               <span class="prov-name">${p.label}</span>
               <span class="prov-tiers">${capBadges({ host: (p.tiers || []).includes("host"), ip: (p.tiers || []).includes("ip") })}</span>
-              ${p.last_updated ? html`<span class="prov-upd" title="When this provider's lists last changed on the panel">updated ${ago(p.last_updated)}</span>` : null}
+              ${p.builtin ? null : html`<span class=${"prov-upd" + (p.last_updated ? "" : " never")} title=${p.last_updated ? "When this provider's data was last pulled to the panel" : "No list from this provider has been routed yet — nothing pulled"}>${p.last_updated ? html`updated ${ago(p.last_updated)}` : "never updated"}</span>`}
             </div>
             <span class="grow"></span>
-            ${(() => { const s = p.status;
+            ${p.builtin ? html`<span class="prov-st ok" title="Maintained by the panel and shipped with each update — no external fetch"><${Ic} i="check"/> panel-maintained</span>`
+              : (() => { const s = p.status;
               if (s === "updating") return html`<span class="prov-st upd"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;
               if (s === "updated") return html`<span class="prov-st ok"><${Ic} i="check"/> updated</span>`;
               if (s === "uptodate") return html`<span class="prov-st ok"><${Ic} i="check"/> up to date</span>`;
@@ -6029,13 +6053,9 @@ function PanelSettingsScreen() {
           <p class="hint" style="margin:0 0 10px">When each node re-fetches its lists. Refreshing briefly reloads the node's match sets, which clients can feel — so schedule it for a <b>quiet hour</b>. (A failed fetch retries on the next sync; existing lists keep working meanwhile.)</p>
           <div class="schedrow">
             <div class="field" style="margin:0"><label>How often</label>
-              <select class="selwrap" value=${guEvery} onChange=${e => setGuEvery(e.target.value)}>
-                <option value="1">Every day</option>
-                <option value="2">Every 2 days</option>
-                <option value="3">Every 3 days</option>
-                <option value="7">Every week</option>
-                <option value="0">Continuous (rolling ${ttlD}-day TTL)</option>
-              </select></div>
+              <${Dropdown} value=${guEvery} onChange=${v => setGuEvery(v)} options=${[
+                { value: "1", label: "Every day" }, { value: "2", label: "Every 2 days" }, { value: "3", label: "Every 3 days" },
+                { value: "7", label: "Every week" }, { value: "0", label: "Continuous (rolling " + ttlD + "-day TTL)" }]}/></div>
             <div class="field" style="margin:0"><label>At (node-local time)</label>
               <input type="time" class="timein" value=${guAt} disabled=${guEvery === "0"} onInput=${e => setGuAt(e.target.value || "04:00")}/>
               <div class="hint">${guEvery === "0" ? "Continuous mode ignores the time — nodes refresh whenever a list is older than the TTL." : "Nodes update at this local time, on the chosen cadence."}</div></div>
@@ -6078,10 +6098,9 @@ function PanelSettingsScreen() {
         ${section === "configs" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Client configs</div>
           <div class="field"><label>Store client configs</label>
-            <select class="selwrap" value=${sc} onChange=${e => setSc(e.target.value)}>
-              <option value="on">On — keep configs (QRs re-viewable anytime)</option>
-              <option value="off">Off — never store private keys</option>
-            </select>
+            <${Dropdown} value=${sc} onChange=${v => setSc(v)} options=${[
+              { value: "on", label: "On — keep configs (QRs re-viewable anytime)" },
+              { value: "off", label: "Off — never store private keys" }]}/>
             <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off" ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute." : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
         </div>` : null}
         ${section === "display" ? html`<div class="card">
@@ -6094,10 +6113,9 @@ function PanelSettingsScreen() {
           </div>
           <div class="seclabel">Display</div>
           <div class="field"><label>Throughput perspective</label>
-            <select class="selwrap" value=${tput} onChange=${e => setTput(e.target.value)}>
-              <option value="nodes">Nodes — what the node downloads / uploads</option>
-              <option value="peers">Peers — what the client downloads / uploads</option>
-            </select>
+            <${Dropdown} value=${tput} onChange=${v => setTput(v)} options=${[
+              { value: "nodes", label: "Nodes — what the node downloads / uploads" },
+              { value: "peers", label: "Peers — what the client downloads / uploads" }]}/>
             <div class="hint">Which way ↓/↑ are labelled across the panel. Same numbers, swapped arrows.</div></div>
           <div class="seclabel">Status timing</div>
           <p class="hint" style="margin:0 0 12px">How long the panel waits before treating things as stale — in seconds.</p>
@@ -6935,19 +6953,18 @@ const ipLabel = ip => isPrivIp(ip) ? ip + " (private)" : ip;
 // IP picker: only the node's PUBLIC (internet-routable) IPs are listed; internal/private IPs are hidden.
 // A "Use custom IP…" entry reveals a free-text field for any address not in the list (also how an already-set
 // private/custom value is shown — preserved, editable). value "" = the Auto option.
-function NodeIpPick({ ips, value, onChange, auto, customPlaceholder }) {
+function NodeIpPick({ ips, value, onChange, auto, customPlaceholder, disabled }) {
   const pub = (ips || []).filter(ip => !isPrivIp(ip));
   const valIsCustom = !!value && !pub.includes(value);
   const [custom, setCustom] = useState(valIsCustom);
   const sel = (custom || valIsCustom) ? "__custom__" : (value || "");
   const onSel = v => { if (v === "__custom__") setCustom(true); else { setCustom(false); onChange(v); } };
   return html`<${Fragment}>
-    <select class="selwrap" value=${sel} onChange=${e => onSel(e.target.value)}>
-      <option value="">${auto}</option>
-      ${pub.map(ip => html`<option value=${ip}>${ip}</option>`)}
-      <option value="__custom__">Use custom…</option>
-    </select>
-    ${sel === "__custom__" ? html`<input class="ipk-custom" placeholder=${customPlaceholder || "Custom IP — e.g. 203.0.113.5"} value=${value || ""} onInput=${e => onChange(e.target.value)} spellcheck="false" autocomplete="off"/>` : null}
+    <${Dropdown} value=${sel} onChange=${onSel} disabled=${disabled} options=${[
+      { value: "", label: auto },
+      ...pub.map(ip => ({ value: ip, label: ip })),
+      { value: "__custom__", label: "Use custom…" }]}/>
+    ${sel === "__custom__" ? html`<input class="ipk-custom" placeholder=${customPlaceholder || "Custom IP — e.g. 203.0.113.5"} value=${value || ""} onInput=${e => onChange(e.target.value)} disabled=${disabled} spellcheck="false" autocomplete="off"/>` : null}
   </${Fragment}>`;
 }
 function NodeEditSheet({ node }) {
