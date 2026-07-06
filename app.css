@@ -192,18 +192,20 @@ a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var
 .dash-nodes{display:flex;align-items:center;gap:7px;flex-wrap:wrap;flex:1;min-width:0}
 .dash-range{display:flex;align-items:center;gap:9px;margin-left:auto}
 .dash-lbl{font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);flex:none}
-.dchip{--c:var(--brand);display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;line-height:1;
-  padding:6px 11px;border-radius:99px;border:1px solid var(--line);background:var(--surface-2);color:var(--dim);cursor:pointer;
-  transition:color .12s,border-color .12s,background .12s,opacity .12s,transform .1s;white-space:nowrap}
-.dchip-dot{width:7px;height:7px;border-radius:50%;background:var(--c);flex:none;transition:background .12s}
-.dchip:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c) 55%,transparent);transform:translateY(-1px)}
-.dchip.on{color:var(--ink);font-weight:600;border-color:color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 18%,transparent)}
-.dchip:not(.on){opacity:.5}
-.dchip:not(.on) .dchip-dot{background:var(--faint)}
+/* Unified node badge — identical on Overview (.dchip, multi-select) and Settings (.snbadge, single-select).
+   Middle ground: the node colour is ALWAYS present (the dot), the active state is a clear-but-light colour
+   tint, and inactive stays fully legible (muted text, dimmed dot) instead of greyed to half opacity. */
+.dchip,.snbadge{--c:var(--brand);display:inline-flex;align-items:center;gap:6px;font:inherit;font-family:var(--mono);font-size:11.5px;line-height:1;
+  padding:5px 11px;border-radius:99px;border:1px solid var(--line);background:none;color:var(--dim);cursor:pointer;
+  transition:color .12s,border-color .12s,background .12s,box-shadow .12s;white-space:nowrap}
+.dchip-dot,.ndot{width:7px;height:7px;border-radius:50%;background:var(--c);flex:none;transition:opacity .12s}
+.dchip:not(.on) .dchip-dot,.snbadge:not(.on) .ndot{opacity:.55}   /* off: keep the node colour, just dim the dot */
+.dchip:hover,.snbadge:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c) 50%,var(--line))}
+.dchip.on,.snbadge.on{color:var(--ink);font-weight:600;border-color:color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 15%,transparent)}
 .dchip.down{filter:grayscale(.7)}
 .dchip.all{--c:var(--ink-2)}
 .dchip.all .dchip-dot{display:none}
-.dchip.all{padding:6px 13px}
+.dchip.all{padding:5px 13px}
 .dseg{display:inline-flex;flex:none;border:1px solid var(--line-solid);border-radius:9px;overflow:hidden;background:var(--surface-2);height:32px}
 .dseg-opt{appearance:none;border:none;background:none;cursor:pointer;font:inherit;font-size:12px;font-weight:600;padding:0 13px;color:var(--dim);transition:background .12s var(--ease),color .12s var(--ease)}
 .dseg-opt:hover{color:var(--ink)}
@@ -1276,12 +1278,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 /* header user-icon dropdown */
 .acct-wrap{position:relative;display:inline-flex}
 @media (max-width:680px){.setbody{flex-direction:column}.setrail{flex-direction:row;flex-wrap:wrap;width:auto;position:static}}
-/* per-node context selector in the settings header (default + node badges) */
-/* per-node selector: a clean wrapping row ABOVE the section card (was an absolute overlay that collided with the header) */
-.setnodes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
-.snbadge{font:inherit;font-size:11.5px;font-family:var(--mono);cursor:pointer;padding:4px 10px;border-radius:99px;border:1px solid color-mix(in srgb,var(--c,var(--brand)) 55%,var(--line));background:none;color:var(--dim);transition:color .12s,border-color .12s,background .12s,box-shadow .12s}
-.snbadge:hover{color:var(--ink);border-color:var(--c,var(--brand))}
-.snbadge.on{color:var(--ink);border-color:var(--c,var(--brand));background:color-mix(in srgb,var(--c,var(--brand)) 16%,transparent)}
+/* per-node selector: a clean wrapping row ABOVE the section card, right-aligned (the .snbadge look is unified
+   with the Overview .dchip up top). */
+.setnodes{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;margin-bottom:12px}
 /* unsaved-edit markers: a cyan dot on a rail section that changed, a cyan glow on a node badge changed in THIS section */
 .dirtydot{width:7px;height:7px;border-radius:50%;background:var(--brand);flex:none;box-shadow:0 0 6px var(--brand)}
 .snbadge.dirty{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand),0 0 9px color-mix(in srgb,var(--brand) 55%,transparent)}
@@ -1348,10 +1347,35 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .catpick-rlbl .ic{color:var(--faint);flex-shrink:0}
 .catpick-builtin{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
   padding:1px 5px;border:1px solid var(--line-solid);border-radius:5px;flex-shrink:0}
-/* provider source tag on a catalog row (MetaCubeX / v2fly / …) */
-.catpick-src{font-family:var(--mono);font-size:9px;letter-spacing:.03em;color:var(--brand);flex-shrink:0;
-  padding:1px 5px;border-radius:5px;background:color-mix(in srgb,var(--brand) 12%,transparent)}
-.catpick-src.legacy{color:var(--dim);background:color-mix(in srgb,var(--ink) 8%,transparent)}
+/* provider source tag — colour-coded per provider via --pc (falls back neutral for Custom/built-in). Readable on
+   light+dark and on a brand-highlighted row. */
+.catpick-src{font-family:var(--mono);font-size:9px;letter-spacing:.03em;flex-shrink:0;padding:1px 5px;border-radius:5px;
+  color:var(--pc,var(--ink-2));border:1px solid color-mix(in srgb,var(--pc,var(--line-solid)) 40%,transparent);
+  background:color-mix(in srgb,var(--pc,var(--ink)) 13%,var(--surface))}
+.catpick-src.legacy{color:var(--dim);border-color:var(--line-solid);background:var(--surface)}
+/* the provider's raw id shown next to the friendly title ("Telegram  telegram") */
+.catpick-rid{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+/* rich catalog-browse row (Add from catalog): title + dimmed id + provider · description/sample · counts · caps */
+.catrow{display:flex;align-items:flex-start;gap:9px;width:100%;padding:8px 9px;border:0;border-radius:7px;background:none;
+  color:var(--ink);font:inherit;text-align:left;cursor:pointer}
+.catrow:hover{background:var(--surface)}
+.catrow.sel{background:color-mix(in srgb,var(--brand) 14%,transparent)}
+.catrow .catpick-tick{margin-top:2px}
+.catrow-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.catrow-l1{display:flex;align-items:baseline;gap:8px;min-width:0}
+.catrow-title{font-size:13.5px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.catrow-id{font-family:var(--mono);font-size:10.5px;color:var(--faint);flex-shrink:0}
+.catrow-l1 .catpick-src{margin-left:auto}
+.catrow-l2{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.catrow-desc{color:var(--ink-2)}
+.catrow-eg{color:var(--faint);font-family:var(--mono);font-size:10.5px}
+.catrow-right{display:flex;align-items:center;gap:8px;flex-shrink:0;align-self:center}
+.catrow-size{font-size:11px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
+/* "view this list on GitHub" info link, on catalog rows + chips — clearer colour + a larger hit area */
+.catrow-info,.ccchip-info{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;margin:-4px -2px;
+  color:var(--dim);flex-shrink:0;border-radius:6px;transition:color .12s,background .12s}
+.catrow-info:hover,.ccchip-info:hover{color:var(--brand);background:color-mix(in srgb,var(--brand) 12%,transparent)}
+.catrow-info .ic svg,.ccchip-info .ic svg{width:16px;height:16px}
 .catpick-empty{padding:16px 10px;text-align:center;color:var(--faint);font-size:12.5px}
 .capbs{display:flex;gap:4px;flex-shrink:0}
 .capb{font-family:var(--mono);font-size:9px;letter-spacing:.05em;font-weight:600;padding:1px 5px;border-radius:5px}
@@ -1378,11 +1402,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .ccchip-tick input:checked::after{content:"";position:absolute;left:50%;top:50%;width:5px;height:5px;border-radius:50%;background:var(--brand-ink);transform:translate(-50%,-50%)}
 .ccchip-lbl.asbtn{border:0;background:none;padding:0;color:var(--ink);font:inherit;cursor:pointer}
 .ccchip-lbl.asbtn:hover{color:var(--brand)}
-/* list-size pill + hover tooltip (records / sample) */
-.listsize{cursor:default;font-family:var(--mono);font-size:10px;color:var(--dim);padding:1px 5px;border-radius:5px;
-  background:color-mix(in srgb,var(--ink) 7%,transparent);font-variant-numeric:tabular-nums}
+/* list size summary ("142 hosts · 38 nets") + hover sample tooltip */
+.listsize{cursor:default;font-size:11px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
 .listsize:hover{color:var(--ink-2)}
-.listsize.unknown{color:var(--faint);font-size:11px}
 .listtippop{padding:0}
 .listtip{display:flex;flex-direction:column;gap:8px;padding:9px 11px;min-width:180px;max-width:280px}
 .lti-tier{display:flex;flex-direction:column;gap:4px}

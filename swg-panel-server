@@ -1827,6 +1827,7 @@ PANEL_SETTINGS_DEFAULTS = {
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
     "enabled_turn_forks": ["WINGS-N", "anton48"],
     "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
+    "provider_colors": {},    # per-provider source-tag colour overrides {prov_id: {dark,light}} (else CAT_PROVIDER_DEFAULTS)
     # palette overrides — empty = the SPA's built-in defaults (wg green, awg cyan, blocked/faulty orange, brand cyan).
     # Each colour carries a per-mode value {dark,light}.
     "iface_colors": {},       # per-protocol interface colour overrides {"wg"|"awg": {dark,light}}
@@ -2676,6 +2677,14 @@ def api(method, path, qs, body, deps):
                 tc = _themed_color(ic.get(k))
                 if tc: out_ic[k] = tc
             cur["iface_colors"] = out_ic
+        pc = incoming.get("provider_colors")            # per-provider source-tag colour overrides {prov_id: {dark,light}}
+        if isinstance(pc, dict):
+            out_pc = {}
+            for k, v in list(pc.items())[:16]:
+                if k in CATALOG_PROVIDERS:
+                    tc = _themed_color(v)
+                    if tc: out_pc[k] = tc
+            cur["provider_colors"] = out_pc
         sco = incoming.get("status_conditions")         # peer-health DETECTION toggles {blocked,faulty: bool}
         if isinstance(sco, dict):
             cur["status_conditions"] = {"blocked": sco.get("blocked", True) is not False,
@@ -2739,6 +2748,13 @@ def api(method, path, qs, body, deps):
     if method == "POST" and path == "/api/geo/update":          # "Update all lists now": re-fetch every routed list on the panel (host bucket)
         provider_update_all(deps["nodes_path"])
         return 200, {"ok": True, "data": {"updating": True}}
+
+    if method == "GET" and path == "/api/catalog/index":        # the FULL catalog (enabled providers) → client searches by title/desc + paginates locally
+        idx = catalog_index()
+        en = (deps.get("panel_settings") or {}).get("providers") or {}
+        items = [{"id": c, "provider": e.get("p", ""), "caps": {"host": e.get("host", False), "ip": e.get("ip", False)}}
+                 for c, e in idx.items() if en.get(e.get("p", ""), True)]
+        return 200, {"ok": True, "data": {"items": items, "provider_labels": {p: catalog_provider_label(p) for p in CATALOG_PROVIDER_ORDER}}}
 
     if method == "GET" and path == "/api/list-info":            # hover tooltip: a provider list's record count + a sample (resolve-on-hover)
         cat = (qs.get("cat") or [""])[0].strip()

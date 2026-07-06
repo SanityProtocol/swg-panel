@@ -423,6 +423,7 @@ const api = {
   meshHistory(range) { return this.get("/api/mesh-history?range=" + encodeURIComponent(range)); },
   categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
   catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
+  catalogIndex() { return this.get("/api/catalog/index"); },
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
   listInfo(cat) { return this.get("/api/list-info?cat=" + encodeURIComponent(cat)); },
   geoUpdate() { return this.post("/api/geo/update", {}); },
@@ -2792,8 +2793,19 @@ const isProviderCat = c => typeof c === "string" && c.includes(":") && !String(c
 // known prefixes get expanded; everything else is title-cased. `fallback` = the panel's plain label.
 const _REGION_NAMES = (() => { try { return new Intl.DisplayNames(["en"], { type: "region" }); } catch { return null; } })();
 const _titleize = s => String(s).replace(/[-_]+/g, " ").trim().replace(/\b([a-z])/g, (_, c) => c.toUpperCase());
+// Curated friendly names for popular service ids — the providers ship NO titles/descriptions (their lists are
+// just id-named files), so this is our own polish for the common ones. Everything else falls back to Intl country
+// names / prefix expansion / title-case. Keyed by the provider's raw id (after the "<prov>:").
+const CAT_FRIENDLY = {
+  meta: "Meta / Facebook", facebook: "Meta / Facebook", openai: "ChatGPT / OpenAI", twitter: "Twitter / X",
+  google: "Google", youtube: "YouTube", netflix: "Netflix", telegram: "Telegram", whatsapp: "WhatsApp",
+  instagram: "Instagram", tiktok: "TikTok", github: "GitHub", disney: "Disney+", spotify: "Spotify",
+  twitch: "Twitch", reddit: "Reddit", discord: "Discord", vk: "VK", yandex: "Yandex", cloudflare: "Cloudflare",
+  ru_gov: "Russian Government", ru_banks: "Russian Banks", ru_social: "Russian Social (VK / OK)",
+};
 function prettyCatLabel(id, fallback) {
   const rid = String(id || "").includes(":") ? String(id).split(":")[1] : String(id || "");
+  if (CAT_FRIENDLY[rid.toLowerCase()]) return CAT_FRIENDLY[rid.toLowerCase()];   // curated friendly name (ids vary in case across providers)
   if (/^[a-z]{2}$/i.test(rid) && _REGION_NAMES) {                 // ISO 3166 alpha-2 → country name
     try { const n = _REGION_NAMES.of(rid.toUpperCase()); if (n && n.toUpperCase() !== rid.toUpperCase()) return n; } catch (e) {}
   }
@@ -2803,6 +2815,33 @@ function prettyCatLabel(id, fallback) {
   if ((m = rid.match(/^tld-(.+)$/))) return "TLD ." + m[1].toLowerCase();
   return fallback || _titleize(rid) || rid;
 }
+const catRawId = id => String(id || "").includes(":") ? String(id).split(":")[1] : String(id || "");   // the provider's raw id ("telegram")
+// Providers ship NO descriptions (their lists are bare id-named files). These are OUR curated one-liners for the
+// popular categories; everything else shows a live sample of its records instead ("e.g. netflix.com, fast.com").
+const CAT_DESC = {
+  google: "Google search, accounts & core services", youtube: "YouTube video + its CDN",
+  netflix: "Netflix streaming & app", meta: "Facebook, Instagram & WhatsApp", facebook: "Facebook, Instagram & WhatsApp",
+  telegram: "Telegram messenger", whatsapp: "WhatsApp messenger", instagram: "Instagram", twitter: "Twitter / X",
+  openai: "ChatGPT & the OpenAI API", tiktok: "TikTok video", github: "GitHub & its CDN", disney: "Disney+ streaming",
+  spotify: "Spotify audio", twitch: "Twitch live streaming", reddit: "Reddit", discord: "Discord voice & chat",
+  cloudflare: "Cloudflare CDN / edge network", vk: "VKontakte", yandex: "Yandex services",
+  ru_gov: "Russian government sites", ru_banks: "Russian banks", ru_social: "Russian social (VK / OK)",
+};
+const catDescOf = id => CAT_DESC[catRawId(id).toLowerCase()] || "";
+// The provider's GitHub page for a specific list — where the operator can see exactly what it contains (the raw
+// file, or blackmatrix7's folder with its README). Built from the same paths we fetch, as human github.com URLs.
+function catListUrl(id, caps) {
+  const rid = catRawId(id), prov = String(id).includes(":") ? String(id).split(":")[0] : "";
+  const host = !!(caps && caps.host);
+  switch (prov) {
+    case "mc": return "https://github.com/MetaCubeX/meta-rules-dat/blob/meta/geo/" + (host ? "geosite" : "geoip") + "/" + rid + ".list";
+    case "v2": return "https://github.com/v2fly/domain-list-community/blob/master/data/" + rid;
+    case "ls": return "https://github.com/Loyalsoldier/geoip/blob/release/text/" + rid + ".txt";
+    case "rf": return "https://github.com/1andrevich/Re-filter-lists/blob/main/" + rid + ".lst";
+    case "bm": return "https://github.com/blackmatrix7/ios_rule_script/tree/master/rule/Clash/" + rid;
+    default: return "";
+  }
+}
 // Custom-list caps + size from its targets (domains → Host, IPs/CIDRs → IP). Accepts a targets string or a list obj.
 const customTargets = l => (typeof l === "string") ? l : (l && (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", "))) || "";
 function customCaps(l) { const raw = customTargets(l); const doms = domainTargets(raw), ips = splitTargets(raw).filter(isIpTarget);
@@ -2811,40 +2850,78 @@ const customSize = l => { const raw = customTargets(l); return splitTargets(raw)
 // Record count for a provider-catalog cat (Host+IP tiers), shipped by the panel in Store.catSizes {cat:{ip,host}}.
 const catSize = c => { const s = (Store.catSizes || {})[c] || {}; return (s.host || 0) + (s.ip || 0); };
 const fmtCount = n => n == null ? "…" : n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n);
+// "142 hosts · 38 nets" style summary from per-tier counts (Host first). Empty string when nothing is known.
+function sizeSummary(host, ip) {
+  const p = [];
+  if (host) p.push(fmtCount(host) + (host === 1 ? " host" : " hosts"));
+  if (ip) p.push(fmtCount(ip) + (ip === 1 ? " net" : " nets"));
+  return p.join(" · ");
+}
 // A small record-count pill that, on hover, shows the list's counts (Host domains · IP nets) + the first few
 // entries. Provider cats lazy-fetch /api/list-info (session-cached); custom lists read their own targets. With
 // `eager`, the count loads on mount so it shows inline (used in the catalog search where sizes aren't preshipped).
-const _LIST_INFO_CACHE = {};   // cat -> resolved list-info (count + sample), so paging never re-fetches
-function ListInfo({ cat, list, sizeHint, eager }) {
-  const [info, setInfo] = useState(cat ? _LIST_INFO_CACHE[cat] || null : null);
-  const load = () => {
-    if (info) return;
-    if (list) {                                                // custom list — build locally
-      const raw = customTargets(list); const doms = domainTargets(raw), ips = splitTargets(raw).filter(isIpTarget);
-      setInfo({ tiers: { host: { n: doms.length, sample: doms.slice(0, 8) }, ip: { n: ips.length, sample: ips.slice(0, 8) } } });
-    } else if (cat) {
-      api.listInfo(cat).then(r => { const d = r && r.ok ? r.data : { err: true }; _LIST_INFO_CACHE[cat] = d; setInfo(d); }).catch(() => setInfo({ err: true }));
-    }
-  };
-  useEffect(() => { if (eager && cat && !info) load(); }, [eager, cat]);   // catalog search: load counts inline on render
-  const infoN = info && info.tiers ? ((info.tiers.host && info.tiers.host.n || 0) + (info.tiers.ip && info.tiers.ip.n || 0)) : null;
-  const size = list ? customSize(list) : (cat ? (catSize(cat) || (infoN != null ? infoN : 0)) : 0);
-  const shown = size || sizeHint || 0;
-  const tierRow = (t, lbl, unit) => { const d = (info && info.tiers && info.tiers[t]) || null; if (!d || !d.n) return null;
-    return html`<div class="lti-tier"><span class="lti-h"><span class=${"capb " + t}>${lbl}</span> ${fmtCount(d.n)} ${unit}</span>
-      <div class="lti-samp">${(d.sample || []).map(s => html`<span class="lti-e">${s}</span>`)}${d.pending ? html`<span class="lti-e faint">resolving…</span>` : null}</div></div>`; };
-  const bubble = html`<div class="listtip">
-    ${info && info.err ? html`<div class="lti-e faint">couldn't load details</div>`
-      : info ? html`${tierRow("host", "Host", "domains")}${tierRow("ip", "IP", "nets")}${!(info.tiers && (info.tiers.host || info.tiers.ip)) ? html`<div class="lti-e faint">empty</div>` : null}`
-      : html`<div class="lti-e faint">loading…</div>`}</div>`;
-  const glyph = shown ? fmtCount(shown) : (eager && !(info && info.err) ? "…" : "ⓘ");   // eager rows load inline → show "…" then the count
-  return html`<${Popover} cls=${"listsize" + (shown ? "" : " unknown")} popCls="listtippop" hoverOnly=${true}
-    trigger=${html`<span onMouseEnter=${load}>${glyph}</span>`} children=${bubble}/>`;
+const _LIST_INFO_CACHE = {};   // cat -> resolved list-info (count + sample), so CatalogRow paging never re-fetches
+// Plain "N hosts · M nets" text for a list. Counts come from the panel's shipped cat_sizes (routed cats) or the
+// custom list's own targets — no fetch, no hover bubble (the full sample lives inline in the catalog browse row).
+function ListInfo({ cat, list }) {
+  let hostN = null, ipN = null;
+  if (list) { const raw = customTargets(list); hostN = domainTargets(raw).length; ipN = splitTargets(raw).filter(isIpTarget).length; }
+  else if (cat) { const s = (Store.catSizes || {})[cat] || {}; hostN = s.host; ipN = s.ip; }
+  const summary = sizeSummary(hostN || 0, ipN || 0);
+  if (!summary) return null;
+  return html`<span class="listsize">${summary}</span>`;
+}
+
+// A rich catalog-browse row (the "Add from catalog" list): title + the raw id (name) dimmed under it, the
+// provider tag, a description (curated, else a live sample of records), "N hosts · M nets", and Host/IP tags.
+// Eager-loads /api/list-info (session-cached) for the counts + samples. Providers ship no descriptions, so the
+// second line falls back to "e.g. <first few records>" — self-explanatory from the list's own contents.
+const _isPending = d => !!(d && d.tiers && Object.keys(d.tiers).some(t => (d.tiers[t] || {}).pending));
+function CatalogRow({ it, added, onPick }) {
+  const [info, setInfo] = useState(() => { const c = _LIST_INFO_CACHE[it.id]; return c && !_isPending(c) ? c : null; });
+  useEffect(() => {   // fetch counts+samples; if the panel is still resolving the list, poll a few times until it lands
+    let live = true, tries = 0, timer = null;
+    const go = () => api.listInfo(it.id).then(r => { const d = r && r.ok ? r.data : { err: true }; _LIST_INFO_CACHE[it.id] = d;
+      if (!live) return; setInfo(d);
+      if (_isPending(d) && tries++ < 8) timer = setTimeout(go, 1800); }).catch(() => live && setInfo({ err: true }));
+    if (!info || _isPending(_LIST_INFO_CACHE[it.id])) go();
+    return () => { live = false; clearTimeout(timer); }; }, [it.id]);
+  const title = prettyCatLabel(it.id, it.label), rid = catRawId(it.id), desc = catDescOf(it.id);
+  const hostD = info && info.tiers && info.tiers.host, ipD = info && info.tiers && info.tiers.ip;
+  const summary = sizeSummary((hostD && hostD.n) || 0, (ipD && ipD.n) || 0);
+  const samples = ((hostD && hostD.sample) || (ipD && ipD.sample) || []).slice(0, 4);
+  const more = (((hostD && hostD.n) || (ipD && ipD.n) || 0) > samples.length);
+  const pending = !info || _isPending(info);
+  const sub = desc || (samples.length ? "e.g. " + samples.join(", ") + (more ? "…" : "")
+    : (pending ? "loading…" : (info && info.err ? "couldn't load" : "")));
+  return html`<button type="button" class=${"catrow" + (added ? " sel" : "")} onClick=${() => onPick(it.id)}>
+    <span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>
+    <div class="catrow-main">
+      <div class="catrow-l1"><span class="catrow-title">${title}</span>${rid.toLowerCase() !== title.toLowerCase() ? html`<span class="catrow-id">${rid}</span>` : null}</div>
+      ${sub ? html`<div class="catrow-l2">${desc ? html`<span class="catrow-desc">${desc}</span>` : null}${desc && samples.length ? html`<span class="catrow-eg"> · e.g. ${samples.join(", ")}${more ? "…" : ""}</span>` : (!desc ? html`<span class="catrow-eg">${sub}</span>` : null)}</div>` : null}
+    </div>
+    <div class="catrow-right">
+      <${ProvTag} id=${it.id} label=${it.provider_label || provLabelOf(it.id)}/>${capBadges(it.caps)}${summary ? html`<span class="catrow-size">${summary}</span>` : null}
+      ${catListUrl(it.id, it.caps) ? html`<a class="catrow-info" href=${catListUrl(it.id, it.caps)} target="_blank" rel="noopener" title="View this list on GitHub" onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>` : null}</div>
+  </button>`;
 }
 function provLabelOf(c) {
   if (!isProviderCat(c)) return "";
   const pid = c.split(":")[0];
   return ((Store.catalogProviders || []).find(p => p.id === pid) || {}).label || pid;
+}
+// Each provider gets a distinct colour (default palette + a Panel-settings per-mode override, like turn forks).
+const CAT_PROVIDER_DEFAULTS = { mc: { color: "#5B8FF9", colorL: "#2C6FD6" }, v2: { color: "#61DDAA", colorL: "#1E9E6E" },
+  ls: { color: "#F6BD16", colorL: "#B8890A" }, rf: { color: "#E8684A", colorL: "#C2452A" }, bm: { color: "#B07BE0", colorL: "#8347C0" } };
+function providerColor(prov) {
+  const ov = (Store.panelSettings && Store.panelSettings.provider_colors) || {};
+  const d = CAT_PROVIDER_DEFAULTS[prov] || { color: "#8FA8C0", colorL: "#5E7085" };
+  return pickThemed(ov[prov], d.color, d.colorL);
+}
+// Provider source tag — colour-coded by provider (or a neutral "Custom"/"built-in" chip when plain).
+function ProvTag({ id, label, plain }) {
+  if (plain || !isProviderCat(id)) return html`<span class="catpick-src legacy">${label}</span>`;
+  return html`<span class="catpick-src" style=${"--pc:" + providerColor(String(id).split(":")[0])}>${label || provLabelOf(id)}</span>`;
 }
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
 // EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns). A
@@ -2864,11 +2941,23 @@ const newRid = () => "rr" + (++_ruleSeq);
 // grow a textarea to fit its content (starts at one row like a textbox, expands as lines wrap)
 const autoGrow = el => { if (!el) return; el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; };
 
+// The full catalog index, fetched once and searched CLIENT-side — so search matches the readable title
+// (country names, friendly names) and descriptions, not just the raw provider id. ~3.5k tiny rows.
+let _CATALOG_INDEX = null;
+function loadCatalogIndex() {
+  if (_CATALOG_INDEX) return Promise.resolve(_CATALOG_INDEX);
+  return api.catalogIndex().then(r => {
+    if (r && r.ok) { const pl = r.data.provider_labels || {};
+      _CATALOG_INDEX = (r.data.items || []).map(it => ({ ...it, provider_label: pl[it.provider] || it.provider })); }
+    return _CATALOG_INDEX || [];
+  }).catch(() => []);
+}
+
 // Searchable provider-catalog category picker — replaces the native <select> for routing rules. The
-// catalog holds ~1800 categories (far too many for a dropdown), so this is a combobox: a button showing
-// the current label, opening a portal'd popover with a live search box (queries /api/catalog, paginated)
-// plus the operator's own custom lists pinned on top. caps ({ip,host}) drive kernel greying — a host-only
-// category can't match by dest IP, so it's disabled (not hidden) in kernel mode with a "needs Force-DNS" note.
+// catalog holds ~3.5k categories (far too many for a dropdown), so this is a combobox: a button showing
+// the current label, opening a portal'd popover with a search box (filters the full index locally, by title/
+// id/description) plus the operator's own custom lists pinned on top. caps ({ip,host}) drive kernel greying —
+// a host-only category can't match by dest IP, so it's disabled (not hidden) in kernel mode with a note.
 // addMode: the picker becomes a multi-select "Add from catalog" affordance — it stays open on each pick,
 // shows a ✓ on already-added ids (from `selected`), and hides the Custom row, custom lists, and the 26
 // built-ins (those are managed by the checkboxes above it). Used by the Settings node-lens.
@@ -2876,7 +2965,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
-  const [res, setRes] = useState(null);       // {items,total,page,per} | null while loading
+  const [cidx, setCidx] = useState(addMode ? _CATALOG_INDEX : null);   // the full catalog index (addMode only), loaded once
   const [pos, setPos] = useState(null);
   const ref = useRef(null), popRef = useRef(null), inRef = useRef(null);
   const selSet = new Set(selected || []);
@@ -2889,11 +2978,9 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     const flip = below < 300 && above > below;                 // not enough room under the trigger → open upward
     setPos({ left: Math.round(r.left), top: Math.round(flip ? r.top - 4 : r.bottom + 4), width: Math.round(r.width),
       flip, maxh: Math.max(200, Math.round(flip ? above : below)) }); };   // list caps to the space actually available
-  useEffect(() => {   // ONLY addMode hits the full catalog API; the routing picker works off the node's own lists (below)
-    if (!open || !addMode) return; let live = true;
-    const t = setTimeout(() => api.catalog(q, page).then(r => { if (live && r && r.data) { (r.data.items || []).forEach(it => { _CATALOG_LABEL_CACHE[it.id] = it.label; }); setRes(r.data); } }).catch(() => {}), q && page === 0 ? 180 : 0);
-    return () => { live = false; clearTimeout(t); };
-  }, [open, q, page, addMode]);
+  useEffect(() => {   // addMode: load the full index ONCE, then search/paginate locally (matches title + id + description)
+    if (open && addMode && !cidx) { let live = true; loadCatalogIndex().then(x => live && setCidx(x)); return () => { live = false; }; }
+  }, [open, addMode]);
   useEffect(() => {   // position + outside-click/Esc/scroll handling while open
     if (!open) return; place();
     const onMove = () => place();
@@ -2906,9 +2993,16 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
   }, [open]);
   const pick = id => { onChange(id); if (addMode) return; setOpen(false); setQ(""); setPage(0); };   // addMode stays open for multi-add
   const capBadge = capBadges;   // shared Host-first renderer (defined near catLabelOf)
-  const items = (res && res.items) || [];
-  const per = (res && res.per) || 40, total = (res && res.total) || 0;
+  // addMode: filter the full index by title/id/description, sort by readable title, paginate 40/page locally.
+  const per = 40;
+  const _aq = q.trim().toLowerCase();
+  const filtered = addMode && cidx ? cidx.filter(it => { if (!_aq) return true;
+    return it.id.toLowerCase().includes(_aq) || catRawId(it.id).toLowerCase().includes(_aq)
+      || prettyCatLabel(it.id, "").toLowerCase().includes(_aq) || catDescOf(it.id).toLowerCase().includes(_aq); })
+    .map(it => ({ ...it, disp: prettyCatLabel(it.id, "") })).sort((a, b) => a.disp.toLowerCase().localeCompare(b.disp.toLowerCase())) : [];
+  const total = filtered.length;
   const pages = Math.max(1, Math.ceil(total / per));
+  const items = filtered.slice(page * per, (page + 1) * per);
   const lists = customLists || [];
   // Routing picker (non-addMode): TWO sections — Provider lists (the node's opted-in provider-catalog cats, each
   // source-tagged) and Custom lists (your own). Never the full catalog — filtered client-side; add more via Settings.
@@ -2931,7 +3025,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
     ${open && pos ? html`<${Portal}><div ref=${popRef} class=${"catpick-pop" + (pos.flip ? " flip" : "")} style=${"left:" + pos.left + "px;top:" + pos.top + "px;min-width:" + Math.max(pos.width, 320) + "px;--catpick-maxh:" + (pos.maxh - 160) + "px"}>
       <div class="catpick-search">
         <${Ic} i="search"/>
-        <input ref=${inRef} type="text" placeholder=${addMode ? "Search " + ((res && res.total) || "") + " categories — netflix, steam, ru…" : "Filter this node's lists…"} value=${q}
+        <input ref=${inRef} type="text" placeholder=${addMode ? "Search " + ((cidx && cidx.length) || "") + " lists — name, country, service…" : "Filter this node's lists…"} value=${q}
           onInput=${e => { setQ(e.target.value); setPage(0); }} spellcheck="false" autocomplete="off"/>
       </div>
       <div class="catpick-list">
@@ -2942,17 +3036,14 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
             ${g.rows.map(it => { const ok = it.caps ? usable(it.caps) : true; return html`<button type="button" disabled=${!ok}
               class=${"catpick-row" + (value === it.id ? " sel" : "") + (ok ? "" : " off")} onClick=${() => ok && pick(it.id)}
               title=${ok ? "" : "Host-only list — switch this node to Force-DNS to use it"}>
-              <span class="catpick-rlbl">${it.label}${it.src ? html`<span class=${"catpick-src" + (it.legacy || it.src === "Custom" ? " legacy" : "")}>${it.src}</span>` : null}</span>
-              ${it.caps ? capBadge(it.caps) : null}${it.list ? html`<${ListInfo} list=${it.list}/>` : (isProviderCat(it.id) ? html`<${ListInfo} cat=${it.id} sizeHint=${catSize(it.id)}/>` : null)}</button>`; })}`)}
+              <span class="catpick-rlbl">${it.label}${it.src ? html`<${ProvTag} id=${it.id} label=${it.src} plain=${it.legacy || it.src === "Custom"}/>` : null}</span>
+              ${it.caps ? capBadge(it.caps) : null}${it.list ? html`<${ListInfo} list=${it.list}/>` : (isProviderCat(it.id) ? html`<${ListInfo} cat=${it.id}/>` : null)}
+              ${isProviderCat(it.id) && catListUrl(it.id, it.caps) ? html`<a class="catrow-info" href=${catListUrl(it.id, it.caps)} target="_blank" rel="noopener" title="View this list on GitHub" onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>` : null}</button>`; })}`)}
           ${localEmpty ? html`<div class="catpick-empty">No list on this node matches “${q}”. Add more in Settings → Routing lists.</div>` : null}
         ` : html`
-          ${(() => { const rows = [...items].map(it => ({ ...it, disp: prettyCatLabel(it.id, it.label) })).sort((a, b) => a.disp.toLowerCase().localeCompare(b.disp.toLowerCase()));
-            return res == null ? html`<div class="catpick-empty">Loading…</div>`
-            : rows.length === 0 ? html`<div class="catpick-empty">No provider list matches “${q}”.</div>`
-            : rows.map(it => { const added = selSet.has(it.id); return html`<button type="button"
-                class=${"catpick-row" + (added ? " sel" : "")} onClick=${() => pick(it.id)}>
-                <span class="catpick-rlbl"><span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>${it.disp}<span class="catpick-src">${it.provider_label || provLabelOf(it.id)}</span></span>
-                ${capBadge(it.caps)}<${ListInfo} cat=${it.id} sizeHint=${catSize(it.id)} eager=${true}/></button>`; }); })()}
+          ${cidx == null ? html`<div class="catpick-empty">Loading catalog…</div>`
+            : items.length === 0 ? html`<div class="catpick-empty">No list matches “${q}”.</div>`
+            : items.map(it => html`<${CatalogRow} key=${it.id} it=${it} added=${selSet.has(it.id)} onPick=${pick}/>`)}
         `}
       </div>
       ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is in <b>Kernel</b> (IP) mode. Switch it to Force-DNS or SNI to use them.</div>` : null}
@@ -5449,6 +5540,9 @@ function PanelSettingsScreen() {
   // ---- themed colour pickers ({dark,light} each) — Interfaces / Display / Turn sections ----
   const asThemed = (v, dd, dl) => (v && typeof v === "object") ? { dark: v.dark || dd, light: v.light || dl } : { dark: v || dd, light: v || dl };
   const sameThemed = (a, dd, dl) => (a.dark || "").toLowerCase() === dd.toLowerCase() && (a.light || "").toLowerCase() === dl.toLowerCase();
+  const _provColDefault = p => { const d = CAT_PROVIDER_DEFAULTS[p] || { color: "#8FA8C0", colorL: "#5E7085" }; return { dark: d.color, light: d.colorL }; };
+  const [provColors, setProvColors] = useState(() => Object.fromEntries(_provReg.map(p => [p.id, asThemed((ps.provider_colors || {})[p.id], _provColDefault(p.id).dark, _provColDefault(p.id).light)])));
+  const provColorOverrides = () => { const o = {}; for (const p of _provReg) { const d = _provColDefault(p.id); const t = asThemed(provColors[p.id], d.dark, d.light); if (!sameThemed(t, d.dark, d.light)) o[p.id] = t; } return o; };
   const [forkColors, setForkColors] = useState(() => Object.fromEntries(TURN_FORKS.map(f => [f.id, asThemed((ps.turn_fork_colors || {})[f.id], f.color, f.colorL)])));
   const [ifaceColors, setIfaceColors] = useState(() => ({
     wg: asThemed((ps.iface_colors || {}).wg, IFACE_COLOR_DEFAULTS.wg.dark, IFACE_COLOR_DEFAULTS.wg.light),
@@ -5559,6 +5653,7 @@ function PanelSettingsScreen() {
         interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25 },
         mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
         providers: provEnabled,
+        provider_colors: provColorOverrides(),
         geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
         store_configs: sc === "off" ? false : true,
         throughput_perspective: tput,
@@ -5690,7 +5785,7 @@ function PanelSettingsScreen() {
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "")) :
     sec === "security" ? secChanged() :
-    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
+    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
@@ -5718,7 +5813,7 @@ function PanelSettingsScreen() {
     <div class="setbody">
       <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
       <div class="setpane">
-        ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}>${n.name}</button>`)}</div>` : null}
+        ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + (n.color || Store.nodeColor(n.id))} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
           <p class="hint" style="margin:0 0 12px">Select how this node matches smart-routing traffic — by destination <b>IP</b>, or by <b>hostname</b> (via the node's DNS, or read from the TLS handshake). In every mode the traffic stays in-kernel (no userspace proxy); the modes differ only in match precision and in whether they touch your clients' DNS. Changing the mode reconfigures the node (adds or removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</p>
@@ -5730,8 +5825,9 @@ function PanelSettingsScreen() {
           <div class="ccchips">${ccOf(selNode).length ? [...ccOf(selNode)].sort((a, b) => catLabelOf(a).toLowerCase().localeCompare(catLabelOf(b).toLowerCase())).map(id => { const cap = catCap(id); const greyed = nodeMode === "kernel" && !cap.ip;
             return html`<span class=${"ccchip" + (greyed ? " off" : "")} key=${id} title=${greyed ? "Domain-only — needs Force-DNS or SNI on this node" : ""}>
               <span class="ccchip-lbl">${catLabelOf(id)}</span>
-              ${provLabelOf(id) ? html`<span class="catpick-src">${provLabelOf(id)}</span>` : null}
-              ${capBadges(cap)}<${ListInfo} cat=${id} sizeHint=${catSize(id)}/>
+              ${provLabelOf(id) ? html`<${ProvTag} id=${id}/>` : null}
+              ${capBadges(cap)}<${ListInfo} cat=${id}/>
+              ${catListUrl(id, cap) ? html`<a class="ccchip-info" href=${catListUrl(id, cap)} target="_blank" rel="noopener" title="View this list on GitHub"><${Ic} i="info"/></a>` : null}
               <button class="ccchip-x" title="Remove from this node" onClick=${() => removeCatalogCat(id)}><${Ic} i="x"/></button>
             </span>`; }) : html`<span class="hint" style="margin:0">No provider lists added to this node yet.</span>`}</div>
           <div style="margin-top:10px"><${CatPicker} addMode=${true} mode=${nodeMode} triggerLabel="Add from catalog" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/></div>
@@ -5791,6 +5887,8 @@ function PanelSettingsScreen() {
           <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = provEnabled[p.id] !== false; return html`<div class=${"provrow" + (on ? "" : " off")} key=${p.id}>
             <label class="swt" title=${on ? "Enabled — its lists are selectable" : "Disabled — its lists are hidden and deactivated on nodes"}>
               <input type="checkbox" checked=${on} onChange=${e => setProvEnabled(m => ({ ...m, [p.id]: e.target.checked }))}/><span class="track"></span><span class="knob"></span></label>
+            <${ThemedSwatch} val=${provColors[p.id]} title=${p.label + " tag colour"} onChange=${nv => setProvColors(c => ({ ...c, [p.id]: nv }))}
+              sample=${(c) => html`<span class="catpick-src" style=${"--pc:" + c}>${p.label}</span>`}/>
             <div class="prov-meta">
               <span class="prov-name">${p.label}</span>
               <span class="prov-tiers">${capBadges({ host: (p.tiers || []).includes("host"), ip: (p.tiers || []).includes("ip") })}</span>
