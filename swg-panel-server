@@ -1377,9 +1377,15 @@ CATALOG_PROVIDERS = {
            "raw_host": "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/{id}.lst",
            "raw_ip":   "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/{id}.lst",
            "fmt_host": "plain"},
-    # blackmatrix7 (per-app host + IP) — planned; needs recursive folder indexing + classical-format normalize here.
+    # blackmatrix7: 668 per-app folders under rule/Clash/<Name>/. Each <Name>.list is Clash "classical" format
+    # (DOMAIN,/DOMAIN-SUFFIX,/IP-CIDR, prefixes) carrying domains AND ips; only a few ship a dedicated <Name>_IP.txt.
+    # Indexed recursively (one call): host cap for every folder (the .list has domains), ip cap only where _IP.txt exists.
+    "bm": {"label": "blackmatrix7", "url": "https://github.com/blackmatrix7/ios_rule_script",
+           "recursive_clash": "https://api.github.com/repos/blackmatrix7/ios_rule_script/git/trees/master:rule/Clash?recursive=1",
+           "raw_host": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/{id}/{id}.list", "fmt_host": "classical",
+           "raw_ip":   "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/{id}/{id}_IP.txt", "fmt_ip": "classical"},
 }
-CATALOG_PROVIDER_ORDER = ["mc", "v2", "ls", "rf"]
+CATALOG_PROVIDER_ORDER = ["mc", "v2", "ls", "rf", "bm"]
 CATALOG_TTL = 86400
 CATALOG_PATH = "/var/lib/swg-panel/catalog-index.json"          # overridden from the state dir in main()
 _CATALOG = {"idx": None, "at": 0, "err": "", "perr": {}}        # in-memory cache
@@ -1392,7 +1398,7 @@ def catalog_providers_view(enabled):
     out = []
     for pid in CATALOG_PROVIDER_ORDER:
         cfg = CATALOG_PROVIDERS[pid]
-        tiers = sorted({t for t, _ in cfg["trees"]} - {"auto"}) or ["ip", "host"]
+        tiers = ["host", "ip"] if cfg.get("recursive_clash") else (sorted({t for t, _ in cfg["trees"]} - {"auto"}) or ["ip", "host"])
         out.append({"id": pid, "label": cfg["label"], "url": cfg.get("url", ""),
                     "tiers": tiers, "enabled": bool((enabled or {}).get(pid, True)),
                     "error": (_CATALOG.get("perr") or {}).get(pid, "")})
@@ -1410,6 +1416,18 @@ def _catalog_build():
     idx = {}; perr = {}
     for prov in CATALOG_PROVIDER_ORDER:
         cfg = CATALOG_PROVIDERS[prov]; strip = cfg.get("strip", "")
+        if cfg.get("recursive_clash"):                          # blackmatrix7: one recursive tree → folder→{host,ip}
+            try:
+                t = _catalog_gh(cfg["recursive_clash"])
+                blobs = [e.get("path", "") for e in (t.get("tree") or []) if e.get("type") == "blob"]
+                has_list = {p.split("/")[0] for p in blobs if p.endswith(".list") and "/" in p}
+                has_ip = {p.split("/")[0] for p in blobs if p.endswith("_IP.txt") and "/" in p}
+                for fid in has_list:
+                    if fid:
+                        idx[prov + ":" + fid] = {"p": prov, "host": True, "ip": fid in has_ip}
+            except Exception as ex:
+                perr[prov] = str(ex)[:120]
+            continue
         try:
             for tier, url in cfg["trees"]:
                 t = _catalog_gh(url)
@@ -1525,6 +1543,38 @@ def _norm_host_plain(text):
             out.add(ln)
     return sorted(out)
 
+def _norm_classical(text, tier):
+    """Clash 'classical' rule text (blackmatrix7) → the requested tier. Lines are `TYPE,value[,opts]`:
+    DOMAIN/DOMAIN-SUFFIX → host (dnsmasq suffix-matches a bare domain); IP-CIDR → ip. DOMAIN-KEYWORD/regexp/
+    IP-CIDR6/PROCESS-NAME are dropped (unmatchable by our IPv4 dnsmasq/nft path)."""
+    if tier == "ip":
+        nets = []
+        for raw in text.splitlines():
+            ln = raw.split("#", 1)[0].strip()
+            if not ln.upper().startswith("IP-CIDR,"):
+                continue
+            val = ln.split(",")[1].strip() if "," in ln else ""
+            try:
+                n = ipaddress.ip_network(val, strict=False)
+                if n.version == 4:
+                    nets.append(n)
+            except Exception:
+                continue
+        return [str(n) for n in ipaddress.collapse_addresses(nets)]
+    out = set()
+    for raw in text.splitlines():
+        ln = raw.split("#", 1)[0].strip()
+        parts = ln.split(",")
+        if len(parts) < 2:
+            continue
+        kind = parts[0].strip().upper()
+        if kind not in ("DOMAIN", "DOMAIN-SUFFIX"):
+            continue
+        d = parts[1].strip().lower().lstrip(".")
+        if _PDOM_RE.match(d):
+            out.add(d)
+    return sorted(out)
+
 def _norm_host_v2(rid, seen, prov="v2"):
     """v2fly data/<rid> → domains; resolves include: recursively (cycle-guarded, bounded). Fail-closed: any fetch
     error → None so a transient blip keeps last-good instead of shipping a truncated list."""
@@ -1573,15 +1623,17 @@ def list_resolve(cat, tier):
         tmpl = cfg.get("raw_ip") or ""
         if not tmpl:
             return None
-        try:    return _norm_ip(_list_fetch_text(tmpl.format(id=rid)))
+        try:    txt = _list_fetch_text(tmpl.format(id=rid))
         except Exception: return None
+        return _norm_classical(txt, "ip") if cfg.get("fmt_ip") == "classical" else _norm_ip(txt)
     if cfg.get("fmt_host") == "v2fly":                          # v2fly needs include expansion
         return _norm_host_v2(rid, set(), prov)
     tmpl = cfg.get("raw_host") or ""
     if not tmpl:
         return None
-    try:    return _norm_host_plain(_list_fetch_text(tmpl.format(id=rid)))
+    try:    txt = _list_fetch_text(tmpl.format(id=rid))
     except Exception: return None
+    return _norm_classical(txt, "host") if cfg.get("fmt_host") == "classical" else _norm_host_plain(txt)
 
 def _list_write(cat, tier, items):
     body = "\n".join(items) + ("\n" if items else "")
