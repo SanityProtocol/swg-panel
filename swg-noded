@@ -1128,6 +1128,83 @@ def _bg_fetch(key, path, fetch_fn):
     threading.Thread(target=_work, daemon=True).start()
 
 
+# ── Panel-pull: fetch provider-catalog lists from the PANEL (not GitHub) ─────────────────────────────────────
+# The panel resolves each routed provider list once and serves it (raw text) with a version. The node pulls a
+# list only when its version changed — a newly-routed cat immediately, a CHANGED existing one only inside the
+# scheduled quiet window (that reload is what clients feel). Pulled files land as <cat>.txt (ip) / <cat>.doms
+# (host) in GEO_DIR — the SAME files _smart_geo_refresh / _smart_domain_refresh already load.
+_PULL_INFLIGHT = set(); _PULL_LOCK = threading.Lock()
+
+def _in_quiet_window(sched):
+    """Is now inside the operator's scheduled update window? every_days=0 → continuous (always). Else the 60-min
+    window opening at the node-local `at` time. New lists ignore this (applied immediately); only CHANGED ones wait."""
+    ev = int((sched or {}).get("every_days") or 1)
+    if ev == 0:
+        return True
+    at = str((sched or {}).get("at") or "04:00")
+    try:
+        hh, mm = int(at.split(":")[0]), int(at.split(":")[1])
+    except Exception:
+        hh, mm = 4, 0
+    import datetime
+    now = datetime.datetime.now()                              # node-local time (the node is a real host, not sandboxed)
+    start = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return start <= now < start + datetime.timedelta(minutes=60)
+
+def _bg_pull(cat, tier, ver, url_base, token, dest, pver_path):
+    """Background pull of one resolved list from the panel → dest, then stamp its version. Deduped per (cat,tier)."""
+    k = cat + "|" + tier
+    with _PULL_LOCK:
+        if k in _PULL_INFLIGHT:
+            return
+        _PULL_INFLIGHT.add(k)
+    def _work():
+        try:
+            url = url_base + "?cat=" + urllib.parse.quote(cat, safe="") + "&tier=" + tier
+            req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read().decode("utf-8", "replace")
+            tmp = dest + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(data)
+            os.replace(tmp, dest)
+            with contextlib.suppress(OSError):
+                open(pver_path, "w").write(ver)
+        except Exception:
+            pass                                               # keep last-good; retry next sync
+        finally:
+            with _PULL_LOCK:
+                _PULL_INFLIGHT.discard(k)
+    threading.Thread(target=_work, daemon=True).start()
+
+def _panel_list_refresh(manifest, sched, panel_base, token, res):
+    """For each provider-catalog list this node routes (from the sync `list_manifest`), pull it from the panel
+    when its version changed — new cat now, changed cat only in the quiet window. Writes <cat>.txt / <cat>.doms
+    so the existing geoip/domain loaders pick them up. Non-blocking (each pull runs on its own daemon thread)."""
+    if not manifest or not panel_base or not token:
+        return
+    try:
+        os.makedirs(GEO_DIR, exist_ok=True)
+    except OSError:
+        return
+    base = panel_base.rstrip("/") + "/api/node/list"
+    in_window = _in_quiet_window(sched)
+    for cat, tiers in manifest.items():
+        for tier, want_v in (tiers or {}).items():
+            if tier not in ("ip", "host") or not want_v:
+                continue
+            dest = os.path.join(GEO_DIR, cat + (".txt" if tier == "ip" else ".doms"))
+            pv = os.path.join(GEO_DIR, "." + cat.replace(":", "_") + "." + tier + ".pver")
+            try:    cur_v = open(pv).read().strip()
+            except OSError: cur_v = ""
+            have = os.path.exists(dest)
+            if cur_v == want_v and have:
+                continue                                       # unchanged upstream → nothing to pull
+            if not (not have or not cur_v) and not in_window:  # a CHANGED existing list waits for the quiet hour
+                continue
+            _bg_pull(cat, tier, want_v, base, token, dest, pv)
+
+
 def _nft_load_set(setname, cidrs):
     """Atomically replace an nft interval set's elements (flush + chunked add via `nft -f`). Overlapping or
     adjacent ranges are COLLAPSED first — an `interval` set without auto-merge rejects an overlapping add and
@@ -1187,19 +1264,20 @@ def _smart_geo_refresh(categories, set_counts, res, skip=()):
         try:                                                   # one bad category must never crash the sync loop
             sn = _smart_setname(cat)
             path = os.path.join(GEO_DIR, cat + ".txt")
-            try:
-                stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
-            except OSError:
-                stale = True
-            ap = os.path.join(GEO_DIR, "." + cat + ".attempt")
-            try:
-                due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
-            except OSError:
-                due = stale
-            if due:
-                with contextlib.suppress(OSError):                 # stamp BEFORE fetching → a hang still backs off
-                    open(ap, "w").write(str(int(time.time())))
-                _bg_fetch("geo:" + cat, path, lambda c=cat: _geo_fetch(c))   # BACKGROUND — never stall the reconcile on network I/O
+            if _cat_geo_sources(cat):                          # built-in → GitHub fetch-if-due (providers own their .txt via _panel_list_refresh)
+                try:
+                    stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
+                except OSError:
+                    stale = True
+                ap = os.path.join(GEO_DIR, "." + cat + ".attempt")
+                try:
+                    due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
+                except OSError:
+                    due = stale
+                if due:
+                    with contextlib.suppress(OSError):             # stamp BEFORE fetching → a hang still backs off
+                        open(ap, "w").write(str(int(time.time())))
+                    _bg_fetch("geo:" + cat, path, lambda c=cat: _geo_fetch(c))   # BACKGROUND — never stall the reconcile on network I/O
             try:
                 st = os.stat(path)                             # no data yet → set stays empty (inert), retry next TTL
             except OSError:
@@ -1265,14 +1343,17 @@ DOMAIN_SOURCES = {
     # overly-broad upstream category pulling in shared/parent domains.
 }
 
-# CATALOG categories (anything beyond the curated built-ins above) resolve to MetaCubeX by id — the panel ships
-# each smart category's caps ({ip,host}) in the sync so the node knows which tier to fetch. Built-ins keep their
-# curated sources; a catalog cat with no built-in source falls back to MC:<id>.
+# Only the legacy built-ins fetch from GitHub (their curated GEO_SOURCES/DOMAIN_SOURCES). PROVIDER-catalog cats
+# (namespaced "<prov>:<id>") are resolved on the PANEL and PULLED from it by _panel_list_refresh — the node never
+# fetches them from GitHub — so their source lists here are empty (an <id> with no ":" and not a built-in is a
+# custom_<hash> rule, whose contents the panel ships inline, so also empty).
 _CAT_CAPS = {}   # {cat:{ip,host}} — refreshed from the sync `smart.cat_caps` at the top of every reconcile
 def _cat_geo_sources(cat):
-    return GEO_SOURCES.get(cat) or (["MC:" + cat] if _CAT_CAPS.get(cat, {}).get("ip") else [])
+    return GEO_SOURCES.get(cat) or []
 def _cat_dom_sources(cat):
-    return DOMAIN_SOURCES.get(cat) or (["MC:" + cat] if _CAT_CAPS.get(cat, {}).get("host") else [])
+    return DOMAIN_SOURCES.get(cat) or []
+def _is_provider_cat(cat):
+    return ":" in str(cat)                                      # <prov>:<id> → panel-resolved + panel-pulled
 
 _DOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
 _DOM_INCLUDE_MAX = 256         # failsafe vs a pathological include tree (cycles already guarded by `seen`);
@@ -1381,23 +1462,26 @@ def _smart_domain_refresh(cats, res):
     except OSError as e:
         res["errors"].append("smart domain dir: " + str(e)); return out
     for cat in cats:
-        if not _cat_dom_sources(cat):                          # built-in (DOMAIN_SOURCES) OR a catalog host cat (MC:) — else nothing to fetch
+        srcs = _cat_dom_sources(cat)
+        prov = _is_provider_cat(cat)                           # panel-pulled: read its <cat>.doms, never GitHub-fetch here
+        if not srcs and not prov:                              # custom_<hash> etc. → domains come inline from the panel
             continue
         try:
             path = os.path.join(GEO_DIR, cat + ".doms")
-            try:
-                stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
-            except OSError:
-                stale = True
-            ap = os.path.join(GEO_DIR, "." + cat + ".doms.attempt")
-            try:
-                due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
-            except OSError:
-                due = stale
-            if due:
-                with contextlib.suppress(OSError):                 # stamp BEFORE fetching → a hang still backs off
-                    open(ap, "w").write(str(int(time.time())))
-                _bg_fetch("dom:" + cat, path, lambda c=cat: _domain_fetch(c))   # BACKGROUND — never stall the reconcile on network I/O
+            if srcs:                                           # built-in → GitHub fetch-if-due (providers own their .doms via _panel_list_refresh)
+                try:
+                    stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
+                except OSError:
+                    stale = True
+                ap = os.path.join(GEO_DIR, "." + cat + ".doms.attempt")
+                try:
+                    due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
+                except OSError:
+                    due = stale
+                if due:
+                    with contextlib.suppress(OSError):             # stamp BEFORE fetching → a hang still backs off
+                        open(ap, "w").write(str(int(time.time())))
+                    _bg_fetch("dom:" + cat, path, lambda c=cat: _domain_fetch(c))   # BACKGROUND — never stall the reconcile on network I/O
             try:
                 st = os.stat(path)
             except OSError:
@@ -1701,7 +1785,7 @@ def apply_panel_settings(pan):
         pass
 
 
-def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
+def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_base="", node_token="", panel_cfg=None):
     """Phase 2 cascade + Phase 3 smart routing. ENTRY (P2 forward): `ip rule from S lookup T`; ENTRY
     (P3 smart): nftables marks `ip saddr S ip daddr @<category> meta mark set T` then `ip rule fwmark T
     lookup T` — both route into `default dev <link> table T`. EXIT (shared): `ip rule to S lookup T` +
@@ -1716,7 +1800,11 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip=""):
     smart_e = (smart or {}).get("entries") or []
     smart_exit = [e for e in smart_e if e.get("action", "exit") == "exit"]   # only exit rules carry a mesh table/dev; direct/block are local verdicts
     mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni — picks the set-fill mechanism
-    _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → lets _cat_*_sources fetch CATALOG cats from MetaCubeX
+    _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → host-tier seeding + kernel greying
+    # PROVIDER lists: pull each routed one from the PANEL (not GitHub) when its version changed — writes the same
+    # <cat>.txt / <cat>.doms the loaders below consume. New cat → now; changed cat → only in the quiet window.
+    _panel_list_refresh((smart or {}).get("list_manifest") or {}, (panel_cfg or {}).get("geo_update") or {},
+                        panel_base, node_token, res)
     band = _live_band_prios()
     want_tables = {str(e["table"]) for e in (fwd + smart_exit + exit_)}
     want_sig = _cascade_want_sig(fwd, exit_, smart_exit)   # only exit entries create fwmark→table policy routing
@@ -3344,7 +3432,8 @@ def main():
                 if (_route_sig != last_route_sig or _iface_churn
                         or (time.time() - last_route_t) >= ROUTING_RECONCILE_EVERY_S):
                     eg = reconcile_egress(node_cfg, reply.get("desired_ifaces") or {}, _def_egress)   # per-interface egress SNAT (+ node default)
-                    cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress)   # P2 forward + P3 smart + exit SNAT
+                    cas = reconcile_cascade(node_cfg, reply.get("cascade"), reply.get("smart"), _def_egress,
+                                            panel_base=panel["url"], node_token=token, panel_cfg=reply.get("panel"))   # P2 forward + P3 smart + exit SNAT (+ panel-pull provider lists)
                     with contextlib.suppress(Exception):
                         reconcile_inet_chain(node_cfg)   # keep the SWG_INET byte-counting chain in step with the iface set (measured internet lane)
                     last_route_sig = _route_sig; last_route_t = time.time()
