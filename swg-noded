@@ -1041,92 +1041,13 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
     return dict(_t["counts"]) if body else {}
 
 
-# ── geo CIDR distribution: per-category lists fetched from upstream (Loyalsoldier geoip / ipverse ASN),
-#    cached, and loaded into the nft sets. Mirrors the turn-binary fetch (SWG_GEO_MIRROR proxy fallback).
+# ── geo/domain lists: the node caches each routed category's CIDR list (<cat>.txt, → nft set) and domain list
+#    (<cat>.doms, → dnsmasq) under GEO_DIR. Both files are resolved ON THE PANEL and PULLED FROM IT by
+#    _panel_list_refresh — the node fetches NO routing list from GitHub (its only network dependency is the panel,
+#    outbound-only, the censorship-robust goal). A Kernel-mode node matches by geoip (the .txt sets); DNS/SNI modes
+#    add the domain tier on top. (youtube has no geoip — it shares Google's IPs — so it's domain-only, DNS/SNI only.)
 GEO_DIR = os.path.join(STATE_DIR, "geo")
-GEO_TTL = 3 * 86400          # refresh a cached category list at most this often (when fetches succeed)
-GEO_RT = {"ttl": GEO_TTL}    # runtime-overridable TTL (Panel settings → advanced.geo_ttl_days)
-GEO_RETRY = 3600             # …but back off failed/missing fetches to once an hour, so a source outage
-#                              never re-hammers (and never blocks every sync on a hanging download)
 _CIDR4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$")
-# category → upstream source specs. "LS:<file>" = Loyalsoldier/geoip release text/<file>.txt;
-# "AS:<asn>" = ipverse/asn-ip as/<asn>/ipv4-aggregated.txt. Multiple specs are unioned (e.g. VK's two ASNs).
-# category → geoip/ASN source(s). Every category that CAN be matched by IP has a source here, so a Kernel-only
-# node (the default routing mode) matches it by destination IP — DoH-proof, no DNS dependency. The domain tier
-# (panel DOMAIN_BUNDLES → dnsmasq) is layered ON TOP only for nodes in a DNS/SNI mode; in Kernel-only mode the
-# panel ships no domains, so these sets fill purely from geoip. (youtube has no geoip — it shares Google's IPs;
-# it's domain-only and only works on a DNS/SNI-mode node.)
-# Phase 2: built-in categories are now resolved ON THE PANEL (CURATED_GEO_SOURCES / CURATED_DOMAIN_SOURCES there)
-# and PULLED from it via list_manifest — exactly like provider-catalog cats. The node no longer fetches ANY routing
-# list from GitHub; its only network dependency is the panel (outbound-only), which is the censorship-robust goal.
-# These dicts are kept empty so `_cat_geo_sources`/`_cat_dom_sources` return [] (no GitHub fetch); the panel-pull
-# populates the same <cat>.txt/.doms files the loaders read. The _geo_fetch/_domain_fetch helpers below are now
-# unreachable (kept as inert dead code for one release, then removed).
-GEO_SOURCES = {}       # was: the curated geoip/ASN specs — moved to the panel (CURATED_GEO_SOURCES)
-
-
-def _geo_url(spec):
-    if spec.startswith("LS:"):
-        return "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/" + spec[3:] + ".txt"
-    if spec.startswith("AS:"):
-        return "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/" + spec[3:] + "/ipv4-aggregated.txt"
-    if spec.startswith("MC:"):                                 # MetaCubeX catalog geoip (plain CIDR list)
-        return "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/" + spec[3:] + ".list"
-    return spec
-
-
-def _geo_fetch_one(url, timeout=40):
-    req = urllib.request.Request(url, headers={"User-Agent": "swg-noded"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:   # nosec - public CIDR list over https, CA-verified
-        return r.read().decode("utf-8", "ignore")
-
-
-def _geo_fetch(cat):
-    """Union of CIDRs for a category from its source specs (GitHub direct, then any SWG_GEO_MIRROR proxy
-    prefixes). Returns a sorted CIDR list, or None if any source couldn't be fetched (don't half-populate)."""
-    mirrors = (os.environ.get("SWG_GEO_MIRROR") or "").split()
-    cidrs = set()
-    for spec in _cat_geo_sources(cat):
-        url = _geo_url(spec)
-        data = None
-        for u in [url] + [m.rstrip("/") + "/" + url for m in mirrors]:
-            try:
-                data = _geo_fetch_one(u); break
-            except Exception:
-                continue
-        if data is None:
-            return None
-        cidrs |= {ln.strip() for ln in data.splitlines() if _CIDR4_RE.match(ln.strip())}
-    return sorted(cidrs) or None
-
-
-_FETCH_INFLIGHT = set()        # keys with a background fetch running → don't double-spawn
-_FETCH_INFLIGHT_LOCK = threading.Lock()
-def _bg_fetch(key, path, fetch_fn):
-    """Run a (blocking, up to 40s PER url × sources × mirrors) list fetch in a DAEMON THREAD and atomically drop
-    the result at `path`. The reconcile loop must NEVER block on network I/O — a slow/hung fetch would otherwise
-    stall everything after it in the same pass: new custom-list sets wouldn't load, dnsmasq wouldn't tear down on
-    a mode switch, geo-epoch bumps would freeze the node. The set/cache stays at last-good (or empty) until the
-    file lands; the next reconcile loads it. Deduped per key so a stuck fetch can't pile up threads (the `.attempt`
-    stamp still rate-limits respawns). Used by BOTH the geoip (CIDR) and domain (GeoSite) tiers."""
-    with _FETCH_INFLIGHT_LOCK:
-        if key in _FETCH_INFLIGHT:
-            return
-        _FETCH_INFLIGHT.add(key)
-    def _work():
-        try:
-            data = fetch_fn()
-            if data:
-                tmp = path + ".tmp"
-                with open(tmp, "w") as f:
-                    f.write("\n".join(data) + "\n")
-                os.replace(tmp, path)
-        except Exception:
-            pass                                               # leave last-good; retry next TTL
-        finally:
-            with _FETCH_INFLIGHT_LOCK:
-                _FETCH_INFLIGHT.discard(key)
-    threading.Thread(target=_work, daemon=True).start()
 
 
 # ── Panel-pull: fetch provider-catalog lists from the PANEL (not GitHub) ─────────────────────────────────────
@@ -1295,23 +1216,9 @@ def _smart_geo_refresh(categories, set_counts, res, skip=()):
             continue
         try:                                                   # one bad category must never crash the sync loop
             sn = _smart_setname(cat)
-            path = os.path.join(GEO_DIR, cat + ".txt")
-            if _cat_geo_sources(cat):                          # built-in → GitHub fetch-if-due (providers own their .txt via _panel_list_refresh)
-                try:
-                    stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
-                except OSError:
-                    stale = True
-                ap = os.path.join(GEO_DIR, "." + cat + ".attempt")
-                try:
-                    due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
-                except OSError:
-                    due = stale
-                if due:
-                    with contextlib.suppress(OSError):             # stamp BEFORE fetching → a hang still backs off
-                        open(ap, "w").write(str(int(time.time())))
-                    _bg_fetch("geo:" + cat, path, lambda c=cat: _geo_fetch(c))   # BACKGROUND — never stall the reconcile on network I/O
+            path = os.path.join(GEO_DIR, cat + ".txt")         # CIDR list, pulled from the panel by _panel_list_refresh
             try:
-                st = os.stat(path)                             # no data yet → set stays empty (inert), retry next TTL
+                st = os.stat(path)                             # no data yet → set stays empty (inert) until the pull lands
             except OSError:
                 continue
             sig = "%d:%d" % (int(st.st_mtime), st.st_size)      # cheap change signal — avoids re-reading/hashing a big file every cycle
@@ -1363,108 +1270,14 @@ def _smart_load_cidrs(cidrs_map, set_counts, res):
 #    DNS/SNI-mode node fetches these (the panel ships a domain cat only off Kernel mode); a Kernel node matches
 #    the same cats by geoip. Cached under GEO_DIR as <cat>.doms, TTL/retry-gated, mirror-able via SWG_GEO_MIRROR.
 #    "V2:<name>" = v2fly data/<name>; "RF:<name>" = Re-filter <name>.lst. Keep in sync with the panel's HOST_CATEGORIES.
-DOMAIN_SOURCES = {}    # was: the curated GeoSite host specs — moved to the panel (CURATED_DOMAIN_SOURCES); node pulls the resolved .doms
-
-# Only the legacy built-ins fetch from GitHub (their curated GEO_SOURCES/DOMAIN_SOURCES). PROVIDER-catalog cats
-# (namespaced "<prov>:<id>") are resolved on the PANEL and PULLED from it by _panel_list_refresh — the node never
-# fetches them from GitHub — so their source lists here are empty (an <id> with no ":" and not a built-in is a
-# custom_<hash> rule, whose contents the panel ships inline, so also empty).
+# PROVIDER-catalog cats (namespaced "<prov>:<id>") AND curated built-ins are resolved on the PANEL and PULLED
+# from it by _panel_list_refresh — the node never fetches from GitHub. A bare id with no pulled file is a
+# custom_<hash> rule, whose contents the panel ships inline.
 _CAT_CAPS = {}   # {cat:{ip,host}} — refreshed from the sync `smart.cat_caps` at the top of every reconcile
-def _cat_geo_sources(cat):
-    return GEO_SOURCES.get(cat) or []
-def _cat_dom_sources(cat):
-    return DOMAIN_SOURCES.get(cat) or []
 def _is_provider_cat(cat):
     return ":" in str(cat)                                      # <prov>:<id> → panel-resolved + panel-pulled
 
 _DOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
-_DOM_INCLUDE_MAX = 256         # failsafe vs a pathological include tree (cycles already guarded by `seen`);
-#                                set well above any real v2fly category so it never silently truncates one
-
-
-def _domain_url(spec):
-    if spec.startswith("V2:"):
-        return "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/" + spec[3:]
-    if spec.startswith("RF:"):
-        return "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/" + spec[3:] + ".lst"
-    if spec.startswith("MC:"):                                 # MetaCubeX catalog geosite (plain domains + `+.suffix`)
-        return "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/" + spec[3:] + ".list"
-    return spec
-
-
-def _domain_fetch_text(url):
-    """Fetch one domain-list file, trying any SWG_GEO_MIRROR prefixes (reused from the geo tier). None on failure."""
-    mirrors = (os.environ.get("SWG_GEO_MIRROR") or "").split()
-    for u in [url] + [m.rstrip("/") + "/" + url for m in mirrors]:
-        try:
-            return _geo_fetch_one(u)
-        except Exception:
-            continue
-    return None
-
-
-def _v2fly_category(name, seen):
-    """A v2fly data/<name> file → its domain list. Resolves `include:` recursively (cycle-guarded by `seen`,
-    bounded by _DOM_INCLUDE_MAX). Keeps bare / `domain:` / `full:` entries (all collapse to dnsmasq suffix
-    matching); drops `keyword:` / `regexp:` (unmatchable) and ignores @attributes (route every domain in the
-    category). FAIL-CLOSED: if this file OR any include can't be fetched, return None so the caller keeps the
-    last-good cache instead of persisting a silently-truncated set (a transient blip must never shrink a list)."""
-    if name in seen:
-        return []                                              # already merged (cycle / shared include) → no dupes
-    if len(seen) >= _DOM_INCLUDE_MAX:
-        return None                                            # pathological tree → fail-closed (keep last-good)
-    seen.add(name)
-    text = _domain_fetch_text(_domain_url("V2:" + name))
-    if text is None:
-        return None
-    out = []
-    for raw in text.splitlines():
-        ln = raw.split("#", 1)[0].strip()
-        if not ln:
-            continue
-        val = ln.split()[0]                                    # token 0 = the value; rest are @attributes
-        if val.startswith("include:"):
-            inc = _v2fly_category(val[8:].strip().lower(), seen)
-            if inc is None:                                    # a failed include fails the whole category (fail-closed)
-                return None
-            out += inc
-            continue
-        if ":" in val:
-            kind, _, v = val.partition(":")
-            if kind in ("keyword", "regexp"):
-                continue                                       # dnsmasq suffix matching can't express these
-            val = v                                            # domain:/full: → the bare domain
-        d = val.strip().lower()
-        if _DOM_RE.match(d):
-            out.append(d)
-    return out
-
-
-def _domain_fetch(cat):
-    """All domains for a category from DOMAIN_SOURCES[cat], deduped + sorted. None if the TOP-LEVEL source of
-    any spec couldn't be fetched, so a source outage keeps the last-good cache instead of shrinking the set."""
-    specs = _cat_dom_sources(cat)
-    if not specs:
-        return None
-    doms = set()
-    for spec in specs:
-        if spec.startswith("V2:"):
-            d = _v2fly_category(spec[3:], set())
-            if d is None:                                      # top-level file down → don't half-populate
-                return None
-            doms |= set(d)
-        else:
-            text = _domain_fetch_text(_domain_url(spec))
-            if text is None:
-                return None
-            for raw in text.splitlines():
-                ln = raw.split("#", 1)[0].strip().lower()
-                if ln.startswith("+."):                        # MetaCubeX/clash suffix form `+.google.com` → dnsmasq already suffix-matches a bare domain
-                    ln = ln[2:]
-                ln = ln.lstrip(".")
-                if _DOM_RE.match(ln):
-                    doms.add(ln)
-    return sorted(doms) or None
 
 
 _DOM_CACHE = {}   # cat -> ((mtime,size), parsed-domain-list): reuse the parsed list while the .doms file is unchanged
@@ -1473,9 +1286,9 @@ _DNSMASQ_BUILD = {"n": 0}   # cycles since the domain tier went active — drive
 
 
 def _smart_domain_refresh(cats, res):
-    """Ensure each domain category's <cat>.doms cache is fresh (TTL-gated, retry-backed off — mirrors
-    _smart_geo_refresh) and return {cat: domain-list} from cache. Cats with no DOMAIN_SOURCES entry (e.g. a
-    custom_<hash> rule, whose domains come from the panel) are skipped. Failures leave the cache as last-good."""
+    """Return {cat: domain-list} parsed from each cat's panel-pulled <cat>.doms cache. A cat with no pulled file
+    (a custom_<hash> rule, whose domains come inline from the panel) is skipped. Cheap: the parsed list is memoized
+    per file signature, so an unchanged .doms is never re-read."""
     out = {}
     if not cats:
         return out
@@ -1484,29 +1297,12 @@ def _smart_domain_refresh(cats, res):
     except OSError as e:
         res["errors"].append("smart domain dir: " + str(e)); return out
     for cat in cats:
-        srcs = _cat_dom_sources(cat)
-        path = os.path.join(GEO_DIR, cat + ".doms")
-        # Panel-pulled = a provider cat, OR a built-in whose .doms the panel now ships (Phase 2). Either way: read
-        # the file, never GitHub-fetch. A cat with no srcs and no pulled file is a custom_<hash> (domains inline).
-        prov = _is_provider_cat(cat) or (not srcs and os.path.exists(path))
-        if not srcs and not prov:                              # custom_<hash> etc. → domains come inline from the panel
+        path = os.path.join(GEO_DIR, cat + ".doms")            # domain list, pulled from the panel by _panel_list_refresh
+        # Panel-pulled = a provider cat OR a curated cat whose .doms the panel ships. A cat with no pulled file is a
+        # custom_<hash> (its domains come inline from the panel) → skip.
+        if not (_is_provider_cat(cat) or os.path.exists(path)):
             continue
         try:
-            path = os.path.join(GEO_DIR, cat + ".doms")
-            if srcs:                                           # built-in → GitHub fetch-if-due (providers own their .doms via _panel_list_refresh)
-                try:
-                    stale = (not os.path.exists(path)) or (time.time() - os.path.getmtime(path) > GEO_RT["ttl"])
-                except OSError:
-                    stale = True
-                ap = os.path.join(GEO_DIR, "." + cat + ".doms.attempt")
-                try:
-                    due = stale and (not os.path.exists(ap) or time.time() - os.path.getmtime(ap) > GEO_RETRY)
-                except OSError:
-                    due = stale
-                if due:
-                    with contextlib.suppress(OSError):             # stamp BEFORE fetching → a hang still backs off
-                        open(ap, "w").write(str(int(time.time())))
-                    _bg_fetch("dom:" + cat, path, lambda c=cat: _domain_fetch(c))   # BACKGROUND — never stall the reconcile on network I/O
             try:
                 st = os.stat(path)
             except OSError:
@@ -1787,11 +1583,8 @@ def apply_panel_settings(pan):
     try:
         if not isinstance(pan, dict):
             return
-        if pan.get("geo_mirror") is not None:                  # panel is authoritative for the geo mirror
-            os.environ["SWG_GEO_MIRROR"] = pan.get("geo_mirror") or ""
         if (pan.get("turn_mirror") or "").strip():             # only ADD a turn mirror (preserve any install-time one)
             os.environ["SWG_TURN_MIRROR"] = pan["turn_mirror"].strip()
-        GEO_RT["ttl"] = max(86400, int(pan.get("geo_ttl_days") or 3) * 86400)
         ep = str(int(pan.get("geo_epoch") or 0))
         ef = os.path.join(GEO_DIR, ".geo-epoch")
         cur = ""
@@ -1878,7 +1671,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     # + each fetched cat's geo-file (mtime,size) — never touching the big lists. Unchanged inputs reuse the enriched
     # dict AND tell _ensure_smart_dnsmasq to skip its (equally expensive) config rebuild. This keeps domains[cat]
     # populated either way, so the geoip↔domain split below (skip=...) stays correct.
-    _fetched = _smart_domain_refresh([c for c in domains if c in DOMAIN_SOURCES or _CAT_CAPS.get(c, {}).get("host")], res)
+    _fetched = _smart_domain_refresh([c for c in domains if _CAT_CAPS.get(c, {}).get("host")], res)
     dom_sig = (tuple(sorted({e["subnet"] for e in smart_e})), json.dumps(domains, sort_keys=True),
                tuple(sorted((c, _DOM_CACHE.get(c, (None,))[0]) for c in _fetched)))
     _dt = _DOMTIER_CACHE.get("v")
