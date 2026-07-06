@@ -1145,6 +1145,16 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .prov-tiers{display:flex;gap:4px}
 .prov-err{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--partial)}
 .prov-err .ic svg{width:12px;height:12px}
+.prov-upd{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+.prov-st{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.prov-st .ic svg{width:13px;height:13px}
+.prov-st.upd{color:var(--dim)}
+.prov-st.ok{color:var(--online)}
+.prov-st.err{color:var(--partial)}
+.prov-repo{font-size:11px;color:var(--faint);text-decoration:none;white-space:nowrap;max-width:210px;overflow:hidden;text-overflow:ellipsis}
+.prov-repo:hover{color:var(--brand)}
+.provrow .tf-arrow{display:inline-flex;animation:spin 1s linear infinite}
+.provrow .tf-arrow .ic svg{width:13px;height:13px}
 .schedrow{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
 .schedrow .field{flex:1;min-width:180px}
 .timein{width:100%;box-sizing:border-box;padding:8px 10px;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--bg);border:1px solid var(--line-solid);border-radius:7px}

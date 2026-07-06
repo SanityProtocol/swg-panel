@@ -1388,21 +1388,101 @@ CATALOG_PROVIDERS = {
 CATALOG_PROVIDER_ORDER = ["mc", "v2", "ls", "rf", "bm"]
 CATALOG_TTL = 86400
 CATALOG_PATH = "/var/lib/swg-panel/catalog-index.json"          # overridden from the state dir in main()
+PROV_STATUS_PATH = "/var/lib/swg-panel/provider-status.json"    # overridden from the state dir in main()
 _CATALOG = {"idx": None, "at": 0, "err": "", "perr": {}}        # in-memory cache
+# per-provider update state {prov: {status, at, last_updated, error}} — status = idle|updating|updated|uptodate|failed.
+# last_updated = last time this provider's data actually CHANGED (a resolved list's version moved). Persisted.
+_PROV_STATUS = {}
+_PROV_UPDATING = {"on": False}
+
+def _prov_status_load():
+    with contextlib.suppress(Exception):
+        _PROV_STATUS.update(json.load(open(PROV_STATUS_PATH)))
+def _prov_status_save():
+    with contextlib.suppress(Exception):
+        atomic_write(PROV_STATUS_PATH, json.dumps(_PROV_STATUS))
 
 def catalog_provider_label(prov):
     return (CATALOG_PROVIDERS.get(prov) or {}).get("label", prov)
 
 def catalog_providers_view(enabled):
-    """The provider registry for the Geo-data UI: id, label, repo url, tiers it serves, enabled state, last error."""
+    """The provider registry for the Geo-data UI: id, label, repo url, tiers, enabled, last error + update status."""
     out = []
     for pid in CATALOG_PROVIDER_ORDER:
         cfg = CATALOG_PROVIDERS[pid]
         tiers = ["host", "ip"] if cfg.get("recursive_clash") else (sorted({t for t, _ in cfg["trees"]} - {"auto"}) or ["ip", "host"])
+        st = _PROV_STATUS.get(pid) or {}
         out.append({"id": pid, "label": cfg["label"], "url": cfg.get("url", ""),
                     "tiers": tiers, "enabled": bool((enabled or {}).get(pid, True)),
-                    "error": (_CATALOG.get("perr") or {}).get(pid, "")})
+                    "error": (_CATALOG.get("perr") or {}).get(pid, "") or st.get("error", ""),
+                    "status": st.get("status", "idle"),          # idle|updating|updated|uptodate|failed
+                    "last_updated": st.get("last_updated", 0)})   # epoch of the last actual content change
     return out
+
+def routed_catalog_cats(nodes):
+    """Every provider-catalog cat (<prov>:<id>) any node routes or has opted into → {cat}."""
+    out = set()
+    for n in (nodes or {}).values():
+        if not isinstance(n, dict):
+            continue
+        for c in (n.get("catalog_cats") or []):
+            if isinstance(c, str) and ":" in c:
+                out.add(c)
+        for ifo in (n.get("ifaces") or {}).values():
+            for r in ((ifo or {}).get("routing") or []):
+                c = r.get("category") if isinstance(r, dict) else None
+                if isinstance(c, str) and ":" in c:
+                    out.add(c)
+    return out
+
+def provider_update_all(nodes_path):
+    """Force the panel (the HOST bucket) to re-fetch every routed provider list from its source, grouped by
+    provider, tracking per-provider status (updating→updated/uptodate/failed) + last-changed time. Runs in a
+    background thread so the request returns immediately; the UI polls /api/state for the live status."""
+    if _PROV_UPDATING["on"]:
+        return
+    _PROV_UPDATING["on"] = True
+    def _work():
+        try:
+            cats = routed_catalog_cats(nodes_load(nodes_path))
+            by_prov = {}
+            for c in cats:
+                by_prov.setdefault(c.split(":", 1)[0], []).append(c)
+            for pid in CATALOG_PROVIDER_ORDER:
+                _PROV_STATUS.setdefault(pid, {})["status"] = "updating"
+            _prov_status_save()
+            catalog_index(force=True)                            # refresh the id index too (its own perr → the error field)
+            cix = catalog_index()
+            for pid in CATALOG_PROVIDER_ORDER:
+                st = _PROV_STATUS.setdefault(pid, {})
+                changed = False; failed = False; err = ""; touched = 0
+                for c in by_prov.get(pid, []):
+                    caps = cix.get(c) or {}
+                    for tier in ("ip", "host"):
+                        if not caps.get(tier):
+                            continue
+                        touched += 1
+                        before = (list_meta(c, tier) or {}).get("v", "")
+                        items = list_resolve(c, tier)            # the actual list re-fetch (raw file) — the "host bucket" update
+                        if items is None:
+                            failed = True; err = "couldn't fetch " + c
+                            continue
+                        meta = _list_write(c, tier, items)
+                        if meta.get("v") != before:
+                            changed = True
+                # status reflects the LIST re-fetch (host bucket), not the id-index blip. No routed lists → up to date.
+                st["status"] = "failed" if failed else ("updated" if changed else "uptodate")
+                st["at"] = int(time.time())
+                if err:
+                    st["error"] = err[:120]
+                else:
+                    st.pop("error", None)
+                if changed:
+                    st["last_updated"] = int(time.time())
+                _prov_status_save()
+        finally:
+            _PROV_UPDATING["on"] = False
+    threading.Thread(target=_work, daemon=True).start()
 
 def _catalog_gh(url):
     req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Accept": "application/vnd.github+json"})
@@ -2655,6 +2735,10 @@ def api(method, path, qs, body, deps):
         idx = catalog_index(force=True)
         return 200, {"ok": True, "data": {"total": len(idx), "providers": CATALOG_PROVIDER_ORDER,
                                           "perr": _CATALOG.get("perr") or {}, "error": _CATALOG.get("err") or ""}}
+
+    if method == "POST" and path == "/api/geo/update":          # "Update all lists now": re-fetch every routed list on the panel (host bucket)
+        provider_update_all(deps["nodes_path"])
+        return 200, {"ok": True, "data": {"updating": True}}
 
     if method == "GET" and path == "/api/list-info":            # hover tooltip: a provider list's record count + a sample (resolve-on-hover)
         cat = (qs.get("cat") or [""])[0].strip()
@@ -4727,7 +4811,9 @@ def main():
     # automatically on exit/crash.
     _statedir = os.path.dirname(nodes_path) or "."
     globals()["CATALOG_PATH"] = os.path.join(_statedir, "catalog-index.json")   # catalog cache lives in the state dir
+    globals()["PROV_STATUS_PATH"] = os.path.join(_statedir, "provider-status.json")   # per-provider update status
     globals()["LIST_DIR"] = os.path.join(_statedir, "lists")                    # resolved per-category lists served to nodes
+    _prov_status_load()
     _lp = os.path.join(_statedir, ".panel.lock")
     try:
         _lockfd = os.open(_lp, os.O_WRONLY | os.O_CREAT, 0o600)

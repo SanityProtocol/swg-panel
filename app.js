@@ -425,6 +425,7 @@ const api = {
   catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
   listInfo(cat) { return this.get("/api/list-info?cat=" + encodeURIComponent(cat)); },
+  geoUpdate() { return this.post("/api/geo/update", {}); },
   nextIp(nodes, iface) { return this.get("/api/next-ip?nodes=" + encodeURIComponent(nodes.join(",")) + "&iface=" + encodeURIComponent(iface)); },
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
@@ -2777,6 +2778,7 @@ const _CATALOG_LABEL_CACHE = {};
 function catLabelOf(c) {   // built-in label · custom-list title (via the panel's custom_<hash>→title map) · inline custom → "Custom" · else the id
   if (c === "uncat") return "Uncategorised";
   const lt = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
+  if (isProviderCat(c)) return prettyCatLabel(c, (Store.catLabels || {})[c] || _CATALOG_LABEL_CACHE[c]);   // provider list → humanised (country names etc.)
   return SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || _CATALOG_LABEL_CACHE[c] || (String(c).startsWith("custom") ? "Custom" : c);
 }
 // Host/IP capability flags for a list — ALWAYS Host first, IP second (house rule).
@@ -2785,6 +2787,22 @@ const capBadges = caps => html`<span class="capbs">
   ${caps && caps.ip ? html`<span class="capb ip" title="Matchable by IP range — works in every mode">IP</span>` : null}</span>`;
 // A provider-catalog id is "<prov>:<rawid>"; return the provider's display label (MetaCubeX / v2fly / …) for the source tag.
 const isProviderCat = c => typeof c === "string" && c.includes(":") && !String(c).startsWith("custom");
+// Provider list ids are cryptic (bare ISO country codes "ad"/"ae", "category-ads-all", "tld-cn"). Make them human:
+// 2-letter codes → the country name via the browser's built-in Intl.DisplayNames (no hardcoded country table);
+// known prefixes get expanded; everything else is title-cased. `fallback` = the panel's plain label.
+const _REGION_NAMES = (() => { try { return new Intl.DisplayNames(["en"], { type: "region" }); } catch { return null; } })();
+const _titleize = s => String(s).replace(/[-_]+/g, " ").trim().replace(/\b([a-z])/g, (_, c) => c.toUpperCase());
+function prettyCatLabel(id, fallback) {
+  const rid = String(id || "").includes(":") ? String(id).split(":")[1] : String(id || "");
+  if (/^[a-z]{2}$/i.test(rid) && _REGION_NAMES) {                 // ISO 3166 alpha-2 → country name
+    try { const n = _REGION_NAMES.of(rid.toUpperCase()); if (n && n.toUpperCase() !== rid.toUpperCase()) return n; } catch (e) {}
+  }
+  let m;
+  if ((m = rid.match(/^geolocation-(.+)$/))) return "Geolocation: " + prettyCatLabel(m[1], null);
+  if ((m = rid.match(/^category-(.+?)(-all)?$/))) return _titleize(m[1]) + (m[2] ? " (all)" : "");
+  if ((m = rid.match(/^tld-(.+)$/))) return "TLD ." + m[1].toLowerCase();
+  return fallback || _titleize(rid) || rid;
+}
 // Custom-list caps + size from its targets (domains → Host, IPs/CIDRs → IP). Accepts a targets string or a list obj.
 const customTargets = l => (typeof l === "string") ? l : (l && (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", "))) || "";
 function customCaps(l) { const raw = customTargets(l); const doms = domainTargets(raw), ips = splitTargets(raw).filter(isIpTarget);
@@ -2793,20 +2811,24 @@ const customSize = l => { const raw = customTargets(l); return splitTargets(raw)
 // Record count for a provider-catalog cat (Host+IP tiers), shipped by the panel in Store.catSizes {cat:{ip,host}}.
 const catSize = c => { const s = (Store.catSizes || {})[c] || {}; return (s.host || 0) + (s.ip || 0); };
 const fmtCount = n => n == null ? "…" : n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n);
-// A small size pill that, on hover, shows the list's record counts (Host hosts · IP nets) + the first few entries.
-// Provider cats lazy-fetch /api/list-info; custom lists read their own targets. `sizeHint` avoids a flash before load.
-function ListInfo({ cat, list, sizeHint }) {
-  const [info, setInfo] = useState(null);
+// A small record-count pill that, on hover, shows the list's counts (Host domains · IP nets) + the first few
+// entries. Provider cats lazy-fetch /api/list-info (session-cached); custom lists read their own targets. With
+// `eager`, the count loads on mount so it shows inline (used in the catalog search where sizes aren't preshipped).
+const _LIST_INFO_CACHE = {};   // cat -> resolved list-info (count + sample), so paging never re-fetches
+function ListInfo({ cat, list, sizeHint, eager }) {
+  const [info, setInfo] = useState(cat ? _LIST_INFO_CACHE[cat] || null : null);
   const load = () => {
     if (info) return;
     if (list) {                                                // custom list — build locally
       const raw = customTargets(list); const doms = domainTargets(raw), ips = splitTargets(raw).filter(isIpTarget);
       setInfo({ tiers: { host: { n: doms.length, sample: doms.slice(0, 8) }, ip: { n: ips.length, sample: ips.slice(0, 8) } } });
     } else if (cat) {
-      api.listInfo(cat).then(r => setInfo(r && r.ok ? r.data : { err: true })).catch(() => setInfo({ err: true }));
+      api.listInfo(cat).then(r => { const d = r && r.ok ? r.data : { err: true }; _LIST_INFO_CACHE[cat] = d; setInfo(d); }).catch(() => setInfo({ err: true }));
     }
   };
-  const size = list ? customSize(list) : (cat ? catSize(cat) : 0);
+  useEffect(() => { if (eager && cat && !info) load(); }, [eager, cat]);   // catalog search: load counts inline on render
+  const infoN = info && info.tiers ? ((info.tiers.host && info.tiers.host.n || 0) + (info.tiers.ip && info.tiers.ip.n || 0)) : null;
+  const size = list ? customSize(list) : (cat ? (catSize(cat) || (infoN != null ? infoN : 0)) : 0);
   const shown = size || sizeHint || 0;
   const tierRow = (t, lbl, unit) => { const d = (info && info.tiers && info.tiers[t]) || null; if (!d || !d.n) return null;
     return html`<div class="lti-tier"><span class="lti-h"><span class=${"capb " + t}>${lbl}</span> ${fmtCount(d.n)} ${unit}</span>
@@ -2815,8 +2837,9 @@ function ListInfo({ cat, list, sizeHint }) {
     ${info && info.err ? html`<div class="lti-e faint">couldn't load details</div>`
       : info ? html`${tierRow("host", "Host", "domains")}${tierRow("ip", "IP", "nets")}${!(info.tiers && (info.tiers.host || info.tiers.ip)) ? html`<div class="lti-e faint">empty</div>` : null}`
       : html`<div class="lti-e faint">loading…</div>`}</div>`;
+  const glyph = shown ? fmtCount(shown) : (eager && !(info && info.err) ? "…" : "ⓘ");   // eager rows load inline → show "…" then the count
   return html`<${Popover} cls=${"listsize" + (shown ? "" : " unknown")} popCls="listtippop" hoverOnly=${true}
-    trigger=${html`<span onMouseEnter=${load}>${shown ? fmtCount(shown) : "ⓘ"}</span>`} children=${bubble}/>`;
+    trigger=${html`<span onMouseEnter=${load}>${glyph}</span>`} children=${bubble}/>`;
 }
 function provLabelOf(c) {
   if (!isProviderCat(c)) return "";
@@ -2923,13 +2946,13 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
               ${it.caps ? capBadge(it.caps) : null}${it.list ? html`<${ListInfo} list=${it.list}/>` : (isProviderCat(it.id) ? html`<${ListInfo} cat=${it.id} sizeHint=${catSize(it.id)}/>` : null)}</button>`; })}`)}
           ${localEmpty ? html`<div class="catpick-empty">No list on this node matches “${q}”. Add more in Settings → Routing lists.</div>` : null}
         ` : html`
-          ${(() => { const rows = items;
+          ${(() => { const rows = [...items].map(it => ({ ...it, disp: prettyCatLabel(it.id, it.label) })).sort((a, b) => a.disp.toLowerCase().localeCompare(b.disp.toLowerCase()));
             return res == null ? html`<div class="catpick-empty">Loading…</div>`
             : rows.length === 0 ? html`<div class="catpick-empty">No provider list matches “${q}”.</div>`
             : rows.map(it => { const added = selSet.has(it.id); return html`<button type="button"
                 class=${"catpick-row" + (added ? " sel" : "")} onClick=${() => pick(it.id)}>
-                <span class="catpick-rlbl"><span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>${it.label}<span class="catpick-src">${it.provider_label || provLabelOf(it.id)}</span></span>
-                ${capBadge(it.caps)}<${ListInfo} cat=${it.id} sizeHint=${catSize(it.id)}/></button>`; }); })()}
+                <span class="catpick-rlbl"><span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>${it.disp}<span class="catpick-src">${it.provider_label || provLabelOf(it.id)}</span></span>
+                ${capBadge(it.caps)}<${ListInfo} cat=${it.id} sizeHint=${catSize(it.id)} eager=${true}/></button>`; }); })()}
         `}
       </div>
       ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is in <b>Kernel</b> (IP) mode. Switch it to Force-DNS or SNI to use them.</div>` : null}
@@ -5400,6 +5423,19 @@ function PanelSettingsScreen() {
   const _gu = ps.geo_update || {};
   const [guEvery, setGuEvery] = useState(String(_gu.every_days == null ? 1 : _gu.every_days));
   const [guAt, setGuAt] = useState(_gu.at || "04:00");
+  const [geoUpdating, setGeoUpdating] = useState(false);   // "Update all lists now" in flight → poll provider status
+  const updateAllLists = async () => {
+    setGeoUpdating(true);
+    const r = await api.geoUpdate();
+    if (!r || !r.ok) { setGeoUpdating(false); return toast((r && r.error) || "Couldn't start update", "err"); }
+    // poll /api/state until no provider is still "updating" (or a 25s cap)
+    const t0 = Date.now();
+    const tick = async () => { await Store.poll();
+      const busy = (Store.catalogProviders || []).some(p => p.status === "updating");
+      if (busy && Date.now() - t0 < 25000) return setTimeout(tick, 1500);
+      setGeoUpdating(false); };
+    setTimeout(tick, 1500);
+  };
   const [sc, setSc] = useState(ps.store_configs === false ? "off" : "on");   // ON and "default" merged — both keep configs
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
@@ -5756,10 +5792,18 @@ function PanelSettingsScreen() {
             <label class="swt" title=${on ? "Enabled — its lists are selectable" : "Disabled — its lists are hidden and deactivated on nodes"}>
               <input type="checkbox" checked=${on} onChange=${e => setProvEnabled(m => ({ ...m, [p.id]: e.target.checked }))}/><span class="track"></span><span class="knob"></span></label>
             <div class="prov-meta">
-              <a class="prov-name" href=${p.url} target="_blank" rel="noopener">${p.label}</a>
+              <span class="prov-name">${p.label}</span>
               <span class="prov-tiers">${capBadges({ host: (p.tiers || []).includes("host"), ip: (p.tiers || []).includes("ip") })}</span>
-              ${p.error ? html`<span class="prov-err" title=${p.error}><${Ic} i="warn"/> last fetch failed</span>` : null}
+              ${p.last_updated ? html`<span class="prov-upd" title="When this provider's lists last changed on the panel">updated ${ago(p.last_updated)}</span>` : null}
             </div>
+            <span class="grow"></span>
+            ${(() => { const s = p.status;
+              if (s === "updating") return html`<span class="prov-st upd"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;
+              if (s === "updated") return html`<span class="prov-st ok"><${Ic} i="check"/> updated</span>`;
+              if (s === "uptodate") return html`<span class="prov-st ok"><${Ic} i="check"/> up to date</span>`;
+              if (s === "failed" || p.error) return html`<span class="prov-st err" title=${p.error || ""}><${Ic} i="warn"/> failed to update</span>`;
+              return null; })()}
+            <a class="prov-repo" href=${p.url} target="_blank" rel="noopener" title=${"Open " + p.label + " on GitHub"}>${(p.url || "").replace(/^https?:\/\/github\.com\//, "")}</a>
           </div>`; })}${!_provReg.length ? html`<div class="hint">Loading providers…</div>` : null}</div>
 
           <div class="seclabel">Update schedule</div>
@@ -5777,7 +5821,7 @@ function PanelSettingsScreen() {
               <input type="time" class="timein" value=${guAt} disabled=${guEvery === "0"} onInput=${e => setGuAt(e.target.value || "04:00")}/>
               <div class="hint">${guEvery === "0" ? "Continuous mode ignores the time — nodes refresh whenever a list is older than the TTL." : "Nodes update at this local time, on the chosen cadence."}</div></div>
           </div>
-          <div class="georefresh"><span class="faint" style="font-size:11px">Skip the schedule and force every node to re-fetch on its next sync</span><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh all lists now</button></div>
+          <div class="georefresh"><span class="faint" style="font-size:11px">Re-fetch every routed list from its provider now (updates the panel; nodes pull the changes on their schedule)</span><button class="btn btn-mini" disabled=${geoUpdating} onClick=${updateAllLists}><span class=${geoUpdating ? "tf-arrow" : ""}><${Ic} i="refresh"/></span> ${geoUpdating ? "Updating…" : "Update all lists now"}</button></div>
         </div>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Interface colours<span class="grow"></span>
