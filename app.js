@@ -2923,6 +2923,25 @@ function ProvTag({ id, label, plain }) {
   if (plain || !isProviderCat(id)) return html`<span class="catpick-src legacy">${label}</span>`;
   return html`<span class="catpick-src" style=${"--pc:" + providerColor(String(id).split(":")[0])}>${label || provLabelOf(id)}</span>`;
 }
+// Routing-mode metadata: icon + labels + the full explanation (shown in the mode banner).
+const MODE_META = {
+  kernel:   { icon: "cpu",    label: "Kernel — IP only", short: "IP only",
+    exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google). Lists: IP only." },
+  forcedns: { icon: "server", label: "Force DNS — Host + IP", short: "Host + IP",
+    exp: "The node becomes your clients' resolver and blocks their encrypted DNS (DoH + DoT), so it can route by hostname too — per-service precise. Trade-off: it sees and downgrades the client's DNS, and a DoH server it doesn't recognise can slip past. Lists: Host + IP." },
+  sni:      { icon: "shield", label: "SNI router — Host + IP", short: "Host + IP",
+    exp: "Routes by hostname by reading the SNI from each TLS handshake — your clients' DNS is never touched, observed or downgraded. Learns each destination on its first connection; ECH-hidden names and QUIC/HTTP3 fall back to IP. Lists: Host + IP." },
+};
+// "on N/M nodes ▾" fleet-assignment popover — toggle a list on each node. disabledFor(nid) → a reason string greys it.
+function FleetAssign({ nodes, isOn, onToggle, disabledFor }) {
+  const on = (nodes || []).filter(n => isOn(n.id)).length;
+  return html`<${Popover} cls="fleetassign" popCls="fleetpop"
+    trigger=${html`<span class="fleet-trig">on <b>${on}</b>/${(nodes || []).length} <span class="fleet-caret">▾</span></span>`}
+    children=${html`<div class="fleetlist"><div class="fleetlist-h">Enabled on</div>${(nodes || []).map(n => { const dis = disabledFor && disabledFor(n.id);
+      return html`<label class=${"fleetrow" + (dis ? " off" : "")} title=${dis || ""}>
+        <input type="checkbox" checked=${isOn(n.id)} disabled=${!!dis} onChange=${e => onToggle(n.id, e.target.checked)}/>
+        <span class="fleet-dot" style=${"--c:" + Store.nodeColor(n.id)}></span><span class="fleet-nm">${n.name}</span></label>`; })}</div>`}/>`;
+}
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
 // EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns). A
 // host-ONLY category (youtube today) is dead weight in kernel mode, so the UI greys/hides it there.
@@ -5777,6 +5796,16 @@ function PanelSettingsScreen() {
   const ccOf = nid => nv(nid, "catalog_cats") || [];
   const addCatalogCat = id => { if (!id || SMART_CAT_LABEL[id] || (lists || []).some(l => l.id === id) || id === "custom") return; setNV(selNode, { catalog_cats: [...new Set([...ccOf(selNode), id])] }); };
   const removeCatalogCat = id => setNV(selNode, { catalog_cats: ccOf(selNode).filter(c => c !== id) });
+  // Fleet-wide provider-list grid: rows = the union of every node's opted-in provider cats; per-node PULL + fleet toggle.
+  const fleetNodes = Store.nodes || [];
+  const catOnNode = (id, nid) => ccOf(nid).includes(id);
+  const setCatOnNode = (id, nid, on) => setNV(nid, { catalog_cats: on ? [...new Set([...ccOf(nid), id])] : ccOf(nid).filter(c => c !== id) });
+  const removeCatFleet = id => fleetNodes.forEach(n => { if (ccOf(n.id).includes(id)) setCatOnNode(id, n.id, false); });   // × drops a list from EVERY node
+  const provFleetCats = [...new Set(fleetNodes.flatMap(n => ccOf(n.id)))].sort((a, b) => catLabelOf(a).toLowerCase().localeCompare(catLabelOf(b).toLowerCase()));
+  const enableAllCompatible = () => setNV(selNode, { catalog_cats: [...new Set([...ccOf(selNode), ...provFleetCats.filter(id => nodeMode !== "kernel" || catCap(id).ip)])] });
+  const clearNodeCats = () => setNV(selNode, { catalog_cats: [] });
+  const customOnNode = (l, nid) => !(l.disabled_nodes || []).includes(nid);
+  const setCustomOnNode = (l, nid, on) => persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: on ? (x.disabled_nodes || []).filter(z => z !== nid) : [...new Set([...(x.disabled_nodes || []), nid])] } : x));
   // dirty tracking — per global section + per node-per-section, drives the rail dots and badge glow
   const SECF = { routing: ["routing_mode", "enabled_categories", "catalog_cats"], mesh: ["endpoint_host", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg"], nodesegress: ["default_egress_ip", "panel_ip"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
@@ -5814,33 +5843,62 @@ function PanelSettingsScreen() {
       <nav class="setrail">${SECTIONS.map(([id, lbl]) => html`<button class=${"setrail-i" + (section === id ? " on" : "")} onClick=${() => setSection(id)}>${lbl}${secDirty(id) ? html`<span class="dirtydot"></span>` : null}</button>`)}</nav>
       <div class="setpane">
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
-        ${section === "routing" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">${nodeRec ? nodeRec.name : "Node"} — match mode</div>
-          <p class="hint" style="margin:0 0 12px">Select how this node matches smart-routing traffic — by destination <b>IP</b>, or by <b>hostname</b> (via the node's DNS, or read from the TLS handshake). In every mode the traffic stays in-kernel (no userspace proxy); the modes differ only in match precision and in whether they touch your clients' DNS. Changing the mode reconfigures the node (adds or removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</p>
-          ${MODES.map(([id, lbl, exp]) => html`<label class=${"moderow" + (nodeMode === id ? " on" : "")}>
-            <input type="radio" name="rmode" checked=${nodeMode === id} onChange=${() => setMode(id)}/>
-            <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
-          <div class="seclabel">Provider lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— added to <b>${nodeRec ? nodeRec.name : "this node"}</b> from the public catalogs</span></div>
-          <p class="hint" style="margin:0 0 8px">Search the catalog (across every enabled provider — manage which in <b>Geo data</b>) and add the lists you want routable on <b>${nodeRec ? nodeRec.name : "this node"}</b>. The same service often comes from several providers; each shows its <b>source</b>, so you can pick who you trust. Added lists appear in this node's interface routing dropdowns. ${nodeMode === "kernel" ? html`In Kernel mode only IP-matchable lists route; domain-only lists stay greyed until you switch to Force-DNS or SNI.` : null}</p>
-          <div class="ccchips">${ccOf(selNode).length ? [...ccOf(selNode)].sort((a, b) => catLabelOf(a).toLowerCase().localeCompare(catLabelOf(b).toLowerCase())).map(id => { const cap = catCap(id); const greyed = nodeMode === "kernel" && !cap.ip;
-            return html`<span class=${"ccchip" + (greyed ? " off" : "")} key=${id} title=${greyed ? "Domain-only — needs Force-DNS or SNI on this node" : ""}>
-              <span class="ccchip-lbl">${catLabelOf(id)}</span>
-              ${provLabelOf(id) ? html`<${ProvTag} id=${id}/>` : null}
-              ${capBadges(cap)}<${ListInfo} cat=${id}/>
-              ${catListUrl(id, cap) ? html`<a class="ccchip-info" href=${catListUrl(id, cap)} target="_blank" rel="noopener" title="View this list on GitHub"><${Ic} i="info"/></a>` : null}
-              <button class="ccchip-x" title="Remove from this node" onClick=${() => removeCatalogCat(id)}><${Ic} i="x"/></button>
-            </span>`; }) : html`<span class="hint" style="margin:0">No provider lists added to this node yet.</span>`}</div>
-          <div style="margin-top:10px"><${CatPicker} addMode=${true} mode=${nodeMode} triggerLabel="Add from catalog" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/></div>
-          <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— your own IPs / domains; the tick enables each on <b>${nodeRec ? nodeRec.name : "this node"}</b></span></div>
-          <p class="hint" style="margin:0 0 8px">Shared across the fleet. Edits apply immediately (no schedule) on every node a list is enabled for.</p>
-          <div class="ccchips">${lists.length ? [...lists].sort((a, b) => (a.title || "").toLowerCase().localeCompare((b.title || "").toLowerCase())).map(l => { const on = !(l.disabled_nodes || []).includes(selNode); const cap = customCaps(l);
-            return html`<span class=${"ccchip" + (on ? "" : " off")} key=${l._rid}>
-              <label class="ccchip-tick" title=${on ? "Enabled on " + (nodeRec ? nodeRec.name : "this node") + " — untick to hide" : "Disabled on this node"}><input type="checkbox" checked=${on} onChange=${e => { const v = e.target.checked; persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: v ? (x.disabled_nodes || []).filter(n => n !== selNode) : [...new Set([...(x.disabled_nodes || []), selNode])] } : x)); }}/></label>
-              <button class="ccchip-lbl asbtn" onClick=${() => openList(l)} title="Click to edit">${l.title || "Untitled list"}</button>
-              <span class="catpick-src legacy">Custom</span>
-              ${capBadges(cap)}<${ListInfo} list=${l}/>
-            </span>`; }) : html`<span class="hint" style="margin:0">No custom lists yet.</span>`}</div>
-          <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
+        ${section === "routing" ? html`<div class="card rcard">
+          <div class=${"rmode-banner m-" + nodeMode}>
+            <span class="rmode-icon"><${Ic} i=${MODE_META[nodeMode].icon}/></span>
+            <div class="rmode-body">
+              <div class="rmode-head"><b>${nodeRec ? nodeRec.name : "Node"}</b><span class="rmode-pill">${MODE_META[nodeMode].short}</span></div>
+              <div class="rmode-desc">${MODE_META[nodeMode].exp}</div>
+            </div>
+            <label class="rmode-picker"><span class="rmode-plbl">Match mode</span>
+              <select class="selwrap" value=${nodeMode} onChange=${e => setMode(e.target.value)}>
+                ${["kernel", "forcedns", "sni"].map(m => html`<option value=${m}>${MODE_META[m].label}</option>`)}
+              </select></label>
+          </div>
+
+          <div class="lgrid-head">
+            <div class="seclabel" style="margin:0">Provider lists <span class="lg-count">${provFleetCats.length}</span></div>
+            <span class="faint lg-sub">provider-maintained · read-only</span><span class="grow"></span>
+            <button class="btn btn-mini" disabled=${!provFleetCats.length} onClick=${enableAllCompatible}>Enable all compatible</button>
+            <button class="btn btn-mini" disabled=${!ccOf(selNode).length} onClick=${clearNodeCats}>Clear</button>
+            <${CatPicker} addMode=${true} mode=${nodeMode} triggerLabel="Add category" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/>
+          </div>
+          ${provFleetCats.length ? html`<table class="lgrid">
+            <thead><tr><th class="lg-pull">Pull</th><th>Category</th><th>Matches by</th><th>List size</th><th class="lg-fleet">Fleet</th><th></th></tr></thead>
+            <tbody>${provFleetCats.map(id => { const cap = catCap(id); const usable = nodeMode !== "kernel" || cap.ip; const sz = (Store.catSizes || {})[id] || {};
+              return html`<tr class=${usable ? "" : "lg-lock"} key=${id}>
+                <td class="lg-pull"><label class="lg-chk" title=${usable ? "Pull this list on " + (nodeRec ? nodeRec.name : "this node") : "Host-only — needs Force-DNS or SNI on this node"}><input type="checkbox" checked=${catOnNode(id, selNode)} disabled=${!usable} onChange=${e => setCatOnNode(id, selNode, e.target.checked)}/></label></td>
+                <td class="lg-cat"><span class="lg-title">${catLabelOf(id)}</span><span class="lg-id">${catRawId(id)}</span>${provLabelOf(id) ? html`<${ProvTag} id=${id}/>` : null}</td>
+                <td>${capBadges(cap)}</td>
+                <td class="lg-size">${sizeSummary(sz.host || 0, sz.ip || 0) || html`<span class="faint">—</span>`}</td>
+                <td class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => catOnNode(id, nid)} onToggle=${(nid, on) => setCatOnNode(id, nid, on)} disabledFor=${nid => (nv(nid, "routing_mode") || "kernel") === "kernel" && !cap.ip ? "Host-only — this node is IP-only" : null}/></td>
+                <td class="lg-act">${catListUrl(id, cap) ? html`<a class="ccchip-info" href=${catListUrl(id, cap)} target="_blank" rel="noopener" title="View on GitHub"><${Ic} i="info"/></a>` : null}<button class="ccchip-x" title="Remove from the whole fleet" onClick=${() => removeCatFleet(id)}><${Ic} i="x"/></button></td>
+              </tr>`; })}</tbody>
+          </table>` : html`<div class="hint" style="margin:2px 0 0">No provider lists yet — use <b>Add category</b> to pull lists from the catalog.</div>`}
+
+          <div class="lgrid-head" style="margin-top:24px">
+            <div class="seclabel" style="margin:0">Custom lists <span class="lg-count">${lists.length}</span></div>
+            <span class="faint lg-sub">your own IPs / domains · editable · apply immediately</span><span class="grow"></span>
+            <button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> New custom list</button>
+          </div>
+          ${lists.length ? html`<table class="lgrid">
+            <thead><tr><th class="lg-pull">Pull</th><th>List</th><th>Matches by</th><th>Entries</th><th class="lg-fleet">Fleet</th><th></th></tr></thead>
+            <tbody>${[...lists].sort((a, b) => (a.title || "").toLowerCase().localeCompare((b.title || "").toLowerCase())).map(l => { const cap = customCaps(l);
+              return html`<tr key=${l._rid}>
+                <td class="lg-pull"><label class="lg-chk" title=${"Enable on " + (nodeRec ? nodeRec.name : "this node")}><input type="checkbox" checked=${customOnNode(l, selNode)} onChange=${e => setCustomOnNode(l, selNode, e.target.checked)}/></label></td>
+                <td class="lg-cat"><button class="lg-title asbtn" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button><button class="lg-id asbtn" onClick=${() => openList(l)}>edit</button><span class="catpick-src legacy">Custom</span></td>
+                <td>${capBadges(cap)}</td>
+                <td class="lg-size"><${ListInfo} list=${l}/></td>
+                <td class="lg-fleet"><${FleetAssign} nodes=${fleetNodes} isOn=${nid => customOnNode(l, nid)} onToggle=${(nid, on) => setCustomOnNode(l, nid, on)}/></td>
+                <td class="lg-act"><button class="ccchip-x" title="Edit" onClick=${() => openList(l)}><${Ic} i="pencil"/></button></td>
+              </tr>`; })}</tbody>
+          </table>` : html`<div class="hint" style="margin:2px 0 0">No custom lists yet.</div>`}
+
+          <div class="lg-legend">
+            <span><span class="capb host">Host</span> by domain — needs Force-DNS or SNI</span>
+            <span><span class="capb ip">IP</span> by address range — every mode</span>
+            <span class="faint">A greyed row is host-only on an IP-only node — the pull is remembered, just inactive.</span>
+          </div>
         </div>` : null}
         ${section === "turn" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Turn proxies<span class="grow"></span>
