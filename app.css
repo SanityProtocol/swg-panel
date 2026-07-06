@@ -1134,6 +1134,21 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .geosrc{margin:0 0 10px;padding-left:18px;display:flex;flex-direction:column;gap:5px}
 .geosrc li{list-style:disc}
 .georefresh{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:16px}
+/* Geo data → list providers + update schedule */
+.provlist{display:flex;flex-direction:column;gap:2px;margin-bottom:6px}
+.provrow{display:flex;align-items:center;gap:12px;padding:9px 4px;border-top:1px solid var(--line)}
+.provrow:first-child{border-top:none}
+.provrow.off{opacity:.55}
+.prov-meta{display:flex;align-items:center;gap:9px;min-width:0}
+.prov-name{font-size:13.5px;font-weight:600;color:var(--ink);text-decoration:none}
+.prov-name:hover{color:var(--brand)}
+.prov-tiers{display:flex;gap:4px}
+.prov-err{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--partial)}
+.prov-err .ic svg{width:12px;height:12px}
+.schedrow{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.schedrow .field{flex:1;min-width:180px}
+.timein{width:100%;box-sizing:border-box;padding:8px 10px;font-family:var(--mono);font-size:13px;color:var(--ink);background:var(--bg);border:1px solid var(--line-solid);border-radius:7px}
+.timein:disabled{opacity:.5}
 .cllist{display:flex;flex-direction:column;gap:6px}
 .cl-row{display:flex;align-items:center;gap:10px;padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
 .cl-row .grow{flex:1}   /* push the owner link + wg/awg capability tags to the right edge */

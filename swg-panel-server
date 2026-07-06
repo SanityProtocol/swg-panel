@@ -1352,24 +1352,42 @@ SMART_CAPS = {c: {"ip": c in IP_CATEGORIES, "host": c in HOST_CATEGORIES}
 # (MetaCubeX/meta-rules-dat: geosite/<id>.list domains ≈1800 host cats + geoip/<id>.list CIDRs ≈260 ip cats).
 # We cache only the INDEX (id + caps) on disk; a category's actual domain/CIDR DATA is fetched lazily by the
 # NODE when the category is pulled. Built-ins merge in (their curated caps win). See docs/SMART-CATEGORIES-SPEC.md.
-CATALOG_PROVIDER = "metacubex"
-CATALOG_URLS = {"metacubex": {
-    "geosite_tree": "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geosite",
-    "geoip_tree":   "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geoip",
-    "geosite_raw":  "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/{id}.list",
-    "geoip_raw":    "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/{id}.list"}}
-# ID-STABILITY alias: our_id → provider_id, only where the upstream file name differs. Unlisted ids resolve to
-# themselves. Never rename an id that already has RRD data without carrying the files forward (see spec §11).
-CATALOG_ALIAS = {"meta": "facebook", "ru_net": "ru"}
+# ── Multi-provider routing-list catalog ────────────────────────────────────────────────────────────────────
+# Every provider publishes per-category lists on GitHub that the NODE fetches directly (see swg-noded's
+# _geo_url/_domain_url). The PANEL only indexes their id lists (via the GitHub git-tree API) so the operator can
+# search + pick. A category id is namespaced <prov>:<rawid> so the same service from two providers stays a
+# distinct, separately-pickable entry and the node knows where to fetch it. caps {ip,host} = which tiers the
+# provider publishes for that id. Providers are enabled/disabled per fleet in Panel settings → Geo data.
+CATALOG_PROVIDERS = {
+    "mc": {"label": "MetaCubeX", "url": "https://github.com/MetaCubeX/meta-rules-dat", "strip": ".list", "skip_at": True,
+           "trees": [("host", "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geosite"),
+                     ("ip",   "https://api.github.com/repos/MetaCubeX/meta-rules-dat/git/trees/meta:geo/geoip")]},
+    "v2": {"label": "v2fly", "url": "https://github.com/v2fly/domain-list-community", "strip": "",
+           "trees": [("host", "https://api.github.com/repos/v2fly/domain-list-community/git/trees/master:data")]},
+    "ls": {"label": "Loyalsoldier", "url": "https://github.com/Loyalsoldier/geoip", "strip": ".txt",
+           "trees": [("ip", "https://api.github.com/repos/Loyalsoldier/geoip/git/trees/release:text")]},
+    "rf": {"label": "Re-filter", "url": "https://github.com/1andrevich/Re-filter-lists", "strip": ".lst",
+           "trees": [("auto", "https://api.github.com/repos/1andrevich/Re-filter-lists/git/trees/main")]},
+    # blackmatrix7 (per-app host + IP) — planned; needs recursive folder indexing + classical-format parse on the node.
+}
+CATALOG_PROVIDER_ORDER = ["mc", "v2", "ls", "rf"]
 CATALOG_TTL = 86400
 CATALOG_PATH = "/var/lib/swg-panel/catalog-index.json"          # overridden from the state dir in main()
-_CATALOG = {"idx": None, "at": 0, "err": ""}                    # in-memory cache
+_CATALOG = {"idx": None, "at": 0, "err": "", "perr": {}}        # in-memory cache
 
-def catalog_src(cid, tier):
-    """Raw-list URL for a category's IP (geoip) or Host (geosite) data at the active provider, id-aliased."""
-    pid = CATALOG_ALIAS.get(cid, cid)
-    key = "geoip_raw" if tier == "ip" else "geosite_raw"
-    return CATALOG_URLS[CATALOG_PROVIDER][key].format(id=pid)
+def catalog_provider_label(prov):
+    return (CATALOG_PROVIDERS.get(prov) or {}).get("label", prov)
+
+def catalog_providers_view(enabled):
+    """The provider registry for the Geo-data UI: id, label, repo url, tiers it serves, enabled state, last error."""
+    out = []
+    for pid in CATALOG_PROVIDER_ORDER:
+        cfg = CATALOG_PROVIDERS[pid]
+        tiers = sorted({t for t, _ in cfg["trees"]} - {"auto"}) or ["ip", "host"]
+        out.append({"id": pid, "label": cfg["label"], "url": cfg.get("url", ""),
+                    "tiers": tiers, "enabled": bool((enabled or {}).get(pid, True)),
+                    "error": (_CATALOG.get("perr") or {}).get(pid, "")})
+    return out
 
 def _catalog_gh(url):
     req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Accept": "application/vnd.github+json"})
@@ -1377,24 +1395,37 @@ def _catalog_gh(url):
         return json.load(r)
 
 def _catalog_build():
-    """Fetch the provider's geosite + geoip id lists → {id:{ip,host}}. Two git-tree calls; heavy-ish, cached."""
-    u = CATALOG_URLS[CATALOG_PROVIDER]; idx = {}
-    for tier, key in (("host", "geosite_tree"), ("ip", "geoip_tree")):
-        t = _catalog_gh(u[key])
-        for e in (t.get("tree") or []):
-            p = e.get("path", "")
-            if e.get("type") == "blob" and p.endswith(".list") and "@" not in p:   # skip @attribute sub-views
-                idx.setdefault(p[:-5], {"ip": False, "host": False})[tier] = True
-    for cid in SMART_CATEGORIES:                                # merge built-ins — curated caps win, aliases resolve upstream
-        if cid == "all":
-            continue
-        e = idx.setdefault(cid, {"ip": False, "host": False})
-        if cid in IP_CATEGORIES:   e["ip"] = True
-        if cid in HOST_CATEGORIES: e["host"] = True
+    """Fetch every provider's id list(s) → {"<prov>:<rawid>": {p,ip,host}}. One git-tree call per tree; cached
+    24h. A provider that fails to fetch is skipped (its error surfaced in the Geo-data UI) — one bad provider
+    never empties the whole catalog. No built-ins are merged: the catalog is provider data only."""
+    idx = {}; perr = {}
+    for prov in CATALOG_PROVIDER_ORDER:
+        cfg = CATALOG_PROVIDERS[prov]; strip = cfg.get("strip", "")
+        try:
+            for tier, url in cfg["trees"]:
+                t = _catalog_gh(url)
+                for e in (t.get("tree") or []):
+                    if e.get("type") != "blob":
+                        continue
+                    p = e.get("path", "")
+                    if strip and not p.endswith(strip):
+                        continue
+                    if cfg.get("skip_at") and "@" in p:         # skip MetaCubeX @attribute sub-views
+                        continue
+                    rid = p[:-len(strip)] if strip else p
+                    if not rid or "/" in rid:
+                        continue
+                    tt = tier
+                    if tier == "auto":                          # Re-filter: <x>_ips.lst = IP tier, else host
+                        tt = "ip" if rid.endswith("_ips") else "host"
+                    idx.setdefault(prov + ":" + rid, {"p": prov, "ip": False, "host": False})[tt] = True
+        except Exception as ex:
+            perr[prov] = str(ex)[:120]
+    _CATALOG["perr"] = perr
     return idx
 
 def catalog_index(force=False):
-    """Cached catalog index (id→caps). Memory → disk → (re)build. Never raises; falls back to last-good on error."""
+    """Cached catalog index (<prov>:<id> → caps). Memory → disk → (re)build. Never raises; last-good on error."""
     now = int(time.time())
     if not force and _CATALOG["idx"] is not None and now - _CATALOG["at"] < CATALOG_TTL:
         return _CATALOG["idx"]
@@ -1419,16 +1450,26 @@ def catalog_index(force=False):
     return idx
 
 def catalog_label(cid):
-    return SMART_CATEGORIES.get(cid) or cid.replace("_", " ").replace("-", " ").strip().title() or cid
+    rid = cid.split(":", 1)[1] if ":" in cid else cid
+    return rid.replace("_", " ").replace("-", " ").strip().title() or cid
 
-def catalog_search(q, page, per=40):
+def catalog_search(q, page, per=40, enabled=None):
+    """Search the catalog, optionally restricted to enabled providers. Returns source-tagged, paginated items."""
     idx = catalog_index(); q = (q or "").strip().lower()
-    items = [(c, catalog_label(c), caps) for c, caps in idx.items()
-             if not q or q in c.lower() or q in catalog_label(c).lower()]
-    items.sort(key=lambda x: (x[0] not in SMART_CATEGORIES, x[1].lower()))   # built-ins first, then A→Z
+    items = []
+    for cid, e in idx.items():
+        prov = e.get("p", "")
+        if enabled is not None and not enabled.get(prov, True):
+            continue
+        lbl = catalog_label(cid)
+        if q and q not in cid.lower() and q not in lbl.lower():
+            continue
+        items.append((cid, lbl, prov, {"ip": e.get("ip", False), "host": e.get("host", False)}))
+    items.sort(key=lambda x: (x[1].lower(), x[2]))              # by label, then provider
     total = len(items); sl = items[page * per:(page + 1) * per]
-    return {"total": total, "page": page, "per": per, "provider": CATALOG_PROVIDER,
-            "items": [{"id": c, "label": l, "caps": caps} for c, l, caps in sl]}
+    return {"total": total, "page": page, "per": per,
+            "items": [{"id": c, "label": l, "provider": p, "provider_label": catalog_provider_label(p), "caps": caps}
+                      for c, l, p, caps in sl]}
 
 # A custom rule (category "custom") carries its own list of IPs/CIDRs AND domains, mixed and comma/space
 # separated; it gets a stable synthetic category id so its nft set is shared by identical lists. The DOMAINS
@@ -1504,6 +1545,14 @@ PANEL_SETTINGS_DEFAULTS = {
     "theme_color": "",        # brand/interface theme colour (DARK mode) replacing the default cyan ("" = default)
     "theme_color_light": "",  # brand/interface theme colour (LIGHT mode) ("" = default)
     "geo_epoch": 0,
+    # routing-list catalog providers the fleet may use {prov_id: bool}; a missing/unknown provider defaults ON.
+    # Disabling one greys its already-picked categories (retained) and drops them from the node desired set → the
+    # node deletes those cat sets; re-enabling restores them.
+    "providers": {},
+    # scheduled list refresh (node-LOCAL time): how often (days) + at what time-of-day. Nodes re-fetch geo/host
+    # lists only when this window is due — so the brief per-update disruption lands at a chosen quiet hour, not
+    # on a rolling TTL. every_days=0 → the legacy rolling-TTL behaviour (advanced.geo_ttl_days).
+    "geo_update": {"every_days": 1, "at": "04:00"},
 }
 
 
@@ -1511,7 +1560,7 @@ def load_panel_settings(path):
     """panel-settings.json merged over the defaults (one level deep for the sub-dicts)."""
     saved = load_json(path, {}) or {}
     out = {**PANEL_SETTINGS_DEFAULTS, **saved}
-    for k in ("interface_defaults", "mirrors", "advanced", "reserved"):
+    for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update"):
         out[k] = {**PANEL_SETTINGS_DEFAULTS[k], **(saved.get(k) or {})}
     return out
 
@@ -2229,6 +2278,7 @@ def api(method, path, qs, body, deps):
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
             "panel_settings": panel_settings,            # Panel settings screen: interface defaults, mirrors, advanced thresholds
+            "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {})),   # Geo-data provider registry + enabled state (source tags + toggles)
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
             "cat_domains": DOMAIN_BUNDLES,                # curated domains per host category → UI hover tooltip (ru/geoip cats absent)
             "cat_labels": {**{custom_cat_id(cl.get("domains") or [], cl.get("cidrs") or []): cl.get("title")   # custom_<hash> → list title, so the destination bars name custom lists (node counter carries the synthetic id)
@@ -2255,6 +2305,17 @@ def api(method, path, qs, body, deps):
         mir = incoming.get("mirrors")
         if isinstance(mir, dict):
             cur["mirrors"] = {"geo": (mir.get("geo") or "").strip(), "turn": (mir.get("turn") or "").strip()}
+        prov = incoming.get("providers")
+        if isinstance(prov, dict):                              # {prov_id: bool} — only known providers, coerced to bool
+            cur["providers"] = {p: bool(prov[p]) for p in prov if p in CATALOG_PROVIDERS}
+        gu = incoming.get("geo_update")
+        if isinstance(gu, dict):
+            try:    _ed = max(0, min(30, int(gu.get("every_days"))))
+            except Exception: _ed = 1
+            _at = str(gu.get("at") or "04:00").strip()
+            if not re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", _at):
+                _at = "04:00"
+            cur["geo_update"] = {"every_days": _ed, "at": _at}
         if "throughput_perspective" in incoming:
             cur["throughput_perspective"] = "peers" if incoming["throughput_perspective"] == "peers" else "nodes"
         rsv = incoming.get("reserved")
@@ -2364,14 +2425,17 @@ def api(method, path, qs, body, deps):
             atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
         return 200, {"ok": True, "data": {"geo_epoch": cur["geo_epoch"]}}
 
-    if method == "GET" and path == "/api/catalog":              # searchable provider catalog (id/label/caps), paginated
+    if method == "GET" and path == "/api/catalog":              # searchable provider catalog (id/label/provider/caps), paginated
         try:    _pg = max(0, int((qs.get("page") or ["0"])[0] or 0))
         except Exception: _pg = 0
-        return 200, {"ok": True, "data": catalog_search((qs.get("search") or [""])[0], _pg)}
+        _en = (deps.get("panel_settings") or {}).get("providers") or {}   # only enabled providers are searchable
+        _incl_disabled = (qs.get("all") or [""])[0] == "1"                # ?all=1 → include disabled providers (unused today)
+        return 200, {"ok": True, "data": catalog_search((qs.get("search") or [""])[0], _pg, enabled=None if _incl_disabled else _en)}
 
     if method == "POST" and path == "/api/catalog/refresh":     # force a catalog re-fetch ("Check for updates now")
         idx = catalog_index(force=True)
-        return 200, {"ok": True, "data": {"total": len(idx), "provider": CATALOG_PROVIDER, "error": _CATALOG.get("err") or ""}}
+        return 200, {"ok": True, "data": {"total": len(idx), "providers": CATALOG_PROVIDER_ORDER,
+                                          "perr": _CATALOG.get("perr") or {}, "error": _CATALOG.get("err") or ""}}
 
     if method == "GET" and path == "/api/roster":
         return 200, {"ok": True, "data": roster_load(roster_path)}

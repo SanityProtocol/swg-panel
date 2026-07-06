@@ -524,6 +524,7 @@ const Store = {
     this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
     this.catDomains = d.cat_domains || this.catDomains || {};   // curated domains per host category → hover tooltip
     this.catLabels = d.cat_labels || this.catLabels || {};   // custom_<hash> → custom-list title (for the destination bars)
+    this.catalogProviders = d.catalog_providers || this.catalogProviders || [];   // Geo-data provider registry [{id,label,url,tiers,enabled,error}]
     this.env = d.env || this.env || {};
     this.versions = d.versions || this.versions;
     this.latestRemote = d.latest_remote; this.panelOutdated = !!d.panel_outdated;
@@ -5347,6 +5348,12 @@ function PanelSettingsScreen() {
   const [ka, setKa] = useState(String(idf.keepalive || 25));
   const [geoMir, setGeoMir] = useState(mir.geo || "");
   const [turnMir, setTurnMir] = useState(mir.turn || "");
+  // Geo-data: catalog provider enable/disable + scheduled list refresh (replacing the geo mirror).
+  const _provReg = Store.catalogProviders || [];
+  const [provEnabled, setProvEnabled] = useState(() => Object.fromEntries(_provReg.map(p => [p.id, p.enabled !== false])));
+  const _gu = ps.geo_update || {};
+  const [guEvery, setGuEvery] = useState(String(_gu.every_days == null ? 1 : _gu.every_days));
+  const [guAt, setGuAt] = useState(_gu.at || "04:00");
   const [sc, setSc] = useState(ps.store_configs === false ? "off" : "on");   // ON and "default" merged — both keep configs
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
@@ -5469,6 +5476,8 @@ function PanelSettingsScreen() {
       const r = await api.panelSettings({
         interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25 },
         mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
+        providers: provEnabled,
+        geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
         store_configs: sc === "off" ? false : true,
         throughput_perspective: tput,
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
@@ -5599,7 +5608,7 @@ function PanelSettingsScreen() {
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
     sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "")) :
     sec === "security" ? secChanged() :
-    sec === "geo" ? (geoMir.trim() !== (mir.geo || "") || turnMir.trim() !== (mir.turn || "") || ttlD !== String(adv.geo_ttl_days || 3)) :
+    sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
@@ -5699,17 +5708,34 @@ function PanelSettingsScreen() {
           <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/…"/>
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
-          <div class="seclabel" style="margin-top:0">Where the geo data comes from</div>
-          <p class="hint" style="margin:0 0 8px">Each node fetches these public lists over HTTPS and refreshes them on a schedule:</p>
-          <ul class="hint geosrc">
-            <li><b>IP ranges</b> (the GeoIP categories) — <b>Loyalsoldier/geoip</b> for countries + most providers (rebuilt from MaxMind GeoLite2 & others), and <b>ipverse/asn-ip</b> for per-ASN ranges (e.g. Yandex / VK).</li>
-            <li><b>Host / domain lists</b> — <b>v2fly/domain-list-community</b> for global services, and <b>1andrevich/Re-filter</b> for Russia. These feed the node's dnsmasq, which fills the sets live as clients resolve.</li>
-          </ul>
-          <p class="hint" style="margin:0 0 12px"><b>Using a different provider?</b> The <b>mirror</b> below proxies these same lists for nodes that can't reach GitHub directly (it must serve the same paths). Swapping to a different source entirely — e.g. <b>MaxMind GeoLite2</b>, <b>IPdeny</b>, or <b>sapics/ip-location-db</b> — isn't a panel toggle yet; it needs the source URLs changed on the node. Tell us if you need one and we'll wire it in.</p>
-          <div class="field"><label>Auto-update interval (days)</label><input value=${ttlD} onInput=${e => setTtlD(e.target.value)} placeholder="3"/><div class="hint">How often a node re-fetches each list (a failed fetch backs off to hourly).</div></div>
-          <div class="field"><label>Geo lists mirror (optional)</label><input value=${geoMir} onInput=${e => setGeoMir(e.target.value)} placeholder="https://mirror.example/"/><div class="hint">Proxy prefix for nodes that can't reach GitHub directly. Blank = fetch direct.</div></div>
-          <div class="field"><label>Turn binaries mirror (optional)</label><input value=${turnMir} onInput=${e => setTurnMir(e.target.value)} placeholder="https://mirror.example/"/></div>
-          <div class="georefresh"><span class="faint" style="font-size:11px">To force every node to re-fetch on its next sync</span><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh geo lists now</button></div>
+          <div class="seclabel" style="margin-top:0">List providers</div>
+          <p class="hint" style="margin:0 0 12px">The public GitHub sources the routing-list catalog draws from. Each node fetches the lists you route directly over HTTPS. <b>Disable</b> a provider to hide its lists from the routing picker — anything already routed from it is <b>kept but greyed</b> (deactivated), and the nodes drop those records until you re-enable it.</p>
+          <div class="provlist">${(_provReg.length ? _provReg : []).map(p => { const on = provEnabled[p.id] !== false; return html`<div class=${"provrow" + (on ? "" : " off")} key=${p.id}>
+            <label class="swt" title=${on ? "Enabled — its lists are selectable" : "Disabled — its lists are hidden and deactivated on nodes"}>
+              <input type="checkbox" checked=${on} onChange=${e => setProvEnabled(m => ({ ...m, [p.id]: e.target.checked }))}/><span class="track"></span><span class="knob"></span></label>
+            <div class="prov-meta">
+              <a class="prov-name" href=${p.url} target="_blank" rel="noopener">${p.label}</a>
+              <span class="prov-tiers">${(p.tiers || []).map(t => html`<span class=${"capb " + (t === "ip" ? "ip" : "host")}>${t === "ip" ? "IP" : "Host"}</span>`)}</span>
+              ${p.error ? html`<span class="prov-err" title=${p.error}><${Ic} i="warn"/> last fetch failed</span>` : null}
+            </div>
+          </div>`; })}${!_provReg.length ? html`<div class="hint">Loading providers…</div>` : null}</div>
+
+          <div class="seclabel">Update schedule</div>
+          <p class="hint" style="margin:0 0 10px">When each node re-fetches its lists. Refreshing briefly reloads the node's match sets, which clients can feel — so schedule it for a <b>quiet hour</b>. (A failed fetch retries on the next sync; existing lists keep working meanwhile.)</p>
+          <div class="schedrow">
+            <div class="field" style="margin:0"><label>How often</label>
+              <select class="selwrap" value=${guEvery} onChange=${e => setGuEvery(e.target.value)}>
+                <option value="1">Every day</option>
+                <option value="2">Every 2 days</option>
+                <option value="3">Every 3 days</option>
+                <option value="7">Every week</option>
+                <option value="0">Continuous (rolling ${ttlD}-day TTL)</option>
+              </select></div>
+            <div class="field" style="margin:0"><label>At (node-local time)</label>
+              <input type="time" class="timein" value=${guAt} disabled=${guEvery === "0"} onInput=${e => setGuAt(e.target.value || "04:00")}/>
+              <div class="hint">${guEvery === "0" ? "Continuous mode ignores the time — nodes refresh whenever a list is older than the TTL." : "Nodes update at this local time, on the chosen cadence."}</div></div>
+          </div>
+          <div class="georefresh"><span class="faint" style="font-size:11px">Skip the schedule and force every node to re-fetch on its next sync</span><button class="btn btn-mini" onClick=${refreshGeo}><${Ic} i="refresh"/> Refresh all lists now</button></div>
         </div>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Interface colours<span class="grow"></span>
