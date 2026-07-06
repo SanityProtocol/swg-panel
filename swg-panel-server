@@ -1645,6 +1645,10 @@ def catalog_search(q, page, per=40, enabled=None):
 LIST_DIR = "/var/lib/swg-panel/lists"          # overridden from the state dir in main(); one .txt + .meta per (cat,tier)
 _LIST_META = {}                                # {"<cat>|<tier>": {"v","n","at"}} — in-memory mirror of the .meta files
 _LIST_INFLIGHT = set(); _LIST_LOCK = threading.Lock()
+# Cap concurrent list resolves so a burst (enable-all-providers + route many cats at once) can't peg a 1-core panel:
+# each resolve fetches + normalizes a list (collapsing a 100k-CIDR geoip is CPU-heavy), so run at most a few at a time.
+# Excess resolves queue on the semaphore (blocked threads are free); the _LIST_INFLIGHT set still dedupes per cat/tier.
+_RESOLVE_SEM = threading.BoundedSemaphore(3)
 _PDOM_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
 
 def _list_key(cat, tier): return re.sub(r"[^a-z0-9]", "_", cat.lower()) + "__" + tier
@@ -1868,7 +1872,8 @@ def list_ensure(cat, tier, force=False):
         _LIST_INFLIGHT.add(k)
     def _work():
         try:
-            list_store(cat, tier)                              # resolve + collapse-guard + store (keeps last-good on a bad pull)
+            with _RESOLVE_SEM:                                 # bound concurrency → smooths the CPU burst on a many-list add
+                list_store(cat, tier)                          # resolve + collapse-guard + store (keeps last-good on a bad pull)
         finally:
             with _LIST_LOCK:
                 _LIST_INFLIGHT.discard(k)
