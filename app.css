@@ -1337,6 +1337,10 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .catpick-rlbl .ic{color:var(--faint);flex-shrink:0}
 .catpick-builtin{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
   padding:1px 5px;border:1px solid var(--line-solid);border-radius:5px;flex-shrink:0}
+/* provider source tag on a catalog row (MetaCubeX / v2fly / …) */
+.catpick-src{font-family:var(--mono);font-size:9px;letter-spacing:.03em;color:var(--brand);flex-shrink:0;
+  padding:1px 5px;border-radius:5px;background:color-mix(in srgb,var(--brand) 12%,transparent)}
+.catpick-src.legacy{color:var(--dim);background:color-mix(in srgb,var(--ink) 8%,transparent)}
 .catpick-empty{padding:16px 10px;text-align:center;color:var(--faint);font-size:12.5px}
 .capbs{display:flex;gap:4px;flex-shrink:0}
 .capb{font-family:var(--mono);font-size:9px;letter-spacing:.05em;font-weight:600;padding:1px 5px;border-radius:5px}

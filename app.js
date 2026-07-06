@@ -2777,6 +2777,13 @@ function catLabelOf(c) {   // built-in label · custom-list title (via the panel
   const lt = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
   return SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || _CATALOG_LABEL_CACHE[c] || (String(c).startsWith("custom") ? "Custom" : c);
 }
+// A provider-catalog id is "<prov>:<rawid>"; return the provider's display label (MetaCubeX / v2fly / …) for the source tag.
+const isProviderCat = c => typeof c === "string" && c.includes(":") && !String(c).startsWith("custom");
+function provLabelOf(c) {
+  if (!isProviderCat(c)) return "";
+  const pid = c.split(":")[0];
+  return ((Store.catalogProviders || []).find(p => p.id === pid) || {}).label || pid;
+}
 // Per-category match capability, shipped by /api/state (Store.smartCaps). ip = matchable by geoip (works in
 // EVERY routing mode); host = matchable by domain via the node's dnsmasq (needs DNS → forcedns). A
 // host-ONLY category (youtube today) is dead weight in kernel mode, so the UI greys/hides it there.
@@ -2803,7 +2810,7 @@ const autoGrow = el => { if (!el) return; el.style.height = "auto"; el.style.hei
 // addMode: the picker becomes a multi-select "Add from catalog" affordance — it stays open on each pick,
 // shows a ✓ on already-added ids (from `selected`), and hides the Custom row, custom lists, and the 26
 // built-ins (those are managed by the checkboxes above it). Used by the Settings node-lens.
-function CatPicker({ value, mode, customLists, catalogCats, builtins, listTitle, onChange, addMode, selected, triggerLabel }) {
+function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange, addMode, selected, triggerLabel }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
@@ -2843,14 +2850,17 @@ function CatPicker({ value, mode, customLists, catalogCats, builtins, listTitle,
   const per = (res && res.per) || 40, total = (res && res.total) || 0;
   const pages = Math.max(1, Math.ceil(total / per));
   const lists = customLists || [];
-  // Routing picker (non-addMode): show ONLY the lists AVAILABLE on this node — enabled built-ins + custom lists +
-  // opted-in catalog cats — never the full ~1769 catalog. Filtered client-side; to add more, use Settings → Routing.
+  // Routing picker (non-addMode): TWO sections — Provider lists (the node's opted-in provider-catalog cats, each
+  // source-tagged) and Custom lists (your own). Never the full catalog — filtered client-side; add more via Settings.
+  // A currently-selected LEGACY built-in (existing rule) is shown under Provider lists so it stays editable.
   const _ql = q.trim().toLowerCase();
   const _match = (id, label) => !_ql || String(label).toLowerCase().includes(_ql) || String(id).toLowerCase().includes(_ql);
+  const _provRows = (catalogCats || []).map(c => ({ id: c.id, label: c.title, caps: catCap(c.id), src: provLabelOf(c.id) }));
+  if (!addMode && value && !isProviderCat(value) && value !== "custom" && !lists.some(l => l.id === value) && !_provRows.some(r => r.id === value))
+    _provRows.push({ id: value, label: catLabelOf(value), caps: catCap(value), src: "built-in", legacy: true });   // keep a legacy built-in rule visible/editable
   const localGroups = addMode ? [] : [
-    { grp: "Built-in lists", rows: (builtins || []).filter(b => _match(b.id, b.label)).map(b => ({ id: b.id, label: b.label, caps: catCap(b.id), builtin: true })) },
-    { grp: "Your lists", rows: lists.filter(l => _match(l.id, l.title)).map(l => ({ id: l.id, label: l.title, caps: null })) },
-    { grp: "Catalog lists on this node", rows: (catalogCats || []).filter(c => _match(c.id, c.title)).map(c => ({ id: c.id, label: c.title, caps: catCap(c.id) })) },
+    { grp: "Provider lists", rows: _provRows.filter(r => _match(r.id, r.label)) },
+    { grp: "Custom lists", rows: lists.filter(l => _match(l.id, l.title)).map(l => ({ id: l.id, label: l.title, caps: null })) },
   ].filter(g => g.rows.length);
   const localEmpty = !addMode && !localGroups.length && !!_ql;
   return html`<div class=${"catpick" + (addMode ? " catpick-add" : "")} ref=${ref}>
@@ -2872,16 +2882,16 @@ function CatPicker({ value, mode, customLists, catalogCats, builtins, listTitle,
             ${g.rows.map(it => { const ok = it.caps ? usable(it.caps) : true; return html`<button type="button" disabled=${!ok}
               class=${"catpick-row" + (value === it.id ? " sel" : "") + (ok ? "" : " off")} onClick=${() => ok && pick(it.id)}
               title=${ok ? "" : "Host-only list — switch this node to Force-DNS to use it"}>
-              <span class="catpick-rlbl">${it.label}${it.builtin ? html`<span class="catpick-builtin">built-in</span>` : null}</span>
+              <span class="catpick-rlbl">${it.label}${it.src ? html`<span class=${"catpick-src" + (it.legacy ? " legacy" : "")}>${it.src}</span>` : null}</span>
               ${it.caps ? capBadge(it.caps) : null}</button>`; })}`)}
-          ${localEmpty ? html`<div class="catpick-empty">No list on this node matches “${q}”. Add more in Settings → Routing.</div>` : null}
+          ${localEmpty ? html`<div class="catpick-empty">No list on this node matches “${q}”. Add more in Settings → Routing lists.</div>` : null}
         ` : html`
-          ${(() => { const rows = items.filter(it => !SMART_CAT_LABEL[it.id]);   // addMode hides built-ins (managed by the checkboxes above)
+          ${(() => { const rows = items;
             return res == null ? html`<div class="catpick-empty">Loading…</div>`
-            : rows.length === 0 ? html`<div class="catpick-empty">No catalog category matches “${q}”.</div>`
+            : rows.length === 0 ? html`<div class="catpick-empty">No provider list matches “${q}”.</div>`
             : rows.map(it => { const added = selSet.has(it.id); return html`<button type="button"
                 class=${"catpick-row" + (added ? " sel" : "")} onClick=${() => pick(it.id)}>
-                <span class="catpick-rlbl"><span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>${it.label}</span>
+                <span class="catpick-rlbl"><span class=${"catpick-tick" + (added ? " on" : "")}>${added ? "✓" : ""}</span>${it.label}<span class="catpick-src">${it.provider_label || provLabelOf(it.id)}</span></span>
                 ${capBadge(it.caps)}</button>`; }); })()}
         `}
       </div>
@@ -2905,8 +2915,7 @@ function RoutingRules({ node, rules, onChange }) {
   const _ec = _nrec && _nrec.enabled_categories && _nrec.enabled_categories.length ? new Set(_nrec.enabled_categories) : null;
   const hiddenCats = { has: id => (_ec ? !_ec.has(id) : false) || !catUsableInMode(id, _mode) };   // node-scoped: hidden = not enabled, OR not matchable in this mode
   const customLists = (_ps.custom_lists || []).filter(l => !(l.disabled_nodes || []).includes(node));   // per-node: hide lists the operator disabled on THIS node
-  const catalogCats = (_nrec && _nrec.catalog_cats || []).map(id => ({ id, title: catLabelOf(id) }));   // provider-catalog cats opted into this node → pinned in the picker
-  const builtins = SMART_CATEGORIES.filter(([id]) => id !== "all" && (!_ec || _ec.has(id))).map(([id, label]) => ({ id, label }));   // the 26 built-ins ENABLED on this node (mode-greying handled in the picker)
+  const catalogCats = (_nrec && _nrec.catalog_cats || []).map(id => ({ id, title: catLabelOf(id) }));   // provider-catalog cats opted into this node → the Provider lists section
   const listTitle = Object.fromEntries([...(_ps.custom_lists || []).map(l => [l.id, l.title]), ...catalogCats.map(c => [c.id, c.title])]);
   const catLabel = c => c === "custom" ? "Custom IPs / domains" : (SMART_CAT_LABEL[c] || listTitle[c] || c);
   const allRule = rules.find(r => r.category === "all");          // the catch-all ("everything else") → footer dropdown
@@ -2942,7 +2951,7 @@ function RoutingRules({ node, rules, onChange }) {
       const it = rs.item(r._rid);
       return html`<div key=${r._rid} class=${"rrrow" + it.cls + ((dup || self || badToks.length || domToks.length) ? " warn" : "")} data-rid=${it.rid}>
         <span class="drag-grip" title="Drag to reorder" ...${rs.grip(r._rid)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>
-        <${CatPicker} value=${r.category} mode=${_mode} customLists=${customLists} catalogCats=${catalogCats} builtins=${builtins} listTitle=${listTitle}
+        <${CatPicker} value=${r.category} mode=${_mode} customLists=${customLists} catalogCats=${catalogCats} listTitle=${listTitle}
           onChange=${v => setRule(r._rid, { category: v })}/>
         <span class="rrarrow">→</span>
         <select class="selwrap" value=${destVal(r)} onChange=${e => onDest(r._rid, e.target.value)}>
@@ -5643,30 +5652,24 @@ function PanelSettingsScreen() {
           ${MODES.map(([id, lbl, exp]) => html`<label class=${"moderow" + (nodeMode === id ? " on" : "")}>
             <input type="radio" name="rmode" checked=${nodeMode === id} onChange=${() => setMode(id)}/>
             <div class="modetxt"><div class="modelbl">${lbl}</div>${nodeMode === id ? html`<div class="modeexp">${exp}</div>` : null}</div></label>`)}
-          <div class="seclabel">Built-in lists</div>
-          <p class="hint" style="margin:0 0 4px">Categories available in <b>${nodeRec ? nodeRec.name : "this node"}</b>'s interface routing dropdowns; unticked ones are hidden (existing rules keep working). "All traffic" and "Custom IPs / domains" are always available.</p>
-          <p class="hint" style="margin:0 0 12px">These lists' contents are maintained for you from public sources (manage where they're fetched from in <b>Geo data</b>) — hover a list to see its domains. To route <b>your own</b> domains or IPs, add a <b>Custom list</b> below.</p>
-          <div class="catgroup">IP <span class="req">— GeoIP, works in every mode</span></div>
-          <div class="catgrid">${sysCats.filter(([id]) => catCap(id).ip).map(([id, lbl]) => html`<label class=${"chk" + (catDoms(id).length ? " listwrap" : "")}><input type="checkbox" checked=${catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id), catCap(id).ip ? "+ GeoIP ranges" : null)}</label>`)}</div>
-          ${(() => { const hostCats = sysCats.filter(([id]) => catHostOnly(id)); if (!hostCats.length) return null; const dis = nodeMode === "kernel";
-            return html`<div class="catgroup hostgroup">Host <span class="req">${dis ? "— needs Force-DNS or SNI mode" : "— matched by hostname"}</span></div>
-            <div class="catgrid">${hostCats.map(([id, lbl]) => html`<label class=${"chk" + (dis ? " disabled" : "") + (catDoms(id).length ? " listwrap" : "")} title=${dis ? "Host lists need Force-DNS or SNI mode" : ""}><input type="checkbox" disabled=${dis} checked=${!dis && catOn(id)} onChange=${e => toggleNodeCat(id, e.target.checked)}/><span>${lbl}</span>${listBubble(catDoms(id))}</label>`)}</div>`; })()}
-          <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— shared across the fleet; the tick enables each on <b>${nodeRec ? nodeRec.name : "this node"}</b></span></div>
+          <div class="seclabel">Provider lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— added to <b>${nodeRec ? nodeRec.name : "this node"}</b> from the public catalogs</span></div>
+          <p class="hint" style="margin:0 0 8px">Search the catalog (across every enabled provider — manage which in <b>Geo data</b>) and add the lists you want routable on <b>${nodeRec ? nodeRec.name : "this node"}</b>. The same service often comes from several providers; each shows its <b>source</b>, so you can pick who you trust. Added lists appear in this node's interface routing dropdowns. ${nodeMode === "kernel" ? html`In Kernel mode only IP-matchable lists route; domain-only lists stay greyed until you switch to Force-DNS or SNI.` : null}</p>
+          <div class="ccchips">${ccOf(selNode).length ? ccOf(selNode).map(id => { const cap = catCap(id); const greyed = nodeMode === "kernel" && !cap.ip;
+            return html`<span class=${"ccchip" + (greyed ? " off" : "")} key=${id} title=${greyed ? "Domain-only — needs Force-DNS or SNI on this node" : ""}>
+              <span class="ccchip-lbl">${catLabelOf(id)}</span>
+              ${provLabelOf(id) ? html`<span class="catpick-src">${provLabelOf(id)}</span>` : null}
+              <span class="ccchip-caps">${cap.ip ? html`<span class="capb ip">IP</span>` : null}${cap.host ? html`<span class="capb host">Host</span>` : null}</span>
+              <button class="ccchip-x" title="Remove from this node" onClick=${() => removeCatalogCat(id)}><${Ic} i="x"/></button>
+            </span>`; }) : html`<span class="hint" style="margin:0">No provider lists added to this node yet.</span>`}</div>
+          <div style="margin-top:10px"><${CatPicker} addMode=${true} mode=${nodeMode} triggerLabel="Add from catalog" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/></div>
+          <div class="seclabel">Custom lists <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— your own IPs / domains; the tick enables each on <b>${nodeRec ? nodeRec.name : "this node"}</b></span></div>
+          <p class="hint" style="margin:0 0 8px">Shared across the fleet. Edits apply immediately (no schedule) on every node a list is enabled for.</p>
           <div class="cllist">${lists.length ? lists.map(l => html`<div class="cl-row" key=${l._rid}>
             <label class="chk" title=${"Available on " + (nodeRec ? nodeRec.name : "this node") + " — untick to hide it in this node's routing dropdown"}><input type="checkbox" checked=${!(l.disabled_nodes || []).includes(selNode)} onChange=${e => { const on = e.target.checked; persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: on ? (x.disabled_nodes || []).filter(n => n !== selNode) : [...new Set([...(x.disabled_nodes || []), selNode])] } : x)); }}/></label>
             <button class="cl-name" onClick=${() => openList(l)}>${l.title || "Untitled list"}</button>
             ${(() => { const p = entryPreview(l.targets); return html`<button class="cl-preview" onClick=${() => openList(l)} title="Click to edit">${p.text ? html`<span class="cl-ptext">${p.text}</span>` : html`<span class="faint">empty</span>`}${p.more ? html`<span class="cl-more">(${p.more} more)</span>` : null}</button>`; })()}
           </div>`) : html`<div class="hint">No custom lists yet.</div>`}</div>
           <div style="margin-top:10px"><button class="btn btn-mini" onClick=${() => openList(null)}><${Ic} i="plus"/> Add new list</button></div>
-          <div class="seclabel">Catalog categories <span class="faint" style="font-weight:400;text-transform:none;letter-spacing:0">— from the ${(Store.catLabels && "provider") || "provider"} catalog, opted into <b>${nodeRec ? nodeRec.name : "this node"}</b></span></div>
-          <p class="hint" style="margin:0 0 8px">Search the full provider catalog (${"~1800"} lists) and add the ones you want available on <b>${nodeRec ? nodeRec.name : "this node"}</b>. Added lists appear in this node's interface routing dropdowns. ${nodeMode === "kernel" ? html`In Kernel mode only IP-matchable lists route; domain-only lists are added but stay greyed until you switch to Force-DNS or SNI.` : null}</p>
-          <div class="ccchips">${ccOf(selNode).length ? ccOf(selNode).map(id => { const cap = catCap(id); const greyed = nodeMode === "kernel" && !cap.ip;
-            return html`<span class=${"ccchip" + (greyed ? " off" : "")} key=${id} title=${greyed ? "Domain-only — needs Force-DNS or SNI on this node" : ""}>
-              <span class="ccchip-lbl">${catLabelOf(id)}</span>
-              <span class="ccchip-caps">${cap.ip ? html`<span class="capb ip">IP</span>` : null}${cap.host ? html`<span class="capb host">Host</span>` : null}</span>
-              <button class="ccchip-x" title="Remove from this node" onClick=${() => removeCatalogCat(id)}><${Ic} i="x"/></button>
-            </span>`; }) : html`<span class="hint" style="margin:0">No catalog categories added to this node yet.</span>`}</div>
-          <div style="margin-top:10px"><${CatPicker} addMode=${true} mode=${nodeMode} triggerLabel="Add from catalog" selected=${ccOf(selNode)} onChange=${id => ccOf(selNode).includes(id) ? removeCatalogCat(id) : addCatalogCat(id)}/></div>
         </div>` : null}
         ${section === "turn" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Turn proxies<span class="grow"></span>
