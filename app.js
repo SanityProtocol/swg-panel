@@ -3706,7 +3706,7 @@ function LoadIfaceSheet({ node }) {
     toast(existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync.", "ok");
   };
   return html`<${Sheet} title="Create new interface"
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || (!existing && !!egressError(eg, nrec.routing_mode || "kernel"))} title=${(!existing && egressError(eg, nrec.routing_mode || "kernel")) || ""} onClick=${save}>${existing ? "Adopt" : "Create"}</button></>`}>
+    foot=${footRow({ onCancel: closeModal, disabled: busy || (!existing && !!egressError(eg, nrec.routing_mode || "kernel")), title: (!existing && egressError(eg, nrec.routing_mode || "kernel")) || "", onAction: save, action: existing ? "Adopt" : "Create" })}>
     <div class="field"><label>Protocol</label>
       <div class="chiprow proto3">
         <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
@@ -3758,7 +3758,7 @@ function DeleteIfaceSheet({ node, iface }) {
     go("#/node/" + encodeURIComponent(node));   // this interface's page is going away
   };
   return html`<${Sheet} title=${"Delete interface · " + iface}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" disabled=${!ok || busy} onClick=${del}>Delete interface</button></>`}>
+    foot=${footRow({ onCancel: closeModal, danger: true, disabled: !ok || busy, onAction: del, action: "Delete interface" })}>
     <div class="notice warn"><${Ic} i="warn"/><span>This permanently tears down <b>${iface}</b> on the node: the interface goes <b>down</b>, its <b>.conf and server key are removed</b>, and <b>every peer on this interface is destroyed</b>. Peers deployed only here are deleted from the panel and their configs/QRs stop working. This can't be undone.</span></div>
     <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
   <//>`;
@@ -3876,7 +3876,7 @@ function ConnectionEditSheet({ node, iface }) {
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`;
   const peerNm = html`<b style=${"color:" + Store.nodeColor(peer)}>${Store.nodeName(peer)}</b>`;
   return html`<${Sheet} title=${"Connection to " + Store.nodeName(peer)} width=${680} onClose=${closeModal}
-      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${nodeDown} title=${nodeDown ? Store.nodeName(node) + " isn't reporting — reconnect it before changing this link" : ""} onClick=${saveDial}>Save</button></>`}>
+      foot=${footRow({ onCancel: closeModal, disabled: nodeDown, title: nodeDown ? Store.nodeName(node) + " isn't reporting — reconnect it before changing this link" : "", onAction: saveDial, action: "Save" })}>
     <div class="conncard">
       <div class="conncard-top">
         <span class=${"iftype " + proto}>System ${proto.toUpperCase()}</span>
@@ -4148,7 +4148,7 @@ function DeleteTurnSheet({ node, service, label }) {
     toast("Turn-proxy removal requested — the node stops + removes it on its next sync.", "ok");
   };
   return html`<${Sheet} title=${"Delete turn-proxy · " + label}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" disabled=${!ok || busy} onClick=${del}>Delete turn-proxy</button></>`}>
+    foot=${footRow({ onCancel: closeModal, danger: true, disabled: !ok || busy, onAction: del, action: "Delete turn-proxy" })}>
     <div class="notice warn"><${Ic} i="warn"/><span>This <b>stops, disables and removes</b> the turn-proxy service <b>${label}</b> on the node. Clients pointed at it stop connecting. This can't be undone. (To keep the service running and only unlink it from the panel, use <b>Disconnect</b>.)</span></div>
     <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
   <//>`;
@@ -4481,7 +4481,7 @@ function SetupTurnSheet({ node }) {
     toast("Turn-proxy install requested — the node downloads + starts it on its next sync.", "ok");
   };
   return html`<${Sheet} title=${mode === "new" ? turnSheetTitle(f.label, title) : "Adopt turn-proxy"}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || (mode === "new" && !FORKS.length)} onClick=${save}>${mode === "existing" ? "Adopt" : "Install"}</button></>`}>
+    foot=${footRow({ onCancel: closeModal, disabled: busy || (mode === "new" && !FORKS.length), onAction: save, action: mode === "existing" ? "Adopt" : "Install" })}>
     <div class="field"><label>Source</label>
       <div class="chiprow proto3">
         <button class=${"chip c-awg" + (mode === "new" ? " on" : "")} onClick=${() => setMode("new")}>Install a fork</button>
@@ -5952,7 +5952,7 @@ function openUpdateModal({ title, side, onConfirm }) {
   const full = "curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update";
   const go = async () => { closeModal(); await onConfirm(); };
   openModal(html`<${Sheet} title=${title}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${go}>Update now</button></>`}>
+    foot=${footRow({ onCancel: closeModal, onAction: go, action: "Update now" })}>
     <div class="iface-intro" style="font-size:14px;line-height:1.55"><div>For a <b>full, controlled update</b> — including third-party components (docker / wg-awg / turn-proxies) — run this on the ${side} box:</div></div>
     <div class="field"><div class="ipk-field"><span class="ipk-val" style="text-align:left">${full}</span><button class="copybtn" onClick=${() => copy(full, "Command copied")}><${Ic} i="copy"/></button></div></div>
     <div class="iface-intro" style="font-size:14px;line-height:1.55;margin-top:26px;margin-bottom:2px"><div>For an <b>automatic update of SWG components only</b>, press <b>Update now</b> below.</div></div>
@@ -6772,7 +6772,7 @@ function AccountSheet() {
     setTimeout(() => location.reload(), 1400);
   };
   return html`<${Sheet} title="Account"
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Close</button><button class="btn btn-primary" disabled=${!enabled} onClick=${save}>Save changes</button></>`}>
+    foot=${footRow({ cancelLabel: "Close", onCancel: closeModal, disabled: !enabled, onAction: save, action: "Save changes" })}>
     <p class="hint" style="margin:0 0 16px">Change the panel username and password. Takes effect immediately — you'll be asked to sign in again.</p>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
     <div class="field"><label>Username</label><input autofocus value=${user} onInput=${e => setUser(e.target.value)} autocomplete="username"/></div>
@@ -6793,6 +6793,14 @@ function AccountSheet() {
 // `onClose` is the single dismiss target for EVERY exit path — ✕, Esc, overlay-click, the discard
 // confirm. Openers pass the place to return to (e.g. reopen the peer view); default just closes.
 // Cancel/Save buttons in a sheet's foot should call the same target so all paths land identically.
+
+// The standard modal footer action row: [optional `left` buttons] · spacer · Cancel · one primary/danger action.
+// Collapses the ~15 dialogs that share this exact shape into one call; irregular footers (multiple actions,
+// a left-aligned Cancel) stay inline. `danger` paints the action red; `actionCls` overrides the class outright;
+// `title`/`disabled` are only emitted when passed, so the rendered DOM stays byte-identical to the old inline form.
+function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
+  return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || "Cancel"}</button><button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button><//>`;
+}
 function Sheet({ title, children, foot, onClose, width }) {
   onClose = onClose || closeModal;
   const ref = useRef(null);
@@ -6964,7 +6972,7 @@ function AddPeersSheet({ userId, userName }) {
   const newAdds = selPeer ? chosen.filter(t => !t.existing && !selPeer.targets.some(x => x.node === t.node && x.iface === t.iface)).length : chosen.length;
   const ctaLabel = selPeer ? ("Assign" + (newAdds ? " + " + newAdds + " target" + (newAdds === 1 ? "" : "s") : "")) : ("Create " + (chosen.length || "") + " peer" + (chosen.length === 1 ? "" : "s"));
   return html`<${Sheet} title=${"Add peers" + (userName ? " · " + userName : "")}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${create}>${ctaLabel}</button></>`}>
+    foot=${footRow({ onCancel: closeModal, disabled: busy, onAction: create, action: ctaLabel })}>
     <div class="field"><label>Peer</label>
       <select class="selwrap" value=${mode} onChange=${e => { setMode(e.target.value); setChosen([]); }}>
         <option value="new">Create new peer</option>
@@ -7168,7 +7176,7 @@ function CreatePeerSheet({ prefill }) {
   };
 
   return html`<${Sheet} title="New peer"
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${create}>Create peer</button></>`}>
+    foot=${footRow({ onCancel: closeModal, disabled: busy, onAction: create, action: "Create peer" })}>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${true} onChange=${setUserId}/></div>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional, to tell devices apart</span></label>
@@ -7269,7 +7277,7 @@ function AddTargetSheet({ peer, back }) {
   };
 
   return html`<${Sheet} title=${"Peer targets"} onClose=${back}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${back}>Cancel</button><button class=${"btn " + (chosen.length === 0 ? "btn-danger" : "btn-primary")} disabled=${busy || !confLoaded || nochange} onClick=${save}>${chosen.length === 0 ? "Delete peer" : ((removed.length || ipChanged.length) ? "Save changes" : "Deploy")}</button></>`}>
+    foot=${footRow({ onCancel: back, actionCls: "btn " + (chosen.length === 0 ? "btn-danger" : "btn-primary"), disabled: busy || !confLoaded || nochange, onAction: save, action: chosen.length === 0 ? "Delete peer" : ((removed.length || ipChanged.length) ? "Save changes" : "Deploy") })}>
     ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : html`<${Fragment}>
         ${added.length && !srcConf ? html`<div class="notice warn"><${Ic} i="warn"/><span>${Store.storeConfigs
@@ -7426,7 +7434,7 @@ function EditPeerSheet({ peer, focus, done, flash }) {
   };
 
   return html`<${Sheet} title=${"Edit peer"} onClose=${done}
-    foot=${html`<${Fragment}>${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, () => openEditPeer(peer, focus, done))}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" disabled=${busy} onClick=${save}>Save</button></>`}>
+    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, () => openEditPeer(peer, focus, done))}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
@@ -7477,7 +7485,7 @@ function NodeCreateSheet() {
     await Store.poll(); openModal(html`<${NodeTokenSheet} name=${r.data.name} token=${r.data.token} isNew=${true}/>`);
   };
   return html`<${Sheet} title="Add node"
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${create}>Create node</button></>`}>
+    foot=${footRow({ onCancel: closeModal, onAction: create, action: "Create node" })}>
     <div class="field"><label>Name</label>
       <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} placeholder="msk-edge1" autocomplete="off"/>
         <${ThemedSwatch} val=${color} title="Node colour" onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || "node"}</span>`}/></div>
@@ -7569,7 +7577,7 @@ function NodeEditSheet({ node }) {
   const meshAwg = node.mesh_awg || {};
   const hasAwg = AWG_KEYS.some(k => meshAwg[k] != null && meshAwg[k] !== "");
   return html`<${Sheet} title=${"Node settings · " + node.name}
-    foot=${html`<${Fragment}><button class="btn btn-ghost" title="Rotate this node's enrollment token (re-enroll / re-install)" onClick=${() => openNodeRotate(node)}><${Ic} i="key"/> Rotate key</button><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></>`}>
+    foot=${footRow({ left: html`<button class="btn btn-ghost" title="Rotate this node's enrollment token (re-enroll / re-install)" onClick=${() => openNodeRotate(node)}><${Ic} i="key"/> Rotate key</button>`, onCancel: closeModal, onAction: save, action: "Save" })}>
     <div class="field"><label>Name</label>
       <div class="namerow"><input autofocus class=${nameBad ? "bad" : ""} value=${name} onInput=${e => setName(e.target.value)} autocomplete="off"/>
         <${ThemedSwatch} val=${color} title="Node colour" onChange=${setColor} sample=${(c) => html`<span class="tg" style=${"background:color-mix(in srgb," + c + " 16%,transparent);color:" + c}>${name.trim() || node.name || "node"}</span>`}/></div>
@@ -7589,7 +7597,7 @@ function openNodeRecover(node) { openModal(html`<${NodeRecoverSheet} node=${node
 function NodeRecoverSheet({ node }) {
   const go = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(r.error || "couldn't generate a recovery command", "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind}/>`); };
   return html`<${Sheet} title=${"Recover node · " + node.name}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${go}>Generate recovery command</button></>`}>
+    foot=${footRow({ onCancel: closeModal, onAction: go, action: "Generate recovery command" })}>
     <div class="notice"><${Ic} i="info"/><span>This node isn't reporting. Generating a recovery command rotates its token and gives you a one-line command to paste on the server — it re-installs/recovers <b>${node.name}</b> as the <b>same node</b>, so its interfaces and peers come straight back (no need to find the old token).</span></div>
     <div class="notice warn" style="margin-top:10px"><${Ic} i="warn"/><span>The node's current token stops working immediately — use this only when the node is genuinely down or you've lost its install command.</span></div>
   <//>`;
@@ -7598,7 +7606,7 @@ function openNodeRotate(node) { openModal(html`<${NodeRotateSheet} node=${node}/
 function NodeRotateSheet({ node }) {
   const go2 = async () => { const r = await api.nodeRotate({ id: node.id }); if (!r.ok) { toast(r.error || "rotate failed", "err"); return; } openModal(html`<${NodeTokenSheet} name=${node.name} token=${r.data.token} isNew=${false} kind=${node.kind}/>`); };
   return html`<${Sheet} title=${"Rotate token · " + node.name}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" onClick=${go2}>Rotate</button></>`}>
+    foot=${footRow({ onCancel: closeModal, onAction: go2, action: "Rotate" })}>
     <div class="notice warn"><${Ic} i="warn"/><span>The current token stops working immediately. Re-enroll the node with the new token or it will go offline.</span></div>
   <//>`;
 }
@@ -7634,7 +7642,7 @@ function ForceRemoveNodeSheet({ node }) {
     toast("Node force-removed.", "ok");
   };
   return html`<${Sheet} title=${"Force remove · " + node.name}
-    foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-danger" disabled=${!ok || busy} onClick=${del}>Force remove</button></>`}>
+    foot=${footRow({ onCancel: closeModal, danger: true, disabled: !ok || busy, onAction: del, action: "Force remove" })}>
     <div class="notice warn"><${Ic} i="warn"/><span>This cuts <b>${node.name}</b> off <b>immediately</b> without waiting for it to confirm — ${onlyHere ? html`<b>${onlyHere}</b> peer${onlyHere === 1 ? "" : "s"} that live only here ${onlyHere === 1 ? "is" : "are"} dropped` : "peers that live only here are dropped"}. Use this only when the server is unreachable. This can't be undone.</span></div>
     <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
   <//>`;
