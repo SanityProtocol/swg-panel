@@ -146,6 +146,8 @@ const ICON = {
   network: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="19" r="2.2"/><circle cx="19" cy="19" r="2.2"/><path d="M12 7.2v3.3M12 10.5 6.2 17M12 10.5 17.8 17"/></svg>',
   key: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="8" cy="15" r="4"/><path d="M10.9 12.1 21 2m-4 1 2.4 2.4M14 5l2.4 2.4"/></svg>',
   shield: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l7.5 3.2v5C19.5 16 16.4 19 12 21 7.6 19 4.5 16 4.5 11.2v-5z"/></svg>',
+  compass: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15.8 8.2l-2 5.6-5.6 2 2-5.6z"/></svg>',
+  eye: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
   activity: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>',
   users: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1"/><circle cx="9" cy="7" r="3.4"/><path d="M22 19v-1a4 4 0 0 0-3-3.85M16 3.2a4 4 0 0 1 0 7.6"/></svg>',
   user: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M19 20v-1a5 5 0 0 0-5-5h-4a5 5 0 0 0-5 5v1"/><circle cx="12" cy="7" r="4"/></svg>',
@@ -153,6 +155,19 @@ const ICON = {
   cpu: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="7" y="7" width="10" height="10" rx="1.6"/><path d="M9 1.5v3M15 1.5v3M9 19.5v3M15 19.5v3M1.5 9h3M1.5 15h3M19.5 9h3M19.5 15h3"/></svg>',
   disk: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5.2 13 7.5 5h9l2.3 8M7 16.5h.01"/></svg>',
   clock: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5l3.2 2"/></svg>',
+  "cal-day": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><rect x="10.2" y="12.4" width="3.6" height="3.6" rx="0.7" fill="currentColor" stroke="none"/></svg>',
+  "cal-week": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><path d="M6.3 14h11.4" stroke-width="2.7"/></svg>',
+  cal: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><path d="M7.5 13h.01M12 13h.01M16.5 13h.01M7.5 16.6h.01M12 16.6h.01M16.5 16.6h.01" stroke-width="2.3"/></svg>',
+  donut: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.4"/></svg>',
+  flow: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="6" r="2.6"/><circle cx="18" cy="18" r="2.6"/><path d="M8.3 10.9 15.7 7.1M8.3 13.1 15.7 16.9"/></svg>',
+  bars: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 20V12M12 20V4M19 20V15"/></svg>',
+  exclaim: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.3v5.4"/><path d="M12 16.3v.01" stroke-width="2.4"/></svg>',
+  excl: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 3.5v11"/><path d="M12 20v.01" stroke-width="3.4"/></svg>',
+  hour2: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 12 9.7 8.1"/><path d="M12 12 17 12"/></svg>',
+  sun: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.3M12 19.2v2.3M2.5 12h2.3M19.2 12h2.3M5.1 5.1l1.7 1.7M17.2 17.2l1.7 1.7M18.9 5.1l-1.7 1.7M6.8 17.2l-1.7 1.7"/></svg>',
+  weekcal: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9.5h18M8 3v3.4M16 3v3.4"/><rect x="6.2" y="12.4" width="3.2" height="3.2" rx="0.6" fill="currentColor" stroke="none"/><rect x="10.4" y="12.4" width="3.2" height="3.2" rx="0.6" fill="currentColor" stroke="none"/><rect x="14.6" y="12.4" width="3.2" height="3.2" rx="0.6" fill="currentColor" stroke="none"/></svg>',
+  monthcal: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9.5h18M8 3v3.4M16 3v3.4"/><g fill="currentColor" stroke="none"><rect x="6.3" y="11.6" width="2.7" height="2.7" rx="0.5"/><rect x="10.65" y="11.6" width="2.7" height="2.7" rx="0.5"/><rect x="15" y="11.6" width="2.7" height="2.7" rx="0.5"/><rect x="6.3" y="15.4" width="2.7" height="2.7" rx="0.5"/><rect x="10.65" y="15.4" width="2.7" height="2.7" rx="0.5"/><rect x="15" y="15.4" width="2.7" height="2.7" rx="0.5"/></g></svg>',
+  daycal: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9.5h18M8 3v3.4M16 3v3.4"/><rect x="9.9" y="12.2" width="4.2" height="4.2" rx="0.8" fill="currentColor" stroke="none"/></svg>',
   relay: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="2"/><path d="M8.2 8.2a5.4 5.4 0 0 0 0 7.6M15.8 15.8a5.4 5.4 0 0 0 0-7.6M5.4 5.4a9.4 9.4 0 0 0 0 13.2M18.6 18.6a9.4 9.4 0 0 0 0-13.2"/></svg>',
   cascade: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v4h5v4h5v4h6"/></svg>',
   smart: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 3l1.8 5.2L18 10l-5.2 1.8L11 17l-1.8-5.2L4 10l5.2-1.8z"/><path d="M18.5 14l.8 2.4 2.4.8-2.4.8-.8 2.4-.8-2.4-2.4-.8 2.4-.8z"/></svg>',
@@ -417,10 +432,14 @@ const api = {
   login(b) { return this.post("/api/login", b); },
   logout() { return this.post("/api/logout", {}); },
   state() { return this.get("/api/state"); },
-  events(limit) { return this.get("/api/events?limit=" + (limit || 12)); },
+  events(limit) { return this.get("/api/events?limit=" + (limit || 15)); },
+  eventDelete(eid) { return this.post("/api/events/delete", { eid }); },
+  eventsClear() { return this.post("/api/events/clear", {}); },
   nodeHistory(node, range) { return this.get("/api/node-history?node=" + encodeURIComponent(node) + "&range=" + encodeURIComponent(range)); },
   meshHistory(range) { return this.get("/api/mesh-history?range=" + encodeURIComponent(range)); },
   categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
+  turnHistory(range) { return this.get("/api/turn-history?range=" + encodeURIComponent(range)); },
+  peerHistory(range) { return this.get("/api/peer-history?range=" + encodeURIComponent(range)); },
   catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
   catalogIndex() { return this.get("/api/catalog/index"); },
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
@@ -1507,55 +1526,111 @@ function DangerButton({ label, confirm, onConfirm, className }) {
 }
 
 // One fleet entry: main block (identity/traffic/sync) on the left, health block on the right.
-function FleetNodeCard({ n }) {
+// `traffic` = this node's client (non-mesh) rx/tx for the SELECTED range — a live rate, or windowed volume
+// when `ranged`. Computed once in Overview (nodeTraffic) so the card agrees with the doughnuts/top-nodes.
+function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist }) {
   const live = Store.recon.nodeStatus[n.id] === "live";
   const snap = Store.stats[n.id];
   const nrec = (Store.nodes || []).find(x => x.id === n.id) || {};   // health lives on the node-store record
   const health = nrec.health || null;
-  const here = Store.recon.peers.filter(p => p.targets.some(t => t.node === n.id));
-  const onl = here.filter(p => p.targets.some(t => t.node === n.id && t.online)).length;
-  let nrx = 0, ntx = 0; if (snap) for (const blk of Object.values(snap.interfaces || {})) for (const pp of blk.peers || []) { nrx += pp.rx_speed || 0; ntx += pp.tx_speed || 0; }
+  const tr = traffic || { rx: 0, tx: 0 };
+  const trafCell = ranged ? xferCell(...dlul(tr.rx, tr.tx)) : rateCell(tr.rx, tr.tx);
   let sync = "no data"; if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); sync = live ? "synced " + seen(a) + " ago" : "stale · " + seen(a); }
   const al = healthAlerts(health);
+  // client interface-type badges — one per type present, "awg" / "awg ×5" (mesh/system ifaces excluded)
+  const ifs = Store.describe[n.id] || {}; let wg = 0, awg = 0;
+  for (const ifn in ifs) { const m = ifs[ifn]; if (!m || m.system) continue; if (m.awg_params && Object.keys(m.awg_params).length) awg++; else wg++; }
+  const ifBadges = []; if (awg) ifBadges.push(["awg", awg]); if (wg) ifBadges.push(["wg", wg]);
   return html`<a class=${"fnode " + (live ? "" : "stale")} href=${"#/node/" + encodeURIComponent(n.id)}>
     <div class="fnode-main">
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
-        <div><span class="fl">Traffic</span>${rateCell(nrx, ntx)}</div>
+        <div><span class="fl">Traffic</span>${trafCell}</div>
         <div><span class="fl">Online</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} trigger=${c => html`${c} <span class="faint">user${c === 1 ? "" : "s"}</span>`}/></span></div>
         <div><span class="fl">Sync</span><span class="fv">${sync}</span></div>
+        ${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c]) => html`<span key=${t} class=${"iftype " + t}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}
       </div>
     </div>
     <div class="fnode-health">
-      ${health ? html`<${NodeHealth} health=${health} node=${n.id} compact=${true}/>` : html`<div class="fnode-nohealth">${live ? "no health data reported" : "node offline"}</div>`}
+      ${health ? html`<${NodeHealth} health=${health} node=${n.id} compact=${true} range=${histRange} nodeHist=${nodeHist}/>` : html`<div class="fnode-nohealth">${live ? "no health data reported" : "node offline"}</div>`}
     </div>
   </a>`;
 }
 
-// Recent activity comes from the panel's server-side event log (/api/events): real per-action
-// history ("Assigned peer", "Removed deployment", …). Until the log has entries we fall back to
-// the created/updated heuristic derived from created_at vs modified_at, so the feed is never blank.
-const ACT_ICON = { user: "user", peer: "device", node: "server" };
-const ACT_HREF = { user: id => "#/user/" + encodeURIComponent(id), peer: id => "#/peer/" + encodeURIComponent(id), node: id => "#/node/" + encodeURIComponent(id) };
-function recentActivity() {
-  if (Store.events && Store.events.length) {
-    return Store.events.slice(0, 7).map((e, i) => ({
-      ts: e.ts, action: e.verb, name: e.name, detail: e.detail || "",
-      icon: ACT_ICON[e.kind] || "info", kind: e.kind, key: "e" + e.ts + i,
-      href: (ACT_HREF[e.kind] || (() => "#/"))(e.id),
-    }));
-  }
+// ─────────── Activity taxonomy ───────────
+// The panel's server-side event log (/api/events) records every operator action. One place decides
+// each record's ITEM category (icon + the history "Item" filter), an ACTION bucket (Added / Changed /
+// Removed, the history "Action" filter), and where a click lands. Shared by the Overview feed and the
+// full Activity-history grid so both stay consistent.
+const EV_ITEMS = ["Peer", "User", "Node", "Interface", "Turn-proxy", "Mesh", "Settings", "Update"];
+const EV_ACTIONS = ["Added", "Changed", "Removed"];
+const EV_ITEM_IC = { Peer: "device", User: "user", Node: "server", Interface: "network", "Turn-proxy": "relay", Mesh: "cascade", Settings: "gear", Update: "download" };
+const evSlug = s => s.toLowerCase().replace(/[^a-z]/g, "");   // "Turn-proxy" → "turnproxy" (CSS tint class)
+function evItem(e) {
+  const v = e.verb || "";
+  if (e.kind === "peer") return "Peer";
+  if (e.kind === "user") return "User";
+  if (e.kind === "panel") return v === "Panel updated" ? "Update" : "Settings";
+  if (/interface/i.test(v)) return "Interface";       // kind === node from here
+  if (/turn-proxy/i.test(v)) return "Turn-proxy";
+  if (/mesh/i.test(v)) return "Mesh";
+  if (/update/i.test(v)) return "Update";
+  return "Node";
+}
+function evAction(e) {
+  const v = (e.verb || "").toLowerCase();
+  if (/\b(deleted|removed|deleting|uninstalled|flagged)\b/.test(v)) return "Removed";
+  if (/\b(created|enrolled|installing|creating|onboarding|added|linked|adopted)\b/.test(v)) return "Added";
+  return "Changed";
+}
+// Where a feed/grid row navigates. Returns {href} for a plain link, {href,on} for a scripted reveal
+// (flash + scroll), or null for non-actionable rows (a version bump, an update-lifecycle note).
+function evClick(e) {
+  const item = evItem(e), v = e.verb || "", gone = /\bdeleted\b/i.test(v);
+  if (item === "Peer") return gone ? { href: "#/peers" } : { href: "#/peers", on: () => revealPeerInPeersById(e.id) };
+  if (item === "User") return gone ? { href: "#/users" } : { href: "#/users", on: () => revealUser(e.id) };
+  if (item === "Settings") return { href: "#/panel/settings", on: () => { pendingSettingsSection = (e.id && e.id !== "settings") ? e.id : null; go("#/panel/settings"); } };
+  if (item === "Update") return null;                 // panel version bump / update lifecycle — nothing to open
+  if (/\b(removed node|uninstalled)\b/i.test(v)) return { href: "#/nodes" };   // the node is gone
+  return e.id ? { href: "#/node/" + encodeURIComponent(e.id) } : { href: "#/nodes" };
+}
+function evDecorate(e, i) {
+  const item = evItem(e);
+  return { ...e, item, action: evAction(e), icon: EV_ITEM_IC[item] || "info", slug: evSlug(item),
+           click: evClick(e), key: "e" + (e.eid || e.ts) + "_" + i };
+}
+// Fallback feed when the server log is still empty: synthesise created/updated rows from the roster's
+// created_at vs modified_at, so a fresh panel's Overview is never blank.
+function synthEvents() {
   const ev = [];
   for (const u of Store.recon.users) {
     const c = u.created_at || 0, m = u.modified_at || c;
-    ev.push({ ts: m, action: m > c + 5 ? "Updated user" : "Created user", name: u.name, detail: "", icon: "user", kind: "user", key: "u" + u.id, href: "#/user/" + encodeURIComponent(u.id) });
+    ev.push({ ts: m, kind: "user", id: u.id, verb: m > c + 5 ? "Updated user" : "Created user", name: u.name, detail: "" });
   }
   for (const p of Store.recon.peers) {
     const c = p.created_at || 0, m = p.modified_at || c;
-    ev.push({ ts: m, action: m > c + 5 ? "Updated peer" : "Created peer", name: p.title || p.name || "unassigned peer", detail: "", icon: "device", kind: "peer", key: "p" + p.id, href: "#/peer/" + encodeURIComponent(p.id) });
+    ev.push({ ts: m, kind: "peer", id: p.id, verb: m > c + 5 ? "Updated peer" : "Created peer", name: p.title || p.name || "unassigned peer", detail: "" });
   }
-  return ev.filter(e => e.ts).sort((a, b) => b.ts - a.ts).slice(0, 7);
+  return ev.filter(e => e.ts).sort((a, b) => b.ts - a.ts);
 }
+function recentActivity(n) {
+  const src = (Store.events && Store.events.length) ? Store.events : synthEvents();
+  return src.slice(0, n || 15).map(evDecorate);
+}
+// "3 WireGuard and 2 AmneziaWG interfaces" — the interface breakdown for a grouped-unassigned row.
+function ifCountPhrase(g) {
+  const parts = [];
+  if (g.wg.size) parts.push(g.wg.size + " WireGuard");
+  if (g.awg.size) parts.push(g.awg.size + " AmneziaWG");
+  const tot = g.wg.size + g.awg.size;
+  return (parts.join(" and ") || "0") + " interface" + (tot === 1 ? "" : "s");
+}
+function ifTypeLabel(node, iface) {
+  const m = Store.ifaceMeta && Store.ifaceMeta(node, iface);
+  return (m && Object.keys(m.awg_params || {}).length) ? "AmneziaWG" : "WireGuard";
+}
+// Deep-link target for a Settings activity row (the first changed section id, applied on the settings screen).
+let pendingSettingsSection = null;
 
 // ─────────── Dashboard controls: node selector + time range ───────────
 // Two module-level controls drive every Overview widget. The NODE selector filters the fleet the
@@ -1565,16 +1640,46 @@ function recentActivity() {
 // the rest read the per-node RRD on demand. Both live in module state + localStorage so a re-render or
 // the 5s poll never clobbers the operator's selection (it's not derived from server data).
 const DASH_RANGES = [["live", "Live"], ["hour", "Hour"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];
-const dashState = { nodes: null, range: "day" };   // nodes: null = whole fleet, else a Set of node ids
+const RANGE_ICON = { hour: "hour2", day: "daycal", week: "weekcal", month: "monthcal" };   // side-rail renders range as icons (live = glowing dot)
+// side-rail section jump-nav: [label, section-title h2 substring to scroll to, icon]
+const DASH_NAV = [["Fleet", "Fleet", "server"], ["Distribution", "Distribution", "donut"], ["Traffic flow", "Traffic flow", "flow"], ["Top charts", "Top nodes", "bars"], ["Attention", "Recent activity", "excl"]];
+// nodes: null = whole fleet, else a Set of node ids. peers/mesh = which traffic COMPONENTS the figures count
+// (the toolbar badges): peers = client traffic (total−mesh), mesh = node↔node relay traffic. `ov` = per-widget
+// overrides keyed by widget id, each {peers?,mesh?} where a set field pins that pill and null inherits the global.
+const dashState = { nodes: null, range: "live", peers: true, mesh: true, ov: {} };
 (function () {
   try {
     const raw = JSON.parse(localStorage.getItem("swg-dash") || "{}");
     if (Array.isArray(raw.nodes)) dashState.nodes = new Set(raw.nodes);
     if (DASH_RANGES.some(r => r[0] === raw.range)) dashState.range = raw.range;
+    if (typeof raw.peers === "boolean") dashState.peers = raw.peers;
+    if (typeof raw.mesh === "boolean") dashState.mesh = raw.mesh;
+    if (raw.ov && typeof raw.ov === "object") dashState.ov = raw.ov;
   } catch (_) {}
 })();
 function dashSave() {
-  try { localStorage.setItem("swg-dash", JSON.stringify({ nodes: dashState.nodes ? [...dashState.nodes] : null, range: dashState.range })); } catch (_) {}
+  try { localStorage.setItem("swg-dash", JSON.stringify({ nodes: dashState.nodes ? [...dashState.nodes] : null, range: dashState.range, peers: dashState.peers, mesh: dashState.mesh, ov: dashState.ov })); } catch (_) {}
+}
+// ── Peers/Mesh traffic filter ──────────────────────────────────────────────────────────────────────────────
+// Every traffic figure has the raw total (rx,tx) and its mesh portion (mrx,mtx) in hand. The badges decide which
+// components survive: peers = client (total−mesh), mesh = the relay portion. Either, both, or neither (→ 0).
+function trafPick(rx, tx, mrx, mtx, f) {
+  const crx = Math.max(0, (rx || 0) - (mrx || 0)), ctx = Math.max(0, (tx || 0) - (mtx || 0));
+  return { rx: (f.peers ? crx : 0) + (f.mesh ? (mrx || 0) : 0),
+           tx: (f.peers ? ctx : 0) + (f.mesh ? (mtx || 0) : 0) };
+}
+// Effective flags for a widget: its per-widget override pins a pill, otherwise the pill inherits the global badge.
+function trafFlags(key) {
+  const ov = key && dashState.ov ? dashState.ov[key] : null;
+  return { peers: ov && ov.peers != null ? ov.peers : dashState.peers,
+           mesh:  ov && ov.mesh  != null ? ov.mesh  : dashState.mesh };
+}
+// flip a traffic badge, but never leave BOTH off: turning off the only-selected one flips selection to the other.
+function dashToggleTraf(which) {
+  const other = which === "peers" ? "mesh" : "peers";
+  if (dashState[which] && !dashState[other]) { dashState[which] = false; dashState[other] = true; }
+  else dashState[which] = !dashState[which];
+  dashSave(); bus.emit();
 }
 // Effective selected node ids, reconciled against the CURRENT fleet (ids for departed nodes drop out).
 // An empty selection collapses back to the whole fleet — the dashboard is never blank.
@@ -1632,6 +1737,39 @@ function dashOnlineTrend(selIds) {
   const t = dashLive.t; if (t.length < 2) return null;
   return { t, pts: t.map((_, i) => selIds.reduce((a, id) => a + ((dashLive.on[id] || [])[i] || 0), 0)) };
 }
+// Fleet-summed history for the hero charts over the SELECTED range. Live → the 15s ring (rx/tx, mesh netted
+// out) + the client online accumulator; a range → Σ per-node RRD (rx−mesh, tx−mesh, pon) aligned by bucket
+// timestamp. Returns { t, rx, tx, on } — everything the fleet-throughput + online-peers charts need.
+function fleetHistory(selIds, range, hist) {
+  if (range === "live") {
+    const m = mergeFleetSeries(selIds), o = dashOnlineTrend(selIds);
+    // online rides its own (client-accumulated) clock; expose it separately so the block chart can resample it
+    return { t: m.t, rx: m.rx, tx: m.tx, onT: o ? o.t : [], on: o ? o.pts : [] };
+  }
+  const byT = new Map();
+  selIds.forEach(id => { const d = hist.byNode[id]; if (!d || !d.t) return;
+    d.t.forEach((t, i) => { const r = byT.get(t) || { rx: 0, tx: 0, on: 0 };
+      r.rx += Math.max(0, ((d.rx || [])[i] || 0) - ((d.mrx || [])[i] || 0));
+      r.tx += Math.max(0, ((d.tx || [])[i] || 0) - ((d.mtx || [])[i] || 0));
+      r.on += (d.pon || [])[i] || 0; byT.set(t, r); }); });
+  const t = [...byT.keys()].sort((a, b) => a - b);
+  return { t, rx: t.map(x => byT.get(x).rx), tx: t.map(x => byT.get(x).tx), onT: t, on: t.map(x => byT.get(x).on) };
+}
+// Online-peers block chart: fixed BLOCK count + step per range (independent of the RRD ring granularity).
+//   live 30×30s (15 min) · hour 30×2 min · day 24×1 h · week 28×6 h · month 30×1 day.
+const ONLINE_BLOCKS = { live: [30, 30], hour: [30, 120], day: [24, 3600], week: [28, 21600], month: [30, 86400] };
+// Resample an irregular (t[], v[]) series into `n` right-anchored blocks of `step` seconds — each block = the
+// MEAN of the samples that fall in its window (null when empty, so the chart can show a gap).
+function resampleBlocks(t, v, n, step) {
+  const out = new Array(n).fill(0), cnt = new Array(n).fill(0);
+  if (!t || !t.length) return out.map(() => null);
+  const end = t[t.length - 1];
+  for (let i = 0; i < t.length; i++) {
+    const idx = n - 1 - Math.floor((end - t[i]) / step);
+    if (idx >= 0 && idx < n) { out[idx] += v[i] || 0; cnt[idx]++; }
+  }
+  return out.map((s, i) => cnt[i] ? s / cnt[i] : null);
+}
 
 // The dashboard toolbar: a multi-select node filter (themed chips) + a live/day/week/month range toggle.
 function DashControls() {
@@ -1639,18 +1777,61 @@ function DashControls() {
   const range = dashState.range;
   return html`<div class="dashbar">
     ${fleet.length > 1 ? html`<div class="dash-nodes">
-      <button class=${"dchip all" + (dashAllOn() ? " on" : "")} onClick=${dashSetAll} title="Show the whole fleet">All</button>
       ${fleet.map(n => {
         const on = dashNodeOn(n.id);
         const down = Store.recon.nodeStatus[n.id] !== "live";
-        return html`<button key=${n.id} class=${"dchip" + (on ? " on" : "") + (down ? " down" : "")} style=${"--c:" + Store.nodeColor(n.id)}
+        return html`<button key=${n.id} class=${"snbadge" + (on ? " on" : "") + (down ? " down" : "")} style=${"--c:" + Store.nodeColor(n.id)}
           onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name + (down ? " · not reporting" : "")}>
-          <span class="dchip-dot"></span>${n.name}</button>`;
+          <span class="ndot"></span>${n.name}</button>`;
       })}
     </div>` : html`<div></div>`}
     <div class="dash-range">
       <span class="dash-lbl">Range</span>
       <div class="dseg">${DASH_RANGES.map(([k, lbl]) => html`<button key=${k} class=${"dseg-opt" + (range === k ? " on" : "")} onClick=${() => dashSetRange(k)}>${lbl}</button>`)}</div>
+    </div>
+  </div>`;
+}
+
+// Once you scroll the dashbar out of view, the SAME node selector + range dock as a compact vertical rail pinned to the
+// right edge, vertically centred and travelling with the scroll. It shrinks further when the pointer leaves it (a "peek")
+// and grows back on hover; scrolling back to the top slides it away and the inline dashbar takes over again. Self-contained
+// scroll state (rAF-throttled, no-op when the boolean doesn't flip) so it never taxes the poll path.
+function DashRail() {
+  const fleet = Store.fleet || [];
+  const range = dashState.range;
+  const findSection = find => [...document.querySelectorAll(".section-title")].find(x => { const h = x.querySelector("h2"); return h && h.textContent.indexOf(find) !== -1; });
+  const jump = find => { const s = findSection(find); if (s) s.scrollIntoView({ behavior: "smooth", block: "start" }); };
+  const menuIc = ic => /^[a-z0-9_-]+$/.test(ic) ? html`<${Ic} i=${ic}/>` : html`<span class="railmenu-emoji">${ic}</span>`;   // registry key → svg icon · anything else (emoji) → text
+  // scroll-spy: highlight the jump icon of the section currently in view (first one at the top, one at a time as you scroll)
+  const [active, setActive] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const compute = () => { raf = 0;
+      const titles = [...document.querySelectorAll(".section-title")]; let idx = 0;
+      DASH_NAV.forEach(([label, find], i) => { const el = titles.find(x => { const h = x.querySelector("h2"); return h && h.textContent.indexOf(find) !== -1; });
+        if (el && el.getBoundingClientRect().top <= 130) idx = i; });   // last section whose title has reached the top band
+      setActive(idx); };
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(compute); };
+    window.addEventListener("scroll", onScroll, { passive: true }); compute();
+    return () => { window.removeEventListener("scroll", onScroll); if (raf) cancelAnimationFrame(raf); };
+  }, []);
+  // Always-on rail: one uniform menu-panel shape for all three (jump · ranges · nodes) — collapsed to icons, hover the
+  // panel to slide the labels out, each row highlights on hover (icon → theme colour, label stays neutral).
+  return html`<div class="dashrail">
+    <div class="dashrail-stack">
+      <div class="railpanel railmenu">
+        ${DASH_NAV.map(([label, find, ic], i) => html`<button key=${label} class=${"railmenu-b" + (i === active ? " on" : "")} onClick=${() => jump(find)} title=${label}>
+          <span class="railmenu-ic">${menuIc(ic)}</span><span class="railmenu-t">${label}</span></button>`)}
+      </div>
+      <div class="railpanel railmenu">
+        ${DASH_RANGES.map(([k, lbl]) => html`<button key=${k} class=${"railmenu-b" + (range === k ? " on" : "")} onClick=${() => dashSetRange(k)} title=${lbl}>
+          <span class="railmenu-ic">${k === "live" ? html`<span class="rlive-dot"></span>` : html`<${Ic} i=${RANGE_ICON[k]}/>`}</span><span class="railmenu-t">${lbl}</span></button>`)}
+      </div>
+      ${fleet.length > 1 ? html`<div class="railpanel railmenu railmenu-nodes">
+        ${fleet.map(n => { const on = dashNodeOn(n.id), down = Store.recon.nodeStatus[n.id] !== "live";
+          return html`<button key=${n.id} class=${"railmenu-b node" + (on ? " on" : " off") + (down ? " down" : "")} onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name}>
+            <span class="railmenu-ic"><span class="railnode-dot" style=${"--c:" + Store.nodeColor(n.id)}></span></span><span class="railmenu-t">${n.name}</span></button>`; })}
+      </div>` : null}
     </div>
   </div>`;
 }
@@ -1663,16 +1844,18 @@ const RANGE_STEP = { hour: 15, day: 300, week: 1800, month: 7200 };   // seconds
 // One fetch burst per range/selection change, shared by the doughnuts AND the flow map (lifted to Overview so
 // they don't each hit the API). Pulls per-node RRD + per-pair mesh means. Live → empty (widgets use the bundle).
 function useRangeHistory(range, selIds) {
-  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], range: "live" });
+  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], peers: [], range: "live" });
   const key = range + "|" + selIds.slice().sort().join(",");
   useEffect(() => {
-    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], range: "live" }); return; }
+    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], peers: [], range: "live" }); return; }
     let alive = true; setSt(s => ({ ...s, loading: true }));
     Promise.all([
       Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, (r && r.data) || null]).catch(() => [id, null]))),
       api.meshHistory(range).then(r => (r && r.data && r.data.pairs) || []).catch(() => []),
       api.categoryHistory(range).then(r => (r && r.data && r.data.cats) || []).catch(() => []),
-    ]).then(([rows, mesh, cats]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, range }); });
+      api.turnHistory(range).then(r => (r && r.data && r.data.turn) || []).catch(() => []),
+      api.peerHistory(range).then(r => (r && r.data && r.data.peers) || []).catch(() => []),
+    ]).then(([rows, mesh, cats, turn, peers]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, turn, peers, range }); });
     return () => { alive = false; };
   }, [key]);
   return st;
@@ -1688,7 +1871,7 @@ function DashDoughnuts({ selIds, range, hist }) {
   const sel = new Set(selIds);
   const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
   const live = range === "live";
-  const ranged = !live && !hist.loading && hist.range === range;   // history is loaded for this range
+  const ranged = !live && hist.range === range;   // caller passes the EFFECTIVE (loaded) range, so this holds the old data through a fetch instead of flashing live
   const STEP = RANGE_STEP[range] || 1;
   const isSys = (nid, ifn) => !!(Store.describe[nid] && Store.describe[nid][ifn] && Store.describe[nid][ifn].system);
   const ifType = (nid, ifn) => { const m = Store.describe[nid] && Store.describe[nid][ifn]; return (m && m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
@@ -1699,68 +1882,91 @@ function DashDoughnuts({ selIds, range, hist }) {
   const clientVol = d => { let rx = 0, tx = 0; const R = (d && d.rx) || [], T = (d && d.tx) || [], MR = (d && d.mrx) || [], MT = (d && d.mtx) || [];
     for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); } return { rx: rx * STEP, tx: tx * STEP }; };
   const awgVol = d => ({ rx: _sum(d && d.arx) * STEP, tx: _sum(d && d.atx) * STEP });
+  const meshVol = d => ({ rx: _sum(d && d.mrx) * STEP, tx: _sum(d && d.mtx) * STEP });
 
-  // ── traffic by node + by iface type ──
-  const nodeTraf = {}, typeTraf = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 } };
+  // ── traffic by node + by iface type — the Peers/Mesh badges pick which components count (client + relay) ──
+  const F = trafFlags("doughnuts");
+  const nodeTraf = {}, typeTraf = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 }, mesh: { rx: 0, tx: 0 } };
+  const addType = (k, rx, tx) => { typeTraf[k].rx += rx; typeTraf[k].tx += tx; };
   fleet.forEach(n => {
     if (ranged) {
-      const d = hist.byNode[n.id]; const cv = clientVol(d), av = awgVol(d);
-      nodeTraf[n.id] = cv;
-      typeTraf.awg.rx += av.rx; typeTraf.awg.tx += av.tx;
-      typeTraf.wg.rx += Math.max(0, cv.rx - av.rx); typeTraf.wg.tx += Math.max(0, cv.tx - av.tx);
+      const d = hist.byNode[n.id]; const cv = clientVol(d), av = awgVol(d), mv = meshVol(d);
+      nodeTraf[n.id] = trafPick(cv.rx + mv.rx, cv.tx + mv.tx, mv.rx, mv.tx, F);
+      if (F.peers) { addType("awg", av.rx, av.tx); addType("wg", Math.max(0, cv.rx - av.rx), Math.max(0, cv.tx - av.tx)); }
+      if (F.mesh) addType("mesh", mv.rx, mv.tx);
     } else {
-      let rx = 0, tx = 0; const snap = Store.stats[n.id];
+      let crx = 0, ctx = 0, mrx = 0, mtx = 0; const snap = Store.stats[n.id];
       if (snap) for (const [ifn, blk] of Object.entries(snap.interfaces || {})) {
-        if (isSys(n.id, ifn)) continue;
-        const ty = ifType(n.id, ifn); let r = 0, t = 0;
-        for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; }
-        typeTraf[ty].rx += r; typeTraf[ty].tx += t; rx += r; tx += t;
+        let r = 0, t = 0; for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; }
+        if (isSys(n.id, ifn)) { mrx += r; mtx += t; }                          // mesh link (swg_*)
+        else { crx += r; ctx += t; if (F.peers) addType(ifType(n.id, ifn), r, t); }
       }
-      nodeTraf[n.id] = { rx, tx };
+      if (F.mesh) addType("mesh", mrx, mtx);
+      nodeTraf[n.id] = trafPick(crx + mrx, ctx + mtx, mrx, mtx, F);
     }
   });
   const trafFmt = ranged ? fmtBytes : rate;
 
-  // ── peer deployments by node + by iface type (live = current count; ranged = mean over window) ──
+  // ── peer deployments by node + by iface type. TOTAL = the roster count deployed to each node/iface (a real head-
+  //    count, not a time-average). ONLINE = DISTINCT peers seen connected: live → online right now; a range → the
+  //    distinct peers that were active at any point in the window (unioned from the per-peer RRD, so cycling peers
+  //    all count once — not the peak or the mean). ──
   const nodeCnt = {}, typeCnt = { wg: { tot: 0, on: 0 }, awg: { tot: 0, on: 0 } };
   fleet.forEach(n => nodeCnt[n.id] = { tot: 0, on: 0 });
-  if (ranged) {
-    fleet.forEach(n => { const d = hist.byNode[n.id] || {};
-      nodeCnt[n.id] = { tot: Math.round(_mean(d.ptot)), on: Math.round(_mean(d.pon)) };
-      const at = Math.round(_mean(d.patot)), ao = Math.round(_mean(d.paon));
-      typeCnt.awg.tot += at; typeCnt.awg.on += ao;
-      typeCnt.wg.tot += Math.max(0, Math.round(_mean(d.ptot)) - at); typeCnt.wg.on += Math.max(0, Math.round(_mean(d.pon)) - ao);
+  const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; });
+  const tyOf = t => (t.type === "awg" || t.type === "wg") ? t.type : ifType(t.node, t.iface);
+  sPeers.forEach(p => p.targets.forEach(t => {
+    if (!sel.has(t.node)) return;
+    const ty = tyOf(t);
+    nodeCnt[t.node].tot++; (typeCnt[ty] = typeCnt[ty] || { tot: 0, on: 0 }).tot++;
+    if (!ranged && t.online) { nodeCnt[t.node].on++; typeCnt[ty].on++; }
+  }));
+  if (ranged) {   // distinct peers active during the window, per node + per iface type
+    const onNode = {}, onType = {};
+    (hist.peers || []).forEach(e => {
+      if (!sel.has(e.node) || (e.rx || 0) + (e.tx || 0) <= 0) return;
+      const p = pkPeer[e.pubkey]; if (!p) return;
+      (onNode[e.node] = onNode[e.node] || new Set()).add(e.pubkey);
+      const tg = p.targets.find(t => t.node === e.node); if (tg) (onType[tyOf(tg)] = onType[tyOf(tg)] || new Set()).add(e.pubkey);
     });
-  } else {
-    sPeers.forEach(p => p.targets.forEach(t => {
-      if (!sel.has(t.node)) return;
-      const ty = (t.type === "awg" || t.type === "wg") ? t.type : ifType(t.node, t.iface);
-      nodeCnt[t.node].tot++; if (t.online) nodeCnt[t.node].on++;
-      (typeCnt[ty] = typeCnt[ty] || { tot: 0, on: 0 }).tot++; if (t.online) typeCnt[ty].on++;
-    }));
+    fleet.forEach(n => nodeCnt[n.id].on = (onNode[n.id] || new Set()).size);
+    Object.keys(typeCnt).forEach(ty => typeCnt[ty].on = (onType[ty] || new Set()).size);
   }
 
   const nodeName = id => Store.nodeName(id), nodeColor = id => Store.nodeColor(id);
-  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"]];
+  const TYPES = [["awg", "AmneziaWG"], ["wg", "WireGuard"], ["mesh", "Mesh"]];   // the Mesh slice only fills when the Mesh badge is on
+  const typeColor = t => t === "mesh" ? FLOW_MESH : ifaceColor(t);
   const segNodes = kind => fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: (nodeTraf[n.id] || {})[kind] || 0, color: nodeColor(n.id) }));
-  const segTypes = kind => TYPES.map(([t, nm]) => ({ key: t, name: nm, value: typeTraf[t][kind] || 0, color: ifaceColor(t) }));
+  const segTypes = kind => TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeTraf[t] || {})[kind] || 0, color: typeColor(t) }));
   const sum = (o, k) => Object.values(o).reduce((a, v) => a + (v[k] || 0), 0);
 
   // centre readouts
-  const trafCenter = (down, up) => html`<div class="mrc-def"><span class="mrc-k">total</span>
-    <span class="mrc-tot dn">↓ ${trafFmt(down)}</span><span class="mrc-tot up" style="font-size:14px">↑ ${trafFmt(up)}</span></div>`;
+  // Auto-fit the font to the widest value string so a wide figure (e.g. "1023.66 M/s") stays on one line
+  // inside the ring hole instead of wrapping/spilling over the arc.
+  const fitFs = n => n <= 9 ? 18 : n <= 11 ? 15.5 : n <= 13 ? 13.5 : 12;
+  const povPeers = (Store.panelSettings || {}).throughput_perspective === "peers";   // ↓/↑ from the peer's side when set
+  const trafCenter = (rx, tx) => {
+    const [down, up] = dlul(rx, tx);
+    const ds = "↓ " + trafFmt(down), us = "↑ " + trafFmt(up);
+    const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(12, dfs - 3);
+    return html`<div class="mrc-def"><span class="mrc-k">total</span>
+      <span class="mrc-tot dn" style=${"font-size:" + dfs + "px"}>${ds}</span><span class="mrc-tot up" style=${"font-size:" + ufs + "px"}>${us}</span></div>`;
+  };
   const cntCenter = (on, tot) => html`<div class="mrc-def"><span class="mrc-k">online</span>
     <span class="mrc-tot dn">${on}<small style="color:var(--faint)"> / ${tot}</small></span></div>`;
 
   const totDownN = sum(nodeTraf, "rx"), totUpN = sum(nodeTraf, "tx");
-  const totDownT = typeTraf.wg.rx + typeTraf.awg.rx, totUpT = typeTraf.wg.tx + typeTraf.awg.tx;
+  const totDownT = typeTraf.wg.rx + typeTraf.awg.rx + typeTraf.mesh.rx, totUpT = typeTraf.wg.tx + typeTraf.awg.tx + typeTraf.mesh.tx;
   const nodeOn = Object.values(nodeCnt).reduce((a, v) => a + v.on, 0), nodeTot = Object.values(nodeCnt).reduce((a, v) => a + v.tot, 0);
   const typeOn = typeCnt.wg.on + typeCnt.awg.on, typeTot = typeCnt.wg.tot + typeCnt.awg.tot;
 
+  // traffic legends carry down/up SEPARATELY (perspective-adjusted) so each is independently hoverable —
+  // hovering the ↓ value isolates the Download arc, the ↑ value the Upload arc.
+  const legDU = (rx, tx) => { const [d, u] = dlul(rx, tx); return { down: trafFmt(d), up: trafFmt(u) }; };
   const trafLegNodes = fleet.map(n => ({ key: n.id, name: nodeName(n.id), color: nodeColor(n.id),
-    right: html`<span style="color:var(--online)">↓${trafFmt((nodeTraf[n.id] || {}).rx || 0)}</span> <span style="color:var(--rate-up)">↑${trafFmt((nodeTraf[n.id] || {}).tx || 0)}</span>` }));
-  const trafLegTypes = TYPES.filter(([t]) => typeTraf[t].rx + typeTraf[t].tx > 0).map(([t, nm]) => ({ key: t, name: nm, color: ifaceColor(t),
-    right: html`<span style="color:var(--online)">↓${trafFmt(typeTraf[t].rx)}</span> <span style="color:var(--rate-up)">↑${trafFmt(typeTraf[t].tx)}</span>` }));
+    ...legDU((nodeTraf[n.id] || {}).rx || 0, (nodeTraf[n.id] || {}).tx || 0) }));
+  const trafLegTypes = TYPES.filter(([t]) => (typeTraf[t] || {}).rx + (typeTraf[t] || {}).tx > 0).map(([t, nm]) => ({ key: t, name: nm, color: typeColor(t),
+    ...legDU(typeTraf[t].rx, typeTraf[t].tx) }));
   const cntLegNodes = fleet.map(n => ({ key: n.id, name: nodeName(n.id), color: nodeColor(n.id), right: nodeCnt[n.id].on + " / " + nodeCnt[n.id].tot }));
   const cntLegTypes = TYPES.filter(([t]) => (typeCnt[t] || { tot: 0 }).tot > 0).map(([t, nm]) => ({ key: t, name: nm, color: ifaceColor(t), right: typeCnt[t].on + " / " + typeCnt[t].tot }));
 
@@ -1769,33 +1975,102 @@ function DashDoughnuts({ selIds, range, hist }) {
   const loadingNote = (!live && hist.loading) ? html`<div class="donut-note">loading ${rname} history…</div>` : null;
   const volNote = ranged ? html`<div class="donut-note">volume over the ${rname}</div>` : null;
   const avgNote = ranged ? html`<div class="donut-note">avg over the ${rname}</div>` : null;
-  const card = (title, ringsOf, body, note) => html`<div class="donutcard">
-    <div class="donutcard-h"><h3>${title}</h3><span class="rings-of">${ringsOf}</span></div>
-    <div class=${"donut-body" + ((!live && hist.loading) ? " loading" : "")}>${body}</div>${note || null}</div>`;
+  // traffic rings carry unitColor so the hovered centre readout tints the unit letter ↓ green / ↑ blue.
+  // Under the peer perspective the ↓ (Download) ring is fed by tx and ↑ (Upload) by rx, so it agrees with
+  // the centre total, the legend, and every other figure.
+  const trafRings = (rxSegs, txSegs) => { const dnSegs = povPeers ? txSegs : rxSegs, upSegs = povPeers ? rxSegs : txSegs;
+    return [{ label: "Download", fmt: trafFmt, unitColor: "var(--online)", segments: dnSegs },
+      { label: "Upload", fmt: trafFmt, unitColor: "var(--rate-up)", segments: upSegs }]; };
 
-  return html`<div class="donutgrid">
-    ${card("Traffic by node", ranged ? "vol ↓ / ↑" : "↓ / ↑ B/s",
-      html`<${MultiRing} rings=${[{ label: "Download", fmt: trafFmt, segments: segNodes("rx") }, { label: "Upload", fmt: trafFmt, segments: segNodes("tx") }]} center=${trafCenter(totDownN, totUpN)}/>
-        <${RingLegend} items=${trafLegNodes}/>`,
-      loadingNote || volNote)}
+  // ── by TURN-PROXY FORK (the 3rd row). Aggregated BY FORK across the fleet (like "by interface type"), only for
+  //    the forks enabled in Panel settings. Live = attribute each turn-routed peer (target.viaTurn) to its fork;
+  //    ranged = the per-(node,fork) RRD (hist.turn). The fork's interface tags come from its live peers. Turn has
+  //    no per-fork history until a node has been reporting, so on a range with no rows it falls back to live. ──
+  const turnOn = turnEnabled();
+  const enSet = new Set(turnOn ? enabledTurnForks().map(f => f.id) : []);
+  const sanF = s => String(s).replace(/[^A-Za-z0-9_]/g, "_");
+  const fLive = {};   // fork → { rx, tx, on, tot } aggregated across every node/instance of that fork
+  if (turnOn) sPeers.forEach(p => p.targets.forEach(t => {
+    if (!sel.has(t.node) || !t.viaTurn) return;
+    const fk = turnFork(t.viaTurn); if (!enSet.has(fk)) return;
+    const a = fLive[fk] = fLive[fk] || { rx: 0, tx: 0, on: 0, tot: 0 };
+    const o = t.observed; if (o) { a.rx += o.rx_speed || 0; a.tx += o.tx_speed || 0; }
+    a.tot++; if (t.online) a.on++;
+  }));
+  const fRanged = {};   // sanitised fork → { rx, tx, pon, ptot } summed over selected nodes
+  if (ranged) (hist.turn || []).forEach(e => { if (!sel.has(e.node)) return;
+    const a = fRanged[e.fork] = fRanged[e.fork] || { rx: 0, tx: 0, pon: 0, ptot: 0 };
+    a.rx += e.rx || 0; a.tx += e.tx || 0; a.pon += e.pon || 0; a.ptot += e.ptot || 0; });
+  const turnRanged = ranged && Object.keys(fRanged).length > 0;   // ranged turn data present → use it; else live
+  const fTraf = fk => turnRanged ? (fRanged[sanF(fk)] || { rx: 0, tx: 0 }) : (fLive[fk] || { rx: 0, tx: 0 });
+  const fCnt = fk => turnRanged ? { on: Math.round((fRanged[sanF(fk)] || {}).pon || 0), tot: Math.round((fRanged[sanF(fk)] || {}).ptot || 0) }
+                                : { on: (fLive[fk] || {}).on || 0, tot: (fLive[fk] || {}).tot || 0 };
+  const forks = [...enSet].filter(fk => { const t = fTraf(fk), c = fCnt(fk); return (t.rx + t.tx) > 0 || c.tot > 0; });
+  const turnFmt = turnRanged ? fmtBytes : rate;
+  const turnCenter = (rx, tx) => { const [d, u] = dlul(rx, tx); const ds = "↓ " + turnFmt(d), us = "↑ " + turnFmt(u);
+    const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(12, dfs - 3);
+    return html`<div class="mrc-def"><span class="mrc-k">total</span>
+      <span class="mrc-tot dn" style=${"font-size:" + dfs + "px"}>${ds}</span><span class="mrc-tot up" style=${"font-size:" + ufs + "px"}>${us}</span></div>`; };
+  const turnTrafRings = () => { const rxS = forks.map(fk => ({ key: fk, name: fk, value: fTraf(fk).rx, color: turnColor(fk) })),
+      txS = forks.map(fk => ({ key: fk, name: fk, value: fTraf(fk).tx, color: turnColor(fk) }));
+    const dn = povPeers ? txS : rxS, up = povPeers ? rxS : txS;
+    return [{ label: "Download", fmt: turnFmt, unitColor: "var(--online)", segments: dn }, { label: "Upload", fmt: turnFmt, unitColor: "var(--rate-up)", segments: up }]; };
+  const turnCntRings = () => [
+    { label: "Total peers", fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fk, value: fCnt(fk).tot, color: turnColor(fk) })) },
+    { label: "Online", fmt: v => v, segments: forks.map(fk => ({ key: fk, name: fk, value: fCnt(fk).on, color: turnColor(fk) })) }];
+  const turnTrafLeg = forks.map(fk => ({ key: fk, name: fk, color: turnColor(fk), ...(() => { const t = fTraf(fk), [d, u] = dlul(t.rx, t.tx); return { down: turnFmt(d), up: turnFmt(u) }; })() }));
+  const turnCntLeg = forks.map(fk => { const c = fCnt(fk); return { key: fk, name: fk, color: turnColor(fk), right: c.on + " / " + c.tot }; });
+  const turnTot = forks.reduce((s, fk) => { const t = fTraf(fk), c = fCnt(fk); s.rx += t.rx; s.tx += t.tx; s.on += c.on; s.tot += c.tot; return s; }, { rx: 0, tx: 0, on: 0, tot: 0 });
+  const turnLiveNote = html`<div class="donut-note">live rates${ranged ? " · no history yet for this range" : ""}</div>`;
+  const turnNote = turnRanged ? volNote : turnLiveNote;       // traffic card → volume
+  const turnAvgNote = turnRanged ? avgNote : turnLiveNote;    // peers card → avg
 
-    ${card("Traffic by interface", ranged ? "vol ↓ / ↑" : "↓ / ↑ B/s",
-      html`<${MultiRing} rings=${[{ label: "Download", fmt: trafFmt, segments: segTypes("rx") }, { label: "Upload", fmt: trafFmt, segments: segTypes("tx") }]} center=${trafCenter(totDownT, totUpT)}/>
-        <${RingLegend} items=${trafLegTypes}/>`,
-      loadingNote || volNote)}
-
-    ${card("Peers online by node", "online / total",
-      html`<${MultiRing} rings=${[{ label: "Total peers", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].tot, color: nodeColor(n.id) })) },
-                                   { label: "Online", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].on, color: nodeColor(n.id) })) }]} center=${cntCenter(nodeOn, nodeTot)}/>
-        <${RingLegend} items=${cntLegNodes}/>`,
-      loadingNote || avgNote)}
-
-    ${card("Peers online by interface", "online / total",
-      html`<${MultiRing} rings=${[{ label: "Total peers", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).tot || 0, color: ifaceColor(t) })) },
-                                   { label: "Online", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).on || 0, color: ifaceColor(t) })) }]} center=${cntCenter(typeOn, typeTot)}/>
-        <${RingLegend} items=${cntLegTypes}/>`,
-      loadingNote || avgNote)}
+  const loading = !live && hist.loading;
+  // Shared Peers/Mesh toggle — sits on BOTH traffic-doughnut headers (right-aligned) and drives the client/mesh split for both at once.
+  const trafBadges = html`<div class="dcard-traf">
+    <button class=${"tbadge peers" + (dashState.peers ? " on" : "")} onClick=${() => dashToggleTraf("peers")} title=${(dashState.peers ? "Hide" : "Show") + " client (peer) traffic"}>Peers</button>
+    <button class=${"tbadge mesh" + (dashState.mesh ? " on" : "")} onClick=${() => dashToggleTraf("mesh")} title=${(dashState.mesh ? "Hide" : "Show") + " mesh (node-to-node relay) traffic"}>Mesh</button>
   </div>`;
+  // Grid rows group BY DIMENSION: row 1 = the two "by node" rings, row 2 = the two "by interface" rings.
+  return html`<div class="donutgrid">
+    <${DoughCard} title="Traffic by node" badges=${trafBadges} loading=${loading}
+      rings=${trafRings(segNodes("rx"), segNodes("tx"))} center=${trafCenter(totDownN, totUpN)} legend=${trafLegNodes} note=${loadingNote || volNote}/>
+
+    <${DoughCard} title="Peers by node" loading=${loading}
+      rings=${[{ label: "Total peers", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].tot, color: nodeColor(n.id) })) },
+               { label: "Online", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].on, color: nodeColor(n.id) })) }]}
+      center=${cntCenter(nodeOn, nodeTot)} legend=${cntLegNodes} note=${loadingNote || avgNote}/>
+
+    <${DoughCard} title="Traffic by interface" badges=${trafBadges} loading=${loading}
+      rings=${trafRings(segTypes("rx"), segTypes("tx"))} center=${trafCenter(totDownT, totUpT)} legend=${trafLegTypes} note=${loadingNote || volNote}/>
+
+    <${DoughCard} title="Peers by interface" loading=${loading}
+      rings=${[{ label: "Total peers", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).tot || 0, color: ifaceColor(t) })) },
+               { label: "Online", fmt: v => v, segments: TYPES.map(([t, nm]) => ({ key: t, name: nm, value: (typeCnt[t] || {}).on || 0, color: ifaceColor(t) })) }]}
+      center=${cntCenter(typeOn, typeTot)} legend=${cntLegTypes} note=${loadingNote || avgNote}/>
+
+    ${turnOn && forks.length ? html`<${Fragment}>
+      <${DoughCard} title="Traffic by turn-proxy" loading=${loading}
+        rings=${turnTrafRings()} center=${turnCenter(turnTot.rx, turnTot.tx)} legend=${turnTrafLeg} note=${loadingNote || turnNote}/>
+
+      <${DoughCard} title="Peers by turn-proxy" loading=${loading}
+        rings=${turnCntRings()} center=${cntCenter(turnTot.on, turnTot.tot)} legend=${turnCntLeg} note=${loadingNote || turnAvgNote}/>
+    <//>` : null}
+  </div>`;
+}
+
+// One distribution card = a doughnut + its legend sharing a hovered {key, dir} target, so hovering ONE ring
+// arc (or one ↓/↑ value) isolates exactly that arc and that value — its partner arc/value dims too. Hovering
+// the NAME (dir:null) lights both arcs and shows that entity's own numbers in the centre. Fully bidirectional
+// between ring and legend. Hover-only state — no poll-path cost, cheap Preact re-renders (no SVG rebuild).
+function DoughCard({ title, rings, center, legend, note, loading, badges }) {
+  const [active, setActive] = useState(null);   // { key, dir } | null · dir = ring index, or null for the whole entity
+  return html`<div class="donutcard">
+    <div class="donutcard-h"><h3>${title}</h3><span class="grow"></span>${badges || null}</div>
+    <div class="donut-body">
+      <${MultiRing} rings=${rings} center=${center} active=${active} onActive=${setActive}/>
+      <${RingLegend} items=${legend} active=${active} onActive=${setActive}/>
+    </div></div>`;
 }
 
 // ═══════════════ Signal-flow map (redesign, P1: categorized model + static split/merge render) ═══════════════
@@ -1806,7 +2081,7 @@ const FLOW_EG = "#2E90FF", FLOW_IN = "#22D07A", FLOW_GLOBE = "#12BECE", FLOW_MES
 function flowGraph(selIds, range, hist) {
   const sel = new Set(selIds);
   const fleet = (Store.fleet || []).filter(n => sel.has(n.id));
-  const ranged = range && range !== "live" && hist && !hist.loading && hist.range === range;   // history loaded → show totals
+  const ranged = range && range !== "live" && hist && hist.range === range;   // caller passes the EFFECTIVE (loaded) range → holds old data through a fetch (no flash to live)
   const STEP = RANGE_STEP[range] || 1;
   const acc = {};
   fleet.forEach(n => acc[n.id] = { cl: { rx: 0, tx: 0 }, turn: {}, mesh: {}, offmesh: { rx: 0, tx: 0, n: new Set() }, inet: null });   // offmesh = traffic to fleet nodes NOT selected (n = which ones) · inet = MEASURED internet {out,in} B/s (node counter), null = fall back to the client-derived estimate
@@ -1820,6 +2095,11 @@ function flowGraph(selIds, range, hist) {
       const IU = d.inet_up || [], ID = d.inet_down || [];   // MEASURED internet total over the window (Σ per-bucket mean · step), same scale as the client volume
       let iu = 0, id = 0; for (let i = 0; i < IU.length; i++) iu += IU[i] || 0; for (let i = 0; i < ID.length; i++) id += ID[i] || 0;
       if (iu || id) acc[n.id].inet = { out: iu * STEP, in: id * STEP }; });
+    // split turn-proxy volume OUT of the client lane (turn rides the client iface) using the per-fork turn RRD, so the
+    // ranged map shows the SAME turn satellites as live instead of folding them into "clients".
+    (hist.turn || []).forEach(e => { const a = acc[e.node]; if (!a) return; const rx = e.rx || 0, tx = e.tx || 0; if (!rx && !tx) return;
+      (a.turn[e.fork] = a.turn[e.fork] || { rx: 0, tx: 0 }); a.turn[e.fork].rx += rx; a.turn[e.fork].tx += tx;
+      a.cl.rx = Math.max(0, a.cl.rx - rx); a.cl.tx = Math.max(0, a.cl.tx - tx); });
     // mesh/offmesh values are per-pair MEAN rates (B/s) over the window — convert to total bytes with the FULL window
     // duration (samples·step), NOT one step, so they're on the same scale as the client volume (Σ mean·step above). Using
     // STEP alone under-counted mesh by the sample count (~300 for a day), flooring every mesh edge to a uniform hairline.
@@ -1911,7 +2191,10 @@ function FlowMap2({ selIds, range, hist }) {
     if (hi <= lo) return () => ceil;                                     // all values ~equal (incl. a lone element) → full size, not floor
     const cLo = curve(Math.max(lo, 1)), cHi = curve(Math.max(hi, 1));
     return v => v <= lo ? floor : floor + Math.min(1, (curve(v) - cLo) / Math.max(1e-9, cHi - cLo)) * (ceil - floor); };
-  const wMap = mapper(flows.map(f => f.bps), 2, 25, LOQ);                // line width px: floor 2 · ceiling 25 (per direction)
+  // Few nodes → the adaptive frame renders the whole diagram at a bigger scale, so a fixed 25px ceiling reads TOO thick.
+  // Trim the max line width for sparse selections (N=1 → ~12px … N≥5 → full 25px); the floor stays put.
+  const wCeil = 25 * Math.min(1, 0.62 + 0.1 * (N - 1));
+  const wMap = mapper(flows.map(f => f.bps), 2, wCeil, LOQ);             // line width px: floor 2 · ceiling wCeil (per direction)
   const wOf = bps => wMap(bps);                                          // line width, reference px
   const NODE_FLOOR = 12, SAT_FLOOR = 11, ICON_R = 1.3;                   // ICON_R = sat icon size ÷ radius (circle & icon grow together)
   // size a node by the traffic it VISIBLY shows — Σ of its incident line widths — NOT raw bps. Line widths are
@@ -1985,11 +2268,12 @@ function FlowMap2({ selIds, range, hist }) {
       const center = sideSign < 0 ? -Math.PI / 2 + tilt : Math.PI / 2 - tilt;
       grp.forEach((s, i) => place(s, center + (grp.length === 1 ? 0 : (i / (grp.length - 1) - 0.5) * sp)));
     };
-    if (allIsle || N === 1) {                             // ISLAND STAR (single node, or a grid of all-islands): internet STRAIGHT UP over the
-      const up = mine.filter(s => s.kind === "internet"), down = mine.filter(s => s.kind !== "internet");   // centre, everything else fanned evenly straight DOWN. In a MIXED selection an island instead fans OUTWARD (below) so its
-      up.forEach(s => place(s, -Math.PI / 2));            // fan doesn't point at neighbouring nodes / cross their mesh lines.
-      const sp = Math.min(Math.PI - 2 * HB - 0.15, 0.5 + down.length * 0.42);
-      down.forEach((s, i) => place(s, Math.PI / 2 + (down.length === 1 ? 0 : (i / (down.length - 1) - 0.5) * sp)));
+    if (allIsle || N === 1) {                             // ISLAND STAR (single node, or a grid of all-islands): the UPSTREAM sats — internet
+      const up = mine.filter(s => s.kind === "internet" || s.kind === "mesh");    // + the rest-of-fleet MESH — fan on TOP; clients + turn-proxies
+      const down = mine.filter(s => s.kind !== "internet" && s.kind !== "mesh");  // fan on the BOTTOM. Even fans keep them off neighbours' lines.
+      const fan = (grp, base) => { const sp = Math.min(Math.PI - 2 * HB - 0.15, 0.5 + grp.length * 0.42);
+        grp.forEach((s, i) => place(s, base + (grp.length === 1 ? 0 : (i / (grp.length - 1) - 0.5) * sp))); };
+      fan(up, -Math.PI / 2); fan(down, Math.PI / 2);
     }
     else if (vfrac < -0.32) arc(mine, -1);                // clearly-upper node → top arc
     else if (vfrac > 0.32) arc(mine, 1);                  // clearly-lower node → bottom arc
@@ -2014,9 +2298,13 @@ function FlowMap2({ selIds, range, hist }) {
   fleet.forEach(n => { const P = spos[n.id], m = nmeta(n.id); vx0 = Math.min(vx0, P.x - m.hw); vx1 = Math.max(vx1, P.x + m.hw); vy0 = Math.min(vy0, P.y - m.hh); vy1 = Math.max(vy1, P.y + m.hh); });
   sats.forEach(s => { const P = satpos[s.id]; if (!P) return; const r = satR(s.id); vx0 = Math.min(vx0, P.x - r); vx1 = Math.max(vx1, P.x + r); vy0 = Math.min(vy0, P.y - r); vy1 = Math.max(vy1, P.y + r); });
   const PAD = 22; vx0 -= PAD; vy0 -= PAD; vx1 += PAD; vy1 += PAD;
-  const FRAME_AR = 1.8, FRAME_W = 1060;
+  // ADAPTIVE frame — the aspect FOLLOWS the content's own shape (clamped to a band) instead of a fixed ratio, so sparse
+  // selections tighten toward the cluster (no dead band) while dense webs keep their taller spread. A gentle min-width keeps
+  // a lone node from being blown up. Content is then centred in whatever frame we land on.
+  const AR_MIN = 1.4, AR_MAX = 1.75, FRAME_W = 480;
   const cw = vx1 - vx0, ch = vy1 - vy0, ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
-  const vbW = Math.max(FRAME_W, cw, ch * FRAME_AR), vbH = vbW / FRAME_AR;
+  const AR = Math.max(AR_MIN, Math.min(AR_MAX, cw / ch));   // frame width:height, clamped to the band
+  const vbW = Math.max(cw, ch * AR, FRAME_W), vbH = vbW / AR;   // frame always contains the content (vbW≥cw, vbH≥ch)
   vx0 = ccx - vbW / 2; vy0 = ccy - vbH / 2;
   // ── Geometry: each flow is a STROKED curve (never a filled ribbon → it can't hourglass/twist). On EVERY endpoint
   //    each touching flow gets its OWN attach ANGLE around the rim — ordered by bearing to the far end, then spread
@@ -2160,8 +2448,6 @@ function FlowMap2({ selIds, range, hist }) {
       </div>` : null}
     </div>
     <div class="fm2-anim" title="Flow animation (saved for everyone)">${FLOW_ANIMS.map(a => html`<button key=${a.id} class=${"fm2-anim-b" + (anim === a.id ? " on" : "")} title=${a.label} onClick=${() => setAnim(a.id)}><${Ic} i=${a.ic}/></button>`)}</div>
-    <div class="flow-foot"><span class="flow-sum"><i class="fm2-key" style=${"background:" + FLOW_EG}></i>egress <i class="fm2-key" style=${"background:" + FLOW_IN}></i>ingress</span><span class="grow"></span>
-      <span class="donut-note">${(!ranged && range && range !== "live") ? "loading history…" : ranged ? "total over the window · width ∝ volume · hover" : "live · width ∝ rate · hover"}</span></div>
   </div>`;
 }
 
@@ -2189,6 +2475,8 @@ function Overview() {
   // (everything else — partial / pending / creating / rotating / dangling / unknown). Always sum to total.
   const ready = sPeers.filter(p => p.status === "ready").length;
   const attention = sPeers.length - online - ready;
+  const pAssigned = sPeers.filter(p => !p.unassigned).length;   // peers attached to a user vs. floating (no owner)
+  const pUnassigned = sPeers.length - pAssigned;
   const sUsers = users.filter(u => sPeers.some(p => p.user_id === u.id));
   const liveNodes = fleetSel.filter(n => ns[n.id] === "live").length;
   const ifaceCount = selIds.reduce((a, id) => a + Object.keys(Store.describe[id] || {}).filter(ifn => !isSys(id, ifn)).length, 0);
@@ -2196,18 +2484,39 @@ function Overview() {
   let rx = 0, tx = 0;
   fleetSel.forEach(n => { const [r, t] = nodeRate(n.id); rx += r; tx += t; });
 
-  const probs = sPeers.filter(p => ["dangling", "partial", "pending", "unknown"].includes(p.status))
+  const PROB_STATUSES = ["dangling", "partial", "blocked", "faulty", "pending", "unknown"];
+  const probs = sPeers.filter(p => PROB_STATUSES.includes(p.status))
     .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
   const unassigned = Store.unassignedPeers().filter(onSel);
   const orphans = Store.recon.orphans.filter(o => sel.has(o.node));
-  const why = { dangling: "missing on every server", partial: "missing on some servers", pending: "just created, not seen yet", unknown: "server stale — can't confirm" };
+  const why = { dangling: "missing on every server", partial: "missing on some servers", blocked: "handshake never completes", faulty: "no inbound data flowing", pending: "just created, not seen yet", unknown: "server stale — can't confirm" };
+
+  // Needs-attention shown IN BULK: problem peers grouped by status, unassigned grouped by node, orphans
+  // grouped by interface — each row lands where you'd fix it (Peers filtered, or the interface detail).
+  const STATUS_WORD = { dangling: "dangling", partial: "partially deployed", blocked: "blocked", faulty: "faulty", pending: "pending", unknown: "on a stale server" };
+  const statusGroups = PROB_STATUSES.map(s => ({ status: s, peers: probs.filter(p => p.status === s) })).filter(g => g.peers.length);
+  const unByNode = {};
+  unassigned.forEach(p => p.targets.forEach(t => {
+    if (!sel.has(t.node)) return;
+    const g = unByNode[t.node] || (unByNode[t.node] = { node: t.node, peers: new Set(), wg: new Set(), awg: new Set() });
+    g.peers.add(p.id); (t.type === "awg" ? g.awg : g.wg).add(t.iface);
+  }));
+  const unGroups = Object.values(unByNode);
+  const orphByIf = {};
+  orphans.forEach(o => { const k = o.node + "|" + o.iface; (orphByIf[k] || (orphByIf[k] = { node: o.node, iface: o.iface, n: 0 })).n++; });
+  const orphGroups = Object.values(orphByIf);
+  const attnCount = statusGroups.length + unGroups.length + orphGroups.length;
 
   const recent = recentActivity();
 
   // ranked nodes — by traffic over the SELECTED RANGE (live rate, or windowed client volume = Σ(rx−mesh)·step,
   // matching the doughnuts), or by peer count when the fleet is idle (selected nodes only)
-  const dRanged = dashState.range !== "live" && !rangeHist.loading && rangeHist.range === dashState.range;
-  const dStep = RANGE_STEP[dashState.range] || 1;
+  // EFFECTIVE range = the range whose data is actually loaded/showing. During a fetch it LAGS the just-clicked range
+  // (rangeHist keeps the previous range's data), so every ranged figure holds the OLD range until the new one lands —
+  // no flash to live, no layout jump. Live is immediate. Only the rail's active highlight reads the raw dashState.range.
+  const effRange = dashState.range === "live" ? "live" : (rangeHist.range || dashState.range);
+  const dRanged = effRange !== "live";
+  const dStep = RANGE_STEP[effRange] || 1;
   const nodeVol = id => { const d = rangeHist.byNode[id]; if (!d) return { rx: 0, tx: 0 };
     let rx = 0, tx = 0; const R = d.rx || [], T = d.tx || [], MR = d.mrx || [], MT = d.mtx || [];
     for (let i = 0; i < R.length; i++) { rx += Math.max(0, (R[i] || 0) - (MR[i] || 0)); tx += Math.max(0, (T[i] || 0) - (MT[i] || 0)); }
@@ -2221,22 +2530,40 @@ function Overview() {
     .sort((a, b) => anyTraffic ? (b.rx + b.tx) - (a.rx + a.tx) : b.peers - a.peers)
     .slice(0, 6)
     .map(x => ({ label: x.name, value: anyTraffic ? x.rx + x.tx : x.peers,
-      sub: anyTraffic ? (dRanged ? xferCell(x.rx, x.tx) : rateCell(x.rx, x.tx)) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
+      sub: anyTraffic ? (dRanged ? xferCell(...dlul(x.rx, x.tx)) : rateCell(x.rx, x.tx)) : x.peers + " peer" + (x.peers === 1 ? "" : "s"),
       color: x.color || "var(--brand)", href: "#/node/" + encodeURIComponent(x.id) }));
 
-  // ── live core-row series (all from the bundle; no server hit on the hot path) ──
-  const fleetSeries = mergeFleetSeries(selIds);          // fleet rx/tx over the 15s ring (survives reload)
-  const onlineTrend = dashOnlineTrend(selIds);           // client-accumulated online-peer count trend
-  // top talkers — peers by live rx+tx across the selected nodes
-  const talkers = sPeers.map(p => {
-    let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return; const o = tg.observed; if (o) { r += o.rx_speed || 0; t += o.tx_speed || 0; } });
-    return { p, rx: r, tx: t };
-  }).filter(x => x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, 6);
-  const talkerRows = talkers.map(x => ({ label: x.p.name || x.p.title || "peer", value: x.rx + x.tx, sub: rateCell(x.rx, x.tx),
-    color: Store.nodeColor((x.p.targets.find(t => sel.has(t.node)) || {}).node) || "var(--brand)", href: "#/peer/" + encodeURIComponent(x.p.id) }));
-  // turn-proxy load across the selected nodes (hidden when the fleet runs none)
-  const turnRows = [];
-  if (turnEnabled()) fleetSel.forEach(n => { const snap = Store.stats[n.id]; ((snap && snap.turn_proxies) || []).forEach(tp => turnRows.push({ node: n.id, tp })); });
+  // ── range-aware fleet hero series. Live = the 15s ring + online accumulator (no server hit); a range =
+  //    Σ per-node RRD (fetched once by useRangeHistory, off the hot path). Fleet throughput reuses the node
+  //    ThroughputChart summed; online-peers resamples pon into the fixed per-range block count. ──
+  const fleetHist = fleetHistory(selIds, effRange, rangeHist);
+  const tputRange = effRange === "live" ? "hour" : effRange;   // fleet live feed IS the 15s (hour) ring
+  const [obN, obStep] = ONLINE_BLOCKS[effRange] || ONLINE_BLOCKS.live;
+  const onlineBlocks = resampleBlocks(fleetHist.onT, fleetHist.on, obN, obStep);
+  const hasOnline = onlineBlocks.some(v => v != null);
+  // how many rows the ranked lists show — operator-set in Panel settings → Display (1–50, default 10)
+  const nTalk = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_talkers || 10));
+  const nDest = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_destinations || 10));
+  // top talkers — peers ranked by traffic across the selected nodes. Live = current per-peer rx/tx from the
+  // snapshot; a range = per-peer windowed VOLUME from the peer RRD (/api/peer-history), matched back to the peer
+  // by pubkey. Same node-selector + perspective as every other figure.
+  let talkers;
+  if (dRanged) {
+    const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; });   // pubkey → reconciled peer
+    const byPk = {};
+    (rangeHist.peers || []).forEach(e => { if (!sel.has(e.node) || !pkPeer[e.pubkey]) return;
+      const a = byPk[e.pubkey] = byPk[e.pubkey] || { rx: 0, tx: 0 }; a.rx += e.rx || 0; a.tx += e.tx || 0; });
+    talkers = Object.entries(byPk).map(([pk, v]) => ({ p: pkPeer[pk], rx: v.rx, tx: v.tx }))
+      .filter(x => x.p && x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
+  } else {
+    talkers = sPeers.map(p => {
+      let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return; const o = tg.observed; if (o) { r += o.rx_speed || 0; t += o.tx_speed || 0; } });
+      return { p, rx: r, tx: t };
+    }).filter(x => x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
+  }
+  const talkerRows = talkers.map((x, i) => ({ label: x.p.name || x.p.title || "peer", value: x.rx + x.tx,
+    sub: dRanged ? xferCell(...dlul(x.rx, x.tx)) : rateCell(x.rx, x.tx),
+    color: dashRankColor(i, "talker"), href: "#/users", onClick: e => { e.preventDefault(); revealPeer(x.p); } }));
   // traffic by DESTINATION CATEGORY — each category's FULL total. Categories NEST (youtube ⊂ google, yandex ⊂ ru_net),
   // so a byte counts in EVERY category it matches: they OVERLAP on purpose and do NOT sum to the total (the distinct
   // total is the CLIENT traffic below). Live = per-node `cats` rates (panel-derived from the node's nft counters);
@@ -2247,102 +2574,90 @@ function Overview() {
   else { const cById = Object.fromEntries((Store.nodes || []).map(n => [n.id, n.cats || {}]));   // Store.fleet is a slim {id,name,color} projection — the live `cats` field lives on the full Store.nodes objects
     fleetSel.forEach(n => { for (const [cat, v] of Object.entries(cById[n.id] || {})) _cadd(cat, v.up, v.dn); }); }
   const catRows = Object.entries(catAgg).filter(([c, v]) => c !== "uncat" && v.up + v.dn > 0)
-    .sort((a, b) => (b[1].dn + b[1].up) - (a[1].dn + a[1].up)).slice(0, 10)
-    .map(([cat, v]) => ({ label: catLabelOf(cat), value: v.dn + v.up, sub: dRanged ? xferCell(v.dn, v.up) : rateCell(v.dn, v.up), color: catColor(cat) }));
+    .sort((a, b) => (b[1].dn + b[1].up) - (a[1].dn + a[1].up)).slice(0, nDest)
+    .map(([cat, v], i) => ({ label: catLabelOf(cat), value: v.dn + v.up, sub: dRanged ? xferCell(...dlul(v.dn, v.up)) : rateCell(v.dn, v.up), color: dashRankColor(i, "dest") }));
   const _un = catAgg.uncat;   // the first-match "matched no set" bucket — always pinned last (a catch-all, not ranked), even if it's the largest
-  if (_un && _un.up + _un.dn > 0) catRows.push({ label: catLabelOf("uncat"), value: _un.dn + _un.up, sub: dRanged ? xferCell(_un.dn, _un.up) : rateCell(_un.dn, _un.up), color: catColor("uncat") });
-  const totClientDn = nodeTraffic.reduce((a, x) => a + (x.rx || 0), 0);   // distinct total (client download) — categories are a subset/overlap of this
+  if (_un && _un.up + _un.dn > 0) catRows.push({ label: catLabelOf("uncat"), value: _un.dn + _un.up, sub: dRanged ? xferCell(...dlul(_un.dn, _un.up)) : rateCell(_un.dn, _un.up), color: CAT_UNCAT_COLOR });
+  const totClientRx = nodeTraffic.reduce((a, x) => a + (x.rx || 0), 0);   // distinct client total (rx/tx) — categories are a subset/overlap of this
+  const totClientTx = nodeTraffic.reduce((a, x) => a + (x.tx || 0), 0);
 
   return html`<div class="screen">
     <${StoreOffBanner}/>
-    <${DashControls}/>
+    <${DashRail}/>
     <div class="statgrid">
       <a class="stat accent clk" href="#/connections"><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">live connections →</div></div></a>
       <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">Users</div><div class="v">${sUsers.length}</div><div class="sub">${sPeers.length} peers${scoped ? " here" : " total"}</div></div></a>
-      <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peer status</div><div class="v" style="font-size:19px"><span style="color:var(--online)">${online}</span> · <span style="color:var(--ready)">${ready}</span> · <span style=${"color:" + (attention ? "var(--dangling)" : "var(--faint)")}>${attention}</span></div><div class="sub">online · ready · attention</div></div></a>
+      <a class="stat clk" href="#/peers"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peers</div><div class="v" style="font-size:19px"><span style="color:var(--ink)">${pAssigned}</span> · <span style="color:var(--dim)">${pUnassigned}</span></div><div class="sub">assigned · unassigned</div>${orphans.length ? html`<div class="sub" style="color:#E8912D;font-weight:600">Orphan peers ${orphans.length}</div>` : ""}</div></a>
       <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleetSel.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></div></a>
       <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">Throughput</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span>${scoped ? " selected" : " aggregate"}</div></div></div>
     </div>
 
+    <div class="section-title"><h2>Fleet</h2><span class="count">${scoped ? fleetSel.length + " of " + fleet.length : fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
     ${fleetSel.length ? html`<div class="trends">
       <div class="trendcard wide">
-        <div class="donutcard-h"><h3>Fleet throughput</h3><span class="rings-of">${scoped ? "selected" : "fleet"} · last hour</span></div>
-        ${(fleetSeries.t || []).length > 1
-          ? html`<${ThroughputChart} rx=${fleetSeries.rx} tx=${fleetSeries.tx} times=${fleetSeries.t} range="hour" cap=${RANGE_CAP.hour} h=${70}/>`
+        <div class="donutcard-h"><h3>Fleet throughput</h3></div>
+        ${(fleetHist.t || []).length > 1
+          ? html`<${ThroughputChart} rx=${fleetHist.rx} tx=${fleetHist.tx} times=${fleetHist.t} range=${tputRange} cap=${RANGE_CAP[tputRange]} h=${70}/>`
           : html`<div class="harea-empty">gathering — no history yet</div>`}
       </div>
       <div class="trendcard">
-        <div class="donutcard-h"><h3>Online peers</h3><span class="rings-of">live trend</span><span class="grow"></span><span class="trend-now">${online}</span></div>
-        ${onlineTrend
-          ? html`<${TrendArea} points=${onlineTrend.pts} times=${onlineTrend.t} color="var(--online)" h=${70} cap=${0} fmt=${v => v + " online"} range="live"/>`
+        <div class="donutcard-h"><h3>Online peers</h3><span class="grow"></span><span class="trend-now">${online}</span></div>
+        ${hasOnline
+          ? html`<${OnlineBlocks} blocks=${onlineBlocks} step=${obStep} endTs=${fleetHist.onT[fleetHist.onT.length - 1]} range=${effRange} color="var(--online)" h=${70}/>`
           : html`<div class="harea-empty">gathering — fills as it polls</div>`}
       </div>
     </div>` : null}
-
-    <div class="section-title"><h2>Fleet</h2><span class="count">${scoped ? fleetSel.length + " of " + fleet.length : fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
-    ${fleetSel.length ? html`<div class="fleet2">${fleetSel.map(n => html`<${FleetNodeCard} key=${n.id} n=${n}/>`)}</div>`
+    ${fleetSel.length ? html`<div class="fleet2">${fleetSel.map(n => html`<${FleetNodeCard} key=${n.id} n=${n} traffic=${nodeTraffic.find(x => x.id === n.id)} ranged=${dRanged} histRange=${effRange} nodeHist=${(rangeHist.byNode || {})[n.id] || null}/>`)}</div>`
       : html`<div class="allclear">No servers configured in fleet.json.</div>`}
 
     ${fleetSel.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Distribution</h2><span class="count">${scoped ? "selected nodes" : "whole fleet"} · ${DASH_RANGES.find(r => r[0] === dashState.range)[1].toLowerCase()}</span><span class="grow"></span></div>
-      <${DashDoughnuts} selIds=${selIds} range=${dashState.range} hist=${rangeHist}/>
+      <div class="section-title"><h2>Distribution</h2><span class="count">${scoped ? "selected nodes" : "whole fleet"} · ${DASH_RANGES.find(r => r[0] === effRange)[1].toLowerCase()}</span><span class="grow"></span></div>
+      <${DashDoughnuts} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
     ${fleetSel.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Traffic flow</h2><span class="count">signal flow · by category</span><span class="grow"></span></div>
-      <${FlowMap2} selIds=${selIds} range=${dashState.range} hist=${rangeHist}/>
+      <div class="section-title"><h2>Traffic flow map</h2><span class="count">signal flow · by category</span><span class="grow"></span></div>
+      <${FlowMap2} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
     ${fleetSel.length > 1 ? html`<${Fragment}>
-      <div class="section-title"><h2>${anyTraffic ? "Top nodes by traffic" : "Top nodes by peers"}</h2><span class="count">${anyTraffic ? (DASH_RANGES.find(r => r[0] === dashState.range) || ["", "live"])[1].toLowerCase() : ""}</span><span class="grow"></span></div>
+      <div class="section-title"><h2>${anyTraffic ? "Top nodes by traffic" : "Top nodes by peers"}</h2><span class="count">${anyTraffic ? (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() : ""}</span><span class="grow"></span></div>
       <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
     <//>` : null}
 
-    ${catRows.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Traffic by destination</h2><span class="count">${dRanged ? (DASH_RANGES.find(r => r[0] === dashState.range) || ["", "live"])[1].toLowerCase() : "live"} · categories overlap${totClientDn ? " · of " + (dRanged ? fmtBytes(totClientDn) : rate(totClientDn)) + " total ↓" : ""}</span><span class="grow"></span></div>
-      <div class="rankcard"><${RankBars} rows=${catRows}/></div>
-    <//>` : null}
-
     ${talkerRows.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Top talkers</h2><span class="count">by live throughput</span><span class="grow"></span></div>
+      <div class="section-title"><h2>Top talkers</h2><span class="count">${dRanged ? (DASH_RANGES.find(r => r[0] === effRange) || ["", ""])[1].toLowerCase() + " · by volume" : "by live throughput"}</span><span class="grow"></span></div>
       <div class="rankcard"><${RankBars} rows=${talkerRows}/></div>
     <//>` : null}
 
-    ${turnRows.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Turn-proxy load</h2><span class="count">${turnRows.length} prox${turnRows.length === 1 ? "y" : "ies"}</span><span class="grow"></span></div>
-      <div class="turnload">${turnRows.map(({ node, tp }) => {
-        const fork = turnFork(tp.service), down = nodeStale(node) || turnDown(tp);
-        return html`<a class="turnload-row" key=${node + tp.service} href=${"#/node/" + encodeURIComponent(node)}>
-          <span class=${"tg tg-turn tf-" + fork + (down ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>
-          <span class="tl-node" style=${"color:" + Store.nodeColor(node)}>${Store.nodeName(node)}</span>
-          <span class="grow"></span>
-          <span class=${"tl-stat " + (down ? "down" : "up")}>${down ? "down" : "up"}</span>
-          ${tp.version ? html`<span class="tl-ver">${tp.version}</span>` : null}</a>`;
-      })}</div>
+    ${catRows.length ? html`<${Fragment}>
+      <div class="section-title"><h2>Top destinations</h2><span class="count">${dRanged ? (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() : "live"} · categories overlap${(totClientRx + totClientTx) ? (() => { const f = dRanged ? fmtBytes : rate, [d, u] = dlul(totClientRx, totClientTx); return html` · of <span style="color:var(--online)">↓${f(d)}</span> and <span style="color:var(--rate-up)">↑${f(u)}</span> total`; })() : ""}</span><span class="grow"></span></div>
+      <div class="rankcard"><${RankBars} rows=${catRows}/></div>
     <//>` : null}
 
     ${recent.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Recent activity</h2></div>
-      <div class="actlist">${recent.map(e => html`<a class="act-row" href=${e.href} key=${e.key}>
-        <span class=${"act-ic t-" + e.kind}><${Ic} i=${e.icon}/></span>
-        <span class="act-what">${e.action}</span><span class="act-name">${e.name}</span>
+      <div class="section-title"><h2>Recent activity</h2><span class="grow"></span><a class="act-more" href="#/activity">Show history »</a></div>
+      <div class="actlist">${recent.map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
+          onClick=${e.click && e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : (e.click ? null : (ev => ev.preventDefault()))}>
+        <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
+        <span class="act-what">${e.verb}</span>${e.name ? html`<span class="act-name">${e.name}</span>` : null}
         ${e.detail ? html`<span class="act-detail">${e.detail}</span>` : null}
-        <span class="grow"></span><span class="when">${ago(e.ts)}</span></a>`)}</div>
+        <span class="grow"></span><span class="when">${ago(e.ts)}</span>${e.click ? html`<span class="act-arrow"><${Ic} i="arrow"/></span>` : null}</a>`)}</div>
     <//>` : null}
 
-    <div class="section-title"><h2>Needs attention</h2><span class="grow"></span></div>
-    ${(!probs.length && !unassigned.length && !orphans.length)
+    <div class="section-title"><h2>Needs attention</h2><span class="grow"></span>${attnCount ? html`<span class="count">${attnCount} group${attnCount === 1 ? "" : "s"}</span>` : null}</div>
+    ${!attnCount
       ? html`<div class="allclear"><${Ic} i="check"/><span>Everything's deployed and reporting. No drift across the fleet.</span></div>`
       : html`<div class="attn">
-          ${probs.map(p => html`<div class="attn-row" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>
-            <${Badge} s=${p.status}/><span class="name">${p.name || html`<span class="faint">unassigned peer</span>`}</span>
-            <span class="why">${why[p.status] || ""}</span><span class="grow"></span><${TargetPips} peer=${p}/><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-          ${unassigned.map(p => html`<div class="attn-row" onClick=${() => go("#/peer/" + encodeURIComponent(p.id))}>
-            <${Badge} s="unassigned"/><span class="name addr">${p.pubkey.slice(0, 18)}…</span>
-            <span class="why">no user assigned</span><span class="grow"></span><${TargetPips} peer=${p}/><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
-          ${orphans.map(o => html`<div class="attn-row" onClick=${() => go("#/node/" + encodeURIComponent(o.node))}>
-            <${Badge} s="orphan"/><span class="name addr">${o.pubkey.slice(0, 18)}…</span>
-            <span class="why">on ${o.node}, not in roster</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
+          ${statusGroups.map(g => html`<div class="attn-row" key=${"s" + g.status} onClick=${() => revealPeersFiltered({ status: g.status })}>
+            <${Badge} s=${g.status}/><span class="name"><b>${g.peers.length}</b> peer${g.peers.length === 1 ? "" : "s"} ${STATUS_WORD[g.status] || g.status}</span>
+            <span class="why">${why[g.status] || ""}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
+          ${unGroups.map(g => html`<div class="attn-row" key=${"u" + g.node} onClick=${() => revealPeersFiltered({ node: g.node, status: "unassigned" })}>
+            <${Badge} s="unassigned"/><span class="name"><b>${g.peers.size}</b> unassigned peer${g.peers.size === 1 ? "" : "s"} on ${ifCountPhrase(g)} on ${Store.nodeName(g.node)}</span>
+            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
+          ${orphGroups.map(g => html`<div class="attn-row" key=${"o" + g.node + g.iface} onClick=${() => revealOrphans(g.node, g.iface)}>
+            <${Badge} s="orphan"/><span class="name"><b>${g.n}</b> orphan peer${g.n === 1 ? "" : "s"} on ${g.iface} (${ifTypeLabel(g.node, g.iface)}) on ${Store.nodeName(g.node)}</span>
+            <span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
         </div>`}
   </div>`;
 }
@@ -2651,7 +2966,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <${PeerGrid} rows=${ifaceFiltered} agg=${false} node=${node} iface=${iface} shownByPeer=${ifaceShown} q=${q} blocked=${blocked}/>
     <//>
 
-    ${orphans.length ? html`<${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}
+    ${orphans.length ? html`<div id="iface-orphans"><${Panel} icon="warn" title="Unmanaged on this interface" tone="warn" pad=${false}
         actions=${html`<button class="btn btn-mini" onClick=${() => orphans.forEach(o => mutate({
           key: "orphan:" + o.node + "|" + o.iface + "|" + o.pubkey,
           call: () => api.peerAdopt({ pubkey: o.pubkey, psk: o.preshared_key || "", target: { node: o.node, iface: o.iface, ip: (o.allowed_ips || "").split("/")[0] } }),
@@ -2659,7 +2974,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
       <table><tbody>
         ${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}
       </tbody></table>
-    <//>` : null}
+    <//></div>` : null}
   </div>`;
 }
 
@@ -2763,26 +3078,31 @@ const SMART_CATEGORIES = [
 ];
 const CURATED_HEAVY = { ru_blocked: 1, ru_net: 1 };   // UI weight flag — large lists
 const SMART_CAT_LABEL = Object.fromEntries(SMART_CATEGORIES);
-// destination-stats palette: a fixed hue per category (built-ins by their SMART_CATEGORIES order; custom lists by a
-// stable hash) so a category keeps its colour across renders. ≤10 hues → many-category fleets can repeat, but an
-// operator routes only a handful at once. custom_<hash>/inline → "Custom".
-const CAT_COLORS = ["#5B8FF9", "#61DDAA", "#F6BD16", "#E8684A", "#9270CA", "#269A99", "#FF9D4D", "#6DC8EC", "#FF99C3", "#D66BF0"];
-const _CAT_IDX = Object.fromEntries(SMART_CATEGORIES.map(([id], i) => [id, i]));
-const CAT_UNCAT_COLOR = "#8A94A6";   // muted slate — the "everything else" bucket, deliberately not a category hue
-function catColor(c) {
-  if (c === "uncat") return CAT_UNCAT_COLOR;
-  if (_CAT_IDX[c] != null) return CAT_COLORS[_CAT_IDX[c] % CAT_COLORS.length];
-  let h = 0; for (const ch of String(c)) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0;
-  return CAT_COLORS[h % CAT_COLORS.length];
+const CAT_UNCAT_COLOR = "#8A94A6";   // muted slate — the "everything else" catch-all, deliberately off-palette
+// HSL→hex, no deps.
+function hsl2hex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = n => { const c = l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)); return Math.round(255 * c).toString(16).padStart(2, "0"); };
+  return "#" + f(0) + f(8) + f(4);
 }
+// Colour for a ranked bar by its ROW INDEX: a golden-angle hue rotation (~137.5° per step) so consecutive rows
+// are always far apart on the wheel — adjacent bars can never look similar, at ANY list length (so the count is
+// free to be configurable). Talkers and destinations use a different start hue + saturation so the two lists read
+// as distinct colour families.
+const dashRankColor = (i, kind) => kind === "talker" ? hsl2hex((205 + i * 137.508) % 360, 68, 62) : hsl2hex((32 + i * 137.508) % 360, 58, 55);
 // labels for catalog categories the CatPicker has fetched this session — lets a just-added (staged, not yet
 // saved+polled) catalog cat show its provider label immediately, before Store.catLabels carries it.
 const _CATALOG_LABEL_CACHE = {};
-function catLabelOf(c) {   // built-in label · custom-list title (via the panel's custom_<hash>→title map) · inline custom → "Custom" · else the id
+// If a resolved label has NO capital letters (a bare list name like "timeweb"), capitalise its first letter —
+// but leave intentional casing alone ("iCloud", "YouTube" stay as-is).
+const capFirst = s => (typeof s === "string" && s && !/[A-Z]/.test(s)) ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+function catLabelOf(c) {   // built-in label · custom-list title (keyed by the list's id AND name, so whichever the node emits resolves to the human title) · inline custom → "Custom" · else the id
   if (c === "uncat") return "Uncategorised";
-  const lt = Object.fromEntries((Store.panelSettings?.custom_lists || []).map(l => [l.id, l.title]));
-  if (isProviderCat(c)) return prettyCatLabel(c, (Store.catLabels || {})[c] || _CATALOG_LABEL_CACHE[c]);   // provider list → humanised (country names etc.)
-  return SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || _CATALOG_LABEL_CACHE[c] || (String(c).startsWith("custom") ? "Custom" : c);
+  const lt = {};
+  (Store.panelSettings?.custom_lists || []).forEach(l => { if (l && l.title) { if (l.id) lt[l.id] = l.title; if (l.name) lt[l.name] = l.title; } });
+  if (isProviderCat(c)) return capFirst(prettyCatLabel(c, (Store.catLabels || {})[c] || _CATALOG_LABEL_CACHE[c]));   // provider list → humanised (country names etc.)
+  return capFirst(SMART_CAT_LABEL[c] || (Store.catLabels || {})[c] || lt[c] || _CATALOG_LABEL_CACHE[c] || (String(c).startsWith("custom") ? "Custom" : c));
 }
 // Host/IP capability flags for a list — ALWAYS Host first, IP second (house rule).
 const capBadges = caps => html`<span class="capbs">
@@ -2950,11 +3270,11 @@ function ProvTag({ id, label, plain }) {
 // NOTE: all three modes are kernel-based — there is NO "Kernel" mode. The IP-only mode is "Default". (Stored value
 // stays "kernel"|"forcedns"|"sni" — the node reads it — but never DISPLAY the word "Kernel".) See MODES for the text.
 const MODE_META = {
-  kernel:   { icon: "globe",  label: "Default — IP only, DNS is not involved", short: "IP only",
+  kernel:   { icon: "🛡️",  label: "Default — IP only. DNS not involved", short: "IP only",
     exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs." },
-  forcedns: { icon: "server", label: "Force DNS — Host + IP, overrides encrypted DNS", short: "Host + IP",
+  forcedns: { icon: "🧭", label: "Force DNS — Host + IP. Overrides encrypted DNS", short: "Host + IP",
     exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
-  sni:      { icon: "shield", label: "SNI router — Host + IP, DNS stays private", short: "Host + IP",
+  sni:      { icon: "👁️", label: "SNI Sniffer — Host + IP. DNS stays private", short: "Host + IP",
     exp: "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
 };
 // Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
@@ -2987,10 +3307,10 @@ function Dropdown({ value, onChange, options, className, placeholder, disabled, 
     </div><//>` : null}
   </div>`;
 }
-// Match-mode dropdown — the shared Dropdown, with the closed label shortened at the comma ("Force DNS — Host + IP")
-// so it stays compact and never squeezes the node name; the open list shows the full label.
+// Match-mode dropdown — the shared Dropdown, with the closed label shortened at the sentence break ("Force DNS —
+// Host + IP") so it stays compact and never squeezes the node name; the open list shows the full label.
 function ModeSelect({ value, onChange }) {
-  return html`<${Dropdown} className="modesel" value=${value} onChange=${onChange} short=${l => l.split(",")[0].trim()}
+  return html`<${Dropdown} className="modesel" value=${value} onChange=${onChange} short=${l => l.split(". ")[0].trim()}
     options=${["kernel", "forcedns", "sni"].map(m => ({ value: m, label: MODE_META[m].label }))}/>`;
 }
 // "on N/M nodes ▾" fleet-assignment popover — toggle a list on each node. disabledFor(nid) → a reason string greys it.
@@ -4196,7 +4516,10 @@ function SetupTurnSheet({ node }) {
 }
 
 // ═════════════════════════ SCREEN: PEERS (by node) ═════════════════════════
-const peersView = { node: "", iface: "", q: "", sort: "status", dir: -1 };
+const peersView = { node: "", iface: "", q: "", sort: "status", dir: -1, status: null };
+// Peers-screen status filter options (also the deep-link targets from grouped Needs-attention rows).
+const PEER_STATUS_FILTERS = [["", "All statuses"], ["online", "Online"], ["ready", "Ready"], ["unassigned", "Unassigned"],
+  ["dangling", "Dangling"], ["partial", "Partial"], ["blocked", "Blocked"], ["faulty", "Faulty"], ["pending", "Pending"], ["unknown", "Unknown"]];
 // Prominent warning when the panel keeps no client configs at rest — QRs/downloads then only work
 // in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.
 function StoreOffBanner() {
@@ -4292,7 +4615,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const u = p.user_id ? Store.user(p.user_id) : null;
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
-        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
+        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} data-peer=${p.id} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
           <td data-label="Status" class="c-status">${(() => {
             const ifaceB = loc ? gridIfaceTag(t) : null;
             if (!live) return html`${gridStatusBadge(t, p)}${ifaceB}`;
@@ -4309,8 +4632,8 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
             const addrCell = html`<td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
             const epCell = html`<td data-label="Endpoint">${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label="Node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
-            const userCell = hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); go("#/user/" + encodeURIComponent(u.id)); }) : (e => e.stopPropagation())}>
-              ${u ? html`<a class="namecell" href=${"#/user/" + encodeURIComponent(u.id)} onClick=${e => e.stopPropagation()}><span>${u.name}</span><${Ic} i="user"/></a>`
+            const userCell = hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); revealUser(u.id); }) : (e => e.stopPropagation())}>
+              ${u ? html`<a class="namecell" href="#/users" onClick=${e => { e.preventDefault(); e.stopPropagation(); revealUser(u.id); }}><span>${u.name}</span><${Ic} i="user"/></a>`
                   : (live ? html`<span class="faint">unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`)}</td>`;
             // embedded / live-peers: Status · [User] · Title · [Endpoint (live)] · Address · Node — iface badge sits by the status
             if (loc) return html`${userCell}${titleCell}${live ? epCell : null}${addrCell}${nodeCell}`;
@@ -4363,6 +4686,7 @@ function PeersScreen() {
     rows.push({ p, t });
   }
   if (q) rows = rows.filter(({ p, t }) => searchMatch((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface, q));
+  if (peersView.status) rows = rows.filter(({ p }) => peersView.status === "unassigned" ? p.unassigned : p.status === peersView.status);   // status filter (set directly, or via a grouped Needs-attention click)
   rows = sortPeerRows(rows, peersView.sort, peersView.dir);
   // which of each peer's deployments are actually visible as rows here — so a row can flag the rest
   // (filtered out by server/interface or search) with a "+N" the operator can hover/tap.
@@ -4390,7 +4714,9 @@ function PeersScreen() {
         ${(node === "*" || ifaceOpts.length > 1) ? html`<option value="*">All interfaces</option>` : null}
         ${ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : (node === "*" ? null : html`<option value="">no interfaces reported</option>`)}
       </select>
-      <span class="grow"></span>
+      <select class="selwrap" value=${peersView.status || ""} onChange=${e => { peersView.status = e.target.value || null; peersView.page = 1; force(x => x + 1); }}>
+        ${PEER_STATUS_FILTERS.map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+      </select>
       <button class="btn btn-primary" onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
     </div>
 
@@ -4415,6 +4741,72 @@ function PeersScreen() {
       <div class="section-title"><h2 style="color:var(--orphan)">Unmanaged here</h2></div>
       <div class="tablewrap"><table><tbody>${orphans.map(o => html`<${OrphanRow} key=${o.node + "|" + o.iface + "|" + o.pubkey} o=${o}/>`)}</tbody></table></div>
     <//>` : null}
+  </div>`;
+}
+
+// ═════════════════════════ SCREEN: ACTIVITY HISTORY ═════════════════════════
+// The full operator-action log ("Show history" from the Overview feed): search + Item/Action filters,
+// pagination, per-row delete, and Clear all. Pulls the whole capped log once and filters client-side with
+// the same taxonomy (evDecorate) as the feed, so a row's icon / click target / category stay identical.
+const activityView = { q: "", item: "", action: "", page: 1 };
+function ActivityHistoryScreen() {
+  const [rows, setRows] = useState(null);   // null = still loading
+  const [, force] = useState(0);
+  const bump = () => force(x => x + 1);
+  const load = () => api.events(1000).then(r => setRows(Array.isArray(r.data) ? r.data : [])).catch(() => setRows([]));
+  useEffect(() => { load(); }, []);
+  const all = (rows || []).map(evDecorate);
+  const q = activityView.q.toLowerCase();
+  let list = all;
+  if (activityView.item) list = list.filter(e => e.item === activityView.item);
+  if (activityView.action) list = list.filter(e => e.action === activityView.action);
+  if (q) list = list.filter(e => (e.verb + " " + e.name + " " + (e.detail || "")).toLowerCase().includes(q));
+  const pageSize = 25;
+  const totalPages = Math.max(1, Math.ceil(list.length / pageSize));
+  const page = Math.min(Math.max(1, activityView.page), totalPages);
+  const pageRows = list.slice((page - 1) * pageSize, page * pageSize);
+  const setPage = p => { activityView.page = p; bump(); };
+  const delOne = e => openConfirm({ title: "Delete this entry?", confirmLabel: "Delete", danger: true,
+    body: html`Remove this record — <b>${e.verb}${e.name ? " · " + e.name : ""}</b>? This can't be undone.`,
+    onConfirm: async () => { await api.eventDelete(e.eid); await load(); } });
+  const clearAll = () => openConfirm({ title: "Clear all activity?", confirmLabel: "Clear history", danger: true,
+    body: html`Delete <b>all ${all.length} record${all.length === 1 ? "" : "s"}</b> from the activity log? This can't be undone.`,
+    onConfirm: async () => { await api.eventsClear(); activityView.page = 1; await load(); } });
+  return html`<div class="screen">
+    <div class="crumb"><a href="#/">Overview</a><span class="sep">/</span><b>Activity history</b></div>
+    <div class="toolbar">
+      <div class="search"><${Ic} i="search"/><input placeholder="Search action, name, detail…" value=${activityView.q}
+        onInput=${e => { activityView.q = e.target.value; activityView.page = 1; bump(); }}/></div>
+      <select class="selwrap" value=${activityView.item} onChange=${e => { activityView.item = e.target.value; activityView.page = 1; bump(); }}>
+        <option value="">All items</option>${EV_ITEMS.map(i => html`<option value=${i}>${i}</option>`)}
+      </select>
+      <select class="selwrap" value=${activityView.action} onChange=${e => { activityView.action = e.target.value; activityView.page = 1; bump(); }}>
+        <option value="">All actions</option>${EV_ACTIONS.map(a => html`<option value=${a}>${a}</option>`)}
+      </select>
+      <span class="grow"></span>
+      <button class="btn btn-danger" disabled=${!all.length} onClick=${clearAll}><${Ic} i="trash"/> Clear history</button>
+    </div>
+    <div class="section-title"><h2>Activity history</h2><span class="count">${list.length}${list.length !== all.length ? " / " + all.length : ""}</span></div>
+    ${rows === null ? html`<div class="loading"><${Ic} i="refresh"/> Loading…</div>`
+      : !all.length ? html`<div class="empty"><b>No activity yet</b>Operator actions across the panel will show up here.</div>`
+      : !list.length ? html`<div class="empty"><b>No matches</b>Try a different search or filter.</div>`
+      : html`<div class="acthist">${pageRows.map(e => html`<div class=${"act-row" + (e.click ? "" : " noclk")} key=${e.key}>
+          <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
+          ${e.click
+            ? html`<a class="act-link" href=${e.click.href} onClick=${e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : null}><span class="act-what">${e.verb}</span>${e.name ? html`<span class="act-name">${e.name}</span>` : null}</a>`
+            : html`<span class="act-what">${e.verb}</span>${e.name ? html`<span class="act-name">${e.name}</span>` : null}`}
+          ${e.detail ? html`<span class="act-detail">${e.detail}</span>` : null}
+          <span class="grow"></span>
+          <span class="act-cat">${e.item}</span>
+          <span class="when">${ago(e.ts)}</span>
+          <button class="iconbtn danger" title="Delete entry" onClick=${() => delOne(e)}><${Ic} i="x"/></button>
+        </div>`)}</div>`}
+    ${list.length > pageSize ? html`<div class="pager">
+      <span class="pager-info">${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, list.length)} of ${list.length}</span>
+      <button class="btn btn-ghost" disabled=${page <= 1} onClick=${() => setPage(page - 1)}>‹ Prev</button>
+      <span class="pager-pg">${page} / ${totalPages}</span>
+      <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${() => setPage(page + 1)}>Next ›</button>
+    </div>` : null}
   </div>`;
 }
 
@@ -4609,6 +5001,41 @@ function revealUser(userId, peerId) {
     Store.apply();                            // re-render Users with the right page + expansion
     requestAnimationFrame(() => { const el = document.getElementById("urow-" + userId); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); });
   }, 240);
+}
+// Clicking a PEER anywhere reveals its OWNER on the Users screen (row expanded, that peer's row glowing) — there
+// is no standalone peer page. An unassigned peer (no owner) just lands on the Users screen with its row glowing.
+function revealPeer(peer) {
+  if (!peer) return go("#/users");
+  if (peer.user_id != null) { revealUser(peer.user_id, peer.id); return; }
+  Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
+}
+function revealPeerById(id) { revealPeer((Store.recon.peers || []).find(p => p.id === id)); }
+// Land on the PEERS screen with a specific peer visible + its row flashing (activity-feed clicks). Filters
+// the grid to that peer (unique IP) so it's guaranteed on-page, then scrolls to + glows it for ~2.5s.
+function revealPeerInPeers(peer) {
+  if (!peer) return go("#/peers");
+  const ip = (peer.targets && peer.targets[0] && peer.targets[0].ip) || "";
+  peersView.node = "*"; peersView.iface = "*"; peersView.status = null;
+  peersView.q = ip || peer.title || peer.name || ""; peersView.page = 1;
+  Store.recentlyCreated[peer.id] = Date.now();
+  go("#/peers");
+  setTimeout(() => {
+    Store.apply();
+    requestAnimationFrame(() => { const el = document.querySelector('[data-peer="' + peer.id + '"]'); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); });
+  }, 240);
+}
+function revealPeerInPeersById(id) { revealPeerInPeers((Store.recon.peers || []).find(p => p.id === id)); }
+// Land on the PEERS screen filtered to a status (a grouped Needs-attention click) — optionally scoped to
+// one node. status "unassigned" is a synthetic filter (peers with no owner); the rest match a peer status.
+function revealPeersFiltered({ node, status }) {
+  peersView.node = node || "*"; peersView.iface = "*";
+  peersView.status = status || null; peersView.q = ""; peersView.page = 1;
+  go("#/peers");
+}
+// Land on an interface detail and scroll to its unmanaged/orphan panel (a grouped-orphans click).
+function revealOrphans(node, iface) {
+  go("#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(iface));
+  setTimeout(() => requestAnimationFrame(() => { const el = document.getElementById("iface-orphans"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }), 320);
 }
 // after assigning a peer TO a user: glow the just-assigned peer's row wherever it is. If we're already on the
 // Users screen, ALSO reveal the user (their page + expand + scroll). But when the assignment came from the
@@ -4883,7 +5310,6 @@ function UsersScreen() {
       <select class="selwrap" value=${usersView.iface} onChange=${e => { usersView.iface = e.target.value; usersView.page = 1; force(x => x + 1); }}>
         <option value="">All interfaces</option>${ifaceOptGroups(ifaceOpts)}
       </select>
-      <span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openCreatePeer({})}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> New user</button>
     </div>
@@ -4914,14 +5340,6 @@ function UsersScreen() {
 }
 
 // ═════════════════════════ SCREEN: USER DETAIL ═════════════════════════
-// The per-user detail screen is folded into the Users list: a deep link (or a peers-table user cell)
-// just opens the Users screen with that user's row expanded. Kept so old links / bookmarks still work.
-function UserDetail({ id: rawId }) {
-  const id = decodeURIComponent(rawId);
-  // clicking a username anywhere lands here → reveal the user on the Users screen at their real page + expand
-  useEffect(() => { revealUser(id); }, [id]);
-  return html`<div class="screen"><div class="empty">Opening…</div></div>`;
-}
 
 // Inline-editable peer title (optimistic). The operator's label to tell a user's devices apart.
 function PeerTitle({ peer }) {
@@ -5028,21 +5446,6 @@ function TargetCard({ peer, t, bare }) {
   </div>`;
 }
 
-// ═════════════════════════ SCREEN: PEER DETAIL (single credential) ═════════════════════════
-function PeerDetail({ id: rawId }) {
-  useStore();
-  const id = decodeURIComponent(rawId);
-  const p = Store.peer(id);
-  if (!p) return html`<div class="screen"><div class="crumb"><a href="#/users">Users</a><span class="sep">/</span><b>unknown</b></div>
-    <div class="empty"><b>Peer not found</b>It may have been removed.</div></div>`;
-  const u = p.user_id ? Store.user(p.user_id) : null;
-  return html`<div class="screen">
-    <div class="crumb">${u ? html`<${Fragment}><a href="#/users">Users</a><span class="sep">/</span><a href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a><span class="sep">/</span><b>peer</b></>` : html`<${Fragment}><a href="#/users">Users</a><span class="sep">/</span><b>unassigned peer</b></>`}</div>
-    <div class="detail-head"><div class="nameline"><h1>${p.title || p.name || "Unassigned peer"}</h1>${p.title && p.name ? html`<span class="tagchip">${p.name}</span>` : null}<${Badge} s=${p.unassigned ? "unassigned" : p.status}/></div></div>
-    <${PeerCard} peer=${p}/>
-  </div>`;
-}
-
 // ═════════════════════════ SCREEN: NODES ═════════════════════════
 function NodesScreen() {
   useStore();
@@ -5105,12 +5508,12 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 function histTime(ts, range) {
   if (ts == null) return "";
   const d = new Date(ts * 1000), p2 = x => String(x).padStart(2, "0");
-  if (range === "week" || range === "month") {
-    const h = d.getHours(), h12 = ((h + 11) % 12) + 1;
-    return MONTHS[d.getMonth()] + " " + d.getDate() + ", " + h12 + (h < 12 ? "AM" : "PM");
-  }
   const hm = p2(d.getHours()) + ":" + p2(d.getMinutes());
-  return range === "live" ? hm + ":" + p2(d.getSeconds()) : hm;
+  const date = MONTHS[d.getMonth()] + " " + d.getDate();
+  if (range === "month") return date;                                  // date only
+  if (range === "day" || range === "week") return date + " " + hm;     // date + time
+  if (range === "live") return hm + ":" + p2(d.getSeconds());          // time + seconds
+  return hm;                                                           // hour → time
 }
 // hover overlay shared by the CPU + throughput charts: vertical guide, point dot(s), value tooltip
 function ChartHover({ xp, dots, label }) {
@@ -5188,7 +5591,11 @@ function MiniArea({ points, h, times, range, cap }) {
 function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
   const [hov, setHov] = useState(null);
   const wref = useRef(null);
-  const R = (rx || []).map(v => v || 0), T = (tx || []).map(v => v || 0);
+  // Perspective is applied HERE (once, centrally) so every caller can pass raw node rx/tx and the ↓ series
+  // always means "download in the active perspective" — node-side by default, user-side when set to peers.
+  const _pov = (Store.panelSettings || {}).throughput_perspective === "peers";
+  const dnArr = _pov ? tx : rx, upArr = _pov ? rx : tx;
+  const R = (dnArr || []).map(v => v || 0), T = (upArr || []).map(v => v || 0);
   const n = Math.max(R.length, T.length);
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   const hi = n ? Math.max(0, ...R, ...T) : 0;
@@ -5224,32 +5631,39 @@ function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
     <div class="harea-wrap" ref=${wref} style=${"height:" + h + "px"} onMouseMove=${onMove} onMouseLeave=${() => setHov(null)}>
       <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
         <defs><linearGradient id=${gid} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/>
+          <stop offset="0" stop-color="var(--tp-rx)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--tp-rx)" stop-opacity="0"/>
         </linearGradient></defs>
         ${n >= 2 ? html`<polygon points=${rxArea} fill=${"url(#" + gid + ")"}/>
-        <polyline points=${rxLine} fill="none" stroke="var(--brand)" stroke-width="1.3" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>
-        <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.3" vector-effect="non-scaling-stroke"/>` : null}
+        <polyline points=${rxLine} fill="none" stroke="var(--tp-rx)" stroke-width="1.3" vector-effect="non-scaling-stroke"/>
+        <polyline points=${line(T)} fill="none" stroke="var(--tp-tx)" stroke-width="1.3" vector-effect="non-scaling-stroke" stroke-dasharray="3 2"/>` : null}
       </svg>
-      ${n === 1 ? html`<div class="ch-dot" style=${"left:" + xAt(0) + "%;top:" + (Y(R[0]) / h * 100) + "%;background:var(--brand)"}></div>
+      ${n === 1 ? html`<div class="ch-dot" style=${"left:" + xAt(0) + "%;top:" + (Y(R[0]) / h * 100) + "%;background:var(--tp-rx)"}></div>
         <div class="ch-dot" style=${"left:" + xAt(0) + "%;top:" + (Y(T[0]) / h * 100) + "%;background:var(--tp-tx)"}></div>` : null}
       ${(hov != null && hov < n) ? html`<${ChartHover} xp=${xAt(hov)}
-        dots=${[{ yp: Y(R[hov] || 0) / h * 100, color: "var(--brand)" }, { yp: Y(T[hov] || 0) / h * 100, color: "var(--tp-tx)" }]}
+        dots=${[{ yp: Y(R[hov] || 0) / h * 100, color: "var(--tp-rx)" }, { yp: Y(T[hov] || 0) / h * 100, color: "var(--tp-tx)" }]}
         label=${histTime(TT[hov], range) + " · ↓ " + rate(R[hov] || 0) + " · ↑ " + rate(T[hov] || 0)}/>` : null}
     </div>
   </div>`;
 }
 
+// Split a formatted value into its numeric head and unit tail so the unit can be tinted separately
+// (e.g. "261G" → "261" + green "G"). No space is inserted — the parts render flush.
+function unitSplit(raw) {
+  const s = String(raw); const m = /^([\d.,\s-]+)(.*)$/.exec(s);
+  return (m && m[2]) ? [m[1], m[2]] : [s, ""];
+}
 // Concentric-ring doughnut (hand-rolled SVG, no deps). `rings` = outer→inner; each ring is
-//   { label, fmt, segments:[{ key, name, value, color }] }.
-// Each ring's segments are drawn as arcs of a single circle via pathLength=100 (so dash maths is in
-// percent, independent of radius). A tiny gap separates segments. Hovering a segment swaps the centre
-// readout to that segment (name · ring-label value · % of ring); leaving restores the `center` node.
-// Re-renders are cheap: only arc dash values + the centre text change per poll, no full rebuild.
-function MultiRing({ rings, size, thick, gap, center, onHover }) {
-  const [hov, setHov] = useState(null);   // {ri, si}
+//   { label, fmt, unitColor?, segments:[{ key, name, value, color }] }.
+// Fully controlled by `active` = { key, dir } (or null): `dir` is the ring index to isolate, or null for the
+// whole entity (both arcs). Hovering ONE arc lights only that arc and reports {key, dir:its-ring}; the centre
+// then shows that one value (arrow + unitColor, resting style · % of ring). A null-dir target (the legend
+// name) lights every arc for the key and the centre shows that entity's own per-ring numbers — never totals.
+// `onActive` reports hover back up so the legend isolates in lock-step. Cheap re-renders — no SVG rebuild.
+function MultiRing({ rings, size, thick, gap, center, active, onActive }) {
   size = size || 168; thick = thick || 15; gap = gap == null ? 1.1 : gap;
   const cx = size / 2, cy = size / 2;
   const rings2 = (rings || []).filter(Boolean);
+  const directional = rings2.some(r => r.unitColor);
   // outer ring radius leaves a thick/2 margin; each inner ring steps in by thick + a 4px groove
   const step = thick + 5;
   const arcs = [];
@@ -5266,36 +5680,82 @@ function MultiRing({ rings, size, thick, gap, center, onHover }) {
       acc += pct;
     });
   });
-  const active = hov ? (arcs.find(a => a.ri === hov.ri && a.si === hov.si) || null) : null;
-  return html`<div class="mring" style=${"width:" + size + "px;height:" + size + "px"}>
+  const arrowOf = lbl => lbl === "Download" ? "↓ " : lbl === "Upload" ? "↑ " : "";
+  // an arc is LIT when it matches the active key AND (whole-entity hover, or its exact ring)
+  const lit = a => active && a.seg.key === active.key && (active.dir == null || a.ri === active.dir);
+  const set = t => onActive && onActive(t);
+  // ── centre readout while hovering ──
+  let readout = center;
+  if (active) {
+    const ea = arcs.filter(a => !a.track && a.seg && a.seg.key === active.key).sort((p, q) => p.ri - q.ri);
+    if (ea.length) {
+      const nm = ea[0].seg.name, col = ea[0].seg.color;
+      const valLine = a => html`<div class="mrc-val" style=${a.ring.unitColor ? "color:" + a.ring.unitColor : ""}>${arrowOf(a.ring.label)}${(a.ring.fmt || (v => v))(a.seg.value)}</div>`;
+      if (active.dir != null) {                                   // one arc → its single value + which ring / %
+        const a = ea.find(x => x.ri === active.dir) || ea[0];
+        readout = html`<div class="mrc-hov"><div class="mrc-name" style=${"color:" + col}>${nm}</div>
+          ${valLine(a)}<div class="mrc-sub">${a.ring.label} · ${Math.round(a.pct)}%</div></div>`;
+      } else if (directional) {                                   // whole entity → its own ↓ / ↑
+        readout = html`<div class="mrc-hov"><div class="mrc-name" style=${"color:" + col}>${nm}</div>${ea.map(valLine)}</div>`;
+      } else {                                                    // count doughnut → this entity's on / tot
+        const tot = (ea.find(a => a.ri === 0) || {}).seg, on = (ea[ea.length - 1] || {}).seg;
+        readout = html`<div class="mrc-hov"><div class="mrc-name" style=${"color:" + col}>${nm}</div>
+          <div class="mrc-val">${on ? on.value : 0}<small style="color:var(--faint)"> / ${tot ? tot.value : 0}</small></div></div>`;
+      }
+    }
+  }
+  return html`<div class="mring" style=${"width:" + size + "px;height:" + size + "px"} onMouseLeave=${() => set(null)}>
     <svg width=${size} height=${size} viewBox=${"0 0 " + size + " " + size}>
       <g transform=${"rotate(-90 " + cx + " " + cy + ")"}>
         ${arcs.map((a, i) => a.track
           ? html`<circle key=${"t" + i} cx=${cx} cy=${cy} r=${a.r} fill="none" stroke="var(--track)" stroke-width=${thick} pathLength="100"/>`
           : html`<circle key=${"a" + a.ri + "-" + a.si} cx=${cx} cy=${cy} r=${a.r} fill="none" stroke=${a.seg.color} stroke-width=${thick}
               pathLength="100" stroke-dasharray=${Math.max(0, a.pct - gap) + " " + (100 - Math.max(0, a.pct - gap))} stroke-dashoffset=${-a.off}
-              class=${"mring-seg" + (active && active !== a ? " dim" : "")}
-              onMouseEnter=${() => { setHov({ ri: a.ri, si: a.si }); onHover && onHover(a); }}
-              onMouseLeave=${() => { setHov(null); onHover && onHover(null); }}/>`)}
+              class=${"mring-seg" + (active && !lit(a) ? " dim" : "")}
+              onMouseEnter=${() => set({ key: a.seg.key, dir: a.ri })}/>`)}
       </g>
     </svg>
-    <div class="mring-center">
-      ${active ? html`<div class="mrc-hov">
-          <div class="mrc-name" style=${"color:" + active.seg.color}>${active.seg.name}</div>
-          <div class="mrc-val">${(active.ring.fmt || (v => v))(active.seg.value)}</div>
-          <div class="mrc-sub">${active.ring.label} · ${Math.round(active.pct)}%</div>
-        </div>`
-        : center}
-    </div>
+    <div class="mring-center">${readout}</div>
   </div>`;
 }
-// Legend for a doughnut: one keyed swatch row per entry {name,color,value,fmt}. Optional second value.
-function RingLegend({ items, cols }) {
-  return html`<div class=${"mring-leg" + (cols ? " c" + cols : "")}>${(items || []).map(it => html`<div class="mrl-row" key=${it.key || it.name}>
-    <span class="mrl-sw" style=${"background:" + it.color}></span><span class="mrl-nm">${it.name}</span>
-    <span class="grow"></span>${it.right != null ? html`<span class="mrl-v">${it.right}</span>` : null}</div>`)}</div>`;
+// Legend for a doughnut. Rows carry either directional values {down, up} (traffic) or a single {right}
+// (counts). Wired with the shared `active` = {key, dir}: hovering the NAME targets the whole entity (dir
+// null, both arcs); hovering the ↓ or ↑ value targets just that ring (dir 0 / 1) and dims its partner value.
+// The whole thing mirrors the doughnut — hover either side, the same arc/value lights, the rest dim.
+function RingLegend({ items, cols, active, onActive }) {
+  const set = t => onActive && onActive(t);
+  return html`<div class=${"mring-leg" + (cols ? " c" + cols : "")}>${(items || []).map(it => {
+    const k = it.key || it.name;
+    const on = active && active.key === k, rowDim = active && active.key !== k, hasDU = it.down != null;
+    return html`<div class=${"mrl-row" + (rowDim ? " dim" : "") + (on ? " on" : "")} key=${k}
+        onMouseEnter=${() => set({ key: k, dir: null })} onMouseLeave=${() => set(null)}>
+      <span class="mrl-sw" style=${"background:" + it.color}></span>
+      <span class="mrl-nm">${it.name}</span>
+      <span class="grow"></span>
+      ${hasDU
+        ? html`<span class=${"mrl-dv" + (on && active.dir === 1 ? " vdim" : "")} onMouseEnter=${() => set({ key: k, dir: 0 })} onMouseLeave=${() => set({ key: k, dir: null })}>↓${it.down}</span>
+               <span class=${"mrl-uv" + (on && active.dir === 0 ? " vdim" : "")} onMouseEnter=${() => set({ key: k, dir: 1 })} onMouseLeave=${() => set({ key: k, dir: null })}>↑${it.up}</span>`
+        : (it.right != null ? html`<span class="mrl-v">${it.right}</span>` : null)}
+    </div>`;
+  })}</div>`;
 }
 
+// Discrete BLOCK history — one bar per time bucket (right-anchored, newest at the right). Height ∝ value,
+// each bar seated in its own track so a low, fixed block count (24–30) reads as clean blocks. Hovering shows
+// the same ChartHover bubble as the throughput/CPU charts: the bucket's time/date (per `range`) + the value.
+function OnlineBlocks({ blocks, step, endTs, range, h, color }) {
+  const [hov, setHov] = useState(null); const wref = useRef(null);
+  color = color || "var(--online)"; h = h || 70;
+  const n = blocks.length, hi = Math.max(1, ...blocks.filter(v => v != null));
+  const onMove = e => { const el = wref.current; if (!el) return; const r = el.getBoundingClientRect();
+    const i = Math.floor((e.clientX - r.left) / r.width * n); setHov(i >= 0 && i < n && blocks[i] != null ? i : null); };
+  return html`<div class="oblk-wrap" ref=${wref} style=${"height:" + h + "px"} onMouseMove=${onMove} onMouseLeave=${() => setHov(null)}>
+    ${blocks.map((v, i) => html`<div class=${"oblk" + (hov === i ? " hot" : "")} key=${i}>
+      ${v == null ? null : html`<i style=${"height:" + Math.max(4, v / hi * 100) + "%;background:" + color}></i>`}</div>`)}
+    ${hov != null ? html`<${ChartHover} xp=${(hov + 0.5) / n * 100} dots=${[{ yp: 100 - Math.max(4, blocks[hov] / hi * 100), color }]}
+      label=${(endTs != null ? histTime(endTs - (n - 1 - hov) * step, range) + " · " : "") + Math.round(blocks[hov]) + " online"}/>` : null}
+  </div>`;
+}
 // A simple single-colour filled-area trend (for count series like online-peers, where MiniArea's
 // load-colour ramp would be semantically wrong). Fixed y-scale from 0 to the series peak; right-anchored
 // and fills leftward like the other charts; hover shows the value via `fmt`.
@@ -5347,11 +5807,13 @@ function ifaceTags(node) {
 function RankBars({ rows }) {
   const mx = Math.max(1, ...rows.map(r => r.value || 0));
   if (!rows.length) return html`<div class="harea-empty">no data</div>`;
-  return html`<div class="rankbars">${rows.map(r => html`<a class="rb" href=${r.href || "#"} key=${r.label}>
-    <span class="rb-label">${r.label}</span>
-    <span class="rb-track"><i style=${"width:" + Math.max(2, (r.value || 0) / mx * 100) + "%;background:" + (r.color || "var(--brand)")}></i></span>
-    <span class="rb-val">${r.sub}</span>
-  </a>`)}</div>`;
+  return html`<div class="rankbars">${rows.map(r => {
+    const inner = html`<span class="rb-label">${r.label}</span>
+      <span class="rb-track"><i style=${"width:" + Math.max(2, (r.value || 0) / mx * 100) + "%;background:" + (r.color || "var(--brand)")}></i></span>
+      <span class="rb-val">${r.sub}</span>`;
+    // rows with an href/onClick are interactive; rows without (e.g. destinations — nothing to open) render static
+    return (r.href || r.onClick) ? html`<a class="rb" href=${r.href || "#"} onClick=${r.onClick || null} key=${r.label}>${inner}</a>` : html`<div class="rb static" key=${r.label}>${inner}</div>`;
+  })}</div>`;
 }
 
 // A history chart (CPU or throughput) with live/day/week/month range tabs. "live" uses the
@@ -5388,8 +5850,7 @@ function RangedHistory({ node, kind, live, h, head, liveFine }) {
   const pausedPill = (notLive && hasData) ? html`<span class="rt-paused" title="This node isn't reporting right now — showing the last data it sent.">paused</span>` : null;
   const tabs = html`${pausedPill}<div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div>`;
   if (kind === "throughput") {
-    const peerPov = (Store.panelSettings || {}).throughput_perspective === "peers";   // flip series so ↓ = download in the chosen perspective
-    return html`<${ThroughputChart} rx=${peerPov ? s.tx : s.rx} tx=${peerPov ? s.rx : s.tx} h=${h} head=${tabs} times=${s.t} range=${range} cap=${cap}/>`;
+    return html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs} times=${s.t} range=${range} cap=${cap}/>`;   // perspective handled inside ThroughputChart
   }
   return html`<div class="chartwrap">
     <div class="chart-head">${head || null}<span class="grow"></span>${tabs}</div>
@@ -5428,16 +5889,24 @@ function HealthAlerts({ health }) {
   const alerts = healthAlerts(health);
   return alerts.length ? html`<div class="halerts">${alerts.map(a => html`<span class=${"halert " + a.sev}><${Ic} i="warn"/> ${a.msg}</span>`)}</div>` : null;
 }
-function NodeHealth({ health, node, compact, history }) {
+function NodeHealth({ health, node, compact, history, range, nodeHist }) {
   if (!health) return compact ? null : html`<div class="hint" style="margin:2px">No health data reported yet.</div>`;
   const hh = (node && (Store.nodes || []).find(n => n.id === node) || {}).health_history || null;  // server-side RRD (node = id)
-  const cpuHist = (hh && Array.isArray(hh.cpu) && hh.cpu.length > 1) ? hh.cpu : null;
+  // CPU history follows the dashboard range. `range` here is the range the passed nodeHist is FOR (the Overview passes
+  // rangeHist.range) — it LAGS the just-clicked range while a fetch is in flight, so the chart keeps showing the last
+  // loaded range's data until the new one lands (no flick to empty or to live).
+  const useRanged = range && range !== "live" && nodeHist && Array.isArray(nodeHist.cpu) && nodeHist.cpu.some(x => x != null);
+  const liveCpu = (hh && Array.isArray(hh.cpu) && hh.cpu.length > 1) ? hh.cpu : null;
+  const cpuHist = useRanged ? nodeHist.cpu : liveCpu;
+  const cpuTimes = useRanged ? nodeHist.t : (hh ? hh.t : null);
+  const cpuRange = useRanged ? range : "live", cpuCap = useRanged ? (RANGE_CAP[range] || 0) : 0;
+  const showHist = history !== false && !!cpuHist;
   return html`<div class="health">
     <${HealthAlerts} health=${health}/>
     <${HealthMeters} health=${health}/>
-    ${(history !== false && cpuHist) ? html`<div class="health-hist">
+    ${showHist ? html`<div class="health-hist">
       <span class="hist-cap">CPU history</span>
-      <${MiniArea} points=${cpuHist} h=${compact ? 36 : 52}/>
+      <${MiniArea} points=${cpuHist} h=${compact ? 36 : 52} times=${cpuTimes} range=${cpuRange} cap=${cpuCap}/>
     </div>` : null}
   </div>`;
 }
@@ -5681,6 +6150,8 @@ function PanelSettingsScreen() {
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
   const [graceS, setGraceS] = useState(String(Math.round((adv.peer_grace_ms || 60000) / 1000)));
   const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
+  const [topTalk, setTopTalk] = useState(String(ps.top_talkers || 10));
+  const [topDest, setTopDest] = useState(String(ps.top_destinations || 10));
   const [hidden, setHidden] = useState(new Set(ps.hidden_categories || []));   // built-in categories hidden from the routing dropdown
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
@@ -5773,7 +6244,8 @@ function PanelSettingsScreen() {
     if (secNp && secNp.length < 8) return "New password must be at least 8 characters.";
     return null;
   };
-  const [section, setSection] = useState("display");   // active left-rail section
+  const [section, setSection] = useState(pendingSettingsSection || "display");   // active left-rail section (a Settings activity click can deep-link here)
+  useEffect(() => { pendingSettingsSection = null; }, []);   // one-shot: don't pin the section on later visits
   const rsv = ps.reserved || {};
   const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
   const [rsvPort, setRsvPort] = useState(String(rsv.mesh_port_base || 9999));
@@ -5801,7 +6273,9 @@ function PanelSettingsScreen() {
   const save = async () => {
     setMsg({ ok: true, t: "Saving…" });
     if (SECTIONS.some(([s]) => glDirty(s))) {   // only rewrite panel_settings when a GLOBAL setting actually changed (nodes go via nodeUpdate below)
+      const dirtySecs = SECTIONS.filter(([s]) => glDirty(s)), secLabel = Object.fromEntries(SECTIONS);   // for the activity one-liner + deep-link
       const r = await api.panelSettings({
+        _ev: { first: (dirtySecs[0] || [""])[0], sections: dirtySecs.map(([s]) => secLabel[s]).join(", ") },   // display-only: which sections changed (drives the "Settings changed" activity row)
         interface_defaults: { dns: dns.split(",").map(s => s.trim()).filter(Boolean), mtu: +mtu || 1280, keepalive: +ka || 25 },
         mirrors: { geo: geoMir.trim(), turn: turnMir.trim() },
         providers: provEnabled,
@@ -5810,6 +6284,8 @@ function PanelSettingsScreen() {
         geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
         store_configs: sc === "off" ? false : true,
         throughput_perspective: tput,
+        top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
+        top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
         mesh_awg: awgSet ? awg : {},
         advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
@@ -5963,7 +6439,7 @@ function PanelSettingsScreen() {
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
-    sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
+    sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
   const badgeDirty = nid => nid === "" ? glDirty(section) : nodeDirty(nid, section);
@@ -5978,9 +6454,9 @@ function PanelSettingsScreen() {
   }, []);
   const leaveSettings = () => { if (!anyDirty || confirm("You have unsaved changes that will be lost. Leave without saving?")) { _unsavedGuard = null; history.back(); } };
   const MODES = [
-    ["kernel", "Default — IP only, DNS is not involved", "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
-    ["forcedns", "Force DNS — Host + IP, overrides encrypted DNS", "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
-    ["sni", "SNI router — Host + IP, DNS stays private", "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["kernel", "Default — IP only. DNS not involved", "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs."],
+    ["forcedns", "Force DNS — Host + IP. Overrides encrypted DNS", "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
+    ["sni", "SNI Sniffer — Host + IP. DNS stays private", "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains."],
   ];
   return html`<div class="screen setscreen">
     <div class="sethead"><b>Panel settings</b></div>
@@ -5990,14 +6466,16 @@ function PanelSettingsScreen() {
       <div class="setpane">
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
-          <p class="hint rmode-intro">Select how <b>${nodeRec ? nodeRec.name : "this node"}</b> matches smart-routing traffic — by destination <b>IP</b>, or by <b>hostname</b> (via the node's DNS, or read from the TLS handshake). In every mode the traffic stays in-kernel (no userspace proxy); the modes differ only in match precision and in whether they touch your clients' DNS. Changing the mode reconfigures the node (adds or removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</p>
           <div class=${"rmode-banner m-" + nodeMode}>
             <div class="rmode-top">
-              <span class="rmode-icon"><${Ic} i=${MODE_META[nodeMode].icon}/></span>
+              <span class="rmode-icon">${MODE_META[nodeMode].icon}</span>
               <div class="rmode-head"><b class="rmode-node">${nodeRec ? nodeRec.name : "Node"}</b><span class="rmode-pill">${MODE_META[nodeMode].short}</span></div>
               <span class="grow"></span>
               <label class="rmode-picker"><span class="rmode-plbl">Match mode</span>
                 <${ModeSelect} value=${nodeMode} onChange=${setMode}/></label>
+              <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
+                <div class="rmode-info-body">Select how <b>${nodeRec ? nodeRec.name : "this node"}</b> matches smart-routing traffic — by destination <b>IP</b>, or by <b>hostname</b> (via the node's DNS, or read from the TLS handshake). In every mode the traffic stays in-kernel (no userspace proxy); the modes differ only in match precision and in whether they touch your clients' DNS. Changing the mode reconfigures the node (adds or removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</div>
+              <//>
             </div>
             <div class="rmode-desc">${MODE_META[nodeMode].exp}</div>
           </div>
@@ -6190,6 +6668,10 @@ function PanelSettingsScreen() {
           <p class="hint" style="margin:0 0 12px">How long the panel waits before treating things as stale — in seconds.</p>
           <div class="row2"><div class="field"><label>Node stale after (s)</label><input value=${staleS} onInput=${e => setStaleS(e.target.value)} placeholder="30"/><div class="hint">No sync for this long → the node shows stale.</div></div>
             <div class="field"><label>Peer grace window (s)</label><input value=${graceS} onInput=${e => setGraceS(e.target.value)} placeholder="60"/><div class="hint">A peer stays "online" this long after its last handshake.</div></div></div>
+          <div class="seclabel">Overview lists</div>
+          <p class="hint" style="margin:0 0 12px">How many rows the Overview's ranked lists show (1–50).</p>
+          <div class="row2"><div class="field"><label>Top talkers</label><input type="text" inputmode="numeric" value=${topTalk} onDblClick=${e => e.target.select()} onInput=${e => { let v = e.target.value.replace(/[^0-9]/g, ""); if (+v > 50) v = "50"; setTopTalk(v); }} placeholder="10"/><div class="hint">Number of peers in the Top talkers list (max 50).</div></div>
+            <div class="field"><label>Top destinations</label><input type="text" inputmode="numeric" value=${topDest} onDblClick=${e => e.target.select()} onInput=${e => { let v = e.target.value.replace(/[^0-9]/g, ""); if (+v > 50) v = "50"; setTopDest(v); }} placeholder="10"/><div class="hint">Number of categories in the Top destinations list (max 50).</div></div></div>
         </div>` : null}
         ${section === "mesh" ? html`<div class="card">
           ${nodeRec ? html`<div class="seclabel" style="margin-top:0">${nodeRec.name} — mesh</div>
@@ -6667,7 +7149,7 @@ function CreatePeerSheet({ prefill }) {
       created_at: Math.floor(Date.now() / 1000), _creating: true };
     closeModal();
     if (prefill.lock && prefill.node && prefill.iface) go("#/node/" + encodeURIComponent(prefill.node) + "/" + encodeURIComponent(prefill.iface));
-    else if (userId) go("#/user/" + encodeURIComponent(userId));
+    else if (userId) revealUser(userId, tempId);
     mutate({
       patch: s => { s.roster.peers[tempId] = optimistic; },        // shows instantly with status "creating"
       call: () => api.peerCreate(body),
@@ -6810,7 +7292,7 @@ function PeerViewSheet({ pid, node, iface }) {
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p, () => openPeerView(p.id, node, iface))}>Unassign</button>`}<//>`}>
     <div class="pv-head">
-      <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href=${"#/user/" + encodeURIComponent(u.id)}>${u.name}</a>`
+      <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href="#/users" onClick=${e => { e.preventDefault(); closeModal(); revealUser(u.id); }}>${u.name}</a>`
           : html`<${UserCombo} onPick=${uid => assignPeer(p, uid)} placeholder="Assign to a user…"/>`}</div></div>
       <${Badge} s=${p.unassigned ? "unassigned" : p.status}/></div>
     <div class="lbl" style="margin:16px 2px 4px">Deployments · ${p.targets.length}</div>
@@ -7180,9 +7662,8 @@ const ROUTES = [
   { re: /^\/node\/(.+)$/, fn: NodeDetail, tab: "nodes", keys: ["node"] },
   { re: /^\/nodes$/, fn: NodesScreen, tab: "nodes" },
   { re: /^\/peers$/, fn: PeersScreen, tab: "peers" },
+  { re: /^\/activity$/, fn: ActivityHistoryScreen, tab: "overview" },
   { re: /^\/users$/, fn: UsersScreen, tab: "users" },
-  { re: /^\/user\/(.+)$/, fn: UserDetail, tab: "users", keys: ["id"] },
-  { re: /^\/peer\/(.+)$/, fn: PeerDetail, tab: "users", keys: ["id"] },
   { re: /^\/account$/, fn: AccountScreen, tab: "account" },
   { re: /^\/panel\/settings$/, fn: PanelSettingsScreen, tab: "panel-settings" },
 ];

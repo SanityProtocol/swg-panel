@@ -374,10 +374,20 @@ def events_path(roster_path):
     return os.path.join(os.path.dirname(roster_path) or ".", "events.jsonl")
 
 
+def _ev_eid():
+    return uuid.uuid4().hex[:10]
+
+
+def _ev_synth_eid(raw_line):
+    """A stable id for a legacy record written before `eid` existed: a content hash, so the
+    Activity-history grid can still delete that exact row."""
+    return "L" + hashlib.sha1(raw_line.encode()).hexdigest()[:9]
+
+
 def ev_append(roster_path, kind, ident, verb, name, detail=""):
-    """Record one operator action. kind=user|peer, verb is the human action
+    """Record one operator action. kind=user|peer|node|panel, verb is the human action
     ("Created peer"), name is the display label, detail is optional context."""
-    rec = {"ts": int(time.time()), "kind": kind, "id": ident or "",
+    rec = {"eid": _ev_eid(), "ts": int(time.time()), "kind": kind, "id": ident or "",
            "verb": verb, "name": name or "", "detail": detail or ""}
     p = events_path(roster_path)
     try:
@@ -397,22 +407,72 @@ def ev_append(roster_path, kind, ident, verb, name, detail=""):
         pass          # the log is best-effort; never fail a mutation because it couldn't be recorded
 
 
-def ev_read(roster_path, limit=12):
-    """Return the newest `limit` events, newest first."""
+def _ev_load(roster_path):
+    """All events oldest→newest, each guaranteed an `eid` (legacy lines get a content hash)."""
     p = events_path(roster_path)
     out = []
     try:
         with open(p) as f:
-            lines = f.readlines()
-        for ln in lines[-limit:]:
-            ln = ln.strip()
-            if ln:
-                with contextlib.suppress(Exception):
-                    out.append(json.loads(ln))
+            for ln in f:
+                s = ln.strip()
+                if not s:
+                    continue
+                try:
+                    rec = json.loads(s)
+                except Exception:
+                    continue
+                if not rec.get("eid"):
+                    rec["eid"] = _ev_synth_eid(s)
+                out.append(rec)
     except OSError:
         pass
-    out.reverse()
     return out
+
+
+def ev_read(roster_path, limit=12):
+    """Return (newest `limit` events newest-first, total count)."""
+    recs = _ev_load(roster_path)
+    total = len(recs)
+    recs.reverse()
+    return recs[:max(1, limit)], total
+
+
+def ev_delete(roster_path, eid):
+    """Drop one record by eid (or its synthesized content-hash id). Returns how many were removed."""
+    p = events_path(roster_path)
+    removed = 0
+    try:
+        with open(p, "r") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            lines = f.readlines()
+            kept = []
+            for ln in lines:
+                s = ln.strip()
+                if not s:
+                    continue
+                try:
+                    rec = json.loads(s)
+                except Exception:
+                    kept.append(ln if ln.endswith("\n") else ln + "\n")
+                    continue
+                rid = rec.get("eid") or _ev_synth_eid(s)
+                if rid == eid:
+                    removed += 1
+                    continue
+                kept.append(ln if ln.endswith("\n") else ln + "\n")
+            tmp = p + ".tmp." + uuid.uuid4().hex[:8]
+            with open(tmp, "w") as g:
+                g.writelines(kept)
+            os.replace(tmp, p)
+    except OSError:
+        pass
+    return removed
+
+
+def ev_clear(roster_path):
+    """Flush the whole activity log."""
+    with contextlib.suppress(OSError):
+        os.remove(events_path(roster_path))
 
 
 def gen_id():
@@ -1932,6 +1992,8 @@ PANEL_SETTINGS_DEFAULTS = {
     "mirrors": {"geo": "", "turn": ""},
     "store_configs": None,
     "throughput_perspective": "nodes",   # "nodes" = node rx=down/tx=up | "peers" = flip (peer's down = node's tx)
+    "top_talkers": 10,        # Overview: rows in the Top talkers list (1–50)
+    "top_destinations": 10,   # Overview: rows in the Top destinations list (1–50)
     # reserved ranges for the panel-managed inter-node mesh — user interfaces / turn-proxies may NOT use these
     "reserved": {"mesh_subnet": "10.255.0.0/16", "mesh_port_base": 9999, "port_span": 100, "iface_prefix": "swg_"},
     "advanced": {"node_stale_ms": 30000, "peer_grace_ms": 60000, "geo_ttl_days": 3},
@@ -2213,6 +2275,8 @@ HRRD_RATIO = [1, 20, 6, 4]          # children each tier folds from the one belo
 HRRD_VIEW = 250         # default read = the hour ring's window (also feeds the overview sparkline)
 LIVE_MAX = 200          # in-memory raw samples kept per node for the LIVE view (one per sync; ~16.7min@5s)
 MESH_THROTTLE_S = 60    # per node-PAIR mesh ring: fold at most one sample/min (flow-map ranges are day+; keeps it cheap)
+PEER_MIN_BPS = 1024     # per-peer history: skip idle peers (< 1 KB/s) so only real talkers get a ring
+PEER_TOPN = 50          # /api/peer-history returns only the top-N peers by fleet-total volume (bounds the scan payload)
 
 
 def mesh_rrd_path(stats_dir, a, b):   # canonical per-pair file (a<b); rx slot = a→b, tx slot = b→a
@@ -2220,6 +2284,18 @@ def mesh_rrd_path(stats_dir, a, b):   # canonical per-pair file (a<b); rx slot =
     return os.path.join(stats_dir, f"mesh-{x}-{y}.rrd")
 def cat_rrd_path(stats_dir, nid, cat):   # per-(node,category) destination-traffic ring (up slot = rx, dn slot = tx)
     return os.path.join(stats_dir, "cat-" + nid + "-" + re.sub(r"[^a-z0-9_]", "_", str(cat).lower()) + ".rrd")
+def turn_fork(service):   # fork id baked into a service name (vk-turn-proxy-<fork>-<port>) — mirrors app.js turnFork
+    s = re.sub(r"^vk-turn-proxy-?", "", service or "turn-proxy") or "turn"
+    s = re.sub(r"-\d+$", "", s) or "turn"
+    return "cacggghp" if s == "main" else s
+def _ip_of(hp):   # "ip:port" → ip ("" if none)
+    hp = hp or ""; return hp.rsplit(":", 1)[0] if ":" in hp else hp
+def _port_of(hp):   # "ip:port" → port str ("" if none)
+    hp = hp or ""; return hp.rsplit(":", 1)[1] if ":" in hp and hp.rsplit(":", 1)[1].isdigit() else ""
+def turn_rrd_path(stats_dir, nid, fork):   # per-(node,fork) turn-proxy ring (rx/tx slots = throughput; pon/ptot = peers). Fork sanitised → no '-', so the endpoint splits nid off the last '-'
+    return os.path.join(stats_dir, "turn-" + nid + "-" + re.sub(r"[^A-Za-z0-9_]", "_", str(fork)) + ".rrd")
+def peer_rrd_path(stats_dir, nid, pubkey):   # per-(node,peer) throughput ring for ranged top-talkers. Filename uses a short pubkey hash (hex, no '-') so the endpoint splits nid off the last '-'; the endpoint reverses hash→pubkey via the roster
+    return os.path.join(stats_dir, "peer-" + nid + "-" + hashlib.sha256((pubkey or "").encode()).hexdigest()[:16] + ".rrd")
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, ring0_step, ring0_slots
 # One slot's metrics live as a flat vector M (below), plus a bucket id + write-time sample count. All extra
 # fields are DERIVED PANEL-SIDE from the snapshot the node already sends (snap_aggregates) — no node change.
@@ -2750,6 +2826,10 @@ def api(method, path, qs, body, deps):
             cur["geo_update"] = {"every_days": _ed, "at": _at}
         if "throughput_perspective" in incoming:
             cur["throughput_perspective"] = "peers" if incoming["throughput_perspective"] == "peers" else "nodes"
+        for _k in ("top_talkers", "top_destinations"):
+            if _k in incoming:
+                try: cur[_k] = max(1, min(50, int(incoming[_k])))
+                except Exception: cur[_k] = 10
         rsv = incoming.get("reserved")
         if isinstance(rsv, dict):
             base = dict(cur.get("reserved") or PANEL_SETTINGS_DEFAULTS["reserved"])
@@ -2856,7 +2936,14 @@ def api(method, path, qs, body, deps):
         deps["panel_settings"] = cur
         with contextlib.suppress(Exception):
             atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
-        ev_append(roster_path, "panel", "settings", "Updated panel settings", "")
+        # The browser knows which settings sections it changed (it drives the dirty-dots), so an
+        # explicit Save passes a summary + the first changed section id — recorded for the activity
+        # one-liner and so a click can deep-link to that exact section. Autosaves (flow-anim toggle,
+        # custom-list edits) omit `_ev` and are intentionally NOT logged as noise. Display-only, not persisted.
+        _ev = incoming.get("_ev") if isinstance(incoming.get("_ev"), dict) else None
+        if _ev:
+            ev_append(roster_path, "panel", (str(_ev.get("first") or "").strip() or "settings"),
+                      "Updated panel settings", str(_ev.get("sections") or "")[:200])
         return 200, {"ok": True, "data": cur}
 
     if method == "POST" and path == "/api/panel/refresh-geo":   # bump the epoch nodes watch to force a geo re-fetch
@@ -2984,11 +3071,22 @@ def api(method, path, qs, body, deps):
         return 200, d
 
     if method == "GET" and path == "/api/events":
+        # limit up to the whole cap so the Activity-history grid can pull everything and
+        # filter/paginate client-side (the log is capped at EVENTS_CAP, so this stays bounded).
         try:
-            limit = max(1, min(50, int((qs.get("limit") or ["12"])[0])))
+            limit = max(1, min(EVENTS_CAP, int((qs.get("limit") or ["15"])[0])))
         except ValueError:
-            limit = 12
-        return 200, {"ok": True, "data": ev_read(roster_path, limit)}
+            limit = 15
+        data, total = ev_read(roster_path, limit)
+        return 200, {"ok": True, "data": data, "total": total}
+
+    if method == "POST" and path == "/api/events/delete":
+        removed = ev_delete(roster_path, (body.get("eid") or "").strip())
+        return 200, {"ok": True, "data": {"removed": removed}}
+
+    if method == "POST" and path == "/api/events/clear":
+        ev_clear(roster_path)
+        return 200, {"ok": True, "data": {"cleared": True}}
 
     if method == "GET" and path == "/api/node-history":
         node = (qs.get("node") or [""])[0]
@@ -3057,6 +3155,83 @@ def api(method, path, qs, body, deps):
             if d:
                 out.append({"node": nid, "cat": cat, "up": vol(d.get("rx")), "dn": vol(d.get("tx"))})   # total bytes over the window
         return 200, {"ok": True, "data": {"range": rng, "cats": out}}
+
+    if method == "GET" and path == "/api/turn-history":
+        # Per-(node,fork) turn-proxy stats over a range — drives the "by turn-proxy" doughnuts. Reads each
+        # turn-<nid>-<fork>.rrd (rx/tx slots = throughput, pon/ptot = peers online/total) → rx/tx MEAN → volume;
+        # pon/ptot MEAN over the window. Fork ids are sanitised → no '-', so the filename splits on the LAST '-'.
+        rng = (qs.get("range") or ["day"])[0]
+        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        if not spec:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        ring, want = spec
+        step = HRRD_RINGS[ring][0]
+        vol = lambda xs: int(sum(xs or []) * step)
+        mean = lambda xs: (sum(xs) / len(xs)) if xs else 0
+        out = []
+        try:
+            files = os.listdir(stats_dir) if stats_dir else []
+        except OSError:
+            files = []
+        for fn in files:
+            if not (fn.startswith("turn-") and fn.endswith(".rrd")):
+                continue
+            body = fn[5:-4]
+            if "-" not in body:
+                continue
+            nid, fork = body.rsplit("-", 1)
+            if nid not in nodes:
+                continue
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want)
+            if d:
+                out.append({"node": nid, "fork": fork, "rx": vol(d.get("rx")), "tx": vol(d.get("tx")),
+                            "pon": mean(d.get("pon")), "ptot": mean(d.get("ptot"))})
+        return 200, {"ok": True, "data": {"range": rng, "turn": out}}
+
+    if method == "GET" and path == "/api/peer-history":
+        # Per-(node,peer) throughput over a range — drives the ranged Top-talkers. Reads each peer-<nid>-<hash>.rrd,
+        # reverses the pubkey hash via the roster (orphaned files → deleted peers → unlinked), and returns only the
+        # top-N peers by fleet-total volume so the scan/payload stays bounded. The SPA sums per selected node + ranks.
+        rng = (qs.get("range") or ["day"])[0]
+        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        if not spec:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        ring, want = spec
+        step = HRRD_RINGS[ring][0]
+        vol = lambda xs: int(sum(xs or []) * step)
+        h2pk = {}
+        for p in (roster_load(roster_path).get("peers") or {}).values():
+            pk = p.get("pubkey")
+            if pk:
+                h2pk[hashlib.sha256(pk.encode()).hexdigest()[:16]] = pk
+        try:
+            files = os.listdir(stats_dir) if stats_dir else []
+        except OSError:
+            files = []
+        rows = []
+        for fn in files:
+            if not (fn.startswith("peer-") and fn.endswith(".rrd")):
+                continue
+            body = fn[5:-4]
+            if "-" not in body:
+                continue
+            nid2, hsh = body.rsplit("-", 1)
+            if nid2 not in nodes:
+                continue
+            pk = h2pk.get(hsh)
+            if not pk:                                             # orphan (peer deleted) — housekeep + skip
+                with contextlib.suppress(Exception):
+                    os.unlink(os.path.join(stats_dir, fn))
+                continue
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want)
+            if d:
+                rows.append({"node": nid2, "pubkey": pk, "rx": vol(d.get("rx")), "tx": vol(d.get("tx"))})
+        tot = {}
+        for r in rows:
+            tot[r["pubkey"]] = tot.get(r["pubkey"], 0) + r["rx"] + r["tx"]
+        keep = set(sorted(tot, key=lambda k: -tot[k])[:PEER_TOPN])   # only the top-N talkers' rows travel to the SPA
+        rows = [r for r in rows if r["pubkey"] in keep]
+        return 200, {"ok": True, "data": {"range": rng, "peers": rows}}
 
     if method == "GET" and path == "/api/next-ip":
         sel = [n for n in (qs.get("nodes") or [""])[0].split(",") if n]
@@ -3301,12 +3476,14 @@ def api(method, path, qs, body, deps):
             return 409, {"ok": False, "error": "peer is assigned to a user — unassign it first",
                          "code": "assigned"}
         label = peer_label(roster, p)
+        ntargets = len(p.get("targets") or [])
         for t in p["targets"]:
             del_config(store_configs, config_dir, p["pubkey"], t["node"], t["iface"])
         retire_pubkey(nodes, deps["nodes_path"], p.get("targets", []), p["pubkey"])   # drop it even on add-only ifaces
         del roster["peers"][pid]
         roster_save(roster_path, roster)
-        ev_append(roster_path, "peer", pid, "Deleted peer", label)
+        ev_append(roster_path, "peer", pid, "Deleted peer", label,
+                  ("%d target%s" % (ntargets, "" if ntargets == 1 else "s")) if ntargets else "")
         return 200, {"ok": True, "data": {"id": pid, "deleted": True}}
 
     if method == "POST" and path == "/api/peers/unassign":
@@ -3318,9 +3495,11 @@ def api(method, path, qs, body, deps):
         if not p:
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
         label = peer_label(roster, p)
+        former = ((roster.get("users") or {}).get(p.get("user_id")) or {}).get("name", "") if p.get("user_id") else ""
         unassign_peer(p, store_configs, config_dir, now())
         roster_save(roster_path, roster)
-        ev_append(roster_path, "peer", pid, "Unassigned peer", p.get("title") or label)
+        ev_append(roster_path, "peer", pid, "Unassigned peer", p.get("title") or label,
+                  ("was " + former) if former else "")
         return 200, {"ok": True, "data": p}
 
     if method == "POST" and path == "/api/peers/rekey":
@@ -4426,6 +4605,57 @@ class Handler(BaseHTTPRequestHandler):
                     with contextlib.suppress(Exception):
                         hrrd_update(cat_rrd_path(stats_dir, nid, cat), now_i, cM)
                     clast_w[(nid, cat)] = now_i
+            # TURN-PROXY STATS (panel-derived, no node change): attribute each turn-routed peer to its proxy's FORK
+            # (a peer whose wg endpoint is a proxy's connect IP; the proxy forwarding to that peer's iface listen
+            # port claims it — mirrors reconcile.js). Aggregate rx/tx + online/total per fork → per-(node,fork) ring
+            # (rx/tx slots = throughput, pon/ptot = peers), so the "by turn-proxy" doughnuts get ranged history.
+            tps = snap.get("turn_proxies") or []
+            if tps:
+                conn_ips = set(); by_port = {}
+                for tp in tps:
+                    ci = _ip_of(tp.get("connect"))
+                    if ci: conn_ips.add(ci)
+                    cp = _port_of(tp.get("connect"))
+                    if cp: by_port.setdefault(cp, []).append(tp.get("service") or "turn")
+                fagg = {}   # fork → [rx, tx, online, total]
+                for ifn, blk in (snap.get("interfaces") or {}).items():
+                    lp = str((blk.get("meta") or {}).get("listen_port") or "")
+                    svcs = by_port.get(lp) or []
+                    if not svcs: continue
+                    fork = turn_fork(svcs[0])
+                    for p in (blk.get("peers") or []):
+                        if _ip_of(p.get("endpoint")) not in conn_ips: continue
+                        f = fagg.setdefault(fork, [0, 0, 0, 0])
+                        f[0] += p.get("rx_speed", 0) or 0; f[1] += p.get("tx_speed", 0) or 0
+                        f[3] += 1
+                        if p.get("online"): f[2] += 1
+                tlast_w = Handler.deps.setdefault("_turn_last_w", {})   # (nid,fork) → last RRD write time
+                for fork, (frx, ftx, fon, ftot) in fagg.items():
+                    if ftot and now_i - tlast_w.get((nid, fork), 0) >= MESH_THROTTLE_S:
+                        tM = [0] * HRRD_NM; tM[3] = int(frx); tM[4] = int(ftx); tM[11] = fon; tM[12] = ftot   # rx,tx + pon,ptot
+                        with contextlib.suppress(Exception):
+                            hrrd_update(turn_rrd_path(stats_dir, nid, fork), now_i, tM)
+                        tlast_w[(nid, fork)] = now_i
+            # PER-PEER throughput history (drives ranged Top talkers). CLIENT ifaces only (skip system/mesh). Sum a
+            # peer's rx/tx across this node's ifaces, then lazily ring it — only peers moving ≥ PEER_MIN_BPS get a
+            # file, throttled ≤1/min per (node,peer). Panel-derived: rx_speed/tx_speed are already in the snapshot.
+            pagg = {}
+            for ifn, blk in (snap.get("interfaces") or {}).items():
+                meta = blk.get("meta") or {}; o = ov_ifaces.get(ifn) or {}
+                if o.get("system") or meta.get("system"):
+                    continue
+                for p in (blk.get("peers") or []):
+                    pk = p.get("public_key")
+                    if not pk:
+                        continue
+                    a = pagg.setdefault(pk, [0, 0]); a[0] += p.get("rx_speed", 0) or 0; a[1] += p.get("tx_speed", 0) or 0
+            plast_w = Handler.deps.setdefault("_peer_last_w", {})   # (nid,pubkey) → last RRD write time
+            for pk, (prx, ptx) in pagg.items():
+                if (prx + ptx) >= PEER_MIN_BPS and now_i - plast_w.get((nid, pk), 0) >= MESH_THROTTLE_S:
+                    pM = [0] * HRRD_NM; pM[3] = int(prx); pM[4] = int(ptx)
+                    with contextlib.suppress(Exception):
+                        hrrd_update(peer_rrd_path(stats_dir, nid, pk), now_i, pM)
+                    plast_w[(nid, pk)] = now_i
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.
@@ -5021,6 +5251,19 @@ def main():
                     "auth": load_auth(),
                     "session_secret": load_session_secret(fleet.get("roster_path", "/var/lib/swg-panel/users.json")),
                     "now": lambda: int(time.time())}
+    # panel version-change → one "Panel updated" activity event (from→to). Tracked in an isolated
+    # marker file so it never rides on the settings dict. First-ever boot just records the baseline.
+    with contextlib.suppress(Exception):
+        _cur_ver = _read_version()
+        _vpath = os.path.join(os.path.dirname(nodes_path) or ".", "panel_version")
+        _last = ""
+        if os.path.exists(_vpath):
+            with open(_vpath) as _vf:
+                _last = (_vf.readline() or "").strip()
+        if _cur_ver and _last and _last != _cur_ver:
+            ev_append(Handler.deps["roster_path"], "panel", "update", "Panel updated", _last + " → " + _cur_ver)
+        if _cur_ver and _last != _cur_ver:
+            atomic_write(_vpath, _cur_ver + "\n")
     # warm-start: seed the in-memory snapshot cache from the mirrored stats files so a fresh panel process (a
     # restart, or the switch-over of a docker↔bare convert) shows each node's LAST-KNOWN state immediately, instead
     # of "awaiting enroll" + dashes until the next sync (~node_interval). Staleness still rides on each snapshot's

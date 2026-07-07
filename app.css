@@ -9,7 +9,7 @@
 @font-face{font-family:"Hanken Grotesk";src:url(vendor/fonts/hanken-700.woff2) format("woff2");font-weight:700;font-style:normal;font-display:swap}
 :root{
   --flowdot:rgba(240,248,255,.82);   /* travelling signal-flow dots (dark) */
-  --bg:#0A0E15; --bg2:#070A10; --surface:#10151E; --surface-2:#0C1019; --raise:#161D29;
+  --bg:#0A0E15; --bg2:#070A10; --surface:#10151E; --surface-2:#0C1019; --raise:#161D29; --row-hover:#1E2836;
   --line:#1D2734; --line-bright:#2A3A4E55; --line-solid:#2A3A4E;
   --ink:#E7EEF6; --ink-2:#C2D0E0; --dim:#8EA0B7; --faint:#536679;
   --glow-1:#15212F; --glow-2:#121A27;   /* the two body backdrop radial glows */
@@ -35,7 +35,7 @@
    the per-mode brand accent is injected by applyThemeColors(). Selected via <html data-theme="light">. */
 :root[data-theme="light"]{
   --flowdot:rgba(255,255,255,.9);   /* travelling signal-flow dots (light) — bright pips on the coloured lines */
-  --bg:#EDF1F7; --bg2:#E1E7F0; --surface:#FFFFFF; --surface-2:#F4F7FB; --raise:#FFFFFF;
+  --bg:#EDF1F7; --bg2:#E1E7F0; --surface:#FFFFFF; --surface-2:#F4F7FB; --raise:#FFFFFF; --row-hover:#E7EEF7;
   --line:#DCE3EC; --line-bright:#C3D0DE99; --line-solid:#C3D0DE;
   --ink:#101822; --ink-2:#33424F; --dim:#586878; --faint:#8695A4;
   --glow-1:#DEE9F6; --glow-2:#E7EEF7;
@@ -180,7 +180,7 @@ a.nbadge:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c) 55%,tran
 a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var(--line);background:color-mix(in srgb,var(--unknown) 12%,transparent)}
 .lbl{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);font-weight:600}
 .card{background:linear-gradient(180deg,var(--raise),var(--surface));border:1px solid var(--line);border-radius:var(--r);padding:22px}
-.section-title{display:flex;align-items:center;gap:9px;margin:22px 2px 9px}
+.section-title{display:flex;align-items:center;gap:9px;margin:22px 2px 9px;scroll-margin-top:72px}   /* clear the 56px sticky appbar + a ~16px buffer when the rail jump-nav scrolls to a section */
 .section-title h2{margin:0;font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);font-weight:500}
 .section-title .count{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .section-title .nodehint{font-size:11.5px;color:var(--faint);font-weight:400;letter-spacing:normal;text-transform:none;margin-left:8px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -189,7 +189,9 @@ a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var
 @media(max-width:860px){.section-title .nodehint{display:none}}
 
 /* ───── dashboard controls (overview): node selector + range ───── */
-.dashbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.dashbar{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px}   /* flex-start so Range lines up with the FIRST node row, not the middle of a wrapped 2-row selector */
+.dashbar .dseg{height:26px}   /* slim, so Range shares a centre line with the (slim) first node-badge row */
+.dash-nodes{padding-top:1px}
 .dash-nodes{display:flex;align-items:center;gap:7px;flex-wrap:wrap;flex:1;min-width:0}
 .dash-range{display:flex;align-items:center;gap:9px;margin-left:auto}
 .dash-lbl{font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);flex:none}
@@ -209,32 +211,80 @@ a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var
 .dseg-opt{appearance:none;border:none;background:none;cursor:pointer;font:inherit;font-size:12px;font-weight:600;padding:0 13px;color:var(--dim);transition:background .12s var(--ease),color .12s var(--ease)}
 .dseg-opt:hover{color:var(--ink)}
 .dseg-opt.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--sel-ink)}
+/* Peers/Mesh traffic badges — sit on the two traffic-doughnut card headers (right-aligned), shared state.
+   Small + no dot; the ON state uses the saturated component colour (peers = cyan, mesh = violet). */
+.dcard-traf{display:inline-flex;align-items:center;gap:5px}
+.tbadge{--c:var(--brand);font:inherit;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.04em;line-height:1;
+  padding:4px 9px;border-radius:99px;border:1px solid var(--line);background:none;color:var(--faint);cursor:pointer;
+  transition:color .12s,border-color .12s,background .12s;white-space:nowrap}
+.tbadge.peers{--c:var(--tp-rx)} .tbadge.mesh{--c:#9B8AFF}
+.tbadge:hover{color:var(--dim);border-color:color-mix(in srgb,var(--c) 45%,var(--line))}
+.tbadge.on{color:var(--c);border-color:color-mix(in srgb,var(--c) 55%,transparent);background:color-mix(in srgb,var(--c) 16%,transparent)}
+
+/* Side rail — three identical menus (jump · ranges · nodes) pinned right-centre, ALWAYS visible. Each is a column of
+   icons that slides its labels out when the panel is hovered; each row highlights on hover with the ICON in the theme
+   colour (label stays neutral). */
+.dashrail{position:fixed;top:50%;right:0;transform:translateY(-50%);z-index:60;pointer-events:none}
+.dashrail-stack{display:flex;flex-direction:column;align-items:flex-end;gap:11px;max-height:94vh;pointer-events:none}
+.railpanel{display:flex;flex-direction:column;gap:2px;padding:8px 9px;pointer-events:auto;
+  background:color-mix(in srgb,var(--surface) 82%,transparent);
+  border:1px solid color-mix(in srgb,var(--line-solid) 70%,transparent);border-right:none;border-radius:14px 0 0 14px;
+  box-shadow:0 12px 40px rgba(0,0,0,.24);overflow-x:hidden}
+.railmenu-nodes{overflow-y:auto;max-height:50vh}
+/* uniform menu row */
+.railmenu-b{appearance:none;border:none;background:none;cursor:pointer;font:inherit;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.02em;
+  color:var(--ink-2);border-radius:8px;white-space:nowrap;display:flex;align-items:center;justify-content:flex-end;width:100%;
+  transition:background .12s}
+.railmenu-ic{display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;color:var(--dim);transition:color .12s}
+.railmenu-ic svg{width:17px;height:17px}
+.railmenu-emoji{font-size:15px;line-height:1}
+.railmenu-t{max-width:0;opacity:0;margin-left:0;overflow:hidden;white-space:nowrap;transition:max-width .3s var(--ease),opacity .24s,margin-left .3s var(--ease)}
+.railpanel:hover .railmenu-t{max-width:150px;opacity:1;margin-left:5px}                 /* hover the panel → slide labels out */
+.railmenu-b:hover{background:color-mix(in srgb,var(--brand) 12%,transparent)}            /* row highlight */
+.railmenu-b:hover .railmenu-ic{color:var(--brand)}                                      /* highlighted icon → theme colour (label stays neutral) */
+.railmenu-b.on .railmenu-ic{color:var(--brand)}                                         /* active range → theme-coloured icon */
+/* nodes menu — coloured dot: bright when selected, dimmed when off */
+.railnode-dot{width:10px;height:10px;border-radius:50%;background:var(--c);transition:opacity .12s,box-shadow .12s}
+.railmenu-b.node.off .railnode-dot{opacity:.32}
+.railmenu-b.node.on .railnode-dot{box-shadow:0 0 6px 1px color-mix(in srgb,var(--c) 60%,transparent)}
+.railmenu-b.node .railmenu-t{color:var(--ink-2)}
+.railmenu-b.node.off .railmenu-t{color:var(--faint)}
+/* live dot — dimmed & static when live is NOT the selected range; bright + glowing + animated only when selected */
+.rlive-dot{position:relative;width:9px;height:9px;border-radius:50%;background:var(--online);opacity:.4}
+.railmenu-b.on .rlive-dot{opacity:1;box-shadow:0 0 6px 1px color-mix(in srgb,var(--online) 75%,transparent)}
+.railmenu-b.on .rlive-dot::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1.5px solid var(--online);animation:rlivePulse 1.5s ease-out infinite}
+@keyframes rlivePulse{0%{transform:scale(.55);opacity:.75}100%{transform:scale(1.9);opacity:0}}
 
 /* ───── doughnuts (overview) ───── */
 .donutgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 @media(max-width:720px){.donutgrid{grid-template-columns:1fr}}
 .donutcard{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);padding:14px 16px 16px}
-.donutcard-h{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.donutcard-h{display:flex;align-items:center;gap:8px;margin-bottom:10px;min-height:24px}   /* uniform height so the badge row never nudges the doughnut down vs a title-only card */
 .donutcard-h h3{font-size:12.5px;font-weight:600;color:var(--ink);margin:0;letter-spacing:.01em}
-.donutcard-h .rings-of{font-family:var(--mono);font-size:10px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
-.donut-body{display:flex;align-items:center;gap:16px}
-.donut-body.loading{opacity:.5}
+.donut-body{display:flex;align-items:center;justify-content:center;gap:22px}   /* doughnut + legend are both fixed-width → the group width is constant, so centring pins the doughnut X and the values' right edge identically across cards, with equal left/right insets */
+/* no loading dim — we keep the previous range's data on screen through a fetch, so dimming just reads as a flicker */
 .mring{position:relative;flex:none}
 .mring svg{display:block}
 .mring-seg{cursor:pointer;transition:opacity .12s}
 .mring-seg.dim{opacity:.28}
-.mring-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none;padding:0 16%}
+.mring-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none;padding:0 11%}
 .mrc-def{display:flex;flex-direction:column;gap:1px}
 .mrc-def .mrc-k{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
-.mrc-def .mrc-tot{font-size:19px;font-weight:600;color:var(--ink);font-family:var(--mono)}
+.mrc-def .mrc-tot{font-size:19px;font-weight:600;color:var(--ink);font-family:var(--mono);white-space:nowrap;line-height:1.2}
 .mrc-def .mrc-tot.up{color:var(--rate-up)}.mrc-def .mrc-tot.dn{color:var(--online)}
-.mrc-hov .mrc-name{font-size:12px;font-weight:600;line-height:1.15;margin-bottom:2px}
-.mrc-hov .mrc-val{font-size:15px;font-weight:600;color:var(--ink);font-family:var(--mono)}
+.mrc-hov .mrc-name{font-size:12px;font-weight:600;line-height:1.15;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.mrc-hov .mrc-val{font-size:15px;font-weight:600;color:var(--ink);font-family:var(--mono);white-space:nowrap}
 .mrc-hov .mrc-sub{font-size:10.5px;color:var(--dim);margin-top:1px}
-.mring-leg{display:flex;flex-direction:column;gap:5px;flex:1;min-width:0;font-size:12px}
-.mrl-row{display:flex;align-items:center;gap:7px;min-width:0}
+.mring-leg{display:flex;flex-direction:column;gap:5px;flex:0 0 240px;min-width:0;font-size:12px}   /* fixed width → swatches pin left AND values right-align to the same edge across every card */
+.mrl-row{display:flex;align-items:center;gap:7px;min-width:0;padding:2px 5px;margin:0 -5px;border-radius:5px;transition:opacity .12s,background .12s}
+.mrl-row.dim{opacity:.3}
+.mrl-row.on{background:var(--row-hover)}
+.mrl-nm{cursor:default}
+.mrl-dv,.mrl-uv{font-family:var(--mono);font-size:11px;flex:none;cursor:default;transition:opacity .12s}
+.mrl-dv{color:var(--online)}.mrl-uv{color:var(--rate-up)}
+.mrl-dv.vdim,.mrl-uv.vdim{opacity:.28}
 .mrl-sw{width:9px;height:9px;border-radius:2px;flex:none}
-.mrl-nm{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrl-nm{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}   /* cap so a very long server name ellipsizes instead of spreading the legend wide */
 .mrl-v{font-family:var(--mono);font-size:11px;color:var(--ink-2);flex:none}
 .donut-note{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:10px;letter-spacing:.02em}
 
@@ -243,6 +293,11 @@ a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var
 @media(max-width:760px){.trends{grid-template-columns:1fr}}
 .trendcard{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);padding:12px 14px 10px}
 .trend-now{font-family:var(--mono);font-size:18px;font-weight:600;color:var(--online)}
+/* online-peers block chart: one seated bar per bucket (fixed low count per range) */
+.oblk-wrap{position:relative;display:flex;align-items:flex-end;gap:3px;width:100%}
+.oblk{flex:1 1 0;min-width:0;height:100%;display:flex;align-items:flex-end;justify-content:stretch;background:var(--track);border-radius:2px;overflow:hidden;transition:background .12s}
+.oblk.hot{background:var(--row-hover)}
+.oblk i{display:block;width:100%;border-radius:2px 2px 0 0;transition:height .25s ease}
 .harea-empty{display:flex;align-items:center;justify-content:center;height:70px;color:var(--faint);font-size:12px;font-family:var(--mono)}
 /* ───── turn-proxy load (overview) ───── */
 .turnload{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px}
@@ -612,7 +667,8 @@ a.ifgroup-head:hover b{color:var(--brand)}
 .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .search{flex:1;min-width:180px;position:relative}
 /* compact search living in a panel header (interface peers), next to the title */
-.panel-head .search.hdr{flex:1;min-width:160px;max-width:380px;margin-left:6px}
+.panel-head .search.hdr{flex:1;min-width:160px;margin-left:6px}   /* dynamic width — fill the header row */
+.panel-head .search.hdr ~ .grow{flex:0}   /* don't let the spacer split the slack; the search absorbs it all */
 .panel-head .search.hdr input{height:32px}
 .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:.5;pointer-events:none}
 input,select{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);
@@ -1401,11 +1457,16 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 :root[data-theme="dark"] .rmode-banner.m-kernel{--mc:#5FB0E8}
 :root[data-theme="dark"] .rmode-banner.m-forcedns{--mc:#EBB43C}
 :root[data-theme="dark"] .rmode-banner.m-sni{--mc:#B08CE8}
-.rmode-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:none;border-radius:8px;
-  color:var(--mc);background:color-mix(in srgb,var(--mc) 15%,transparent)}
-.rmode-icon .ic svg{width:17px;height:17px}
+.rmode-icon{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;flex:none;line-height:1;font-size:30px}
+.rmode-info{display:inline-flex;flex:none}
+.rmode-infobtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:6px;color:var(--brand);cursor:help;transition:color .12s,background .12s}
+.rmode-infobtn .ic svg{width:20px;height:20px}
+.rmode-info.on .rmode-infobtn,.rmode-infobtn:hover{color:var(--brand);background:color-mix(in srgb,var(--brand) 14%,transparent)}
+.rmode-info-pop{max-width:420px;font-size:12.5px;line-height:1.55;color:var(--dim)}
+.rmode-info-body{padding:5px 8px;text-align:justify}
+.rmode-info-body b{color:var(--ink);font-weight:600}
 .rmode-head{display:flex;align-items:center;gap:9px}
-.rmode-head b{font-size:14.5px;color:var(--ink)}
+.rmode-head b{font-size:19px;color:var(--ink)}
 .rmode-pill{font-family:var(--mono);font-size:10px;color:var(--mc);padding:2px 7px;border-radius:20px;background:color-mix(in srgb,var(--mc) 15%,transparent)}
 .rmode-desc{font-size:12px;color:var(--dim);line-height:1.55;margin-top:11px;max-width:none}
 .rmode-head{flex:0 1 auto;min-width:0}   /* node name truncates before the picker shrinks */
@@ -1658,7 +1719,7 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 
 /* ───── fleet: merged node card (main block + health block) ───── */
 .fleet2{display:flex;flex-direction:column;gap:10px}
-.fnode{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);border:1px solid var(--line);border-radius:var(--r);
+.fnode{display:grid;grid-template-columns:minmax(0,0.9fr) minmax(0,1.16fr);border:1px solid var(--line);border-radius:var(--r);   /* left −10% / right +10% */
   background:var(--surface);overflow:hidden;text-decoration:none;color:inherit;transition:border-color .15s,background .15s}
 .fnode:hover{border-color:var(--line-solid);background:var(--raise)}
 .fnode.stale{opacity:.82}
@@ -1667,7 +1728,9 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .fnode-name{font-family:var(--mono);font-weight:600;font-size:14px;color:var(--ink)}
 .fnode-top .tport{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);background:var(--surface-2);padding:2px 6px;border-radius:5px}
 .fnode-top .rowarrow{color:var(--faint)}
-.fnode-stats{display:flex;gap:22px;flex-wrap:wrap}
+.fnode-stats{display:flex;gap:22px;flex-wrap:wrap;align-items:center}
+.fnode-ifs{margin:0 auto;display:flex;gap:6px;align-items:center;align-self:flex-end;padding-bottom:1px}   /* centred in the empty space; sit on the VALUES row (bottom of the stat blocks) */
+.fnode-ifs .iftype{font-size:10px;padding:2.5px 8px;font-weight:600}   /* same .iftype badge as the node interfaces, just a touch bigger */
 .fnode-stats .fl{display:block;font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);margin-bottom:3px}
 .fnode-stats .fv{font-family:var(--mono);font-size:12.5px;color:var(--ink-2)}
 .fnode-health{padding:13px 15px;border-left:1px solid var(--line);background:var(--surface-2);display:flex;align-items:center;min-width:0}
@@ -1688,6 +1751,29 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .act-name{font-family:var(--mono);font-size:12.5px;color:var(--ink);font-weight:500}
 .act-ic.t-node{background:color-mix(in srgb,var(--pending) 14%,transparent);color:var(--pending)}
 .act-detail{font-family:var(--mono);font-size:11px;color:var(--faint);padding:2px 7px;border-radius:5px;background:var(--surface-2)}
+/* activity item-category tints (icon chip): peer/user/node above, the rest here */
+.act-ic.t-interface{background:color-mix(in srgb,#6E9BF2 15%,transparent);color:#6E9BF2}
+.act-ic.t-turnproxy{background:color-mix(in srgb,#E0729F 15%,transparent);color:#E0729F}
+.act-ic.t-mesh{background:color-mix(in srgb,#9B7BE8 16%,transparent);color:#9B7BE8}
+.act-ic.t-settings{background:var(--surface-2);color:var(--dim)}
+.act-ic.t-update{background:color-mix(in srgb,#38B2AC 15%,transparent);color:#38B2AC}
+.act-row .act-arrow{color:var(--faint);display:flex;transition:color .15s,transform .15s}
+.act-row .act-arrow svg{width:14px;height:14px}
+.act-row:hover .act-arrow{color:var(--dim);transform:translateX(2px)}
+.act-row.noclk{cursor:default}
+.act-row.noclk:hover{background:var(--surface)}
+.act-more{font-family:var(--mono);font-size:11.5px;color:var(--brand);text-decoration:none;letter-spacing:.02em}
+.act-more:hover{text-decoration:underline}
+/* activity history grid — same bordered list, plus a category pill + delete control per row */
+.acthist{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.acthist .act-row{border-bottom:1px solid var(--line)}
+.acthist .act-row:last-child{border-bottom:0}
+.act-link{display:inline-flex;align-items:center;gap:9px;text-decoration:none;color:inherit;min-width:0}
+.act-link:hover .act-what{color:var(--brand)}
+.act-cat{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);background:var(--surface-2);border:1px solid var(--line);padding:2px 7px;border-radius:5px;white-space:nowrap}
+.acthist .iconbtn{width:26px;height:26px}
+/* grouped Needs-attention row: the count leads, so a bolded number reads at a glance */
+.attn-row .name b{color:var(--ink);font-weight:700}
 
 /* ───── name cells ───── */
 .namecell{display:flex;align-items:center;gap:9px;min-width:0}
@@ -1717,7 +1803,8 @@ a.tg:hover{filter:brightness(1.25)}
 .rankcard{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);padding:6px 4px}
 .rankbars{display:flex;flex-direction:column}
 .rb{display:grid;grid-template-columns:140px 1fr auto;align-items:center;gap:14px;padding:8px 12px;text-decoration:none;color:inherit;border-radius:7px;transition:background .12s}
-.rb:hover{background:var(--surface-2)}
+.rb:not(.static):hover{background:var(--surface-2)}
+.rb.static{cursor:default}
 .rb-label{font-family:var(--mono);font-size:12.5px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rb-track{height:8px;border-radius:5px;background:var(--track);overflow:hidden}
 .rb-track i{display:block;height:100%;border-radius:5px;transition:width .6s var(--ease);opacity:.9}
@@ -1929,10 +2016,10 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .peergrid th.h-status{width:9%}
 .peergrid.loc th.h-status{width:11%}   /* loc grids put the iface badge next to the status → a touch wider */
 .peergrid th.h-user{width:14%}
-.peergrid th.h-title{width:17%}
+.peergrid th.h-title{width:13%}
 .peergrid th.h-ep{width:13%}
 .peergrid th.h-addr{width:11%}
-.peergrid th.h-node{width:10%}
+.peergrid th.h-node{width:16%}   /* aggregate view packs node name + iface badge here — give it room so names don't ellipsize */
 .peergrid th.h-online{width:8%}
 .peergrid th.h-rate{width:15%}
 .peergrid th.h-total{width:14%}
@@ -1940,7 +2027,7 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 .urow-body .peergrid th.h-status{width:150px}
 .urow-body .peergrid th.h-title,.urow-body .peergrid th.h-ep{width:auto}   /* flexible left in the embedded fixed layout */
 .urow-body .peergrid th.h-addr{width:168px}   /* ↔ user-row Peers */
-.urow-body .peergrid th.h-node{width:120px}   /* ↔ user-row Nodes */
+.urow-body .peergrid th.h-node{width:152px}   /* ↔ user-row Nodes — fit full names (spb-rostelecom / sgp-digitalocean) */
 .urow-body .peergrid th.h-online{width:86px}
 .urow-body .peergrid th.h-rate{width:168px}
 .urow-body .peergrid th.h-total{width:158px}
