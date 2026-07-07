@@ -2368,6 +2368,8 @@ def turn_rrd_path(stats_dir, nid, fork):   # per-(node,fork) turn-proxy ring (rx
     return os.path.join(stats_dir, "turn-" + nid + "-" + re.sub(r"[^A-Za-z0-9_]", "_", str(fork)) + ".rrd")
 def iface_rrd_path(stats_dir, nid, ifn):   # per-(node,interface) throughput ring (rx/tx slots) — drives the interface-detail graph. node+iface passed explicitly, so the filename is never split.
     return os.path.join(stats_dir, "iface-" + nid + "-" + re.sub(r"[^A-Za-z0-9_.-]", "_", str(ifn)) + ".rrd")
+def _turn_ips_path(deps):   # unique turn-proxy source-IP store {nid:{ip:{first,last,by:[svc]}}} — client IPs seen connecting to each proxy
+    return os.path.join(os.path.dirname((deps or {}).get("nodes_path") or ".") or ".", "turn-ips.json")
 
 
 def _rrd_series(path, rng):
@@ -3226,6 +3228,50 @@ def api(method, path, qs, body, deps):
         if node < peer:                              # RRD stores rx = x→y (x<y). node is x → its INbound is y→x = tx: swap so rx = into-node.
             s = {"t": s["t"], "rx": s["tx"], "tx": s["rx"]}
         return 200, {"ok": True, "data": s}
+
+    if method == "GET" and path == "/api/turn-ips":
+        # Unique client source IPs seen connecting to each node's turn-proxies. Merges the stored history (first/last
+        # seen + which proxies) with the LIVE snapshot (active_by = proxies currently reporting the IP). On-demand only.
+        store = deps.get("turn_ips") or {}
+        out = {}
+        for nid in nodes:
+            cur = {}                                     # ip -> set(services currently established)
+            for tp in ((snaps.get(nid) or {}).get("turn_proxies") or []):
+                for ip in (tp.get("src_ips") or []):
+                    cur.setdefault(ip, set()).add(tp.get("service") or "")
+            recs = store.get(nid) or {}
+            merged = {}
+            for ip in set(recs) | set(cur):
+                r = recs.get(ip) or {}
+                merged[ip] = {"first": r.get("first"), "last": r.get("last"),
+                              "by": sorted(set(r.get("by") or []) | cur.get(ip, set())),
+                              "active_by": sorted(x for x in cur.get(ip, set()) if x)}
+            if merged:
+                out[nid] = merged
+        return 200, {"ok": True, "data": {"nodes": out}}
+
+    if method == "POST" and path == "/api/turn-ips/flush":
+        # Drop collected IP history, KEEPING the ones currently established (online). node="" → whole fleet.
+        # With `ip` set, delete just that one record (the grid's ✕) instead of the whole inactive set.
+        nid = (body.get("node") or "").strip(); one = (body.get("ip") or "").strip()
+        store = deps.setdefault("turn_ips", {})
+        removed = 0
+        if one:
+            recs = store.get(nid) or {}
+            if recs.pop(one, None) is not None:
+                removed = 1
+        else:
+            for tn in ([nid] if nid else list(store.keys())):
+                recs = store.get(tn) or {}
+                cur = set()
+                for tp in ((snaps.get(tn) or {}).get("turn_proxies") or []):
+                    cur.update(tp.get("src_ips") or [])
+                keep = {ip: r for ip, r in recs.items() if ip in cur}
+                removed += len(recs) - len(keep)
+                store[tn] = keep
+        with contextlib.suppress(Exception):
+            atomic_write(_turn_ips_path(deps), json.dumps(store))
+        return 200, {"ok": True, "data": {"removed": removed}}
 
     if method == "GET" and path == "/api/mesh-history":
         # Per node-PAIR directed mesh flow over a range — drives the flow-map ranges. Reads each pair's tiny ring
@@ -4753,13 +4799,33 @@ class Handler(BaseHTTPRequestHandler):
                         f[0] += p.get("rx_speed", 0) or 0; f[1] += p.get("tx_speed", 0) or 0
                         f[3] += 1
                         if p.get("online"): f[2] += 1
-                tlast_w = Handler.deps.setdefault("_turn_last_w", {})   # (nid,fork) → last RRD write time
-                for fork, (frx, ftx, fon, ftot) in fagg.items():
-                    if ftot and now_i - tlast_w.get((nid, fork), 0) >= MESH_THROTTLE_S:
+                for fork, (frx, ftx, fon, ftot) in fagg.items():   # ring EVERY sync (few forks/node → cheap) so the turn graph's live is ~5s-smooth, like the interface one; mesh stays throttled (N² pairs)
+                    if ftot:
                         tM = [0] * HRRD_NM; tM[3] = int(frx); tM[4] = int(ftx); tM[11] = fon; tM[12] = ftot   # rx,tx + pon,ptot
                         with contextlib.suppress(Exception):
                             hrrd_update(turn_rrd_path(stats_dir, nid, fork), now_i, tM)
-                        tlast_w[(nid, fork)] = now_i
+                # TURN source-IP collection: merge the unique client IPs the node ss-sampled per proxy (tp.src_ips) into
+                # the panel's unique-IP store. No bytes / no time-series — just first/last-seen + which proxies saw it.
+                # "active" is derived at read time from the live snapshot, not stored here.
+                tips = Handler.deps.setdefault("turn_ips", {}).setdefault(nid, {})
+                for tp in (snap.get("turn_proxies") or []):
+                    svc = tp.get("service") or ""
+                    for ip in (tp.get("src_ips") or []):
+                        if not isinstance(ip, str) or not ip:
+                            continue
+                        rec = tips.get(ip)
+                        if rec is None:
+                            if len(tips) >= 1000:                # soft cap/node → evict the oldest-seen
+                                tips.pop(min(tips, key=lambda k: tips[k].get("last", 0)), None)
+                            rec = tips[ip] = {"first": now_i, "last": now_i, "by": []}
+                        rec["last"] = now_i
+                        if svc and svc not in rec["by"]:
+                            rec["by"].append(svc)
+                _tiw = Handler.deps.setdefault("_turn_ips_last_w", [0])
+                if now_i - _tiw[0] >= 30:                         # persist throttled (small file; survives restart)
+                    with contextlib.suppress(Exception):
+                        atomic_write(_turn_ips_path(Handler.deps), json.dumps(Handler.deps.get("turn_ips") or {}))
+                    _tiw[0] = now_i
             # PER-PEER throughput history (drives ranged Top talkers). CLIENT ifaces only (skip system/mesh). Sum a
             # peer's rx/tx across this node's ifaces, then lazily ring it — only peers moving ≥ PEER_MIN_BPS get a
             # file, throttled ≤1/min per (node,peer). Panel-derived: rx_speed/tx_speed are already in the snapshot.
@@ -5387,6 +5453,7 @@ def main():
                     "auth": load_auth(),
                     "session_secret": load_session_secret(fleet.get("roster_path", "/var/lib/swg-panel/users.json")),
                     "now": lambda: int(time.time())}
+    Handler.deps["turn_ips"] = load_json(_turn_ips_path(Handler.deps), {}) or {}   # unique turn-proxy source-IP history (survives restart)
     # panel version-change → one "Panel updated" activity event (from→to). Tracked in an isolated
     # marker file so it never rides on the settings dict. First-ever boot just records the baseline.
     with contextlib.suppress(Exception):

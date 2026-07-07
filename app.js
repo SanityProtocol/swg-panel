@@ -443,6 +443,8 @@ const api = {
   ifaceSeries(node, iface, range) { return this.get("/api/iface-series?node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface) + "&range=" + encodeURIComponent(range)); },
   turnSeries(node, fork, range) { return this.get("/api/turn-series?node=" + encodeURIComponent(node) + "&fork=" + encodeURIComponent(fork) + "&range=" + encodeURIComponent(range)); },
   meshSeries(node, peer, range) { return this.get("/api/mesh-series?node=" + encodeURIComponent(node) + "&peer=" + encodeURIComponent(peer) + "&range=" + encodeURIComponent(range)); },
+  turnIps() { return this.get("/api/turn-ips"); },
+  turnIpsFlush(body) { return this.post("/api/turn-ips/flush", body || {}); },   // {node?, ip?}: ip → delete one; else drop inactive (keep online)
   catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
   catalogIndex() { return this.get("/api/catalog/index"); },
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
@@ -4103,7 +4105,7 @@ function TurnManageSheet({ node, tp }) {
     const a = new Uint8Array(32); crypto.getRandomValues(a);
     copy(Array.from(a, b => b.toString(16).padStart(2, "0")).join(""), "Random 64-hex key copied — paste it into the parameters");
   };
-  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}`} width=${660}
+  return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}`} width=${660} headExtra=${html`<${TurnIpsHeader} node=${node} svc=${svc}/>`}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
       ${stopped
@@ -4190,6 +4192,66 @@ function turnColor(label) {
   const ov = (Store.panelSettings && Store.panelSettings.turn_fork_colors) || {};
   const fk = TURN_FORKS.find(x => x.id === label);
   return pickThemed(ov[label], (fk && fk.color) || "#8FA8C0", (fk && fk.colorL) || "#5E7085");
+}
+const _forkTag = svc => html`<span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(svc))}>${turnFork(svc)}</span>`;
+const _lastSeen = last => last ? seen(Math.max(0, Math.floor(Date.now() / 1000) - last)) + " ago" : "—";
+
+// The "Turn IPs" header control on the turn-edit modal: unique client IPs seen connecting to THIS proxy. The
+// active count comes from the live snapshot (no fetch); the hover bubble lists them (green dot = online) with a
+// Flush that drops the offline ones. `src_ips` is node-collected (ss); history persists on the panel.
+function TurnIpsHeader({ node, svc }) {
+  const [data, setData] = useState(null);
+  const load = () => api.turnIps().then(r => setData(r && r.ok ? ((r.data.nodes || {})[node] || {}) : {})).catch(() => setData({}));
+  useEffect(() => { load(); }, [node]);
+  const tp = ((Store.stats[node] || {}).turn_proxies || []).find(t => t.service === svc);
+  const active = new Set(tp ? (tp.src_ips || []) : []);
+  const recs = data || {};
+  const ips = new Set([...Object.keys(recs).filter(ip => (recs[ip].by || []).includes(svc)), ...active]);
+  const rows = [...ips].map(ip => ({ ip, last: (recs[ip] || {}).last, on: active.has(ip) }))
+    .sort((a, b) => (a.on === b.on ? (b.last || 0) - (a.last || 0) : a.on ? -1 : 1));
+  const flush = async () => { await api.turnIpsFlush({ node }); load(); };
+  const trigger = html`<span class="turnips-hd" title="Client IPs the node saw connecting to this proxy">Turn IPs${active.size ? html` · <b>${active.size}</b>` : ""}</span>`;
+  return html`<${Popover} cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
+    <div class="tipbub-h"><b>Collected client IPs</b>${rows.length ? html`<span class="grow"></span><button class="linkbtn" onClick=${flush}>Flush</button>` : null}</div>
+    ${rows.length ? html`<div class="tipbub-list">${rows.map(r => html`<div class="tipbub-row" key=${r.ip}><span class=${"tipdot" + (r.on ? " on" : "")}></span><span class="tipbub-ip">${r.ip}</span><span class="grow"></span><span class="tipbub-when">${r.on ? "online" : _lastSeen(r.last)}</span></div>`)}</div>`
+      : html`<div class="hint" style="margin:6px 0 0">No connections seen yet.</div>`}
+  <//>`;
+}
+
+// The "Collected IPs" grid in Settings → Turn proxies: every unique client IP across the fleet's proxies,
+// sorted by Last (online first), with per-row delete and a fleet-wide "Flush …" that keeps the online ones.
+function TurnCollectedIps() {
+  const [show, setShow] = useState(false);   // collapsed by default (advtoggle concept) — fetch on first expand
+  const [data, setData] = useState(null);
+  const load = () => api.turnIps().then(r => setData(r && r.ok ? (r.data.nodes || {}) : {})).catch(() => setData({}));
+  useEffect(() => { if (show && data === null) load(); }, [show]);
+  const rows = [];
+  for (const [nid, ips] of Object.entries(data || {}))
+    for (const [ip, rec] of Object.entries(ips))
+      rows.push({ nid, ip, last: rec.last, by: rec.by || [], on: (rec.active_by || []).length > 0 });
+  rows.sort((a, b) => (a.on === b.on ? (b.last || 0) - (a.last || 0) : a.on ? -1 : 1));   // default: Last (online first)
+  const del = async (nid, ip) => { await api.turnIpsFlush({ node: nid, ip }); load(); };
+  const flushAll = async () => { if (!confirm("Flush collected turn-proxy IP history across the fleet? The currently-online IPs are kept.")) return; await api.turnIpsFlush({}); load(); };
+  return html`<${Fragment}>
+    <button type="button" class="advtoggle" style="margin-top:18px" onClick=${() => setShow(a => !a)}><span class="advcaret">${show ? "▾" : "▸"}</span> Collected IPs${show && rows.length ? html` <span class="count">${rows.length}</span>` : ""}</button>
+    ${show ? html`<${Fragment}>
+    <p class="hint" style="margin:8px 0 10px">Unique client IPs the nodes saw connecting to their turn-proxies. A <span style="color:var(--online)">green dot</span> marks the ones online now; the rest show when they were last seen.</p>
+    ${data === null ? html`<div class="hint">Loading…</div>`
+      : rows.length ? html`<${Fragment}>
+        <div class="tipgrid">
+          <div class="tipgrid-h"><span>Turn IP</span><span>Last</span><span>Collected by</span><span></span></div>
+          ${rows.map(r => html`<div class="tiprow" key=${r.nid + "|" + r.ip}>
+            <span class="tip-ip"><span class=${"tipdot" + (r.on ? " on" : "")}></span>${r.ip}</span>
+            <span class="tip-last">${r.on ? "online" : _lastSeen(r.last)}</span>
+            <span class="tip-by">${r.by.map(_forkTag)}</span>
+            <button class="xbtn" title="Delete this IP record" onClick=${() => del(r.nid, r.ip)}><${Ic} i="x"/></button>
+          </div>`)}
+        </div>
+        <div class="tipfoot"><button class="btn btn-mini warn" onClick=${flushAll}><${Ic} i="trash"/> Flush turn-proxies history</button></div>
+      <//>`
+      : html`<div class="hint">No turn-proxy connections collected yet.</div>`}
+    <//>` : null}
+  <//>`;
 }
 // Drive EVERY `.tf-<fork>` element (the .tg-turn tags + .iftype.turn badges scattered across the SPA) from the
 // picker override — those use a static CSS class, so without this the colour picker would only reach the handful of
@@ -6603,6 +6665,7 @@ function PanelSettingsScreen() {
           <div class="seclabel" style="margin-top:18px">VK call link</div>
           <p class="hint" style="margin:0 0 8px">Baked into the client configs a peer's <b>Turn</b> button generates — it's the call the turn-proxy relays through. Leave blank to emit a <span class="mono">${"<PASTE VK CALL LINK>"}</span> placeholder.</p>
           <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/…"/>
+          ${turnEnabledS ? html`<${TurnCollectedIps}/>` : null}
         </div>` : null}
         ${section === "geo" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">List providers</div>
@@ -6846,7 +6909,7 @@ function SearchBox({ placeholder, value, onInput }) {
 function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
   return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || "Cancel"}</button><button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button><//>`;
 }
-function Sheet({ title, children, foot, onClose, width }) {
+function Sheet({ title, children, foot, onClose, width, headExtra }) {
   onClose = onClose || closeModal;
   const ref = useRef(null);
   const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
@@ -6893,7 +6956,7 @@ function Sheet({ title, children, foot, onClose, width }) {
 
   return html`<div class="overlay show" onClick=${e => { if (e.target.classList.contains("overlay")) tryClose(); }}>
     <div class="sheet" role="dialog" aria-modal="true" ref=${ref} style=${width ? "width:" + width + "px;max-width:calc(100vw - 32px)" : ""}>
-      <div class="sheet-head"><h3>${title}</h3><button class="x" onClick=${tryClose}>×</button></div>
+      <div class="sheet-head"><h3>${title}</h3>${headExtra || null}<button class="x" onClick=${tryClose}>×</button></div>
       <div class="sheet-body">${children}</div>
       ${(foot || discard) ? html`<div class="sheet-foot">${discard
         ? html`<${Fragment}><span class="discard-msg"><${Ic} i="warn"/> Discard unsaved changes?</span><span class="grow"></span>

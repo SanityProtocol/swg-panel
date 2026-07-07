@@ -423,6 +423,41 @@ def _turn_installing_markers():
         out[f] = {"listen": (ls[0] if len(ls) > 0 else ""), "connect": (ls[1] if len(ls) > 1 else ""), "owner": (ls[2] if len(ls) > 2 else "")}
     return out
 
+def _turn_conn_ips():
+    """listen-port(str) → set(established remote IPs), from one ss sweep (TCP+UDP). Best-effort; empty if ss is
+    missing/errors. Peer = the client's source IP; keyed by the LOCAL port so we can match a proxy's listen port.
+    NB: sees the netns swg-noded runs in — fine for host-networked turn nodes (the common case); a bridge-net
+    docker turn-proxy terminates connections inside its container, so those wouldn't show here."""
+    m = {}
+    for proto in ("-t", "-u"):
+        try:
+            r = subprocess.run(["ss", "-Hn", proto, "state", "established"], capture_output=True, text=True, timeout=5)
+        except Exception:
+            continue
+        for line in (r.stdout or "").splitlines():
+            cols = line.split()
+            if len(cols) < 2:
+                continue
+            lp = cols[-2].rsplit(":", 1)[-1]                       # local addr:port → port
+            pip = cols[-1].rsplit(":", 1)[0].strip("[]")          # peer  addr:port → addr (the client source IP)
+            if lp.isdigit() and pip and pip not in ("*", "0.0.0.0", "::"):
+                m.setdefault(lp, set()).add(pip)
+    return m
+
+
+def _attach_turn_src_ips(tp):
+    """Attach src_ips (unique client source IPs currently connected) to each turn-proxy by matching its listen
+    PORT against one ss sweep. Best-effort — any failure just leaves src_ips unset (the panel then shows none)."""
+    with contextlib.suppress(Exception):
+        if not tp:
+            return
+        cmap = _turn_conn_ips()
+        for t in tp:
+            lp = str(t.get("listen") or "").rsplit(":", 1)[-1]
+            if lp.isdigit():
+                t["src_ips"] = sorted(cmap.get(lp, ()))
+
+
 def load_turn_proxies():
     """Turn-proxies installed on this box — listen/connect/wrap_key/params. Refreshed from the LIVE
     .service files (throttled) so direct edits on the server show up on the panel."""
@@ -448,6 +483,7 @@ def load_turn_proxies():
         tp = uniq
         _dturn_attach_running(tp)
         _attach_turn_version(tp)
+        _attach_turn_src_ips(tp)
         return tp
     nowt = time.time()
     on_disk = _list_turn_units()   # bare-metal: the units on disk are the source of truth — reconcile the list
@@ -474,6 +510,7 @@ def load_turn_proxies():
                 os.replace(tmp, TURN_RECORD)
     _attach_turn_running(tp)
     _attach_turn_version(tp)
+    _attach_turn_src_ips(tp)
     marks = _turn_installing_markers()   # an installer/convert is setting these up → show "installing" (synthetic entry if no unit yet)
     if marks:
         have = {t.get("service") for t in tp}
