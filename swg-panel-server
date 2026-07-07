@@ -180,6 +180,74 @@ def _remote_version_loop():
         _check_latest_remote()
         time.sleep(60 * 60)   # every hour — the header reflects a freshly-published release within the hour (the "check" icon is still there for an instant, on-demand refresh)
 
+
+# ── turn-proxy auto-update (panel-driven; see PANEL_SETTINGS_DEFAULTS["turn_update"]) ──
+def _turn_update_due(sched, last_ts, now_ts):
+    """every_days=0 → never (OFF). Else due when >= every_days elapsed since the last check AND now is inside the
+    60-min window opening at the panel-local `at` time — so the fleet-wide restart lands at a chosen quiet hour."""
+    ev = int((sched or {}).get("every_days") or 0)
+    if ev <= 0:
+        return False
+    if now_ts - last_ts < ev * 86400 - 1800:              # not enough days since the last check (30-min slack)
+        return False
+    at = str((sched or {}).get("at") or "04:00")
+    try:    hh, mm = int(at.split(":")[0]), int(at.split(":")[1])
+    except Exception: hh, mm = 4, 0
+    lt = time.localtime(now_ts); cur = lt.tm_hour * 60 + lt.tm_min; start = hh * 60 + mm
+    return start <= cur < start + 60
+
+
+def _turn_autoupdate_tick():
+    deps = getattr(Handler, "deps", None) or {}
+    psp = deps.get("panel_settings_path")
+    if not psp:
+        return
+    sched = (load_panel_settings(psp) or {}).get("turn_update") or {}
+    if int(sched.get("every_days") or 0) <= 0:            # OFF — nothing scheduled
+        return
+    marker = os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "turn_update_last")
+    try:    last_ts = int((open(marker).read().strip() or "0"))
+    except Exception: last_ts = 0
+    now_ts = int(time.time())
+    if not _turn_update_due(sched, last_ts, now_ts):
+        return
+    snaps = deps.get("node_snaps") or {}
+    nodes = nodes_load(deps["nodes_path"])
+    latest = {}                                           # fork -> latest release tag (one resolve per fork)
+    changed = False
+    for nid, snap in snaps.items():
+        if nid not in nodes or not isinstance(snap, dict):
+            continue
+        for tp in (snap.get("turn_proxies") or []):
+            svc = (tp.get("service") or "").strip(); ver = (tp.get("version") or "").strip()
+            if not svc or not ver:
+                continue
+            fork = turn_fork(svc); owner = fork + "/vk-turn-proxy"
+            if fork not in latest:
+                latest[fork] = _resolve_turn_tag(owner)
+            tag = latest[fork]
+            if not tag or tag == ver:                    # unreachable, or already current
+                continue
+            pend = (nodes[nid].get("turn") or {}).get(svc)
+            if pend and pend.get("action") == "reinstall":   # a reinstall is already staged — don't double-stage
+                continue
+            nodes[nid].setdefault("turn", {})[svc] = {"action": "reinstall", "at": now_ts, "owner": owner, "auto": True}
+            changed = True
+            with contextlib.suppress(Exception):
+                ev_append(deps["roster_path"], "node", nid, "Auto-updating turn-proxy", svc + " → " + tag)
+    if changed:
+        nodes_save(deps["nodes_path"], nodes)
+        _invalidate_state_cache()
+    with contextlib.suppress(Exception):                 # record the check ran (even if nothing changed) → fire once per window
+        atomic_write(marker, str(now_ts))
+
+
+def _turn_update_loop():
+    while True:
+        with contextlib.suppress(Exception):
+            _turn_autoupdate_tick()
+        time.sleep(15 * 60)                              # re-evaluate the schedule window every 15 min
+
 STATIC = {
     "/": "index.html", "/index.html": "index.html",
     "/app.css": "app.css", "/app.js": "app.js",
@@ -2026,6 +2094,10 @@ PANEL_SETTINGS_DEFAULTS = {
     # lists only when this window is due — so the brief per-update disruption lands at a chosen quiet hour, not
     # on a rolling TTL. every_days=0 → the legacy rolling-TTL behaviour (advanced.geo_ttl_days).
     "geo_update": {"every_days": 1, "at": "04:00"},
+    # turn-proxy auto-update schedule (PANEL-driven): every_days (0 = OFF, opt-in) + panel-local hour. On the
+    # chosen cadence the panel resolves each deployed fork's latest release and stages a reinstall on any node
+    # running an older build (the node re-downloads + restarts on its next sync). 0 = manual updates only.
+    "turn_update": {"every_days": 0, "at": "04:00"},
 }
 
 
@@ -2033,7 +2105,7 @@ def load_panel_settings(path):
     """panel-settings.json merged over the defaults (one level deep for the sub-dicts)."""
     saved = load_json(path, {}) or {}
     out = {**PANEL_SETTINGS_DEFAULTS, **saved}
-    for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update"):
+    for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update", "turn_update"):
         out[k] = {**PANEL_SETTINGS_DEFAULTS[k], **(saved.get(k) or {})}
     return out
 
@@ -2824,6 +2896,14 @@ def api(method, path, qs, body, deps):
             if not re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", _at):
                 _at = "04:00"
             cur["geo_update"] = {"every_days": _ed, "at": _at}
+        tu = incoming.get("turn_update")
+        if isinstance(tu, dict):
+            try:    _ted = max(0, min(30, int(tu.get("every_days"))))
+            except Exception: _ted = 0
+            _tat = str(tu.get("at") or "04:00").strip()
+            if not re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", _tat):
+                _tat = "04:00"
+            cur["turn_update"] = {"every_days": _ted, "at": _tat}
         if "throughput_perspective" in incoming:
             cur["throughput_perspective"] = "peers" if incoming["throughput_perspective"] == "peers" else "nodes"
         for _k in ("top_talkers", "top_destinations"):
@@ -5312,6 +5392,7 @@ def main():
     else:
         srv = ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler)
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
+    threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
     print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     with contextlib.suppress(KeyboardInterrupt):

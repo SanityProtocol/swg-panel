@@ -743,7 +743,7 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length}
-      actions=${(!iface && nrec.turn_manage) ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node)}><${Ic} i="plus"/> Setup new proxy</button>` : null}>
+      actions=${(!iface && nrec.turn_manage) ? html`<${Fragment}><button class="btn btn-mini ico" title="Turn-proxy settings in Settings → Turn proxies" onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node)}><${Ic} i="plus"/> Setup new proxy</button><//>` : null}>
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>Turn-proxy management is <b>off</b> on this node — no Docker socket was mounted at install (<b>TURN_MANAGE=manual</b>), so these are read-only here. Add, edit or restart them on the box directly.</span></div>` : null}
     <div class="ifgrid" ...${iface ? {} : tReorder.container()}>${cards.map(tp => html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface} reorder=${iface ? null : tReorder}/>`)}
     ${optTurns.map(o => optCard(o.svc, o.d))}
@@ -1631,6 +1631,9 @@ function ifTypeLabel(node, iface) {
 }
 // Deep-link target for a Settings activity row (the first changed section id, applied on the settings screen).
 let pendingSettingsSection = null;
+// Jump to a Settings sub-section, closing any open modal first (a no-op when nothing is open). Used by the
+// gear shortcuts next to Add rule / Create interface / Setup proxy.
+function goSettings(section) { pendingSettingsSection = section; closeAllModals(); go("#/panel/settings"); }
 
 // ─────────── Dashboard controls: node selector + time range ───────────
 // Two module-level controls drive every Overview widget. The NODE selector filters the fleet the
@@ -2817,7 +2820,7 @@ function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="globe" title="User interfaces" tone="ready" count=${userKeys.length}
-        actions=${html`<${Fragment}>${turnEnabled() && nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
+        actions=${html`<${Fragment}>${turnEnabled() && nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini ico" title="Interface defaults in Settings → Interfaces" onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
@@ -3572,7 +3575,7 @@ function RoutingRules({ node, rules, onChange }) {
         ${others.map(n => html`<option value=${"exit|" + n.id}>→ ${n.name}</option>`)}
         <option value="block">Block</option>
       </select>
-      <button class="xbtn rrfoot-ghost" tabindex="-1"><${Ic} i="x"/></button>
+      <button class="xbtn rrfoot-gear" title="Manage routing lists in Settings → Routing lists" onClick=${() => goSettings("routing")}><${Ic} i="gear"/></button>
     </div>
     ${dispRules.length || allRule ? null : html`<div class="hint">No rules yet. Add a rule to send a category through another node, or set "Everything else" to channel everything.</div>`}
   </div>`;
@@ -4026,6 +4029,7 @@ function TurnManageSheet({ node, tp }) {
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
   const [custom, setCustom] = useState(con || "127.0.0.1:");
   const [params, setParams] = useState(tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : ""));
+  const [showExec, setShowExec] = useState(false);   // Additional ExecStart params collapsed by default
   const origParams = tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : "");
   const [title, setTitle] = useState(tp.title || "");
   const [msg, setMsg] = useState(null);
@@ -4129,10 +4133,11 @@ function TurnManageSheet({ node, tp }) {
       <div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>
       <div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This forwards to a port with no managed interface behind it. Make sure a wg/awg interface is really listening there, or clients reach the proxy but get no tunnel.</span></div>
     <//>` : null}
-    <div class="field"><label>Additional ExecStart parameters</label>
+    <button type="button" class="advtoggle" onClick=${() => setShowExec(a => !a)}><span class="advcaret">${showExec ? "▾" : "▸"}</span> Additional ExecStart parameters</button>
+    ${showExec ? html`<div class="field">
       <textarea class="ta mono" rows="4" value=${params} onInput=${e => setParams(e.target.value)} placeholder="-wrap-mode on -wrap-key <64 hex chars>" spellcheck="false"></textarea>
       <div class="hint">Free text appended after <span class="mono">-connect ip:port</span>. Changing the wrap key breaks every client using the old one. <button type="button" class="linkbtn" onClick=${randKey}>Copy a random 64-hex key</button></div>
-    </div>
+    </div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
 }
@@ -4437,6 +4442,7 @@ function SetupTurnSheet({ node }) {
   const [wrapKey] = useState(randWrapKey);            // one fresh key, reused so a fork switch is deterministic
   const dflParams = fk => fk.wrap ? (fk.wrap + " -wrap-key " + wrapKey) : "";
   const [params, setParams] = useState(dflParams(FORKS[0] || TURN_FORKS[0]));
+  const [showExec, setShowExec] = useState(false);   // Additional ExecStart params collapsed by default
   const [path, setPath] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
@@ -4517,10 +4523,11 @@ function SetupTurnSheet({ node }) {
         ${hideAwg ? html`<div class="hint">${fork} is WireGuard-only — AmneziaWG interfaces are hidden (its client doesn't do AmneziaWG).</div>` : null}
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
-      <div class="field"><label>Additional ExecStart parameters</label>
+      <button type="button" class="advtoggle" onClick=${() => setShowExec(a => !a)}><span class="advcaret">${showExec ? "▾" : "▸"}</span> Additional ExecStart parameters</button>
+      ${showExec ? html`<div class="field">
         <textarea class="ta mono" rows="3" value=${params} onInput=${e => setParams(e.target.value)} placeholder="-wrap-mode on -wrap-key <64 hex chars>" spellcheck="false"></textarea>
         <div class="hint">Appended after <span class="mono">-connect ip:port</span>. ${f.wrap ? "Pre-filled with this fork's obfuscation flags + a fresh key." : "This fork has no obfuscation flags."} <button type="button" class="linkbtn" onClick=${randKey}>Copy a random 64-hex key</button></div>
-      </div>
+      </div>` : null}
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -6172,6 +6179,9 @@ function PanelSettingsScreen() {
   const provColorOverrides = () => { const o = {}; for (const k of _provColKeys) { const d = _provColDefault(k); const t = asThemed(provColors[k], d.dark, d.light); if (!sameThemed(t, d.dark, d.light)) o[k] = t; } return o; };
   const [customEnabled, setCustomEnabled] = useState(ps.custom_lists_enabled !== false);
   const [forkColors, setForkColors] = useState(() => Object.fromEntries(TURN_FORKS.map(f => [f.id, asThemed((ps.turn_fork_colors || {})[f.id], f.color, f.colorL)])));
+  const _tu = ps.turn_update || {};   // turn-proxy auto-update schedule: every_days (0=off) + node-checked panel-local hour
+  const [tuEvery, setTuEvery] = useState(String(_tu.every_days == null ? 0 : _tu.every_days));
+  const [tuAt, setTuAt] = useState(_tu.at || "04:00");
   const [ifaceColors, setIfaceColors] = useState(() => ({
     wg: asThemed((ps.iface_colors || {}).wg, IFACE_COLOR_DEFAULTS.wg.dark, IFACE_COLOR_DEFAULTS.wg.light),
     awg: asThemed((ps.iface_colors || {}).awg, IFACE_COLOR_DEFAULTS.awg.dark, IFACE_COLOR_DEFAULTS.awg.light) }));
@@ -6298,6 +6308,7 @@ function PanelSettingsScreen() {
         hidden_categories: [...hidden],
         custom_lists: lists.map(({ _rid, domains, cidrs, ...l }) => l),   // send id/title/targets/enabled; backend re-derives domains+cidrs
         turn_enabled: turnEnabledS,
+        turn_update: { every_days: Math.max(0, Math.min(30, parseInt(tuEvery) || 0)), at: tuAt },
         enabled_turn_forks: [...turnForks],
         turn_fork_colors: forkColorOverrides(),
         iface_colors: ifaceColorOverrides(),
@@ -6440,7 +6451,7 @@ function PanelSettingsScreen() {
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
-    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "")) :
+    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
@@ -6531,7 +6542,6 @@ function PanelSettingsScreen() {
         </div>` : null}
         ${section === "turn" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Turn proxies<span class="grow"></span>
-            ${turnEnabledS ? html`<button class="btn btn-mini" disabled=${Object.values(turnCheck).some(v => v && v.status === "checking")} onClick=${checkTurnUpdates}><${Ic} i="refresh"/> Check for updates</button>` : null}
             <label class="swt" title=${turnEnabledS ? "Turn proxies are on" : "Turn proxies are off"}><input type="checkbox" checked=${turnEnabledS} onChange=${e => setTurnEnabledS(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
           ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">Turn proxies are off.</b> Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.</p>`
             : html`<p class="hint" style="margin:0 0 12px">Which forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node, and each fork's colour. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>`}
@@ -6564,6 +6574,20 @@ function PanelSettingsScreen() {
               return html`<span class="tf-chk ok"><${Ic} i="check"/> up to date</span>`; })()}
             <a class="tf-repo" href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" title=${"Open " + f.owner + " on GitHub"}>${f.owner}</a>
           </div>`; })}</div>
+          ${turnEnabledS ? html`<${Fragment}>
+          <div class="seclabel" style="margin-top:18px">Auto-update schedule</div>
+          <p class="hint" style="margin:0 0 10px">The panel checks each deployed proxy's fork for a newer release and, if there is one, updates the binary and restarts the proxy automatically. A restart briefly drops that proxy's clients, so pick a <b>quiet hour</b>. (The panel stages the update; each node applies it on its next sync.)</p>
+          <div class="schedrow">
+            <div class="field" style="margin:0"><label>How often</label>
+              <${Dropdown} value=${tuEvery} onChange=${v => setTuEvery(v)} options=${[
+                { value: "1", label: "Every day" }, { value: "2", label: "Every 2 days" }, { value: "3", label: "Every 3 days" },
+                { value: "7", label: "Every week" }, { value: "0", label: "Off — no auto-updates" }]}/></div>
+            <div class="field" style="margin:0"><label>At (panel time)</label>
+              <input type="time" class="timein" value=${tuAt} disabled=${tuEvery === "0"} onInput=${e => setTuAt(e.target.value || "04:00")}/>
+              <div class="hint">${tuEvery === "0" ? "Auto-updates are off — use “Check for updates” below to update manually." : "The panel checks at this local time, on the chosen cadence."}</div></div>
+          </div>
+          <div class="georefresh"><span class="faint" style="font-size:11px">Check every deployed proxy's fork for a newer release now, and update the ones that are behind</span><button class="btn btn-mini" disabled=${Object.values(turnCheck).some(v => v && v.status === "checking")} onClick=${checkTurnUpdates}><span class=${Object.values(turnCheck).some(v => v && v.status === "checking") ? "tf-arrow" : ""}><${Ic} i="refresh"/></span> Check for updates</button></div>
+          <//>` : null}
           <div class="seclabel" style="margin-top:18px">VK call link</div>
           <p class="hint" style="margin:0 0 8px">Baked into the client configs a peer's <b>Turn</b> button generates — it's the call the turn-proxy relays through. Leave blank to emit a <span class="mono">${"<PASTE VK CALL LINK>"}</span> placeholder.</p>
           <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/…"/>

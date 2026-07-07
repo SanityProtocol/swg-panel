@@ -1451,7 +1451,16 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .rrfoot-lead .btn-mini{margin-left:-8px;padding:7px 13px}
 .rrfoot-lead .btn-mini .ic{color:var(--brand)}
 .rrfoot-lead .btn-mini .ic svg{width:16px;height:16px}
+/* square icon-only mini button (the gear shortcuts next to Add rule / Create interface / Setup proxy):
+   a definite 1:1 box (aspect-ratio can't resolve with two auto dims) with the glyph dead-centre. */
+.btn-mini.ico{width:28px;height:28px;padding:0;gap:0;justify-content:center;flex:none}
 .rrfoot-lead .btn-mini .ic path{stroke-width:2.75}
+/* routing-lists gear in the footer's last column: its box is pinned to the rule-row X width so the grid's
+   auto track (and thus the catch-all dropdown) never shifts; a larger glyph overflows the box harmlessly. */
+.rrfoot-gear{width:18px;height:18px;padding:0;box-sizing:border-box;justify-content:center;overflow:visible;color:var(--dim)}
+.rrfoot-gear:hover{color:var(--brand);background:transparent}
+.rrfoot-gear .ic{overflow:visible}
+.rrfoot-gear .ic svg{width:22px;height:22px}
 /* node-connection link health: a single glowing dot (green up / amber connecting / red down) */
 .lkdot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--unknown);--g:var(--unknown)}
 .lkdot.up{background:var(--online);--g:var(--online);animation:pulse 2.6s infinite}
