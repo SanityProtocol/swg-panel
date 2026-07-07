@@ -1764,6 +1764,14 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .act-row.noclk:hover{background:var(--surface)}
 .act-more{font-family:var(--mono);font-size:11.5px;color:var(--brand);text-decoration:none;letter-spacing:.02em}
 .act-more:hover{text-decoration:underline}
+.act-morewrap{display:flex;justify-content:flex-end;margin-top:9px}   /* "Show all history" sits under the feed, right-aligned */
+/* Overview empty-state — no nodes on the panel yet (fresh install / all deleted) */
+.nonodes{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:64vh;gap:15px;padding:24px}
+.nonodes-ic{width:64px;height:64px;border-radius:16px;display:flex;align-items:center;justify-content:center;background:var(--surface-2);color:var(--dim)}
+.nonodes-ic svg{width:30px;height:30px}
+.nonodes h2{margin:0;font-size:20px;color:var(--ink);letter-spacing:-.01em}
+.nonodes p{margin:0;max-width:440px;color:var(--dim);font-size:13.5px;line-height:1.6}
+.nonodes .btn{margin-top:4px}
 /* activity history grid — same bordered list, plus a category pill + delete control per row */
 .acthist{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .acthist .act-row{border-bottom:1px solid var(--line)}

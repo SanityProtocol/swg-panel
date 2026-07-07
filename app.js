@@ -1759,16 +1759,18 @@ function fleetHistory(selIds, range, hist) {
 //   live 30×30s (15 min) · hour 30×2 min · day 24×1 h · week 28×6 h · month 30×1 day.
 const ONLINE_BLOCKS = { live: [30, 30], hour: [30, 120], day: [24, 3600], week: [28, 21600], month: [30, 86400] };
 // Resample an irregular (t[], v[]) series into `n` right-anchored blocks of `step` seconds — each block = the
-// MEAN of the samples that fall in its window (null when empty, so the chart can show a gap).
+// PEAK (max) of the samples in its window (null when empty, so the chart can show a gap). This charts a COUNT of
+// online peers: a MEAN renders integer counts as misleading fractions ("0.05 peers" when one peer was online for
+// one sample of the window); the peak stays a whole number and still surfaces that brief activity.
 function resampleBlocks(t, v, n, step) {
-  const out = new Array(n).fill(0), cnt = new Array(n).fill(0);
-  if (!t || !t.length) return out.map(() => null);
+  const out = new Array(n).fill(null);
+  if (!t || !t.length) return out;
   const end = t[t.length - 1];
   for (let i = 0; i < t.length; i++) {
     const idx = n - 1 - Math.floor((end - t[i]) / step);
-    if (idx >= 0 && idx < n) { out[idx] += v[i] || 0; cnt[idx]++; }
+    if (idx >= 0 && idx < n) { const x = v[i] || 0; out[idx] = out[idx] == null ? x : Math.max(out[idx], x); }
   }
-  return out.map((s, i) => cnt[i] ? s / cnt[i] : null);
+  return out;
 }
 
 // The dashboard toolbar: a multi-select node filter (themed chips) + a live/day/week/month range toggle.
@@ -2459,6 +2461,14 @@ function Overview() {
   // it has at least one target on a selected node; its counts/traffic come only from selected nodes.
   const selIds = dashNodes(), sel = new Set(selIds);
   const rangeHist = useRangeHistory(dashState.range, selIds);   // one fetch, shared by the doughnuts + flow map
+  // Fresh install (or every node removed) → there's no fleet to chart. Skip the whole dashboard and invite
+  // the operator to add their first entry server. (After the two hooks above, so rules-of-hooks holds.)
+  if (fleet.length === 0) return html`<div class="screen"><div class="nonodes">
+    <div class="nonodes-ic"><${Ic} i="server"/></div>
+    <h2>No nodes yet</h2>
+    <p>Add your first entry server to start deploying peers. The panel stays the source of truth — each node syncs to it over outbound HTTPS.</p>
+    <button class="btn btn-primary" onClick=${openNodeCreate}><span class="plus"><${Ic} i="plus"/></span> Add node</button>
+  </div></div>`;
   const fleetSel = fleet.filter(n => sel.has(n.id));
   const scoped = selIds.length < fleet.length;   // a subset is active → section labels say "selected"
   const isSys = (nid, ifn) => !!(Store.describe[nid] && Store.describe[nid][ifn] && Store.describe[nid][ifn].system);
@@ -2636,16 +2646,17 @@ function Overview() {
     <//>` : null}
 
     ${recent.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Recent activity</h2><span class="grow"></span><a class="act-more" href="#/activity">Show history »</a></div>
+      <div class="section-title"><h2>Recent activity</h2></div>
       <div class="actlist">${recent.map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
           onClick=${e.click && e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : (e.click ? null : (ev => ev.preventDefault()))}>
         <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
         <span class="act-what">${e.verb}</span>${e.name ? html`<span class="act-name">${e.name}</span>` : null}
         ${e.detail ? html`<span class="act-detail">${e.detail}</span>` : null}
         <span class="grow"></span><span class="when">${ago(e.ts)}</span>${e.click ? html`<span class="act-arrow"><${Ic} i="arrow"/></span>` : null}</a>`)}</div>
+      <div class="act-morewrap"><a class="act-more" href="#/activity">Show all history »</a></div>
     <//>` : null}
 
-    <div class="section-title"><h2>Needs attention</h2><span class="grow"></span>${attnCount ? html`<span class="count">${attnCount} group${attnCount === 1 ? "" : "s"}</span>` : null}</div>
+    <div class="section-title"><h2>Needs attention</h2>${attnCount ? html`<span class="count">${attnCount} group${attnCount === 1 ? "" : "s"}</span>` : null}<span class="grow"></span></div>
     ${!attnCount
       ? html`<div class="allclear"><${Ic} i="check"/><span>Everything's deployed and reporting. No drift across the fleet.</span></div>`
       : html`<div class="attn">
@@ -4783,7 +4794,6 @@ function ActivityHistoryScreen() {
       <select class="selwrap" value=${activityView.action} onChange=${e => { activityView.action = e.target.value; activityView.page = 1; bump(); }}>
         <option value="">All actions</option>${EV_ACTIONS.map(a => html`<option value=${a}>${a}</option>`)}
       </select>
-      <span class="grow"></span>
       <button class="btn btn-danger" disabled=${!all.length} onClick=${clearAll}><${Ic} i="trash"/> Clear history</button>
     </div>
     <div class="section-title"><h2>Activity history</h2><span class="count">${list.length}${list.length !== all.length ? " / " + all.length : ""}</span></div>
