@@ -4715,8 +4715,7 @@ function PeersScreen() {
   return html`<div class="screen">
     <${StoreOffBanner}/>
     <div class="toolbar">
-      <div class="search"><${Ic} i="search"/><input placeholder="Search title, user, address…" value=${peersView.q}
-        onInput=${e => { peersView.q = e.target.value; peersView.page = 1; force(x => x + 1); }}/></div>
+      <${SearchBox} placeholder="Search title, user, address…" value=${peersView.q} onInput=${e => { peersView.q = e.target.value; peersView.page = 1; force(x => x + 1); }}/>
       <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}>
         ${multiServer ? html`<option value="*">All nodes</option>` : null}
         ${fleet.map(n => html`<option value=${n.id}>${n.name}</option>`)}
@@ -4786,8 +4785,7 @@ function ActivityHistoryScreen() {
   return html`<div class="screen">
     <div class="crumb"><a href="#/">Overview</a><span class="sep">/</span><b>Activity history</b></div>
     <div class="toolbar">
-      <div class="search"><${Ic} i="search"/><input placeholder="Search action, name, detail…" value=${activityView.q}
-        onInput=${e => { activityView.q = e.target.value; activityView.page = 1; bump(); }}/></div>
+      <${SearchBox} placeholder="Search action, name, detail…" value=${activityView.q} onInput=${e => { activityView.q = e.target.value; activityView.page = 1; bump(); }}/>
       <select class="selwrap" value=${activityView.item} onChange=${e => { activityView.item = e.target.value; activityView.page = 1; bump(); }}>
         <option value="">All items</option>${EV_ITEMS.map(i => html`<option value=${i}>${i}</option>`)}
       </select>
@@ -4860,7 +4858,7 @@ function ConnectionsScreen() {
       <button class=${"pm-opt pm-peers" + (mode === "peers" ? " on" : "")} onClick=${() => setMode("peers")}>Peers</button>
       <button class=${"pm-opt pm-users" + (mode === "users" ? " on" : "")} onClick=${() => setMode("users")}>Users</button>
     </div>
-    <div class="search"><${Ic} i="search"/><input placeholder=${mode === "users" ? "Search users, tags, peers…" : "Search peer, user, endpoint, IP…"} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/></div>
+    <${SearchBox} placeholder=${mode === "users" ? "Search users, tags, peers…" : "Search peer, user, endpoint, IP…"} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/>
     <select class="selwrap" value=${connView.node} onChange=${e => { connView.node = e.target.value; connView.iface = ""; reset(); }}>
       <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
     </select>
@@ -5116,8 +5114,7 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
 
   return html`<div class="peerspanel">
     ${hideToolbar ? null : html`<div class="toolbar sub">
-      <div class="search"><${Ic} i="search"/><input placeholder="Search title, address…" value=${view.q || ""}
-        onInput=${e => { view.q = e.target.value; view.page = 1; bump(); }}/></div>
+      <${SearchBox} placeholder="Search title, address…" value=${view.q || ""} onInput=${e => { view.q = e.target.value; view.page = 1; bump(); }}/>
       ${multiServer ? html`<select class="selwrap" value=${node} onChange=${e => { view.node = e.target.value; view.iface = ""; view.page = 1; bump(); }}>
         <option value="*">All nodes</option>${nodes.map(n => html`<option value=${n}>${Store.nodeName(n)}</option>`)}
       </select>` : null}
@@ -5312,8 +5309,7 @@ function UsersScreen() {
   return html`<div class="screen">
     <${StoreOffBanner}/>
     <div class="toolbar">
-      <div class="search"><${Ic} i="search"/><input placeholder="Search users, tags, notes, peers…" value=${usersView.q}
-        onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/></div>
+      <${SearchBox} placeholder="Search users, tags, notes, peers…" value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
       <select class="selwrap" value=${usersView.node} onChange=${e => { usersView.node = e.target.value; usersView.iface = ""; usersView.page = 1; force(x => x + 1); }}>
         <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
       </select>
@@ -6799,6 +6795,12 @@ function AccountSheet() {
 // headers with a styled/classed h2 or extra children (the Live .tags) stay inline.
 function secTitle(title, count, grow) {
   return html`<div class="section-title"><h2>${title}</h2>${count != null ? html`<span class="count">${count}</span>` : null}${grow === false ? null : html`<span class="grow"></span>`}</div>`;
+}
+
+// The shared toolbar search box (Peers / Users / Activity / Live / expanded-peer grids): a magnifier
+// icon + a filter input. Only placeholder / value / onInput vary per screen.
+function SearchBox({ placeholder, value, onInput }) {
+  return html`<div class="search"><${Ic} i="search"/><input placeholder=${placeholder} value=${value} onInput=${onInput}/></div>`;
 }
 
 // The standard modal footer action row: [optional `left` buttons] · spacer · Cancel · one primary/danger action.
