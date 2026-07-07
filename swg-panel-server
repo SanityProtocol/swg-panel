@@ -2366,6 +2366,19 @@ def _port_of(hp):   # "ip:port" → port str ("" if none)
     hp = hp or ""; return hp.rsplit(":", 1)[1] if ":" in hp and hp.rsplit(":", 1)[1].isdigit() else ""
 def turn_rrd_path(stats_dir, nid, fork):   # per-(node,fork) turn-proxy ring (rx/tx slots = throughput; pon/ptot = peers). Fork sanitised → no '-', so the endpoint splits nid off the last '-'
     return os.path.join(stats_dir, "turn-" + nid + "-" + re.sub(r"[^A-Za-z0-9_]", "_", str(fork)) + ".rrd")
+def iface_rrd_path(stats_dir, nid, ifn):   # per-(node,interface) throughput ring (rx/tx slots) — drives the interface-detail graph. node+iface passed explicitly, so the filename is never split.
+    return os.path.join(stats_dir, "iface-" + nid + "-" + re.sub(r"[^A-Za-z0-9_.-]", "_", str(ifn)) + ".rrd")
+
+
+def _rrd_series(path, rng):
+    """Per-time-point {t, rx, tx} from one RRD ring, for the on-demand per-entity throughput graphs (turn /
+    mesh / interface). None on a bad range. Same ring→range mapping as /api/node-history."""
+    spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+    if not spec:
+        return None
+    ring, want = spec
+    d = hrrd_read(path, ring=ring, want=want) if path else None
+    return {"t": (d or {}).get("t") or [], "rx": (d or {}).get("rx") or [], "tx": (d or {}).get("tx") or []}
 def peer_rrd_path(stats_dir, nid, pubkey):   # per-(node,peer) throughput ring for ranged top-talkers. Filename uses a short pubkey hash (hex, no '-') so the endpoint splits nid off the last '-'; the endpoint reverses hash→pubkey via the roster
     return os.path.join(stats_dir, "peer-" + nid + "-" + hashlib.sha256((pubkey or "").encode()).hexdigest()[:16] + ".rrd")
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, ring0_step, ring0_slots
@@ -3182,6 +3195,37 @@ def api(method, path, qs, body, deps):
         ring, want = spec
         data = hrrd_read(rrd, ring=ring, want=want) if rrd else None
         return 200, {"ok": True, "data": data or {"t": [], "cpu": [], "mem": [], "disk": [], "rx": [], "tx": []}}
+
+    # Per-entity throughput SERIES (on-demand; never in /api/state → 5s hot path untouched). {t,rx,tx} from the
+    # entity's own RRD ring. Interface = per-(node,iface); turn = per-(node,fork); mesh = per link (this node's view).
+    if method == "GET" and path == "/api/iface-series":
+        node = (qs.get("node") or [""])[0]; ifn = (qs.get("iface") or [""])[0]
+        if not known(node) or not ifn:
+            return 400, {"ok": False, "error": "node and iface required", "code": "bad_request"}
+        s = _rrd_series(iface_rrd_path(stats_dir, node, ifn) if stats_dir else None, (qs.get("range") or ["live"])[0])
+        if s is None:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        return 200, {"ok": True, "data": s}
+
+    if method == "GET" and path == "/api/turn-series":
+        node = (qs.get("node") or [""])[0]; fork = (qs.get("fork") or [""])[0]
+        if not known(node) or not fork:
+            return 400, {"ok": False, "error": "node and fork required", "code": "bad_request"}
+        s = _rrd_series(turn_rrd_path(stats_dir, node, fork) if stats_dir else None, (qs.get("range") or ["live"])[0])
+        if s is None:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        return 200, {"ok": True, "data": s}
+
+    if method == "GET" and path == "/api/mesh-series":
+        node = (qs.get("node") or [""])[0]; peer = (qs.get("peer") or [""])[0]
+        if not known(node) or not known(peer):
+            return 400, {"ok": False, "error": "node and peer required", "code": "bad_request"}
+        s = _rrd_series(mesh_rrd_path(stats_dir, node, peer) if stats_dir else None, (qs.get("range") or ["live"])[0])
+        if s is None:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        if node < peer:                              # RRD stores rx = x→y (x<y). node is x → its INbound is y→x = tx: swap so rx = into-node.
+            s = {"t": s["t"], "rx": s["tx"], "tx": s["rx"]}
+        return 200, {"ok": True, "data": s}
 
     if method == "GET" and path == "/api/mesh-history":
         # Per node-PAIR directed mesh flow over a range — drives the flow-map ranges. Reads each pair's tiny ring
@@ -4736,6 +4780,18 @@ class Handler(BaseHTTPRequestHandler):
                     with contextlib.suppress(Exception):
                         hrrd_update(peer_rrd_path(stats_dir, nid, pk), now_i, pM)
                     plast_w[(nid, pk)] = now_i
+            # PER-IFACE throughput history (drives the interface-detail graph). CLIENT ifaces only (skip system/mesh).
+            # rx/tx = sum of the iface's peers' speeds — the exact value snap_aggregates + the doughnuts use — ringed
+            # every sync (few ifaces per node → cheap, as smooth as the node graph). Panel-derived; no node change.
+            for ifn, blk in (snap.get("interfaces") or {}).items():
+                meta = blk.get("meta") or {}; o = ov_ifaces.get(ifn) or {}
+                if o.get("system") or meta.get("system"):
+                    continue
+                irx = sum((p.get("rx_speed", 0) or 0) for p in (blk.get("peers") or []))
+                itx = sum((p.get("tx_speed", 0) or 0) for p in (blk.get("peers") or []))
+                iM = [0] * HRRD_NM; iM[3] = int(irx); iM[4] = int(itx)
+                with contextlib.suppress(Exception):
+                    hrrd_update(iface_rrd_path(stats_dir, nid, ifn), now_i, iM)
         # self-heal the full mesh BEFORE computing desired, so a node that entered the store outside
         # /api/nodes/create (auto-enrolled master/local node) or lost a link conf (convert/re-install)
         # gets its links (re)staged on its very next sync.

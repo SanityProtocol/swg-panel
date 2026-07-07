@@ -440,6 +440,9 @@ const api = {
   categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
   turnHistory(range) { return this.get("/api/turn-history?range=" + encodeURIComponent(range)); },
   peerHistory(range) { return this.get("/api/peer-history?range=" + encodeURIComponent(range)); },
+  ifaceSeries(node, iface, range) { return this.get("/api/iface-series?node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface) + "&range=" + encodeURIComponent(range)); },
+  turnSeries(node, fork, range) { return this.get("/api/turn-series?node=" + encodeURIComponent(node) + "&fork=" + encodeURIComponent(fork) + "&range=" + encodeURIComponent(range)); },
+  meshSeries(node, peer, range) { return this.get("/api/mesh-series?node=" + encodeURIComponent(node) + "&peer=" + encodeURIComponent(peer) + "&range=" + encodeURIComponent(range)); },
   catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
   catalogIndex() { return this.get("/api/catalog/index"); },
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
@@ -2972,6 +2975,10 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         </div>` : null}
       <//>`}
 
+    ${meta ? html`<${Panel} icon="gauge" title="Throughput">
+      <${RangedHistory} node=${node} kind="throughput" h=${72} fetch=${r => api.ifaceSeries(node, iface, r).then(x => x && x.ok ? x.data : {})}/>
+    <//>` : null}
+
     ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title="Reachable via turn-proxy" iface=${iface}/>` : null}
 
     <${Panel} icon="users" title="Peers on this interface" count=${peers.length} pad=${false}
@@ -3894,6 +3901,7 @@ function ConnectionEditSheet({ node, iface }) {
         ${Cell("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
       </div>
     </div>
+    <${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.meshSeries(node, peer, r).then(x => x && x.ok ? x.data : {})}/>
     <div class="row2" style="margin-top:14px">
       <div class="field"><label>Dial source IP <span class="faint" style="text-transform:none;letter-spacing:0">— ${Store.nodeName(node)}'s IP</span></label>
         <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto="Auto (default route)"/></div>
@@ -4111,6 +4119,7 @@ function TurnManageSheet({ node, tp }) {
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
       <button class="btn btn-primary" disabled=${dis} onClick=${save}>Save</button></>`}>
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>This node is busy or offline${nrec.proc_status ? html` (${PROC_LABEL[nrec.proc_status] || nrec.proc_status})` : ""} — turn-proxy actions are disabled until it's reporting again.</span></div>` : null}
+    <${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.turnSeries(node, turnFork(svc), r).then(x => x && x.ok ? x.data : {})}/>
     <div class="iface-intro">
       <div>Changing any field rewrites the unit's ExecStart on the node and restarts it.</div>
       <div>The parameters below are placed verbatim after <span class="mono">-connect</span> — wrap key, wrap mode, any flags the fork supports.</div>
@@ -5836,25 +5845,28 @@ const HIST_RANGES = ["live", "hour", "day", "week", "month"];
 // HRRD_RINGS slot counts (live = LIVE_MAX). Charts pin data to the right and fill leftward.
 const RANGE_CAP = { live: 200, hour: 250, day: 300, week: 350, month: 400 };
 const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem", "disk", "rx", "tx"]) if (Array.isArray((s || {})[k])) o[k] = s[k].slice(-n); return o; };
-function RangedHistory({ node, kind, live, h, head, liveFine }) {
+function RangedHistory({ node, kind, live, h, head, liveFine, fetch }) {
   const [range, setRange] = useState("live");
   const [fetched, setFetched] = useState(null);
-  const fetchRange = range === "day" || range === "week" || range === "month";   // live/hour come from /api/state
+  const custom = !!fetch;   // per-entity graphs (turn / mesh / interface): fetch EVERY range on-demand off their own RRD (never in /api/state)
+  const fetchRange = custom || range === "day" || range === "week" || range === "month";   // node graph: live/hour ride /api/state
   useEffect(() => {
     if (!fetchRange) { setFetched(null); return; }
     let ok = true; setFetched(null);   // clear so the chart shows an empty area, then fills when the fetch lands
-    api.nodeHistory(node, range).then(r => { if (ok) setFetched(r && r.ok ? r.data : {}); }).catch(() => {});
+    const p = custom ? Promise.resolve(fetch(range)) : api.nodeHistory(node, range).then(r => r && r.ok ? r.data : {});
+    p.then(d => { if (ok) setFetched(d || {}); }).catch(() => {});
     return () => { ok = false; };
   }, [node, range]);
   // LIVE = the raw ~5s in-memory buffer when present; else — e.g. just after a panel restart, before
   // the buffer refills — fall back to the tail of the 15s ring (`live`, the hour series) so the chart
   // keeps showing recent history. hour = the full 15s series from /api/state; day/week/month fetched.
   const liveBuf = range === "live" && liveFine && (liveFine.t || []).length > 1;
-  const s = range === "live" ? (liveBuf ? liveFine : tailSeries(live, 70))
+  const s = custom ? (fetched || {})
+    : range === "live" ? (liveBuf ? liveFine : tailSeries(live, 70))
     : range === "hour" ? (live || {}) : (fetched || {});
   // x-axis capacity: the live fallback is coarse 15s data, so let it fit to its own length (cap 0)
   // rather than pinning to the 5s window; every other range uses its fixed block count.
-  const cap = range === "live" ? (liveBuf ? RANGE_CAP.live : 0) : RANGE_CAP[range];
+  const cap = custom ? RANGE_CAP[range] : range === "live" ? (liveBuf ? RANGE_CAP.live : 0) : RANGE_CAP[range];
   const hasData = (s.cpu || s.rx || []).some(x => x != null);
   const nlive = Store.recon.nodeStatus[node] === "live";   // node hasn't reported for several rounds → the live feed is frozen
   // A node that stops reporting (update / re-install / convert / brief outage) must NEVER blank the
