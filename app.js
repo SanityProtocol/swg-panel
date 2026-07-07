@@ -1574,7 +1574,7 @@ function evItem(e) {
   if (/interface/i.test(v)) return "Interface";       // kind === node from here
   if (/turn-proxy/i.test(v)) return "Turn-proxy";
   if (/mesh/i.test(v)) return "Mesh";
-  if (/update/i.test(v)) return "Update";
+  if (/^update |host update/i.test(v)) return "Update";   // update LIFECYCLE ("Update requested", "Host update started") — NOT "Updated node/interface"
   return "Node";
 }
 function evAction(e) {
