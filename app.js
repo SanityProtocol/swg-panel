@@ -2602,7 +2602,7 @@ function Overview() {
       <div class="stat"><span class="stat-ic"><${Ic} i="gauge"/></span><div class="stat-c"><div class="k">Throughput</div><div class="v" style=${"font-size:19px;color:" + (rx + tx > 0 ? "var(--online)" : "var(--faint)")}>↓ ${rate(dlul(rx, tx)[0])}</div><div class="sub"><span style=${"color:" + (rx + tx > 0 ? "var(--ready)" : "var(--faint)")}>↑ ${rate(dlul(rx, tx)[1])}</span>${scoped ? " selected" : " aggregate"}</div></div></div>
     </div>
 
-    <div class="section-title"><h2>Fleet</h2><span class="count">${scoped ? fleetSel.length + " of " + fleet.length : fleet.length} server${fleet.length === 1 ? "" : "s"}</span><span class="grow"></span></div>
+    ${secTitle("Fleet", html`${scoped ? fleetSel.length + " of " + fleet.length : fleet.length} server${fleet.length === 1 ? "" : "s"}`)}
     ${fleetSel.length ? html`<div class="trends">
       <div class="trendcard wide">
         <div class="donutcard-h"><h3>Fleet throughput</h3></div>
@@ -2621,32 +2621,32 @@ function Overview() {
       : html`<div class="allclear">No servers configured in fleet.json.</div>`}
 
     ${fleetSel.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Distribution</h2><span class="count">${scoped ? "selected nodes" : "whole fleet"} · ${DASH_RANGES.find(r => r[0] === effRange)[1].toLowerCase()}</span><span class="grow"></span></div>
+      ${secTitle("Distribution", html`${scoped ? "selected nodes" : "whole fleet"} · ${DASH_RANGES.find(r => r[0] === effRange)[1].toLowerCase()}`)}
       <${DashDoughnuts} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
     ${fleetSel.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Traffic flow map</h2><span class="count">signal flow · by category</span><span class="grow"></span></div>
+      ${secTitle("Traffic flow map", "signal flow · by category")}
       <${FlowMap2} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
     ${fleetSel.length > 1 ? html`<${Fragment}>
-      <div class="section-title"><h2>${anyTraffic ? "Top nodes by traffic" : "Top nodes by peers"}</h2><span class="count">${anyTraffic ? (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() : ""}</span><span class="grow"></span></div>
+      ${secTitle(anyTraffic ? "Top nodes by traffic" : "Top nodes by peers", anyTraffic ? (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() : "")}
       <div class="rankcard"><${RankBars} rows=${rankRows}/></div>
     <//>` : null}
 
     ${talkerRows.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Top talkers</h2><span class="count">${dRanged ? (DASH_RANGES.find(r => r[0] === effRange) || ["", ""])[1].toLowerCase() + " · by volume" : "by live throughput"}</span><span class="grow"></span></div>
+      ${secTitle("Top talkers", dRanged ? (DASH_RANGES.find(r => r[0] === effRange) || ["", ""])[1].toLowerCase() + " · by volume" : "by live throughput")}
       <div class="rankcard"><${RankBars} rows=${talkerRows}/></div>
     <//>` : null}
 
     ${catRows.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Top destinations</h2><span class="count">${dRanged ? (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() : "live"} · categories overlap${(totClientRx + totClientTx) ? (() => { const f = dRanged ? fmtBytes : rate, [d, u] = dlul(totClientRx, totClientTx); return html` · of <span style="color:var(--online)">↓${f(d)}</span> and <span style="color:var(--rate-up)">↑${f(u)}</span> total`; })() : ""}</span><span class="grow"></span></div>
+      ${secTitle("Top destinations", html`${dRanged ? (DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase() : "live"} · categories overlap${(totClientRx + totClientTx) ? (() => { const f = dRanged ? fmtBytes : rate, [d, u] = dlul(totClientRx, totClientTx); return html` · of <span style="color:var(--online)">↓${f(d)}</span> and <span style="color:var(--rate-up)">↑${f(u)}</span> total`; })() : ""}`)}
       <div class="rankcard"><${RankBars} rows=${catRows}/></div>
     <//>` : null}
 
     ${recent.length ? html`<${Fragment}>
-      <div class="section-title"><h2>Recent activity</h2></div>
+      ${secTitle("Recent activity", null, false)}
       <div class="actlist">${recent.map(e => html`<a class=${"act-row" + (e.click ? "" : " noclk")} href=${e.click ? e.click.href : null} key=${e.key}
           onClick=${e.click && e.click.on ? (ev => { ev.preventDefault(); e.click.on(); }) : (e.click ? null : (ev => ev.preventDefault()))}>
         <span class=${"act-ic t-" + e.slug}><${Ic} i=${e.icon}/></span>
@@ -2656,7 +2656,7 @@ function Overview() {
       <div class="act-morewrap"><a class="act-more" href="#/activity">Show all history »</a></div>
     <//>` : null}
 
-    <div class="section-title"><h2>Needs attention</h2>${attnCount ? html`<span class="count">${attnCount} group${attnCount === 1 ? "" : "s"}</span>` : null}<span class="grow"></span></div>
+    ${secTitle("Needs attention", attnCount ? html`${attnCount} group${attnCount === 1 ? "" : "s"}` : null)}
     ${!attnCount
       ? html`<div class="allclear"><${Ic} i="check"/><span>Everything's deployed and reporting. No drift across the fleet.</span></div>`
       : html`<div class="attn">
@@ -4796,7 +4796,7 @@ function ActivityHistoryScreen() {
       </select>
       <button class="btn btn-danger" disabled=${!all.length} onClick=${clearAll}><${Ic} i="trash"/> Clear history</button>
     </div>
-    <div class="section-title"><h2>Activity history</h2><span class="count">${list.length}${list.length !== all.length ? " / " + all.length : ""}</span></div>
+    ${secTitle("Activity history", html`${list.length}${list.length !== all.length ? " / " + all.length : ""}`, false)}
     ${rows === null ? html`<div class="loading"><${Ic} i="refresh"/> Loading…</div>`
       : !all.length ? html`<div class="empty"><b>No activity yet</b>Operator actions across the panel will show up here.</div>`
       : !list.length ? html`<div class="empty"><b>No matches</b>Try a different search or filter.</div>`
@@ -5324,7 +5324,7 @@ function UsersScreen() {
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> New user</button>
     </div>
 
-    <div class="section-title"><h2>Users</h2><span class="count">${users.length}</span></div>
+    ${secTitle("Users", users.length, false)}
     ${!allUsers.length ? html`<div class="empty"><b>No users yet</b>Create a user, then mint peers for them — or create a peer and assign it later.</div>`
       : !users.length ? html`<div class="empty"><b>Nothing matches</b>Clear the search.</div>`
       : html`<${Fragment}>
@@ -6793,6 +6793,13 @@ function AccountSheet() {
 // `onClose` is the single dismiss target for EVERY exit path — ✕, Esc, overlay-click, the discard
 // confirm. Openers pass the place to return to (e.g. reopen the peer view); default just closes.
 // Cancel/Save buttons in a sheet's foot should call the same target so all paths land identically.
+
+// The recurring section header: <h2>title</h2> + an optional .count pill + a right-hand spacer.
+// title/count may be a string or html; count null → no pill; grow===false → no spacer. The few
+// headers with a styled/classed h2 or extra children (the Live .tags) stay inline.
+function secTitle(title, count, grow) {
+  return html`<div class="section-title"><h2>${title}</h2>${count != null ? html`<span class="count">${count}</span>` : null}${grow === false ? null : html`<span class="grow"></span>`}</div>`;
+}
 
 // The standard modal footer action row: [optional `left` buttons] · spacer · Cancel · one primary/danger action.
 // Collapses the ~15 dialogs that share this exact shape into one call; irregular footers (multiple actions,
