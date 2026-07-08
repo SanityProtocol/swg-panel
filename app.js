@@ -3320,24 +3320,26 @@ function ProvTag({ id, label, plain }) {
 const MODE_META = {
   kernel:   { icon: "globe",  label: "IP only", short: "IP only", tag: "no host layer",
     adds: "Just the always-on IP layer — no domain matching added.",
-    bene: "Simplest & most robust · never touches DNS · carries all traffic (calls, UDP, QUIC).",
-    cost: "Can't separate services that share IPs (YouTube vs Google).",
-    exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs." },
+    bene: ["Simplest & most robust · never touches DNS · carries all traffic (calls, UDP, QUIC)."],
+    cost: "Can't separate services that share IPs (YouTube vs Google), no Host routing.",
+    exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs / ASNs." },
   forcedns: { icon: "compass", label: "Force-DNS", short: "Host via DNS", tag: "host layer · via DNS",
     adds: "Adds domain matching by resolving your clients' DNS through the node.",
-    bene: "Per-service precise · fills before the first connection (no first-hit miss).",
+    bene: ["Per-service precise · fills before the first connection (no first-hit miss)."],
     cost: "Intercepts & downgrades client DNS — blocks their DoH / DoT.",
-    exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
+    exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
   sni_kernel: { icon: "cpu", label: "Kernel SNI", short: "Host via SNI", tag: "host layer · SNI in-kernel",
     adds: "Reads the TLS SNI in-kernel to match domains — client DNS stays private.",
-    bene: "Daemonless & parallel per-CPU · lightest at high connection rates.",
+    bene: ["Daemonless & parallel per-CPU · lightest at high connection rates.",
+           "Wins stability and high-connection-rate CPU over Hybrid."],
     cost: "Substring match only (no regex) · needs xt_string + ipset on the node.",
-    exp: "Reads the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
+    exp: "Reads the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
   sni:      { icon: "eye", label: "Hybrid SNI", short: "Host via SNI", tag: "host layer · SNI in userspace",
     adds: "Reads the TLS SNI in a small helper to match domains — client DNS stays private.",
-    bene: "Precise parsed-SNI matching · regex-capable · unbothered by big lists.",
+    bene: ["Precise parsed-SNI matching · regex-capable · unbothered by big lists.",
+           "Has fewer kernel deps, wins accuracy and large-list CPU cost over Kernel."],
     cost: "Runs a helper process (fails open — learning pauses — if it stops).",
-    exp: "Routes by hostname by reading the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
+    exp: "Routes by hostname by reading the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
 };
 // Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
 // OS-rendered <select> option list can't be styled, hence this). `options` is a flat [{value,label,disabled}] or
@@ -6669,18 +6671,29 @@ function PanelSettingsScreen() {
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
           <div class=${"rmode-banner m-" + nodeMode}>
-            <div class="rmode-top">
-              <div class="rmode-head"><b class="rmode-node">${nodeRec ? nodeRec.name : "Node"}</b><span class="rmode-pill">${MODE_META[nodeMode].short}</span></div>
+            ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel; return html`
+            <div class="rd-head">
+              <span class="rd-ic"><${Ic} i=${mm.icon}/></span>
+              <b class="rd-name">${mm.label}</b>
+              <b class="rd-node">${nodeRec ? nodeRec.name : "Node"}</b>
+              <span class="rmc-tag">${mm.short}</span>
+              <span class="grow"></span>
+              <${ModeTabs} value=${nodeMode} onChange=${setMode}/>
+            </div>
+            <div class="rd-adds">${mm.adds}</div>
+            <div class="rd-lines">
+              ${(mm.bene || []).map(b => html`<div class="rmc-bene"><b>+</b><span>${b}</span></div>`)}
+              <div class="rmc-cost"><b>−</b><span>${mm.cost}</span></div>
+            </div>
+            <div class="rmode-desc">${mm.exp}</div>
+            <${HostHealth} node=${selNode} mode=${nodeMode}/>
+            <div class="rd-foot">
               <span class="grow"></span>
               <button class="rmode-reset" title="Recover: wipe this node's routing tables + learned IPs and re-pull all lists from the panel" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset</button>
               <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
-                <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice below only adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use. <b>Reset</b> recovers a stuck node — wipe + rebuild + re-pull.</div>
+                <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel in any mode including <b>Hybrid SNI</b> (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.<div style="margin-top:9px"><b>Reset</b> recovers a stuck node — wipe + rebuild + re-pull.</div></div>
               <//>
-            </div>
-            <p class="rmode-frame">Matches by destination <b>IP</b> first — always on, all traffic (incl. calls & UDP). Add an optional <b>host-matching</b> layer on top:</p>
-            <${ModeTabs} value=${nodeMode} onChange=${setMode}/>
-            <${ModeDetail} mode=${nodeMode}/>
-            <${HostHealth} node=${selNode} mode=${nodeMode}/>
+            </div>`; })()}
           </div>
 
           <div class="lgrid-head">
@@ -6807,7 +6820,7 @@ function PanelSettingsScreen() {
               <${Switch} on=${customEnabled} title=${customEnabled ? "On — you can create custom lists" : "Off — the Custom lists section is hidden"} onChange=${v => setCustomEnabled(v)}/>
               <${ThemedSwatch} val=${provColors.custom} title="Custom-list tag colour" onChange=${nv => setProvColors(c => ({ ...c, custom: nv }))}
                 sample=${(c) => html`<span class="sw-sample" style=${"--pc:" + c}>Custom</span>`}/>
-              <div class="prov-meta"><span class="prov-name">Custom lists</span></div>
+              <div class="prov-meta"><span class="prov-name" style="color:var(--ink)">Custom lists</span></div>
               <span class="grow"></span>
               <span class="prov-desc">Your own IP / domain lists — turn off to hide the Custom lists section in routing</span>
             </div>
