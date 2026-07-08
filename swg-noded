@@ -1691,6 +1691,49 @@ def apply_panel_settings(pan):
         pass
 
 
+def _apply_routing_reset(reset_val, res):
+    """Operator pressed 'Reset routing' for this node: wipe ALL smart-routing state so the SAME reconcile pass
+    rebuilds it from scratch and re-pulls every enabled/curated list from the panel. Idempotent — acts only when
+    the panel's per-node counter differs from our local stamp (so it fires once per press, never on a normal sync).
+    An explicit operator action, not an outage → safe to wipe (the never-wipe-on-outage invariant is about failed
+    syncs, which never reach here). Returns True if it reset."""
+    try:
+        rv = str(int(reset_val or 0))
+    except Exception:
+        rv = "0"
+    stamp = os.path.join(GEO_DIR, ".routing-reset")
+    cur = ""
+    with contextlib.suppress(Exception):
+        cur = open(stamp).read().strip()
+    if rv == cur or rv == "0":                                  # unchanged (or never reset) → nothing to do
+        return False
+    with contextlib.suppress(OSError):
+        os.makedirs(GEO_DIR, exist_ok=True)
+    # 1) wipe the pulled-list cache + every rebuild signature → forces a fresh re-pull + full rebuild next
+    for fn in (os.listdir(GEO_DIR) if os.path.isdir(GEO_DIR) else []):
+        if fn.endswith((".txt", ".doms", ".attempt", ".loaded")) or fn in (
+                ".smart-sig", ".xtstring-sig", ".catcount-sig", ".geo-epoch", ".doh.sig", ".automerge-migrated"):
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(GEO_DIR, fn))
+    # 2) drop the nft smart table (all sets + chains + mark rules) → rebuilt below
+    run(["nft", "delete", "table", "inet", SMART_NFT_TABLE])
+    # 3) drop the kernel-SNI iptables chain + destroy the learned ipsets
+    run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"])
+    run(["iptables", "-t", "mangle", "-F", "SWGK"]); run(["iptables", "-t", "mangle", "-X", "SWGK"])
+    for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
+        run(["ipset", "destroy", setn])
+    # 4) restart the userspace SNI reader so its in-memory learned set clears (relaunched by _ensure_sni_router)
+    p = _SNI_PROC.get("p")
+    if p and p.poll() is None:
+        with contextlib.suppress(Exception): p.terminate()
+    _SNI_PROC["p"] = None
+    with contextlib.suppress(OSError):
+        open(stamp, "w").write(rv)
+    res["changed"] += 1
+    print("routing: FULL RESET #%s — wiped sets/chains/ipsets/list-cache; rebuilding + re-pulling" % rv, flush=True)
+    return True
+
+
 def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_conn=None, panel_cfg=None):
     """Phase 2 cascade + Phase 3 smart routing. ENTRY (P2 forward): `ip rule from S lookup T`; ENTRY
     (P3 smart): nftables marks `ip saddr S ip daddr @<category> meta mark set T` then `ip rule fwmark T
@@ -1714,6 +1757,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     else:                      host_engine = "none"
     is_sni = host_engine in ("sni_user", "sni_kernel")         # both SNI engines share the nft ct-restore/QUIC-drop/reset setup
     _SMART_MODE["engine"] = host_engine                        # the ACTUAL running engine → smart_status reports its liveness
+    _apply_routing_reset((smart or {}).get("routing_reset"), res)   # operator 'Reset routing' → wipe all state; the rebuild below then starts fresh + re-pulls
     _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → host-tier seeding + kernel greying
     # PROVIDER lists: pull each routed one from the PANEL (not GitHub) when its version changed — writes the same
     # <cat>.txt / <cat>.doms the loaders below consume. New cat → now; changed cat → only in the quiet window.

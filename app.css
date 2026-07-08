@@ -1407,6 +1407,10 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmh-sep{color:var(--faint)}
 .rmh-note{color:var(--faint);font-style:italic}
 :root[data-theme="dark"] .rmode-health.ok .rmh-dot{background:#57C98A}
+.rmode-reset{display:inline-flex;align-items:center;gap:5px;flex:none;font-size:11.5px;padding:4px 9px;border-radius:7px;cursor:pointer;
+  border:1px solid var(--line-solid);background:transparent;color:var(--dim);transition:color .12s,border-color .12s,background .12s}
+.rmode-reset .ic svg{width:13px;height:13px}
+.rmode-reset:hover{color:#D65B5B;border-color:color-mix(in srgb,#D65B5B 50%,var(--line-solid));background:color-mix(in srgb,#D65B5B 8%,transparent)}
 /* Reusable styled dropdown (Dropdown/ModeSelect) — one look everywhere, replacing native <select> option lists. */
 .dropdown{position:relative;min-width:0}
 .field .dropdown{width:100%}   /* field dropdowns fill their column like the native selects did */

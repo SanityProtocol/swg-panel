@@ -3887,6 +3887,15 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
 
+    if method == "POST" and path == "/api/node/routing-reset":   # per-node: wipe + rebuild + re-pull ALL smart-routing state
+        nid = body.get("id") or ""
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        nodes[nid]["routing_reset"] = int(nodes[nid].get("routing_reset") or 0) + 1   # the node acts when this counter changes
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Reset routing", nodes[nid].get("name", nid))
+        return 200, {"ok": True, "data": {"id": nid, "routing_reset": nodes[nid]["routing_reset"]}}
+
     if method == "POST" and path == "/api/connection/update":
         # per-mesh-link overrides: the local source IP this node dials FROM (dial_src), and which of the
         # peer's IPs it dials TO (dial_endpoint, overriding the peer's ingress). Changing the endpoint
@@ -5185,7 +5194,8 @@ class Handler(BaseHTTPRequestHandler):
                                           # Force-DNS guard: the node drops smart-subnet DoH/DoT so clients can't bypass its DNS-based
                                           # domain fill. Only in forcedns mode — kernel needs no DNS, and sni reads the TLS handshake so it
                                           # leaves the client's DNS (incl. DoH) untouched by design.
-                                          "block_doh": (node.get("routing_mode") or "kernel") == "forcedns"},
+                                          "block_doh": (node.get("routing_mode") or "kernel") == "forcedns",
+                                          "routing_reset": int(node.get("routing_reset") or 0)},   # per-node 'Reset routing' counter → node wipes+rebuilds+re-pulls when it changes
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
                                                 "panel_ip": node.get("panel_ip") or ""},
                                 "panel": {"geo_mirror": (_ps.get("mirrors") or {}).get("geo") or "",   # Panel settings → node (Part 5)

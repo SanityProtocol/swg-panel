@@ -472,6 +472,7 @@ const api = {
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
+  routingReset(b) { return this.post("/api/node/routing-reset", b); },   // per-node: wipe + rebuild + re-pull all smart-routing state
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
   nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
   nodeUnflagRemove(b) { return this.post("/api/nodes/unflag-remove", b); },
@@ -3377,6 +3378,19 @@ function ModeDetail({ mode }) {
     <div class="rd-lines"><div class="rmc-bene"><b>+</b><span>${mm.bene}</span></div><div class="rmc-cost"><b>−</b><span>${mm.cost}</span></div></div>
     <div class="rmode-desc">${mm.exp}</div>
   </div>`;
+}
+// Operator recovery: wipe a node's smart-routing state (tables, learned IPs, cached lists), then let it rebuild from
+// scratch + re-pull every enabled/curated list from the panel. Destructive → modal confirm, never a browser popup.
+function resetRouting(node, name) {
+  openConfirm({ title: "Reset routing · " + (name || "node"), confirmLabel: "Reset routing", danger: true,
+    body: "Wipes this node's smart-routing tables, learned IPs and cached lists, then rebuilds from scratch and re-pulls "
+        + "every enabled / curated list from the panel on its next sync. Routing may blip for a few seconds while it "
+        + "rebuilds. Use this to recover a node from a bad or stale state.",
+    onConfirm: async () => {
+      const r = await api.routingReset({ id: node });
+      if (r && r.ok === false) toast(r.error || "Reset failed.", "err", 4500);
+      else toast("Routing reset queued — the node wipes, rebuilds and re-pulls on its next sync.", "ok");
+    } });
 }
 // Live host-layer health for a node, from its reported smartroute: is the mode's fill engine actually alive (swg-sni
 // for SNI, dnsmasq for Force-DNS), plus the SNI first-hit reset count. Surfaces a SILENT host-layer failure (dead
@@ -6628,8 +6642,9 @@ function PanelSettingsScreen() {
             <div class="rmode-top">
               <div class="rmode-head"><b class="rmode-node">${nodeRec ? nodeRec.name : "Node"}</b><span class="rmode-pill">${MODE_META[nodeMode].short}</span></div>
               <span class="grow"></span>
+              <button class="rmode-reset" title="Recover: wipe this node's routing tables + learned IPs and re-pull all lists from the panel" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset</button>
               <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
-                <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice below only adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.</div>
+                <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice below only adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use. <b>Reset</b> recovers a stuck node — wipe + rebuild + re-pull.</div>
               <//>
             </div>
             <p class="rmode-frame">Matches by destination <b>IP</b> first — always on, all traffic (incl. calls & UDP). Add an optional <b>host-matching</b> layer on top:</p>
