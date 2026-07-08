@@ -3818,10 +3818,11 @@ def api(method, path, qs, body, deps):
                     except ValueError:
                         return 400, {"ok": False, "error": k + " must be a valid IPv4 address (or blank)", "code": "bad_request"}
                 nodes[nid][k] = v
-        if "routing_mode" in body:              # how THIS node matches smart traffic: kernel (geoip only, DoH-proof) |
-            rm = (body.get("routing_mode") or "kernel").strip()   # forcedns (host+IP via dnsmasq, blocks client DoH) |
-            if rm not in ("kernel", "forcedns", "sni"):           # sni (host+IP via on-node SNI reader — client DNS untouched)
-                return 400, {"ok": False, "error": "routing_mode must be kernel|forcedns|sni", "code": "bad_request"}
+        if "routing_mode" in body:              # how THIS node adds a HOST layer on top of the always-on IP layer:
+            rm = (body.get("routing_mode") or "kernel").strip()   # kernel (IP only) | forcedns (host via dnsmasq, blocks
+            # client DoH) | sni (host via userspace SNI reader) | sni_kernel (host via in-kernel xt_string SNI reader).
+            if rm not in ("kernel", "forcedns", "sni", "sni_kernel"):
+                return 400, {"ok": False, "error": "routing_mode must be kernel|forcedns|sni|sni_kernel", "code": "bad_request"}
             nodes[nid]["routing_mode"] = rm
         if "enabled_categories" in body:        # built-in categories shown for THIS node's interfaces ([]/absent = all)
             ec = body.get("enabled_categories")
@@ -4793,20 +4794,27 @@ class Handler(BaseHTTPRequestHandler):
             # (rx/tx slots = throughput, pon/ptot = peers), so the "by turn-proxy" doughnuts get ranged history.
             tps = snap.get("turn_proxies") or []
             if tps:
-                conn_ips = set(); by_port = {}
+                conn_ips = set(); by_port = {}; sport_svc = {}
                 for tp in tps:
                     ci = _ip_of(tp.get("connect"))
                     if ci: conn_ips.add(ci)
                     cp = _port_of(tp.get("connect"))
                     if cp: by_port.setdefault(cp, []).append(tp.get("service") or "turn")
+                    for sp in (tp.get("wg_sports") or []):
+                        sport_svc[str(sp)] = tp.get("service") or "turn"   # exact: endpoint source port → its proxy
                 fagg = {}   # fork → [rx, tx, online, total]
                 for ifn, blk in (snap.get("interfaces") or {}).items():
                     lp = str((blk.get("meta") or {}).get("listen_port") or "")
                     svcs = by_port.get(lp) or []
-                    if not svcs: continue
-                    fork = turn_fork(svcs[0])
                     for p in (blk.get("peers") or []):
                         if _ip_of(p.get("endpoint")) not in conn_ips: continue
+                        # exact proxy via the peer's endpoint source port (disambiguates several proxies on one iface);
+                        # fall back to the iface's first proxy for old nodes that don't report wg_sports.
+                        svc = sport_svc.get(str(_port_of(p.get("endpoint"))))
+                        if not svc:
+                            if not svcs: continue
+                            svc = svcs[0]
+                        fork = turn_fork(svc)
                         f = fagg.setdefault(fork, [0, 0, 0, 0])
                         f[0] += p.get("rx_speed", 0) or 0; f[1] += p.get("tx_speed", 0) or 0
                         f[3] += 1

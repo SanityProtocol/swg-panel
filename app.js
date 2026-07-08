@@ -2591,7 +2591,7 @@ function Overview() {
       return { p, rx: r, tx: t };
     }).filter(x => x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
   }
-  const talkerRows = talkers.map((x, i) => ({ label: x.p.name || x.p.title || "peer", value: x.rx + x.tx,
+  const talkerRows = talkers.map((x, i) => ({ label: x.p.name || x.p.title || "Unassigned peer", value: x.rx + x.tx,
     sub: dRanged ? xferCell(...dlul(x.rx, x.tx)) : rateCell(x.rx, x.tx),
     color: dashRankColor(i, "talker"), href: "#/users", onClick: e => { e.preventDefault(); revealPeer(x.p); } }));
   // traffic by DESTINATION CATEGORY — each category's FULL total. Categories NEST (youtube ⊂ google, yandex ⊂ ru_net),
@@ -3304,13 +3304,29 @@ function ProvTag({ id, label, plain }) {
 // Routing-mode metadata: icon + labels + the full explanation (shown in the mode banner).
 // NOTE: all three modes are kernel-based — there is NO "Kernel" mode. The IP-only mode is "Default". (Stored value
 // stays "kernel"|"forcedns"|"sni" — the node reads it — but never DISPLAY the word "Kernel".) See MODES for the text.
+// Each entry is framed as an OPTIONAL host-matching layer ON TOP of the always-on IP base: `adds` = what the layer
+// does, `bene` = its upside (+), `cost` = its trade-off (−), `exp` = the full description under the selected card.
 const MODE_META = {
-  kernel:   { icon: "🛡️",  label: "Default — IP only. DNS not involved", short: "IP only",
+  kernel:   { icon: "globe",  label: "IP only", short: "IP only", tag: "no host layer",
+    adds: "Just the always-on IP layer — no domain matching added.",
+    bene: "Simplest & most robust · never touches DNS · carries all traffic (calls, UDP, QUIC).",
+    cost: "Can't separate services that share IPs (YouTube vs Google).",
     exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs." },
-  forcedns: { icon: "🧭", label: "Force DNS — Host + IP. Overrides encrypted DNS", short: "Host + IP",
+  forcedns: { icon: "compass", label: "Force-DNS", short: "Host via DNS", tag: "host layer · via DNS",
+    adds: "Adds domain matching by resolving your clients' DNS through the node.",
+    bene: "Per-service precise · fills before the first connection (no first-hit miss).",
+    cost: "Intercepts & downgrades client DNS — blocks their DoH / DoT.",
     exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
-  sni:      { icon: "👁️", label: "SNI Sniffer — Host + IP. DNS stays private", short: "Host + IP",
-    exp: "Routes by hostname by reading the SNI from each TLS handshake, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
+  sni_kernel: { icon: "cpu", label: "Kernel SNI", short: "Host via SNI", tag: "host layer · SNI in-kernel",
+    adds: "Reads the TLS SNI in-kernel to match domains — client DNS stays private.",
+    bene: "Daemonless & parallel per-CPU · lightest at high connection rates.",
+    cost: "Substring match only (no regex) · needs xt_string + ipset on the node.",
+    exp: "Reads the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
+  sni:      { icon: "eye", label: "Hybrid SNI", short: "Host via SNI", tag: "host layer · SNI in userspace",
+    adds: "Reads the TLS SNI in a small helper to match domains — client DNS stays private.",
+    bene: "Precise parsed-SNI matching · regex-capable · unbothered by big lists.",
+    cost: "Runs a helper process (fails open — learning pauses — if it stops).",
+    exp: "Routes by hostname by reading the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite (host) + GeoIP + Custom IPs/domains." },
 };
 // Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
 // OS-rendered <select> option list can't be styled, hence this). `options` is a flat [{value,label,disabled}] or
@@ -3342,11 +3358,25 @@ function Dropdown({ value, onChange, options, className, placeholder, disabled, 
     </div><//>` : null}
   </div>`;
 }
-// Match-mode dropdown — the shared Dropdown, with the closed label shortened at the sentence break ("Force DNS —
-// Host + IP") so it stays compact and never squeezes the node name; the open list shows the full label.
-function ModeSelect({ value, onChange }) {
-  return html`<${Dropdown} className="modesel" value=${value} onChange=${onChange} short=${l => l.split(". ")[0].trim()}
-    options=${["kernel", "forcedns", "sni"].map(m => ({ value: m, label: MODE_META[m].label }))}/>`;
+// Match-mode picker — a compact row of four icons (IP · Force-DNS · Kernel-SNI · Hybrid-SNI); the selected one is
+// highlighted in its mode colour and its full detail card renders below (see the routing banner). Icon-only keeps
+// it tight; the tooltip + the detail card carry the names, so no per-option text is needed here.
+function ModeTabs({ value, onChange }) {
+  return html`<div class="rmode-tabs" role="radiogroup">
+    ${["kernel", "forcedns", "sni_kernel", "sni"].map(m => { const mm = MODE_META[m], on = m === value;
+      return html`<button type="button" role="radio" aria-checked=${on} key=${m} title=${mm.label}
+        class=${"rmtab m-" + m + (on ? " on" : "")} onClick=${() => onChange(m)}><${Ic} i=${mm.icon}/></button>`; })}
+  </div>`;
+}
+// Full-width detail for the currently-selected mode (icon + name + tag, what it adds, +benefit / −trade-off, full text).
+function ModeDetail({ mode }) {
+  const mm = MODE_META[mode] || MODE_META.kernel;
+  return html`<div class="rmode-detail">
+    <div class="rd-head"><span class="rd-ic"><${Ic} i=${mm.icon}/></span><b class="rd-name">${mm.label}</b><span class="rmc-tag">${mm.tag}</span></div>
+    <div class="rd-adds">${mm.adds}</div>
+    <div class="rd-lines"><div class="rmc-bene"><b>+</b><span>${mm.bene}</span></div><div class="rmc-cost"><b>−</b><span>${mm.cost}</span></div></div>
+    <div class="rmode-desc">${mm.exp}</div>
+  </div>`;
 }
 // "on N/M nodes ▾" fleet-assignment popover — toggle a list on each node. disabledFor(nid) → a reason string greys it.
 function FleetAssign({ nodes, isOn, onToggle, disabledFor }) {
@@ -3519,7 +3549,7 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
             : _matchTotal === 0 ? html`<div class="catpick-empty">No list matches “${q}”.${cidx && cidx.length === 0 ? html`<br/><span class="faint">Enable a provider in Settings → Geo data to search its catalog.</span>` : ""}</div>` : null}
         `}
       </div>
-      ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is in <b>Kernel</b> (IP) mode. Switch it to Force-DNS or SNI to use them.</div>` : null}
+      ${mode === "kernel" ? html`<div class="catpick-note">Greyed lists match by <b>domain</b> only — this node is <b>IP-only</b> (no host layer). Switch it to Force-DNS or SNI to use them.</div>` : null}
       ${addMode && total > per ? html`<div class="catpick-foot">
         <button type="button" class="btn btn-mini" disabled=${page === 0} onClick=${() => setPage(p => Math.max(0, p - 1))}>‹ Prev</button>
         <span class="catpick-count">${page * per + 1}–${Math.min(total, (page + 1) * per)} of ${total}</span>
@@ -3585,7 +3615,7 @@ function RoutingRules({ node, rules, onChange }) {
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => emit(dispRules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
         ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
-        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder=${ipOnly ? "IPs / CIDRs only (Kernel mode) — e.g. 1.2.3.0/24, 5.6.7.8" : "IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com"} value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP${ipOnly ? " or CIDR" : " or domain"}</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : domToks.length ? html`<span class="rrlint">Kernel mode is IP-only — ${domToks.slice(0, 3).join(", ")}${domToks.length > 3 ? "…" : ""} ${domToks.length > 1 ? "are domains" : "is a domain"}. Use IPs/CIDRs, or <button type="button" class="linkbtn" onClick=${switchToForceDns}>switch this node to Force-DNS</button>.</span>` : null}` : null}
+        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder=${ipOnly ? "IPs / CIDRs only (IP-only mode) — e.g. 1.2.3.0/24, 5.6.7.8" : "IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com"} value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP${ipOnly ? " or CIDR" : " or domain"}</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : domToks.length ? html`<span class="rrlint">IP-only mode — ${domToks.slice(0, 3).join(", ")}${domToks.length > 3 ? "…" : ""} ${domToks.length > 1 ? "are domains" : "is a domain"}. Use IPs/CIDRs, or <button type="button" class="linkbtn" onClick=${switchToForceDns}>switch this node to Force-DNS</button>.</span>` : null}` : null}
       </div>`;
     })}</div>
     <div class="rrfoot">
@@ -3675,7 +3705,7 @@ function egressError(eg, mode) {
     if (bad.length) return "Invalid target" + (bad.length > 1 ? "s" : "") + ": " + bad.slice(0, 4).join(", ") + (bad.length > 4 ? "…" : "");
     if (mode === "kernel") {
       const doms = domainTargets(r.targets || "");
-      if (doms.length) return "Kernel mode routes by IP only — remove the domain" + (doms.length > 1 ? "s" : "") + " (" + doms.slice(0, 3).join(", ") + (doms.length > 3 ? "…" : "") + "), or switch this node to Force-DNS.";
+      if (doms.length) return "IP-only mode routes by IP only — remove the domain" + (doms.length > 1 ? "s" : "") + " (" + doms.slice(0, 3).join(", ") + (doms.length > 3 ? "…" : "") + "), or switch this node to Force-DNS.";
     }
   }
   return null;
@@ -6577,16 +6607,15 @@ function PanelSettingsScreen() {
         ${section === "routing" ? html`<div class="card rcard">
           <div class=${"rmode-banner m-" + nodeMode}>
             <div class="rmode-top">
-              <span class="rmode-icon">${MODE_META[nodeMode].icon}</span>
               <div class="rmode-head"><b class="rmode-node">${nodeRec ? nodeRec.name : "Node"}</b><span class="rmode-pill">${MODE_META[nodeMode].short}</span></div>
               <span class="grow"></span>
-              <label class="rmode-picker"><span class="rmode-plbl">Match mode</span>
-                <${ModeSelect} value=${nodeMode} onChange=${setMode}/></label>
               <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
-                <div class="rmode-info-body">Select how <b>${nodeRec ? nodeRec.name : "this node"}</b> matches smart-routing traffic — by destination <b>IP</b>, or by <b>hostname</b> (via the node's DNS, or read from the TLS handshake). In every mode the traffic stays in-kernel (no userspace proxy); the modes differ only in match precision and in whether they touch your clients' DNS. Changing the mode reconfigures the node (adds or removes its DNS resolver or SNI reader) and changes which lists its interfaces can use.</div>
+                <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice below only adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.</div>
               <//>
             </div>
-            <div class="rmode-desc">${MODE_META[nodeMode].exp}</div>
+            <p class="rmode-frame">Matches by destination <b>IP</b> first — always on, all traffic (incl. calls & UDP). Add an optional <b>host-matching</b> layer on top:</p>
+            <${ModeTabs} value=${nodeMode} onChange=${setMode}/>
+            <${ModeDetail} mode=${nodeMode}/>
           </div>
 
           <div class="lgrid-head">

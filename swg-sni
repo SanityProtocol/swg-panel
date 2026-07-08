@@ -46,6 +46,7 @@ NFQA_CFG_F_FAIL_OPEN = 0x0001
 NFQA_PACKET_HDR, NFQA_PAYLOAD = 1, 10
 # verdict
 NFQA_VERDICT_HDR = 2
+NFQA_MARK = 3                                       # __u32 nfmark — set the skb mark in the verdict (→ a standing nft rule RSTs the flow)
 NF_ACCEPT = 1
 NLA_TYPE_MASK = 0x3fff                              # strip NLA_F_NESTED / NLA_F_NET_BYTEORDER flags
 
@@ -84,12 +85,17 @@ class NFQueue:
                          _nla(NFQA_CFG_MASK, struct.pack(">I", NFQA_CFG_F_FAIL_OPEN)),
                          _nla(NFQA_CFG_FLAGS, flags)))
 
-    def _accept(self, packet_id):
-        vh = struct.pack(">II", NF_ACCEPT, packet_id)
-        self.s.send(_msg(NFQNL_MSG_VERDICT, self.qnum, _nla(NFQA_VERDICT_HDR, vh)))
+    def _accept(self, packet_id, mark=None):
+        """ACCEPT the packet; if `mark` is truthy, also stamp the skb mark (NFQA_MARK) so a standing nft rule can
+        act on it (we use it to RST the first flow to a newly-learned dst). Omitting the mark leaves it untouched,
+        so an already-routed connection's mark (restored from its connmark) survives — we don't reroute it."""
+        attrs = [_nla(NFQA_VERDICT_HDR, struct.pack(">II", NF_ACCEPT, packet_id))]
+        if mark:
+            attrs.append(_nla(NFQA_MARK, struct.pack(">I", mark)))
+        self.s.send(_msg(NFQNL_MSG_VERDICT, self.qnum, *attrs))
 
     def loop(self, on_packet):
-        """Receive packets forever; for each, call on_packet(payload_bytes) then ACCEPT. Never drops."""
+        """Receive packets forever; for each, call on_packet(payload_bytes) → optional skb mark, then ACCEPT. Never drops."""
         while True:
             buf = self.s.recv(0x10000)
             off = 0
@@ -100,12 +106,13 @@ class NFQueue:
                 if mtype == NFQNL_MSG_PACKET:
                     pid, payload = self._parse_packet(buf[off + 16:off + mlen])
                     if pid is not None:
+                        mark = None
                         try:
                             if payload:
-                                on_packet(payload)
+                                mark = on_packet(payload)
                         except Exception:
                             pass                       # a bad packet must never stop the queue
-                        self._accept(pid)
+                        self._accept(pid, mark)
                 off += (mlen + 3) & ~3
 
     @staticmethod
@@ -177,9 +184,10 @@ def parse_sni(p):
 
 # ── domain → category matching + nft learning ──
 class Classifier:
-    def __init__(self, map_path, table):
+    def __init__(self, map_path, table, reset_mark=0):
         self.map_path = map_path
         self.table = table
+        self.reset_mark = reset_mark               # >0: RST the FIRST flow to each newly-learned dst so it reconnects routed
         self.mtime = 0
         self.dom2cat = {}                              # exact domain → category
         self.seen = set()                              # (ip, cat) already added → don't re-shell nft
@@ -236,8 +244,10 @@ class Classifier:
                            capture_output=True, text=True)
         if r.returncode != 0:
             self.seen.discard(key)                     # let it retry next time (set may not exist yet)
-        else:
-            print(f"swg-sni: {host} → {cat}  (+{dst})", flush=True)
+            return None
+        print(f"swg-sni: {host} → {cat}  (+{dst})", flush=True)
+        return self.reset_mark                          # FIRST sight of this dst: RST this flow (mark it) so the client
+        #                                                 reconnects — the retry's SYN now matches the set and routes correctly.
 
 
 def main():
@@ -245,10 +255,11 @@ def main():
     ap.add_argument("--queue", type=int, default=int(os.environ.get("SWG_SNI_QUEUE", "0")))
     ap.add_argument("--map", default=os.environ.get("SWG_SNI_MAP", "/var/lib/swg-noded/sni-map.json"))
     ap.add_argument("--table", default=os.environ.get("SWG_SNI_TABLE", "swg_smart"))
+    ap.add_argument("--reset-mark", type=lambda x: int(x, 0), default=int(os.environ.get("SWG_SNI_RESET_MARK", "0"), 0))
     a = ap.parse_args()
-    cls = Classifier(a.map, a.table)
+    cls = Classifier(a.map, a.table, a.reset_mark)
     q = NFQueue(a.queue)
-    print(f"swg-sni: bound queue {a.queue}, table {a.table}, map {a.map}", flush=True)
+    print(f"swg-sni: bound queue {a.queue}, table {a.table}, map {a.map}, reset-mark {a.reset_mark:#x}", flush=True)
     q.loop(cls.on_packet)
 
 

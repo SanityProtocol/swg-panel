@@ -1350,9 +1350,10 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-top{display:flex;align-items:center;gap:12px;flex-wrap:nowrap;min-width:0}
 .rmode-node{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
 /* mode colours — mid-tones legible on BOTH light and dark grounds (bright amber washed out on white) */
-.rmode-banner.m-kernel{--mc:#3E8FC4}.rmode-banner.m-forcedns{--mc:#C0821A}.rmode-banner.m-sni{--mc:#8A5CD0}
+.rmode-banner.m-kernel{--mc:#3E8FC4}.rmode-banner.m-forcedns{--mc:#C0821A}.rmode-banner.m-sni_kernel{--mc:#5B6EE1}.rmode-banner.m-sni{--mc:#8A5CD0}
 :root[data-theme="dark"] .rmode-banner.m-kernel{--mc:#5FB0E8}
 :root[data-theme="dark"] .rmode-banner.m-forcedns{--mc:#EBB43C}
+:root[data-theme="dark"] .rmode-banner.m-sni_kernel{--mc:#8A98F0}
 :root[data-theme="dark"] .rmode-banner.m-sni{--mc:#B08CE8}
 .rmode-icon{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;flex:none;line-height:1;font-size:30px}
 .rmode-info{display:inline-flex;flex:none}
@@ -1367,9 +1368,34 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-pill{font-family:var(--mono);font-size:10px;color:var(--mc);padding:2px 7px;border-radius:20px;background:color-mix(in srgb,var(--mc) 15%,transparent)}
 .rmode-desc{font-size:12px;color:var(--dim);line-height:1.55;margin-top:11px;max-width:none}
 .rmode-head{flex:0 1 auto;min-width:0}   /* node name truncates before the picker shrinks */
-.rmode-picker{display:flex;align-items:center;gap:9px;flex:1 1 auto;min-width:0;justify-content:flex-end}
-.rmode-plbl{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);flex:none}
-.rmode-picker .modesel{min-width:0;flex:0 1 auto}   /* compact — the closed label is short (before the comma) */
+/* framing line → four mode-icon tabs → the selected mode's full-width detail card (all colour off the banner's --mc) */
+.rmode-frame{font-size:12.5px;color:var(--dim);line-height:1.5;margin:12px 0 11px}
+.rmode-frame b{color:var(--ink);font-weight:600}
+.rmode-tabs{display:flex;gap:8px;margin:0 0 14px}
+.rmtab{--mc:var(--brand);flex:0 0 auto;width:54px;height:44px;display:inline-flex;align-items:center;justify-content:center;
+  border:1px solid var(--line-solid);background:var(--surface-2);border-radius:9px;color:var(--faint);cursor:pointer;
+  transition:color .12s,background .12s,border-color .12s,box-shadow .12s}
+.rmtab .ic svg{width:22px;height:22px}
+.rmtab.m-kernel{--mc:#3E8FC4}.rmtab.m-forcedns{--mc:#C0821A}.rmtab.m-sni_kernel{--mc:#5B6EE1}.rmtab.m-sni{--mc:#8A5CD0}
+:root[data-theme="dark"] .rmtab.m-kernel{--mc:#5FB0E8}
+:root[data-theme="dark"] .rmtab.m-forcedns{--mc:#EBB43C}
+:root[data-theme="dark"] .rmtab.m-sni_kernel{--mc:#8A98F0}
+:root[data-theme="dark"] .rmtab.m-sni{--mc:#B08CE8}
+.rmtab:hover{color:var(--mc);border-color:color-mix(in srgb,var(--mc) 55%,var(--line-solid));background:color-mix(in srgb,var(--mc) 8%,var(--surface-2))}
+.rmtab.on{color:#fff;background:var(--mc);border-color:var(--mc);box-shadow:0 3px 10px color-mix(in srgb,var(--mc) 38%,transparent)}
+.rmode-detail{border:1px solid color-mix(in srgb,var(--mc) 30%,var(--line-solid));background:color-mix(in srgb,var(--mc) 6%,var(--surface-2));border-radius:9px;padding:13px 15px}
+.rd-head{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.rd-ic{display:inline-flex;color:var(--mc)}.rd-ic svg{width:20px;height:20px}
+.rd-name{font-size:15px;color:var(--ink);font-weight:700}
+.rd-adds{font-size:12.5px;color:var(--dim);line-height:1.5;margin-bottom:9px}
+.rd-lines{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.rmc-tag{font-family:var(--mono);font-size:9px;letter-spacing:.03em;color:var(--mc);padding:2px 7px;border-radius:20px;background:color-mix(in srgb,var(--mc) 14%,transparent);white-space:nowrap}
+.rmc-bene,.rmc-cost{font-size:12px;line-height:1.45;display:flex;gap:7px;align-items:baseline}
+.rmc-bene b,.rmc-cost b{flex:none;font-family:var(--mono);font-weight:700;font-size:12.5px}
+.rmc-bene{color:var(--dim)}.rmc-bene b{color:#3EA76B}
+.rmc-cost{color:var(--faint)}.rmc-cost b{color:#C0821A}
+:root[data-theme="dark"] .rmc-bene b{color:#57C98A}:root[data-theme="dark"] .rmc-cost b{color:#EBB43C}
+.rmode-detail .rmode-desc{margin-top:10px}
 /* Reusable styled dropdown (Dropdown/ModeSelect) — one look everywhere, replacing native <select> option lists. */
 .dropdown{position:relative;min-width:0}
 .field .dropdown{width:100%}   /* field dropdowns fill their column like the native selects did */

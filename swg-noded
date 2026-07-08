@@ -447,7 +447,9 @@ def _turn_conn_ips():
 
 def _attach_turn_src_ips(tp):
     """Attach src_ips (unique client source IPs currently connected) to each turn-proxy by matching its listen
-    PORT against one ss sweep. Best-effort — any failure just leaves src_ips unset (the panel then shows none)."""
+    PORT against one ss sweep. Best-effort — any failure just leaves src_ips unset (the panel then shows none).
+    NB: works for a TCP-transport proxy (per-client established sockets); a UDP proxy serves all clients from ONE
+    unconnected socket, so ss can't see client IPs there (would need conntrack) — src_ips is left empty."""
     with contextlib.suppress(Exception):
         if not tp:
             return
@@ -456,6 +458,44 @@ def _attach_turn_src_ips(tp):
             lp = str(t.get("listen") or "").rsplit(":", 1)[-1]
             if lp.isdigit():
                 t["src_ips"] = sorted(cmap.get(lp, ()))
+
+
+def _service_of_pid(pid):
+    """The systemd turn-proxy unit owning a pid → its service name (vk-turn-proxy-<fork>-<port>), via cgroup."""
+    try:
+        with open("/proc/%s/cgroup" % pid) as f:
+            m = re.search(r"(vk-turn-proxy-[^/\s.]+)", f.read())
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def _attach_turn_wg_sports(tp):
+    """Attach wg_sports — the localhost SOURCE ports this proxy uses to reach its wg backend. A wg peer that came
+    in via a proxy has endpoint 127.0.0.1:<one of these ports>, so the panel can tell WHICH proxy a client used
+    even when several proxies front the SAME interface (else it'd guess the first). Transport-agnostic (the
+    proxy→wg side is always a normal connected socket); grouped by owning unit via /proc/<pid>/cgroup. Best-effort."""
+    with contextlib.suppress(Exception):
+        if not tp:
+            return
+        by_svc = {}
+        for proto in ("-t", "-u"):
+            try:
+                r = subprocess.run(["ss", "-Hnp", proto, "state", "established"], capture_output=True, text=True, timeout=5)
+            except Exception:
+                continue
+            for line in (r.stdout or "").splitlines():
+                mp = re.search(r"pid=(\d+)", line)
+                loop = re.findall(r"127\.0\.0\.1:(\d+)", line)   # LOCAL then PEER, both loopback on a proxy→wg conn
+                if not mp or len(loop) < 2:
+                    continue
+                svc = _service_of_pid(mp.group(1))
+                if svc:
+                    by_svc.setdefault(svc, set()).add(loop[0])   # loop[0] = LOCAL = the source port wg sees as the endpoint
+        for t in tp:
+            svc = t.get("service") or ""
+            if svc in by_svc:
+                t["wg_sports"] = sorted(by_svc[svc])
 
 
 def load_turn_proxies():
@@ -484,6 +524,7 @@ def load_turn_proxies():
         _dturn_attach_running(tp)
         _attach_turn_version(tp)
         _attach_turn_src_ips(tp)
+        _attach_turn_wg_sports(tp)
         return tp
     nowt = time.time()
     on_disk = _list_turn_units()   # bare-metal: the units on disk are the source of truth — reconcile the list
@@ -511,6 +552,7 @@ def load_turn_proxies():
     _attach_turn_running(tp)
     _attach_turn_version(tp)
     _attach_turn_src_ips(tp)
+    _attach_turn_wg_sports(tp)
     marks = _turn_installing_markers()   # an installer/convert is setting these up → show "installing" (synthetic entry if no unit yet)
     if marks:
         have = {t.get("service") for t in tp}
@@ -708,6 +750,9 @@ SWG_RT_MAX = 7099           # (priority == table number; one table per egress ta
 SMART_NFT_TABLE = "swg_smart"   # Phase 3: inet nft table holding the per-category dest sets + marking chain
 SNI_NFQUEUE = 0                 # SNI mode: nft queues each connection's first packets here → swg-sni reads the ClientHello
 SNI_MAP_PATH = "/var/lib/swg-noded/sni-map.json"   # domain→category map swg-noded writes for swg-sni to consume
+SNI_RESET_MARK = 0x9999         # SNI mode: swg-sni stamps the FIRST ClientHello to a newly-learned dst with this skb mark;
+#                                 a standing nft forward rule RSTs it so the client reconnects and the retry routes correctly
+#                                 (outside the 7000-band fwmarks). Must match the value passed to swg-sni.
 _SNI_PROC = {"p": None}         # the running swg-sni subprocess (SNI-mode classifier), or None
 
 
@@ -872,7 +917,7 @@ def _smart_table():
     return _SMART_TABLE
 
 
-def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
+def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_mark=0):
     """Phase 3 marking: keep an inet table `swg_smart` with one interval set per category (populated from
     shipped geo CIDR lists — see _smart_geo_refresh) and a prerouting chain that marks
     `ip saddr <S> ip daddr @cat_<c> meta mark set <T>`. Idempotent + drift-gated (flush+rebuild the chain
@@ -924,7 +969,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
     allr = [e for e in smart_e if e["category"] == "all"]
     want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec + allr]
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
-    sig = hashlib.sha1((("pin;" if pin else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|s2").encode()).hexdigest()[:16]   # s2: +QUIC drop (sni)
+    sig = hashlib.sha1((("pin;" if pin else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + "|s4").encode()).hexdigest()[:16]   # s4: +QUIC drop + SNI first-hit reset (counted)
     _sigf = os.path.join(GEO_DIR, ".smart-sig")
     try:
         stored = open(_sigf).read().strip()
@@ -936,7 +981,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
         return m.group(1) if m else ""
     expect_pre = pin or any(a != "direct" for (_, _, a, _) in want)   # exit/block rules + pin (queue/restore) all emit `ip saddr` prerouting rules
     pre_ok = (not expect_pre) or ("saddr" in _cbody("prerouting"))
-    fwd_ok = (not v6f) or ("drop" in _cbody("forward"))
+    fwd_ok = ((not v6f) or ("drop" in _cbody("forward"))) and ((not (pin and reset_mark)) or ("reject" in _cbody("forward")))
     if stored != sig or not chain_present or not pre_ok or not fwd_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
         run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "prerouting"])
@@ -975,10 +1020,15 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=()):
         # IPv6 fail-closed: the marking above is IPv4-only, so a dual-stack client's v6 traffic would bypass smart
         # routing and leak out the entry node's WAN. DROP forwarded IPv6 on each smart interface (both directions).
         chains_now = re.findall(r"chain (\S+) {", body)
-        if v6f:
+        want_fwd = bool(v6f) or bool(pin and reset_mark)   # forward chain hosts the v6 fail-closed drops AND the SNI reset
+        if want_fwd:
             if "forward" not in chains_now:
                 run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "forward", "{ type filter hook forward priority filter; policy accept; }"])
             run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "forward"])
+            if pin and reset_mark:                         # SNI first-hit RST: swg-sni stamped the FIRST ClientHello to a
+                for S in subnets:                           # newly-learned dst with reset_mark → RST it so the client reconnects
+                    run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "forward", "ip", "saddr", S, "tcp", "dport", "443",
+                         "meta", "mark", hex(reset_mark), "counter", "reject", "with", "tcp", "reset"])   # counter = reset hit-rate (health); retry's SYN matches the set and routes correctly
             for ifn in v6f:
                 run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "iifname", ifn, "drop"])
                 run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "forward", "meta", "nfproto", "ipv6", "oifname", ifn, "drop"])
@@ -1654,7 +1704,9 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     exit_ = plan.get("exit") or []
     smart_e = (smart or {}).get("entries") or []
     smart_exit = [e for e in smart_e if e.get("action", "exit") == "exit"]   # only exit rules carry a mesh table/dev; direct/block are local verdicts
-    mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni — picks the set-fill mechanism
+    mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni | sni_kernel — picks the set-fill mechanism
+    if mode == "sni_kernel":                                   # dedicated in-kernel (xt_string) SNI reader is a later phase; until it
+        mode = "sni"                                           # ships, a Kernel-SNI node runs the userspace SNI reader so host routing still works (same routing, just not the kernel datapath)
     _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → host-tier seeding + kernel greying
     # PROVIDER lists: pull each routed one from the PANEL (not GitHub) when its version changed — writes the same
     # <cat>.txt / <cat>.doms the loaders below consume. New cat → now; changed cat → only in the quiet window.
@@ -1696,7 +1748,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     smart_cats = sorted(set((smart or {}).get("categories") or []) | {e["category"] for e in smart_e})
     _smart_subs = {e["subnet"] for e in smart_e}                # smart interfaces (by subnet) → IPv6 fail-closed drop
     smart_ifs = sorted({ifn for ifn in (node_cfg.get("interfaces") or {}) if _iface_subnet(node_cfg, ifn) in _smart_subs}) if _smart_subs else []
-    set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=(mode == "sni"), v6_ifaces=smart_ifs)
+    set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=(mode == "sni"), v6_ifaces=smart_ifs,
+                                    reset_mark=(SNI_RESET_MARK if mode == "sni" else 0))
     domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq-filled
     if mode != "kernel":                                       # CATALOG host cats (no curated bundle) → seed empty so the node domain-fills them from MetaCubeX
         for _c, _caps in _CAT_CAPS.items():
@@ -1775,7 +1828,8 @@ def _ensure_sni_router(domains, subnets, res):
         try:
             log = open("/var/lib/swg-noded/swg-sni.log", "a")
             _SNI_PROC["p"] = subprocess.Popen([sys.executable, exe, "--queue", str(SNI_NFQUEUE),
-                                               "--map", SNI_MAP_PATH, "--table", SMART_NFT_TABLE],
+                                               "--map", SNI_MAP_PATH, "--table", SMART_NFT_TABLE,
+                                               "--reset-mark", hex(SNI_RESET_MARK)],
                                               stdout=log, stderr=log)
             res["changed"] += 1; print("sni: launched swg-sni (queue %d)" % SNI_NFQUEUE, flush=True)
         except Exception as e:

@@ -70,14 +70,17 @@ function reconcile(roster, stats, now, cfg) {
   // which. We attribute a turn-online peer to a proxy that forwards to the peer's OWN interface (proxy connect
   // port == the iface's wg listen port); several such proxies (redundancy) → pick the first, so exactly ONE
   // proxy claims the connection.
-  const turnConnIps = {}, turnByPort = {};   // node → { connectIP: true } · node → { wgPort: [service] }
+  const turnConnIps = {}, turnByPort = {}, turnSportSvc = {};   // node → {connectIP:true} · {wgPort:[svc]} · {wgSourcePort:svc}
   for (const node of Object.keys(stats)) {
-    const ips = {}, byPort = {};
+    const ips = {}, byPort = {}, sportSvc = {};
     for (const tp of ((stats[node] && stats[node].turn_proxies) || [])) {
       const ip = ipOf(tp && tp.connect); if (ip) ips[ip] = true;
       const port = portOf(tp && tp.connect); if (port) (byPort[port] = byPort[port] || []).push((tp && tp.service) || "turn");
+      // exact attribution: a peer whose endpoint is 127.0.0.1:<sport> came in through THIS proxy (disambiguates
+      // several proxies fronting one interface). Nodes < the wg_sports change won't send these → we fall back below.
+      for (const sp of ((tp && tp.wg_sports) || [])) sportSvc[String(sp)] = (tp && tp.service) || "turn";
     }
-    turnConnIps[node] = ips; turnByPort[node] = byPort;
+    turnConnIps[node] = ips; turnByPort[node] = byPort; turnSportSvc[node] = sportSvc;
   }
 
   const managed = {};
@@ -116,10 +119,15 @@ function reconcile(roster, stats, now, cfg) {
       const epIp = (obs && obs.endpoint) ? ipOf(obs.endpoint) : "";
       const via = epIp ? ((turnConnIps[t.node] || {})[epIp] ? "turn" : "direct") : null;
       let viaTurn = null;
-      if (via === "turn") {   // attribute to a proxy forwarding to THIS interface (connect port == iface listen port)
+      if (via === "turn") {
+        // Prefer the EXACT proxy: the wg endpoint's source port maps 1:1 to the proxy that opened it (node-reported).
+        const eport = portOf(obs && obs.endpoint);
+        const bySport = (turnSportSvc[t.node] || {})[String(eport)];
+        // Fall back (old nodes without wg_sports): attribute to a proxy forwarding to THIS iface (connect port ==
+        // iface listen port); if several share it we can only guess the first.
         const lp = ((((((stats[t.node] || {}).interfaces || {})[t.iface] || {}).meta) || {}).listen_port);
         const svcs = (turnByPort[t.node] || {})[String(lp)] || [];
-        viaTurn = svcs.length ? svcs[0] : null;
+        viaTurn = bySport || (svcs.length ? svcs[0] : null);
       }
       return { node: t.node, iface: t.iface, ip: t.ip, type: t.type,
                status: st, online: !!(obs && obs.online), observed: obs, via: via,
