@@ -1636,6 +1636,7 @@ function ifTypeLabel(node, iface) {
 }
 // Deep-link target for a Settings activity row (the first changed section id, applied on the settings screen).
 let pendingSettingsSection = null;
+let pendingTurnIpsOpen = false;   // set by the "Turn IPs" header → Settings opens + expands + scrolls to the Collected IPs grid
 // Jump to a Settings sub-section, closing any open modal first (a no-op when nothing is open). Used by the
 // gear shortcuts next to Add rule / Create interface / Setup proxy.
 function goSettings(section) { pendingSettingsSection = section; closeAllModals(); go("#/panel/settings"); }
@@ -4207,14 +4208,20 @@ function TurnIpsHeader({ node, svc }) {
   const active = new Set(tp ? (tp.src_ips || []) : []);
   const recs = data || {};
   const ips = new Set([...Object.keys(recs).filter(ip => (recs[ip].by || []).includes(svc)), ...active]);
-  const rows = [...ips].map(ip => ({ ip, last: (recs[ip] || {}).last, on: active.has(ip) }))
+  const all = [...ips].map(ip => ({ ip, last: (recs[ip] || {}).last, on: active.has(ip) }))
     .sort((a, b) => (a.on === b.on ? (b.last || 0) - (a.last || 0) : a.on ? -1 : 1));
-  const flush = async () => { await api.turnIpsFlush({ node }); load(); };
-  const trigger = html`<span class="turnips-hd" title="Client IPs the node saw connecting to this proxy">Turn IPs${active.size ? html` · <b>${active.size}</b>` : ""}</span>`;
-  return html`<${Popover} cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
-    <div class="tipbub-h"><b>Collected client IPs</b>${rows.length ? html`<span class="grow"></span><button class="linkbtn" onClick=${flush}>Flush</button>` : null}</div>
-    ${rows.length ? html`<div class="tipbub-list">${rows.map(r => html`<div class="tipbub-row" key=${r.ip}><span class=${"tipdot" + (r.on ? " on" : "")}></span><span class="tipbub-ip">${r.ip}</span><span class="grow"></span><span class="tipbub-when">${r.on ? "online" : _lastSeen(r.last)}</span></div>`)}</div>`
-      : html`<div class="hint" style="margin:6px 0 0">No connections seen yet.</div>`}
+  const rows = all.slice(0, 10);   // show at most 10 here — the full list lives in Settings
+  const flush = async () => { await api.turnIpsFlush({ node, service: svc }); load(); };   // this proxy's recorded IPs only
+  const openSettings = () => { pendingSettingsSection = "turn"; pendingTurnIpsOpen = true; closeAllModals(); go("#/panel/settings"); };
+  const trigger = html`<span class="turnips-hd" title="Open the collected IPs in Settings → Turn proxies" onClick=${openSettings}>Turn IPs${active.size ? html` · <b>${active.size}</b>` : ""}</span>`;
+  return html`<${Popover} hoverOnly cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
+    <div class="onpop-h">Collected VK IPs</div>
+    ${rows.length ? html`<${Fragment}>
+      ${rows.map(r => html`<div class="tipbub-row" key=${r.ip}><span class=${"tipdot" + (r.on ? " on" : "")}></span><span class="tipbub-ip">${r.ip}</span><span class="grow"></span><span class="tipbub-when">${r.on ? "online" : _lastSeen(r.last)}</span></div>`)}
+      ${all.length > rows.length ? html`<div class="tipbub-more">+${all.length - rows.length} more in Settings</div>` : null}
+      <button class="tipbub-flush" onClick=${flush}><${Ic} i="trash"/> Flush offline recorded IPs</button>
+    <//>`
+      : html`<div class="tipbub-empty">No connections seen yet.</div>`}
   <//>`;
 }
 
@@ -4223,19 +4230,25 @@ function TurnIpsHeader({ node, svc }) {
 function TurnCollectedIps() {
   const [show, setShow] = useState(false);   // collapsed by default (advtoggle concept) — fetch on first expand
   const [data, setData] = useState(null);
+  const secRef = useRef(null);
   const load = () => api.turnIps().then(r => setData(r && r.ok ? (r.data.nodes || {}) : {})).catch(() => setData({}));
   useEffect(() => { if (show && data === null) load(); }, [show]);
+  useEffect(() => {   // deep-linked from a "Turn IPs" header → expand + scroll into view
+    if (pendingTurnIpsOpen) { pendingTurnIpsOpen = false; setShow(true); setTimeout(() => secRef.current && secRef.current.scrollIntoView({ behavior: "smooth", block: "center" }), 150); }
+  }, []);
   const rows = [];
   for (const [nid, ips] of Object.entries(data || {}))
     for (const [ip, rec] of Object.entries(ips))
       rows.push({ nid, ip, last: rec.last, by: rec.by || [], on: (rec.active_by || []).length > 0 });
   rows.sort((a, b) => (a.on === b.on ? (b.last || 0) - (a.last || 0) : a.on ? -1 : 1));   // default: Last (online first)
   const del = async (nid, ip) => { await api.turnIpsFlush({ node: nid, ip }); load(); };
-  const flushAll = async () => { if (!confirm("Flush collected turn-proxy IP history across the fleet? The currently-online IPs are kept.")) return; await api.turnIpsFlush({}); load(); };
+  const flushAll = () => openConfirm({ title: "Flush recorded IP history", confirmLabel: "Flush", danger: true,
+    body: "Flush the collected turn-proxy IP history across the fleet? The currently-online IPs are kept.",
+    onConfirm: async () => { await api.turnIpsFlush({}); load(); } });
   return html`<${Fragment}>
-    <button type="button" class="advtoggle" style="margin-top:18px" onClick=${() => setShow(a => !a)}><span class="advcaret">${show ? "▾" : "▸"}</span> Collected IPs${show && rows.length ? html` <span class="count">${rows.length}</span>` : ""}</button>
+    <button type="button" ref=${secRef} class="advtoggle" style="margin-top:18px" onClick=${() => setShow(a => !a)}><span class="advcaret">${show ? "▾" : "▸"}</span> Collected IPs${show && rows.length ? html` <span class="count">${rows.length}</span>` : ""}</button>
     ${show ? html`<${Fragment}>
-    <p class="hint" style="margin:8px 0 10px">Unique client IPs the nodes saw connecting to their turn-proxies. A <span style="color:var(--online)">green dot</span> marks the ones online now; the rest show when they were last seen.</p>
+    <p class="hint" style="margin:8px 0 10px">Unique VK server IPs the nodes collected via turn-proxies.</p>
     ${data === null ? html`<div class="hint">Loading…</div>`
       : rows.length ? html`<${Fragment}>
         <div class="tipgrid">
