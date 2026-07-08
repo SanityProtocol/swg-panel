@@ -482,6 +482,7 @@ const api = {
   panelSettings(b) { return this.post("/api/panel/settings", b); },
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
   routingReset(b) { return this.post("/api/node/routing-reset", b); },   // per-node: wipe + rebuild + re-pull all smart-routing state
+  asnCount(n) { return this.get("/api/asn?n=" + encodeURIComponent(n)); },   // resolve an ASN → prefix count (live editor feedback)
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
   nodeFlagRemove(b) { return this.post("/api/nodes/flag-remove", b); },
   nodeUnflagRemove(b) { return this.post("/api/nodes/unflag-remove", b); },
@@ -3658,6 +3659,7 @@ function RoutingRules({ node, rules, onChange }) {
         <button class="xbtn" title="Remove rule" onClick=${() => emit(dispRules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
         ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
         ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder=${ipOnly ? "IPs / CIDRs / AS numbers (IP-only mode) — e.g. 1.2.3.0/24, AS62041" : "IPs / domains / AS numbers — e.g. youtube.com, 1.2.3.0/24, AS62041"} value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP${ipOnly ? " or CIDR" : " or domain"}</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : domToks.length ? html`<span class="rrlint">IP-only mode — ${domToks.slice(0, 3).join(", ")}${domToks.length > 3 ? "…" : ""} ${domToks.length > 1 ? "are domains" : "is a domain"}. Use IPs/CIDRs, or <button type="button" class="linkbtn" onClick=${switchToForceDns}>switch this node to Force-DNS</button>.</span>` : null}` : null}
+        ${r.category === "custom" ? html`<${AsnHint} targets=${r.targets}/>` : null}
       </div>`;
     })}</div>
     <div class="rrfoot">
@@ -3737,6 +3739,23 @@ function validTarget(tok) {
 const invalidTargets = raw => splitTargets(raw).filter(t => !validTarget(t));
 const isIpTarget = tok => { const t = String(tok).trim().toLowerCase(); if (_RR_ASN.test(t)) return true; const m = t.match(_RR_IP4); return !!m && [1, 2, 3, 4].every(i => +m[i] <= 255) && (!m[5] || +m[5].slice(1) <= 32); };   // AS<n> resolves to IPs → an IP target
 const domainTargets = raw => splitTargets(raw).filter(t => validTarget(t) && !isIpTarget(t));   // real hostnames among the valid tokens (kernel mode can't match these)
+// Live feedback for AS<n> tokens in a rule/list: shows "AS62041 → 5 prefixes" (or "not found") so the operator knows
+// the ASN resolved. Counts are cached module-wide (keyed by AS number) so switching rows never re-fetches.
+const _asnCache = {};
+function AsnHint({ targets }) {
+  const asns = [...new Set((String(targets || "").match(/\bas:?\d{1,10}\b/gi) || []).map(t => t.replace(/^as:?/i, "")))];
+  const [, force] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    asns.forEach(n => { if (_asnCache[n] === undefined) { _asnCache[n] = "loading";
+      api.asnCount(n).then(r => { _asnCache[n] = (r && r.ok && r.data) ? r.data : { count: 0 }; if (alive) force(x => x + 1); }); } });
+    return () => { alive = false; };
+  }, [asns.join(",")]);
+  if (!asns.length) return null;
+  return html`<div class="asn-hint">${asns.map(n => { const c = _asnCache[n]; const load = c === "loading" || c === undefined;
+    const cnt = (c && typeof c === "object") ? c.count : 0;
+    return html`<span class=${"asn-tok " + (load ? "load" : cnt ? "ok" : "bad")}>AS${n} ${load ? "resolving…" : cnt ? "→ " + cnt + " prefix" + (cnt === 1 ? "" : "es") : "→ not found"}</span>`; })}</div>`;
+}
 // null when the egress config is savable; otherwise a message the sheets show + disable Save on. `mode` = the node's
 // routing_mode: in kernel (IP-only) a custom rule can't use domains — only Force-DNS matches by hostname.
 function egressError(eg, mode) {
@@ -6899,9 +6918,10 @@ function CustomListSheet({ list, onSave, onClose }) {
   const foot = html`<span class="grow"></span><button class="btn btn-ghost" onClick=${onClose}>Cancel</button><button class="btn btn-primary" disabled=${!!err} title=${err || ""} onClick=${save}>${list ? "Save" : "Add"}</button>`;
   return html`<${Sheet} title=${list ? "Edit list" : "New list"} width=${520} onClose=${onClose} foot=${foot}>
     <div class="field"><label>Title</label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder="e.g. Streaming"/></div>
-    <div class="field"><label>IPs / domains</label>
-      <textarea class="rrdoms" rows="1" spellcheck="false" placeholder="comma-separated — spotify.com, 1.2.3.0/24, sub.example.com" value=${targets} onInput=${e => { autoGrow(e.target); setTargets(e.target.value); }} ref=${el => autoGrow(el)}/>
-      ${err ? html`<div class="rrlint" style="margin-top:5px">${err}</div>` : html`<div class="hint">Domains match their subdomains too; IPs / CIDRs are matched directly.</div>`}</div>
+    <div class="field"><label>IPs / domains / AS numbers</label>
+      <textarea class="rrdoms" rows="1" spellcheck="false" placeholder="comma-separated — spotify.com, 1.2.3.0/24, AS62041" value=${targets} onInput=${e => { autoGrow(e.target); setTargets(e.target.value); }} ref=${el => autoGrow(el)}/>
+      <${AsnHint} targets=${targets}/>
+      ${err ? html`<div class="rrlint" style="margin-top:5px">${err}</div>` : html`<div class="hint">Domains match their subdomains too; IPs / CIDRs directly; an <b>AS number</b> (e.g. AS62041) resolves to that provider's IP ranges.</div>`}</div>
   <//>`;
 }
 

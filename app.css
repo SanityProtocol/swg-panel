@@ -1417,6 +1417,13 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .confirm-type b{color:#D65B5B;font-family:var(--mono);letter-spacing:.08em}
 .ctype-input{font-family:var(--mono);font-size:13px;letter-spacing:.06em;padding:8px 11px;border-radius:8px;border:1px solid var(--line-solid);background:var(--surface-2);color:var(--ink);outline:none;transition:border-color .12s}
 .ctype-input:focus{border-color:color-mix(in srgb,#D65B5B 55%,var(--line-solid))}
+/* live ASN-resolution feedback under a rule/list target field */
+.asn-hint{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
+.asn-tok{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:20px;white-space:nowrap}
+.asn-tok.load{color:var(--faint);background:color-mix(in srgb,var(--faint) 12%,transparent)}
+.asn-tok.ok{color:#3EA76B;background:color-mix(in srgb,#3EA76B 13%,transparent)}
+.asn-tok.bad{color:#D65B5B;background:color-mix(in srgb,#D65B5B 12%,transparent)}
+:root[data-theme="dark"] .asn-tok.ok{color:#57C98A}
 /* Reusable styled dropdown (Dropdown/ModeSelect) — one look everywhere, replacing native <select> option lists. */
 .dropdown{position:relative;min-width:0}
 .field .dropdown{width:100%}   /* field dropdowns fill their column like the native selects did */

@@ -3076,6 +3076,14 @@ def api(method, path, qs, body, deps):
             atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
         return 200, {"ok": True, "data": {"geo_epoch": cur["geo_epoch"]}}
 
+    if method == "GET" and path == "/api/asn":                   # resolve an ASN → prefix count (live feedback as the operator types AS<n>)
+        try:    _asn = int(re.sub(r"\D", "", (qs.get("n") or [""])[0]) or 0)
+        except Exception: _asn = 0
+        if not _asn:
+            return 400, {"ok": False, "error": "n (AS number) required", "code": "bad_request"}
+        _pfx = _asn_cidrs(_asn)                                  # TTL-cached; empty = unknown/unannounced ASN
+        return 200, {"ok": True, "data": {"asn": _asn, "count": len(_pfx), "sample": _pfx[:4]}}
+
     if method == "GET" and path == "/api/catalog":              # searchable provider catalog (id/label/provider/caps), paginated
         try:    _pg = max(0, int((qs.get("page") or ["0"])[0] or 0))
         except Exception: _pg = 0
