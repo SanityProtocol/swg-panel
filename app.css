@@ -1344,7 +1344,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
   font-size:11.5px;line-height:1.45;font-weight:500;text-align:left;white-space:normal;box-shadow:0 10px 26px rgba(0,0,0,.4)}
 .descinfo:hover .descbub,.descinfo:focus .descbub,.descinfo:focus-within .descbub{display:block}
 /* ── Routing lists redesign: mode banner + two list grids + fleet popover ── */
-.rmode-banner{padding:14px 16px;border-radius:10px;margin-bottom:22px;
+.rmode-banner{padding:11px 16px 14px;border-radius:10px;margin-bottom:22px;
   border:1px solid var(--line-solid);background:color-mix(in srgb,var(--mc,var(--brand)) 6%,var(--surface-2));border-left:3px solid var(--mc,var(--brand))}
 .rmode-intro{margin:0 0 14px;line-height:1.55}
 .rmode-top{display:flex;align-items:center;gap:12px;flex-wrap:nowrap;min-width:0}
@@ -1384,12 +1384,13 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmtab:hover{color:var(--mc);border-color:color-mix(in srgb,var(--mc) 55%,var(--line-solid));background:color-mix(in srgb,var(--mc) 8%,var(--surface-2))}
 .rmtab.on{color:#fff;background:var(--mc);border-color:var(--mc);box-shadow:0 3px 10px color-mix(in srgb,var(--mc) 38%,transparent)}
 .rmode-detail{border:1px solid color-mix(in srgb,var(--mc) 30%,var(--line-solid));background:color-mix(in srgb,var(--mc) 6%,var(--surface-2));border-radius:9px;padding:13px 15px}
-.rd-head{display:flex;align-items:center;gap:9px;margin-bottom:5px;flex-wrap:wrap}
+.rd-head{display:flex;align-items:stretch;gap:12px;margin-bottom:9px}
+.rd-headmain{display:flex;flex-direction:column;justify-content:space-between;flex:1;min-width:0}   /* title top, bold summary bottom-aligned to the mode buttons */
+.rd-titlerow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .rd-ic{display:inline-flex;color:var(--mc)}.rd-ic svg{width:20px;height:20px}
 .rd-name{font-size:15px;color:var(--ink);font-weight:700}
-.rd-node{font-size:13.5px;font-weight:700;margin-left:auto;white-space:nowrap;flex:none}   /* right-aligned on the bold summary line, in the node's own colour (inline) */
-.rd-head .rmode-tabs{margin:0}   /* the 4 mode icons live in the header now */
-.rd-adds{display:flex;align-items:baseline;gap:12px;font-size:12.5px;color:var(--ink);font-weight:700;line-height:1.5;margin-bottom:9px}
+.rd-head .rmode-tabs{margin:0;flex:none;align-self:flex-start}   /* the 4 mode icons live in the header now */
+.rd-adds{font-size:12.5px;color:var(--ink);font-weight:700;line-height:1.5}
 .rd-lines{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
 .rmc-bene + .rmc-bene{margin-top:-2px}   /* tighten the gap between two "+" rows */
 .rmc-tag{font-family:var(--mono);font-size:9px;letter-spacing:.03em;color:var(--mc);padding:2px 7px;border-radius:20px;background:color-mix(in srgb,var(--mc) 14%,transparent);white-space:nowrap}
@@ -1401,6 +1402,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-banner .rmode-desc{margin-top:11px}
 .rd-foot{display:flex;align-items:center;gap:8px;margin-top:11px;padding-top:4px;border-top:1px solid color-mix(in srgb,var(--mc) 16%,var(--line-solid))}   /* host-health left, info + reset right, below the description */
 .rd-foot .rmode-health{margin-top:0}   /* it lives inline in the foot now, not stacked above it */
+.rd-runs{font-size:12px;color:var(--dim);white-space:nowrap}   /* "<node> currently runs on <mode>" caption, foot-left */
+.rd-runs-node{font-weight:700}
+.rd-runs-mode{color:var(--ink);font-weight:600}
 /* live host-layer health strip (engine alive? + reset count) below the mode detail */
 .rmode-health{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:12px;color:var(--dim)}
 .rmode-health b{color:var(--ink);font-weight:600}
