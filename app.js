@@ -3318,7 +3318,7 @@ function ProvTag({ id, label, plain }) {
 // Each entry is framed as an OPTIONAL host-matching layer ON TOP of the always-on IP base: `adds` = what the layer
 // does, `bene` = its upside (+), `cost` = its trade-off (−), `exp` = the full description under the selected card.
 const MODE_META = {
-  kernel:   { icon: "globe",  label: "Default", short: "IP only", tag: "no host layer",
+  kernel:   { icon: "globe",  label: "Default routing", short: "IP only", tag: "no host layer",
     adds: "Just the always-on IP layer — no domain matching added",
     bene: ["Simplest & most robust · never touches DNS · carries all traffic (calls, UDP, QUIC)."],
     cost: "Can't separate services that share IPs (YouTube vs Google), no Host routing.",
@@ -3329,17 +3329,17 @@ const MODE_META = {
     cost: "Intercepts & downgrades client DNS — blocks their DoH / DoT.",
     exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
   sni_kernel: { icon: "cpu", label: "Kernel SNI", short: "Host via SNI", tag: "host layer · SNI in-kernel",
-    adds: "Reads the TLS SNI in-kernel to match domains — client DNS stays private",
+    adds: "Scans the TLS SNI in-kernel to match domains — client DNS stays private",
     bene: ["Daemonless & parallel per-CPU · lightest at high connection rates.",
            "Wins stability and high-connection-rate CPU over Hybrid."],
     cost: "Substring match only (no regex) · needs xt_string + ipset on the node.",
-    exp: "Reads the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
+    exp: "Scans the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
   sni:      { icon: "eye", label: "Hybrid SNI", short: "Host via SNI", tag: "host layer · SNI in userspace",
-    adds: "Reads the TLS SNI in a small helper to match domains — client DNS stays private",
+    adds: "Parses the TLS SNI in a small helper to match domains — client DNS stays private",
     bene: ["Precise parsed-SNI matching · regex-capable · unbothered by big lists.",
            "Has fewer kernel deps, wins accuracy and large-list CPU cost over Kernel."],
     cost: "Runs a helper process (fails open — learning pauses — if it stops).",
-    exp: "Routes by hostname by reading the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
+    exp: "Routes by hostname by parsing the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
 };
 // Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
 // OS-rendered <select> option list can't be styled, hence this). `options` is a flat [{value,label,disabled}] or
@@ -3412,15 +3412,18 @@ function HostHealth({ node, mode }) {
   const sr = (Store.stats[node] || {}).smartroute || {};
   if (!sr.mode) return null;                                  // node hasn't reported host-layer health yet → don't guess
   const eng = sr.engine || "";                                // ACTUAL running engine (may differ from configured — see degrade)
-  const label = eng === "dns" ? "DNS resolver" : eng === "sni_kernel" ? "SNI reader (kernel)" : "SNI reader (userspace)";
+  const label = eng === "dns" ? "DNS resolver" : eng === "sni_kernel" ? "SNI scanner" : "SNI parser";
   const ok = sr.engine_ok !== false;
   let extra = null, note = null;
-  if (eng.startsWith("sni") && sr.resets) extra = sr.resets + " first-hit reset" + (sr.resets === 1 ? "" : "s");
-  if (mode === "sni_kernel" && eng === "sni_user") note = "kernel engine unavailable — running userspace";   // degraded-open
+  if (eng.startsWith("sni") && sr.resets) extra = sr.resets + " new host" + (sr.resets === 1 ? "" : "s") + " rerouted";
+  if (mode === "sni_kernel" && eng === "sni_user") note = "kernel SNI scanner unavailable — running userspace SNI parser";   // degraded-open
   return html`<div class=${"rmode-health " + (ok ? "ok" : "bad")}>
     <span class="rmh-dot"></span><b>${label}</b> <span>${ok ? "healthy" : "down — host routing degraded"}</span>
-    ${extra ? html`<span class="rmh-sep">·</span><span>${extra}</span>` : null}
-    ${note ? html`<span class="rmh-sep">·</span><span class="rmh-note">${note}</span>` : null}
+    ${extra ? html`<span class="rmh-sep">·</span><span>${extra}</span>
+      <${Popover} hoverOnly cls="rmh-info" popCls="rmode-info-pop" trigger=${html`<span class="rmh-infobtn"><${Ic} i="info"/></span>`}>
+        <div class="rmode-info-body">A host's name is only visible once its connection starts, so the <b>first</b> connection to a brand-new host has already left on the default path before it can be routed. The engine learns that host's IP and <b>resets that one connection</b> so the client immediately reconnects — the reconnect matches the learned IP and takes the correct route. This counts how many new hosts were caught and rerouted this way; every later connection to them matches by IP and is never reset.</div>
+      <//>` : null}
+    ${note ? html`<span class="rmh-note">${note}</span>` : null}
   </div>`;
 }
 // "on N/M nodes ▾" fleet-assignment popover — toggle a list on each node. disabledFor(nid) → a reason string greys it.

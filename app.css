@@ -1408,7 +1408,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmr-node{color:var(--ink);font-weight:700}   /* node name: bold, default ink (no node colour) */
 .rmr-mode{color:var(--ink);font-weight:600}
 /* live host-layer health strip (engine alive? + reset count) below the mode detail */
-.rmode-health{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:12px;color:var(--dim)}
+.rmode-health{display:flex;align-items:center;flex-wrap:wrap;gap:7px;row-gap:2px;margin-top:12px;font-size:12px;color:var(--dim)}
+.rmode-health > b,.rmode-health > span{white-space:nowrap}   /* wrap the strip between units, never mid-phrase */
+.rmode-health .rmh-note{white-space:normal}
 .rmode-health b{color:var(--ink);font-weight:600}
 .rmh-dot{width:8px;height:8px;border-radius:50%;flex:none}
 .rmode-health.ok .rmh-dot{background:#3EA76B;box-shadow:0 0 0 3px color-mix(in srgb,#3EA76B 22%,transparent)}
@@ -1416,7 +1418,11 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-health.bad b{color:#D65B5B}
 .rmode-health.bad .rmh-dot{background:#D65B5B;box-shadow:0 0 0 3px color-mix(in srgb,#D65B5B 22%,transparent)}
 .rmh-sep{color:var(--faint)}
-.rmh-note{color:var(--faint);font-style:italic}
+.rmh-note{flex-basis:100%;color:var(--faint);font-style:italic}   /* degraded note drops onto its own line under the status */
+.rmh-info{display:inline-flex}
+.rmh-infobtn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:var(--faint);cursor:help;transition:color .12s}
+.rmh-info.on .rmh-infobtn,.rmh-infobtn:hover{color:var(--brand)}
+.rmh-infobtn .ic svg{width:14px;height:14px}
 :root[data-theme="dark"] .rmode-health.ok .rmh-dot{background:#57C98A}
 .rmode-reset{display:inline-flex;align-items:center;gap:5px;flex:none;font-size:11.5px;padding:1px 9px;border-radius:7px;cursor:pointer;
   border:1px solid var(--line-solid);background:transparent;color:var(--dim);transition:color .12s,border-color .12s,background .12s}
