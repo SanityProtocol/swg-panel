@@ -888,6 +888,14 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .btn-danger{background:color-mix(in srgb,var(--dangling) 10%,transparent);color:var(--dangling);border:1px solid color-mix(in srgb,var(--dangling) 32%,transparent);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
 .btn-danger:hover{background:color-mix(in srgb,var(--dangling) 20%,transparent)}
 .btn-danger:disabled{opacity:.5;cursor:not-allowed}
+.btn-warn{background:color-mix(in srgb,#C0821A 11%,transparent);color:#C0821A;border:1px solid color-mix(in srgb,#C0821A 34%,transparent);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease);display:inline-flex;align-items:center;gap:5px}
+.btn-warn .ic svg{width:13px;height:13px}
+.btn-warn:hover{background:color-mix(in srgb,#C0821A 20%,transparent)}
+.btn-warn:disabled{opacity:.5;cursor:not-allowed}
+:root[data-theme="dark"] .btn-warn{color:#EBB43C;border-color:color-mix(in srgb,#EBB43C 34%,transparent)}
+.confirm-type b.ct-learn{color:#C0821A}
+:root[data-theme="dark"] .confirm-type b.ct-learn{color:#EBB43C}
+.confirm-type b.ct-all{color:var(--dangling)}
 /* one-time token + enrollment command */
 .cmdrow{display:flex;gap:8px;align-items:stretch}
 .cmdrow .tokenbox{flex:1}
@@ -1384,29 +1392,36 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmtab:hover{color:var(--mc);border-color:color-mix(in srgb,var(--mc) 55%,var(--line-solid));background:color-mix(in srgb,var(--mc) 8%,var(--surface-2))}
 .rmtab.on{color:#fff;background:var(--mc);border-color:var(--mc);box-shadow:0 3px 10px color-mix(in srgb,var(--mc) 38%,transparent)}
 .rmode-detail{border:1px solid color-mix(in srgb,var(--mc) 30%,var(--line-solid));background:color-mix(in srgb,var(--mc) 6%,var(--surface-2));border-radius:9px;padding:13px 15px}
-.rd-head{display:flex;align-items:stretch;gap:12px;margin-bottom:9px}
+.rd-head{display:flex;align-items:stretch;gap:12px;margin-bottom:7px}
 .rd-headmain{display:flex;flex-direction:column;justify-content:space-between;flex:1;min-width:0}   /* title top, bold summary bottom-aligned to the mode buttons */
 .rd-titlerow{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .rd-ic{display:inline-flex;color:var(--mc)}.rd-ic svg{width:20px;height:20px}
 .rd-name{font-size:15px;color:var(--ink);font-weight:700}
 .rd-head .rmode-tabs{margin:0;flex:none;align-self:flex-start}   /* the 4 mode icons live in the header now */
 .rd-adds{font-size:12.5px;color:var(--ink);font-weight:700;line-height:1.5}
-.rd-lines{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
-.rmc-bene + .rmc-bene{margin-top:-2px}   /* tighten the gap between two "+" rows */
+.rd-lines{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}   /* even spacing between every +/- row */
 .rmc-tag{font-family:var(--mono);font-size:9px;letter-spacing:.03em;color:var(--mc);padding:2px 7px;border-radius:20px;background:color-mix(in srgb,var(--mc) 14%,transparent);white-space:nowrap}
 .rmc-bene,.rmc-cost{font-size:12px;line-height:1.45;display:flex;gap:7px;align-items:baseline}
 .rmc-bene b,.rmc-cost b{flex:none;font-family:var(--mono);font-weight:700;font-size:12.5px}
 .rmc-bene{color:var(--dim)}.rmc-bene b{color:#3EA76B}
 .rmc-cost{color:var(--faint)}.rmc-cost b{color:#C0821A}
 :root[data-theme="dark"] .rmc-bene b{color:#57C98A}:root[data-theme="dark"] .rmc-cost b{color:#EBB43C}
-.rmode-banner .rmode-desc{margin-top:11px}
+.rmode-banner .rmode-desc{margin-top:8px}
 .rmode-lists{margin-top:5px;font-size:12px;color:var(--dim);line-height:1.55}   /* the "Lists:" line on its own row under the description */
 .rmode-lists b{color:var(--ink);font-weight:700}
 /* status bar ABOVE the mode card (outside it): "<node> currently runs on <mode>" + status under it, reset/info right */
 .rmode-runbar{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}   /* status text (left) and caption (right) share a baseline */
-.rmode-runbar > .rmode-health{margin-top:0}   /* status on the left, aligned left */
-.rmr-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}   /* caption + info on top, reset under, right-aligned */
-.rmr-rtop{display:flex;align-items:center;gap:6px}
+.rmr-left{display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0}   /* status (+ reset when there's no 2nd status line), left-aligned */
+.rmr-left .rmode-health{margin-top:0}
+.rmr-right{display:flex;flex-direction:column;align-items:flex-end;gap:7px;flex:none}   /* caption + toggle + info on top, reset under (when degraded), right-aligned */
+.rmr-rtop{display:flex;align-items:center;gap:7px}
+.rmr-actions{display:flex;align-items:center;gap:8px;flex:none}   /* default-routing runbar: reset + info, right-aligned (no status/toggle) */
+.learn-toggle{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border-radius:6px;border:none;background:transparent;color:#D65B5B;cursor:pointer;transition:color .12s,background .12s}   /* IP-learning OFF = red */
+.learn-toggle:hover{background:color-mix(in srgb,currentColor 15%,transparent)}
+.learn-toggle.on{color:#3EA76B}   /* ON = green */
+:root[data-theme="dark"] .learn-toggle{color:#E06B6B}
+:root[data-theme="dark"] .learn-toggle.on{color:#57C98A}
+.learn-toggle .ic svg{width:15px;height:15px}
 .rmr-title{font-size:13px;color:var(--dim)}
 .rmr-node{color:var(--ink);font-weight:700}   /* node name: bold, default ink (no node colour) */
 .rmr-mode{color:var(--ink);font-weight:600}
@@ -1417,9 +1432,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-health b{color:var(--ink);font-weight:600}
 .rmh-dot{width:8px;height:8px;border-radius:50%;flex:none}
 .rmode-health.ok .rmh-dot{background:#3EA76B}
-.rmode-health.bad{color:#D65B5B}
-.rmode-health.bad b{color:#D65B5B}
-.rmode-health.bad .rmh-dot{background:#D65B5B}
+.rmode-health.down{color:#D65B5B}
+.rmode-health.down b{color:#D65B5B}
+.rmode-health.down .rmh-dot{background:#D65B5B}
 .rmh-sep{color:var(--faint)}
 .rmh-note{flex-basis:100%;color:var(--faint);font-style:italic}   /* degraded note drops onto its own line under the status */
 .rmh-info{display:inline-flex}

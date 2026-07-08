@@ -165,6 +165,7 @@ const ICON = {
   device: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="7" y="3" width="10" height="18" rx="2.4"/><path d="M11 18h2"/></svg>',
   cpu: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="7" y="7" width="10" height="10" rx="1.6"/><path d="M9 1.5v3M15 1.5v3M9 19.5v3M15 19.5v3M1.5 9h3M1.5 15h3M19.5 9h3M19.5 15h3"/></svg>',
   disk: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5.2 13 7.5 5h9l2.3 8M7 16.5h.01"/></svg>',
+  database: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>',
   clock: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5l3.2 2"/></svg>',
   "cal-day": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><rect x="10.2" y="12.4" width="3.6" height="3.6" rx="0.7" fill="currentColor" stroke="none"/></svg>',
   "cal-week": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><path d="M6.3 14h11.4" stroke-width="2.7"/></svg>',
@@ -3320,28 +3321,28 @@ function ProvTag({ id, label, plain }) {
 const MODE_META = {
   kernel:   { icon: "globe",  label: "Default routing", short: "IP only", tag: "no host layer",
     adds: "Just the always-on IP layer — no domain matching added",
-    bene: ["Simplest & most robust · never touches DNS · carries all traffic (calls, UDP, QUIC)."],
-    cost: "Can't separate services that share IPs (YouTube vs Google), no Host routing.",
+    bene: ["Simplest & most robust · never touches DNS · carries all traffic (calls, UDP, QUIC)"],
+    cost: "Can't separate services that share IPs (YouTube vs Google), no Host routing",
     exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it.",
     lists: ["GeoIP", "Custom IPs / ASNs"] },
   forcedns: { icon: "compass", label: "Force-DNS", short: "Host via DNS", tag: "host layer · via DNS",
     adds: "Adds domain matching by resolving your clients' DNS through the node",
-    bene: ["Per-service precise · fills before the first connection (no first-hit miss)."],
-    cost: "Intercepts & downgrades client DNS — blocks their DoH / DoT.",
+    bene: ["Per-service precise · fills before the first connection (no first-hit miss)"],
+    cost: "Intercepts & downgrades client DNS — blocks their DoH / DoT",
     exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past.",
     lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
   sni_kernel: { icon: "cpu", label: "Kernel SNI", short: "Host via SNI", tag: "host layer · SNI in-kernel",
-    adds: "Scans the TLS SNI in-kernel to match domains — client DNS stays private",
-    bene: ["Daemonless & parallel per-CPU · lightest at high connection rates.",
-           "Wins stability and high-connection-rate CPU over Hybrid."],
-    cost: "Substring match only (no regex) · needs xt_string + ipset on the node.",
+    adds: "Scans the TLS SNI in-kernel — client DNS stays private",
+    bene: ["Daemonless & parallel per-CPU · lightest at high connection rates",
+           "Wins stability and high-connection-rate CPU over Hybrid"],
+    cost: "Substring match only (no regex) · needs xt_string + ipset on the node",
     exp: "Scans the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing.",
     lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
   sni:      { icon: "eye", label: "Hybrid SNI", short: "Host via SNI", tag: "host layer · SNI in userspace",
-    adds: "Parses the TLS SNI in a small helper to match domains — client DNS stays private",
-    bene: ["Precise parsed-SNI matching · regex-capable · unbothered by big lists.",
-           "Has fewer kernel deps, wins accuracy and large-list CPU cost over Kernel."],
-    cost: "Runs a helper process (fails open — learning pauses — if it stops).",
+    adds: "Parses the TLS SNI in a small helper — client DNS stays private",
+    bene: ["Precise parsed-SNI matching · regex-capable · unbothered by big lists",
+           "Has fewer kernel deps, wins accuracy and large-list CPU cost over Kernel"],
+    cost: "Runs a helper process (fails open — learning pauses — if it stops)",
     exp: "Routes by hostname by parsing the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing.",
     lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
 };
@@ -3398,20 +3399,39 @@ function ModeDetail({ mode }) {
 // Operator recovery: wipe a node's smart-routing state (tables, learned IPs, cached lists), then let it rebuild from
 // scratch + re-pull every enabled/curated list from the panel. Destructive → modal confirm, never a browser popup.
 function resetRouting(node, name) {
-  openConfirm({ title: "Reset routing · " + (name || "node"), confirmLabel: "Reset routing", danger: true, requireType: "RESET",
-    body: "Wipes this node's smart-routing tables, learned IPs and cached lists, then rebuilds from scratch and re-pulls "
-        + "every enabled / curated list from the panel on its next sync. Routing may blip for a few seconds while it "
-        + "rebuilds. Use this to recover a node from a bad or stale state.",
-    onConfirm: async () => {
-      const r = await api.routingReset({ id: node });
-      if (r && r.ok === false) toast(r.error || "Reset failed.", "err", 4500);
-      else toast("Routing reset queued — the node wipes, rebuilds and re-pulls on its next sync.", "ok");
-    } });
+  openModal(html`<${ResetRoutingSheet} node=${node} name=${name || "node"}/>`);
+}
+// Two-scope reset: "learned" clears only the node's SNI-learned IPs; "all" wipes tables + learned IPs + list cache
+// and rebuilds/re-pulls. Each button is gated by its own typed token ("RESET LEARNED" / "RESET ALL").
+function ResetRoutingSheet({ node, name }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const t = typed.trim();   // case-sensitive: the tokens must be typed in CAPS exactly
+  const learnOk = t === "RESET LEARNED", allOk = t === "RESET ALL";
+  const run = async scope => {
+    if (busy) return; setBusy(true);
+    const r = await api.routingReset({ id: node, scope });
+    if (r && r.ok === false) toast(r.error || "Reset failed.", "err", 4500);
+    else toast(scope === "learned"
+      ? "Learned IPs cleared — the node forgets them and re-learns on its next sync."
+      : "Routing reset queued — the node wipes, rebuilds and re-pulls on its next sync.", "ok");
+    closeModal();
+  };
+  return html`<${Sheet} title=${"Reset routing · " + name} onClose=${closeModal}
+    foot=${html`<${Fragment}><span class="grow"></span>
+      <button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
+      <button class="btn btn-warn" disabled=${busy || !learnOk} onClick=${() => run("learned")}><${Ic} i="refresh"/> Reset learned IPs</button>
+      <button class="btn btn-danger" disabled=${busy || !allOk} onClick=${() => run("all")}><${Ic} i="refresh"/> Reset all routing</button></>`}>
+    <div class="notice warn"><${Ic} i="warn"/><span><b>Reset learned IPs</b> clears only the IPs this node has learned from SNI so far — its tables and lists stay in place and it re-learns as traffic flows. <b>Reset all routing</b> wipes the smart-routing tables, learned IPs and cached lists, then rebuilds from scratch and re-pulls every list from the panel; routing may blip for a few seconds.</span></div>
+    <label class="confirm-type"><span>Type <b class="ct-learn">RESET LEARNED</b> or <b class="ct-all">RESET ALL</b> to confirm your action</span>
+      <input class="ctype-input" type="text" autofocus spellcheck="false" autocomplete="off" placeholder="RESET LEARNED / RESET ALL" value=${typed}
+        onInput=${e => setTyped(e.target.value)}/></label>
+  <//>`;
 }
 // Live host-layer health for a node, from its reported smartroute: is the mode's fill engine actually alive (swg-sni
 // for SNI, dnsmasq for Force-DNS), plus the SNI first-hit reset count. Surfaces a SILENT host-layer failure (dead
 // reader ⇒ host categories quietly stop routing). Hidden for IP-only and for nodes too old to report it (no false alarms).
-function HostHealth({ node, mode }) {
+function HostHealth({ node, mode, learn, onLearn }) {
   if (mode === "kernel") return null;
   const sr = (Store.stats[node] || {}).smartroute || {};
   if (!sr.mode) return null;                                  // node hasn't reported host-layer health yet → don't guess
@@ -3421,11 +3441,12 @@ function HostHealth({ node, mode }) {
   let extra = null, note = null;
   if (eng.startsWith("sni") && sr.resets) extra = sr.resets + " new host" + (sr.resets === 1 ? "" : "s") + " rerouted";
   if (mode === "sni_kernel" && eng === "sni_user") note = "kernel SNI scanner unavailable — running userspace SNI parser";   // degraded-open
-  return html`<div class=${"rmode-health " + (ok ? "ok" : "bad")}>
+  return html`<div class=${"rmode-health " + (ok ? "ok" : "down")}>
     <span class="rmh-dot"></span><b>${label}</b> <span>${ok ? "healthy" : "down — host routing degraded"}</span>
     ${extra ? html`<span class="rmh-sep">·</span><span>${extra}</span>
+      ${onLearn ? html`<button class=${"learn-toggle" + (learn ? " on" : "")} title=${"IP learning is " + (learn ? "ON — the node remembers each learned IP" : "OFF — routing stays fresh, no remembered IPs") + " · click to turn it " + (learn ? "off" : "on")} onClick=${() => onLearn(!learn)}><${Ic} i="database"/></button>` : null}
       <${Popover} hoverOnly cls="rmh-info" popCls="rmode-info-pop" trigger=${html`<span class="rmh-infobtn"><${Ic} i="info"/></span>`}>
-        <div class="rmode-info-body">A host's name is only visible once its connection starts, so the <b>first</b> connection to a brand-new host has already left on the default path before it can be routed. The engine learns that host's IP and <b>resets that one connection</b> so the client immediately reconnects — the reconnect matches the learned IP and takes the correct route. This counts how many new hosts were caught and rerouted this way; every later connection to them matches by IP and is never reset.</div>
+        <div class="rmode-info-body">A host's name is only visible once its connection starts, so the <b>first</b> connection to a brand-new host has already left on the default path before it can be routed. The engine learns that host's IP and <b>resets that one connection</b> so the client instantly reconnects on the correct route — that's the <b>new hosts rerouted</b> count; every later connection matches by IP and is never reset.<div style="margin-top:9px">The <b>records</b> toggle (the database icon) controls <b>IP learning</b>. <b>On</b> (default) keeps each learned IP so repeat connections are instant. <b>Off</b> keeps the node <b>fresh</b> — learned IPs are held only briefly, so a host whose address rotates is never routed on a stale IP (at a little extra CPU, as more connections are re-scanned).</div></div>
       <//>` : null}
     ${note ? html`<span class="rmh-note">${note}</span>` : null}
   </div>`;
@@ -6468,7 +6489,7 @@ function PanelSettingsScreen() {
   // per-node pending edits (mode / mesh / egress) — lifted here so switching node or section keeps unsaved
   // changes; the single Save commits the global settings AND one nodeUpdate per changed node.
   const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
-  const nFields = n => ({ routing_mode: n.routing_mode || "kernel", endpoint_host: n.endpoint_host || "",
+  const nFields = n => ({ routing_mode: n.routing_mode || "kernel", ip_learning: n.ip_learning !== false, endpoint_host: n.endpoint_host || "",
     mesh_subnet: n.mesh_subnet || "", mesh_port: n.mesh_port ? String(n.mesh_port) : "", mesh_prefix: n.mesh_prefix || "",
     default_egress_ip: n.default_egress_ip || "", panel_ip: n.panel_ip || "",
     enabled_categories: (n.enabled_categories && n.enabled_categories.length) ? [...n.enabled_categories] : null,   // null = all built-ins enabled for this node
@@ -6519,7 +6540,7 @@ function PanelSettingsScreen() {
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {};
       if (!Object.keys(nFields(n)).some(k => !eq(e[k], o[k]))) continue;
-      const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, endpoint_host: (e.endpoint_host || "").trim(),
+      const nr = await api.nodeUpdate({ id: n.id, routing_mode: e.routing_mode, ip_learning: e.ip_learning !== false, endpoint_host: (e.endpoint_host || "").trim(),
         mesh_subnet: (e.mesh_subnet || "").trim() === dSub ? "" : (e.mesh_subnet || "").trim(),
         mesh_port: (e.mesh_port || "").trim() === dPort ? "" : (e.mesh_port || "").trim(),
         mesh_prefix: (e.mesh_prefix || "").trim() === dPfx ? "" : (e.mesh_prefix || "").trim(),
@@ -6555,6 +6576,7 @@ function PanelSettingsScreen() {
     for (const n of (Store.nodes || [])) {
       const e = nodeEdits[n.id] || {}, o = orig[n.id] || {}, fl = [];
       if (!eq(e.routing_mode, o.routing_mode)) fl.push("mode → " + e.routing_mode);
+      if (!eq(e.ip_learning !== false, o.ip_learning !== false)) fl.push("IP learning → " + (e.ip_learning !== false ? "on" : "off"));
       if (!eq(e.endpoint_host, o.endpoint_host)) fl.push("ingress IP → " + (e.endpoint_host || "auto"));
       if (!eq(e.mesh_subnet, o.mesh_subnet)) fl.push("mesh subnet → " + (e.mesh_subnet || "default"));
       if (!eq(e.mesh_port, o.mesh_port)) fl.push("mesh port → " + (e.mesh_port || "default"));
@@ -6611,8 +6633,12 @@ function PanelSettingsScreen() {
   const [selNode, setSelNode] = useState(() => ((Store.nodes || [])[0] || {}).id || "");
   const perNodeSection = section === "routing" || section === "mesh" || section === "nodesegress";
   const nodeRec = (Store.nodes || []).find(n => n.id === selNode);
-  const nodeMode = nv(selNode, "routing_mode") || "kernel";
+  const nodeMode = nv(selNode, "routing_mode") || "kernel";       // DRAFT mode being edited (drives the mode card + tabs)
   const setMode = m => setNV(selNode, { routing_mode: m });
+  const savedMode = (nodeRec && nodeRec.routing_mode) || "kernel"; // what the node is ACTUALLY running (drives the status runbar — only changes on Save)
+  const ipLearn = nv(selNode, "ip_learning") !== false;           // per-node "remember learned IPs" toggle (default on)
+  const setIpLearn = v => setNV(selNode, { ip_learning: v });
+  const hostDegraded = savedMode === "sni_kernel" && (((Store.stats[selNode] || {}).smartroute || {}).engine === "sni_user");   // → HostHealth shows a 2nd (note) line
   const ecOf = nid => nv(nid, "enabled_categories");               // per-node enabled built-ins (null = all)
   const catOn = id => { const ec = ecOf(selNode); return !ec || ec.includes(id); };
   const toggleNodeCat = (id, on) => { if (nodeMode === "kernel" && catHostOnly(id)) return; const all = sysCats.map(([c]) => c); let ec = ecOf(selNode); if (ec == null) ec = all.slice(); ec = on ? [...new Set([...ec, id])] : ec.filter(c => c !== id); setNV(selNode, { enabled_categories: ec.length >= all.length ? null : ec }); };
@@ -6640,7 +6666,7 @@ function PanelSettingsScreen() {
   const customOnNode = (l, nid) => !(l.disabled_nodes || []).includes(nid);
   const setCustomOnNode = (l, nid, on) => persistLists(lists.map(x => x._rid === l._rid ? { ...x, disabled_nodes: on ? (x.disabled_nodes || []).filter(z => z !== nid) : [...new Set([...(x.disabled_nodes || []), nid])] } : x));
   // dirty tracking — per global section + per node-per-section, drives the rail dots and badge glow
-  const SECF = { routing: ["routing_mode", "enabled_categories", "catalog_cats"], mesh: ["endpoint_host", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg"], nodesegress: ["default_egress_ip", "panel_ip"] };
+  const SECF = { routing: ["routing_mode", "ip_learning", "enabled_categories", "catalog_cats"], mesh: ["endpoint_host", "mesh_subnet", "mesh_port", "mesh_prefix", "mesh_awg"], nodesegress: ["default_egress_ip", "panel_ip"] };
   const nodeDirty = (nid, sec) => (SECF[sec] || []).some(f => !eq((nodeEdits[nid] || {})[f], (orig[nid] || {})[f]));
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
@@ -6677,20 +6703,32 @@ function PanelSettingsScreen() {
       <div class="setpane">
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
-          ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel; return html`
-          <div class="rmode-runbar">
-            <${HostHealth} node=${selNode} mode=${nodeMode}/>
-            <span class="grow"></span>
-            <div class="rmr-right">
-              <div class="rmr-rtop">
-                <div class="rmr-title"><b class="rmr-node">${nodeRec ? nodeRec.name : "Node"}</b> currently runs on <b class="rmr-mode">${mm.label}</b></div>
-                <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
-                  <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel in any mode including <b>Hybrid SNI</b> (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.<div style="margin-top:9px"><b>Reset</b> recovers a stuck node — wipe + rebuild + re-pull.</div></div>
-                <//>
-              </div>
-              <button class="rmode-reset" title="Recover: wipe this node's routing tables + learned IPs and re-pull all lists from the panel" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset routing</button>
-            </div>
-          </div>
+          ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel;
+            const resetBtn = html`<button class="rmode-reset" title="Wipe or refresh this node's smart routing — learned IPs and/or the full rebuild" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset routing</button>`;
+            const mmRun = MODE_META[savedMode] || MODE_META.kernel;   // runbar reflects the SAVED/running mode, not the draft
+            const caption = html`<div class="rmr-title"><b class="rmr-node">${nodeRec ? nodeRec.name : "Node"}</b> currently runs on <b class="rmr-mode">${mmRun.label}</b></div>`;
+            const infoPop = html`<${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
+                  <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel in any mode including <b>Hybrid SNI</b> (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.<div style="margin-top:9px"><b>Reset routing</b> recovers a stuck node — clear just the learned IPs, or wipe + rebuild + re-pull everything.</div></div>
+                <//>`;
+            const runbar = savedMode === "kernel"
+              ? html`<div class="rmode-runbar">
+                  ${caption}
+                  <span class="grow"></span>
+                  <div class="rmr-actions">${resetBtn}${infoPop}</div>
+                </div>`
+              : html`<div class="rmode-runbar">
+                  <div class="rmr-left">
+                    <${HostHealth} node=${selNode} mode=${savedMode} learn=${ipLearn} onLearn=${setIpLearn}/>
+                    ${!hostDegraded ? resetBtn : null}
+                  </div>
+                  <span class="grow"></span>
+                  <div class="rmr-right">
+                    <div class="rmr-rtop">${caption}${infoPop}</div>
+                    ${hostDegraded ? resetBtn : null}
+                  </div>
+                </div>`;
+            return html`
+          ${runbar}
           <div class=${"rmode-banner m-" + nodeMode}>
             <div class="rd-head">
               <div class="rd-headmain">

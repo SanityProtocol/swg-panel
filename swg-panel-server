@@ -2769,6 +2769,7 @@ def api(method, path, qs, body, deps):
                         "endpoint_host": c.get("endpoint_host"), "created": c.get("created"),
                         "default_egress_ip": c.get("default_egress_ip") or "", "panel_ip": c.get("panel_ip") or "",
                         "routing_mode": c.get("routing_mode") or "kernel",   # smart-routing match mode for this node (kernel|forcedns|sni)
+                        "ip_learning": c.get("ip_learning", True),   # keep learned SNI IPs vs stay fresh (default on)
                         "enabled_categories": c.get("enabled_categories"),   # built-in categories shown for this node ([]/None = all)
                         "catalog_cats": c.get("catalog_cats") or [],          # provider-catalog categories opted into on this node (node-lens)
                         "mesh_port": c.get("mesh_port") or "", "mesh_subnet": c.get("mesh_subnet") or "", "mesh_prefix": c.get("mesh_prefix") or "",
@@ -3859,6 +3860,8 @@ def api(method, path, qs, body, deps):
             if rm not in ("kernel", "forcedns", "sni", "sni_kernel"):
                 return 400, {"ok": False, "error": "routing_mode must be kernel|forcedns|sni|sni_kernel", "code": "bad_request"}
             nodes[nid]["routing_mode"] = rm
+        if "ip_learning" in body:               # keep learned SNI IPs (True) vs stay fresh / no remembered IPs (False)
+            nodes[nid]["ip_learning"] = bool(body.get("ip_learning"))
         if "enabled_categories" in body:        # built-in categories shown for THIS node's interfaces ([]/absent = all)
             ec = body.get("enabled_categories")
             if isinstance(ec, list):
@@ -3926,10 +3929,12 @@ def api(method, path, qs, body, deps):
         nid = body.get("id") or ""
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
-        nodes[nid]["routing_reset"] = int(nodes[nid].get("routing_reset") or 0) + 1   # the node acts when this counter changes
+        scope = (body.get("scope") or "all").strip()   # "learned" = clear only the node's learned-IP sets; else full wipe+rebuild+re-pull
+        key = "routing_reset_learned" if scope == "learned" else "routing_reset"
+        nodes[nid][key] = int(nodes[nid].get(key) or 0) + 1   # the node acts when its counter changes
         nodes_save(deps["nodes_path"], nodes)
-        ev_append(roster_path, "node", nid, "Reset routing", nodes[nid].get("name", nid))
-        return 200, {"ok": True, "data": {"id": nid, "routing_reset": nodes[nid]["routing_reset"]}}
+        ev_append(roster_path, "node", nid, "Reset learned IPs" if scope == "learned" else "Reset routing", nodes[nid].get("name", nid))
+        return 200, {"ok": True, "data": {"id": nid, key: nodes[nid][key]}}
 
     if method == "POST" and path == "/api/connection/update":
         # per-mesh-link overrides: the local source IP this node dials FROM (dial_src), and which of the
@@ -5230,7 +5235,9 @@ class Handler(BaseHTTPRequestHandler):
                                           # domain fill. Only in forcedns mode — kernel needs no DNS, and sni reads the TLS handshake so it
                                           # leaves the client's DNS (incl. DoH) untouched by design.
                                           "block_doh": (node.get("routing_mode") or "kernel") == "forcedns",
-                                          "routing_reset": int(node.get("routing_reset") or 0)},   # per-node 'Reset routing' counter → node wipes+rebuilds+re-pulls when it changes
+                                          "ip_learning": node.get("ip_learning", True),   # keep learned SNI IPs (True) vs stay fresh with a short TTL (False)
+                                          "routing_reset": int(node.get("routing_reset") or 0),   # per-node 'Reset all routing' counter → node wipes+rebuilds+re-pulls when it changes
+                                          "routing_reset_learned": int(node.get("routing_reset_learned") or 0)},   # 'Reset learned IPs' counter → node clears only its learned-IP sets
                                 "node_egress": {"default_egress_ip": node.get("default_egress_ip") or "",   # node IP roles (Part 2)
                                                 "panel_ip": node.get("panel_ip") or ""},
                                 "panel": {"geo_mirror": (_ps.get("mirrors") or {}).get("geo") or "",   # Panel settings → node (Part 5)

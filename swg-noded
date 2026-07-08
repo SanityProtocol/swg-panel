@@ -1691,7 +1691,57 @@ def apply_panel_settings(pan):
         pass
 
 
-def _apply_routing_reset(reset_val, res):
+def _apply_routing_reset(reset_val, res, learned_val=None):
+    """Dispatch the operator's reset counters. A full reset already clears the learned sets, so skip the learned
+    pass when it fired. Returns True if either reset ran."""
+    full = _apply_full_reset(reset_val, res)
+    learned = False if full else _apply_learned_reset(learned_val, res)
+    return full or learned
+
+
+def _apply_learned_reset(learned_val, res):
+    """Operator pressed 'Reset learned IPs': clear ONLY the node's learned dst-IP sets (kernel-SNI ipsets + the
+    userspace-SNI nft sets), keeping the pulled lists in place — no re-pull. This SAME reconcile pass rebuilds the
+    nft sets from the still-cached lists (geoip re-loads) and the reader re-learns hosts as traffic flows. Fires once
+    per press (per-node counter vs local stamp)."""
+    try:
+        rv = str(int(learned_val or 0))
+    except Exception:
+        rv = "0"
+    stamp = os.path.join(GEO_DIR, ".routing-reset-learned")
+    cur = ""
+    with contextlib.suppress(Exception):
+        cur = open(stamp).read().strip()
+    if rv == cur or rv == "0":                                  # unchanged (or never reset) → nothing to do
+        return False
+    with contextlib.suppress(OSError):
+        os.makedirs(GEO_DIR, exist_ok=True)
+    # kernel-SNI: flush each learned ipset (keep the set + chain — only the learned IPs go)
+    for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
+        run(["ipset", "flush", setn])
+    # userspace-SNI: drop the rebuild signatures + per-list loaded markers so the nft sets rebuild from the CACHED
+    # lists this pass (userspace-learned IPs go; geoip re-loads from the still-present .txt — NO re-pull)
+    for fn in (".smart-sig", ".xtstring-sig", ".catcount-sig"):
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(GEO_DIR, fn))
+    for fn in (os.listdir(GEO_DIR) if os.path.isdir(GEO_DIR) else []):
+        if fn.endswith(".loaded"):
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(GEO_DIR, fn))
+    run(["nft", "delete", "table", "inet", SMART_NFT_TABLE])    # rebuilt from cache below (same pass)
+    _SMART_TABLE["n"] = -1                                      # invalidate the per-loop table cache so _ensure_smart_nft re-renders
+    p = _SNI_PROC.get("p")                                      # restart the userspace reader → its in-memory learned/seen clears
+    if p and p.poll() is None:
+        with contextlib.suppress(Exception): p.terminate()
+    _SNI_PROC["p"] = None
+    with contextlib.suppress(OSError):
+        open(stamp, "w").write(rv)
+    res["changed"] += 1
+    print("routing: LEARNED RESET #%s — flushed learned ipsets/nft sets (lists kept); re-learning" % rv, flush=True)
+    return True
+
+
+def _apply_full_reset(reset_val, res):
     """Operator pressed 'Reset routing' for this node: wipe ALL smart-routing state so the SAME reconcile pass
     rebuilds it from scratch and re-pulls every enabled/curated list from the panel. Idempotent — acts only when
     the panel's per-node counter differs from our local stamp (so it fires once per press, never on a normal sync).
@@ -1758,7 +1808,9 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     else:                      host_engine = "none"
     is_sni = host_engine in ("sni_user", "sni_kernel")         # both SNI engines share the nft ct-restore/QUIC-drop/reset setup
     _SMART_MODE["engine"] = host_engine                        # the ACTUAL running engine → smart_status reports its liveness
-    _apply_routing_reset((smart or {}).get("routing_reset"), res)   # operator 'Reset routing' → wipe all state; the rebuild below then starts fresh + re-pulls
+    _apply_routing_reset((smart or {}).get("routing_reset"), res, (smart or {}).get("routing_reset_learned"))   # operator resets: full wipe+re-pull, or learned-IPs-only
+    ip_learning = (smart or {}).get("ip_learning", True)       # False → keep the node "fresh": learned SNI IPs expire fast (short ipset TTL)
+    ksni_ttl = 3600 if ip_learning else 120                    # kernel-SNI learned-IP lifetime (s)
     _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → host-tier seeding + kernel greying
     # PROVIDER lists: pull each routed one from the PANEL (not GitHub) when its version changed — writes the same
     # <cat>.txt / <cat>.doms the loaders below consume. New cat → now; changed cat → only in the quiet window.
@@ -1839,7 +1891,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
         _ensure_doh_block(_subs, False, res)                  # never block the client's encrypted DNS in SNI mode
     elif host_engine == "sni_kernel":                         # in-kernel xt_string reader — no userspace daemon at all
         _ensure_sni_router(None, [], res)                     # stop swg-sni
-        _ensure_smart_xtstring(smart_exit, domains, SNI_RESET_MARK, res)   # enriched domains, capped per-cat inside (256)
+        _ensure_smart_xtstring(smart_exit, domains, SNI_RESET_MARK, res, ttl=ksni_ttl)   # enriched domains, capped per-cat inside (256)
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
         _ensure_doh_block(_subs, False, res)
@@ -1869,7 +1921,7 @@ def _xts_setname(cat):
     return ("swgk_" + re.sub(r"[^a-z0-9]", "_", cat.lower()))[:31]   # ipset names cap at 31 chars
 
 
-def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True):
+def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, ttl=3600):
     """Kernel-SNI host tier (mode=sni_kernel): learn each host category's dst IPs IN-KERNEL from the TLS SNI
     (iptables `-m string` Boyer-Moore on the ClientHello) into a per-category ipset, route KNOWN IPs to that
     category's exit fwmark (CONNMARK — the nft ct-restore carries it to the packet), and flag the FIRST hit with
@@ -1883,7 +1935,7 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True):
     entries = [e for e in host_entries if domains.get(e["category"])] if active else []
     want_cats = sorted({e["category"] for e in entries})
     sig_src = (json.dumps([[e["subnet"], e["category"], e.get("table")] for e in entries], sort_keys=True)
-               + "|" + json.dumps({c: sorted((domains.get(c) or [])[:256]) for c in want_cats}, sort_keys=True) + "|rm:" + str(reset_mark))
+               + "|" + json.dumps({c: sorted((domains.get(c) or [])[:256]) for c in want_cats}, sort_keys=True) + "|rm:" + str(reset_mark) + "|ttl:" + str(ttl))
     sig = hashlib.sha1(sig_src.encode()).hexdigest()[:16]
     sigf = os.path.join(GEO_DIR, ".xtstring-sig")
     try:
@@ -1893,12 +1945,21 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True):
     hooked = run(["iptables", "-t", "mangle", "-C", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN]).returncode == 0
     if stored == sig and (hooked or not entries):              # steady state: keep the ipsets alive (they hold learned IPs — NEVER flush here)
         for c in want_cats:
-            run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", "3600", "-exist"])
+            run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])
         return
     if entries and not _kernel_sni_ok():
         res["errors"].append("kernel-sni: ipset/xt_string unavailable"); return
     run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", CHAIN])   # unhook, rebuild fresh
     run(["iptables", "-t", "mangle", "-F", CHAIN]); run(["iptables", "-t", "mangle", "-X", CHAIN])
+    ttl_marker = os.path.join(GEO_DIR, ".xtstring-ttl")         # a TTL change (IP-learning toggled) can't be applied to a live set → recreate
+    prev_ttl = ""
+    with contextlib.suppress(Exception):
+        prev_ttl = open(ttl_marker).read().strip()
+    if entries and str(ttl) != prev_ttl:
+        for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
+            run(["ipset", "destroy", setn])
+        with contextlib.suppress(OSError):
+            os.makedirs(GEO_DIR, exist_ok=True); open(ttl_marker, "w").write(str(ttl))
     if not entries:                                            # teardown: drop the chain + our learned ipsets
         for setn in re.findall(r"^(swgk_\S+)", (run(["ipset", "list", "-name"]).stdout or ""), re.M):
             run(["ipset", "destroy", setn])
@@ -1911,7 +1972,7 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True):
         if r.returncode != 0:
             res["errors"].append("kernel-sni: " + (r.stderr or "").strip()[:120]); _ok[0] = False
     for c in want_cats:                                        # per-category learned-IP set MUST exist before the rules reference it
-        run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", "3600", "-exist"])
+        run(["ipset", "create", _xts_setname(c), "hash:ip", "family", "inet", "timeout", str(ttl), "-exist"])
     _ipt("-N", CHAIN)
     for e in entries:                                          # Phase 1: route KNOWN learned IPs to their exit, then RETURN
         setn = _xts_setname(e["category"]); T = str(e.get("table"))   # (so a known flow never re-learns / re-resets)
