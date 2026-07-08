@@ -215,6 +215,15 @@ async function genKeys() {
 function genPSK() { const b = new Uint8Array(32); crypto.getRandomValues(b); return b64(b); }
 
 const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
+// IPv6 leak-guard: a FULL v4 tunnel (AllowedIPs contains 0.0.0.0/0) MUST also capture v6 (::/0), else the client's
+// IPv6 traffic escapes the tunnel over its real IP (the tunnels are v4-only, so captured v6 is dropped node-side and
+// apps fall back to v4 — no leak). Append ::/0 when it's missing. Split-tunnel (specific v4 CIDRs, no 0.0.0.0/0) is
+// left untouched — routing only some v4 is an explicit choice and v6 staying local is expected there.
+function guardAllowed(a) {
+  const parts = ((a || "").trim() || "0.0.0.0/0, ::/0").split(",").map(s => s.trim()).filter(Boolean);
+  if (parts.includes("0.0.0.0/0") && !parts.some(p => p.includes(":"))) parts.push("::/0");
+  return parts.join(", ");
+}
 function buildConf(o) {
   const L = ["[Interface]", "PrivateKey = " + o.privkey, "Address = " + o.address];
   if (o.dns && o.dns.length) L.push("DNS = " + o.dns.join(", "));
@@ -222,7 +231,7 @@ function buildConf(o) {
   for (const k of AWG_ORDER) if (o.awg_params && o.awg_params[k] != null) L.push(k + " = " + o.awg_params[k]);
   L.push("", "[Peer]", "PublicKey = " + o.server_pubkey);
   if (o.psk) L.push("PresharedKey = " + o.psk);
-  L.push("AllowedIPs = " + (o.allowed || "0.0.0.0/0, ::/0"), "Endpoint = " + o.endpoint,
+  L.push("AllowedIPs = " + guardAllowed(o.allowed), "Endpoint = " + o.endpoint,
     "PersistentKeepalive = " + (o.keepalive != null && o.keepalive !== "" ? o.keepalive : 25));
   return L.join("\n") + "\n";
 }
