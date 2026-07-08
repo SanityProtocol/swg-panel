@@ -3385,11 +3385,12 @@ function HostHealth({ node, mode }) {
   if (mode === "kernel") return null;
   const sr = (Store.stats[node] || {}).smartroute || {};
   if (!sr.mode) return null;                                  // node hasn't reported host-layer health yet → don't guess
-  let label, ok, extra = null, note = null;
-  if (mode === "forcedns") { label = "DNS resolver"; ok = !!sr.dnsmasq; }
-  else { label = "SNI reader"; ok = !!sr.sni_alive;
-    if (sr.resets) extra = sr.resets + " first-hit reset" + (sr.resets === 1 ? "" : "s");
-    if (mode === "sni_kernel") note = "userspace engine — kernel datapath pending"; }
+  const eng = sr.engine || "";                                // ACTUAL running engine (may differ from configured — see degrade)
+  const label = eng === "dns" ? "DNS resolver" : eng === "sni_kernel" ? "SNI reader (kernel)" : "SNI reader (userspace)";
+  const ok = sr.engine_ok !== false;
+  let extra = null, note = null;
+  if (eng.startsWith("sni") && sr.resets) extra = sr.resets + " first-hit reset" + (sr.resets === 1 ? "" : "s");
+  if (mode === "sni_kernel" && eng === "sni_user") note = "kernel engine unavailable — running userspace";   // degraded-open
   return html`<div class=${"rmode-health " + (ok ? "ok" : "bad")}>
     <span class="rmh-dot"></span><b>${label}</b> <span>${ok ? "healthy" : "down — host routing degraded"}</span>
     ${extra ? html`<span class="rmh-sep">·</span><span>${extra}</span>` : null}

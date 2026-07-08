@@ -534,6 +534,7 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
 ensure_smart_tools(){ # nftables (smart-routing marking, every mode) + dnsmasq (Force-DNS host tier) — idempotent, non-fatal
   have nft     || { run apt-get update -qq || true; run apt-get install -y nftables || true; }
   have dnsmasq || { run apt-get update -qq || true; run apt-get install -y dnsmasq  || true; }
+  have ipset   || { run apt-get update -qq || true; run apt-get install -y ipset    || true; }   # kernel-SNI mode (xt_string learn → ipset); degrades to userspace SNI if absent
   # the node runs its OWN dnsmasq on loopback:5354 via swg-noded; keep the distro service from ever grabbing :53.
   # mask (not just disable) so an apt postinst can't restart it, and reset-failed so a prior boot's :53 conflict
   # (systemd-resolved already holds :53) doesn't linger in `systemctl --failed` after a reinstall.
