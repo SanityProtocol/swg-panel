@@ -1402,8 +1402,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-banner .rmode-desc{margin-top:11px}
 /* status bar ABOVE the mode card (outside it): "<node> currently runs on <mode>" + status under it, reset/info right */
 .rmode-runbar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.rmr-main{display:flex;flex-direction:column;gap:3px;min-width:0}
-.rmr-main .rmode-health{margin-top:0}
+.rmr-main{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;text-align:right}   /* caption + status right-aligned, flush against reset/info */
+.rmr-main .rmode-health{margin-top:0;justify-content:flex-end}
 .rmr-title{font-size:13px;color:var(--dim)}
 .rmr-node{color:var(--ink);font-weight:700}   /* node name: bold, default ink (no node colour) */
 .rmr-mode{color:var(--ink);font-weight:600}
