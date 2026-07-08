@@ -3322,24 +3322,28 @@ const MODE_META = {
     adds: "Just the always-on IP layer — no domain matching added",
     bene: ["Simplest & most robust · never touches DNS · carries all traffic (calls, UDP, QUIC)."],
     cost: "Can't separate services that share IPs (YouTube vs Google), no Host routing.",
-    exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it. Lists: GeoIP + Custom IPs / ASNs." },
+    exp: "Matches by destination IP (GeoIP / ASN) — routing never depends on DNS, so your clients' DoH, DoT and plain DNS all keep working untouched. Simplest and most robust; it just can't separate services that share IPs (YouTube vs Google), and a CDN category catches everything behind it.",
+    lists: ["GeoIP", "Custom IPs / ASNs"] },
   forcedns: { icon: "compass", label: "Force-DNS", short: "Host via DNS", tag: "host layer · via DNS",
     adds: "Adds domain matching by resolving your clients' DNS through the node",
     bene: ["Per-service precise · fills before the first connection (no first-hit miss)."],
     cost: "Intercepts & downgrades client DNS — blocks their DoH / DoT.",
-    exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
+    exp: "The node becomes your clients' resolver and blocks their encrypted DNS — both DoH (known providers) and all DoT — so it can route by hostname too, per-service precise. Trade-off: it sees and downgrades the client's DNS, can break a client that insists on its own encrypted DNS, and a DoH server it doesn't recognise can still slip past.",
+    lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
   sni_kernel: { icon: "cpu", label: "Kernel SNI", short: "Host via SNI", tag: "host layer · SNI in-kernel",
     adds: "Scans the TLS SNI in-kernel to match domains — client DNS stays private",
     bene: ["Daemonless & parallel per-CPU · lightest at high connection rates.",
            "Wins stability and high-connection-rate CPU over Hybrid."],
     cost: "Substring match only (no regex) · needs xt_string + ipset on the node.",
-    exp: "Scans the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
+    exp: "Scans the SNI from each TLS handshake entirely in the kernel (xt_string) and learns each destination's IP into the routing set — no userspace helper, and your clients' DNS (DoH, DoT or plain) is never touched. Runs in parallel across CPUs, so it stays light even at high connection rates. Matches by substring only (no regex) and needs the node's kernel to provide xt_string + ipset. Names hidden by ECH, and QUIC / HTTP3, fall back to IP routing.",
+    lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
   sni:      { icon: "eye", label: "Hybrid SNI", short: "Host via SNI", tag: "host layer · SNI in userspace",
     adds: "Parses the TLS SNI in a small helper to match domains — client DNS stays private",
     bene: ["Precise parsed-SNI matching · regex-capable · unbothered by big lists.",
            "Has fewer kernel deps, wins accuracy and large-list CPU cost over Kernel."],
     cost: "Runs a helper process (fails open — learning pauses — if it stops).",
-    exp: "Routes by hostname by parsing the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing. Lists: GeoSite + GeoIP + Custom IPs/Domains/ASNs." },
+    exp: "Routes by hostname by parsing the SNI from each TLS handshake in a small userspace helper, so your clients' DNS — DoH, DoT or plain — is never touched, observed or downgraded: the connection stays encrypted end-to-end. Parses the real SNI field (precise, regex-capable, fine with very large lists). Learns each destination on its first connection (a brand-new host routes on the next one); names hidden by ECH, and QUIC / HTTP3, fall back to IP routing.",
+    lists: ["GeoSite", "GeoIP", "Custom IPs/Domains/ASNs"] },
 };
 // Reusable styled dropdown — a drop-in for a native <select> so every dropdown in the app shares one look (the
 // OS-rendered <select> option list can't be styled, hence this). `options` is a flat [{value,label,disabled}] or
@@ -6675,14 +6679,17 @@ function PanelSettingsScreen() {
         ${section === "routing" ? html`<div class="card rcard">
           ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel; return html`
           <div class="rmode-runbar">
-            <div class="rmr-main">
-              <div class="rmr-title"><b class="rmr-node">${nodeRec ? nodeRec.name : "Node"}</b> currently runs on <b class="rmr-mode">${mm.label}</b></div>
-              <${HostHealth} node=${selNode} mode=${nodeMode}/>
+            <${HostHealth} node=${selNode} mode=${nodeMode}/>
+            <span class="grow"></span>
+            <div class="rmr-right">
+              <div class="rmr-rtop">
+                <div class="rmr-title"><b class="rmr-node">${nodeRec ? nodeRec.name : "Node"}</b> currently runs on <b class="rmr-mode">${mm.label}</b></div>
+                <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
+                  <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel in any mode including <b>Hybrid SNI</b> (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.<div style="margin-top:9px"><b>Reset</b> recovers a stuck node — wipe + rebuild + re-pull.</div></div>
+                <//>
+              </div>
+              <button class="rmode-reset" title="Recover: wipe this node's routing tables + learned IPs and re-pull all lists from the panel" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset</button>
             </div>
-            <button class="rmode-reset" title="Recover: wipe this node's routing tables + learned IPs and re-pull all lists from the panel" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset</button>
-            <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
-              <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel in any mode including <b>Hybrid SNI</b> (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.<div style="margin-top:9px"><b>Reset</b> recovers a stuck node — wipe + rebuild + re-pull.</div></div>
-            <//>
           </div>
           <div class=${"rmode-banner m-" + nodeMode}>
             <div class="rd-head">
@@ -6701,6 +6708,7 @@ function PanelSettingsScreen() {
               <div class="rmc-cost"><b>−</b><span>${mm.cost}</span></div>
             </div>
             <div class="rmode-desc">${mm.exp}</div>
+            ${mm.lists ? html`<div class="rmode-lists">${mm.lists.map((l, i) => html`${i ? " + " : ""}<b>${l}</b>`)}</div>` : null}
           </div>`; })()}
 
           <div class="lgrid-head">

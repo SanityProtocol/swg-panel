@@ -1400,10 +1400,13 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmc-cost{color:var(--faint)}.rmc-cost b{color:#C0821A}
 :root[data-theme="dark"] .rmc-bene b{color:#57C98A}:root[data-theme="dark"] .rmc-cost b{color:#EBB43C}
 .rmode-banner .rmode-desc{margin-top:11px}
+.rmode-lists{margin-top:5px;font-size:12px;color:var(--dim);line-height:1.55}   /* the "Lists:" line on its own row under the description */
+.rmode-lists b{color:var(--ink);font-weight:700}
 /* status bar ABOVE the mode card (outside it): "<node> currently runs on <mode>" + status under it, reset/info right */
-.rmode-runbar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.rmr-main{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;text-align:right}   /* caption + status right-aligned, flush against reset/info */
-.rmr-main .rmode-health{margin-top:0;justify-content:flex-end}
+.rmode-runbar{display:flex;align-items:flex-start;gap:10px;margin-bottom:12px}
+.rmode-runbar > .rmode-health{margin-top:0}   /* status on the left, aligned left */
+.rmr-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}   /* caption + info on top, reset under, right-aligned */
+.rmr-rtop{display:flex;align-items:center;gap:6px}
 .rmr-title{font-size:13px;color:var(--dim)}
 .rmr-node{color:var(--ink);font-weight:700}   /* node name: bold, default ink (no node colour) */
 .rmr-mode{color:var(--ink);font-weight:600}
@@ -1413,10 +1416,10 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-health .rmh-note{white-space:normal}
 .rmode-health b{color:var(--ink);font-weight:600}
 .rmh-dot{width:8px;height:8px;border-radius:50%;flex:none}
-.rmode-health.ok .rmh-dot{background:#3EA76B;box-shadow:0 0 0 3px color-mix(in srgb,#3EA76B 22%,transparent)}
+.rmode-health.ok .rmh-dot{background:#3EA76B}
 .rmode-health.bad{color:#D65B5B}
 .rmode-health.bad b{color:#D65B5B}
-.rmode-health.bad .rmh-dot{background:#D65B5B;box-shadow:0 0 0 3px color-mix(in srgb,#D65B5B 22%,transparent)}
+.rmode-health.bad .rmh-dot{background:#D65B5B}
 .rmh-sep{color:var(--faint)}
 .rmh-note{flex-basis:100%;color:var(--faint);font-style:italic}   /* degraded note drops onto its own line under the status */
 .rmh-info{display:inline-flex}
