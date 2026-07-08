@@ -3378,6 +3378,24 @@ function ModeDetail({ mode }) {
     <div class="rmode-desc">${mm.exp}</div>
   </div>`;
 }
+// Live host-layer health for a node, from its reported smartroute: is the mode's fill engine actually alive (swg-sni
+// for SNI, dnsmasq for Force-DNS), plus the SNI first-hit reset count. Surfaces a SILENT host-layer failure (dead
+// reader ⇒ host categories quietly stop routing). Hidden for IP-only and for nodes too old to report it (no false alarms).
+function HostHealth({ node, mode }) {
+  if (mode === "kernel") return null;
+  const sr = (Store.stats[node] || {}).smartroute || {};
+  if (!sr.mode) return null;                                  // node hasn't reported host-layer health yet → don't guess
+  let label, ok, extra = null, note = null;
+  if (mode === "forcedns") { label = "DNS resolver"; ok = !!sr.dnsmasq; }
+  else { label = "SNI reader"; ok = !!sr.sni_alive;
+    if (sr.resets) extra = sr.resets + " first-hit reset" + (sr.resets === 1 ? "" : "s");
+    if (mode === "sni_kernel") note = "userspace engine — kernel datapath pending"; }
+  return html`<div class=${"rmode-health " + (ok ? "ok" : "bad")}>
+    <span class="rmh-dot"></span><b>${label}</b> <span>${ok ? "healthy" : "down — host routing degraded"}</span>
+    ${extra ? html`<span class="rmh-sep">·</span><span>${extra}</span>` : null}
+    ${note ? html`<span class="rmh-sep">·</span><span class="rmh-note">${note}</span>` : null}
+  </div>`;
+}
 // "on N/M nodes ▾" fleet-assignment popover — toggle a list on each node. disabledFor(nid) → a reason string greys it.
 function FleetAssign({ nodes, isOn, onToggle, disabledFor }) {
   const on = (nodes || []).filter(n => isOn(n.id)).length;
@@ -6616,6 +6634,7 @@ function PanelSettingsScreen() {
             <p class="rmode-frame">Matches by destination <b>IP</b> first — always on, all traffic (incl. calls & UDP). Add an optional <b>host-matching</b> layer on top:</p>
             <${ModeTabs} value=${nodeMode} onChange=${setMode}/>
             <${ModeDetail} mode=${nodeMode}/>
+            <${HostHealth} node=${selNode} mode=${nodeMode}/>
           </div>
 
           <div class="lgrid-head">

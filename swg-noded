@@ -754,6 +754,7 @@ SNI_RESET_MARK = 0x9999         # SNI mode: swg-sni stamps the FIRST ClientHello
 #                                 a standing nft forward rule RSTs it so the client reconnects and the retry routes correctly
 #                                 (outside the 7000-band fwmarks). Must match the value passed to swg-sni.
 _SNI_PROC = {"p": None}         # the running swg-sni subprocess (SNI-mode classifier), or None
+_SMART_MODE = {"m": None}       # the routing mode the panel last shipped (configured intent) — surfaced in smart_status for the panel's host-layer health view
 
 
 def _cascade_want_sig(fwd, exit_, smart=None):
@@ -1705,6 +1706,7 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     smart_e = (smart or {}).get("entries") or []
     smart_exit = [e for e in smart_e if e.get("action", "exit") == "exit"]   # only exit rules carry a mesh table/dev; direct/block are local verdicts
     mode = (smart or {}).get("mode") or "kernel"               # kernel | forcedns | sni | sni_kernel — picks the set-fill mechanism
+    _SMART_MODE["m"] = mode                                     # report the CONFIGURED mode (pre-fallback) for the panel's host-layer health
     if mode == "sni_kernel":                                   # dedicated in-kernel (xt_string) SNI reader is a later phase; until it
         mode = "sni"                                           # ships, a Kernel-SNI node runs the userspace SNI reader so host routing still works (same routing, just not the kernel datapath)
     _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → host-tier seeding + kernel greying
@@ -1837,14 +1839,21 @@ def _ensure_sni_router(domains, subnets, res):
 
 
 def smart_status():
-    """Phase 3 smart-routing health for the panel UI: whether our nft table is up, per-category element
-    counts (a populated set = geo data loaded), and the number of active mark rules. nft absent → inactive."""
+    """Phase 3 smart-routing health for the panel UI: whether our nft table is up, per-category element counts
+    (a populated set = data loaded), active mark-rule count, and HOST-LAYER health — the configured mode, whether
+    the mode's fill engine is alive (swg-sni for SNI, dnsmasq for Force-DNS), and the SNI first-hit reset hit-count.
+    So the operator sees a silent host-layer failure (dead reader / never learning) instead of just missing routes."""
     t = _smart_table()                                          # shared per-loop render + parse (also used by _ensure_smart_nft)
+    mode = _SMART_MODE.get("m") or "kernel"
+    sni_alive = bool(_SNI_PROC.get("p") and _SNI_PROC["p"].poll() is None)
+    dns_alive = bool(_dnsmasq_running())
     if t["rc"] != 0:
-        return {"active": False, "sets": {}, "rules": 0}
+        return {"active": False, "sets": {}, "rules": 0, "mode": mode, "sni_alive": sni_alive, "dnsmasq": dns_alive, "resets": 0}
     rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", t["out"]))
-    return {"active": rules > 0, "sets": dict(t["counts"]), "rules": rules, "dnsmasq": bool(_dnsmasq_running()),
-            "bytes": dict(t["bytes"])}   # destination stats: {cat:{up,dn}} cumulative bytes (harvested from the same dump)
+    resets = sum(int(x) for x in re.findall(r"meta mark 0x0*9999 counter packets (\d+)", t["out"]))   # SNI first-hit RSTs
+    return {"active": rules > 0, "sets": dict(t["counts"]), "rules": rules, "dnsmasq": dns_alive,
+            "bytes": dict(t["bytes"]),   # destination stats: {cat:{up,dn}} cumulative bytes (harvested from the same dump)
+            "mode": mode, "sni_alive": sni_alive, "resets": resets}
 
 
 _CATS = {"t": 0.0, "cum": {}, "rate": {}}

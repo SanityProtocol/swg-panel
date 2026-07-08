@@ -1396,6 +1396,17 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmc-cost{color:var(--faint)}.rmc-cost b{color:#C0821A}
 :root[data-theme="dark"] .rmc-bene b{color:#57C98A}:root[data-theme="dark"] .rmc-cost b{color:#EBB43C}
 .rmode-detail .rmode-desc{margin-top:10px}
+/* live host-layer health strip (engine alive? + reset count) below the mode detail */
+.rmode-health{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:12px;color:var(--dim)}
+.rmode-health b{color:var(--ink);font-weight:600}
+.rmh-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.rmode-health.ok .rmh-dot{background:#3EA76B;box-shadow:0 0 0 3px color-mix(in srgb,#3EA76B 22%,transparent)}
+.rmode-health.bad{color:#D65B5B}
+.rmode-health.bad b{color:#D65B5B}
+.rmode-health.bad .rmh-dot{background:#D65B5B;box-shadow:0 0 0 3px color-mix(in srgb,#D65B5B 22%,transparent)}
+.rmh-sep{color:var(--faint)}
+.rmh-note{color:var(--faint);font-style:italic}
+:root[data-theme="dark"] .rmode-health.ok .rmh-dot{background:#57C98A}
 /* Reusable styled dropdown (Dropdown/ModeSelect) — one look everywhere, replacing native <select> option lists. */
 .dropdown{position:relative;min-width:0}
 .field .dropdown{width:100%}   /* field dropdowns fill their column like the native selects did */
