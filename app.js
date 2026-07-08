@@ -82,6 +82,17 @@ function rate(bps) {
   return (v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i] + "/s";
 }
 function cssid(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, "_"); }
+// Nice y-axis ceiling for a throughput graph: the smallest "1/5/10/50/100/500 × {B,K,M,G}" value ≥ bps.
+// Base-1024 to match rate(), so the scale badge reads e.g. "50 K/s" / "500 K/s" / "1 M/s"; past 500 it rolls to
+// the next unit (…500 K → 1 M, never an ugly "1000 K"). Callers pass peak/0.85 to guarantee ≥15% headroom.
+function niceScaleCeil(bps) {
+  const LADDER = [1, 5, 10, 50, 100, 500];
+  let unit = 1;
+  while (bps >= 1024 * unit) unit *= 1024;
+  const m = bps / unit;
+  for (const L of LADDER) if (m <= L) return L * unit;
+  return 1024 * unit;
+}
 
 // ── validation for fields that affect connectivity / data-structure ──
 const V = {
@@ -5696,25 +5707,19 @@ function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
   const n = Math.max(R.length, T.length);
   const curR = R[R.length - 1] || 0, curT = T[T.length - 1] || 0;
   const hi = n ? Math.max(0, ...R, ...T) : 0;
-  // FIXED tiered y-scale so the curve reflects real magnitude instead of stretching to fill the height
-  // (a 39 B/s peak shouldn't look identical to a 39 Mbps one). Tier the scale by the view's peak (Mbps):
-  //   ≤45 → 0–50 · ≤90 → 0–100 · ≤180 → 0–200 · ≤470 → 0–500 · ≤1000 → 0–1 Gbps · above → dynamic (peak +10%).
-  const MBIT = 125000;                                   // bytes/sec per megabit/sec
-  const hiM = hi / MBIT;                                 // peak in Mbps
-  const [smM, scaleLabel] = hiM <= 45 ? [50, "50 Mbps"]
-    : hiM <= 90 ? [100, "100 Mbps"]
-    : hiM <= 180 ? [200, "200 Mbps"]
-    : hiM <= 470 ? [500, "500 Mbps"]
-    : hiM <= 1000 ? [1000, "1 Gbps"]
-    : [hiM * 1.1, "auto"];
-  const scaleMax = (smM * MBIT) || 1;
-  const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="tp-scale" title="Vertical scale (auto = peak +10%, above 1 Gbps)">${scaleLabel}</span><span class="grow"></span>${head || null}</div>`;
+  // DYNAMIC y-scale from the DISPLAYED peak (this range's series, not a global/hour peak): ceiling = the nearest
+  // 1/5/10/50/100/500×unit above the peak, with ≥15% headroom baked in via peak/0.85 (so a peak sitting within
+  // 15% of a ceiling takes the next one up). Reflects real magnitude without stretching a tiny peak to fill height.
+  const scaleMax = niceScaleCeil(Math.max(hi, 1024) / 0.85);
+  const scaleLabel = rate(scaleMax);
+  const legend = html`<div class="tp-legend"><span class="tp-k"><i class="sw rx"></i>↓ ${rate(curR)}</span><span class="tp-k"><i class="sw tx"></i>↑ ${rate(curT)}</span><span class="tp-peak">peak ${rate(hi)}</span><span class="tp-scale" title="Vertical scale — nearest 1/5/10/50/100/500 unit above the peak (≥15% headroom)">${scaleLabel}</span><span class="grow"></span>${head || null}</div>`;
   h = h || 60; const w = 100;
   // right-anchored to the ring's full capacity, like MiniArea — fills from the right as blocks arrive
   const C = Math.max(cap || n || 1, 2);
   const xAt = i => w - (n - 1 - i) * (w / (C - 1));
-  // baseline 0 at the bottom, scaleMax at the top (with a little headroom) — fixed, not min/max autoscale
-  const top = h * 0.10;
+  // baseline 0 at the bottom, scaleMax (the nice ceiling) at the very top — the ceiling itself carries the ≥15%
+  // headroom, so no extra top padding is needed (the peak line lands at ≥15% below the top).
+  const top = 0;
   const Y = v => h - (Math.max(0, Math.min(v, scaleMax)) / scaleMax) * (h - top);
   const line = arr => arr.map((v, i) => xAt(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
   const rxLine = line(R), rxArea = n >= 2 ? (xAt(0).toFixed(1) + "," + h + " " + rxLine + " " + xAt(n - 1).toFixed(1) + "," + h) : "";
