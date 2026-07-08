@@ -6670,8 +6670,19 @@ function PanelSettingsScreen() {
       <div class="setpane">
         ${perNodeSection && (Store.nodes || []).length ? html`<div class="setnodes">${(Store.nodes || []).map(n => html`<button class=${"snbadge" + (selNode === n.id ? " on" : "") + (badgeDirty(n.id) ? " dirty" : "")} style=${"--c:" + Store.nodeColor(n.id)} onClick=${() => setSelNode(n.id)}><span class="ndot"></span>${n.name}</button>`)}</div>` : null}
         ${section === "routing" ? html`<div class="card rcard">
+          ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel; return html`
+          <div class="rmode-runbar">
+            <div class="rmr-main">
+              <div class="rmr-title"><b class="rmr-node">${nodeRec ? nodeRec.name : "Node"}</b> currently runs on <b class="rmr-mode">${mm.label}</b></div>
+              <${HostHealth} node=${selNode} mode=${nodeMode}/>
+            </div>
+            <span class="grow"></span>
+            <button class="rmode-reset" title="Recover: wipe this node's routing tables + learned IPs and re-pull all lists from the panel" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset</button>
+            <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
+              <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel in any mode including <b>Hybrid SNI</b> (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.<div style="margin-top:9px"><b>Reset</b> recovers a stuck node — wipe + rebuild + re-pull.</div></div>
+            <//>
+          </div>
           <div class=${"rmode-banner m-" + nodeMode}>
-            ${(() => { const mm = MODE_META[nodeMode] || MODE_META.kernel; return html`
             <div class="rd-head">
               <div class="rd-headmain">
                 <div class="rd-titlerow">
@@ -6688,16 +6699,7 @@ function PanelSettingsScreen() {
               <div class="rmc-cost"><b>−</b><span>${mm.cost}</span></div>
             </div>
             <div class="rmode-desc">${mm.exp}</div>
-            <div class="rd-foot">
-              <span class="rd-runs"><b class="rd-runs-node" style=${"color:" + Store.nodeColor(selNode)}>${nodeRec ? nodeRec.name : "Node"}</b> currently runs on <b class="rd-runs-mode">${mm.label}</b></span>
-              <span class="grow"></span>
-              <${HostHealth} node=${selNode} mode=${nodeMode}/>
-              <button class="rmode-reset" title="Recover: wipe this node's routing tables + learned IPs and re-pull all lists from the panel" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset</button>
-              <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
-                <div class="rmode-info-body">Every mode matches by destination <b>IP</b> first (GeoIP / ASN / your IP lists) — that layer is <b>always on</b> and carries all traffic, including calls, UDP and QUIC. The choice adds an optional <b>host (domain)</b> matching layer on top: none, via the node's <b>DNS</b>, or read from the <b>TLS handshake</b>. Traffic always stays in-kernel in any mode including <b>Hybrid SNI</b> (no userspace proxy). Changing it reconfigures ${nodeRec ? nodeRec.name : "the node"} and changes which lists its interfaces can use.<div style="margin-top:9px"><b>Reset</b> recovers a stuck node — wipe + rebuild + re-pull.</div></div>
-              <//>
-            </div>`; })()}
-          </div>
+          </div>`; })()}
 
           <div class="lgrid-head">
             <div class="lg-htitle"><span class="seclabel" style="margin:0">Provider lists</span><span class="lg-count">${provFleetCats.length}</span><span class="faint lg-sub">provider-maintained · read-only</span></div>

@@ -1400,11 +1400,13 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmc-cost{color:var(--faint)}.rmc-cost b{color:#C0821A}
 :root[data-theme="dark"] .rmc-bene b{color:#57C98A}:root[data-theme="dark"] .rmc-cost b{color:#EBB43C}
 .rmode-banner .rmode-desc{margin-top:11px}
-.rd-foot{display:flex;align-items:center;gap:8px;margin-top:11px;padding-top:4px;border-top:1px solid color-mix(in srgb,var(--mc) 16%,var(--line-solid))}   /* host-health left, info + reset right, below the description */
-.rd-foot .rmode-health{margin-top:0}   /* it lives inline in the foot now, not stacked above it */
-.rd-runs{font-size:12px;color:var(--dim);white-space:nowrap}   /* "<node> currently runs on <mode>" caption, foot-left */
-.rd-runs-node{font-weight:700}
-.rd-runs-mode{color:var(--ink);font-weight:600}
+/* status bar ABOVE the mode card (outside it): "<node> currently runs on <mode>" + status under it, reset/info right */
+.rmode-runbar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.rmr-main{display:flex;flex-direction:column;gap:3px;min-width:0}
+.rmr-main .rmode-health{margin-top:0}
+.rmr-title{font-size:13px;color:var(--dim)}
+.rmr-node{color:var(--ink);font-weight:700}   /* node name: bold, default ink (no node colour) */
+.rmr-mode{color:var(--ink);font-weight:600}
 /* live host-layer health strip (engine alive? + reset count) below the mode detail */
 .rmode-health{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:12px;color:var(--dim)}
 .rmode-health b{color:var(--ink);font-weight:600}
