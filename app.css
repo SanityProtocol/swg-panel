@@ -1357,8 +1357,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 :root[data-theme="dark"] .rmode-banner.m-sni{--mc:#B08CE8}
 .rmode-icon{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;flex:none;line-height:1;font-size:30px}
 .rmode-info{display:inline-flex;flex:none}
-.rmode-infobtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:6px;color:var(--brand);cursor:help;transition:color .12s,background .12s}
-.rmode-infobtn .ic svg{width:20px;height:20px}
+.rmode-infobtn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;color:var(--brand);cursor:help;transition:color .12s,background .12s}
+.rmode-infobtn .ic svg{width:15px;height:15px}
 .rmode-info.on .rmode-infobtn,.rmode-infobtn:hover{color:var(--brand);background:color-mix(in srgb,var(--brand) 14%,transparent)}
 .rmode-info-pop{max-width:420px;font-size:12.5px;line-height:1.55;color:var(--dim)}
 .rmode-info-body{padding:5px 8px;text-align:justify}
@@ -1384,13 +1384,14 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmtab:hover{color:var(--mc);border-color:color-mix(in srgb,var(--mc) 55%,var(--line-solid));background:color-mix(in srgb,var(--mc) 8%,var(--surface-2))}
 .rmtab.on{color:#fff;background:var(--mc);border-color:var(--mc);box-shadow:0 3px 10px color-mix(in srgb,var(--mc) 38%,transparent)}
 .rmode-detail{border:1px solid color-mix(in srgb,var(--mc) 30%,var(--line-solid));background:color-mix(in srgb,var(--mc) 6%,var(--surface-2));border-radius:9px;padding:13px 15px}
-.rd-head{display:flex;align-items:center;gap:9px;margin-bottom:9px;flex-wrap:wrap}
+.rd-head{display:flex;align-items:center;gap:9px;margin-bottom:5px;flex-wrap:wrap}
 .rd-ic{display:inline-flex;color:var(--mc)}.rd-ic svg{width:20px;height:20px}
 .rd-name{font-size:15px;color:var(--ink);font-weight:700}
-.rd-node{font-size:14px;color:var(--dim);font-weight:600}
+.rd-node{font-size:13.5px;font-weight:700;margin-left:auto;white-space:nowrap;flex:none}   /* right-aligned on the bold summary line, in the node's own colour (inline) */
 .rd-head .rmode-tabs{margin:0}   /* the 4 mode icons live in the header now */
-.rd-adds{font-size:12.5px;color:var(--dim);line-height:1.5;margin-bottom:9px}
+.rd-adds{display:flex;align-items:baseline;gap:12px;font-size:12.5px;color:var(--ink);font-weight:700;line-height:1.5;margin-bottom:9px}
 .rd-lines{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.rmc-bene + .rmc-bene{margin-top:-2px}   /* tighten the gap between two "+" rows */
 .rmc-tag{font-family:var(--mono);font-size:9px;letter-spacing:.03em;color:var(--mc);padding:2px 7px;border-radius:20px;background:color-mix(in srgb,var(--mc) 14%,transparent);white-space:nowrap}
 .rmc-bene,.rmc-cost{font-size:12px;line-height:1.45;display:flex;gap:7px;align-items:baseline}
 .rmc-bene b,.rmc-cost b{flex:none;font-family:var(--mono);font-weight:700;font-size:12.5px}
@@ -1398,7 +1399,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmc-cost{color:var(--faint)}.rmc-cost b{color:#C0821A}
 :root[data-theme="dark"] .rmc-bene b{color:#57C98A}:root[data-theme="dark"] .rmc-cost b{color:#EBB43C}
 .rmode-banner .rmode-desc{margin-top:11px}
-.rd-foot{display:flex;align-items:center;gap:8px;margin-top:13px;padding-top:12px;border-top:1px solid color-mix(in srgb,var(--mc) 16%,var(--line-solid))}   /* info + reset, right-aligned below the description */
+.rd-foot{display:flex;align-items:center;gap:8px;margin-top:11px;padding-top:4px;border-top:1px solid color-mix(in srgb,var(--mc) 16%,var(--line-solid))}   /* host-health left, info + reset right, below the description */
+.rd-foot .rmode-health{margin-top:0}   /* it lives inline in the foot now, not stacked above it */
 /* live host-layer health strip (engine alive? + reset count) below the mode detail */
 .rmode-health{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:12px;color:var(--dim)}
 .rmode-health b{color:var(--ink);font-weight:600}
@@ -1410,7 +1412,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmh-sep{color:var(--faint)}
 .rmh-note{color:var(--faint);font-style:italic}
 :root[data-theme="dark"] .rmode-health.ok .rmh-dot{background:#57C98A}
-.rmode-reset{display:inline-flex;align-items:center;gap:5px;flex:none;font-size:11.5px;padding:4px 9px;border-radius:7px;cursor:pointer;
+.rmode-reset{display:inline-flex;align-items:center;gap:5px;flex:none;font-size:11.5px;padding:1px 9px;border-radius:7px;cursor:pointer;
   border:1px solid var(--line-solid);background:transparent;color:var(--dim);transition:color .12s,border-color .12s,background .12s}
 .rmode-reset .ic svg{width:13px;height:13px}
 .rmode-reset:hover{color:#D65B5B;border-color:color-mix(in srgb,#D65B5B 50%,var(--line-solid));background:color-mix(in srgb,#D65B5B 8%,transparent)}

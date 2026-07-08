@@ -6675,19 +6675,18 @@ function PanelSettingsScreen() {
             <div class="rd-head">
               <span class="rd-ic"><${Ic} i=${mm.icon}/></span>
               <b class="rd-name">${mm.label}</b>
-              <b class="rd-node">${nodeRec ? nodeRec.name : "Node"}</b>
               <span class="rmc-tag">${mm.short}</span>
               <span class="grow"></span>
               <${ModeTabs} value=${nodeMode} onChange=${setMode}/>
             </div>
-            <div class="rd-adds">${mm.adds}</div>
+            <div class="rd-adds"><span class="rd-addstxt">${mm.adds}</span><b class="rd-node" style=${"color:" + Store.nodeColor(selNode)}>${nodeRec ? nodeRec.name : "Node"}</b></div>
             <div class="rd-lines">
               ${(mm.bene || []).map(b => html`<div class="rmc-bene"><b>+</b><span>${b}</span></div>`)}
               <div class="rmc-cost"><b>−</b><span>${mm.cost}</span></div>
             </div>
             <div class="rmode-desc">${mm.exp}</div>
-            <${HostHealth} node=${selNode} mode=${nodeMode}/>
             <div class="rd-foot">
+              <${HostHealth} node=${selNode} mode=${nodeMode}/>
               <span class="grow"></span>
               <button class="rmode-reset" title="Recover: wipe this node's routing tables + learned IPs and re-pull all lists from the panel" onClick=${() => resetRouting(selNode, nodeRec ? nodeRec.name : "this node")}><${Ic} i="refresh"/> Reset</button>
               <${Popover} hoverOnly cls="rmode-info" popCls="rmode-info-pop" trigger=${html`<span class="rmode-infobtn"><${Ic} i="info"/></span>`}>
