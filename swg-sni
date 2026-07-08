@@ -28,6 +28,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 # ── netlink / nfnetlink_queue constants (linux/netfilter/nfnetlink*.h) ──
@@ -183,6 +184,15 @@ def parse_sni(p):
 
 
 # ── domain → category matching + nft learning ──
+# Learned dst IPs are added to the nft set in BATCHES by a background thread, not one `nft` fork per IP inline in the
+# packet loop. At a cold-start burst that turns hundreds of forks/sec (each stalling the recv loop) into a handful of
+# multi-element `nft` calls off the hot path. Trade-off: the first-hit RST is now sent OPTIMISTICALLY (the IP lands
+# within <= FLUSH_INTERVAL, well under the client's reconnect RTT); if that race is ever lost the reconnect routes
+# direct for exactly one connection, then matches — strictly better than pre-RST, and never a persistent leak.
+FLUSH_INTERVAL = 0.025      # s — max time a learned IP waits before it's in the set
+MAX_BATCH      = 128        # flush early once this many IPs are pending (bounds latency + argv length)
+
+
 class Classifier:
     def __init__(self, map_path, table, reset_mark=0):
         self.map_path = map_path
@@ -190,9 +200,14 @@ class Classifier:
         self.reset_mark = reset_mark               # >0: RST the FIRST flow to each newly-learned dst so it reconnects routed
         self.mtime = 0
         self.dom2cat = {}                              # exact domain → category
-        self.seen = set()                              # (ip, cat) already added → don't re-shell nft
+        self.seen = set()                              # (ip, cat) already added / pending → don't re-queue
+        self._pending = []                             # [(cat, ip)] buffered for the next batched nft add
+        self._lock = threading.Lock()                  # guards _pending + seen (touched by packet loop + flusher)
+        self._wake = threading.Event()                 # set when MAX_BATCH reached → flush now, don't wait the interval
         self._last_reload = 0.0
         self._reload()
+        t = threading.Thread(target=self._flush_loop, name="swg-sni-flush", daemon=True)
+        t.start()
 
     def _reload(self):
         try:
@@ -237,17 +252,38 @@ class Classifier:
         if not cat:
             return
         key = (dst, cat)
-        if key in self.seen:
-            return
-        self.seen.add(key)
-        r = subprocess.run(["nft", "add", "element", "inet", self.table, "cat_" + cat, "{ " + dst + " }"],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            self.seen.discard(key)                     # let it retry next time (set may not exist yet)
-            return None
+        with self._lock:
+            if key in self.seen:                       # already added or queued → nothing to do
+                return
+            self.seen.add(key)
+            self._pending.append((cat, dst))           # buffered; the flusher adds it to the set within FLUSH_INTERVAL
+            if len(self._pending) >= MAX_BATCH:
+                self._wake.set()
         print(f"swg-sni: {host} → {cat}  (+{dst})", flush=True)
         return self.reset_mark                          # FIRST sight of this dst: RST this flow (mark it) so the client
-        #                                                 reconnects — the retry's SYN now matches the set and routes correctly.
+        #                                                 reconnects — the retry's SYN matches the set (added by the flusher)
+        #                                                 and routes correctly.
+
+    def _flush_loop(self):
+        """Background: drain the pending buffer into batched `nft add element` calls (one per category)."""
+        while True:
+            self._wake.wait(FLUSH_INTERVAL)
+            self._wake.clear()
+            with self._lock:
+                if not self._pending:
+                    continue
+                batch, self._pending = self._pending, []
+            bycat = {}
+            for cat, ip in batch:
+                bycat.setdefault(cat, []).append(ip)
+            for cat, ips in bycat.items():
+                r = subprocess.run(["nft", "add", "element", "inet", self.table, "cat_" + cat,
+                                    "{ " + ", ".join(ips) + " }"], capture_output=True, text=True)
+                if r.returncode != 0:                  # set may not exist yet → forget these so they re-learn next time
+                    with self._lock:
+                        for ip in ips:
+                            self.seen.discard((ip, cat))
+                    print("swg-sni: batch add failed for %s (%d ips): %s" % (cat, len(ips), (r.stderr or "").strip()[:120]), flush=True)
 
 
 def main():
