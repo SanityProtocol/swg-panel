@@ -1357,8 +1357,8 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 :root[data-theme="dark"] .rmode-banner.m-sni{--mc:#B08CE8}
 .rmode-icon{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;flex:none;line-height:1;font-size:30px}
 .rmode-info{display:inline-flex;flex:none}
-.rmode-infobtn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;color:var(--brand);cursor:help;transition:color .12s,background .12s}
-.rmode-infobtn .ic svg{width:15px;height:15px}
+.rmode-infobtn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:6px;color:var(--brand);cursor:help;transition:color .12s,background .12s}
+.rmode-infobtn .ic svg{width:14px;height:14px}
 .rmode-info.on .rmode-infobtn,.rmode-infobtn:hover{color:var(--brand);background:color-mix(in srgb,var(--brand) 14%,transparent)}
 .rmode-info-pop{max-width:420px;font-size:12.5px;line-height:1.55;color:var(--dim)}
 .rmode-info-body{padding:5px 8px;text-align:justify}
@@ -1403,7 +1403,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmode-lists{margin-top:5px;font-size:12px;color:var(--dim);line-height:1.55}   /* the "Lists:" line on its own row under the description */
 .rmode-lists b{color:var(--ink);font-weight:700}
 /* status bar ABOVE the mode card (outside it): "<node> currently runs on <mode>" + status under it, reset/info right */
-.rmode-runbar{display:flex;align-items:flex-start;gap:10px;margin-bottom:12px}
+.rmode-runbar{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}   /* status text (left) and caption (right) share a baseline */
 .rmode-runbar > .rmode-health{margin-top:0}   /* status on the left, aligned left */
 .rmr-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}   /* caption + info on top, reset under, right-aligned */
 .rmr-rtop{display:flex;align-items:center;gap:6px}
@@ -1423,7 +1423,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .rmh-sep{color:var(--faint)}
 .rmh-note{flex-basis:100%;color:var(--faint);font-style:italic}   /* degraded note drops onto its own line under the status */
 .rmh-info{display:inline-flex}
-.rmh-infobtn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:var(--faint);cursor:help;transition:color .12s}
+.rmh-infobtn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:var(--brand);cursor:help;transition:color .12s}
 .rmh-info.on .rmh-infobtn,.rmh-infobtn:hover{color:var(--brand)}
 .rmh-infobtn .ic svg{width:14px;height:14px}
 :root[data-theme="dark"] .rmode-health.ok .rmh-dot{background:#57C98A}
