@@ -3657,7 +3657,7 @@ function RoutingRules({ node, rules, onChange }) {
         </select>
         <button class="xbtn" title="Remove rule" onClick=${() => emit(dispRules.filter(x => x._rid !== r._rid))}><${Ic} i="x"/></button>
         ${self ? html`<span class="rrlint">can't exit via itself</span>` : dup ? html`<span class="rrlint">shadowed by an earlier ${catLabel(r.category)} rule</span>` : null}
-        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder=${ipOnly ? "IPs / CIDRs only (IP-only mode) — e.g. 1.2.3.0/24, 5.6.7.8" : "IPs / domains (any level), comma-separated — e.g. youtube.com, 1.2.3.0/24, sub.example.com"} value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP${ipOnly ? " or CIDR" : " or domain"}</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : domToks.length ? html`<span class="rrlint">IP-only mode — ${domToks.slice(0, 3).join(", ")}${domToks.length > 3 ? "…" : ""} ${domToks.length > 1 ? "are domains" : "is a domain"}. Use IPs/CIDRs, or <button type="button" class="linkbtn" onClick=${switchToForceDns}>switch this node to Force-DNS</button>.</span>` : null}` : null}
+        ${r.category === "custom" ? html`<textarea class="rrdoms" rows="1" spellcheck="false" placeholder=${ipOnly ? "IPs / CIDRs / AS numbers (IP-only mode) — e.g. 1.2.3.0/24, AS62041" : "IPs / domains / AS numbers — e.g. youtube.com, 1.2.3.0/24, AS62041"} value=${r.targets || ""} onInput=${e => { autoGrow(e.target); setRule(r._rid, { targets: e.target.value }); }} ref=${el => autoGrow(el)}/>${!splitTargets(r.targets || "").length ? html`<span class="rrlint">add at least one IP${ipOnly ? " or CIDR" : " or domain"}</span>` : badToks.length ? html`<span class="rrlint">not a valid IP, CIDR or domain: ${badToks.join(", ")}</span>` : domToks.length ? html`<span class="rrlint">IP-only mode — ${domToks.slice(0, 3).join(", ")}${domToks.length > 3 ? "…" : ""} ${domToks.length > 1 ? "are domains" : "is a domain"}. Use IPs/CIDRs, or <button type="button" class="linkbtn" onClick=${switchToForceDns}>switch this node to Force-DNS</button>.</span>` : null}` : null}
       </div>`;
     })}</div>
     <div class="rrfoot">
@@ -3716,10 +3716,12 @@ const egressBody = eg => eg.mode === "smart"
 // rejects anything the node would silently drop. A token is valid if it's an IPv4 (optionally /0-32) or a
 // domain (after stripping scheme/path and a leading "*."). Leading-dot / single-label names are invalid.
 const _RR_IP4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/\d{1,2})?$/;
+const _RR_ASN = /^as:?\d{1,10}$/i;                  // AS<n> / AS:<n> — the panel resolves it to the ASN's IPv4 prefixes
 const _RR_LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;   // one DNS label
 const splitTargets = raw => String(raw || "").split(/[\s,]+/).filter(Boolean);
 function validTarget(tok) {
   const t = String(tok).trim().toLowerCase(); if (!t) return false;
+  if (_RR_ASN.test(t)) return true;                 // AS<n> → resolved to CIDRs on the panel (counts as an IP target)
   // a bare IPv4 or IPv4/CIDR — all four octets ≤255, prefix 0-32 (rejects "22.1", "22.11.5/4343", "1.1.1.1/", "1.1.1.1/555")
   const mi = t.match(_RR_IP4);
   if (mi) return [1, 2, 3, 4].every(i => +mi[i] <= 255) && (!mi[5] || +mi[5].slice(1) <= 32);
@@ -3733,7 +3735,7 @@ function validTarget(tok) {
   return labels.length >= 2 && labels.every(l => _RR_LABEL.test(l)) && /^([a-z]{2,}|xn--[a-z0-9-]+)$/.test(labels[labels.length - 1]);
 }
 const invalidTargets = raw => splitTargets(raw).filter(t => !validTarget(t));
-const isIpTarget = tok => { const m = String(tok).trim().toLowerCase().match(_RR_IP4); return !!m && [1, 2, 3, 4].every(i => +m[i] <= 255) && (!m[5] || +m[5].slice(1) <= 32); };
+const isIpTarget = tok => { const t = String(tok).trim().toLowerCase(); if (_RR_ASN.test(t)) return true; const m = t.match(_RR_IP4); return !!m && [1, 2, 3, 4].every(i => +m[i] <= 255) && (!m[5] || +m[5].slice(1) <= 32); };   // AS<n> resolves to IPs → an IP target
 const domainTargets = raw => splitTargets(raw).filter(t => validTarget(t) && !isIpTarget(t));   // real hostnames among the valid tokens (kernel mode can't match these)
 // null when the egress config is savable; otherwise a message the sheets show + disable Save on. `mode` = the node's
 // routing_mode: in kernel (IP-only) a custom rule can't use domains — only Force-DNS matches by hostname.
