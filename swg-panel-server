@@ -1422,9 +1422,9 @@ CURATED_PRESETS = {
     # id             label                       host sources                     ip sources                     extra host
     "google":       ("Google",                   ["mc:google"],                   ["ls:google"],                 []),
     "youtube":      ("YouTube",                  ["v2:youtube"],                  [],                            []),
-    "telegram":     ("Telegram",                 ["v2:telegram"],                 ["ls:telegram"],               []),
+    "telegram":     ("Telegram",                 ["v2:telegram"],                 ["ls:telegram", "AS:62041"],   []),   # +AS62041 (Telegram Messenger): canonical BGP prefixes → voice/media route by IP too
     "netflix":      ("Netflix",                  ["v2:netflix"],                  ["ls:netflix"],                []),
-    "meta":         ("Meta (FB / IG / WA)",      ["mc:meta"],                     ["ls:facebook"],               []),
+    "meta":         ("Meta (FB / IG / WA)",      ["mc:meta"],                     ["ls:facebook", "AS:32934"],   []),   # +AS32934 (Facebook): all Meta IPs incl. WhatsApp/IG/Messenger voice
     "twitter":      ("X (Twitter)",              ["v2:twitter"],                  ["ls:twitter"],                []),
     "tiktok":       ("TikTok",                   ["v2:tiktok"],                   [],                            []),
     "discord":      ("Discord",                  ["v2:discord"],                  ["rf:discord_ips"],            []),
