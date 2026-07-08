@@ -1411,6 +1411,12 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
   border:1px solid var(--line-solid);background:transparent;color:var(--dim);transition:color .12s,border-color .12s,background .12s}
 .rmode-reset .ic svg{width:13px;height:13px}
 .rmode-reset:hover{color:#D65B5B;border-color:color-mix(in srgb,#D65B5B 50%,var(--line-solid));background:color-mix(in srgb,#D65B5B 8%,transparent)}
+/* type-to-confirm field inside a destructive ConfirmSheet */
+.confirm-type{display:flex;flex-direction:column;gap:6px;margin:13px 2px 2px}
+.confirm-type>span{font-size:12.5px;color:var(--dim)}
+.confirm-type b{color:#D65B5B;font-family:var(--mono);letter-spacing:.08em}
+.ctype-input{font-family:var(--mono);font-size:13px;letter-spacing:.06em;padding:8px 11px;border-radius:8px;border:1px solid var(--line-solid);background:var(--surface-2);color:var(--ink);outline:none;transition:border-color .12s}
+.ctype-input:focus{border-color:color-mix(in srgb,#D65B5B 55%,var(--line-solid))}
 /* Reusable styled dropdown (Dropdown/ModeSelect) — one look everywhere, replacing native <select> option lists. */
 .dropdown{position:relative;min-width:0}
 .field .dropdown{width:100%}   /* field dropdowns fill their column like the native selects did */

@@ -3382,7 +3382,7 @@ function ModeDetail({ mode }) {
 // Operator recovery: wipe a node's smart-routing state (tables, learned IPs, cached lists), then let it rebuild from
 // scratch + re-pull every enabled/curated list from the panel. Destructive → modal confirm, never a browser popup.
 function resetRouting(node, name) {
-  openConfirm({ title: "Reset routing · " + (name || "node"), confirmLabel: "Reset routing", danger: true,
+  openConfirm({ title: "Reset routing · " + (name || "node"), confirmLabel: "Reset routing", danger: true, requireType: "RESET",
     body: "Wipes this node's smart-routing tables, learned IPs and cached lists, then rebuilds from scratch and re-pulls "
         + "every enabled / curated list from the panel on its next sync. Routing may blip for a few seconds while it "
         + "rebuilds. Use this to recover a node from a bad or stale state.",
@@ -7062,13 +7062,15 @@ function LogBody({ text, raw }) {
   return html`<div class=${"logview" + (raw ? " raw" : "")}>${t.split("\n").map(l => html`<div class="logline">${l === "" ? " " : l}</div>`)}</div>`;
 }
 function openConfirm(opts) { openModal(html`<${ConfirmSheet} ...${opts}/>`); }
-function ConfirmSheet({ title, body, log, confirmLabel, danger, warn, onConfirm, back }) {
+function ConfirmSheet({ title, body, log, confirmLabel, danger, warn, onConfirm, back, requireType }) {
   back = back || closeModal;
   const [busy, setBusy] = useState(false);
   const [raw, setRaw] = useState(false);
+  const [typed, setTyped] = useState("");
   const isLog = log != null && String(log) !== "";
   const canToggle = isLog && logRaw(log) !== logRendered(log);   // only offer raw/rendered when they differ (ANSI present)
-  const go = async () => { if (busy) return; if (!onConfirm) return back(); setBusy(true); const seq = _modalSeq;
+  const typeOk = !requireType || typed.trim() === requireType;   // type-to-confirm gate for destructive actions
+  const go = async () => { if (busy || !typeOk) return; if (!onConfirm) return back(); setBusy(true); const seq = _modalSeq;
     try { await onConfirm(); } finally { if (_modalSeq === seq) closeModal(); } };   // skip close if onConfirm opened another modal (no flicker)
   const tone = danger || warn;
   return html`<${Sheet} title=${title} onClose=${back}
@@ -7076,10 +7078,15 @@ function ConfirmSheet({ title, body, log, confirmLabel, danger, warn, onConfirm,
       ${canToggle ? html`<button class="btn btn-ghost logtoggle" onClick=${() => setRaw(r => !r)}>${raw ? "Display rendered" : "Display raw"}</button>` : null}
       <span class="grow"></span>
       <button class=${"btn " + (onConfirm ? "btn-ghost" : "btn-primary")} onClick=${back}>${onConfirm ? "Cancel" : (confirmLabel || "Close")}</button>
-      ${onConfirm ? html`<button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy} onClick=${go}>${confirmLabel || "Confirm"}</button>` : null}</>`}>
+      ${onConfirm ? html`<button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy || !typeOk} onClick=${go}>${confirmLabel || "Confirm"}</button>` : null}</>`}>
     ${isLog
       ? html`<${LogBody} text=${log} raw=${raw}/>`
-      : html`<div class=${"notice" + (tone ? " warn" : "")}><${Ic} i=${tone ? "warn" : "info"}/><span>${body}</span></div>`}
+      : html`<${Fragment}>
+          <div class=${"notice" + (tone ? " warn" : "")}><${Ic} i=${tone ? "warn" : "info"}/><span>${body}</span></div>
+          ${requireType ? html`<label class="confirm-type"><span>Type <b>${requireType}</b> to confirm</span>
+            <input class="ctype-input" type="text" autofocus spellcheck="false" autocomplete="off" placeholder=${requireType} value=${typed}
+              onInput=${e => setTyped(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") go(); }}/></label>` : null}
+        <//>`}
   <//>`;
 }
 

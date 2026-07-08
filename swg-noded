@@ -1717,6 +1717,7 @@ def _apply_routing_reset(reset_val, res):
                 os.unlink(os.path.join(GEO_DIR, fn))
     # 2) drop the nft smart table (all sets + chains + mark rules) → rebuilt below
     run(["nft", "delete", "table", "inet", SMART_NFT_TABLE])
+    _SMART_TABLE["n"] = -1                                      # invalidate the per-loop table cache so _ensure_smart_nft re-renders (sees it gone) and RECREATES it this same pass
     # 3) drop the kernel-SNI iptables chain + destroy the learned ipsets
     run(["iptables", "-t", "mangle", "-D", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"])
     run(["iptables", "-t", "mangle", "-F", "SWGK"]); run(["iptables", "-t", "mangle", "-X", "SWGK"])
