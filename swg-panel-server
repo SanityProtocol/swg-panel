@@ -1442,7 +1442,7 @@ CURATED_PRESETS = {
     "twitch":       ("Twitch",                   ["v2:twitch"],                   [],                            []),
     "disney":       ("Disney+",                  ["v2:disney"],                   [],                            []),
     "reddit":       ("Reddit",                   ["v2:reddit"],                   [],                            []),
-    "github":       ("GitHub",                   ["v2:github"],                   [],                            []),
+    "github":       ("GitHub",                   ["v2:github"],                   ["AS:36459"],                  []),   # +AS36459 (GitHub Inc.): core git/web/api IPs → now IP-routable (host tier still covers CDN-served assets)
     "ru_net":       ("Russia — all IPs",         [],                              ["ls:ru"],                     []),
     "ru_gov":       ("Russia — Government",       ["v2:category-gov-ru"],          [],                            []),
     "ru_banks":     ("Russia — Banks",           ["mc:category-bank-ru"],         [],                            []),
