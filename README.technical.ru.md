@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <b>Техническое (RU)</b></p>
 
-<p align="center"><code>1.2.10-beta</code></p>
+<p align="center"><code>1.2.11-beta</code></p>
 
 ---
 
@@ -399,7 +399,7 @@ swgPanel использует несколько прекрасных проек
 **Форки turn-proxy** — оборачивают WireGuard/AmneziaWG через TURN-реле VK/Yandex, чтобы обходить жёсткие блокировки:
 
 - [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — оригинал
-- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy)
+- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
 - [samosvalishe/vk-turn-proxy](https://github.com/samosvalishe/vk-turn-proxy)
 - [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
 - [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
