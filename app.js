@@ -2228,7 +2228,7 @@ const FLOW_ANIMS = [   // travelling-current styles for the flow lines (the ORIG
 ];
 function FlowMap2({ selIds, range, hist }) {
   const [hov, setHov] = useState(null);
-  const anim = (Store.panelSettings || {}).flow_anim || "dots";   // HOST-WIDE setting — shared by every operator, persists across logins (default = the original dots)
+  const anim = (Store.panelSettings || {}).flow_anim || "off";   // HOST-WIDE setting — shared by every operator, persists across logins (default = OFF until an operator picks a style)
   const setAnim = m => { Store.panelSettings = { ...(Store.panelSettings || {}), flow_anim: m }; bus.emit(); api.panelSettings({ flow_anim: m }).catch(() => {}); };
   const G = flowGraph(selIds, range, hist);
   const { fleet, sats, flows, ranged } = G;
