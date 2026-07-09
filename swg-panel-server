@@ -49,6 +49,30 @@ BIND_PORT  = int(os.environ.get("SWG_PANEL_PORT", "8088"))
 # Self-contained mode: serve TLS + Basic-Auth directly, no reverse proxy needed.
 TLS_CERT   = os.environ.get("SWG_PANEL_TLS_CERT", "")   # fullchain.pem; blank => plain HTTP
 TLS_KEY    = os.environ.get("SWG_PANEL_TLS_KEY", "")
+# TLS expiry watch: the container's acme.sh --cron renewal silences its own failures, so a stalled renewal is
+# invisible until the cert expires and the whole fleet's node-sync fails the TLS pin (goes dark). The panel
+# instead watches its OWN cert from disk and surfaces days-left in state, warning loudly before expiry — works
+# the same bare-metal or docker, independent of whatever issues/renews the cert.
+TLS_STATUS = {}
+def _refresh_tls_status():
+    if not TLS_CERT:
+        return
+    try:
+        info = ssl._ssl._test_decode_cert(TLS_CERT)   # stdlib decode of a cert FILE (no connection)
+        exp = ssl.cert_time_to_seconds(info["notAfter"])
+        selfsigned = dict(x[0] for x in info.get("issuer", ())) == dict(x[0] for x in info.get("subject", ()))
+        days = int((exp - time.time()) // 86400)
+        TLS_STATUS.clear()
+        TLS_STATUS.update({"expires_at": int(exp), "days_left": days, "self_signed": bool(selfsigned)})
+        if not selfsigned and days <= 14:
+            print(f"WARNING: TLS certificate expires in {days} day(s) — check ACME/renewal", flush=True)
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            print(f"TLS status check failed: {e}", flush=True)
+def _tls_watch_loop():
+    while True:
+        _refresh_tls_status()
+        time.sleep(21600)   # every 6h
 AUTH_FILE  = os.environ.get("SWG_PANEL_AUTH", "")        # file "user:pbkdf2_sha256$...."; blank => no auth
 # Mount the panel under a subpath (e.g. /swg) to live inside an existing site. Blank => served at root.
 PANEL_BASE = "/" + os.environ.get("SWG_PANEL_BASE", "").strip("/") if os.environ.get("SWG_PANEL_BASE", "").strip("/") else ""
@@ -2946,6 +2970,7 @@ def api(method, path, qs, body, deps):
             "latest_remote": LATEST_REMOTE.get("version"),           # newest published version (repo VERSION)
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
+            "tls": dict(TLS_STATUS),                                  # cert expiry watch — surface a stalled renewal before it goes dark
         }}
 
     if method == "POST" and path == "/api/panel/settings":   # Panel settings: validate + persist + hot-reload in deps
@@ -5641,10 +5666,12 @@ def main():
             try:
                 ctx.load_cert_chain(TLS_CERT, TLS_KEY)
                 print("reloaded TLS certificate (SIGHUP)", flush=True)
+                _refresh_tls_status()                # a renewal just landed → refresh days-left immediately
             except Exception as e:
                 print(f"TLS reload failed (keeping old cert): {e}", flush=True)
         with contextlib.suppress(ValueError, OSError, AttributeError):
             signal.signal(signal.SIGHUP, _reload_tls)
+        threading.Thread(target=_tls_watch_loop, daemon=True).start()   # watch cert expiry; warn before a stalled renewal goes dark
     else:
         srv = ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler)
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases

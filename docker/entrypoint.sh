@@ -167,8 +167,14 @@ mkdir -p "$STATS_DIR" /var/lib/swg-panel
 #    none/mounted certs aren't acme-managed, so no loop is started for them.
 case "${TLS:-selfsigned}" in
   letsencrypt|letsencrypt-ip|cloudflare)
-    ( while sleep 43200; do acme --cron >/dev/null 2>&1 || true; done ) &
-    log "TLS auto-renewal enabled (acme.sh --cron every 12h; reload via SIGHUP, no downtime)" ;;
+    # Don't silence failures — a stalled renewal must be visible in the logs (the panel also watches its own
+    # cert expiry and warns in the UI, but a loud log line is the first breadcrumb). On failure, retry sooner
+    # (1h) instead of waiting a full 12h, so we get more attempts inside the renewal buffer.
+    ( while :; do
+        if out=$(acme --cron 2>&1); then sleep 43200
+        else log "WARNING: TLS auto-renewal failed — retrying in 1h. last: $(printf '%s' "$out" | tail -1)"; sleep 3600; fi
+      done ) &
+    log "TLS auto-renewal enabled (acme.sh --cron every 12h; 1h retry on failure; reload via SIGHUP)" ;;
 esac
 
 log "starting swg-panel-server on ${SWG_PANEL_HOST:-0.0.0.0}:${SWG_PANEL_PORT:-8443}"
