@@ -28,6 +28,9 @@ const BASE = (() => { try { return new URL(document.baseURI).pathname.replace(/\
 const url = p => BASE + p;
 
 const tkey = (node, iface) => node + "|" + iface;          // session-config key for one target
+// wg vs awg for an interface. A single peer/key can't span both protocols, so the target pickers hide the other
+// kind once one is chosen (enforced wherever peers get interfaces — peers module, users module, …).
+const iTypeOf = (node, iface) => { const m = (Store.describe[node] || {})[iface] || {}; return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
 function ipOf(hostport) { if (!hostport) return ""; const s = String(hostport); return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0]; }
 function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
 // turn-proxy display label: strip the vk-turn-proxy- prefix and render as name:port (a "-NNNN"
@@ -7167,7 +7170,7 @@ function SearchBox({ placeholder, value, onInput }) {
 function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
   return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || "Cancel"}</button><button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button><//>`;
 }
-function Sheet({ title, children, foot, onClose, width, headExtra }) {
+function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef }) {
   onClose = onClose || closeModal;
   const ref = useRef(null);
   const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
@@ -7175,8 +7178,10 @@ function Sheet({ title, children, foot, onClose, width, headExtra }) {
   const [discard, setDiscardState] = useState(false);
   const setDiscarding = v => { discardRef.current = v; setDiscardState(v); };
   const fields = () => Array.from(ref.current ? ref.current.querySelectorAll("input,textarea,select") : []);
-  // closing a dirty sheet swaps the footer into an inline "discard?" confirm instead of a native dialog.
-  const tryClose = () => { if (dirty.current && !discardRef.current) { setDiscarding(true); return; } onClose(); };
+  // closing a dirty sheet swaps the footer into an inline "discard?" confirm instead of a native dialog. `dirtyRef`
+  // lets a caller flag changes the input/change listener can't see (e.g. click-toggled grids).
+  const tryClose = () => { if ((dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current) { setDiscarding(true); return; } onClose(); };
+  if (closeRef) closeRef.current = tryClose;   // expose the guarded close so a footer Cancel routes through it too
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
@@ -7303,31 +7308,43 @@ function AddPeersSheet({ userId, userName }) {
   const seq = useRef(0);
   const lastOnline = p => { const a = (p.targets || []).map(t => t.observed && t.observed.handshake_age).filter(x => x != null); return a.length ? seen(Math.min(...a)) + " ago" : "never online"; };
   const peerLabel = p => { const t = (p.targets || [])[0] || {}; const ty = (t.type || "").toLowerCase() === "awg" ? "AWG" : "WG"; return [p.title || "untitled", Store.nodeName(t.node), ty + " " + t.iface, t.ip].filter(Boolean).join(" · "); };
+  const peerCtx = p => { const t = (p.targets || [])[0] || {}; const ty = (t.type || "").toLowerCase() === "awg" ? "AWG" : "WG"; return [Store.nodeName(t.node), ty + " " + t.iface, t.ip].filter(Boolean).join(" · "); };   // the label MINUS the (now-editable) title
   const rep = p => (p.targets || [])[0] || {};
   const orderPeers = list => [...list].sort((a, b) => (Store.nodeName(rep(a).node) || "").localeCompare(Store.nodeName(rep(b).node) || "")
     || (rep(a).iface || "").localeCompare(rep(b).iface || "") || String(rep(a).ip || "").localeCompare(String(rep(b).ip || ""), undefined, { numeric: true }));
-  const mkExisting = (p, assigned) => ({ key: "e:" + p.id, kind: "existing", peer: p, assigned, sel: Object.fromEntries((p.targets || []).map(t => [tkey(t.node, t.iface), { node: t.node, iface: t.iface, ip: String(t.ip || "").split("/")[0], existing: true }])) });
-  const mkNew = () => ({ key: "n:" + (seq.current++), kind: "new", sel: {} });
+  const mkExisting = (p, assigned) => ({ key: "e:" + p.id, kind: "existing", peer: p, assigned, title: p.title || "", sel: Object.fromEntries((p.targets || []).map(t => [tkey(t.node, t.iface), { node: t.node, iface: t.iface, ip: String(t.ip || "").split("/")[0], existing: true }])) });
+  const mkNew = () => ({ key: "n:" + (seq.current++), kind: "new", title: "", sel: {} });
   const [items, setItems] = useState(() => orderPeers(userId ? Store.peersOfUser(userId) : []).map(p => mkExisting(p, true)));
   const [cursor, setCursor] = useState(0);
   const [jump, setJump] = useState(false);
+  const [toUnassign, setToUnassign] = useState([]);   // saved peers the operator unlinked → unassigned on Save
+  const dirty = useRef(false); const sheetClose = useRef(null);
   const cur = items[cursor] || null;
   const usedExisting = new Set(items.filter(it => it.kind === "existing").map(it => it.peer.id));
   const addable = orderPeers(Store.unassignedPeers().filter(p => !usedExisting.has(p.id)));
-  const carLabel = it => it.kind === "new" ? "New peer" : peerLabel(it.peer);
+  const carLabel = it => (it.title || "").trim() || (it.kind === "new" ? "New peer" : peerLabel(it.peer));
 
   const stayExpanded = () => { usersView.expanded[userId] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
   const addFromDrop = v => {
-    if (!v) return; const idx = items.length;
+    if (!v) return; const idx = items.length; dirty.current = true;
     if (v === "__new") setItems(its => [...its, mkNew()]);
     else { const p = Store.unassignedPeers().find(x => x.id === v); if (!p) return; setItems(its => [...its, mkExisting(p, false)]); }
     setCursor(idx); setJump(false);
   };
-  const updateSel = updater => setItems(its => its.map((it, i) => i === cursor ? { ...it, sel: typeof updater === "function" ? updater(it.sel) : updater } : it));
-  const removeCur = () => { setJump(false); setItems(its => its.filter((_, i) => i !== cursor)); setCursor(c => Math.max(0, Math.min(c, items.length - 2))); };
+  const updateSel = updater => { dirty.current = true; setItems(its => its.map((it, i) => i === cursor ? { ...it, sel: typeof updater === "function" ? updater(it.sel) : updater } : it)); };
+  const updateTitle = v => { dirty.current = true; setItems(its => its.map((it, i) => i === cursor ? { ...it, title: v } : it)); };
+  const dropAt = i => { setJump(false); setItems(its => its.filter((_, k) => k !== i)); setCursor(c => Math.max(0, Math.min(c, items.length - 2))); };
+  const removeCur = () => {
+    const it = items[cursor]; if (!it) return; dirty.current = true;
+    if (it.kind === "existing" && it.assigned)   // unlinking a SAVED peer = unassign on Save → confirm (pushed, keeps this sheet)
+      pushModal(html`<${ConfirmSheet} title=${"Unlink peer" + (userName ? " · " + userName : "")} confirmLabel="Unlink" danger=${true}
+        body=${html`Unassign <b>${it.peer.title || "this peer"}</b> from ${userName || "the user"} when you Save? Access is revoked and the key changes — re-adding later needs a fresh QR / config.`}
+        onConfirm=${() => { setToUnassign(u => [...u, it.peer.id]); dropAt(cursor); }}/>`);
+    else dropAt(cursor);
+  };
 
   const save = async () => {
-    if (!items.length) return setMsg({ k: "err", t: "Add at least one peer." });
+    if (!items.length && !toUnassign.length) return setMsg({ k: "err", t: "Add at least one peer." });
     for (const it of items) {
       for (const s of Object.values(it.sel)) if (!V.ipv4(String(s.ip || "").trim())) return setMsg({ k: "err", t: "Invalid address for " + Store.nodeName(s.node) + "/" + s.iface + "." });
       if (it.kind === "new" && !Object.keys(it.sel).length) return setMsg({ k: "err", t: "A new peer has no interfaces — tick at least one (or remove it)." });
@@ -7337,10 +7354,13 @@ function AddPeersSheet({ userId, userName }) {
     const fails = []; let firstPid = null;
     for (const it of items) {
       if (it.kind === "new") {
-        const res = await createOneMultiTargetPeer(userId, Object.values(it.sel), cf.opts());
+        const res = await createOneMultiTargetPeer(userId, Object.values(it.sel), cf.opts(), (it.title || "").trim());
         if (!res.ok) fails.push(...res.fails); else if (res.id && !firstPid) firstPid = res.id;
       } else {
-        if (!it.assigned) { const r = await api.peerUpdate({ peer_id: it.peer.id, user_id: userId }); if (!r.ok) { fails.push(peerLabel(it.peer) + ": " + (r.error || "assign failed")); continue; } }
+        const patch = {};
+        if (!it.assigned) patch.user_id = userId;
+        if ((it.title || "").trim() !== (it.peer.title || "")) patch.title = (it.title || "").trim();   // inline title edit
+        if (Object.keys(patch).length) { const r = await api.peerUpdate({ peer_id: it.peer.id, ...patch }); if (!r.ok) { fails.push(peerLabel(it.peer) + ": " + (r.error || "update failed")); continue; } }
         const have = new Set((it.peer.targets || []).map(t => tkey(t.node, t.iface)));
         for (const s of Object.values(it.sel)) {
           if (have.has(tkey(s.node, s.iface))) continue;
@@ -7350,6 +7370,7 @@ function AddPeersSheet({ userId, userName }) {
         if (!firstPid) firstPid = it.peer.id;
       }
     }
+    for (const pid of toUnassign) { const r = await api.peerUnassign({ peer_id: pid }); if (!r.ok) fails.push("unassign: " + (r.error || r.code || "failed")); }
     setBusy(false); await Store.poll();
     if (fails.length) toast("Some operations failed: " + fails.join("; "), "err", 6000);
     closeModal();
@@ -7357,9 +7378,9 @@ function AddPeersSheet({ userId, userName }) {
   };
 
   const newCount = items.filter(it => it.kind === "new").length;
-  const cta = "Save" + (items.length ? " · " + items.length + " peer" + (items.length === 1 ? "" : "s") : "");
-  return html`<${Sheet} title=${"Add peers" + (userName ? " · " + userName : "")}
-    foot=${footRow({ onCancel: closeModal, disabled: busy || !items.length, onAction: save, action: cta })}>
+  const cta = "Save" + (items.length ? " · " + items.length + " peer" + (items.length === 1 ? "" : "s") : (toUnassign.length ? " · unlink " + toUnassign.length : ""));
+  return html`<${Sheet} title=${"Add peers" + (userName ? " · " + userName : "")} dirtyRef=${dirty} closeRef=${sheetClose}
+    foot=${footRow({ onCancel: () => (sheetClose.current || closeModal)(), disabled: busy || (!items.length && !toUnassign.length), onAction: save, action: cta })}>
     <div class="field"><label>Add peer</label>
       <select class="selwrap" value="" onChange=${e => { addFromDrop(e.target.value); e.target.value = ""; }}>
         <option value="">Add an existing peer or create a new one…</option>
@@ -7369,11 +7390,14 @@ function AddPeersSheet({ userId, userName }) {
     ${items.length && cur ? html`<${Fragment}>
       <div class="peercar">
         <button class="pc-arrow" title="Previous peer" disabled=${cursor <= 0} onClick=${() => { setJump(false); setCursor(c => Math.max(0, c - 1)); }}>◀</button>
-        <button class="pc-face" onClick=${() => setJump(j => !j)} title="Pick a peer">
+        <div class="pc-face" title="Pick a peer" onClick=${e => { if (e.target.tagName !== "INPUT") setJump(j => !j); }}>
           <span class=${"pc-kind " + cur.kind}>${cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg")}</span>
-          <span class="pc-name">${carLabel(cur)}</span><span class="pc-count">${cursor + 1}/${items.length}</span></button>
+          <input class="pc-title" size=${Math.max(6, ((cur.title || (cur.kind === "new" ? "New peer" : "untitled")).length) + 1)} value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} title="Click to name this peer — saved when you Save" onInput=${e => updateTitle(e.target.value)} onClick=${e => e.stopPropagation()}/>
+          ${cur.kind === "existing" ? html`<span class="pc-ctx">· ${peerCtx(cur.peer)}</span>` : html`<span class="grow"></span>`}
+          <span class="pc-count">${cursor + 1}/${items.length}</span>
+        </div>
         <button class="pc-arrow" title="Next peer" disabled=${cursor >= items.length - 1} onClick=${() => { setJump(false); setCursor(c => Math.min(items.length - 1, c + 1)); }}>▶</button>
-        <button class="pc-x" title="Remove this peer from the list" onClick=${removeCur}><${Ic} i="link"/></button>
+        <button class="pc-x" title=${(cur.kind === "existing" && cur.assigned) ? "Unlink (unassign on save)" : "Remove from the list"} onClick=${removeCur}><${Ic} i="link"/></button>
         ${jump ? html`<div class="pc-menu">${items.map((it, i) => html`<button key=${it.key} class=${i === cursor ? "on" : ""} onClick=${() => { setCursor(i); setJump(false); }}><span class="pc-mi">${i + 1}</span> ${carLabel(it)}</button>`)}</div>` : null}
       </div>
       <div class="field"><label>Interfaces${cur.kind === "new" ? " · pick where to deploy" : ""}</label>
@@ -7433,7 +7457,9 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   // order by the INITIAL checked state (already-deployed targets), then node, then interface — so the
   // pre-checked rows sit on top and the list does NOT reshuffle as you toggle.
   const initialKeys = new Set((initial || []).map(t => tkey(t.node, t.iface)));
-  const ordered = [...targets].sort((a, b) =>
+  const _sv = Object.values(sel);
+  const lockType = _sv.length ? iTypeOf(_sv[0].node, _sv[0].iface) : null;   // a peer is one protocol — hide the other kind once one is ticked
+  const ordered = [...targets].filter(t => !lockType || iTypeOf(t.node, t.iface) === lockType).sort((a, b) =>
     (initialKeys.has(tkey(a.node, a.iface)) ? 0 : 1) - (initialKeys.has(tkey(b.node, b.iface)) ? 0 : 1)
     || (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
     || (a.iface || "").localeCompare(b.iface || ""));
@@ -7470,7 +7496,9 @@ function PeerIfaceGrid({ value, onChange, lockExisting }) {
   };
   const setIp = (k, v) => onChange(sel => sel[k] ? { ...sel, [k]: { ...sel[k], ip: v } } : sel);
   if (!all.length) return html`<div class="hint">No interfaces available — is a node online?</div>`;
-  const ordered = [...all].sort((a, b) => (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "") || (a.iface || "").localeCompare(b.iface || ""));
+  const _sv = Object.values(value);
+  const lockType = _sv.length ? iTypeOf(_sv[0].node, _sv[0].iface) : null;   // a peer is one protocol — hide the other kind once one is ticked
+  const ordered = [...all].filter(t => !lockType || iTypeOf(t.node, t.iface) === lockType).sort((a, b) => (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "") || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class=${"targetpick" + (ordered.length > 5 ? " scroll" : "")}>${ordered.map(t => {
     const k = tkey(t.node, t.iface); const s = value[k];
     const im = (Store.describe[t.node] || {})[t.iface] || {};
@@ -7489,7 +7517,7 @@ function PeerIfaceGrid({ value, onChange, lockExisting }) {
 
 // Mint ONE peer (single key + PSK) deployed to MULTIPLE targets in a single atomic peerCreate (per-target configs
 // keyed node|iface). Returns { ok, id?, fails:[...] }. Used by the Add-peers carousel for a "new peer" item.
-async function createOneMultiTargetPeer(userId, targets, opts) {
+async function createOneMultiTargetPeer(userId, targets, opts, title) {
   if (!targets.length) return { ok: false, fails: ["no interfaces"] };
   const dnsArr = (opts.dns || "").split(",").map(s => s.trim()).filter(Boolean);
   try {
@@ -7506,6 +7534,7 @@ async function createOneMultiTargetPeer(userId, targets, opts) {
         allowed: (opts.allowed || "").trim() || "0.0.0.0/0, ::/0", keepalive: (opts.keepalive || "").trim() });
     }
     const body = { user_id: userId, pubkey: keys.pub, psk, targets: tlist };
+    if (title) body.title = title;
     if (Store.storeConfigs) body.configs = configs;
     const r = await api.peerCreate(body);
     if (!r.ok) return { ok: false, fails: ["create: " + (r.error || r.code || "failed")] };
