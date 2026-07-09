@@ -596,6 +596,27 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .targetopt .tg{flex:none;margin-right:2px}   /* wg/awg type tag sits just before the address */
 .targetopt .topt-ip{width:130px;flex:none;padding:5px 8px;font-size:12.5px}
 .targetopt .topt-ip.existing{display:inline-flex;align-items:center;justify-content:flex-end;font-family:var(--mono);color:var(--ink-2);text-align:right}   /* already-deployed address, read-only */
+.targetopt .topt-ip[readonly]{color:var(--ink-2);text-align:right;font-family:var(--mono)}
+.targetpick.scroll{max-height:232px}   /* Add-peers carousel grid: scroll after ~5 rows */
+
+/* Add-peers peer carousel: ◀ [kind · name · N/M] ▶ ✕ + a click-to-jump menu */
+.peercar{position:relative;display:flex;align-items:center;gap:6px;margin:2px 0 12px}
+.pc-arrow,.pc-x{flex:none;width:34px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);color:var(--ink-2);cursor:pointer;font-size:12px;transition:all .14s}
+.pc-arrow:hover:not(:disabled){border-color:var(--line-solid);color:var(--ink)}
+.pc-arrow:disabled{opacity:.35;cursor:not-allowed}
+.pc-x{background:transparent;color:var(--faint)}
+.pc-x:hover{border-color:#e0574d;color:#e0574d}
+.pc-face{flex:1;min-width:0;display:flex;align-items:center;gap:9px;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);cursor:pointer;transition:all .14s}
+.pc-face:hover{border-color:var(--line-solid)}
+.pc-kind{flex:none;font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;padding:2px 6px;border-radius:5px;color:#fff;background:var(--dim)}
+.pc-kind.new{background:var(--brand)}
+.pc-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--ink);text-align:left}
+.pc-count{flex:none;font-family:var(--mono);font-size:11px;color:var(--dim);font-weight:600}
+.pc-menu{position:absolute;top:44px;left:40px;right:40px;z-index:20;max-height:240px;overflow-y:auto;background:var(--surface);border:1px solid var(--line-solid);border-radius:10px;box-shadow:var(--shadow);padding:4px;display:flex;flex-direction:column;gap:2px}
+.pc-menu button{display:flex;align-items:center;gap:8px;text-align:left;padding:7px 9px;border:none;border-radius:7px;background:transparent;color:var(--ink-2);cursor:pointer;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pc-menu button:hover{background:var(--surface-2)}
+.pc-menu button.on{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--ink)}
+.pc-mi{flex:none;font-family:var(--mono);font-size:10px;color:var(--faint)}
 
 /* ───── node pips (redundancy signature) ───── */
 .pips{display:inline-flex;gap:5px;align-items:center}
