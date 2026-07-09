@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.2-beta</code></p>
+<p align="center"><code>1.2.3-beta</code></p>
 
 ---
 
@@ -390,3 +390,26 @@ Full reference: [`docs/API.md`](docs/API.md).
 - **Client connects (handshake works) but has no internet / `rx` climbs while `tx` stays ~0.** The node is decrypting packets but not routing them out. Interfaces created by the installer set this up automatically; for a hand-made interface, enable forwarding (`net.ipv4.ip_forward=1`) and add a masquerade for the tunnel subnet out the WAN nic (`iptables -t nat -A POSTROUTING -s <subnet> -o <wan> -j MASQUERADE`).
 - **Smart routing doesn't switch instantly — give it a minute or two.** Enabling a list/category or changing its exit is *eventually consistent*, not immediate. The node applies routing on a periodic reconcile (~60s) after pulling the resolved list from the panel, so there's a short delay before matched traffic starts leaving via the new exit — and longer if a connection is already open, since it keeps flowing the old way until it reconnects. Category attribution lags a little further: a destination's IP set fills lazily (as its domains are resolved/seen), so freshly routed traffic can show as **uncategorized** for a bit before it lands in its category. Both converge on their own; nothing is wrong — re-checking after a minute or reconnecting the client speeds it up.
 - **`acme.sh` failed to issue.** `letsencrypt` needs port 80 reachable; if 80 is taken, use `cloudflare` (DNS-01, no port 80).
+
+## Special thanks
+
+swgPanel integrates several excellent open-source projects — huge thanks to their authors.
+
+**Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK/Yandex TURN relays to get past tough blocks:
+
+- [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — the original
+- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy)
+- [samosvalishe/vk-turn-proxy](https://github.com/samosvalishe/vk-turn-proxy)
+- [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
+- [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
+- [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)
+
+**Routing / geo-data lists** — the domain & IP lists behind smart routing:
+
+- [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
+- [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
+- [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
+- [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists)
+- [blackmatrix7/ios_rule_script](https://github.com/blackmatrix7/ios_rule_script)
+
+And, of course, [WireGuard](https://www.wireguard.com/) and [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go).

@@ -1,6 +1,6 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.2-beta</code></p>
+<p align="center"><code>1.2.3-beta</code></p>
 
 ---
 
@@ -238,3 +238,26 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 - **[Technical guide (English)](README.technical.md)** — architecture, every install option and flag,
   Docker by hand, converting, smart routing, the external API, backups & security, and troubleshooting.
 - **[Русский](README.ru.md)** · **[Техническое (RU)](README.technical.ru.md)**
+
+## Special thanks
+
+swgPanel integrates several excellent open-source projects — huge thanks to their authors.
+
+**Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK/Yandex TURN relays to get past tough blocks:
+
+- [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — the original
+- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy)
+- [samosvalishe/vk-turn-proxy](https://github.com/samosvalishe/vk-turn-proxy)
+- [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
+- [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
+- [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)
+
+**Routing / geo-data lists** — the domain & IP lists behind smart routing:
+
+- [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
+- [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
+- [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
+- [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists)
+- [blackmatrix7/ios_rule_script](https://github.com/blackmatrix7/ios_rule_script)
+
+And, of course, [WireGuard](https://www.wireguard.com/) and [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go).

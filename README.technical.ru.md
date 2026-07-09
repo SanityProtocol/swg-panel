@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <b>Техническое (RU)</b></p>
 
-<p align="center"><code>1.2.2-beta</code></p>
+<p align="center"><code>1.2.3-beta</code></p>
 
 ---
 
@@ -390,3 +390,26 @@ Uptime Kuma: добавьте монитор **HTTP(s) - Keyword** на `/api/v1
 - **Клиент подключается (handshake проходит), но нет интернета / `rx` растёт, а `tx` остаётся ~0.** Узел расшифровывает пакеты, но не маршрутизирует их наружу. Интерфейсы, созданные установщиком, настраивают это автоматически; для интерфейса, собранного вручную, включите форвардинг (`net.ipv4.ip_forward=1`) и добавьте masquerade для туннельной подсети на WAN-интерфейс (`iptables -t nat -A POSTROUTING -s <subnet> -o <wan> -j MASQUERADE`).
 - **Умная маршрутизация переключается не мгновенно — дайте минуту-другую.** Включение списка/категории или смена его выхода — *eventually consistent*, а не мгновенно. Узел применяет маршрутизацию на периодическом reconcile (~60с) после получения разрешённого списка от панели, поэтому есть небольшая задержка, прежде чем совпавший трафик начнёт уходить через новый выход — и дольше, если соединение уже открыто, так как оно продолжает идти по-старому до переподключения. Атрибуция категорий отстаёт чуть сильнее: IP-набор назначения наполняется лениво (по мере разрешения/наблюдения его доменов), поэтому свежемаршрутизированный трафик какое-то время может показываться как **uncategorized**, прежде чем попадёт в свою категорию. Оба сходятся сами; ничего не сломано — перепроверка через минуту или переподключение клиента ускоряет это.
 - **`acme.sh` не смог выпустить сертификат.** `letsencrypt` требует доступного порта 80; если 80 занят, используйте `cloudflare` (DNS-01, без порта 80).
+
+## Особая благодарность
+
+swgPanel использует несколько прекрасных проектов с открытым исходным кодом — огромная благодарность их авторам.
+
+**Форки turn-proxy** — оборачивают WireGuard/AmneziaWG через TURN-реле VK/Yandex, чтобы обходить жёсткие блокировки:
+
+- [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — оригинал
+- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy)
+- [samosvalishe/vk-turn-proxy](https://github.com/samosvalishe/vk-turn-proxy)
+- [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
+- [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
+- [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)
+
+**Списки маршрутизации / гео-данные** — доменные и IP-списки, на которых работает умная маршрутизация:
+
+- [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
+- [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
+- [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
+- [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists)
+- [blackmatrix7/ios_rule_script](https://github.com/blackmatrix7/ios_rule_script)
+
+И, конечно, [WireGuard](https://www.wireguard.com/) и [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go).
