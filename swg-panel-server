@@ -4436,6 +4436,7 @@ def api(method, path, qs, body, deps):
         # capture the node's current version — we clear the request once it reports ANYTHING different
         # (it updates to latest, which can move past a docker panel's lagging-CI image version)
         frm = ((deps.get("node_snaps") or {}).get(nid) or {}).get("noded_version")
+        nodes[nid].pop("proc_status", None)   # a fresh Update request clears any prior stuck/failed tag so it starts clean
         nodes[nid]["update"] = {"to": VERSIONS.get("panel") or "", "from": frm, "at": int(time.time())}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Update requested", "")
@@ -5036,8 +5037,16 @@ class Handler(BaseHTTPRequestHandler):
         # it. A docker node with no host updater wired reports `update-failed` itself, so it won't hang silently.
         upd = node.get("update")
         rv = snap.get("noded_version")
-        if upd and rv and rv != upd.get("from"):
+        if upd and rv and rv != upd.get("from"):                       # version advanced → the update landed, clear the request
             node.pop("update", None)
+            with contextlib.suppress(Exception):
+                nodes_save(Handler.deps["nodes_path"], nodes)
+            upd = None
+        elif upd and (time.time() - (upd.get("at") or 0)) > PROC_GRACE:   # never landed within the window (hung / couldn't reach GitHub):
+            node.pop("update", None)                                       # CLEAR the request so the operator can click Update again (not
+            node["proc_status"] = {"state": "update-failed", "at": int(time.time()),   # stuck on "updating") and the node isn't asked to
+                                   "err": "Update did not complete within %d min — the node never reported a new version "   # keep self-updating. A real, dismissible failure tag.
+                                          "(e.g. it couldn't reach GitHub). Click Update to retry." % (PROC_GRACE // 60)}
             with contextlib.suppress(Exception):
                 nodes_save(Handler.deps["nodes_path"], nodes)
             upd = None
