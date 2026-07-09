@@ -275,6 +275,15 @@ if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml"
   fi
   prof="${prof:-host}"   # older installs may carry a host-node marker — compose keeps it as a master alias
   if have docker && docker compose version >/dev/null 2>&1; then COMPOSE="docker compose"; else COMPOSE="docker-compose"; fi
+  # Force-DNS DNATs a client's :53 to the node's loopback dnsmasq, which needs net.ipv4.conf.all.route_localnet=1.
+  # A host-net container can't set it (read-only /proc/sys) and pre-fix installs never persisted it → repair it on
+  # the HOST here so an update un-breaks Force-DNS on existing nodes. Idempotent; node-bearing profiles only.
+  case "$prof" in node|master|host-node)
+    if ! $DRYRUN; then
+      grep -qs route_localnet /etc/sysctl.d/99-swg-node.conf 2>/dev/null || printf 'net.ipv4.conf.all.route_localnet = 1\n' >> /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
+      sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 || true
+    fi ;;
+  esac
   # migrate existing docker panels: the panel matches a master's co-located node by the HOST hostname, which it
   # only learns via SWG_HOST_HOSTNAME — older .env/compose lack it (an update doesn't restage the compose), so add it.
   case "$prof" in host|master|host-node)
