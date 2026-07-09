@@ -379,10 +379,15 @@ function turnArtifact(baseConf, tp, vkLink) {
       text: baseConf.replace(/\s*$/, "") + "\n" + block + "\n" };
   }
   if (fork === "anton48") {
+    // Match anton48's own generator EXACTLY except the per-connection values (keys, tunnel addr, peerAddress, vkLink):
+    // allowedIPs (missing broke routing), dnsServers as a STRING not an array, useDTLS:true (off = degraded speed),
+    // no useWrapA. numConnections 12 like its reference link.
     const s = { privateKey: cf.privkey, peerPublicKey: cf.server_pubkey, presharedKey: cf.psk,
-      tunnelAddress: cf.address, dnsServers: cf.dns || [], peerAddress: listen, vkLink: vk,
-      numConnections: 10, useUDP: true, useDTLS: false, useSrtp: !tp.wrap_key,
-      useWrap: !!tp.wrap_key, useWrapA: false, wrapKeyHex: tp.wrap_key || "" };
+      tunnelAddress: cf.address, allowedIPs: "0.0.0.0/0",
+      dnsServers: (cf.dns && cf.dns.length ? cf.dns.join(",") : "1.1.1.1"),
+      peerAddress: listen, vkLink: vk, numConnections: 12,
+      useUDP: true, useDTLS: true, useSrtp: !tp.wrap_key,
+      useWrap: !!tp.wrap_key, wrapKeyHex: tp.wrap_key || "" };
     const uri = "vkturnproxy://import?data=" + btoa(JSON.stringify({ settings: s, type: "connection", version: 1 }));
     return { fork, label: "anton48 · VK TURN Proxy (iOS)", ext: "txt", uri: true,
       hint: "Open this link on the iPhone (or the app's Settings → Import from connection link) to import into the anton48 app.",
@@ -4109,12 +4114,17 @@ function TurnManageSheet({ node, tp }) {
   const lp = lis.includes(":") ? lis.slice(lis.lastIndexOf(":") + 1) : "";
   const con = tp.connect || "";
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-  const ips = nrec.ips || [];
+  const snap = Store.stats[node] || {};
+  const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";
+  // node's PUBLIC endpoint (what clients dial): on a bridge node the reported nrec.ips are container-private (and
+  // filtered out), so surface the public endpoint so the LISTEN-IP dropdown offers it — noded rebinds it to
+  // 0.0.0.0 inside the netns, so binding "the public IP" works there despite it not being a local container address.
+  const epIp = (() => { for (const b of Object.values(snap.interfaces || {})) { const ep = (b.meta || {}).endpoint || ""; if (ep) return ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep; } return ""; })();
+  const ips = [...new Set([epIp, (nrec.endpoint_host || "").trim(), ...(nrec.ips || [])].filter(Boolean))];
   const lInit = ips.includes(lh) ? lh : "__custom__";
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? lh : "");
   const [lport, setLport] = useState(lp);
-  const snap = Store.stats[node] || {};
   const allIfaces = Object.entries(snap.interfaces || {})
     .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
     .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
@@ -4122,7 +4132,6 @@ function TurnManageSheet({ node, tp }) {
   const fork = turnFork(svc);
   const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
   const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
-  const epIp = (() => { for (const b of Object.values(snap.interfaces || {})) { const ep = (b.meta || {}).endpoint || ""; if (ep) return ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep; } return ""; })();
   const conPort = con.includes(":") ? con.slice(con.lastIndexOf(":") + 1) : con;
   const match = ifaces.find(i => i.port === conPort);
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
@@ -4221,7 +4230,9 @@ function TurnManageSheet({ node, tp }) {
         <${IpPicker} ips=${ips} sel=${lsel} setSel=${setLsel} custom=${lcustom} setCustom=${setLcustom} placeholder="203.0.113.7"/></div>
       <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="57000"/></div>
     </div>
-    ${lsel === "__custom__" && lhost && ips.length && !ips.includes(lhost) ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't a detected address on the node. The proxy <b>binds</b> to this address — it must be a real IP on the server, or it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>` : null}
+    ${lsel === "__custom__" && lhost && !ips.includes(lhost) ? (isBridge
+      ? html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>Bridge node: the proxy binds <span class="mono">0.0.0.0</span> inside the container and this port is published, so enter the node's <b>public</b> IP/host (what clients dial) here.</span></div>`
+      : html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't a detected address on the node. The proxy <b>binds</b> to this address — it must be a real IP on the server, or it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>`) : null}
     <div class="field"><label>Forwards to</label>
       <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
         ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
@@ -4587,21 +4598,23 @@ function SetupTurnSheet({ node }) {
   const [mode, setMode] = useState("new");   // new (install) | existing (adopt)
   const [fork, setFork] = useState((FORKS[0] || TURN_FORKS[0]).id);
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
-  const ips = nrec.ips || [];
   const snap = Store.stats[node] || {};
-  const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
-    .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
-  // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker
-  const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
-  const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
-  const epIp = (() => {   // the node's detected public IP — the proxy BINDS to listen, so it must be local
+  const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";
+  const epIp = (() => {   // the node's PUBLIC endpoint (what clients dial); on bridge the proxy rebinds it to 0.0.0.0
     for (const b of Object.values(snap.interfaces || {})) {
       const ep = (b.meta || {}).endpoint || "";
       if (ep) return ep.includes(":") ? ep.slice(0, ep.lastIndexOf(":")) : ep;
     }
     return "";
   })();
+  // include the public endpoint so bridge nodes (whose reported ips are container-private + filtered) still offer it
+  const ips = [...new Set([epIp, (nrec.endpoint_host || "").trim(), ...(nrec.ips || [])].filter(Boolean))];
+  const allIfaces = Object.entries(snap.interfaces || {})
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
+  // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker
+  const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
+  const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
   const lInit = epIp ? (ips.includes(epIp) ? epIp : "__custom__") : (ips[0] || "__custom__");
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? epIp : "");
@@ -4684,7 +4697,9 @@ function SetupTurnSheet({ node }) {
           <div class="hint">An address on this server — the proxy binds to it</div></div>
         <div class="field"><label>Listen port</label><input value=${lport} onInput=${e => setLport(e.target.value)} placeholder="56000"/></div>
       </div>
-      ${lsel === "__custom__" && lhost && ips.length && !ips.includes(lhost) ? html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't a detected address on the node. The proxy <b>binds</b> to it, so it must be a real IP on the server — otherwise it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>` : null}
+      ${lsel === "__custom__" && lhost && !ips.includes(lhost) ? (isBridge
+        ? html`<div class="notice" style="margin:-6px 0 16px"><${Ic} i="info"/><span>Bridge node: the proxy binds <span class="mono">0.0.0.0</span> inside the container and this port is published, so enter the node's <b>public</b> IP/host (what clients dial) here.</span></div>`
+        : html`<div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This isn't a detected address on the node. The proxy <b>binds</b> to it, so it must be a real IP on the server — otherwise it dies with <span class="mono">bind: cannot assign requested address</span>.</span></div>`) : null}
       <div class="field"><label>Forwards to</label>
         <select class="selwrap" value=${fwd} onChange=${e => setFwd(e.target.value)}>
           ${ifaces.map(i => html`<option value=${i.name}>${i.name} · 127.0.0.1:${i.port}</option>`)}
