@@ -1151,7 +1151,10 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         # is the measured CLIENT traffic, never Σ categories. Cost ≈ 1 nftset lookup per populated category per
         # forwarded packet (all-match), bounded by how many categories you enable. Order irrelevant without `return`.
         subnets = sorted({e["subnet"] for e in smart_e})           # every client subnet under smart routing (incl catch-all)
-        count_cats = sorted(c for c in cats if c != "all" and _t["counts"].get(_smart_setname(c), 0) > 0)
+        # In Hybrid-SNI a category's dsts can live ONLY in its learned set (catl_) with an empty geoip set (cat_),
+        # so also count any ROUTED category when queueing — else swg-sni-learned traffic falls through to c_uncat.
+        _routed_cats = {c for (_S, c, _a, _T) in want if c != "all"} if queue else set()
+        count_cats = sorted(c for c in cats if c != "all" and (_t["counts"].get(_smart_setname(c), 0) > 0 or c in _routed_cats))
         catw = [(S, c) for S in subnets for c in count_cats]
         have_cnt = set(re.findall(r"counter (\S+) {", body))
         for c in count_cats:
@@ -1162,7 +1165,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         for d in ("up", "dn"):                                  # UNCATEGORIZED bucket: client traffic matching no category set
             if count_cats and "c_uncat_" + d not in have_cnt:   # only meaningful when ≥1 category exists to be "un" of
                 run(["nft", "add", "counter", "inet", SMART_NFT_TABLE, "c_uncat_" + d])
-        csig = hashlib.sha1((json.dumps(catw) + "|d2").encode()).hexdigest()[:16]   # d2: + catany (uncategorised) chain
+        csig = hashlib.sha1((json.dumps(catw) + "|d4|q" + str(int(bool(queue)))).encode()).hexdigest()[:16]   # d4: + ct-mark uncat exclusion (Kernel-SNI double-count); catl_ learned counting; q: engine gate
         _csigf = os.path.join(GEO_DIR, ".catcount-sig")
         try:
             cstored = open(_csigf).read().strip()
@@ -1181,6 +1184,12 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 r2 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + snm, "counter", "name", cn + "_dn"])
                 if r1.returncode or r2.returncode:
                     cok = False
+                if queue:                                       # Hybrid-SNI: swg-sni-learned dsts live in catl_<c> — tally them into the SAME
+                    lnm = _smart_learnsetname(c)                # category counter, skipping any dst already in the geoip cat_ set (no double count)
+                    r3 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "saddr", S, "ip", "daddr", "@" + lnm, "ip", "daddr", "!=", "@" + snm, "counter", "name", cn + "_up"])
+                    r4 = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catcount", "ip", "daddr", S, "ip", "saddr", "@" + lnm, "ip", "saddr", "!=", "@" + snm, "counter", "name", cn + "_dn"])
+                    if r3.returncode or r4.returncode:
+                        cok = False
             # catany: FIRST-MATCH mirror — a client byte that matches NO populated category set falls through to
             # c_uncat → the "Uncategorised" bar. Categorised bytes `return` early (already tallied in catcount). Ordered
             # per subnet: up cat-returns, then the up uncat catch-all; then the same for down. Subnet-scoped like catcount
@@ -1196,11 +1205,21 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                     snm = _smart_setname(c)
                     r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + snm, "return"])
                     if r.returncode: cok = False
+                    if queue:                                   # a learned dst IS categorised → return early so it isn't tallied as uncat
+                        r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ip", "daddr", "@" + _smart_learnsetname(c), "return"])
+                        if r.returncode: cok = False
+                # Kernel-SNI categorises into swgk_<c> IPSETS (invisible to nft) but CONNMARKs the routed flow — so an
+                # exit-marked byte IS categorised even when no nft set matched it; exclude it from uncat (else double count).
+                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "ct", "mark", "!=", "0x0", "return"])
                 run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "saddr", S, "counter", "name", "c_uncat_up", "return"])
                 for c in cats_here:
                     snm = _smart_setname(c)
                     r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + snm, "return"])
                     if r.returncode: cok = False
+                    if queue:
+                        r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ip", "saddr", "@" + _smart_learnsetname(c), "return"])
+                        if r.returncode: cok = False
+                run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "ct", "mark", "!=", "0x0", "return"])
                 run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "catany", "ip", "daddr", S, "counter", "name", "c_uncat_dn", "return"])
             if cok:
                 with contextlib.suppress(OSError):
