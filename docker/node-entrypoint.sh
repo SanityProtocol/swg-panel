@@ -163,7 +163,7 @@ for IFACE in $MANAGED; do
 done
 
 # ───────── 3) swg-agent config: declarative HTTPS sync, all interfaces listed (with per-interface endpoints) ─────────
-VERIFY=false; [ "${TLS_VERIFY:-no}" = yes ] && VERIFY=true
+VERIFY=false; [ "${TLS_VERIFY:-yes}" = yes ] && VERIFY=true
 FP=""; [ -n "${TLS_FINGERPRINT:-}" ] && FP=",
     \"fingerprint\": \"${TLS_FINGERPRINT}\""
 cat > /etc/swg-agent/config.json <<JSON

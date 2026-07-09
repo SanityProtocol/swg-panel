@@ -773,7 +773,20 @@ case "$PANEL_URL" in https://*) ;; http://*) warn "panel URL is http:// — the 
 [ "$EXISTING" = yes ] && [ -n "${LC_TOKEN:-}" ] && [ -n "$PANEL_URL" ] && LC_URL="$PANEL_URL"
 
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
-  ask_yn "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n TLS_VERIFY
+  # Verify the panel's TLS certificate by DEFAULT (secure). To avoid a fresh install failing its first sync
+  # against a self-signed panel, auto-detect the cert: probe once with strict TLS; only if that fails while
+  # skipping verification works is the panel self-signed → default to no. The operator can still override.
+  _tls_def=y
+  if [ -n "$PANEL_URL" ] && ! $DRYRUN; then
+    curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; _rc=$?
+    # Only a genuine cert-verification failure (curl 60/51) — where skipping verify then works — means the
+    # panel is self-signed. A transient error (timeout/refused/other) keeps the SECURE default (verify), so
+    # a network hiccup never silently downgrades a real-CA panel to no-verify.
+    if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
+      _tls_def=n
+    fi
+  fi
+  ask_yn "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def" TLS_VERIFY
 fi
 
 NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"   # local label (systemd unit + final message)

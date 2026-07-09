@@ -647,7 +647,19 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
   ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
   case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
-  [ -z "$TLS_VERIFY" ] && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" n)"
+  if [ -z "$TLS_VERIFY" ]; then
+    # Verify by DEFAULT (secure); auto-detect a self-signed panel so a fresh node never fails its first sync.
+    local _tls_def=y _rc
+    if [ -n "$PANEL_URL" ]; then
+      curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; _rc=$?
+      # only a genuine cert-verification failure (60/51) with -k then working means self-signed; a transient
+      # error keeps the secure default (verify) rather than silently downgrading a real-CA panel.
+      if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
+        _tls_def=n
+      fi
+    fi
+    TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def")"
+  fi
   return 0
 }
 # subnet (10.x.y.0/24) -> the server's interface address (10.x.y.1/24). Accepts either form as input.
