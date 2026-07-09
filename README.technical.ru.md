@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <b>Техническое (RU)</b></p>
 
-<p align="center"><code>1.2.7-beta</code></p>
+<p align="center"><code>1.2.8-beta</code></p>
 
 ---
 
@@ -32,6 +32,7 @@
 - [Внешний API и интеграции](#внешний-api-и-интеграции)
 - [Безопасность](#безопасность)
 - [Диагностика](#диагностика)
+- [Особая благодарность](#особая-благодарность)
 
 ## Метод × Роль
 

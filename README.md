@@ -1,6 +1,6 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.7-beta</code></p>
+<p align="center"><code>1.2.8-beta</code></p>
 
 ---
 
@@ -42,6 +42,7 @@ subscription and no one else sitting in the middle of your traffic.
 - [Keeping it running](#keeping-it-running) — updates, backups, recovery, switching method, uninstall
 - [A few things worth knowing](#a-few-things-worth-knowing)
 - [Learn more](#learn-more)
+- [Special thanks](#special-thanks)
 
 ## What it does
 

@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.7-beta</code></p>
+<p align="center"><code>1.2.8-beta</code></p>
 
 ---
 
@@ -32,6 +32,7 @@ Multi-hop in mind (edge entry → distant exit), and built to scale — from a c
 - [External API & Integrations](#external-api--integrations)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
+- [Special thanks](#special-thanks)
 
 ## Method × Role
 
