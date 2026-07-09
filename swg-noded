@@ -2513,6 +2513,18 @@ def current_endpoints(node_cfg, iface, dump=_UNSET):
     return {p["public_key"]: p.get("endpoint") for p in dump[1]}
 
 
+MESH_STALE_S = 240   # a dial-out mesh peer silent this long (well past keepalive + the panel's 180s "down") is stuck → bounce
+def current_handshakes(node_cfg, iface, dump=_UNSET):
+    """{pubkey -> last-handshake unix ts (0 if never)} on the interface, or None if unreadable. Lets the
+    reconcile detect a dial-out mesh peer that HAS connected but gone silent-stale (endpoint moved / NAT
+    rebind / DPI) — WG dialing a fixed endpoint never recovers that on its own, so we bounce it."""
+    if dump is _UNSET:
+        dump = _iface_dump(node_cfg, iface)
+    if dump is None:
+        return None
+    return {p["public_key"]: p.get("last_handshake") or 0 for p in dump[1]}
+
+
 def current_listen_port(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = ic.get("cmd", ["awg"])
@@ -2591,6 +2603,7 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
             continue
         live_allowed = current_allowed(node_cfg, iface, dump) or {}   # for re-applying a CHANGED AllowedIPs (cascade /32→/0)
         live_ep = current_endpoints(node_cfg, iface, dump) or {}       # live endpoints — adopt an already-dialed peer (see the re-assert below)
+        live_hs = current_handshakes(node_cfg, iface, dump) or {}      # live handshake ts — detect a silent-stale dial-out mesh peer
         # EXPLICIT retirements from the panel (a key it rotated/deleted) FIRST — removed even on an
         # add-only interface, and before the add below so the replacement key can take the freed IP.
         for pk in remove_by_iface.get(iface, []):
@@ -2602,6 +2615,8 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                     res["errors"].append(f"retire {pk[:8]}: {r.get('error')}")
         for pk, p in desired.items():
             if pk in current:
+                if live_hs.get(pk) and (time.time() - live_hs[pk]) <= MESH_STALE_S:
+                    _op_ok("stale|" + iface + "|" + pk)   # link is healthy → reset any prior stale-bounce backoff
                 # already present — but its AllowedIPs may have CHANGED (cascade flips a mesh peer
                 # /32 ↔ 0.0.0.0/0, or an exit gains a forwarded subnet). reconcile otherwise skips
                 # present peers, so apply the diff surgically (this is risk R1).
@@ -2643,6 +2658,24 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                             _op_ok("redial|" + ek); applied_ep[ek] = want_ep; ep_dirty = True; res["added"] += 1
                         else:
                             _op_fail("redial|" + ek); res["errors"].append(f"endpoint {pk[:8]}: {r.get('error')}")
+                elif want_ep and live_hs.get(pk) and (time.time() - live_hs[pk]) > MESH_STALE_S and _op_ready("stale|" + ek):
+                    # SILENT-MESH-DEATH heal: a dial-out mesh peer that HANDSHOOK before but has been stale past
+                    # MESH_STALE_S is stuck — the remote's ingress moved (NAT rebind / IP change / DPI) and WG,
+                    # dialing a fixed endpoint, never recovers. Bounce it (re-resolves a hostname endpoint on
+                    # re-add). Gated: only a previously-connected peer (never-connected = "connecting", not stuck),
+                    # and backoff-guarded so a genuinely-offline peer doesn't churn.
+                    run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
+                    r = run_agent(agent, sudo, {"op": "add-peer", "iface": iface, "public_key": pk,
+                                                "allowed_ips": p.get("allowed_ips", ""),
+                                                "preshared_key": p.get("preshared_key", "none"),
+                                                "endpoint": want_ep,
+                                                "persistent_keepalive": p.get("persistent_keepalive"),
+                                                "name": p.get("name", "")})
+                    if r.get("ok"):
+                        _op_fail("stale|" + ek)   # count the bounce for backoff, but DON'T clear — a healthy link stops being stale on its own next cycle
+                        applied_ep[ek] = want_ep; ep_dirty = True; res["added"] += 1
+                    else:
+                        _op_fail("stale|" + ek); res["errors"].append(f"stale-redial {pk[:8]}: {r.get('error')}")
                 continue
             akey = "add|" + iface + "|" + pk
             if not _op_ready(akey):                                  # repeatedly rejected → in backoff; don't re-spawn the agent
