@@ -79,7 +79,7 @@ body{
 .mono{font-family:var(--mono)}
 .dim{color:var(--dim)} .faint{color:var(--faint)}
 a{color:inherit;text-decoration:none}
-::selection{background:color-mix(in srgb,var(--brand) 26%,transparent);color:#fff}
+::selection{background:color-mix(in srgb,var(--brand) 32%,transparent);color:var(--ink)}   /* --ink adapts per theme so selected text stays legible in light AND dark */
 :focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:5px}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 button{font-family:inherit}
