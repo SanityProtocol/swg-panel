@@ -1833,6 +1833,24 @@ function DashControls() {
 // right edge, vertically centred and travelling with the scroll. It shrinks further when the pointer leaves it (a "peek")
 // and grows back on hover; scrolling back to the top slides it away and the inline dashbar takes over again. Self-contained
 // scroll state (rAF-throttled, no-op when the boolean doesn't flip) so it never taxes the poll path.
+// The node rail panel — shared by the Overview rail (nav=false: toggle a node in/out of the dashboard) and the
+// node/interface-detail rail (nav=true: jump to a node). Identical markup/CSS; only the per-row behaviour differs.
+function NodesRailPanel({ nav, active }) {
+  const ns = Store.nodes || [];
+  return html`<div class="railpanel railmenu railmenu-nodes">
+    ${ns.map(n => {
+      const down = Store.recon.nodeStatus[n.id] !== "live";
+      const on = nav ? (n.id === active) : dashNodeOn(n.id);
+      const cls = "railmenu-b node" + (on ? " on" : (nav ? "" : " off")) + (down ? " down" : "");
+      const inner = html`<span class="railmenu-ic"><span class="railnode-dot" style=${"--c:" + Store.nodeColor(n.id)}></span></span><span class="railmenu-t">${n.name}</span>`;
+      if (!nav)
+        return html`<button key=${n.id} class=${cls} onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name + (down ? " · not reporting" : "")}>${inner}</button>`;
+      return on
+        ? html`<span key=${n.id} class=${cls} title=${n.name + (down ? " · not reporting" : "")}>${inner}</span>`
+        : html`<a key=${n.id} class=${cls} href=${"#/node/" + encodeURIComponent(n.id)} title=${(down ? "Down — " : "Go to ") + n.name}>${inner}</a>`;
+    })}
+  </div>`;
+}
 function DashRail() {
   const fleet = Store.fleet || [];
   const range = dashState.range;
@@ -1864,11 +1882,7 @@ function DashRail() {
         ${DASH_RANGES.map(([k, lbl]) => html`<button key=${k} class=${"railmenu-b" + (range === k ? " on" : "")} onClick=${() => dashSetRange(k)} title=${lbl}>
           <span class="railmenu-ic">${k === "live" ? html`<span class="rlive-dot"></span>` : html`<${Ic} i=${RANGE_ICON[k]}/>`}</span><span class="railmenu-t">${lbl}</span></button>`)}
       </div>
-      ${fleet.length > 1 ? html`<div class="railpanel railmenu railmenu-nodes">
-        ${fleet.map(n => { const on = dashNodeOn(n.id), down = Store.recon.nodeStatus[n.id] !== "live";
-          return html`<button key=${n.id} class=${"railmenu-b node" + (on ? " on" : " off") + (down ? " down" : "")} onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name}>
-            <span class="railmenu-ic"><span class="railnode-dot" style=${"--c:" + Store.nodeColor(n.id)}></span></span><span class="railmenu-t">${n.name}</span></button>`; })}
-      </div>` : null}
+      ${fleet.length > 1 ? html`<${NodesRailPanel} nav=${false}/>` : null}
     </div>
   </div>`;
 }
@@ -2727,18 +2741,13 @@ function HealthDot({ issues }) {
     ${issues.map(it => html`<div class="onrow hrow"><span class="on-name">${it}</span></div>`)}
   </${Popover}>`;
 }
-// Quick node→node nav: a colour-coded chip per server (saved order), the current one highlighted.
-function NodeBadges({ active }) {
-  const ns = Store.nodes || [];
-  if (ns.length < 2) return null;
-  return html`<div class="node-badges">${ns.map(n => {
-    const col = Store.nodeColor(n.id);
-    const down = Store.recon.nodeStatus[n.id] !== "live";   // not reporting → dim it (greyed, desaturated)
-    const cls = "nbadge" + (down ? " off" : "");
-    return n.id === active
-      ? html`<span class=${cls + " on"} style=${"--c:" + col} title=${n.name + (down ? " · not reporting" : "")}>${n.name}</span>`
-      : html`<a class=${cls} style=${"--c:" + col} href=${"#/node/" + encodeURIComponent(n.id)} title=${(down ? "Down — " : "Go to ") + n.name}>${n.name}</a>`;
-  })}</div>`;
+// Quick node→node nav as a pinned SIDE RAIL — the exact Overview node rail (reused via NodesRailPanel), in nav
+// mode: the current node highlighted, click navigates. Same markup/CSS as the dashboard's node selector.
+function NodeRail({ active }) {
+  if ((Store.nodes || []).length < 2) return null;
+  return html`<div class="dashrail noderail"><div class="dashrail-stack">
+    <${NodesRailPanel} nav=${true} active=${active}/>
+  </div></div>`;
 }
 function NodeDetail({ node: rawName }) {
   const name = decodeURIComponent(rawName);   // `name` is the node id (the connector); display uses dname
@@ -2788,7 +2797,8 @@ function NodeDetail({ node: rawName }) {
   if (snap && snap.generated_at) { const a = Math.floor(Date.now() / 1000 - snap.generated_at); syncTxt = live ? "synced " + seen(a) + " ago" : "stale for " + seen(a); }
 
   return html`<div class="screen">
-    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b><${NodeBadges} active=${name}/></div>
+    <${NodeRail} active=${name}/>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><b>${dname}</b></div>
     <div class="detail-head">
       <div class="title">${(nrec.outdated || (nrec.local && Store.panelOutdated)) && !nrec.updating ? html`<span class="upd-dot" title="Update available"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v4h-4"/></svg></span>` : null}<h1>${dname}</h1>${nrec.kind ? html`<span class=${"tport " + nrec.kind}>${nrec.kind === "docker" ? "docker" : "bare-metal"}</span>` : null}${nrec.uninstalled ? html`<span class="nstat uninst"><${Ic} i="info"/> uninstalled</span>` : live ? html`<span class="reporting">reporting</span>` : nrec.status === "dangling" ? html`<span class="nstat enroll"><${Ic} i="clock"/> awaiting enroll</span>` : html`<span class="nstat stale"><${Ic} i="info"/> stale</span>`}${nrec.proc_status && !isUpdateState(nrec.proc_status) ? procTag(nrec.proc_status, () => dismissNodeProc(nrec.id), nrec.proc_err, !live && nrec.status === "dangling") : null}<${HealthDot} issues=${nrec.issues}/></div>
       <div class="grow"></div>
@@ -2978,7 +2988,8 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   });
 
   return html`<div class="screen">
-    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b><${NodeBadges} active=${node}/></div>
+    <${NodeRail} active=${node}/>
+    <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
       <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${istopped ? html`<span class="nstat stopped" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/> stopped</span>` : idown ? html`<span class="nstat down" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/> down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="nstat stale"><${Ic} i="info"/> stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>

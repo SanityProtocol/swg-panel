@@ -167,17 +167,6 @@ h1,h2,h3{font-family:var(--sans)}
 .crumb a{color:var(--dim)} .crumb a:hover{color:var(--ink)}
 .crumb .sep{color:var(--faint)}
 .crumb b{color:var(--ink);font-weight:600}
-/* quick node→node jump chips, pushed to the right of the breadcrumb line */
-.node-badges{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.nbadge{--c:var(--brand);display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;line-height:1;
-  padding:5px 9px;border-radius:7px;border:1px solid color-mix(in srgb,var(--c) 30%,transparent);
-  background:color-mix(in srgb,var(--c) 9%,transparent);color:var(--ink-2);white-space:nowrap;transition:all .14s}
-.nbadge::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--c);flex:none}
-a.nbadge:hover{color:var(--ink);border-color:color-mix(in srgb,var(--c) 55%,transparent);background:color-mix(in srgb,var(--c) 16%,transparent);transform:translateY(-1px)}
-.nbadge.on{color:var(--ink);font-weight:600;border-color:color-mix(in srgb,var(--c) 60%,transparent);background:color-mix(in srgb,var(--c) 20%,transparent);cursor:default}
-.nbadge.off{opacity:.42;filter:grayscale(.8);border-color:var(--line);background:transparent;color:var(--faint)}   /* node not reporting → dimmed/greyed */
-.nbadge.off::before{background:var(--unknown)}                                                                    /* its colour dot goes grey too */
-a.nbadge.off:hover{opacity:.7;transform:none;color:var(--ink-2);border-color:var(--line);background:color-mix(in srgb,var(--unknown) 12%,transparent)}
 .lbl{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);font-weight:600}
 .card{background:linear-gradient(180deg,var(--raise),var(--surface));border:1px solid var(--line);border-radius:var(--r);padding:22px}
 .section-title{display:flex;align-items:center;gap:9px;margin:22px 2px 9px;scroll-margin-top:72px}   /* clear the 56px sticky appbar + a ~16px buffer when the rail jump-nav scrolls to a section */
