@@ -628,8 +628,9 @@ apply_specs(){ # install tools + write confs + bring up every queued interface, 
     # gateway plumbing: forward + masquerade the tunnel subnet out the WAN (bound to iface lifecycle)
     up="sysctl -q -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -A FORWARD -i %i -o ${wan} -j ACCEPT; iptables -A FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
     down="iptables -t nat -D POSTROUTING -s ${subnet} -o ${wan} -j MASQUERADE; iptables -D FORWARD -i %i -o ${wan} -j ACCEPT; iptables -D FORWARD -i ${wan} -o %i -m state --state RELATED,ESTABLISHED -j ACCEPT"
-    printf 'net.ipv4.ip_forward = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
+    printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n' | writef /etc/sysctl.d/99-swg-forward.conf 644
     run sysctl -q -w net.ipv4.ip_forward=1
+    run sysctl -q -w net.ipv4.conf.all.route_localnet=1   # lets Force-DNS DNAT client :53 to loopback dnsmasq (else silent DNS blackhole on this master's local node)
     if $DRYRUN; then priv="<generated-on-real-run>"
     elif ! priv="$("$cmd" genkey 2>/dev/null)" || [ -z "$priv" ]; then warn "'$cmd genkey' failed — skipping interface '$name'"; failed="$failed $name"; continue; fi
     { printf '[Interface]\nPrivateKey = %s\nAddress = %s\nListenPort = %s\nMTU = %s\n' "$priv" "$addr" "$port" "$WG_MTU"
@@ -950,7 +951,7 @@ mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/swg-panel-server" "$PREFIX$PANEL_DIR/"; c
 for f in index.html app.css app.js reconcile.js; do mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/$f" "$PREFIX$PANEL_DIR/"; done
 mkdir -p "$PREFIX$PANEL_DIR/vendor"; cp -a "$SRC/vendor/." "$PREFIX$PANEL_DIR/vendor/"   # qrcode + vendored Preact/htm ESM (buildless SPA)
 [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$PANEL_DIR/" || true   # version stamp (update.sh reports it)
-[ -f "$SRC/swg-passwd" ] && { cp "$SRC/swg-passwd" "$PREFIX/usr/local/bin/swg-passwd"; chmod 755 "$PREFIX/usr/local/bin/swg-passwd"; }   # `sudo swg-passwd` — reset the panel login like the system passwd
+[ -f "$SRC/swg-passwd" ] && { mkdir -p "$PREFIX/usr/local/bin"; cp "$SRC/swg-passwd" "$PREFIX/usr/local/bin/swg-passwd"; chmod 755 "$PREFIX/usr/local/bin/swg-passwd"; }   # `sudo swg-passwd` — reset the panel login like the system passwd (mkdir so --dry-run's $PREFIX tree exists)
 ok "installed panel + SPA to $PANEL_DIR"
 mkdir -p "$PREFIX$STATE_DIR"; [ -f "$PREFIX$STATE_DIR/users.json" ] || { echo '{}' > "$PREFIX$STATE_DIR/users.json"; run chown "$PANEL_USER:swg" "$STATE_DIR/users.json"; ok "seeded empty users.json"; }
 
