@@ -7308,8 +7308,11 @@ function AddPeersSheet({ userId, userName }) {
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const seq = useRef(0);
   const lastOnline = p => { const a = (p.targets || []).map(t => t.observed && t.observed.handshake_age).filter(x => x != null); return a.length ? seen(Math.min(...a)) + " ago" : "never online"; };
-  const peerLabel = p => { const t = (p.targets || [])[0] || {}; const ty = (t.type || "").toLowerCase() === "awg" ? "AWG" : "WG"; return [p.title || "untitled", Store.nodeName(t.node), ty + " " + t.iface, t.ip].filter(Boolean).join(" · "); };
-  const peerCtx = p => { const t = (p.targets || [])[0] || {}; const ty = (t.type || "").toLowerCase() === "awg" ? "AWG" : "WG"; return [Store.nodeName(t.node), ty + " " + t.iface, t.ip].filter(Boolean).join(" · "); };   // the label MINUS the (now-editable) title
+  // Type from the LIVE interface (awg_params), falling back to the peer's stored target.type only when the interface
+  // isn't reported — so the badge/label always agree with the interfaces grid (which reads the live interface too).
+  const tgtType = t => { const m = (Store.describe[t.node] || {})[t.iface]; return m ? ((m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg") : (t.type || "wg").toLowerCase(); };
+  const peerLabel = p => { const t = (p.targets || [])[0] || {}; return [p.title || "untitled", Store.nodeName(t.node), tgtType(t).toUpperCase() + " " + t.iface, t.ip].filter(Boolean).join(" · "); };
+  const peerCtx = p => { const t = (p.targets || [])[0] || {}; return [Store.nodeName(t.node), tgtType(t).toUpperCase() + " " + t.iface, t.ip].filter(Boolean).join(" · "); };   // the label MINUS the (now-editable) title
   const rep = p => (p.targets || [])[0] || {};
   const orderPeers = list => [...list].sort((a, b) => (Store.nodeName(rep(a).node) || "").localeCompare(Store.nodeName(rep(b).node) || "")
     || (rep(a).iface || "").localeCompare(rep(b).iface || "") || String(rep(a).ip || "").localeCompare(String(rep(b).ip || ""), undefined, { numeric: true }));
@@ -7397,7 +7400,7 @@ function AddPeersSheet({ userId, userName }) {
       <div class="peercar">
         <button class="pc-arrow" title="Previous peer" disabled=${cursor <= 0} onClick=${() => goTo(Math.max(0, cursor - 1))}>◀</button>
         <div class="pc-face" title="Pick a peer" onClick=${e => { if (!editTitle && !e.target.closest(".pc-titletext")) setJump(j => !j); }}>
-          <span class=${"pc-kind " + (cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg"))}>${cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg")}</span>
+          <span class=${"pc-kind " + (cur.kind === "new" ? "new" : tgtType(rep(cur.peer)))}>${cur.kind === "new" ? "new" : tgtType(rep(cur.peer))}</span>
           <span class="pc-name">${editTitle
             ? html`<input class="pc-title" data-enter="self" ref=${titleInput} value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} onInput=${e => updateTitle(e.target.value)}
                 onBlur=${() => setEditTitle(false)} onClick=${e => e.stopPropagation()}
