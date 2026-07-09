@@ -1975,18 +1975,21 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     if host_engine == "sni_user":                             # userspace swg-sni fills the domain cats from the TLS
         _ensure_sni_router(domains, _subs, res, learn_ttl)    # handshake (client DNS untouched); enriched lists OK here
         _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
+        reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
         _ensure_doh_block(_subs, False, res)                  # never block the client's encrypted DNS in SNI mode
     elif host_engine == "sni_kernel":                         # in-kernel xt_string reader — no userspace daemon at all
         _ensure_sni_router(None, [], res)                     # stop swg-sni
         _ensure_smart_xtstring(smart_exit, domains, SNI_RESET_MARK, res, ttl=learn_ttl)   # enriched domains, capped per-cat inside (256)
+        reconcile_catk_chain(sorted({e["category"] for e in smart_exit if domains.get(e["category"])}))   # per-category dest byte counters (swgk sets)
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
         _ensure_doh_block(_subs, False, res)
     else:                                                     # forcedns (dnsmasq oracle) or kernel/IP-only (nothing)
         _ensure_sni_router(None, [], res)                     # not SNI → stop the classifier + drop its map
         _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
+        reconcile_catk_chain([])                              # not kernel-SNI → drop the per-category counting chain
         if smart_e or domains or _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=dom_unchanged)
         # Force-DNS guard: block encrypted DNS (DoH/DoT) so the domain fill can't be bypassed (forcedns mode only)
@@ -2282,6 +2285,76 @@ def sample_inet(node_cfg, now):
     return dict(_INET["rate"])
 
 
+# ── Kernel-SNI per-category bytes (destination stats for the sni_kernel engine) ──
+# The nft `catcount` counters key off the nft cat_<c> GEOIP sets. But Kernel-SNI learns dst IPs into the swgk_<c>
+# IPSETS (nft can't match an ipset), so its routed traffic is invisible to catcount → the "top destinations" chart is
+# empty in sni_kernel mode. Mirror the SWG_INET pattern: an iptables mangle-FORWARD chain that counts up (dst∈swgk_<c>)
+# + dn (src∈swgk_<c>) per category via `-m set`, read as a delta. Config-independent (mangle runs before filter),
+# count-only (no verdict → no datapath effect). Merged into cat_rate alongside the nft catcount cats.
+SWG_CATK_CHAIN = "SWG_CATK"
+CATK_SAMPLE_EVERY_S = 5
+_CATK = {"t": 0.0, "cum": None, "rate": {}}
+
+
+def reconcile_catk_chain(cats):
+    """Maintain SWG_CATK: per-category up/dn count rules (`-m set --match-set swgk_<c> dst|src`) in mangle FORWARD,
+    so the Kernel-SNI datapath's routed bytes are attributed per category. cats = raw category ids with a swgk_ set.
+    Drift-gated on the category set; best-effort (a node without iptables/ipset just no-ops)."""
+    T = "mangle"
+    want = sorted(set(c for c in (cats or []) if c and c != "all"))
+    have = run(["iptables", "-t", T, "-nL", SWG_CATK_CHAIN]).returncode == 0
+    if not want:
+        if have:
+            run(["iptables", "-t", T, "-D", "FORWARD", "-j", SWG_CATK_CHAIN])
+            run(["iptables", "-t", T, "-F", SWG_CATK_CHAIN]); run(["iptables", "-t", T, "-X", SWG_CATK_CHAIN])
+        return
+    if not have:
+        run(["iptables", "-t", T, "-N", SWG_CATK_CHAIN])
+    if ("-j " + SWG_CATK_CHAIN) not in (run(["iptables", "-t", T, "-S", "FORWARD"]).stdout or ""):
+        run(["iptables", "-t", T, "-I", "FORWARD", "1", "-j", SWG_CATK_CHAIN])   # count before anything else
+    cur = run(["iptables", "-t", T, "-S", SWG_CATK_CHAIN]).stdout or ""
+    cursig = set(m.group(1) for m in re.finditer(r'--comment "?swg-catk-(?:up|dn):([^"\s]+)', cur))   # `-S` quotes the comment
+    if cursig == set(want):
+        return                                              # unchanged → leave the counters accumulating
+    run(["iptables", "-t", T, "-F", SWG_CATK_CHAIN])
+    for c in want:
+        sn = _xts_setname(c)
+        run(["iptables", "-t", T, "-A", SWG_CATK_CHAIN, "-m", "set", "--match-set", sn, "dst",
+             "-m", "comment", "--comment", "swg-catk-up:" + c])   # up: client → dest (dst in the learned set)
+        run(["iptables", "-t", T, "-A", SWG_CATK_CHAIN, "-m", "set", "--match-set", sn, "src",
+             "-m", "comment", "--comment", "swg-catk-dn:" + c])   # dn: dest → client (src in the learned set)
+
+
+def sample_catk():
+    """Kernel-SNI per-category {cat:{up,dn}} B/s from the SWG_CATK counters (delta). {} if the chain isn't built."""
+    now = time.time()
+    if _CATK["cum"] is not None and (now - _CATK["t"]) < CATK_SAMPLE_EVERY_S:
+        return dict(_CATK["rate"])
+    r = run(["iptables-save", "-c", "-t", "mangle"])
+    if r.returncode != 0 or not r.stdout:
+        return dict(_CATK["rate"])                          # no iptables → leave last known
+    if "swg-catk-" not in r.stdout:                         # chain gone (mode changed) → clear
+        _CATK["cum"] = {}; _CATK["rate"] = {}; _CATK["t"] = now
+        return {}
+    cum = {}
+    for ln in r.stdout.splitlines():
+        m = re.match(r"\[\d+:(\d+)\]\s+-A\s+" + SWG_CATK_CHAIN + r"\b(.*)", ln)
+        if not m:
+            continue
+        mm = re.search(r"swg-catk-(up|dn):(\S+)", m.group(2))
+        if not mm:
+            continue
+        cum.setdefault(mm.group(2).strip('"'), {"up": 0, "dn": 0})[mm.group(1)] += int(m.group(1))
+    prev, pt = _CATK["cum"], _CATK["t"]
+    if prev is not None and now > pt:                       # counter reset (rebuild) → clamp negative delta to 0
+        dt = now - pt
+        _CATK["rate"] = {c: {"up": max(0.0, v["up"] - (prev.get(c) or {}).get("up", 0)) / dt,
+                             "dn": max(0.0, v["dn"] - (prev.get(c) or {}).get("dn", 0)) / dt}
+                         for c, v in cum.items()}
+    _CATK["cum"] = cum; _CATK["t"] = now
+    return dict(_CATK["rate"])
+
+
 def build_snapshot(node_cfg, online_max, last_samples, now=None):
     now = now or int(time.time())
     hcfg = node_cfg.get("health") or {}
@@ -2339,6 +2412,9 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     snap["inet"] = sample_inet(node_cfg, now)   # measured internet up/down (B/s); cached, refreshed off the 5s path
     snap["cat_rate"] = sample_cats()            # LIVE per-category throughput {cat:{up,dn}} B/s (latest push, delta of the nft counters)
+    for _c, _v in sample_catk().items():        # + Kernel-SNI categories (swgk ipsets, invisible to the nft catcount) — add per cat
+        _b = snap["cat_rate"].setdefault(_c, {"up": 0.0, "dn": 0.0})
+        _b["up"] = _b.get("up", 0.0) + _v["up"]; _b["dn"] = _b.get("dn", 0.0) + _v["dn"]
     return snap
 
 
