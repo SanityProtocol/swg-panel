@@ -1568,6 +1568,17 @@ def _dnsmasq_stop():
             os.unlink(p)
 
 
+def _route_localnet_ok():
+    """True if net.ipv4.conf.all.route_localnet is enabled — REQUIRED for Force-DNS to DNAT a forwarded client's
+    :53 to our loopback dnsmasq. In containers /proc/sys is usually read-only, so `sysctl -w` silently no-ops and
+    the redirect blackholes every DNS packet while dnsmasq sits idle (client loses all name resolution). Reading
+    the live value lets us self-heal where writable and, where not, flag the node instead of failing in silence."""
+    try:
+        return open("/proc/sys/net/ipv4/conf/all/route_localnet").read().strip() == "1"
+    except OSError:
+        return False
+
+
 def _smart_dns_redirect(subnets, res):
     """DNAT udp/tcp :53 from each smart subnet → our dnsmasq (127.0.0.1:SMART_DNS_PORT), tag-reconciled so it
     converges (add wanted / drop stale) without churn. Empty subnets → remove all our redirect rules. The
@@ -1582,7 +1593,10 @@ def _smart_dns_redirect(subnets, res):
         if ms and mp:
             S = ms.group(1)
             live.add((S if "/" in S else S + "/32", mp.group(1)))
-    if want and not live:
+    if want and not _route_localnet_ok():
+        # Re-assert every cycle it's found off — a container/host restart resets the sysctl while our DNAT rules
+        # persist, silently blackholing client DNS. Idempotent where already on; a no-op where /proc/sys is
+        # read-only (containers) — smart_status() then reports route_localnet=false so the failure is visible.
         run(["sysctl", "-q", "-w", "net.ipv4.conf.all.route_localnet=1"])
 
     def rule(S, proto):
@@ -2182,9 +2196,10 @@ def smart_status():
     dns_alive = bool(_dnsmasq_running())
     if engine == "sni_user":     engine_ok = sni_alive          # is the mode's fill engine actually up?
     elif engine == "sni_kernel": engine_ok = run(["iptables", "-t", "mangle", "-C", "PREROUTING", "-p", "tcp", "--dport", "443", "-j", "SWGK"]).returncode == 0
-    elif engine == "dns":        engine_ok = dns_alive
+    elif engine == "dns":        engine_ok = dns_alive and _route_localnet_ok()   # dnsmasq up AND loopback-DNAT possible
     else:                        engine_ok = True               # IP-only → no host engine to be down
-    base = {"mode": mode, "engine": engine, "engine_ok": engine_ok, "sni_alive": sni_alive, "dnsmasq": dns_alive}
+    base = {"mode": mode, "engine": engine, "engine_ok": engine_ok, "sni_alive": sni_alive,
+            "dnsmasq": dns_alive, "route_localnet": _route_localnet_ok()}   # false in dns mode ⇒ client DNS blackholed (container)
     if t["rc"] != 0:
         return {**base, "active": False, "sets": {}, "rules": 0, "resets": 0}
     rules = len(re.findall(r"ip saddr \S+ ip daddr @\S+ meta mark set", t["out"]))

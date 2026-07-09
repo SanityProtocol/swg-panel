@@ -1056,13 +1056,14 @@ for ln in lines:
             out += [ln, '    network_mode: host        # node datapath: every interface port is on the host']; continue
         if re.match(r'^    (ports|sysctls):\s*$', ln):
             out.append('    # ' + ln.strip() + '   (disabled — host networking)'); continue
-        if re.match(r'^      - ("?\$\{NODE_LISTEN_PORT|net\.ipv4\.ip_forward)', ln):
+        if re.match(r'^      - ("?\$\{NODE_LISTEN_PORT|net\.ipv4\.)', ln):   # any net.ipv4.* sysctl (ip_forward, route_localnet, …)
             out.append('    #   ' + ln.strip()); continue
     out.append(ln)
 open(p, 'w').write('\n'.join(out) + '\n')
 PYHOST
-      printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
+      printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n' > /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
       sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+      sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 || true   # host-net node: Force-DNS needs loopback DNAT (container can't set this itself)
       [ "$PROFILE" = master ] && ok "host networking — every port reachable; node → panel via 127.0.0.1:${PANEL_PORT:-443}" \
                              || ok "host networking — every interface port reachable, no per-port publishing"
     fi
