@@ -31,6 +31,10 @@ const tkey = (node, iface) => node + "|" + iface;          // session-config key
 // wg vs awg for an interface. A single peer/key can't span both protocols, so the target pickers hide the other
 // kind once one is chosen (enforced wherever peers get interfaces — peers module, users module, …).
 const iTypeOf = (node, iface) => { const m = (Store.describe[node] || {})[iface] || {}; return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
+// wg/awg for a peer TARGET — from the LIVE interface (authoritative), falling back to the stored target.type only
+// when the node isn't reporting the interface. Use this everywhere a target's protocol tag/colour is shown so a
+// stale target.type can never mislabel/miscolour a row (peers · users · live · interface grids all share this).
+const targetType = t => { const m = t && (Store.describe[t.node] || {})[t.iface]; return m ? ((m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg") : (((t && t.type) || "wg").toLowerCase() === "awg" ? "awg" : "wg"); };
 function ipOf(hostport) { if (!hostport) return ""; const s = String(hostport); return s[0] === "[" ? s.slice(1, s.indexOf("]")) : s.split(":")[0]; }
 function portOf(hostport) { if (!hostport) return ""; const s = String(hostport); const i = s.lastIndexOf(":"); return i < 0 ? "" : s.slice(i + 1); }
 // turn-proxy display label: strip the vk-turn-proxy- prefix and render as name:port (a "-NNNN"
@@ -1086,8 +1090,7 @@ function turnProxyTitle(node, service) {
 }
 // The interface badge for one peer-grid row (protocol + iface name).
 function gridIfaceTag(t) {
-  const kind = (t.type || "").toLowerCase() === "awg" ? "awg" : "wg";
-  return html`<${Tag} kind=${kind} label=${t.iface} muted=${!t.online}/>`;
+  return html`<${Tag} kind=${targetType(t)} label=${t.iface} muted=${!t.online}/>`;
 }
 // Status badge for a peer-grid row. A peer ONLINE through a turn-proxy takes the fork colour on its status
 // badge with a glowing animated dot, plus a "Connected via <fork> <title>" hover bubble — consistent in
@@ -1186,7 +1189,7 @@ function DepBadge({ others }) {
       onClick=${e => e.stopPropagation()} onMouseEnter=${cancelClose} onMouseLeave=${scheduleClose}>
       ${others.map(d => html`<div class="deprow" key=${tkey(d.node, d.iface)}>
         <span class="dep-name" style=${"color:" + (Store.nodeColor(d.node) || "var(--ink)")}>${Store.nodeName(d.node)}</span>
-        <${Tag} kind=${(d.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${d.iface} muted=${!d.online}/>
+        <${Tag} kind=${targetType(d)} label=${d.iface} muted=${!d.online}/>
         <span class="dep-ip addr">${d.ip || "—"}</span></div>`)}
     </div>` : null}
   </span>`;
@@ -1979,7 +1982,8 @@ function DashDoughnuts({ selIds, range, hist }) {
   const nodeCnt = {}, typeCnt = { wg: { tot: 0, on: 0 }, awg: { tot: 0, on: 0 } };
   fleet.forEach(n => nodeCnt[n.id] = { tot: 0, on: 0 });
   const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; });
-  const tyOf = t => (t.type === "awg" || t.type === "wg") ? t.type : ifType(t.node, t.iface);
+  // live interface is authoritative; the stored target.type is only a fallback for interfaces the node isn't reporting.
+  const tyOf = t => { const m = Store.describe[t.node] && Store.describe[t.node][t.iface]; return m ? ifType(t.node, t.iface) : ((t.type === "awg") ? "awg" : "wg"); };
   sPeers.forEach(p => p.targets.forEach(t => {
     if (!sel.has(t.node)) return;
     const ty = tyOf(t);
@@ -2579,7 +2583,7 @@ function Overview() {
   unassigned.forEach(p => p.targets.forEach(t => {
     if (!sel.has(t.node)) return;
     const g = unByNode[t.node] || (unByNode[t.node] = { node: t.node, peers: new Set(), wg: new Set(), awg: new Set() });
-    g.peers.add(p.id); (t.type === "awg" ? g.awg : g.wg).add(t.iface);
+    g.peers.add(p.id); (targetType(t) === "awg" ? g.awg : g.wg).add(t.iface);
   }));
   const unGroups = Object.values(unByNode);
   const orphByIf = {};
@@ -5489,7 +5493,7 @@ function UserRow({ user, live, onlineOnly, q }) {
   const _nm = {};
   for (const p of allPeers) for (const t of p.targets) {
     const nn = _nm[t.node] = _nm[t.node] || {};
-    if (!nn[t.iface]) nn[t.iface] = { iface: t.iface, type: (t.type || "").toLowerCase() === "awg" ? "awg" : "wg", count: 0 };
+    if (!nn[t.iface]) nn[t.iface] = { iface: t.iface, type: targetType(t), count: 0 };
     nn[t.iface].count++;
   }
   const srvNodes = Object.keys(_nm).map(nid => ({ node: nid, ifaces: Object.values(_nm[nid]).sort((a, b) => a.iface.localeCompare(b.iface)) }))
@@ -5680,12 +5684,12 @@ function TargetCard({ peer, t, bare }) {
   const dnode = Store.nodeName(t.node);
   // zoom caption: username + title (or "Unassigned"), then the server name (in its colour) + iface tag
   const idParts = []; if (peer.name) idParts.push(esc(peer.name)); if (peer.title) idParts.push(esc(peer.title));
-  const ltype = (t.type || "").toLowerCase() === "awg" ? "awg" : "wg";
+  const ltype = targetType(t);
   const label = `<span class="qrc-id">${idParts.length ? idParts.join(" · ") : "Unassigned"}</span>`
     + `<span class="qrc-srv" style="color:${col}">${esc(dnode)}</span><span class="tg tg-${ltype}">${esc(t.iface)}</span>`;
 
   return html`<div class="deploy">
-    <div class="deploy-head"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a><${Tag} kind=${(t.type || "").toLowerCase() === "awg" ? "awg" : "wg"} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>
+    <div class="deploy-head"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>
     <div class="deploy-body">
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? "loading…"
@@ -7310,7 +7314,7 @@ function AddPeersSheet({ userId, userName }) {
   const lastOnline = p => { const a = (p.targets || []).map(t => t.observed && t.observed.handshake_age).filter(x => x != null); return a.length ? seen(Math.min(...a)) + " ago" : "never online"; };
   // Type from the LIVE interface (awg_params), falling back to the peer's stored target.type only when the interface
   // isn't reported — so the badge/label always agree with the interfaces grid (which reads the live interface too).
-  const tgtType = t => { const m = (Store.describe[t.node] || {})[t.iface]; return m ? ((m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg") : (t.type || "wg").toLowerCase(); };
+  const tgtType = targetType;   // module helper — live interface authoritative, stored target.type only as fallback
   const peerLabel = p => { const t = (p.targets || [])[0] || {}; return [p.title || "untitled", Store.nodeName(t.node), tgtType(t).toUpperCase() + " " + t.iface, t.ip].filter(Boolean).join(" · "); };
   const peerCtx = p => { const t = (p.targets || [])[0] || {}; return [Store.nodeName(t.node), tgtType(t).toUpperCase() + " " + t.iface, t.ip].filter(Boolean).join(" · "); };   // the label MINUS the (now-editable) title
   const rep = p => (p.targets || [])[0] || {};
@@ -7820,11 +7824,11 @@ function PeerViewSheet({ pid, node, iface }) {
     <div class="lbl" style="margin:16px 2px 4px">Deployments · ${p.targets.length}</div>
     <div class="pv-deps">${p.targets.map(t => {
       const obs = t.observed;
-      const proto = (t.type || "").toLowerCase();
+      const proto = targetType(t);
       return html`<div class=${"pv-dep" + (node === t.node && iface === t.iface ? " hl" : "")} key=${tkey(t.node, t.iface)}>
         <div class="pv-dep-top"><${Badge} s=${t.status}/>
           <span class="tags">
-            <${Tag} kind=${proto === "awg" ? "awg" : "wg"} label=${proto === "awg" ? "awg" : "wg"} muted=${!t.online}/>
+            <${Tag} kind=${proto} label=${proto} muted=${!t.online}/>
             ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}
           </span></div>
         <div class="pv-dep-grid">
