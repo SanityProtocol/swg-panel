@@ -7320,6 +7320,8 @@ function AddPeersSheet({ userId, userName }) {
   const [jump, setJump] = useState(false);
   const [editTitle, setEditTitle] = useState(false);   // click the title → inline edit; blur/Enter keeps, Esc reverts
   const editOrig = useRef("");                          // the title as it was when edit started → restored on Esc
+  const titleInput = useRef(null);
+  useEffect(() => { if (editTitle && titleInput.current) { titleInput.current.focus(); try { titleInput.current.select(); } catch (_) {} } }, [editTitle, cursor]);   // focus the inline box so typing starts immediately
   const goTo = i => { setJump(false); setEditTitle(false); setCursor(i); };
   const [toUnassign, setToUnassign] = useState([]);   // saved peers the operator unlinked → unassigned on Save
   const dirty = useRef(false); const sheetClose = useRef(null);
@@ -7397,7 +7399,7 @@ function AddPeersSheet({ userId, userName }) {
         <div class="pc-face" title="Pick a peer" onClick=${e => { if (!editTitle && !e.target.closest(".pc-titletext")) setJump(j => !j); }}>
           <span class=${"pc-kind " + (cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg"))}>${cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg")}</span>
           <span class="pc-name">${editTitle
-            ? html`<input class="pc-title" data-enter="self" autofocus value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} onInput=${e => updateTitle(e.target.value)}
+            ? html`<input class="pc-title" data-enter="self" ref=${titleInput} value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} onInput=${e => updateTitle(e.target.value)}
                 onBlur=${() => setEditTitle(false)} onClick=${e => e.stopPropagation()}
                 onKeyDown=${e => {
                   if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); setEditTitle(false); }          // keep the new title, back to static
