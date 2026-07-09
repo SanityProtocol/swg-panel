@@ -3050,7 +3050,12 @@ def _params_set_wrapkey(params, key):
     return (params + " -wrap-key " + key).strip()
 
 def _dturn_args(tp):
-    args = ["-listen", tp.get("listen", ""), "-connect", tp.get("connect", "")]
+    listen = tp.get("listen", "")
+    if NODE_NET == "bridge" and ":" in listen:
+        # the stored listen binds the node's public IP, which isn't assignable inside our container netns — bind all
+        # interfaces on the same port and let docker publish it (compose ports:). connect stays 127.0.0.1 (our netns).
+        listen = "0.0.0.0:" + listen.rsplit(":", 1)[1]
+    args = ["-listen", listen, "-connect", tp.get("connect", "")]
     p = (tp.get("params") or "").strip()
     if p:
         try: args += shlex.split(p)
