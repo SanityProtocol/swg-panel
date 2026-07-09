@@ -819,7 +819,7 @@ def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
     for iface in (node_cfg.get("interfaces") or {}):
         want = (desired_ifaces or {}).get(iface) or {}
         egress = (want.get("egress_ip") or "").strip()
-        wan_ov = (want.get("wan_iface") or "").strip()
+        wan_ov = _safe_wan(want.get("wan_iface"), "")     # reject shell metachars before it enters an iptables rule
         subnet = _iface_subnet(node_cfg, iface)
         if not subnet:
             continue
@@ -926,7 +926,7 @@ def _ensure_fwd_iptables(fwd, exit_, default_wan, res, default_egress_ip=""):
     want_snat = set()
     for e in exit_:
         S = e["subnet"]; tag = "swg-fwd-snat:" + S; want_snat.add(tag)
-        W = (e.get("wan_iface") or "").strip() or default_wan
+        W = _safe_wan(e.get("wan_iface"), default_wan)     # reject shell metachars before it enters an iptables rule
         X = (e.get("egress_ip") or "").strip() or default_egress_ip
         des = ("SNAT", W, X) if X else ("MASQUERADE", W, "")
         _ch, err = _snat_reconcile_rule(tag, S, des, nat)
@@ -1371,6 +1371,8 @@ def _panel_list_refresh(manifest, sched, panel, res):
     base = base_url.rstrip("/") + "/api/node/list"
     in_window = _in_quiet_window(sched)
     for cat, tiers in manifest.items():
+        if not re.match(r"^[A-Za-z0-9:._-]+$", cat or ""):     # category → a filename under GEO_DIR; reject path traversal (/, \, ..) from a compromised/MITM panel
+            continue
         for tier, want_v in (tiers or {}).items():
             if tier not in ("ip", "host") or not want_v:
                 continue
@@ -3369,6 +3371,22 @@ def _dturn_bg_loop():   # background thread: keep turn-proxy containers up WITHO
 # Editing a turn-proxy then only rewrites turn.env + `systemctl restart` — systemd re-parsing EVERY unit
 # (daemon-reload) was the CPU spike. Old units (values baked into ExecStart) are migrated on first edit.
 def _turn_env_path(svc): return "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/turn.env"
+_WANIF_RE = re.compile(r"^[A-Za-z0-9._-]{1,15}$")
+def _safe_wan(w, fallback):
+    """A WAN NIC name safe to splice into an iptables rule (which is later re-parsed from `iptables -S` and
+    deleted via sh) — blocks ; ` $ | & from a compromised/MITM panel. Invalid → the auto-detected fallback."""
+    w = (w or "").strip()
+    return w if (w and _WANIF_RE.match(w)) else fallback
+
+
+_TURN_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+def _turn_input_safe(*vals):
+    """Defence-in-depth: refuse turn params carrying control chars. They are interpolated into a systemd
+    unit + env heredoc executed as root, so a newline could terminate the heredoc and inject a command.
+    The panel validates these too — this is the belt on the node against a compromised or MITM'd panel."""
+    return all(not _TURN_CTRL_RE.search(v or "") for v in vals)
+
+
 def _turn_env_text(listen, connect, params):
     return "SWG_LISTEN=%s\nSWG_CONNECT=%s\nSWG_PARAMS=%s\n" % (listen, connect, (params or "").strip())
 def _exec_bin(execl):
@@ -3410,6 +3428,8 @@ def _turn_install(svc, req):
     wrap_flags = (req.get("wrap_flags") or "").strip()
     if "/" not in owner or ":" not in listen or ":" not in connect:
         return "bad install request"
+    if not _turn_input_safe(owner, listen, connect, wrap_flags, req.get("params")):
+        return "refused: control characters in turn parameters"
     inst = svc[len("vk-turn-proxy-"):] if svc.startswith("vk-turn-proxy-") else svc
     fork = _turn_fork(svc)
     fdir = "/opt/vk-turn-proxy/.bin/" + fork   # shared per-fork: one binary + version.txt + repo.txt for every instance
@@ -3653,6 +3673,8 @@ def apply_turn(turn, turn_onboard):
                 if req.get("listen"):  listen = req["listen"].strip()
                 if req.get("connect"): connect = req["connect"].strip()
                 if "params" in req:    params = (req.get("params") or "").strip()
+                if not _turn_input_safe(listen, connect, params):   # belt on the node vs a compromised/MITM panel
+                    fail(svc, "refused: control characters in turn parameters"); continue
             elif act == "rotate":
                 params = _params_set_wrapkey(params, secrets.token_hex(32))
             # restart: no config change — just rewrite turn.env (unchanged) + restart below

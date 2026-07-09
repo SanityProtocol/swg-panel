@@ -36,6 +36,7 @@ import ssl
 import struct
 import subprocess
 import threading
+import socket
 import urllib.request
 import time
 import uuid
@@ -78,6 +79,8 @@ AUTH_FILE  = os.environ.get("SWG_PANEL_AUTH", "")        # file "user:pbkdf2_sha
 # Mount the panel under a subpath (e.g. /swg) to live inside an existing site. Blank => served at root.
 PANEL_BASE = "/" + os.environ.get("SWG_PANEL_BASE", "").strip("/") if os.environ.get("SWG_PANEL_BASE", "").strip("/") else ""
 NODE_OFFLINE = 30   # seconds since last sync before a node reads "offline"
+MAX_BODY = 8 * 1024 * 1024         # cap on a general API POST body (bytes) — reject larger with 413 (anti-OOM)
+MAX_SYNC_BODY = 64 * 1024 * 1024   # node-sync snapshots can be big on large fleets — a looser cap, still bounded
 _api_lock = threading.Lock()   # serialize roster/node read-modify-write across handler threads
 
 # /api/state is identical for every poller and rebuilt from scratch on each call (roster read off disk,
@@ -358,6 +361,20 @@ def load_session_secret(roster_path):
             return s
     except OSError:
         pass
+    s = base64.b64encode(os.urandom(48))
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(s)
+    return s
+
+
+def rotate_session_secret(roster_path):
+    """Mint a NEW session-signing secret → every outstanding session cookie stops validating. Called on a
+    password change so a captured cookie can't outlive the reset; the admin simply re-signs-in (the panel
+    already documents 'you'll be asked to sign in again')."""
+    p = os.path.join(os.path.dirname(roster_path) or ".", "session.key")
     s = base64.b64encode(os.urandom(48))
     with contextlib.suppress(OSError):
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
@@ -726,6 +743,34 @@ def valid_addr(s):
         return False
 
 
+# ── input hardening ──────────────────────────────────────────────────────────────────────────────
+# Operator strings that a NODE later turns into a subprocess arg, systemd unit, or config line must
+# not carry shell/heredoc-breakout metacharacters. These validators reject ONLY control chars /
+# injection payloads — every legitimate value (IPs, ports, hex keys, repo slugs, NIC names) passes.
+# Cheap: compiled regex / one ipaddress parse. Defence-in-depth pairs with argv writes on the node.
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+def no_ctrl(s):                                   # no newline/control chars (heredoc + config-line injection)
+    return not _CTRL_RE.search(s or "")
+def strip_ctrl(s):                                # drop control chars from a cosmetic free-text field (title/name)
+    return _CTRL_RE.sub("", s or "")
+def valid_hostport(s):
+    """host:port — host an IP or a safe hostname, port 1-65535, no shell metacharacters."""
+    if not s or _CTRL_RE.search(s):
+        return False
+    host, sep, port = s.rpartition(":")
+    if not sep or not host or not port.isdigit() or not (1 <= int(port) <= 65535):
+        return False
+    h = host.strip("[]")
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        return bool(re.match(r"^[A-Za-z0-9._-]+$", h))
+_OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")   # GitHub owner/repo slug
+_TURN_SVC_RE = re.compile(r"^vk-turn-proxy-[A-Za-z0-9._-]+-\d{1,5}$")                 # node writes this as a path/unit component
+_WANIF_RE = re.compile(r"^[A-Za-z0-9._-]{1,15}$")                                     # Linux NIC name (IFNAMSIZ 16); blocks ; ` $ | & etc.
+
+
 def bad_targets(targets):
     """First validation error across a target list, or None. Defence-in-depth behind the UI."""
     for t in targets:
@@ -962,9 +1007,20 @@ def normalize_stats_files(nodes_path, stats_dir):
 
 
 def find_node_by_token(nodes, token):
+    # Fast path: a per-node sha256(token) index (`token_sha`) gives O(N) constant-time compares — no pbkdf2.
+    # The node token is 144-bit os.urandom, so a plain sha256 is a secure verifier (same as the API tokens).
+    # This removes the N×200k-iter-pbkdf2 amplification a bogus token used to force on every unauth request.
+    # Legacy nodes (enrolled before token_sha) fall back to pbkdf2 and get upgraded on their next sync.
     if not token:
         return None, None
+    tsha = hashlib.sha256(token.encode()).hexdigest()
     for nid, n in nodes.items():
+        ts = n.get("token_sha")
+        if ts and hmac.compare_digest(ts, tsha):
+            return nid, n
+    for nid, n in nodes.items():
+        if n.get("token_sha"):
+            continue                                  # already indexed → not a legacy candidate
         if verify_password(n.get("token_hash", ""), token):
             return nid, n
     return None, None
@@ -3234,6 +3290,8 @@ def api(method, path, qs, body, deps):
         url = str(body.get("url") or "").strip()[:512]
         if not (url.startswith("http://") or url.startswith("https://")):
             return 400, {"ok": False, "error": "webhook url must start with http:// or https://", "code": "bad_request"}
+        if not webhook_host_ok(url):        # block SSRF to cloud-metadata / link-local / reserved (loopback + RFC1918 allowed)
+            return 400, {"ok": False, "error": "webhook host must not be a link-local / reserved address", "code": "bad_request"}
         events = [e for e in (body.get("events") or []) if e in WEBHOOK_EVENTS] or list(WEBHOOK_EVENTS)
         cur = dict(deps.get("panel_settings") or {})
         a = dict(cur.get("api") or {})
@@ -3383,6 +3441,8 @@ def api(method, path, qs, body, deps):
         except OSError as e:
             return 500, {"ok": False, "error": f"could not write auth file: {e}", "code": "internal"}
         deps["auth"] = (new_user, new_hash)          # hot-reload in-process; no restart
+        if new_pw:                                   # a password change invalidates every outstanding session
+            deps["session_secret"] = rotate_session_secret(roster_path)   # → a captured cookie dies; admin re-signs-in
         return 200, {"ok": True, "data": {"username": new_user, "password_changed": bool(new_pw)}}
 
     if method == "GET" and path == "/api/config":
@@ -3770,7 +3830,7 @@ def api(method, path, qs, body, deps):
         pid = gen_id()
         while pid in roster["peers"]:
             pid = gen_id()
-        p = peer_set(roster, pid, {"user_id": uid or None, "title": body.get("title", ""),
+        p = peer_set(roster, pid, {"user_id": uid or None, "title": strip_ctrl(body.get("title", "")),
                                    "pubkey": pubkey, "psk": psk, "targets": targets}, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Created peer", peer_label(roster, p),
@@ -3848,7 +3908,7 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
         changed = {}
         if "title" in body:
-            changed["title"] = body.get("title", "")
+            changed["title"] = strip_ctrl(body.get("title", ""))
         if "user_id" in body:
             uid = body.get("user_id")
             if uid and uid not in roster["users"]:
@@ -4038,7 +4098,8 @@ def api(method, path, qs, body, deps):
         nodes[nid] = {"id": nid, "name": name, "color": sanitize_color(body.get("color"), {"dark": "#34d399", "light": "#12A46B"}),
                       "endpoint_host": (body.get("endpoint_host") or "").strip(),
                       "stats_file": f"stats-{nid}.json",
-                      "token_hash": make_token_hash(token), "created": now()}
+                      "token_hash": make_token_hash(token), "token_sha": hashlib.sha256(token.encode()).hexdigest(),
+                      "created": now()}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Enrolled node", name)
         reconcile_mesh(nodes, deps.get("node_snaps") or {}, deps)   # full-mesh link to every existing node
@@ -4271,7 +4332,9 @@ def api(method, path, qs, body, deps):
                 ov.pop("egress_ip", None)
         if "wan_iface" in body:                          # egress WAN NIC ("" = clear → auto-detect)
             w = (body.get("wan_iface") or "").strip()
-            if w and (" " in w or "/" in w):
+            # the node splices this into an iptables rule; a shell metachar here would be RCE when a stale
+            # rule is later replaced. A real NIC name (eth0, ens3, br-lan, eth0.100) passes; ; ` $ | & don't.
+            if w and not _WANIF_RE.match(w):
                 return 400, {"ok": False, "error": "WAN interface must be a bare device name", "code": "bad_request"}
             if w:
                 ov["wan_iface"] = w
@@ -4474,14 +4537,16 @@ def api(method, path, qs, body, deps):
         listen = (body.get("listen") or "").strip()
         connect = (body.get("connect") or "").strip()
         wrap_flags = (body.get("wrap_flags") or "").strip()
-        def _ipport(s):
-            return ":" in s and s.rsplit(":", 1)[1].isdigit() and bool(s.rsplit(":", 1)[0])
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
-        if not fork or "/" in fork or " " in fork or "/" not in owner:
-            return 400, {"ok": False, "error": "a fork + owner repo are required", "code": "bad_request"}
-        if not _ipport(listen) or not _ipport(connect):
+        # STRICT validation — these values become a systemd unit + subprocess args on the node; a shell/heredoc
+        # metacharacter here would be RCE. Legit forks/owners/ip:port/params all pass; injection payloads don't.
+        if not re.match(r"^[A-Za-z0-9._-]+$", fork) or not _OWNER_RE.match(owner):
+            return 400, {"ok": False, "error": "a fork + owner repo are required (letters, digits, . _ - and one /)", "code": "bad_request"}
+        if not valid_hostport(listen) or not valid_hostport(connect):
             return 400, {"ok": False, "error": "listen and connect must be ip:port", "code": "bad_request"}
+        if not no_ctrl(wrap_flags) or not no_ctrl(body.get("params") or "") or not no_ctrl(body.get("title") or ""):
+            return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
         rc = reserved_conflict(deps, nodes, nodes[nid], port=listen.rsplit(":", 1)[1])
         if rc:
             return 400, {"ok": False, "error": rc, "code": "bad_request"}
@@ -4503,16 +4568,22 @@ def api(method, path, qs, body, deps):
         nid = body.get("node") or ""; svc = (body.get("service") or "").strip()
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
-        if not svc:
-            return 400, {"ok": False, "error": "service is required", "code": "bad_request"}
+        if not _TURN_SVC_RE.match(svc):                  # svc becomes a unit/path/subprocess component on the node
+            return 400, {"ok": False, "error": "invalid service name", "code": "bad_request"}
         if path.endswith("/manage"):
             req = {"action": "manage", "at": now()}
             for k in ("listen", "connect"):
                 if (body.get(k) or "").strip():
+                    if not valid_hostport(body[k].strip()):
+                        return 400, {"ok": False, "error": k + " must be ip:port", "code": "bad_request"}
                     req[k] = body[k].strip()
-            if "params" in body:                        # free-text ExecStart tail after -connect
+            if "params" in body:                        # free-text ExecStart tail after -connect (node uses it verbatim)
+                if not no_ctrl(body.get("params") or ""):
+                    return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
                 req["params"] = body.get("params") or ""
             if "title" in body:                          # optional display label (node stores it on the record)
+                if not no_ctrl(body.get("title") or ""):
+                    return 400, {"ok": False, "error": "control characters are not allowed", "code": "bad_request"}
                 req["title"] = (body.get("title") or "").strip()
             verb = "Editing turn-proxy"
         elif path.endswith("/rotate"):
@@ -4526,6 +4597,8 @@ def api(method, path, qs, body, deps):
         elif path.endswith("/reinstall"):
             req = {"action": "reinstall", "at": now()}; verb = "Reinstalling turn-proxy"
             if (body.get("owner") or "").strip():   # repo to re-fetch the binary from (UI maps fork → owner)
+                if not _OWNER_RE.match(body["owner"].strip()):
+                    return 400, {"ok": False, "error": "invalid owner repo", "code": "bad_request"}
                 req["owner"] = body["owner"].strip()
         else:
             req = {"action": "delete", "at": now()}; verb = "Deleting turn-proxy"
@@ -4540,8 +4613,8 @@ def api(method, path, qs, body, deps):
         nid = body.get("node") or ""; svc = (body.get("service") or "").strip()
         if nid not in nodes:
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
-        if not svc:
-            return 400, {"ok": False, "error": "service is required", "code": "bad_request"}
+        if not _TURN_SVC_RE.match(svc) or not no_ctrl(body.get("title") or ""):
+            return 400, {"ok": False, "error": "invalid service or title", "code": "bad_request"}
         nodes[nid].setdefault("turn", {})[svc] = {"action": "title", "title": (body.get("title") or "").strip(), "at": now()}
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Renaming turn-proxy", svc)
@@ -4736,6 +4809,7 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
         token = base64.urlsafe_b64encode(os.urandom(18)).decode().rstrip("=")
         nodes[nid]["token_hash"] = make_token_hash(token)
+        nodes[nid]["token_sha"] = hashlib.sha256(token.encode()).hexdigest()   # fast-lookup index (see find_node_by_token)
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Rotated node token", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name"), "token": token}}
@@ -5068,12 +5142,45 @@ def ext_metrics(deps):
     return "\n".join(L) + "\n"
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):     # never follow a redirect → can't be bounced to an internal target
+        return None
+_WEBHOOK_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def webhook_host_ok(url):
+    """Reject a webhook target that resolves to link-local (169.254 — cloud-metadata credential theft),
+    multicast, reserved, or unspecified. Loopback and RFC1918 private ranges are deliberately ALLOWED — a
+    local receiver or an internal alerting endpoint is a legitimate, common webhook target. The narrow block
+    kills the metadata-SSRF escalation without breaking internal/localhost webhooks."""
+    try:
+        host = urlparse(url).hostname
+    except Exception:
+        return False
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return True                      # unresolvable NOW → nothing to SSRF (the POST just fails); don't reject a legit host over a DNS hiccup
+    for ai in infos:
+        try:
+            ip = ipaddress.ip_address(ai[4][0])
+        except ValueError:
+            continue
+        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return False
+    return True
+
+
 def _webhook_post(url, secret, body_bytes, timeout=8):
+    if not webhook_host_ok(url):              # re-check at send time (config may pre-date the guard) — no redirects
+        raise ValueError("webhook target resolves to a disallowed (internal) address")
     headers = {"Content-Type": "application/json", "User-Agent": "swg-panel-webhook"}
     if secret:
         headers["X-SWG-Signature"] = "sha256=" + hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
     req = urllib.request.Request(url, data=body_bytes, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _WEBHOOK_OPENER.open(req, timeout=timeout) as r:
         return getattr(r, "status", None) or r.getcode()
 
 
@@ -5140,6 +5247,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code, obj):
         self._send_bytes(code, json.dumps(obj).encode())
+
+    def _body_len(self, cap=MAX_BODY):
+        """Validated Content-Length, or None (after sending 413) if malformed or over `cap` — read the body
+        ONLY after this passes, so an oversized/streamed body can't exhaust memory before it's parsed."""
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > cap:
+            self._send(413, {"ok": False, "error": "request body too large", "code": "too_large"})
+            return None
+        return n
 
     def _send_bytes(self, code, payload):
         self.send_response(code)
@@ -5278,6 +5397,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-cache")
         self.send_header("ETag", etag)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if STATIC[key] == "index.html":
+            # Defence-in-depth CSP for the buildless SPA: everything is same-origin except QR/favicon data:
+            # URIs; 'unsafe-inline' is required for the theme-bootstrap + importmap inline scripts and the
+            # app's inline styles. Restricts connect/img/object and blocks framing (clickjacking).
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; "
+                             "connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "same-origin")
         self.end_headers()
         with contextlib.suppress(BrokenPipeError):
             self.wfile.write(data)
@@ -5335,8 +5465,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _login(self):
         creds = Handler.deps.get("auth")
+        length = self._body_len()
+        if length is None:
+            return
         try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
             body = {}
@@ -5378,8 +5510,17 @@ class Handler(BaseHTTPRequestHandler):
         nid, node = find_node_by_token(nodes, token)
         if not nid:
             return self._send(401, {"error": "invalid node token"})
+        if token and not node.get("token_sha"):        # one-time upgrade of a legacy node → fast-lookup index (H3)
+            with contextlib.suppress(Exception):
+                with _api_lock:
+                    nn = nodes_load(Handler.deps["nodes_path"])
+                    if nid in nn and not nn[nid].get("token_sha"):
+                        nn[nid]["token_sha"] = hashlib.sha256(token.encode()).hexdigest()
+                        nodes_save(Handler.deps["nodes_path"], nn)
+        length = self._body_len(MAX_SYNC_BODY)
+        if length is None:
+            return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length) or "{}")
         except Exception:
             return self._send(400, {"error": "bad body"})
@@ -5929,10 +6070,9 @@ class Handler(BaseHTTPRequestHandler):
         nid, _ = find_node_by_token(nodes, token)
         if not nid:
             return self._send(401, {"error": "invalid node token"})
-        try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-        except ValueError:
-            length = 0
+        length = self._body_len()
+        if length is None:
+            return
         try:
             body = json.loads(self.rfile.read(length) or b"{}") if length else {}
         except Exception:
@@ -6016,15 +6156,14 @@ class Handler(BaseHTTPRequestHandler):
         nid, _ = find_node_by_token(nodes, token)
         if not nid:
             return self._send(401, {"error": "invalid node token"})
-        try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-        except ValueError:
-            length = 0
+        length = self._body_len()
+        if length is None:
+            return
         try:
             body = json.loads(self.rfile.read(length) or b"{}") if length else {}
         except Exception:
             body = {}
-        name = (body.get("name") or "").strip()[:40]
+        name = strip_ctrl((body.get("name") or "").strip())[:40]   # node names itself (node-token) — drop control chars
         if not name:
             return self._send(400, {"ok": False, "error": "empty name"})
         with _api_lock:
@@ -6085,10 +6224,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path is None or not path.startswith("/api/"):
             return self.send_error(404)
-        try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-        except ValueError:
-            length = 0
+        length = self._body_len()
+        if length is None:
+            return
         raw = self.rfile.read(length) if length else b"{}"
         try:
             bodyobj = json.loads(raw or b"{}")
