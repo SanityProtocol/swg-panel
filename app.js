@@ -1706,11 +1706,14 @@ function trafFlags(key) {
   return { peers: ov && ov.peers != null ? ov.peers : dashState.peers,
            mesh:  ov && ov.mesh  != null ? ov.mesh  : dashState.mesh };
 }
-// flip a traffic badge, but never leave BOTH off: turning off the only-selected one flips selection to the other.
-function dashToggleTraf(which) {
-  const other = which === "peers" ? "mesh" : "peers";
-  if (dashState[which] && !dashState[other]) { dashState[which] = false; dashState[other] = true; }
-  else dashState[which] = !dashState[which];
+// Flip one widget's own Peers/Mesh override (pinned in dashState.ov[key]) without touching the others — each traffic
+// doughnut drives its filter independently. Never leave BOTH off: turning off the only-selected one flips to the other.
+function dashToggleTrafKey(key, which) {
+  const cur = trafFlags(key), other = which === "peers" ? "mesh" : "peers";
+  const next = { peers: cur.peers, mesh: cur.mesh };
+  if (next[which] && !next[other]) { next[which] = false; next[other] = true; }
+  else next[which] = !next[which];
+  dashState.ov = dashState.ov || {}; dashState.ov[key] = next;
   dashSave(); bus.emit();
 }
 // Effective selected node ids, reconciled against the CURRENT fleet (ids for departed nodes drop out).
@@ -1918,27 +1921,34 @@ function DashDoughnuts({ selIds, range, hist }) {
   const awgVol = d => ({ rx: _sum(d && d.arx) * STEP, tx: _sum(d && d.atx) * STEP });
   const meshVol = d => ({ rx: _sum(d && d.mrx) * STEP, tx: _sum(d && d.mtx) * STEP });
 
-  // ── traffic by node + by iface type — the Peers/Mesh badges pick which components count (client + relay) ──
-  const F = trafFlags("doughnuts");
-  const nodeTraf = {}, typeTraf = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 }, mesh: { rx: 0, tx: 0 } };
-  const addType = (k, rx, tx) => { typeTraf[k].rx += rx; typeTraf[k].tx += tx; };
+  // ── traffic by node + by iface type. Each doughnut owns an INDEPENDENT Peers/Mesh filter (FN = by node,
+  //    FT = by interface): accumulate the raw client/mesh components once, then apply each filter at the end. ──
+  const FN = trafFlags("dnode"), FT = trafFlags("dtype");
+  const nodeRaw = {};   // per node: client (crx/ctx) and mesh (mrx/mtx) kept apart so either filter can pick them
+  const typeRaw = { wg: { rx: 0, tx: 0 }, awg: { rx: 0, tx: 0 }, mesh: { rx: 0, tx: 0 } };
+  const addType = (k, rx, tx) => { typeRaw[k].rx += rx; typeRaw[k].tx += tx; };
   fleet.forEach(n => {
     if (ranged) {
       const d = hist.byNode[n.id]; const cv = clientVol(d), av = awgVol(d), mv = meshVol(d);
-      nodeTraf[n.id] = trafPick(cv.rx + mv.rx, cv.tx + mv.tx, mv.rx, mv.tx, F);
-      if (F.peers) { addType("awg", av.rx, av.tx); addType("wg", Math.max(0, cv.rx - av.rx), Math.max(0, cv.tx - av.tx)); }
-      if (F.mesh) addType("mesh", mv.rx, mv.tx);
+      nodeRaw[n.id] = { crx: cv.rx, ctx: cv.tx, mrx: mv.rx, mtx: mv.tx };
+      addType("awg", av.rx, av.tx); addType("wg", Math.max(0, cv.rx - av.rx), Math.max(0, cv.tx - av.tx));
+      addType("mesh", mv.rx, mv.tx);
     } else {
       let crx = 0, ctx = 0, mrx = 0, mtx = 0; const snap = Store.stats[n.id];
       if (snap) for (const [ifn, blk] of Object.entries(snap.interfaces || {})) {
         let r = 0, t = 0; for (const pp of blk.peers || []) { r += pp.rx_speed || 0; t += pp.tx_speed || 0; }
         if (isSys(n.id, ifn)) { mrx += r; mtx += t; }                          // mesh link (swg_*)
-        else { crx += r; ctx += t; if (F.peers) addType(ifType(n.id, ifn), r, t); }
+        else { crx += r; ctx += t; addType(ifType(n.id, ifn), r, t); }
       }
-      if (F.mesh) addType("mesh", mrx, mtx);
-      nodeTraf[n.id] = trafPick(crx + mrx, ctx + mtx, mrx, mtx, F);
+      addType("mesh", mrx, mtx);
+      nodeRaw[n.id] = { crx, ctx, mrx, mtx };
     }
   });
+  // apply each doughnut's own filter to the raw components
+  const nodeTraf = {}; fleet.forEach(n => { const r = nodeRaw[n.id] || { crx: 0, ctx: 0, mrx: 0, mtx: 0 }; nodeTraf[n.id] = trafPick(r.crx + r.mrx, r.ctx + r.mtx, r.mrx, r.mtx, FN); });
+  const typePick = k => k === "mesh" ? { rx: FT.mesh ? typeRaw.mesh.rx : 0, tx: FT.mesh ? typeRaw.mesh.tx : 0 }
+                                     : { rx: FT.peers ? typeRaw[k].rx : 0, tx: FT.peers ? typeRaw[k].tx : 0 };
+  const typeTraf = { wg: typePick("wg"), awg: typePick("awg"), mesh: typePick("mesh") };
   const trafFmt = ranged ? fmtBytes : rate;
 
   // ── peer deployments by node + by iface type. TOTAL = the roster count deployed to each node/iface (a real head-
@@ -2060,14 +2070,14 @@ function DashDoughnuts({ selIds, range, hist }) {
   const turnAvgNote = turnRanged ? avgNote : turnLiveNote;    // peers card → avg
 
   const loading = !live && hist.loading;
-  // Shared Peers/Mesh toggle — sits on BOTH traffic-doughnut headers (right-aligned) and drives the client/mesh split for both at once.
-  const trafBadges = html`<div class="dcard-traf">
-    <button class=${"tbadge peers" + (dashState.peers ? " on" : "")} onClick=${() => dashToggleTraf("peers")} title=${(dashState.peers ? "Hide" : "Show") + " client (peer) traffic"}>Peers</button>
-    <button class=${"tbadge mesh" + (dashState.mesh ? " on" : "")} onClick=${() => dashToggleTraf("mesh")} title=${(dashState.mesh ? "Hide" : "Show") + " mesh (node-to-node relay) traffic"}>Mesh</button>
+  // Each traffic doughnut gets its OWN Peers/Mesh toggle (its own override key) so they operate independently.
+  const trafBadgesFor = (key, F) => html`<div class="dcard-traf">
+    <button class=${"tbadge peers" + (F.peers ? " on" : "")} onClick=${() => dashToggleTrafKey(key, "peers")} title=${(F.peers ? "Hide" : "Show") + " client (peer) traffic"}>Peers</button>
+    <button class=${"tbadge mesh" + (F.mesh ? " on" : "")} onClick=${() => dashToggleTrafKey(key, "mesh")} title=${(F.mesh ? "Hide" : "Show") + " mesh (node-to-node relay) traffic"}>Mesh</button>
   </div>`;
   // Grid rows group BY DIMENSION: row 1 = the two "by node" rings, row 2 = the two "by interface" rings.
   return html`<div class="donutgrid">
-    <${DoughCard} title="Traffic by node" badges=${trafBadges} loading=${loading}
+    <${DoughCard} title="Traffic by node" badges=${trafBadgesFor("dnode", FN)} loading=${loading}
       rings=${trafRings(segNodes("rx"), segNodes("tx"))} center=${trafCenter(totDownN, totUpN)} legend=${trafLegNodes} note=${loadingNote || volNote}/>
 
     <${DoughCard} title="Peers by node" loading=${loading}
@@ -2075,7 +2085,7 @@ function DashDoughnuts({ selIds, range, hist }) {
                { label: "Online", fmt: v => v, segments: fleet.map(n => ({ key: n.id, name: nodeName(n.id), value: nodeCnt[n.id].on, color: nodeColor(n.id) })) }]}
       center=${cntCenter(nodeOn, nodeTot)} legend=${cntLegNodes} note=${loadingNote || avgNote}/>
 
-    <${DoughCard} title="Traffic by interface" badges=${trafBadges} loading=${loading}
+    <${DoughCard} title="Traffic by interface" badges=${trafBadgesFor("dtype", FT)} loading=${loading}
       rings=${trafRings(segTypes("rx"), segTypes("tx"))} center=${trafCenter(totDownT, totUpT)} legend=${trafLegTypes} note=${loadingNote || volNote}/>
 
     <${DoughCard} title="Peers by interface" loading=${loading}
@@ -2811,17 +2821,9 @@ function NodeDetail({ node: rawName }) {
       <div class="nr-sync"><span class="when">${syncTxt}</span>${nrec.health && nrec.health.uptime != null ? html`<span class="when">up ${dur(nrec.health.uptime)}</span>` : null}</div>
     </div>
 
-    ${nrec.health ? html`<${Panel} icon="activity" title="Health" tone="online"
-      actions=${html`<${Fragment}>${nrec.removing ? html`<span class="nstat removing"><${Ic} i="trash"/> flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null}</>`}>
-      <${HealthAlerts} health=${nrec.health}/>
-      ${nrec.health_history
-        ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} liveFine=${nrec.health_live} h=${52} head=${html`<${HealthMeters} health=${nrec.health}/>`}/>`
-        : html`<${HealthMeters} health=${nrec.health}/>`}
-    <//>` : null}
+    ${nrec.health ? html`<${NodeHealthPanel} name=${name} nrec=${nrec}/>` : null}
 
-    ${nrec.health_history ? html`<${Panel} icon="gauge" title="Throughput">
-      <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72}/>
-    <//>` : null}
+    ${nrec.health_history ? html`<${NodeThroughput} name=${name} nrec=${nrec}/>` : null}
 
     ${(nrec.mesh_peers || []).length ? html`<${Panel} icon="network" title="Node connections" tone="pending" count=${(nrec.mesh_peers || []).length}
         actions=${html`<${MeshStat} nodeId=${name} mode="in"/>`}>
@@ -3001,9 +3003,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
         </div>` : null}
       <//>`}
 
-    ${meta ? html`<${Panel} icon="gauge" title="Throughput">
-      <${RangedHistory} node=${node} kind="throughput" h=${72} fetch=${r => api.ifaceSeries(node, iface, r).then(x => x && x.ok ? x.data : {})}/>
-    <//>` : null}
+    ${meta ? html`<${IfaceThroughput} node=${node} iface=${iface}/>` : null}
 
     ${turnEnabled() ? html`<${TurnProxiesBlock} node=${node} nrec=${nrec} metas=${Store.describe[node] || {}} title="Reachable via turn-proxy" iface=${iface}/>` : null}
 
@@ -4038,7 +4038,7 @@ function ConnectionEditSheet({ node, iface }) {
         ${Cell("Last handshake", meta.handshake_age != null ? seen(meta.handshake_age) + " ago" : "—")}
       </div>
     </div>
-    <${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.meshSeries(node, peer, r).then(x => x && x.ok ? x.data : {})}/>
+    <div style="margin-top:12px"><${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.meshSeries(node, peer, r).then(x => x && x.ok ? x.data : {})}/></div>
     <div class="row2" style="margin-top:14px">
       <div class="field"><label>Dial source IP <span class="faint" style="text-transform:none;letter-spacing:0">— ${Store.nodeName(node)}'s IP</span></label>
         <${NodeIpPick} ips=${nrec.ips || []} value=${dialSrc} onChange=${setDialSrc} auto="Auto (default route)"/></div>
@@ -4257,7 +4257,7 @@ function TurnManageSheet({ node, tp }) {
       <button class="btn btn-primary" disabled=${dis} onClick=${save}>Save</button></>`}>
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>This node is busy or offline${nrec.proc_status ? html` (${PROC_LABEL[nrec.proc_status] || nrec.proc_status})` : ""} — turn-proxy actions are disabled until it's reporting again.</span></div>` : null}
     <${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.turnSeries(node, turnFork(svc), r).then(x => x && x.ok ? x.data : {})}/>
-    <div class="iface-intro">
+    <div class="iface-intro" style="margin-top:8px">
       <div>Changing any field rewrites the unit's ExecStart on the node and restarts it.</div>
       <div>The parameters below are placed verbatim after <span class="mono">-connect</span> — wrap key, wrap mode, any flags the fork supports.</div>
     </div>
@@ -6050,9 +6050,52 @@ const HIST_RANGES = ["live", "hour", "day", "week", "month"];
 // blocks (= slots = plotted points) each range's x-axis holds — must match swg-panel-server
 // HRRD_RINGS slot counts (live = LIVE_MAX). Charts pin data to the right and fill leftward.
 const RANGE_CAP = { live: 200, hour: 250, day: 300, week: 350, month: 400 };
-const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem", "disk", "rx", "tx"]) if (Array.isArray((s || {})[k])) o[k] = s[k].slice(-n); return o; };
-function RangedHistory({ node, kind, live, h, head, liveFine, fetch }) {
+const tailSeries = (s, n) => { const o = {}; for (const k of ["t", "cpu", "mem", "disk", "rx", "tx", "mrx", "mtx"]) if (Array.isArray((s || {})[k])) o[k] = s[k].slice(-n); return o; };
+// Node throughput panel: a Peers/Mesh toggle in the header (right-aligned) splits the graph into client (rx−mrx),
+// mesh (mrx), or both. Never both off — turning off the only-selected one switches to the other (like the doughnuts).
+// Node health panel: CPU/Mem/Disk meters + the CPU-load history, with the range picker hoisted into the header.
+function NodeHealthPanel({ name, nrec }) {
   const [range, setRange] = useState("live");
+  const removing = nrec.removing ? html`<span class="nstat removing"><${Ic} i="trash"/> flagged for removal</span><button class="btn btn-mini" style="margin-left:9px" title="Cancel removal — keep this node" onClick=${() => unflagNode(nrec)}>Cancel</button>` : null;
+  const actions = html`<div class="panel-tools">${removing}${nrec.health_history ? html`<${RangeTabs} range=${range} setRange=${setRange}/>` : null}</div>`;
+  return html`<${Panel} icon="activity" title="Health" tone="online" actions=${actions}>
+    <${HealthAlerts} health=${nrec.health}/>
+    ${nrec.health_history
+      ? html`<${RangedHistory} node=${name} kind="cpu" live=${nrec.health_history} liveFine=${nrec.health_live} h=${52} head=${html`<${HealthMeters} health=${nrec.health}/>`} range=${range} setRange=${setRange}/>`
+      : html`<${HealthMeters} health=${nrec.health}/>`}
+  <//>`;
+}
+// Interface throughput panel (interface-detail screen): range picker hoisted into the header, like the node graph.
+function IfaceThroughput({ node, iface }) {
+  const [range, setRange] = useState("live");
+  return html`<${Panel} icon="gauge" title="Throughput" actions=${html`<${RangeTabs} range=${range} setRange=${setRange}/>`}>
+    <${RangedHistory} node=${node} kind="throughput" h=${72} fetch=${r => api.ifaceSeries(node, iface, r).then(x => x && x.ok ? x.data : {})} range=${range} setRange=${setRange}/>
+  <//>`;
+}
+function NodeThroughput({ name, nrec }) {
+  const [peers, setPeers] = useState(true);
+  const [mesh, setMesh] = useState(true);
+  const [range, setRange] = useState("live");
+  const togP = () => { if (peers && !mesh) { setPeers(false); setMesh(true); } else setPeers(!peers); };
+  const togM = () => { if (mesh && !peers) { setMesh(false); setPeers(true); } else setMesh(!mesh); };
+  // Peers/Mesh sits on the LEFT (as the header's `lead`, right after the title); the range picker stays on the right.
+  const lead = html`<div class="dcard-traf hdr-lead">
+    <button class=${"tbadge peers" + (peers ? " on" : "")} onClick=${togP} title=${(peers ? "Hide" : "Show") + " client (peer) traffic"}>Peers</button>
+    <button class=${"tbadge mesh" + (mesh ? " on" : "")} onClick=${togM} title=${(mesh ? "Hide" : "Show") + " mesh (node-to-node relay) traffic"}>Mesh</button>
+  </div>`;
+  return html`<${Panel} icon="gauge" title="Throughput" lead=${lead} actions=${html`<${RangeTabs} range=${range} setRange=${setRange}/>`}>
+    <${RangedHistory} node=${name} kind="throughput" live=${nrec.health_history} liveFine=${nrec.health_live} h=${72} traf=${{ peers, mesh }} range=${range} setRange=${setRange}/>
+  <//>`;
+}
+// The live/hour/day/week/month picker. Rendered inside the chart by default, or lifted into a panel header
+// (controlled `range`/`setRange`) so Health/Throughput can host it up top.
+function RangeTabs({ range, setRange }) {
+  return html`<div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div>`;
+}
+function RangedHistory({ node, kind, live, h, head, liveFine, fetch, traf, range: cRange, setRange: cSetRange }) {
+  const [iRange, iSetRange] = useState("live");
+  const controlled = cRange !== undefined;   // parent owns the range (tabs live in a panel header) → don't draw them here
+  const range = controlled ? cRange : iRange, setRange = cSetRange || iSetRange;
   const [fetched, setFetched] = useState(null);
   const custom = !!fetch;   // per-entity graphs (turn / mesh / interface): fetch EVERY range on-demand off their own RRD (never in /api/state)
   const fetchRange = custom || range === "day" || range === "week" || range === "month";   // node graph: live/hour ride /api/state
@@ -6079,9 +6122,17 @@ function RangedHistory({ node, kind, live, h, head, liveFine, fetch }) {
   // chart — the data already collected stays on screen, flagged with a small "paused" pill.
   const notLive = !nlive && (range === "live" || range === "hour");   // only the live-fed ranges; day/week/month keep their stored history
   const pausedPill = (notLive && hasData) ? html`<span class="rt-paused" title="This node isn't reporting right now — showing the last data it sent.">paused</span>` : null;
-  const tabs = html`${pausedPill}<div class="rangetabs">${HIST_RANGES.map(t => html`<button class=${"rtab" + (range === t ? " on" : "")} onClick=${() => setRange(t)}>${t}</button>`)}</div>`;
+  // when the range picker is hoisted into the panel header, the in-chart slot keeps only the "paused" pill
+  const tabs = html`${pausedPill}${controlled ? null : html`<${RangeTabs} range=${range} setRange=${setRange}/>`}`;
   if (kind === "throughput") {
-    return html`<${ThroughputChart} rx=${s.rx} tx=${s.tx} h=${h} head=${tabs} times=${s.t} range=${range} cap=${cap}/>`;   // perspective handled inside ThroughputChart
+    // The node throughput carries a mesh split; the parent passes a `traf` {peers,mesh} filter (its Peers/Mesh toggle
+    // lives in the panel header). client = rx−mrx, mesh = mrx. Per-entity graphs (iface/turn/mesh) pass no filter.
+    let rx = s.rx, tx = s.tx;
+    if (traf) {
+      const pick = (tot, mesh) => (tot || []).map((v, i) => (traf.peers ? Math.max(0, (v || 0) - ((mesh || [])[i] || 0)) : 0) + (traf.mesh ? ((mesh || [])[i] || 0) : 0));
+      rx = pick(s.rx, s.mrx); tx = pick(s.tx, s.mtx);
+    }
+    return html`<${ThroughputChart} rx=${rx} tx=${tx} h=${h} head=${tabs} times=${s.t} range=${range} cap=${cap}/>`;   // perspective handled inside ThroughputChart
   }
   return html`<div class="chartwrap">
     <div class="chart-head">${head || null}<span class="grow"></span>${tabs}</div>

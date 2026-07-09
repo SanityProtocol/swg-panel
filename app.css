@@ -1940,6 +1940,7 @@ body.loggedout .tabs,body.loggedout .appbar-right,body.loggedout .appver{display
 /* node-detail Health: meters occupy ~60% (each ~20%), range tabs ride the same row, right */
 .chart-head .health-cols{flex:1 1 58%;min-width:300px;gap:14px 22px}
 .rangetabs{display:inline-flex;gap:2px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:2px}
+.panel-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}   /* header-hosted controls: Peers/Mesh + range picker */
 .rtab{cursor:pointer;border:0;background:transparent;color:var(--dim);font-family:var(--mono);font-size:10px;text-transform:uppercase;
   letter-spacing:.06em;padding:4px 9px;border-radius:6px;transition:all .14s}
 .rtab:hover{color:var(--ink-2)}
