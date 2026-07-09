@@ -1,6 +1,6 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.8-beta</code></p>
+<p align="center"><code>1.2.9-beta</code></p>
 
 ---
 
@@ -9,7 +9,7 @@
 **Easy-to-use self-hosted WireGuard & AmneziaWG control panel with TURN-PROXY support. Deploy your own VPN in minutes.**
 
 swgPanel is a control panel for running your own WireGuard / AmneziaWG VPN across one or more servers.
-You add your people in the browser, hand them a QR code, and they’re connected. Everything — who has
+You add your users in the browser, hand them a QR code, and they’re connected. Everything — who has
 access, which servers they use, how much they’re using — lives on one dashboard that you host yourself.
 
 Run it for yourself, your household, your team, or a whole community — a fast private VPN with no monthly
@@ -37,7 +37,7 @@ subscription and no one else sitting in the middle of your traffic.
 - [The three roles (in plain words)](#the-three-roles-in-plain-words)
 - [Step 1 — Install the panel](#step-1--install-the-panel)
 - [Step 2 — Add your servers](#step-2--add-your-servers)
-- [Step 3 — Add people and hand out access](#step-3--add-people-and-hand-out-access)
+- [Step 3 — Add users and hand out access](#step-3--add-users-and-hand-out-access)
 - [Using it day to day](#using-it-day-to-day)
 - [Keeping it running](#keeping-it-running) — updates, backups, recovery, switching method, uninstall
 - [A few things worth knowing](#a-few-things-worth-knowing)
@@ -46,10 +46,11 @@ subscription and no one else sitting in the middle of your traffic.
 
 ## What it does
 
-- **One page to run everything.** Add servers, add people, hand out access — all from the web panel.
+- **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
-- **More than one server.** Put servers in different countries; a person can fail over between them.
+- **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
+- **Panel here or apart.** Run the panel on the same server as a VPN node, or on a separate box that only manages your nodes — either works.
 - **Hard to block.** Uses **AmneziaWG** (a stealthier WireGuard) and can route traffic cleverly by
   destination, so it keeps working where plain VPNs get blocked.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
@@ -61,7 +62,7 @@ subscription and no one else sitting in the middle of your traffic.
 
 | | |
 |---|---|
-| **People** — everyone you’ve given access to, at a glance | ![Peers](screenshots/peers.png) |
+| **Users** — everyone you’ve given access to, at a glance | ![Peers](screenshots/peers.png) |
 | **Activity log** — every change, and anything that needs attention | ![Activity log](screenshots/activity-log.png) |
 | **Smart routing** — send chosen sites out through a chosen server | ![Smart routing](screenshots/smart-routing.png) |
 | **Routing lists** — pick a routing mode and manage lists per server | ![Routing lists](screenshots/settings-routing.png) |
@@ -76,7 +77,7 @@ subscription and no one else sitting in the middle of your traffic.
 You need **one server** to run the panel on — a cheap VPS (virtual server) from any hosting provider is
 plenty. It should have:
 
-- A **public IP address** (so your people can reach it).
+- A **public IP address** (so your users can reach it).
 - A recent **Linux** (Ubuntu/Debian and most others are fine).
 - **`sudo`/root** access, and a way to paste a command into it (SSH).
 
@@ -144,7 +145,7 @@ If you chose **Master** above, you already have your first VPN server — you ca
 The new server reaches out to the panel on its own — **you never have to open special access to it**,
 no inbound ports, no SSH keys shared around. Within a few seconds it shows up in your Nodes list.
 
-## Step 3 — Add people and hand out access
+## Step 3 — Add users and hand out access
 
 1. Go to **Peers → New peer**, give it a name (e.g. a person or a device), and pick which server(s) it
    may use.
@@ -161,7 +162,7 @@ peer.
 
 - **Watch the dashboard.** The **Overview** page shows who’s online, the busiest servers, and where
   traffic is going — all live.
-- **Add or remove people anytime.** Changes reach your servers within seconds. Remove someone and their
+- **Add or remove users anytime.** Changes reach your servers within seconds. Remove someone and their
   access stops on the next check-in.
 - **Change the panel’s login** under **⚙︎ → Account** — it takes effect immediately.
 - **Route certain sites through a certain country (optional).** For example, send streaming out through a
@@ -179,7 +180,7 @@ before it does anything** and keeps your data safe.
 ### Update to the latest version
 
 Run this on any server (panel or VPN server) — it figures out what’s installed and updates it in place,
-keeping all your settings and people:
+keeping all your settings and users:
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
 ```
@@ -191,20 +192,20 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
   file ever gets damaged (a bad shutdown, a full disk), the panel **quietly restores the newest good backup
   on its own** the next time it starts. You don’t have to do anything.
 - **Manual (recommended anyway).** For an off-server copy, save the panel’s state folder
-  (`/var/lib/swg-panel`, which holds your people and servers) somewhere safe — a copy is all it takes to
+  (`/var/lib/swg-panel`, which holds your users and servers) somewhere safe — a copy is all it takes to
   rebuild the panel elsewhere.
 
 ### Recover / reinstall without losing anything
 
 - **Re-running any installer is safe.** It notices there’s already an install and **keeps your data**
-  (login, certificate, people, servers) — handy if a command got interrupted, or to change an option.
+  (login, certificate, users, servers) — handy if a command got interrupted, or to change an option.
 - **Rebuilding a VPN server?** Run the recovery helper on it and it finds the server’s leftover identity so
   it rejoins your panel **without re-enrolling**:
   ```
   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s recovery
   ```
 - **Lost the whole panel box?** Put your saved `/var/lib/swg-panel` folder back on a fresh install and your
-  people and servers are there again; the servers reconnect on their own.
+  users and servers are there again; the servers reconnect on their own.
 
 ### Switch between bare-metal and Docker
 
@@ -215,13 +216,13 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master  # → Docker
 ```
 It stages the new version fully **before** removing the old one, so the switch takes only a few seconds and
-your people barely notice. (A “master” box can convert as a whole, or just its panel half or just its
+your users barely notice. (A “master” box can convert as a whole, or just its panel half or just its
 server half.)
 
 ### Uninstall
 
 Removes swgPanel, asking about **each piece** first (the panel, a VPN server, the VPN software, any
-turn-proxies) — nothing goes without a yes, and you can keep your people/servers data for a future
+turn-proxies) — nothing goes without a yes, and you can keep your users/servers data for a future
 reinstall:
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s uninstall
