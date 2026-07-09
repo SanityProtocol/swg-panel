@@ -21,6 +21,7 @@ Config (/etc/swg-agent/config.json), see config.example.json:
 import contextlib
 import fcntl
 import hashlib
+import ipaddress
 import http.client
 import json
 import os
@@ -425,17 +426,50 @@ def _turn_installing_markers():
 
 TURN_CAP_TABLE = "swg_turn"        # our own inet nft table: capture turn-proxy CLIENT src IPs (UDP + TCP) into a dynamic set
 TURN_CLI_TTL   = "3m"              # a captured client IP lingers this long past its last packet, then auto-prunes (online is wg-tracked)
+TURN_CAP_SIG   = "v2-ctest"        # bump when the table/rule SHAPE changes → forces a one-time rebuild of the capture table
+_GW_CACHE = {"at": 0.0, "ips": frozenset()}
+
+
+def _default_gateways():
+    """Default-route gateway IP(s), cached ~60s. Excluded from captured client IPs: a bridge-net docker install that
+    SNATs inbound (userland-proxy) makes EVERY client appear as the container's gateway — so recording it would be
+    wrong. Dropping it degrades that config honestly to 'no client IP' instead of a bogus 172.x.x.1."""
+    now = time.time()
+    if now - _GW_CACHE["at"] < 60:
+        return _GW_CACHE["ips"]
+    gws = set(re.findall(r"via (\d+\.\d+\.\d+\.\d+)", (run(["ip", "route", "show", "default"]).stdout or "")))
+    _GW_CACHE["at"] = now; _GW_CACHE["ips"] = frozenset(gws)
+    return _GW_CACHE["ips"]
+
+
+def _is_client_ip(ip):
+    """A capturable turn CLIENT source: keep public AND private/internal (a LAN/internal deployment is valid), but
+    drop the SNAT gateway artifact + loopback/link-local/unspecified/reserved/multicast (never a real remote client)."""
+    if ip in _default_gateways():
+        return False
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return not (a.is_loopback or a.is_link_local or a.is_unspecified or a.is_reserved or a.is_multicast)
 
 
 def _ensure_turn_capture(ports):
     """Keep an nft `swg_turn` table whose prerouting rule records each turn-proxy CLIENT's source IP into a dynamic,
     self-expiring set `cli` (key = src-ip . dst-port). Replaces the old `ss` sweep: it works for UDP (which ss can't
     see — a proxy serves every client from one unconnected socket) AND TCP, is read as O(turn-clients) (only OUR set,
-    not the whole socket/conntrack table), and needs no extra package. `ports` = the wanted turn listen ports.
-    Docker note: a bridge-net turn container terminates traffic in its own netns, so this host-netns rule won't see
-    those clients (same blind spot the ss sweep had)."""
+    not the whole socket/conntrack table), and needs no extra package. `ct state established` records only flows the
+    proxy actually replied to → drops internet scanners / spoofed src on the public UDP ports. `ports` = wanted turn
+    listen ports. Runs in swg-noded's netns → bare-metal + host-net docker see all turn traffic; a bridge-net node is
+    isolated (best-effort: works if docker preserves the client src, else the SNAT gateway is filtered out on read)."""
     want = sorted({int(p) for p in ports if str(p).isdigit()})
     exists = run(["nft", "list", "table", "inet", TURN_CAP_TABLE]).returncode == 0
+    sigf = os.path.join(STATE_DIR, ".turn-cap-sig")
+    prev = ""
+    with contextlib.suppress(Exception):
+        prev = open(sigf).read().strip()
+    if exists and prev != TURN_CAP_SIG:                            # rule/table shape changed → rebuild once
+        run(["nft", "delete", "table", "inet", TURN_CAP_TABLE]); exists = False
     if not want:                                                   # no turn proxies → tear the table down
         if exists:
             run(["nft", "delete", "table", "inet", TURN_CAP_TABLE])
@@ -447,8 +481,10 @@ def _ensure_turn_capture(ports):
              "{ type ipv4_addr . inet_service; flags dynamic,timeout; timeout " + TURN_CLI_TTL + "; }"])
         run(["nft", "add", "chain", "inet", TURN_CAP_TABLE, "pre",   # prerouting @ mangle priority → sees the client src before any DNAT
              "{ type filter hook prerouting priority mangle; policy accept; }"])
-        run(["nft", "add", "rule", "inet", TURN_CAP_TABLE, "pre",    # non-terminal: just record src-ip.dport, packet continues
-             "meta l4proto { tcp, udp } th dport @ports update @cli { ip saddr . th dport }"])
+        run(["nft", "add", "rule", "inet", TURN_CAP_TABLE, "pre",    # non-terminal: record only established flows' src-ip.dport, packet continues
+             "meta l4proto { tcp, udp } th dport @ports ct state established update @cli { ip saddr . th dport }"])
+        with contextlib.suppress(OSError):
+            os.makedirs(STATE_DIR, exist_ok=True); open(sigf, "w").write(TURN_CAP_SIG)
     out = run(["nft", "list", "set", "inet", TURN_CAP_TABLE, "ports"]).stdout or ""   # sync @ports to the wanted list (drift-gated)
     m = re.search(r"elements = \{([^}]*)\}", out)
     cur = {int(x) for x in re.findall(r"\d+", m.group(1))} if m else set()
@@ -458,14 +494,15 @@ def _ensure_turn_capture(ports):
 
 
 def _turn_cli_ips():
-    """port(str) → set(client src IPs), read from OUR nft capture set (elements look like `203.0.113.9 . 56006 expires …`)."""
+    """port(str) → set(real client src IPs), read from OUR nft capture set (elements look like `203.0.113.9 . 56006
+    expires …`), filtered to genuine remote clients (drops the SNAT gateway + non-routable artifacts)."""
     m = {}
     out = run(["nft", "list", "set", "inet", TURN_CAP_TABLE, "cli"]).stdout or ""
     mm = re.search(r"elements = \{(.*)\}", out, re.S)
     if mm:
         for el in mm.group(1).split(","):
             g = re.search(r"([0-9.]+)\s*\.\s*(\d+)", el)
-            if g:
+            if g and _is_client_ip(g.group(1)):
                 m.setdefault(g.group(2), set()).add(g.group(1))
     return m
 
