@@ -1977,12 +1977,12 @@ function DashDoughnuts({ selIds, range, hist }) {
   // centre readouts
   // Auto-fit the font to the widest value string so a wide figure (e.g. "1023.66 M/s") stays on one line
   // inside the ring hole instead of wrapping/spilling over the arc.
-  const fitFs = n => n <= 9 ? 18 : n <= 11 ? 15.5 : n <= 13 ? 13.5 : 12;
+  const fitFs = n => n <= 9 ? 16 : n <= 11 ? 14 : n <= 13 ? 12.5 : 11;   // a touch smaller so the up/down rates clear the inner ring
   const povPeers = (Store.panelSettings || {}).throughput_perspective === "peers";   // ↓/↑ from the peer's side when set
   const trafCenter = (rx, tx) => {
     const [down, up] = dlul(rx, tx);
     const ds = "↓ " + trafFmt(down), us = "↑ " + trafFmt(up);
-    const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(12, dfs - 3);
+    const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(11, dfs - 3);
     return html`<div class="mrc-def"><span class="mrc-k">total</span>
       <span class="mrc-tot dn" style=${"font-size:" + dfs + "px"}>${ds}</span><span class="mrc-tot up" style=${"font-size:" + ufs + "px"}>${us}</span></div>`;
   };
@@ -2042,7 +2042,7 @@ function DashDoughnuts({ selIds, range, hist }) {
   const forks = [...enSet].filter(fk => { const t = fTraf(fk), c = fCnt(fk); return (t.rx + t.tx) > 0 || c.tot > 0; });
   const turnFmt = turnRanged ? fmtBytes : rate;
   const turnCenter = (rx, tx) => { const [d, u] = dlul(rx, tx); const ds = "↓ " + turnFmt(d), us = "↑ " + turnFmt(u);
-    const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(12, dfs - 3);
+    const dfs = fitFs(Math.max(ds.length, us.length)), ufs = Math.max(11, dfs - 3);
     return html`<div class="mrc-def"><span class="mrc-k">total</span>
       <span class="mrc-tot dn" style=${"font-size:" + dfs + "px"}>${ds}</span><span class="mrc-tot up" style=${"font-size:" + ufs + "px"}>${us}</span></div>`; };
   const turnTrafRings = () => { const rxS = forks.map(fk => ({ key: fk, name: fk, value: fTraf(fk).rx, color: turnColor(fk) })),
@@ -4347,7 +4347,7 @@ function TurnIpsHeader({ node, svc }) {
   const rows = all.slice(0, 10);   // show at most 10 here — the full list lives in Settings
   const flush = async () => { await api.turnIpsFlush({ node, service: svc }); load(); };   // this proxy's recorded IPs only
   const openSettings = () => { pendingSettingsSection = "turn"; pendingTurnIpsOpen = true; closeAllModals(); go("#/panel/settings"); };
-  const trigger = html`<span class="turnips-hd" title="Open the collected IPs in Settings → Turn proxies" onClick=${openSettings}>Turn IPs${active.size ? html` · <b>${active.size}</b>` : ""}</span>`;
+  const trigger = html`<span class="turnips-hd" onClick=${openSettings}>Turn IPs${active.size ? html` · <b>${active.size}</b>` : ""}</span>`;
   return html`<${Popover} hoverOnly cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
     <div class="onpop-h">Collected VK IPs</div>
     ${rows.length ? html`<${Fragment}>
