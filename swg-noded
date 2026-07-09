@@ -882,6 +882,12 @@ def _smart_setname(cat):
     return "cat_" + re.sub(r"[^a-z0-9]", "_", str(cat).lower())
 
 
+def _smart_learnsetname(cat):
+    # Hybrid-SNI learned dst IPs live in their OWN per-cat set (flags timeout) so they auto-expire — separate from the
+    # timeout-less interval cat_ set that holds the static geoip CIDRs. swg-sni must sanitise the cat identically.
+    return "catl_" + re.sub(r"[^a-z0-9]", "_", str(cat).lower())
+
+
 _LOOP = {"n": 0}                       # reconcile-loop counter — drives per-loop caches (bumped at the top of main's loop)
 _SMART_TABLE = {"n": -1, "rc": 1, "out": "", "counts": {}, "setnames": set(), "bytes": {}}
 
@@ -918,7 +924,7 @@ def _smart_table():
     return _SMART_TABLE
 
 
-def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_mark=0, queue=True):
+def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_mark=0, queue=True, learn_ttl=3600):
     """Phase 3 marking: keep an inet table `swg_smart` with one interval set per category (populated from
     shipped geo CIDR lists — see _smart_geo_refresh) and a prerouting chain that marks
     `ip saddr <S> ip daddr @cat_<c> meta mark set <T>`. Idempotent + drift-gated (flush+rebuild the chain
@@ -955,6 +961,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
         sn = _smart_setname(c)
         if sn not in have_sets:
             run(["nft", "add", "set", "inet", SMART_NFT_TABLE, sn, "{ type ipv4_addr; flags interval; auto-merge; }"])
+        if queue and _smart_learnsetname(c) not in have_sets:   # Hybrid-SNI: self-expiring learned-IP set (single IPs; TTL change handled in the rebuild block)
+            run(["nft", "add", "set", "inet", SMART_NFT_TABLE, _smart_learnsetname(c),
+                 "{ type ipv4_addr; flags timeout; timeout " + str(learn_ttl) + "s; }"])
     if "prerouting" not in re.findall(r"chain (\S+) {", body):
         run(["nft", "add", "chain", "inet", SMART_NFT_TABLE, "prerouting",
              "{ type filter hook prerouting priority mangle; policy accept; }"])
@@ -970,7 +979,7 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     allr = [e for e in smart_e if e["category"] == "all"]
     want = [(e["subnet"], e["category"], e.get("action", "exit"), e.get("table")) for e in spec + allr]
     v6f = sorted(set(v6_ifaces))                                # smart routing is IPv4-only → drop forwarded v6 on these ifaces (fail-closed, no leak)
-    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + "|s5").encode()).hexdigest()[:16]   # s5: +QUIC drop + SNI reset + queue-gate (kernel SNI has no NFQUEUE)
+    sig = hashlib.sha1((("pin;" if pin else "") + ("q;" if queue else "") + json.dumps(want) + "|v6:" + ",".join(v6f) + "|rst:" + str(reset_mark) + ("|lttl:" + str(learn_ttl) if queue else "") + "|s6").encode()).hexdigest()[:16]   # s6: +catl_ learned-IP sets (Hybrid-SNI TTL); s5 was +QUIC drop + SNI reset + queue-gate
     _sigf = os.path.join(GEO_DIR, ".smart-sig")
     try:
         stored = open(_sigf).read().strip()
@@ -986,6 +995,21 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     if stored != sig or not chain_present or not pre_ok or not fwd_ok:   # drift-gate: signature change, or a chain was emptied externally
         stored = ""                                            # force the sig file to be rewritten below
         run(["nft", "flush", "chain", "inet", SMART_NFT_TABLE, "prerouting"])
+        if queue:                                              # apply an ip_learning TTL change to the learned sets (an nft set's
+            _ttlm = os.path.join(GEO_DIR, ".catl-ttl")         # default timeout is immutable live → destroy+recreate; chain just
+            _prev = ""                                         # flushed above so catl_ is now unreferenced. Marker-gated: stable TTL never churns.
+            with contextlib.suppress(Exception):
+                _prev = open(_ttlm).read().strip()
+            if _prev != str(learn_ttl):
+                for c in cats:
+                    if c == "all":
+                        continue
+                    ln = _smart_learnsetname(c)
+                    run(["nft", "delete", "set", "inet", SMART_NFT_TABLE, ln])   # ok if absent
+                    run(["nft", "add", "set", "inet", SMART_NFT_TABLE, ln,
+                         "{ type ipv4_addr; flags timeout; timeout " + str(learn_ttl) + "s; }"])
+                with contextlib.suppress(OSError):
+                    os.makedirs(GEO_DIR, exist_ok=True); open(_ttlm, "w").write(str(learn_ttl))
         _ok = [True]                                            # a failed nft add must NOT persist the sig, so the rebuild retries next cycle
         def _add(*a):
             r = run(["nft", "add", "rule", "inet", SMART_NFT_TABLE, "prerouting", *a])
@@ -1008,13 +1032,14 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
                 elif act == "block":                           # kill-switch: drop everything else (pin: only the new pkt, so an allowed flow's established pkts survive)
                     _add("ip", "saddr", S, *_new, "drop")
                 continue                                        # direct catch-all → no rule (falls to the main/default route)
-            snm = _smart_setname(cat)
-            if act == "exit":
-                _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")
-            elif act == "direct":
-                _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "return")   # explicit direct exception (wins over a later catch-all exit)
-            elif act == "block":
-                _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "drop")
+            # match the geoip CIDR set AND (Hybrid-SNI) the learned-IP set — a dst learned by swg-sni lives only in catl_
+            for snm in [_smart_setname(cat)] + ([_smart_learnsetname(cat)] if queue else []):
+                if act == "exit":
+                    _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "meta", "mark", "set", str(T), *(["ct", "mark", "set", str(T)] if pin else []), "return")
+                elif act == "direct":
+                    _add("ip", "saddr", S, *_new, "ip", "daddr", "@" + snm, "return")   # explicit direct exception (wins over a later catch-all exit)
+                elif act == "block":
+                    _add("ip", "saddr", S, "ip", "daddr", "@" + snm, "drop")
         if pin and queue:                                       # feed each connection's first packets to swg-sni (userspace SNI); kernel-SNI reads them via xt_string instead → no queue
             for S in subnets:
                 _add("ip", "saddr", S, "tcp", "dport", "443", "ct", "state", "established", "ct", "packets", "lt", "12", "queue", "num", str(SNI_NFQUEUE), "bypass")
@@ -1043,8 +1068,9 @@ def _ensure_smart_nft(smart_e, categories, res, pin=False, v6_ifaces=(), reset_m
     # drop sets we no longer want (a category was un-ticked, or 'ru' was split into 'ru_net'/'ru_blocked'): after the
     # chain rebuild above they're unreferenced, so delete them — else the stale set lingers with old IPs forever.
     wanted_sn = {_smart_setname(c) for c in cats if c != "all"}
+    wanted_ln = {_smart_learnsetname(c) for c in cats if c != "all"}
     for sn in have_sets:
-        if sn.startswith("cat_") and sn not in wanted_sn:
+        if (sn.startswith("cat_") and sn not in wanted_sn) or (sn.startswith("catl_") and sn not in wanted_ln):
             if run(["nft", "delete", "set", "inet", SMART_NFT_TABLE, sn]).returncode == 0:   # still-referenced → fails, retried next pass
                 res["changed"] += 1
     # ── DESTINATION STATS: per-category named byte counters + their own FORWARD count chain (harvested free by
@@ -1809,8 +1835,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     is_sni = host_engine in ("sni_user", "sni_kernel")         # both SNI engines share the nft ct-restore/QUIC-drop/reset setup
     _SMART_MODE["engine"] = host_engine                        # the ACTUAL running engine → smart_status reports its liveness
     _apply_routing_reset((smart or {}).get("routing_reset"), res, (smart or {}).get("routing_reset_learned"))   # operator resets: full wipe+re-pull, or learned-IPs-only
-    ip_learning = (smart or {}).get("ip_learning", True)       # False → keep the node "fresh": learned SNI IPs expire fast (short ipset TTL)
-    ksni_ttl = 3600 if ip_learning else 120                    # kernel-SNI learned-IP lifetime (s)
+    ip_learning = (smart or {}).get("ip_learning", True)       # False → keep the node "fresh": learned SNI IPs expire fast (short TTL)
+    learn_ttl = 3600 if ip_learning else 120                   # learned-IP lifetime (s) — kernel-SNI ipset AND Hybrid-SNI catl_ set
     _CAT_CAPS.clear(); _CAT_CAPS.update((smart or {}).get("cat_caps") or {})   # panel-shipped caps → host-tier seeding + kernel greying
     # PROVIDER lists: pull each routed one from the PANEL (not GitHub) when its version changed — writes the same
     # <cat>.txt / <cat>.doms the loaders below consume. New cat → now; changed cat → only in the quiet window.
@@ -1853,7 +1879,8 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _smart_subs = {e["subnet"] for e in smart_e}                # smart interfaces (by subnet) → IPv6 fail-closed drop
     smart_ifs = sorted({ifn for ifn in (node_cfg.get("interfaces") or {}) if _iface_subnet(node_cfg, ifn) in _smart_subs}) if _smart_subs else []
     set_counts = _ensure_smart_nft(smart_e, smart_cats, res, pin=is_sni, v6_ifaces=smart_ifs,
-                                    reset_mark=(SNI_RESET_MARK if is_sni else 0), queue=(host_engine == "sni_user"))
+                                    reset_mark=(SNI_RESET_MARK if is_sni else 0), queue=(host_engine == "sni_user"),
+                                    learn_ttl=learn_ttl)
     domains = dict((smart or {}).get("domains") or {})         # domain-tier bundles {cat:[domain]} → dnsmasq/sni/kernel-filled
     if mode != "kernel":                                       # CATALOG host cats (no curated bundle) → seed empty so the node domain-fills them from MetaCubeX
         for _c, _caps in _CAT_CAPS.items():
@@ -1884,14 +1911,14 @@ def reconcile_cascade(node_cfg, plan, smart=None, default_egress_ip="", panel_co
     _smart_load_cidrs((smart or {}).get("cidrs") or {}, set_counts or {}, res)   # custom-rule raw IPs/CIDRs → into the set
     _subs = sorted({e["subnet"] for e in smart_e})
     if host_engine == "sni_user":                             # userspace swg-sni fills the domain cats from the TLS
-        _ensure_sni_router(domains, _subs, res)               # handshake (client DNS untouched); enriched lists OK here
+        _ensure_sni_router(domains, _subs, res, learn_ttl)    # handshake (client DNS untouched); enriched lists OK here
         _ensure_smart_xtstring([], {}, 0, res, active=False)  # ensure the kernel engine is torn down
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
         _ensure_doh_block(_subs, False, res)                  # never block the client's encrypted DNS in SNI mode
     elif host_engine == "sni_kernel":                         # in-kernel xt_string reader — no userspace daemon at all
         _ensure_sni_router(None, [], res)                     # stop swg-sni
-        _ensure_smart_xtstring(smart_exit, domains, SNI_RESET_MARK, res, ttl=ksni_ttl)   # enriched domains, capped per-cat inside (256)
+        _ensure_smart_xtstring(smart_exit, domains, SNI_RESET_MARK, res, ttl=learn_ttl)   # enriched domains, capped per-cat inside (256)
         if _dnsmasq_running() or os.path.exists(DNSMASQ_CONF):
             _ensure_smart_dnsmasq({}, [], res, unchanged=False)
         _ensure_doh_block(_subs, False, res)
@@ -1992,7 +2019,7 @@ def _ensure_smart_xtstring(host_entries, domains, reset_mark, res, active=True, 
             os.makedirs(GEO_DIR, exist_ok=True); open(sigf, "w").write(sig)
 
 
-def _ensure_sni_router(domains, subnets, res):
+def _ensure_sni_router(domains, subnets, res, learn_ttl=3600):
     """SNI mode: write the domain→category map for swg-sni and keep the classifier running; any other mode stops it
     and drops the map. swg-sni reads each connection's ClientHello off the NFQUEUE that _ensure_smart_nft set up
     and adds the dst IP to the matched category set, so the kernel routes FUTURE connections to that IP — the
@@ -2006,6 +2033,9 @@ def _ensure_sni_router(domains, subnets, res):
         _SNI_PROC["p"] = None
         with contextlib.suppress(OSError): os.remove(SNI_MAP_PATH)
         return
+    if p and p.poll() is None and _SNI_PROC.get("ttl") != learn_ttl:   # ip_learning TTL flipped → relaunch so swg-sni's seen-cache
+        with contextlib.suppress(Exception): p.terminate()            # TTL matches the new learned-set timeout (else a 3600→120 flip leaks)
+        _SNI_PROC["p"] = None; p = None
     try:                                                       # write the map only when it changes (cheap; swg-sni reloads on mtime)
         newmap = json.dumps({c: sorted(d) for c, d in (domains or {}).items() if d}, sort_keys=True)
         old = ""
@@ -2027,9 +2057,10 @@ def _ensure_sni_router(domains, subnets, res):
             log = open("/var/lib/swg-noded/swg-sni.log", "a")
             _SNI_PROC["p"] = subprocess.Popen([sys.executable, exe, "--queue", str(SNI_NFQUEUE),
                                                "--map", SNI_MAP_PATH, "--table", SMART_NFT_TABLE,
-                                               "--reset-mark", hex(SNI_RESET_MARK)],
+                                               "--reset-mark", hex(SNI_RESET_MARK), "--learn-ttl", str(learn_ttl)],
                                               stdout=log, stderr=log)
-            res["changed"] += 1; print("sni: launched swg-sni (queue %d)" % SNI_NFQUEUE, flush=True)
+            _SNI_PROC["ttl"] = learn_ttl
+            res["changed"] += 1; print("sni: launched swg-sni (queue %d, learn-ttl %d)" % (SNI_NFQUEUE, learn_ttl), flush=True)
         except Exception as e:
             res["errors"].append("sni launch: " + str(e)[:120])
 
