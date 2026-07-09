@@ -1,6 +1,6 @@
 <h1 align="center">🚧 WORK IN PROGRESS 🚧</h1>
 <h2 align="center">PROJECT NOT READY</h2>
-<p align="center"><code>1.124.0-alpha</code></p>
+<p align="center"><code>1.125.0-alpha</code></p>
 
 ---
 
