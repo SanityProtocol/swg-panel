@@ -455,6 +455,25 @@ def load_critical(path, default):
         raise RuntimeError("critical state %s is corrupt and no good backup exists — refusing to start empty" % path)
 
 
+# Disk-space guard: the snapshot mirror + per-node/peer/cat/turn RRDs are frequent, growth-prone, and NON-essential
+# (the panel runs fine without fresh stats). On a critically-low stats volume, skip those writes so a full disk
+# degrades gracefully instead of wedging — critical state (users/nodes) is small and always still written.
+_DISK_WARN = {"t": 0.0}
+def stats_disk_ok(path, min_free_mb=64, min_pct=2):
+    try:
+        st = os.statvfs(path)
+        free = st.f_bavail * st.f_frsize; total = (st.f_blocks * st.f_frsize) or 1
+        if free >= min_free_mb * 1048576 and (free * 100 // total) >= min_pct:
+            return True
+    except OSError:
+        return True                                   # can't stat → don't block on a false alarm
+    now = time.time()
+    if now - _DISK_WARN["t"] > 300:
+        _DISK_WARN["t"] = now
+        sys.stderr.write("swg-panel: stats volume critically low — pausing snapshot/RRD writes (critical state still saved)\n")
+    return False
+
+
 # ───────────────────────── roster: users + peers ─────────────────────────
 #
 # users.json is a versioned envelope, NOT a flat dict:
@@ -4854,7 +4873,7 @@ class Handler(BaseHTTPRequestHandler):
         # no terminal falls back to "<op> failed" after PROC_GRACE (see _proc_view). The re-install key
         # re-bless now happens when "reinstalling" is received (see _node_proc_status), not on sync.
         stats_dir = Handler.deps.get("stats_dir")
-        if stats_dir and snap:
+        if stats_dir and snap and stats_disk_ok(stats_dir):   # skip the non-essential stats/RRD writes on a full disk
             sf = node.get("stats_file", f"stats-{nid}.json")
             with contextlib.suppress(Exception):
                 atomic_write(os.path.join(stats_dir, sf), json.dumps(snap), mode=0o644)
