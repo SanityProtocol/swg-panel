@@ -475,6 +475,9 @@ const api = {
   config(pubkey, node, iface) { return this.get("/api/config?pubkey=" + encodeURIComponent(pubkey) + "&node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface)); },
   account() { return this.get("/api/account"); },
   accountSave(b) { return this.post("/api/account", b); },
+  twofaSetup() { return this.post("/api/account/2fa/setup", {}); },
+  twofaEnable(code) { return this.post("/api/account/2fa/enable", { code }); },
+  twofaDisable(b) { return this.post("/api/account/2fa/disable", b); },
   nodes() { return this.get("/api/nodes"); },
   nodeCreate(b) { return this.post("/api/nodes/create", b); },
   nodeUpdate(b) { return this.post("/api/nodes/update", b); },
@@ -6568,7 +6571,8 @@ function PanelSettingsScreen() {
   const [secUser, setSecUser] = useState(""); const [secOrigUser, setSecOrigUser] = useState("");
   const [secCur, setSecCur] = useState(""); const [secNp, setSecNp] = useState(""); const [secNp2, setSecNp2] = useState("");
   const [secAuth, setSecAuth] = useState(true);   // false = panel has no login configured (fields disabled)
-  useEffect(() => { api.account().then(r => { if (r && r.ok) { setSecAuth(r.data.auth_enabled !== false); if (r.data.username) { setSecUser(r.data.username); setSecOrigUser(r.data.username); } } }); }, []);
+  const [sec2fa, setSec2fa] = useState(false);    // TOTP currently enabled on the account
+  useEffect(() => { api.account().then(r => { if (r && r.ok) { setSecAuth(r.data.auth_enabled !== false); setSec2fa(!!r.data.twofa_enabled); if (r.data.username) { setSecUser(r.data.username); setSecOrigUser(r.data.username); } } }); }, []);
   const secChanged = () => secAuth && (secUser.trim() !== secOrigUser || !!secNp);
   const secErr = () => {
     if (!secAuth || !secChanged()) return null;
@@ -7027,6 +7031,7 @@ function PanelSettingsScreen() {
           <div class="row2"><div class="field"><label>New password</label><input type="password" value=${secNp} disabled=${!secAuth} onInput=${e => setSecNp(e.target.value)} autocomplete="new-password" placeholder="leave blank to keep current"/></div>
             <div class="field"><label>Confirm new password</label><input type="password" value=${secNp2} disabled=${!secAuth} onInput=${e => setSecNp2(e.target.value)} autocomplete="new-password"/></div></div>
         </div>` : null}
+        ${section === "security" ? html`<${TwoFactorCard} enabled=${sec2fa} disabled=${!secAuth} onChange=${setSec2fa}/>` : null}
         ${section === "configs" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Client configs</div>
           <div class="field"><label>Store client configs</label>
@@ -8282,27 +8287,127 @@ function App() {
 
 // ───────────────────────── auth: login page + logout ─────────────────────────
 let _loginShown = false;
+// Two-factor (TOTP / Google Authenticator) card for Settings → Authentication.
+// Self-contained: setup → scan → verify → recovery codes → enabled/disable.
+function TwoFactorCard({ enabled, disabled, onChange }) {
+  const [stage, setStage] = useState("idle");     // idle | setup | recovery | disabling
+  const [setup, setSetup] = useState(null);        // {secret, otpauth}
+  const [qr, setQr] = useState("");
+  const [code, setCode] = useState("");
+  const [recovery, setRecovery] = useState([]);
+  const [disPw, setDisPw] = useState(""); const [disCode, setDisCode] = useState("");
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+  const reset = () => { setStage("idle"); setSetup(null); setQr(""); setCode(""); setErr(""); setDisPw(""); setDisCode(""); };
+  const beginSetup = async () => {
+    setBusy(true); setErr("");
+    try {
+      const r = await api.twofaSetup();
+      if (!r || !r.ok) { setErr((r && r.error) || "Couldn't start setup."); setBusy(false); return; }
+      setSetup(r.data); setStage("setup");
+      try { setQr(await qrDataURL(r.data.otpauth, 200)); } catch (_) { setQr(""); }
+    } catch (_) { setErr("Couldn't reach the panel."); }
+    setBusy(false);
+  };
+  const doEnable = async () => {
+    if (busy) return; setBusy(true); setErr("");
+    try {
+      const r = await api.twofaEnable(code.trim());
+      if (!r || !r.ok) { setErr((r && r.error) || "That code isn't valid — try the current one."); setBusy(false); return; }
+      setRecovery((r.data && r.data.recovery) || []); setStage("recovery"); setCode(""); onChange && onChange(true);
+    } catch (_) { setErr("Couldn't reach the panel."); }
+    setBusy(false);
+  };
+  const doDisable = async () => {
+    if (busy) return; setBusy(true); setErr("");
+    try {
+      const r = await api.twofaDisable({ current_password: disPw, code: disCode.trim() });
+      if (!r || !r.ok) { setErr((r && r.error) || "Couldn't disable — check your password and code."); setBusy(false); return; }
+      reset(); onChange && onChange(false); toast("Two-factor authentication disabled.", "ok");
+    } catch (_) { setErr("Couldn't reach the panel."); }
+    setBusy(false);
+  };
+  const copyRecovery = () => { try { navigator.clipboard.writeText(recovery.join("\n")); toast("Recovery codes copied.", "ok"); } catch (_) {} };
+
+  return html`<div class="card">
+    <div class="seclabel" style="margin-top:0">Two-factor authentication
+      ${enabled && stage === "idle" ? html`<span class="grow"></span><span class="tg tg-ok">On</span>` : null}</div>
+    ${err ? html`<div class="formmsg err">${err}</div>` : null}
+    ${!enabled && stage === "idle" ? html`
+      <p class="hint" style="margin:0 0 12px">Add a second step at sign-in using an authenticator app (Google Authenticator, Authy, 1Password…). ${disabled ? html`<b class="warntext">Configure a panel login first.</b>` : null}</p>
+      <button class="btn btn-primary" disabled=${disabled || busy} onClick=${beginSetup}>${busy ? "Starting…" : "Set up two-factor"}</button>
+    ` : null}
+    ${enabled && stage === "idle" ? html`
+      <p class="hint" style="margin:0 0 12px">Sign-in requires a code from your authenticator app. Keep your recovery codes somewhere safe in case you lose the device.</p>
+      <button class="btn btn-danger" onClick=${() => { reset(); setStage("disabling"); }}>Disable two-factor</button>
+    ` : null}
+    ${stage === "setup" ? html`
+      <p class="hint" style="margin:0 0 12px">Scan this with your authenticator app, then enter the 6-digit code it shows to confirm.</p>
+      <div class="twofa-setup">
+        ${qr ? html`<img class="twofa-qr" src=${qr} alt="TOTP QR code" width="200" height="200"/>` : html`<div class="twofa-qr empty">QR unavailable</div>`}
+        <div class="twofa-manual">
+          <label>Can't scan? Enter this key manually</label>
+          <code class="twofa-secret">${setup && setup.secret}</code>
+          <div class="field" style="margin-top:12px"><label>Code from the app</label>
+            <input autofocus value=${code} onInput=${e => setCode(e.target.value)} inputmode="text" autocomplete="one-time-code" placeholder="123 456"/></div>
+          <div class="btnrow" style="margin-top:8px">
+            <button class="btn btn-primary" disabled=${busy || code.trim().length < 6} onClick=${doEnable}>${busy ? "Verifying…" : "Verify & enable"}</button>
+            <button class="btn btn-ghost" disabled=${busy} onClick=${reset}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    ` : null}
+    ${stage === "recovery" ? html`
+      <p class="hint" style="margin:0 0 12px"><b>Two-factor is on.</b> Save these recovery codes now — each works once if you lose your authenticator. <b class="warntext">They won't be shown again.</b></p>
+      <div class="twofa-codes">${recovery.map(c => html`<code key=${c}>${c}</code>`)}</div>
+      <div class="btnrow" style="margin-top:12px">
+        <button class="btn btn-ghost" onClick=${copyRecovery}><${Ic} i="copy"/> Copy codes</button>
+        <button class="btn btn-primary" onClick=${reset}>Done</button>
+      </div>
+    ` : null}
+    ${stage === "disabling" ? html`
+      <p class="hint" style="margin:0 0 12px">Confirm with your password and a current code to turn two-factor off.</p>
+      <div class="field"><label>Current password</label><input type="password" value=${disPw} onInput=${e => setDisPw(e.target.value)} autocomplete="current-password"/></div>
+      <div class="field"><label>Authentication code (or recovery code)</label><input value=${disCode} onInput=${e => setDisCode(e.target.value)} autocomplete="one-time-code" placeholder="123 456"/></div>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="btn btn-danger" disabled=${busy || !disPw || !disCode.trim()} onClick=${doDisable}>${busy ? "Disabling…" : "Disable two-factor"}</button>
+        <button class="btn btn-ghost" disabled=${busy} onClick=${reset}>Cancel</button>
+      </div>
+    ` : null}
+  </div>`;
+}
 function require401() { showLogin(); throw new Error("unauthorized"); }
 function showLogin() { if (_loginShown) return; _loginShown = true; document.body.classList.add("loggedout"); try { render(h(LoginScreen), viewEl); } catch (_) {} }
 function LoginScreen() {
   const [u, setU] = useState(""); const [p, setP] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const [twofa, setTwofa] = useState(false); const [code, setCode] = useState("");
   const submit = async e => {
     if (e) e.preventDefault();
     if (busy) return;
     setBusy(true); setErr("");
     try {
-      const r = await api.login({ username: u, password: p });
+      const r = await api.login({ username: u, password: p, code: twofa ? code.trim() : undefined });
       if (r && r.ok) { location.reload(); return; }
+      if (r && r.twofa_required) {                       // password OK — panel wants the 6-digit code
+        setTwofa(true); setErr((r && r.error) || ""); setBusy(false); return;
+      }
       setErr((r && r.error) || "Login failed."); setBusy(false);
     } catch (_) { setErr("Couldn't reach the panel."); setBusy(false); }
   };
   return html`<div class="login-wrap"><form class="login-card" onSubmit=${submit}>
     <div class="login-brand"><span class="brand-mark"></span><span class="brand-name">swg<span>Panel</span></span></div>
-    <h2>Sign in</h2>
-    <div class="field"><label>Username</label><input autofocus value=${u} onInput=${e => setU(e.target.value)} autocomplete="username"/></div>
-    <div class="field"><label>Password</label><input type="password" value=${p} onInput=${e => setP(e.target.value)} autocomplete="current-password"/></div>
-    ${err ? html`<div class="formmsg err">${err}</div>` : null}
-    <button class="btn btn-primary" type="submit" disabled=${busy} style="width:100%;justify-content:center;margin-top:4px">${busy ? "Signing in…" : "Sign in"}</button>
+    <h2>${twofa ? "Two-factor" : "Sign in"}</h2>
+    ${twofa ? html`
+      <p class="muted" style="margin:-4px 0 12px">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+      <div class="field"><label>Authentication code</label><input autofocus value=${code} onInput=${e => setCode(e.target.value)} inputmode="text" autocomplete="one-time-code" placeholder="123 456"/></div>
+      ${err ? html`<div class="formmsg err">${err}</div>` : null}
+      <button class="btn btn-primary" type="submit" disabled=${busy} style="width:100%;justify-content:center;margin-top:4px">${busy ? "Verifying…" : "Verify"}</button>
+      <button class="btn btn-ghost" type="button" onClick=${() => { setTwofa(false); setCode(""); setErr(""); }} style="width:100%;justify-content:center;margin-top:8px">Back</button>
+    ` : html`
+      <div class="field"><label>Username</label><input autofocus value=${u} onInput=${e => setU(e.target.value)} autocomplete="username"/></div>
+      <div class="field"><label>Password</label><input type="password" value=${p} onInput=${e => setP(e.target.value)} autocomplete="current-password"/></div>
+      ${err ? html`<div class="formmsg err">${err}</div>` : null}
+      <button class="btn btn-primary" type="submit" disabled=${busy} style="width:100%;justify-content:center;margin-top:4px">${busy ? "Signing in…" : "Sign in"}</button>
+    `}
   </form></div>`;
 }
 function doLogout() {

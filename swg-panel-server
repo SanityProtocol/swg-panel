@@ -41,7 +41,7 @@ import urllib.request
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 FLEET_PATH = os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
 IN_DOCKER  = os.path.exists("/.dockerenv")   # so the UI can show the right "enable store_configs" command
@@ -872,6 +872,58 @@ def make_token_hash(token, iters=200000):
 
 # password hashing reuses the same pbkdf2_sha256 format verify_password() understands
 make_pw_hash = make_token_hash
+
+
+# ── two-factor auth (TOTP / Google Authenticator, RFC 6238) — stdlib only ────────────────────────────
+# The TOTP secret + recovery-code hashes live in their own 0o600 file (2fa.json) next to the roster; the
+# raw secret is shown ONCE at setup and never returned again, recovery codes are stored only as sha256.
+def totp_secret():
+    return base64.b32encode(os.urandom(20)).decode().rstrip("=")          # 160-bit base32, no padding
+
+def _hotp(secret_b32, counter, digits=6):
+    key = base64.b32decode(secret_b32.upper() + "=" * (-len(secret_b32) % 8))
+    h = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    off = h[-1] & 0x0F
+    num = struct.unpack(">I", h[off:off + 4])[0] & 0x7FFFFFFF
+    return str(num % (10 ** digits)).zfill(digits)
+
+def totp_verify(secret_b32, code, step=30, window=1):
+    """True if `code` is a valid TOTP for `secret_b32` within ±window steps (clock skew tolerance)."""
+    code = (code or "").strip().replace(" ", "")
+    if not (secret_b32 and code.isdigit() and len(code) == 6):
+        return False
+    now = int(time.time() // step)
+    for w in range(-window, window + 1):
+        if hmac.compare_digest(_hotp(secret_b32, now + w), code):
+            return True
+    return False
+
+def otpauth_uri(user, secret_b32, issuer="swgPanel"):
+    return ("otpauth://totp/%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30"
+            % (quote("%s:%s" % (issuer, user)), secret_b32, quote(issuer)))
+
+def gen_recovery_codes(n=10):
+    # 10 chars of base32 (~50 bits) each, grouped for readability; compared case-insensitively, dashes ignored
+    def one(): s = base64.b32encode(os.urandom(7)).decode().rstrip("=").lower()[:10]; return s[:5] + "-" + s[5:]
+    return [one() for _ in range(n)]
+
+def _recovery_hash(code):
+    return hashlib.sha256(("swg-2fa\x00" + (code or "").strip().lower().replace("-", "").replace(" ", "")).encode()).hexdigest()
+
+def recovery_consume(tf, code):
+    """If `code` matches a stored recovery hash, remove it from tf (single use) and return True."""
+    h = _recovery_hash(code); recs = tf.get("recovery") or []
+    for i, r in enumerate(recs):
+        if hmac.compare_digest(str(r), h):
+            recs.pop(i); tf["recovery"] = recs; return True
+    return False
+
+def load_2fa(path):
+    d = load_json(path, {}) if path else {}
+    return d if isinstance(d, dict) else {}
+
+def save_2fa(path, data):
+    atomic_write(path, json.dumps(data, indent=2) + "\n", mode=0o600)
 
 
 def nodes_load(path):
@@ -3416,7 +3468,41 @@ def api(method, path, qs, body, deps):
     if method == "GET" and path == "/api/account":
         creds = deps.get("auth")
         return 200, {"ok": True, "data": {"username": creds[0] if creds else None,
-                                          "auth_enabled": bool(creds)}}
+                                          "auth_enabled": bool(creds),
+                                          "twofa_enabled": bool(load_2fa(deps.get("twofa_path")).get("enabled"))}}
+
+    if method == "POST" and path == "/api/account/2fa/setup":     # begin enrolment: mint a secret, return the QR data
+        creds = deps.get("auth")
+        if not creds:
+            return 403, {"ok": False, "error": "login is not enabled on this panel", "code": "no_auth"}
+        secret = totp_secret()
+        save_2fa(deps["twofa_path"], {"enabled": False, "secret": secret, "recovery": []})   # pending until verified
+        return 200, {"ok": True, "data": {"secret": secret, "otpauth": otpauth_uri(creds[0], secret)}}
+
+    if method == "POST" and path == "/api/account/2fa/enable":    # confirm a code → turn it on + issue recovery codes
+        tf = load_2fa(deps["twofa_path"])
+        if not tf.get("secret"):
+            return 400, {"ok": False, "error": "start setup first", "code": "no_setup"}
+        if not totp_verify(tf["secret"], body.get("code")):
+            return 400, {"ok": False, "error": "that code isn't valid — check the app and your device clock", "code": "bad_code"}
+        codes = gen_recovery_codes()
+        tf["enabled"] = True; tf["recovery"] = [_recovery_hash(c) for c in codes]; tf["created"] = int(time.time())
+        save_2fa(deps["twofa_path"], tf)
+        ev_append(roster_path, "panel", "account", "Enabled two-factor auth", "")
+        return 200, {"ok": True, "data": {"recovery": codes}}    # shown once
+
+    if method == "POST" and path == "/api/account/2fa/disable":   # turn off — requires the password + a valid code
+        creds = deps.get("auth")
+        if not creds:
+            return 403, {"ok": False, "error": "login is not enabled", "code": "no_auth"}
+        if not verify_password(creds[1], body.get("current_password") or ""):
+            return 403, {"ok": False, "error": "current password is incorrect", "code": "bad_password"}
+        tf = load_2fa(deps["twofa_path"])
+        if tf.get("enabled") and not (totp_verify(tf.get("secret", ""), body.get("code")) or recovery_consume(tf, body.get("code"))):
+            return 400, {"ok": False, "error": "enter a valid authenticator or recovery code", "code": "bad_code"}
+        save_2fa(deps["twofa_path"], {"enabled": False})
+        ev_append(roster_path, "panel", "account", "Disabled two-factor auth", "")
+        return 200, {"ok": True, "data": {"disabled": True}}
 
     if method == "POST" and path == "/api/account":
         creds = deps.get("auth")
@@ -5478,6 +5564,16 @@ class Handler(BaseHTTPRequestHandler):
         pw = body.get("password") or ""
         if not (hmac.compare_digest(user, creds[0]) and verify_password(creds[1], pw)):
             return self._send(401, {"ok": False, "error": "invalid username or password", "code": "bad_login"})
+        tf = load_2fa(Handler.deps.get("twofa_path"))
+        if tf.get("enabled"):                                 # password OK — now the second factor
+            code = (body.get("code") or "").strip()
+            if not code:                                      # first submit → tell the SPA to ask for a code
+                return self._send(200, {"ok": False, "twofa_required": True})
+            ok2 = totp_verify(tf.get("secret", ""), code)
+            if not ok2 and recovery_consume(tf, code):        # a single-use recovery code
+                save_2fa(Handler.deps["twofa_path"], tf); ok2 = True
+            if not ok2:
+                return self._send(200, {"ok": False, "twofa_required": True, "error": "that code isn't valid"})
         tok = make_session(creds[0], Handler.deps.get("session_secret"))
         return self._send_with_cookie(200, {"ok": True, "data": {"username": creds[0]}},
                                       self._session_cookie(tok, SESSION_TTL))
@@ -6309,6 +6405,7 @@ def main():
                     "node_snaps": {}, "node_seen": {}, "live_samples": {},
                     "auth": load_auth(),
                     "session_secret": load_session_secret(fleet.get("roster_path", "/var/lib/swg-panel/users.json")),
+                    "twofa_path": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "2fa.json"),
                     "now": lambda: int(time.time())}
     Handler.deps["turn_ips"] = load_json(_turn_ips_path(Handler.deps), {}) or {}   # unique turn-proxy source-IP history (survives restart)
     # panel version-change → one "Panel updated" activity event (from→to). Tracked in an isolated
