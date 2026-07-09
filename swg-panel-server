@@ -454,6 +454,37 @@ def load_critical(path, default):
             return data
         raise RuntimeError("critical state %s is corrupt and no good backup exists — refusing to start empty" % path)
 
+def load_settings_critical(path):
+    """Panel settings loader with the same backup safety net as the roster/node store — but softer: settings can be
+    re-entered, so a corrupt/lost primary recovers the newest good backup and, failing that, falls back to defaults
+    ({}) instead of refusing to start. Crucially it ALSO recovers when the primary parsed but is EMPTY {} while a
+    backup has real content — i.e. it was clobbered/truncated to nothing (how vk_link + other settings kept vanishing;
+    settings had no backup at all before). A genuine {} only arises from a clobber — the settings API always writes a
+    populated dict — so preferring a non-empty backup is safe."""
+    primary, primary_ok = {}, False
+    try:
+        with open(path) as f:
+            primary = json.load(f); primary_ok = isinstance(primary, dict)
+    except FileNotFoundError:
+        return {}                                                          # legitimately absent → fresh install
+    except (json.JSONDecodeError, OSError):
+        primary_ok = False                                                 # corrupt/unreadable
+    if primary_ok and primary:
+        return primary                                                     # healthy, non-empty
+    for b in _state_backups(path):                                         # corrupt OR clobbered-empty → newest good backup
+        try:
+            with open(b) as f:
+                cand = json.load(f)
+        except Exception:
+            continue
+        if isinstance(cand, dict) and cand:
+            sys.stderr.write("swg-panel: panel-settings %s — recovered from %s\n"
+                             % ("corrupt" if not primary_ok else "empty", b))
+            with contextlib.suppress(Exception):
+                atomic_write(path, json.dumps(cand, indent=2) + "\n", mode=0o600)   # promote back → stop losing it
+            return cand
+    return primary if primary_ok else {}                                   # nothing to recover → defaults
+
 
 # Disk-space guard: the snapshot mirror + per-node/peer/cat/turn RRDs are frequent, growth-prone, and NON-essential
 # (the panel runs fine without fresh stats). On a critically-low stats volume, skip those writes so a full disk
@@ -872,12 +903,12 @@ def migrate_ru_split(nodes_path, panel_settings_path):
                         r["category"] = "ru_net"; changed = True
         if changed:
             nodes_save(nodes_path, nodes)
-    ps = load_json(panel_settings_path, {})
+    ps = load_settings_critical(panel_settings_path)   # recover before migrating (never modify a clobbered stub)
     if isinstance(ps, dict):
         hc = ps.get("hidden_categories")
         if isinstance(hc, list) and "ru" in hc:
             ps["hidden_categories"] = _sub(hc)
-            atomic_write(panel_settings_path, json.dumps(ps, indent=2) + "\n")
+            save_critical(panel_settings_path, json.dumps(ps, indent=2) + "\n")   # rotating backups (recoverable)
             changed = True
     if changed:
         print("migrated 'ru' category → 'ru_net' (ru_blocked is now a separate opt-in list)", flush=True)
@@ -887,7 +918,7 @@ def migrate_provider_defaults(nodes_path, panel_settings_path):
     """One-time: providers now default OFF (a fresh fleet opts in). To keep an EXISTING fleet's routing working
     across that flip, explicitly enable every provider a node already routes. Idempotent — runs once (marked by
     `providers_defaulted`), only adds True entries, never disables, and respects later manual toggles."""
-    ps = load_json(panel_settings_path, {})
+    ps = load_settings_critical(panel_settings_path)   # recover before migrating (never modify a clobbered stub)
     if not isinstance(ps, dict) or ps.get("providers_defaulted"):
         return
     prov = dict(ps.get("providers") or {})
@@ -896,7 +927,7 @@ def migrate_provider_defaults(nodes_path, panel_settings_path):
         prov.setdefault(pid, True)                              # keep an already-routed provider enabled
     ps["providers"] = prov
     ps["providers_defaulted"] = True
-    atomic_write(panel_settings_path, json.dumps(ps, indent=2) + "\n")
+    save_critical(panel_settings_path, json.dumps(ps, indent=2) + "\n")   # rotating backups (recoverable)
     print("provider defaults: kept %d in-use provider(s) enabled; new providers now default off" % len(inuse), flush=True)
 
 
@@ -2219,7 +2250,7 @@ PANEL_SETTINGS_DEFAULTS = {
 
 def load_panel_settings(path):
     """panel-settings.json merged over the defaults (one level deep for the sub-dicts)."""
-    saved = load_json(path, {}) or {}
+    saved = load_settings_critical(path) or {}   # backup-recovering load (a clobbered/corrupt primary → newest good backup)
     out = {**PANEL_SETTINGS_DEFAULTS, **saved}
     for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update", "turn_update"):
         out[k] = {**PANEL_SETTINGS_DEFAULTS[k], **(saved.get(k) or {})}
@@ -3148,7 +3179,7 @@ def api(method, path, qs, body, deps):
             cur["custom_lists"] = out_lists
         deps["panel_settings"] = cur
         with contextlib.suppress(Exception):
-            atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
+            save_critical(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")   # rotating backups (recoverable)
         # The browser knows which settings sections it changed (it drives the dirty-dots), so an
         # explicit Save passes a summary + the first changed section id — recorded for the activity
         # one-liner and so a click can deep-link to that exact section. Autosaves (flow-anim toggle,
@@ -3164,7 +3195,7 @@ def api(method, path, qs, body, deps):
         cur["geo_epoch"] = int(cur.get("geo_epoch") or 0) + 1
         deps["panel_settings"] = cur
         with contextlib.suppress(Exception):
-            atomic_write(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
+            save_critical(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")   # rotating backups (recoverable)
         return 200, {"ok": True, "data": {"geo_epoch": cur["geo_epoch"]}}
 
     if method == "GET" and path == "/api/asn":                   # resolve an ASN → prefix count (live feedback as the operator types AS<n>)
