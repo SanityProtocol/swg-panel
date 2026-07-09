@@ -1,6 +1,6 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.6-beta</code></p>
+<p align="center"><code>1.2.7-beta</code></p>
 
 ---
 
@@ -51,6 +51,8 @@ subscription and no one else sitting in the middle of your traffic.
 - **More than one server.** Put servers in different countries; a person can fail over between them.
 - **Hard to block.** Uses **AmneziaWG** (a stealthier WireGuard) and can route traffic cleverly by
   destination, so it keeps working where plain VPNs get blocked.
+- **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
+  apps — wrap traffic through VK/Yandex TURN relays to slip past even the toughest blocks, all from the panel.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
 
 <details>
@@ -147,6 +149,8 @@ no inbound ports, no SSH keys shared around. Within a few seconds it shows up in
    may use.
 2. The panel shows a **QR code and a config file**. The person opens the **WireGuard** or **AmneziaWG**
    app on their phone/computer, scans the QR (or imports the file), and they’re online.
+3. Using a **turn-proxy** on that server? Getting its config is just as easy — the panel shows the proxy’s
+   address and a **wrap key** to drop into the vk-turn-proxy client app, right alongside the QR.
 
 That’s the whole flow. The secret half of their key is created in your browser and shown **once** — so
 save/hand over the config there and then. Need to give the same person a second device? Just make another
