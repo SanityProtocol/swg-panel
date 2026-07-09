@@ -7317,6 +7317,8 @@ function AddPeersSheet({ userId, userName }) {
   const [items, setItems] = useState(() => orderPeers(userId ? Store.peersOfUser(userId) : []).map(p => mkExisting(p, true)));
   const [cursor, setCursor] = useState(0);
   const [jump, setJump] = useState(false);
+  const [editTitle, setEditTitle] = useState(false);   // click the title → inline edit; blur/Enter → back to static
+  const goTo = i => { setJump(false); setEditTitle(false); setCursor(i); };
   const [toUnassign, setToUnassign] = useState([]);   // saved peers the operator unlinked → unassigned on Save
   const dirty = useRef(false); const sheetClose = useRef(null);
   const cur = items[cursor] || null;
@@ -7389,16 +7391,19 @@ function AddPeersSheet({ userId, userName }) {
       </select></div>
     ${items.length && cur ? html`<${Fragment}>
       <div class="peercar">
-        <button class="pc-arrow" title="Previous peer" disabled=${cursor <= 0} onClick=${() => { setJump(false); setCursor(c => Math.max(0, c - 1)); }}>◀</button>
-        <div class="pc-face" title="Pick a peer" onClick=${e => { if (e.target.tagName !== "INPUT") setJump(j => !j); }}>
-          <span class=${"pc-kind " + cur.kind}>${cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg")}</span>
-          <input class="pc-title" size=${Math.max(6, ((cur.title || (cur.kind === "new" ? "New peer" : "untitled")).length) + 1)} value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} title="Click to name this peer — saved when you Save" onInput=${e => updateTitle(e.target.value)} onClick=${e => e.stopPropagation()}/>
-          ${cur.kind === "existing" ? html`<span class="pc-ctx">· ${peerCtx(cur.peer)}</span>` : html`<span class="grow"></span>`}
+        <button class="pc-arrow" title="Previous peer" disabled=${cursor <= 0} onClick=${() => goTo(Math.max(0, cursor - 1))}>◀</button>
+        <div class="pc-face" title="Pick a peer" onClick=${e => { if (!editTitle && !e.target.closest(".pc-titletext")) setJump(j => !j); }}>
+          <span class=${"pc-kind " + (cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg"))}>${cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg")}</span>
+          <span class="pc-name">${editTitle
+            ? html`<input class="pc-title" autofocus value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} onInput=${e => updateTitle(e.target.value)}
+                onBlur=${() => setEditTitle(false)} onClick=${e => e.stopPropagation()}
+                onKeyDown=${e => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditTitle(false); } }}/>`
+            : html`<span class="pc-titletext" title="Click to rename this peer" onClick=${e => { e.stopPropagation(); setEditTitle(true); }}>${(cur.title || "").trim() || (cur.kind === "new" ? "New peer" : "untitled")}</span>`}${cur.kind === "existing" ? html`<span class="pc-rest"> · ${peerCtx(cur.peer)}</span>` : null}</span>
           <span class="pc-count">${cursor + 1}/${items.length}</span>
         </div>
-        <button class="pc-arrow" title="Next peer" disabled=${cursor >= items.length - 1} onClick=${() => { setJump(false); setCursor(c => Math.min(items.length - 1, c + 1)); }}>▶</button>
+        <button class="pc-arrow" title="Next peer" disabled=${cursor >= items.length - 1} onClick=${() => goTo(Math.min(items.length - 1, cursor + 1))}>▶</button>
         <button class="pc-x" title=${(cur.kind === "existing" && cur.assigned) ? "Unlink (unassign on save)" : "Remove from the list"} onClick=${removeCur}><${Ic} i="link"/></button>
-        ${jump ? html`<div class="pc-menu">${items.map((it, i) => html`<button key=${it.key} class=${i === cursor ? "on" : ""} onClick=${() => { setCursor(i); setJump(false); }}><span class="pc-mi">${i + 1}</span> ${carLabel(it)}</button>`)}</div>` : null}
+        ${jump ? html`<div class="pc-menu">${items.map((it, i) => html`<button key=${it.key} class=${i === cursor ? "on" : ""} onClick=${() => goTo(i)}><span class="pc-mi">${i + 1}</span> ${carLabel(it)}</button>`)}</div>` : null}
       </div>
       <div class="field"><label>Interfaces${cur.kind === "new" ? " · pick where to deploy" : ""}</label>
         <${PeerIfaceGrid} value=${cur.sel} onChange=${updateSel} lockExisting=${cur.kind === "existing"}/></div>
