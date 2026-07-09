@@ -1,6 +1,0 @@
-[ 1171893ms] [ERROR] Failed to load resource: net::ERR_INTERNET_DISCONNECTED @ https://swgt.sanitygate.net/api/state:0
-[ 1171894ms] [ERROR] Failed to load resource: net::ERR_INTERNET_DISCONNECTED @ https://swgt.sanitygate.net/api/events?limit=12:0
-[ 1176892ms] [ERROR] Failed to load resource: net::ERR_INTERNET_DISCONNECTED @ https://swgt.sanitygate.net/api/state:0
-[ 1176892ms] [ERROR] Failed to load resource: net::ERR_INTERNET_DISCONNECTED @ https://swgt.sanitygate.net/api/events?limit=12:0
-[ 2932180ms] [ERROR] Failed to load resource: net::ERR_INTERNET_DISCONNECTED @ https://swgt.sanitygate.net/api/state:0
-[ 2932181ms] [ERROR] Failed to load resource: net::ERR_INTERNET_DISCONNECTED @ https://swgt.sanitygate.net/api/events?limit=12:0

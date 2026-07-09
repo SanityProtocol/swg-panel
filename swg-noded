@@ -3003,21 +3003,6 @@ def _exec_of(unit_text):
             return ln[len("ExecStart="):]
     return ""
 
-def _set_arg(execl, flag, value):
-    """Replace '-flag <val>' (space- or =-separated) in the ExecStart, or append it."""
-    pat = re.compile(r"(-" + re.escape(flag) + r")[ =]+\S+")
-    if pat.search(execl):
-        return pat.sub(lambda m: m.group(1) + " " + value, execl, count=1)
-    return execl.rstrip() + " -" + flag + " " + value
-
-def _strip_wrap(execl):
-    """Remove the wrap key + the fork's wrap flag (-wrap / -wrap-srtp / -wrap-mode on)."""
-    execl = re.sub(r"\s*-wrap-key[ =]+\S+", "", execl)
-    execl = re.sub(r"\s*-wrap-mode[ =]+\S+", "", execl)
-    execl = re.sub(r"\s*-wrap-srtp\b", "", execl)
-    execl = re.sub(r"\s*-wrap\b", "", execl)
-    return execl
-
 def _exec_params(execl):
     """Everything after '-connect <ip:port>' in the ExecStart — the free-text extra flags (wrap etc.)."""
     m = re.search(r"-connect[ =]+\S+\s*(.*)$", execl)

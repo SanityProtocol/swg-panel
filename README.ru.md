@@ -235,7 +235,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 ## Справочник по конфигурации
 
-**Панель — `/etc/swg-panel/fleet.json`** (см. `fleet.example.json`):
+**Панель — `/etc/swg-panel/fleet.json`**:
 
 ```json
 {
@@ -250,7 +250,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 `store_configs` хранит сгенерированные конфиги клиентов (включая приватные ключи) на панели — по умолчанию выключено; не включайте без понимания последствий.
 
-**Узел — `/etc/swg-agent/config.json`** (см. `config.example.json`):
+**Узел — `/etc/swg-agent/config.json`**:
 
 ```json
 {

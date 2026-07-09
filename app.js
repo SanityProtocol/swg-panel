@@ -88,7 +88,6 @@ function rate(bps) {
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return (v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i] + "/s";
 }
-function cssid(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, "_"); }
 // Nice y-axis ceiling for a throughput graph: the smallest "1/5/10/50/100/500 × {B,K,M,G}" value ≥ bps.
 // Base-1024 to match rate(), so the scale badge reads e.g. "50 K/s" / "500 K/s" / "1 M/s"; past 500 it rolls to
 // the next unit (…500 K → 1 M, never an ugly "1000 K"). Callers pass peak/0.85 to guarantee ≥15% headroom.
@@ -243,11 +242,6 @@ function buildConf(o) {
     "PersistentKeepalive = " + (o.keepalive != null && o.keepalive !== "" ? o.keepalive : 25));
   return L.join("\n") + "\n";
 }
-function parseConf(text) {
-  const priv = (text.match(/PrivateKey\s*=\s*(\S+)/) || [])[1] || null;
-  const psk = (text.match(/PresharedKey\s*=\s*(\S+)/) || [])[1] || null;
-  return { priv, psk };
-}
 // Full parse of a client config back into buildConf()'s shape — so an edit/copy can
 // rebuild the config from the existing one (the only place the private key lives).
 function parseFullConf(text) {
@@ -269,19 +263,12 @@ function parseFullConf(text) {
   };
 }
 // Same config, Endpoint swapped to the turn-proxy's public listen address (import via turn-proxy).
-function turnConf(baseConf, listen) { return baseConf.replace(/Endpoint\s*=\s*\S.*/m, "Endpoint = " + listen); }
 
 function downloadConf(text, base) {
   // octet-stream (not text/plain) so the browser keeps the .conf name instead of appending .txt
   const blob = new Blob([text], { type: "application/octet-stream" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
   a.download = base.replace(/[^\w.-]+/g, "_").replace(/\.(conf|txt)$/i, "") + ".conf"; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-function downloadNamed(text, filename) {   // download with an explicit filename+extension (turn artifacts: .conf or .txt)
-  const blob = new Blob([text], { type: "application/octet-stream" });
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-  a.download = filename.replace(/[^\w.-]+/g, "_"); a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
@@ -653,7 +640,6 @@ function turnProxiesFor(node, iface) {
 // a node is "stale" when its last snapshot is older than the staleness window (reconcile.js) — we can't
 // trust any live state then, so cross-reference badges grey out (don't claim "active" on a node gone dark).
 function nodeStale(node) { return Store.recon.nodeStatus[node] !== "live"; }
-function ifaceDown(node, ifn) { return !!(((((Store.stats[node] || {}).interfaces) || {})[ifn] || {}).down); }
 function ifaceNotUp(node, ifn) { const s = (((Store.stats[node] || {}).interfaces) || {})[ifn] || {}; return !!s.down || !!s.stopped; }  // down OR stopped → grey chips
 function turnDown(tp) { return tp && tp.running === false; }
 // turn badges for an interface card: one fork-coloured "turn" chip per distinct forwarding fork
@@ -1068,21 +1054,6 @@ function Tag({ kind, label, color, muted }) {
 }
 // the tags that describe a peer's deployment on a (node,iface): protocol + interface + turn-proxy.
 // `muted` greys them out for inactive (offline / dangling / disconnected) rows.
-function targetTags(node, iface, type, via, muted, viaTurn) {
-  const tags = [];
-  const proto = (type || "").toLowerCase();
-  if (proto === "awg") tags.push(html`<${Tag} kind="awg" label="awg" muted=${muted}/>`);
-  else if (proto === "wg") tags.push(html`<${Tag} kind="wg" label="wg" muted=${muted}/>`);
-  if (viaTurn) {
-    // peer came in THROUGH a turn-proxy → tint the interface badge with the proxy's colour + a hover bubble
-    const tn = turnLabel(viaTurn), tc = turnColor(tn);
-    tags.push(html`<span class="turnwrap"><${Tag} kind="iface" label=${iface} color=${tc} muted=${muted}/><span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span></span></span>`);
-  } else {
-    tags.push(html`<${Tag} kind="iface" label=${iface} color=${Store.nodeColor(node)} muted=${muted}/>`);
-    if (via === "turn" || turnProxiesFor(node, iface).length) tags.push(html`<${Tag} kind="turn" label="turn" muted=${muted}/>`);
-  }
-  return tags;
-}
 // operator title of a turn-proxy (by service) on a node, if one was set — for the "Connected via" bubble
 function turnProxyTitle(node, service) {
   const tp = ((Store.stats[node] || {}).turn_proxies || []).find(x => x && x.service === service);
@@ -1312,7 +1283,6 @@ function meshHealth(nodeId) {
   return { peers, total: peers.length,
     okIn: peers.filter(p => p.in === "up").length, okOut: peers.filter(p => p.out === "up").length };
 }
-const meshTone = (ok, total) => total === 0 ? "off" : ok === total ? "ok" : ok === 0 ? "bad" : "warn";
 const mhArrow = (dir, status) => html`<span class=${"mh-ar mh-" + dir + " s-" + status}>${dir === "down" ? "↓" : "↑"}</span>`;
 // mode "in" → node-detail header (inbound only) · mode "both" → nodes-list (down = inbound, up = outbound)
 function MeshStat({ nodeId, mode }) {
@@ -1345,16 +1315,6 @@ function OnlinePeersTag({ nodeId, iface, total, cls, trigger, orphans, orphHref 
     trigger=${trigger || (c => html`<b class=${"oncount" + (c ? " on" : "")}>${c}</b>${total != null ? " / " + total : ""} online`)}/>`;
 }
 
-function TargetPips({ peer }) {
-  return html`<span class="pips">${peer.targets.map(d => {
-    const col = Store.nodeColor(d.node);
-    let cls = "unk";
-    if (d.status === "online") cls = "on";
-    else if (d.status === "ready") cls = "present";
-    else if (d.status === "dangling" || d.status === "pending") cls = "miss";
-    return html`<span class="pip ${cls}" style=${"--pc:" + col} title=${Store.nodeName(d.node) + " · " + d.iface + " · " + d.status}></span>`;
-  })}</span>`;
-}
 
 // inline user assignment <select>
 // Assign an unassigned peer to a user with a FRESH credential: mint a new keypair + PSK in
@@ -1732,7 +1692,6 @@ function dashNodes() {
   return sel.length ? sel : fleet;
 }
 function dashNodeOn(id) { const s = dashState.nodes; return !s || !s.size || s.has(id); }
-function dashAllOn() { const f = (Store.fleet || []).length; return !dashState.nodes || dashNodes().length >= f; }
 function dashToggleNode(id) {
   const fleet = (Store.fleet || []).map(n => n.id);
   const sel = new Set(dashState.nodes && dashState.nodes.size ? [...dashState.nodes].filter(x => fleet.includes(x)) : fleet);
@@ -1743,7 +1702,6 @@ function dashToggleNode(id) {
   dashState.nodes = (sel.size >= fleet.length) ? null : sel;   // all selected → canonical null (never an empty set)
   dashSave(); bus.emit();
 }
-function dashSetAll() { dashState.nodes = null; dashSave(); bus.emit(); }
 function dashSetRange(r) { if (DASH_RANGES.some(x => x[0] === r)) { dashState.range = r; dashSave(); bus.emit(); } }
 
 // Merge the SELECTED nodes' 15s health-ring series (server-provided, bucket-aligned) into one fleet
@@ -1819,25 +1777,6 @@ function resampleBlocks(t, v, n, step) {
 }
 
 // The dashboard toolbar: a multi-select node filter (themed chips) + a live/day/week/month range toggle.
-function DashControls() {
-  const fleet = Store.fleet || [];
-  const range = dashState.range;
-  return html`<div class="dashbar">
-    ${fleet.length > 1 ? html`<div class="dash-nodes">
-      ${fleet.map(n => {
-        const on = dashNodeOn(n.id);
-        const down = Store.recon.nodeStatus[n.id] !== "live";
-        return html`<button key=${n.id} class=${"snbadge" + (on ? " on" : "") + (down ? " down" : "")} style=${"--c:" + Store.nodeColor(n.id)}
-          onClick=${() => dashToggleNode(n.id)} title=${(on ? "Hide " : "Show ") + n.name + (down ? " · not reporting" : "")}>
-          <span class="ndot"></span>${n.name}</button>`;
-      })}
-    </div>` : html`<div></div>`}
-    <div class="dash-range">
-      <span class="dash-lbl">Range</span>
-      <div class="dseg">${DASH_RANGES.map(([k, lbl]) => html`<button key=${k} class=${"dseg-opt" + (range === k ? " on" : "")} onClick=${() => dashSetRange(k)}>${lbl}</button>`)}</div>
-    </div>
-  </div>`;
-}
 
 // Once you scroll the dashbar out of view, the SAME node selector + range dock as a compact vertical rail pinned to the
 // right edge, vertically centred and travelling with the scroll. It shrinks further when the pointer leaves it (a "peek")
@@ -1922,7 +1861,6 @@ function useRangeHistory(range, selIds) {
   return st;
 }
 // total bytes moved over a range window = Σ(per-bucket mean B/s) × bucket step
-function histVolume(d, range) { const step = RANGE_STEP[range] || 1, s = a => (a || []).reduce((x, v) => x + (v || 0), 0) * step; return { rx: s(d && d.rx), tx: s(d && d.tx) }; }
 
 // The 4 concentric-ring doughnuts. All respect the node selector AND the time range: live comes from the
 // /api/state bundle; day/week/month read the per-node RRD (client rx/tx = total−mesh, awg-client rx/tx, and
@@ -3438,15 +3376,6 @@ function ModeTabs({ value, onChange }) {
   </div>`;
 }
 // Full-width detail for the currently-selected mode (icon + name + tag, what it adds, +benefit / −trade-off, full text).
-function ModeDetail({ mode }) {
-  const mm = MODE_META[mode] || MODE_META.kernel;
-  return html`<div class="rmode-detail">
-    <div class="rd-head"><span class="rd-ic"><${Ic} i=${mm.icon}/></span><b class="rd-name">${mm.label}</b><span class="rmc-tag">${mm.tag}</span></div>
-    <div class="rd-adds">${mm.adds}</div>
-    <div class="rd-lines"><div class="rmc-bene"><b>+</b><span>${mm.bene}</span></div><div class="rmc-cost"><b>−</b><span>${mm.cost}</span></div></div>
-    <div class="rmode-desc">${mm.exp}</div>
-  </div>`;
-}
 // Operator recovery: wipe a node's smart-routing state (tables, learned IPs, cached lists), then let it rebuild from
 // scratch + re-pull every enabled/curated list from the panel. Destructive → modal confirm, never a browser popup.
 function resetRouting(node, name) {
@@ -3520,11 +3449,6 @@ const catHostOnly = id => { const c = catCap(id); return c.host && !c.ip; };
 const catUsableInMode = (id, mode) => mode === "kernel" ? catCap(id).ip : (catCap(id).ip || catCap(id).host);
 const catDoms = id => (Store.catDomains || {})[id] || [];   // curated domains for a host category (empty for geoip/fetched cats)
 // hover bubble listing a list's domains/IPs (only when there are some); `note` = a faint footer caption
-const listBubble = (items, note) => items && items.length ? html`<span class="listbub" role="tooltip">
-  <span class="lb-h">${items.length} entr${items.length === 1 ? "y" : "ies"}</span>
-  ${items.slice(0, 40).map(d => html`<span class="lb-i">${d}</span>`)}
-  ${items.length > 40 ? html`<span class="lb-m">+${items.length - 40} more</span>` : null}
-  ${note ? html`<span class="lb-n">${note}</span>` : null}</span>` : null;
 let _ruleSeq = 0;
 const newRid = () => "rr" + (++_ruleSeq);
 // grow a textarea to fit its content (starts at one row like a textbox, expands as lines wrap)
@@ -3961,26 +3885,6 @@ function DeleteIfaceSheet({ node, iface }) {
     <div class="field"><label>Type <span class="mono" style="text-transform:none">${phrase}</span> to confirm</label><input autofocus value=${txt} onInput=${e => setTxt(e.target.value)} placeholder=${phrase} autocomplete="off" spellcheck="false"/></div>
   <//>`;
 }
-async function restartIface(node, iface) {   // legacy callers (e.g. Save auto-restart) — fire-and-forget
-  const r = await api.ifaceRestart({ node, iface });
-  if (!r.ok) return toast(r.error || "Failed to request restart.", "err");
-  await Store.poll();
-}
-async function stopIface(node, iface) {
-  const r = await api.ifaceStop({ node, iface });
-  if (!r.ok) return toast(r.error || "Failed to stop.", "err");
-  await Store.poll(); toast("Stop requested — applies on the node's next sync.", "ok");
-}
-async function startIface(node, iface) {
-  const r = await api.ifaceStart({ node, iface });
-  if (!r.ok) return toast(r.error || "Failed to start.", "err");
-  await Store.poll(); toast("Start requested — applies on the node's next sync.", "ok");
-}
-async function restartIfaceToast(node, iface) {
-  const r = await api.ifaceRestart({ node, iface });
-  if (!r.ok) return toast(r.error || "Failed to restart.", "err");
-  await Store.poll(); toast("Restart requested — applies on the node's next sync.", "ok");
-}
 // start/restart with an inline progress lifecycle on the interface card: busy tag (button hidden)
 // → green "started/restarted" 5s or red "failed" 10s (button back). verb = "start" (down) | "restart".
 async function startOrRestartIface(node, iface, verb) {
@@ -4050,8 +3954,7 @@ function ConnectionEditSheet({ node, iface }) {
   const lk = nodeStale(node) ? "down" : (meta.handshake_age == null ? "connecting" : (meta.handshake_age < 180 ? "up" : "down"));
   const lkLabel = { up: "connected", connecting: "connecting", down: "down" }[lk];
   const proto = (meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
-  const Row = (l, v) => html`<div class="row"><span class="k">${l}</span><span class="vv">${v}</span></div>`;
-  const Cell = (l, v) => html`<div class="conn-cell"><span class="cl">${l}</span><span class="cv">${v}</span></div>`;
+    const Cell = (l, v) => html`<div class="conn-cell"><span class="cl">${l}</span><span class="cv">${v}</span></div>`;
   const saveDial = () => {
     closeModal();
     mutate({
@@ -4498,11 +4401,6 @@ function hexLum(h) {
   h = String(h).replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join("");
   const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
   return (isNaN(r) ? 0.5 : 0.299 * r + 0.587 * g + 0.114 * b);
-}
-function mixHex(a, b, t) {   // blend two hex colours (t=0→a, 1→b)
-  const p = h => { h = String(h).replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join(""); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
-  const A = p(a), B = p(b);
-  return "#" + A.map((x, i) => Math.max(0, Math.min(255, Math.round(x + (B[i] - x) * t))).toString(16).padStart(2, "0")).join("");
 }
 function hexToHsl(hex) {
   let h = String(hex).replace("#", ""); if (h.length === 3) h = h.split("").map(c => c + c).join("");
@@ -5296,7 +5194,6 @@ function revealPeer(peer) {
   if (peer.user_id != null) { revealUser(peer.user_id, peer.id); return; }
   Store.recentlyCreated[peer.id] = Date.now(); go("#/users");
 }
-function revealPeerById(id) { revealPeer((Store.recon.peers || []).find(p => p.id === id)); }
 // Land on the PEERS screen with a specific peer visible + its row flashing (activity-feed clicks). Filters
 // the grid to that peer (unique IP) so it's guaranteed on-page, then scrolls to + glows it for ~2.5s.
 function revealPeerInPeers(peer) {
@@ -5670,24 +5567,6 @@ function UserEditCard({ user, done }) {
 }
 
 // one credential: its targets, each a QR card; owner controls + edit + add-target
-function PeerCard({ peer }) {
-  return html`<div class="peercard">
-    <div class="peercard-head">
-      <span class="ptitle-h"><${PeerTitle} peer=${peer}/></span>
-      <span class="addr">${peer.pubkey.slice(0, 16)}…</span>
-      <button class="copybtn" title="Copy public key" onClick=${() => copy(peer.pubkey, "Public key copied")}><${Ic} i="copy"/></button>
-      <span class="grow"></span>
-      ${peer.unassigned ? null : html`<button class="btn btn-mini" onClick=${() => openEditPeer(peer)}><${Ic} i="pencil"/> Config</button>`}
-      <span class="assignwrap"><${PeerOwnerControls} peer=${peer} showDelete=${true}/></span>
-    </div>
-    <div class="deploys">
-      ${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t}/>`)}
-      <div class="deploy adder" onClick=${() => openAddTarget(peer)}>
-        <div class="inner"><div class="ring"><${Ic} i="plus"/></div><div>Manage targets</div><div class="faint" style="font-size:11px">deploy or remove · same key</div></div>
-      </div>
-    </div>
-  </div>`;
-}
 
 function TargetCard({ peer, t, bare }) {
   useStore();   // re-render on each poll so the status badge stays live (t is a snapshot from open)
@@ -5750,7 +5629,7 @@ function NodesScreen() {
 }
 // load/util tone: green under 70%, amber to 90%, red above.
 function htone(pct) { return pct >= 90 ? "hot" : (pct >= 70 ? "warn" : "ok"); }
-function htcolor(pct) { return pct >= 90 ? "var(--dangling)" : (pct >= 70 ? "var(--fault)" : "var(--online)"); }   // green→amber→red util ramp (matches hm-fill + the CPU loadColor ramp)
+   // green→amber→red util ramp (matches hm-fill + the CPU loadColor ramp)
 // Threshold alerts for a node: disk/memory > 90%, CPU saturated (load-per-core > 1.5).
 function healthAlerts(health) {
   const out = [];
@@ -5774,17 +5653,6 @@ function Sparkline({ points, color, w, h }) {
   </svg>`;
 }
 const toneColor = t => t === "hot" ? "var(--dangling)" : t === "warn" ? "var(--fault)" : "var(--online)";
-function HealthMeter({ label, pct, text, tone, spark }) {
-  const p = Math.min(100, Math.max(0, pct || 0));
-  const tn = tone || htone(p);
-  return html`<div class="hmeter">
-    <div class="hm-top"><span class="hm-l">${label}</span><span class="hm-r">${text}</span></div>
-    <div class="hm-row">
-      <div class="hm-bar"><i class=${"hm-fill " + tn} style=${"width:" + p + "%"}></i></div>
-      ${spark && spark.length > 1 ? html`<${Sparkline} points=${spark} color=${toneColor(tn)}/>` : null}
-    </div>
-  </div>`;
-}
 // Gradient area chart for a history series (0–100). Stretches to its container width;
 // the stroke stays crisp via non-scaling-stroke. Used for the CPU-load history.
 // format a chart point's timestamp for the hover tooltip — time of day, + date for week/month ranges
@@ -5927,10 +5795,6 @@ function ThroughputChart({ rx, tx, h, head, times, range, cap }) {
 
 // Split a formatted value into its numeric head and unit tail so the unit can be tinted separately
 // (e.g. "261G" → "261" + green "G"). No space is inserted — the parts render flush.
-function unitSplit(raw) {
-  const s = String(raw); const m = /^([\d.,\s-]+)(.*)$/.exec(s);
-  return (m && m[2]) ? [m[1], m[2]] : [s, ""];
-}
 // Concentric-ring doughnut (hand-rolled SVG, no deps). `rings` = outer→inner; each ring is
 //   { label, fmt, unitColor?, segments:[{ key, name, value, color }] }.
 // Fully controlled by `active` = { key, dir } (or null): `dir` is the ring index to isolate, or null for the
@@ -6062,13 +5926,6 @@ function TrendArea({ points, times, color, h, cap, fmt, range, label }) {
 }
 
 // Inline "x of y" usage bar for table rows — a compact track + count.
-function UsageBar({ value, total, color }) {
-  const v = value || 0, tt = total || 0, pct = tt ? Math.min(100, v / tt * 100) : 0;
-  return html`<span class="usebar" title=${v + " / " + tt}>
-    <span class="usebar-t"><i style=${"width:" + pct + "%;background:" + (color || "var(--online)")}></i></span>
-    <span class="usebar-n">${v}<small>/${tt}</small></span>
-  </span>`;
-}
 // interface tags for a node: each iface coloured by protocol, linking to its detail.
 function ifaceTags(node) {
   const meta = Store.describe[node] || {};
@@ -6713,8 +6570,7 @@ function PanelSettingsScreen() {
       body: html`<div class="savediff"><div class="savediff-h">${ch.length} change${ch.length === 1 ? "" : "s"} to apply:</div><ul>${ch.map(c => html`<li>${c}</li>`)}</ul>${rp ? html`<div class="savediff-w">${REPROV_WARN}</div>` : null}</div>` });
   };
   const refreshGeo = async () => { const r = await api.refreshGeo(); toast(r.ok ? "Geo lists will refresh on each node's next sync." : (r.error || "Failed"), r.ok ? "ok" : "err"); };
-  const setList = (rid, patch) => setLists(ls => ls.map(l => l._rid === rid ? { ...l, ...patch } : l));
-  // Custom lists AUTOSAVE on add/edit/delete — they persist on their own (POST just custom_lists), no global Save needed.
+    // Custom lists AUTOSAVE on add/edit/delete — they persist on their own (POST just custom_lists), no global Save needed.
   // Re-baseline the local rows from the server afterwards so the row content + the routing dirty-state both stay correct.
   const persistLists = async newLists => {
     setLists(newLists);
@@ -6729,8 +6585,7 @@ function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: "Delete custom list", confirmLabel: "Delete", danger: true,
     body: html`Delete <b>${l.title || "Untitled list"}</b>? It's removed from <b>every node</b> it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.`,
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-  const toggleCat = (id, on) => setHidden(h => { const n = new Set(h); on ? n.delete(id) : n.add(id); return n; });
-  const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   const entryPreview = t => {   // as many WHOLE entries as fit ~one line, then a "(N more)" tail — never cuts an entry
@@ -6755,8 +6610,7 @@ function PanelSettingsScreen() {
   const hostDegraded = savedMode === "sni_kernel" && (((Store.stats[selNode] || {}).smartroute || {}).engine === "sni_user");   // → HostHealth shows a 2nd (note) line
   const ecOf = nid => nv(nid, "enabled_categories");               // per-node enabled built-ins (null = all)
   const catOn = id => { const ec = ecOf(selNode); return !ec || ec.includes(id); };
-  const toggleNodeCat = (id, on) => { if (nodeMode === "kernel" && catHostOnly(id)) return; const all = sysCats.map(([c]) => c); let ec = ecOf(selNode); if (ec == null) ec = all.slice(); ec = on ? [...new Set([...ec, id])] : ec.filter(c => c !== id); setNV(selNode, { enabled_categories: ec.length >= all.length ? null : ec }); };
-  // node-lens for the provider catalog: catalog_cats[] = the categories the operator opted THIS node into (staged; commits on Save)
+    // node-lens for the provider catalog: catalog_cats[] = the categories the operator opted THIS node into (staged; commits on Save)
   const ccOf = nid => nv(nid, "catalog_cats") || [];
   const addCatalogCat = id => { if (!id || id === "all" || (lists || []).some(l => l.id === id) || id === "custom") return; setNV(selNode, { catalog_cats: [...new Set([...ccOf(selNode), id])] }); };   // provider cats + curated presets (bare id) are both first-class opt-ins
   const removeCatalogCat = id => setNV(selNode, { catalog_cats: ccOf(selNode).filter(c => c !== id) });
@@ -7614,30 +7468,6 @@ function AdvancedFields({ st, startOpen }) {
 // Mint ONE peer per chosen target (own keypair + PSK each), assigned to userId. Builds each
 // config in-browser, stashes it in sessionConfigs (so the QR shows), and creates the peer via
 // the Phase-2 endpoint. Returns { ok, made, fails:[...] }.
-async function createPeersForTargets(userId, chosen, opts) {
-  const dnsArr = (opts.dns || "").split(",").map(s => s.trim()).filter(Boolean);
-  let made = 0; const fails = [];
-  for (const t of chosen) {
-    const m = Store.ifaceMeta(t.node, t.iface);
-    if (!m) { fails.push(Store.nodeName(t.node) + "/" + t.iface + " (no interface meta)"); continue; }
-    try {
-      const keys = await genKeys();
-      const psk = genPSK();
-      const ipClean = String(t.ip).trim().split("/")[0];
-      const conf = buildConf({ privkey: keys.priv, address: ipClean + "/32", dns: dnsArr, mtu: (opts.mtu || "").trim() || 1280,
-        awg_params: m.awg_params, server_pubkey: m.public_key, psk, endpoint: m.endpoint,
-        allowed: (opts.allowed || "").trim() || "0.0.0.0/0, ::/0", keepalive: (opts.keepalive || "").trim() });
-      const body = { user_id: userId, pubkey: keys.pub, psk, targets: [{ node: t.node, iface: t.iface, ip: ipClean, type: (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg" }] };
-      if (Store.storeConfigs) body.configs = { [tkey(t.node, t.iface)]: conf };
-      const r = await api.peerCreate(body);
-      if (!r.ok) { fails.push(Store.nodeName(t.node) + "/" + t.iface + ": " + (r.error || r.code || "failed")); continue; }
-      Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, { [tkey(t.node, t.iface)]: conf });
-      if (r.data && r.data.id) Store.recentlyCreated[r.data.id] = Date.now();
-      made++;
-    } catch (e) { fails.push(Store.nodeName(t.node) + "/" + t.iface + ": " + (e.message || e)); }
-  }
-  return { ok: made > 0 || chosen.length === 0, made, fails };
-}
 
 // Shared client-config field state (DNS / MTU / keepalive / AllowedIPs) for the peer sheets.
 function useConfigFields() {
@@ -8347,7 +8177,6 @@ function doLogout() {
     onConfirm: async () => { try { await api.logout(); } catch (_) {} location.reload(); } });
 }
 // Account form as a modal (same chrome as the node sheets).
-function openAccount() { openModal(html`<${AccountSheet}/>`); }
 
 // ───────────────────────── boot ─────────────────────────
 const viewEl = $("#view");

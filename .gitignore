@@ -9,3 +9,7 @@ dryrun/
 __pycache__/
 *.pyc
 .DS_Store
+
+# test-harness / screenshot cruft (never commit)
+.playwright-mcp/
+*.png

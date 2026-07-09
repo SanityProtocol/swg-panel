@@ -561,9 +561,7 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .tf-kiper292{--tfc:#9D8DFF}
 .tf-Moroka8{--tfc:#8E72E8}
 .tf-anton48{--tfc:#C04FD6}
-.utc{border:1px solid var(--line);border-radius:14px;padding:12px;background:var(--surface-2)}
-.utc .deploy{border:none;background:none;border-radius:0;overflow:visible}
-.utc .deploy .acts{padding:10px 0 0}
+
 .ptitle,.ptitle-h{display:inline-flex;align-items:center;gap:4px}
 .ptitle b{color:var(--ink);font-size:13.5px}
 .ptitle .editname,.ptitle-h .editname{background:none;border:none;color:var(--faint);cursor:pointer;padding:2px;display:inline-flex}
@@ -865,7 +863,6 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .nstat.down{color:var(--dangling)} .nstat.down::before{display:none}       /* down on the node: RED, warn icon */
 .nstat.stopped{color:var(--unknown)} .nstat.stopped::before{display:none}  /* stopped by operator: GREY, stop icon */
 .nstat.removing{color:var(--dangling)} .nstat.removing::before{display:none}  /* flagged for removal: RED, trash icon */
-.nstat.proc{color:var(--partial)} .nstat.proc::before{display:none}   /* legacy in-progress fallback: YELLOW */
 .nstat.procbusy{color:var(--partial)} .nstat.procbusy::before{display:none}        /* active work (re-installing / updating / installing): YELLOW */
 .nstat.procconvert{color:var(--pending)} .nstat.procconvert::before{display:none}  /* converting: PURPLE */
 .nstat.procuninstall{color:var(--dangling)} .nstat.procuninstall::before{display:none}  /* uninstalling: RED */
@@ -987,8 +984,6 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .condot.faulty{background:var(--fault);color:var(--fault);animation:sdotpulse 1.6s ease-in-out infinite}   /* orange, pulsing — handshake up but no data */
 .condot.blocked{background:var(--fault)}   /* orange, static — reaching but no handshake */
 .condot.off{background:var(--faint)}
-.chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--dim);white-space:nowrap;cursor:pointer}
-.chk input{width:auto;margin:0}
 
 /* ───── inline metadata tags (dense, colored row signature) ───── */
 .tags{display:inline-flex;gap:4px;flex-wrap:wrap;margin-left:9px;vertical-align:middle}
@@ -1083,18 +1078,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .setrail-i.on{color:var(--ink);background:color-mix(in srgb,var(--brand) 16%,transparent);font-weight:600}
 .setpane{flex:1;min-width:0;position:relative}   /* anchors the node-badge bar to the card's top-right */
 .setpane .card{max-width:none}
-.chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
-/* CSS-drawn checkbox (no native theme): the OS-themed control flashes on a full-form re-render even when its
-   state is unchanged — a plain styled box repaints cleanly, so sibling checkboxes don't flicker on a toggle. */
-.chk input{appearance:none;-webkit-appearance:none;margin:0;width:13px;height:13px;flex:none;cursor:pointer;
-  border:1.5px solid var(--line-solid);border-radius:3px;background:var(--surface-2);position:relative;transition:none}
-.chk input:checked{background:var(--brand);border-color:var(--brand)}
-/* checked marker: a clean centered dot (not a check glyph) — reads as "on", crisp at any size */
-.chk input:checked::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;border-radius:50%;
-  background:var(--brand-ink);transform:translate(-50%,-50%)}
-.chk input:focus-visible{outline:2px solid color-mix(in srgb,var(--brand) 60%,transparent);outline-offset:1px}
-.chk.disabled{opacity:.4;cursor:not-allowed}
-.chk.disabled input{cursor:not-allowed}
+
 .listbub{position:absolute;top:calc(100% + 6px);left:0;min-width:150px;max-width:300px;max-height:240px;overflow-y:auto;
   background:var(--surface-2);border:1px solid var(--line-solid);border-radius:8px;padding:7px 9px;display:none;
   flex-direction:column;gap:2px;z-index:60;box-shadow:0 8px 24px rgba(0,0,0,.5);font-family:var(--mono);font-size:10.5px;
@@ -1552,8 +1536,7 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 .catpick-note b{color:var(--ink-2);font-weight:600}
 .catpick-tick{display:inline-flex;justify-content:center;width:14px;color:var(--brand);font-size:12px;flex-shrink:0}
 .catpick-add .btn-mini.on{border-color:var(--brand);color:var(--brand)}
-.ccchip{display:inline-flex;align-items:center;gap:7px;padding:4px 5px 4px 10px;border:1px solid var(--line-solid);border-radius:20px;background:color-mix(in srgb,var(--ink) 3%,transparent)}
-.ccchip.off{opacity:.6}
+
 .ccchip-lbl{font-size:12.5px;color:var(--ink)}
 .ccchip-caps{display:flex;gap:3px}
 .ccchip-x{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;background:none;color:var(--faint);cursor:pointer}
@@ -1788,7 +1771,7 @@ button.lg-id{border:0;background:none;padding:0;cursor:pointer}button.lg-id:hove
 /* ───── name cells ───── */
 .namecell{display:flex;align-items:center;gap:9px;min-width:0}
 .namecell>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.nsl{flex:none;width:96px;font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);padding-top:3px}
+
 a.tg{cursor:pointer;transition:filter .15s}
 a.tg:hover{filter:brightness(1.25)}
 
@@ -1838,7 +1821,7 @@ a.tg:hover{filter:brightness(1.25)}
 .usebar-t i{display:block;height:100%;border-radius:4px;transition:width .6s var(--ease)}
 .usebar-n{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
 .usebar-n small{color:var(--faint);font-size:10.5px}
-.nrow .r .tags{justify-content:flex-end}
+
 .ug-head{display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);background:var(--surface-2)}
 .ug-id{min-width:0;display:flex;flex-direction:column;gap:2px}
 .ug-name{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:var(--ink)}

@@ -235,7 +235,7 @@ A convert **keeps everything** — the panel's URL, login, roster, nodes and TLS
 
 ## Configuration reference
 
-**Panel — `/etc/swg-panel/fleet.json`** (see `fleet.example.json`):
+**Panel — `/etc/swg-panel/fleet.json`**:
 
 ```json
 {
@@ -250,7 +250,7 @@ A convert **keeps everything** — the panel's URL, login, roster, nodes and TLS
 
 `store_configs` keeps the generated client configs (including private keys) on the panel — off by default; leave it off unless you understand the trade-off.
 
-**Node — `/etc/swg-agent/config.json`** (see `config.example.json`):
+**Node — `/etc/swg-agent/config.json`**:
 
 ```json
 {
