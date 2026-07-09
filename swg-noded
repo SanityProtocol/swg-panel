@@ -67,6 +67,10 @@ NODE_KIND = "docker" if (os.path.exists("/.dockerenv") or os.path.exists("/run/.
 NODE_NET = (os.environ.get("NODE_NET") or "host").strip().lower()
 if NODE_NET not in ("host", "bridge"):
     NODE_NET = "host"
+# In BRIDGE mode the WG interfaces live in THIS container's netns, so turn-proxy containers must join it
+# (not the host net) to forward to 127.0.0.1:<port> and be seen by our nft client-IP capture. Our own container
+# id is our hostname (docker's default); overridable if the deployment sets a custom hostname.
+_SELF_CONTAINER = (os.environ.get("SWG_NODE_CONTAINER") or "").strip() or socket.gethostname()
 # can the panel manage this node's host turn-proxy services? bare-metal: always (swg-noded is on the
 # host). docker: only when the installer mounted docker.sock (TURN_MANAGE=panel) so we can drive host
 # units via a privileged --pid=host helper. Reported so the panel only shows manage/onboard controls
@@ -3120,7 +3124,12 @@ def _dturn_force_download(svc, owner):
 def _dturn_run(tp):   # (re)create the container to match tp; returns the docker-run CompletedProcess
     svc = tp["service"]; cn = _turn_cname(svc)
     run(["docker", "rm", "-f", cn], timeout=30)   # ignore errors (may not exist yet)
-    return run(["docker", "run", "-d", "--name", cn, "--network", "host", "--restart", "unless-stopped",
+    # HOST-net node: turn shares the host net → forwards to the WG interface at 127.0.0.1:<port>. BRIDGE-net node:
+    # the WG interfaces are in OUR netns, so the turn container joins it (container:<us>) to reach 127.0.0.1:<port>
+    # and be visible to our nft client-IP capture. In bridge, its public listen port lives in our netns → publish it
+    # on the swg-node container (compose ports:). (A swg-node recreate orphans netns-joined turns; reconcile re-runs them.)
+    net = ["--network", "container:" + _SELF_CONTAINER] if NODE_NET == "bridge" else ["--network", "host"]
+    return run(["docker", "run", "-d", "--name", cn] + net + ["--restart", "unless-stopped",
                 "-v", _turn_bin_host(svc) + ":/turn-server:ro", "--entrypoint", "/turn-server",
                 SWG_TURN_IMAGE] + _dturn_args(tp), timeout=60)
 
