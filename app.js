@@ -481,6 +481,12 @@ const api = {
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
+  // external integration API (Settings → Integrations): read-only tokens + webhooks
+  apiTokenCreate(label) { return this.post("/api/integrations/token", { label }); },
+  apiTokenRevoke(id) { return this.post("/api/integrations/token/revoke", { id }); },
+  apiWebhookSave(b) { return this.post("/api/integrations/webhook", b); },
+  apiWebhookDelete(id) { return this.post("/api/integrations/webhook/delete", { id }); },
+  apiWebhookTest(id) { return this.post("/api/integrations/webhook/test", { id }); },
   routingReset(b) { return this.post("/api/node/routing-reset", b); },   // per-node: wipe + rebuild + re-pull all smart-routing state
   asnCount(n) { return this.get("/api/asn?n=" + encodeURIComponent(n)); },   // resolve an ASN → prefix count (live editor feedback)
   nodeRotate(b) { return this.post("/api/nodes/rotate", b); },
@@ -1645,7 +1651,7 @@ function goSettings(section) { pendingSettingsSection = section; closeAllModals(
 const DASH_RANGES = [["live", "Live"], ["hour", "Hour"], ["day", "Day"], ["week", "Week"], ["month", "Month"]];
 const RANGE_ICON = { hour: "hour2", day: "daycal", week: "weekcal", month: "monthcal" };   // side-rail renders range as icons (live = glowing dot)
 // side-rail section jump-nav: [label, section-title h2 substring to scroll to, icon]
-const DASH_NAV = [["Fleet", "Fleet", "server"], ["Distribution", "Distribution", "donut"], ["Traffic flow", "Traffic flow", "flow"], ["Top charts", "Top nodes", "bars"], ["Attention", "Recent activity", "excl"]];
+const DASH_NAV = [["Fleet", "Fleet", "server"], ["Distribution", "Distribution", "donut"], ["Traffic flow", "Traffic flow", "flow"], ["Top charts", "Top nodes", "bars"], ["Activity log", "Recent activity", "excl"]];
 // nodes: null = whole fleet, else a Set of node ids. peers/mesh = which traffic COMPONENTS the figures count
 // (the toolbar badges): peers = client traffic (total−mesh), mesh = node↔node relay traffic. `ov` = per-widget
 // overrides keyed by widget id, each {peers?,mesh?} where a set field pins that pill and null inherits the global.
@@ -1718,12 +1724,13 @@ function mergeFleetSeries(selIds) {
     const n = (Store.nodes || []).find(x => x.id === id); const h = n && n.health_history;
     if (!h || !h.t) return;
     // client throughput = total − mesh, so relayed traffic isn't counted against the fleet's user throughput
-    h.t.forEach((t, i) => { const r = byT.get(t) || { rx: 0, tx: 0 };
+    h.t.forEach((t, i) => { const r = byT.get(t) || { rx: 0, tx: 0, on: 0 };
       r.rx += Math.max(0, ((h.rx || [])[i] || 0) - ((h.mrx || [])[i] || 0));
-      r.tx += Math.max(0, ((h.tx || [])[i] || 0) - ((h.mtx || [])[i] || 0)); byT.set(t, r); });
+      r.tx += Math.max(0, ((h.tx || [])[i] || 0) - ((h.mtx || [])[i] || 0));
+      r.on += (h.pon || [])[i] || 0; byT.set(t, r); });                       // online-peer count from the ring (survives reload)
   });
   const t = [...byT.keys()].sort((a, b) => a - b);
-  return { t, rx: t.map(x => byT.get(x).rx), tx: t.map(x => byT.get(x).tx) };
+  return { t, rx: t.map(x => byT.get(x).rx), tx: t.map(x => byT.get(x).tx), on: t.map(x => byT.get(x).on), hasOn: t.some(x => byT.get(x).on > 0) };
 }
 // Client-side live accumulator for series the RRD ring doesn't keep yet (online-peer counts). One point
 // per poll, per node, pushed in lockstep so selected nodes sum by index. Bounded; empty on reload, fills as
@@ -1750,8 +1757,11 @@ function dashOnlineTrend(selIds) {
 // timestamp. Returns { t, rx, tx, on } — everything the fleet-throughput + online-peers charts need.
 function fleetHistory(selIds, range, hist) {
   if (range === "live") {
-    const m = mergeFleetSeries(selIds), o = dashOnlineTrend(selIds);
-    // online rides its own (client-accumulated) clock; expose it separately so the block chart can resample it
+    const m = mergeFleetSeries(selIds);
+    // online-peer trend: prefer the panel ring's `pon` (full on load, survives reload); fall back to the
+    // client-side accumulator for a node/panel too old to report pon in health_history.
+    if (m.hasOn) return { t: m.t, rx: m.rx, tx: m.tx, onT: m.t, on: m.on };
+    const o = dashOnlineTrend(selIds);
     return { t: m.t, rx: m.rx, tx: m.tx, onT: o ? o.t : [], on: o ? o.pts : [] };
   }
   const byT = new Map();
@@ -6298,6 +6308,114 @@ function AwgGrid({ value, onChange, readOnly }) {
     : html`<input value=${v[k] ?? ""} onInput=${e => onChange({ ...v, [k]: e.target.value })} spellcheck="false"/>`}</label>`)}</div>`)}</div>`;
 }
 
+// Add / edit an outbound webhook (Settings → Integrations). Immediate-persist via a dedicated endpoint —
+// not part of the batched Save. On create the panel returns the signing secret once; edits keep the secret.
+const WH_EVENTS = [["peer.added", "Peer added"], ["peer.removed", "Peer removed"], ["node.online", "Node came online"], ["node.offline", "Node went offline"]];
+function WebhookSheet({ hook, onSaved, onClose }) {
+  const [url, setUrl] = useState((hook && hook.url) || "");
+  const [events, setEvents] = useState(new Set((hook && hook.events) || WH_EVENTS.map(e => e[0])));
+  const [enabled, setEnabled] = useState(hook ? hook.enabled !== false : true);
+  const [busy, setBusy] = useState(false);
+  const [secret, setSecret] = useState("");                 // shown once, only on create
+  const valid = /^https?:\/\/.+/i.test(url.trim());
+  const toggle = ev => setEvents(s => { const n = new Set(s); n.has(ev) ? n.delete(ev) : n.add(ev); return n; });
+  const save = async () => {
+    if (!valid) return toast("Enter a valid http(s) URL.", "err");
+    setBusy(true);
+    const r = await api.apiWebhookSave({ id: hook && hook.id, url: url.trim(), events: [...events], enabled });
+    setBusy(false);
+    if (!r.ok) return toast(r.error || "Failed to save webhook", "err");
+    if (r.data && r.data.secret && !hook) { setSecret(r.data.secret); onSaved && onSaved(); return; }   // creation: reveal the secret, keep the sheet open
+    onSaved && onSaved(); onClose && onClose();
+  };
+  return html`<${Sheet} title=${hook ? "Edit webhook" : "Add webhook"} onClose=${onClose}
+    foot=${secret ? html`<${Fragment}><span class="grow"></span><button class="btn" onClick=${onClose}>Done</button></>`
+      : html`<${Fragment}><span class="grow"></span>
+        <button class="btn btn-ghost" onClick=${onClose}>Cancel</button>
+        <button class="btn btn-primary" disabled=${busy || !valid} onClick=${save}>${hook ? "Save" : "Add webhook"}</button></>`}>
+    ${secret ? html`<div class="notice ok"><${Ic} i="check"/><span>Webhook saved. This is its <b>signing secret</b> — shown once. Every delivery carries an <span class="mono">X-SWG-Signature: sha256=HMAC(secret, body)</span> header so you can verify it's from this panel.</span></div>
+      <div class="tokreveal"><code class="tokval">${secret}</code><button class="btn btn-mini" onClick=${() => copy(secret, "Secret")}><${Ic} i="copy"/> Copy</button></div>`
+    : html`<div class="field"><label>Payload URL</label>
+        <input value=${url} onInput=${e => setUrl(e.target.value)} placeholder="https://example.com/hooks/swg" spellcheck="false"/>
+        <div class="hint">The panel POSTs a JSON body here on each selected event. A signing secret is generated on save.</div></div>
+      <div class="seclabel">Events</div>
+      <div class="wh-events">${WH_EVENTS.map(([ev, lbl]) => html`<label class="wh-ev" key=${ev}>
+        <input type="checkbox" checked=${events.has(ev)} onChange=${() => toggle(ev)}/><span class="mono">${ev}</span><span class="wh-ev-lbl">${lbl}</span></label>`)}</div>
+      <label class="wh-en"><${Switch} on=${enabled} onChange=${setEnabled}/><span>Deliveries enabled</span></label>`}
+  <//>`;
+}
+
+// Settings → Integrations: the read-only external API (tokens + Prometheus) and outbound webhooks. All actions
+// persist immediately via dedicated endpoints (outside the batched Save), mirrored optimistically into Store.
+function IntegrationsSettings() {
+  const cfg = () => ((Store.panelSettings || {}).api) || { enabled: false, tokens: [], webhooks: [] };
+  const [label, setLabel] = useState("");
+  const [minted, setMinted] = useState(null);               // {label, token} — revealed once after minting
+  const [busy, setBusy] = useState(false);
+  const c = cfg();
+  const baseUrl = `${location.origin}${BASE}`;
+  const optimistic = next => { Store.panelSettings = { ...(Store.panelSettings || {}), api: next }; bus.emit(); };
+  const setEnabled = async v => { optimistic({ ...cfg(), enabled: v }); const r = await api.panelSettings({ api_enabled: v }); if (r && r.ok === false) toast(r.error || "Failed", "err"); };
+  const mint = async () => {
+    setBusy(true);
+    const r = await api.apiTokenCreate(label.trim());
+    setBusy(false);
+    if (!r.ok) return toast(r.error || "Failed to create token", "err");
+    setMinted({ label: r.data.label, token: r.data.token });
+    setLabel("");
+    optimistic({ ...cfg(), enabled: true, tokens: [...(cfg().tokens || []), { id: r.data.id, label: r.data.label, created: r.data.created, last_used: null }] });
+  };
+  const revoke = t => openConfirm({ title: "Revoke API token", confirmLabel: "Revoke", danger: true,
+    body: html`Revoke <b>${t.label}</b>? Any integration still using it stops working immediately.`,
+    onConfirm: async () => { await api.apiTokenRevoke(t.id); optimistic({ ...cfg(), tokens: (cfg().tokens || []).filter(x => x.id !== t.id) }); } });
+  const editHook = h => openModal(html`<${WebhookSheet} hook=${h} onClose=${closeModal}/>`);
+  const delHook = h => openConfirm({ title: "Delete webhook", confirmLabel: "Delete", danger: true,
+    body: html`Stop sending events to <b>${h.url}</b>?`,
+    onConfirm: async () => { await api.apiWebhookDelete(h.id); optimistic({ ...cfg(), webhooks: (cfg().webhooks || []).filter(x => x.id !== h.id) }); } });
+  const testHook = async h => { const r = await api.apiWebhookTest(h.id); toast(r.ok ? ("Delivered — HTTP " + ((r.data || {}).status || "200")) : ("Delivery failed: " + (r.error || "unreachable")), r.ok ? "ok" : "err", 4200); };
+  return html`<div class="card">
+    <div class="seclabel turnhead" style="margin-top:0">External API<span class="grow"></span>
+      <${Switch} on=${c.enabled === true} title=${c.enabled ? "API on — tokens are accepted" : "API off — all tokens are rejected"} onChange=${setEnabled}/></div>
+    <p class="hint" style="margin:0 0 12px">A <b>read-only</b> REST + Prometheus surface for external monitoring and automation — Grafana, Uptime Kuma, Prometheus, Terraform/Ansible. No token can ever change the fleet. Authenticate with a bearer token below; <span class="mono">/healthz</span> and <span class="mono">/api/v1/health</span> stay open as liveness probes.</p>
+    ${c.enabled !== true ? html`<div class="notice warn"><${Ic} i="warn"/><span>The API is <b>off</b> — endpoints return 401. Minting a token turns it on, or flip the switch above.</span></div>` : null}
+
+    <div class="seclabel">Access tokens</div>
+    <div class="tok-add"><input value=${label} onInput=${e => setLabel(e.target.value)} placeholder="Label (e.g. grafana, prometheus)" spellcheck="false" onKeyDown=${e => { if (e.key === "Enter") mint(); }}/>
+      <button class="btn btn-primary" disabled=${busy} onClick=${mint}><span class="plus"><${Ic} i="plus"/></span> Create token</button></div>
+    ${minted ? html`<div class="notice ok"><${Ic} i="check"/><span>New token <b>${minted.label}</b> — copy it now, it won't be shown again.</span></div>
+      <div class="tokreveal"><code class="tokval">${minted.token}</code><button class="btn btn-mini" onClick=${() => copy(minted.token, "Token")}><${Ic} i="copy"/> Copy</button><button class="btn btn-mini btn-ghost" onClick=${() => setMinted(null)}>Dismiss</button></div>` : null}
+    ${(c.tokens || []).length ? html`<div class="toklist">${c.tokens.map(t => html`<div class="tokrow" key=${t.id}>
+      <div class="tokrow-main"><span class="tokrow-label">${t.label}</span>
+        <span class="tokrow-meta">created ${ago(t.created)}${t.last_used ? " · last used " + ago(t.last_used) : " · never used"}</span></div>
+      <button class="btn btn-mini btn-danger" onClick=${() => revoke(t)}><${Ic} i="trash"/> Revoke</button></div>`)}</div>`
+      : html`<p class="hint" style="margin:2px 0 0">No tokens yet — create one to let an external system read the fleet.</p>`}
+
+    <div class="seclabel">Webhooks</div>
+    <p class="hint" style="margin:0 0 10px">The panel POSTs a signed JSON body to your endpoint when a peer is added/removed or a node goes online/offline. Use them for alerting or automation.</p>
+    ${(c.webhooks || []).length ? html`<div class="toklist">${c.webhooks.map(h => html`<div class=${"tokrow" + (h.enabled === false ? " off" : "")} key=${h.id}>
+      <div class="tokrow-main"><span class="tokrow-label mono">${h.url}</span>
+        <span class="tokrow-meta">${(h.events || []).join(", ") || "all events"}${h.enabled === false ? " · disabled" : ""}</span></div>
+      <button class="btn btn-mini" title="Send a test ping" onClick=${() => testHook(h)}><${Ic} i="refresh"/> Test</button>
+      <button class="btn btn-mini" onClick=${() => editHook(h)}><${Ic} i="pencil"/></button>
+      <button class="btn btn-mini btn-danger" onClick=${() => delHook(h)}><${Ic} i="trash"/></button></div>`)}</div>` : null}
+    <div style="margin-top:10px"><button class="btn btn-ghost" onClick=${() => editHook(null)}><${Ic} i="plus"/> Add webhook</button></div>
+
+    <div class="seclabel">Endpoints</div>
+    <div class="apiendpoints">
+      <div class="apiep"><span class="apiep-m">GET</span><span class="mono">/api/v1/health</span><span class="apiep-d">liveness + counts (no auth)</span></div>
+      <div class="apiep"><span class="apiep-m">GET</span><span class="mono">/metrics</span><span class="apiep-d">Prometheus exposition</span></div>
+      <div class="apiep"><span class="apiep-m">GET</span><span class="mono">/api/v1/servers</span><span class="apiep-d">nodes with status + counts</span></div>
+      <div class="apiep"><span class="apiep-m">GET</span><span class="mono">/api/v1/servers/{id}/peers</span><span class="apiep-d">peers + last-handshake timing</span></div>
+      <div class="apiep"><span class="apiep-m">GET</span><span class="mono">/api/v1/peers</span><span class="apiep-d">all peers, per-node presence</span></div>
+      <div class="apiep"><span class="apiep-m">GET</span><span class="mono">/api/v1/summary</span><span class="apiep-d">fleet totals</span></div>
+    </div>
+    <div class="apisnip"><div class="apisnip-h">Test it<button class="btn btn-mini" onClick=${() => copy(`curl -H 'Authorization: Bearer <token>' ${baseUrl}/api/v1/servers`, "Command")}><${Ic} i="copy"/> Copy</button></div>
+      <code class="apisnip-c">${`curl -H 'Authorization: Bearer <token>' ${baseUrl}/api/v1/servers`}</code></div>
+    <div class="apisnip"><div class="apisnip-h">Prometheus scrape config<button class="btn btn-mini" onClick=${() => copy(`scrape_configs:\n  - job_name: swg-panel\n    metrics_path: /metrics\n    scheme: ${location.protocol.replace(":", "")}\n    authorization:\n      credentials: <token>\n    static_configs:\n      - targets: ['${location.host}${BASE}']`, "Scrape config")}><${Ic} i="copy"/> Copy</button></div>
+      <code class="apisnip-c">${`scrape_configs:\n  - job_name: swg-panel\n    metrics_path: /metrics\n    authorization:\n      credentials: <token>\n    static_configs:\n      - targets: ['${location.host}${BASE}']`}</code></div>
+  </div>`;
+}
+
 function PanelSettingsScreen() {
   // NOTE: deliberately NOT subscribed to the 5s poll (no useStore) — this is an edit form seeded from a
   // snapshot at mount. Re-rendering every poll re-diffs every controlled input (the source of the checkbox
@@ -6600,7 +6718,7 @@ function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: "Delete custom list", confirmLabel: "Delete", danger: true,
     body: html`Delete <b>${l.title || "Untitled list"}</b>? It's removed from <b>every node</b> it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.`,
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"]];
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"], ["integrations", "Integrations"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   const entryPreview = t => {   // as many WHOLE entries as fit ~one line, then a "(N more)" tail — never cuts an entry
@@ -6875,6 +6993,7 @@ function PanelSettingsScreen() {
           </div>
           <div class="georefresh"><span class="faint" style="font-size:11px">Re-fetch every routed list from its provider now (updates the panel; nodes pull the changes on their schedule)</span><button class="btn btn-mini" disabled=${geoUpdating} onClick=${updateAllLists}><span class=${geoUpdating ? "tf-arrow" : ""}><${Ic} i="refresh"/></span> ${geoUpdating ? "Updating…" : "Update all lists now"}</button></div>
         </div>` : null}
+        ${section === "integrations" ? html`<${IntegrationsSettings}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Interface colours<span class="grow"></span>
             ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg } })}><${Ic} i="refresh"/> Reset</button>` : null}</div>

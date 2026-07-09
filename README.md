@@ -1,291 +1,240 @@
-<h1 align="center">🚧 WORK IN PROGRESS 🚧</h1>
-<h2 align="center">PROJECT NOT READY</h2>
-<p align="center"><code>1.125.0-alpha</code></p>
+<p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
+
+<p align="center"><code>1.2.0-beta</code></p>
 
 ---
 
-# swg-panel
+# swgPanel
 
-A self-hosted control panel for running a small WireGuard / AmneziaWG service across one or more entry servers. The panel is the source of truth for your peers; each entry server (a **node**) syncs to it over **outbound HTTPS** and converges on the peer set it has been assigned — so nodes need no inbound access, no SSH, and no rsync.
+**Your own private VPN, run from one simple web page.**
 
-Built for small, trusted deployments — tens of users, a handful of servers — with multi-hop in mind (edge entry → distant exit).
+swgPanel is a control panel for running your own WireGuard / AmneziaWG VPN across one or more servers.
+You add your people in the browser, hand them a QR code, and they’re connected. Everything — who has
+access, which servers they use, how much they’re using — lives on one dashboard that you host yourself.
 
-## How it works
+Run it for yourself, your household, your team, or a whole community — a fast private VPN with no monthly
+subscription and no one else sitting in the middle of your traffic.
 
-- **Panel** (control plane) — serves the web UI, its own TLS + login, and a node-sync API. It owns the roster (your peers) and the node store. Pure Python, no database.
-- **Node** (entry server) — runs `swg-noded`, which every few seconds posts a snapshot of its interface to the panel, receives the peers it *should* have, and reconciles locally through `swg-agent` (adding/removing peers on the live wg/awg interface). Outbound HTTPS only.
-- **Declarative** — you change peers in the panel; nodes converge. A node that misses a beat self-heals on the next sync, and a transient panel outage never wipes a node's peers (a node only reconciles on a valid reply).
-- **Keys stay where they belong** — peer keypairs are generated in your browser. The private key goes into the config/QR you are shown **once** and never touches the server; the panel stores only the public key, the assigned IP, and the preshared key (so it can keep every node consistent).
+> This is a complete, plain-language guide — enough to install swgPanel and use it even if you’re not
+> technical. If you *are* technical and want the internals — architecture, every flag, the API, security —
+> read the **[Technical guide](README.technical.md)**.
+
+<p align="center">
+  <a href="screenshots/overview.png"><img src="screenshots/overview.png" alt="Dashboard" width="270"></a>
+  <a href="screenshots/flow-map.png"><img src="screenshots/flow-map.png" alt="Traffic flow map" width="270"></a>
+  <a href="screenshots/distribution.png"><img src="screenshots/distribution.png" alt="Traffic distribution" width="270"></a>
+  <a href="screenshots/live-users.png"><img src="screenshots/live-users.png" alt="Live users" width="270"></a>
+  <a href="screenshots/top-charts.png"><img src="screenshots/top-charts.png" alt="Top talkers & destinations" width="270"></a>
+  <a href="screenshots/node.png"><img src="screenshots/node.png" alt="A server up close" width="270"></a>
+</p>
+
+<p align="center"><sub>Click any tile to enlarge · more screenshots throughout this guide</sub></p>
 
 ## Contents
 
-- [Method × Role](#method-role)
-- [The pieces](#the-pieces)
-- [Quick start](#quick-start)
-- [Installing the panel](#installing-the-panel)
-- [Adding a node](#adding-a-node)
-- [Managing peers](#managing-peers)
-- [Docker](#docker)
-- [Converting between bare-metal and Docker](#converting-between-bare-metal-and-docker)
-- [Configuration reference](#configuration-reference)
-- [Operations](#operations)
-- [Security](#security)
-- [Troubleshooting](#troubleshooting)
+- [What it does](#what-it-does)
+- [Before you begin](#before-you-begin)
+- [The three roles (in plain words)](#the-three-roles-in-plain-words)
+- [Step 1 — Install the panel](#step-1--install-the-panel)
+- [Step 2 — Add your servers](#step-2--add-your-servers)
+- [Step 3 — Add people and hand out access](#step-3--add-people-and-hand-out-access)
+- [Using it day to day](#using-it-day-to-day)
+- [Keeping it running](#keeping-it-running) — updates, backups, recovery, switching method, uninstall
+- [A few things worth knowing](#a-few-things-worth-knowing)
+- [Learn more](#learn-more)
 
-## Method × Role
+## What it does
 
-Two independent choices.
+- **One page to run everything.** Add servers, add people, hand out access — all from the web panel.
+- **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
+- **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
+- **More than one server.** Put servers in different countries; a person can fail over between them.
+- **Hard to block.** Uses **AmneziaWG** (a stealthier WireGuard) and can route traffic cleverly by
+  destination, so it keeps working where plain VPNs get blocked.
+- **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
 
-**Method** — how it is installed:
-- **bare-metal** — systemd services, via `install-host.sh` / `install-node.sh`.
-- **docker** — `docker compose` with the `swg-panel` / `swg-node` images.
+<details>
+<summary>📸 <b>More screenshots</b> — click to expand</summary>
 
-**Role** — what a box does:
-- **host** — the panel only.
-- **master** — the panel *and* this box is also an entry server (auto-enrolled for you).
-- **node** — an entry server only.
+| | |
+|---|---|
+| **People** — everyone you’ve given access to, at a glance | ![Peers](screenshots/peers.png) |
+| **Activity log** — every change, and anything that needs attention | ![Activity log](screenshots/activity-log.png) |
+| **Smart routing** — send chosen sites out through a chosen server | ![Smart routing](screenshots/smart-routing.png) |
+| **Routing lists** — pick a routing mode and manage lists per server | ![Routing lists](screenshots/settings-routing.png) |
+| **List providers** — curated + community geo/domain lists | ![Geo data](screenshots/settings-geo-data.png) |
+| **Turn-proxy** — wrap traffic through relays to beat blocks | ![Turn proxy](screenshots/turn-proxy.png) |
+| **Turn-proxy catalog** — which relay forks are offered, and auto-updates | ![Turn proxies](screenshots/settings-turn-proxies.png) |
 
-Mix freely: a Docker panel with bare-metal nodes, a bare-metal `master` plus extra Docker nodes, and so on.
+</details>
 
-## The pieces
+## Before you begin
 
-| component | where | what it does |
-|---|---|---|
-| `swg-panel-server` | host | UI + node-sync API + roster/node store; serves its own TLS + login and the status board |
-| `swg-noded` | each node | posts snapshots, pulls the desired peer set, reconciles locally — outbound HTTPS only |
-| `swg-agent` | each node | applies a single peer add/remove to the live interface and its `.conf` |
-| `users.json` | host | the **roster** — your peers (public key, IP, PSK, and which nodes each lives on) |
-| `nodes.json` | host | the **node store** — node names, endpoints, and enrollment-token hashes |
+You need **one server** to run the panel on — a cheap VPS (virtual server) from any hosting provider is
+plenty. It should have:
 
-You never edit `users.json` or `nodes.json` by hand — the UI does it.
+- A **public IP address** (so your people can reach it).
+- A recent **Linux** (Ubuntu/Debian and most others are fine).
+- **`sudo`/root** access, and a way to paste a command into it (SSH).
 
-## Quick start
+That’s it. If you want a domain name (like `vpn.example.com`) you can point it at the server first — the
+installer will get a real HTTPS certificate for it automatically. No domain? It still works with the
+server’s IP address.
 
-Four one-liners — each **prompts for whatever it needs**. Choose a method (bare-metal or Docker) per box; mix freely.
+You can add **more servers** later — each extra server is one more command, run the same way.
 
-### A — bare-metal (systemd)
+## The three roles (in plain words)
 
-**Panel** — asks the role: master (panel + this box is a node) or host (panel only)
+Every server you set up plays one of three roles. You don’t have to memorise these — the installer asks
+you in plain language — but it helps to know the words:
 
+- **Host** — *just the control panel.* The web page and the brains. It doesn’t carry any VPN traffic itself.
+- **Master** — *the control panel **and** a VPN server on the same box.* Simplest for a one-server setup:
+  one command gives you the panel and your first VPN server together.
+- **Node** — *just a VPN server.* An extra server that carries traffic and reports back to your panel.
+
+And there are **two ways** to install any of them — pick whichever you like:
+
+- **Bare-metal** — installs straight onto the server (a little faster).
+- **Docker** — runs in containers (tidy, easy to move around).
+
+You can mix freely: a Docker panel with bare-metal servers, and so on.
+
+## Step 1 — Install the panel
+
+Copy the command onto your server and run it. It **asks you a few simple questions** (is this just the
+panel or also a VPN server? what domain? pick a password) and sets everything up, including HTTPS.
+
+**Bare-metal:**
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
 ```
 
-**Node** — asks for the panel URL + the key from Nodes → Add node
-
-```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node
-```
-
-### B — Docker
-
-**Panel** — installs Docker if needed, then asks the role (master: panel + this box is a node, auto-enrolled · host: panel only) and a domain + TLS choice (login auto-generated, change it later in the panel)
-
+**Docker:**
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
 ```
 
-**Node** — asks for the panel URL + the key from Nodes → Add node
+The first question is the role: choose **Master** to make this box your panel *and* your first VPN server
+in one go (recommended if you only have one server), or **Host** for just the panel. Either way, when it
+finishes it prints your panel’s web address and login — open it and sign in.
 
-```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
-```
+> Prefer to install Docker yourself and use `docker compose`? That works too — see the
+> [Technical guide](README.technical.md#docker).
 
-Open the panel URL, log in, and add entry servers from **Nodes → Add node** — it prints the exact bare-metal *and* Docker command (key pre-filled) for each. Details: [Installing the panel](#installing-the-panel) · [Adding a node](#adding-a-node) · [Docker](#docker).
+## Step 2 — Add your servers
 
-**Update** any box later, in place (auto-detects what's installed):
+If you chose **Master** above, you already have your first VPN server — you can skip to Step 3. To add
+**more** servers (called **nodes**), do this for each one:
 
+1. In the panel, open **Nodes → Add node**. It shows you a ready-to-paste command with a key already
+   filled in — one for bare-metal, one for Docker. It looks like this:
+
+   ```
+   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s node        # bare-metal
+   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node # Docker
+   ```
+
+2. Run that command on the new server. It asks for your panel’s address and the key (both pre-filled if
+   you copied the panel’s command), then connects itself back to the panel.
+
+The new server reaches out to the panel on its own — **you never have to open special access to it**,
+no inbound ports, no SSH keys shared around. Within a few seconds it shows up in your Nodes list.
+
+## Step 3 — Add people and hand out access
+
+1. Go to **Peers → New peer**, give it a name (e.g. a person or a device), and pick which server(s) it
+   may use.
+2. The panel shows a **QR code and a config file**. The person opens the **WireGuard** or **AmneziaWG**
+   app on their phone/computer, scans the QR (or imports the file), and they’re online.
+
+That’s the whole flow. The secret half of their key is created in your browser and shown **once** — so
+save/hand over the config there and then. Need to give the same person a second device? Just make another
+peer.
+
+## Using it day to day
+
+- **Watch the dashboard.** The **Overview** page shows who’s online, the busiest servers, and where
+  traffic is going — all live.
+- **Add or remove people anytime.** Changes reach your servers within seconds. Remove someone and their
+  access stops on the next check-in.
+- **Change the panel’s login** under **⚙︎ → Account** — it takes effect immediately.
+- **Route certain sites through a certain country (optional).** For example, send streaming out through a
+  server abroad and keep everything else local. Set it per server under **Settings → Routing lists**.
+- **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
+  it through a **turn-proxy** — set up under a server’s details and in **Settings → Turn proxies**.
+- **Feed other tools (optional).** The panel can share live status with dashboards like **Grafana** or
+  **Uptime Kuma**, and ping a webhook when a server goes offline — **Settings → Integrations**.
+
+## Keeping it running
+
+Everything below is **one command**, run on the server, the same way you installed. Each one **asks
+before it does anything** and keeps your data safe.
+
+### Update to the latest version
+
+Run this on any server (panel or VPN server) — it figures out what’s installed and updates it in place,
+keeping all your settings and people:
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s update
 ```
 
-## Installing the panel
+### Backups — automatic, and manual
 
-`install-host.sh` (run by `bootstrap.sh host`, or directly from a clone) sets up the panel and, for a `master`, the local entry server. Two sequenced sections — **Panel setup**, then **Node setup** (master only):
+- **Automatic.** Every time something changes — you add a person, add a server, change a setting — the
+  panel writes a **timestamped backup** of that file right next to it, and keeps the **last several**. If a
+  file ever gets damaged (a bad shutdown, a full disk), the panel **quietly restores the newest good backup
+  on its own** the next time it starts. You don’t have to do anything.
+- **Manual (recommended anyway).** For an off-server copy, save the panel’s state folder
+  (`/var/lib/swg-panel`, which holds your people and servers) somewhere safe — a copy is all it takes to
+  rebuild the panel elsewhere.
 
-| section | prompt | meaning |
-|---|---|---|
-| Panel · 1 | **Role** | `master` (default — panel + this box is an entry server) or `host` (panel only) |
-| Panel · 2 | **Panel URL** | IP, host, or host with a subpath (`vpn.example.com/swg`) to mount the panel under an existing site. Default is this host's public IP. |
-| Panel · 3 | **TLS** | `letsencrypt` (default) · `cloudflare` · `cf15` · `selfsigned` · `skip` |
-| Panel · 4 | **Serve mode** | `internal` (default, self-contained) · `nginx` · `caddy` · `skip` |
-| Panel | **Port / admin** | port (default **443** for `internal`; the unit adds the bind capability for ports < 1024) and the web login — suggests `admin` + 3 digits; changeable later under **Account** |
-| Node · 1 | **Node name** | *(master)* this box's node name (default: hostname) |
-| Node · 2 | **Endpoint IP** | *(master)* public IP clients dial for this box (default: detected) |
-| Node · 3 | **Interfaces** | *(master)* manages **every** wg/awg interface found (scanning all of `/etc/amnezia` and `/etc/wireguard`); offers to **create** one if none exist; press **Enter** to proceed or **`new`** to add another. New interfaces get a server key, tunnel subnet, and an automatic forward + masquerade (`PostUp`/`PostDown`) so clients reach the internet. |
-| Node · 4 | **Turn-proxy** | *(master)* optional [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — tunnels wg/awg through VK/Yandex TURN servers. Detects any installed proxy (by its `-listen`/`-connect` unit) and lists it; **Enter** to skip or pick a fork by **number** to install one (`WINGS-N`/`samosvalishe`/`kiper292`/`Moroka8` for Android, `anton48` for iOS). It fetches the release binary, **auto-derives** the `-connect` port from the wg/awg interface you just set up (lists all of them), **generates a 64-hex wrap key** with the fork's flags (`-wrap-srtp`/`-wrap`/`-wrap-mode`; `kiper292` has none), and records `listen`/`connect`/`wrap_key` for the panel + client configs. On **bare-metal** each proxy is a systemd service whose target lives in an `EnvironmentFile`, so a panel edit just rewrites it + restarts (no `daemon-reload`); on **Docker** it's a sibling **container** (`swg-turn-*`, managed over the mounted Docker socket — no `--privileged`/`--pid=host`). |
+### Recover / reinstall without losing anything
 
-**TLS:**
-- **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
-- **cloudflare** — real cert via DNS-01; **never uses port 80**. The token needs `Zone:DNS:Edit` + `Zone:Read`.
-- **cf15** — Cloudflare **Origin** certificate, **15 years**, issued via the CF API (needs an **API token** with `Zone` → `SSL and Certificates` → `Edit`; the legacy Origin CA Key is deprecated). ⚠️ Only trusted **behind Cloudflare's proxy** (orange cloud) — a direct hit to the origin shows an untrusted cert. No renewal needed for 15 years.
-- **selfsigned** — instant; browsers warn once. Good for getting going or behind a tunnel.
-- **skip** — bring your own cert (set `CERT_FULLCHAIN`/`CERT_KEY`), or terminate TLS elsewhere. With no cert the panel/proxy serves plain HTTP.
+- **Re-running any installer is safe.** It notices there’s already an install and **keeps your data**
+  (login, certificate, people, servers) — handy if a command got interrupted, or to change an option.
+- **Rebuilding a VPN server?** Run the recovery helper on it and it finds the server’s leftover identity so
+  it rejoins your panel **without re-enrolling**:
+  ```
+  curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s recovery
+  ```
+- **Lost the whole panel box?** Put your saved `/var/lib/swg-panel` folder back on a fresh install and your
+  people and servers are there again; the servers reconnect on their own.
 
-**Serve modes:** `internal` self-contained (own TLS + login); `nginx` / `caddy` reverse-proxy on loopback (TLS terminated by the proxy, with a `location`/`handle` block honoring any subpath); `skip` leaves the panel on a loopback port for you to front yourself. Every mode uses the panel's own pbkdf2 login, so the **Account** tab works throughout.
+### Switch between bare-metal and Docker
 
-Unattended example (config via env):
-
+Changed your mind about how a server is installed? You can **convert** it in place, keeping everything.
+Just re-run the installer asking for the *other* method — it offers **convert · keep · abort**:
 ```
-sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.net \
-     BASIC_USER=admin BASIC_PASS='…' bash -s host \
-     < <(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)
-```
-
-## Adding a node
-
-Nodes are managed entirely from the UI — the installer no longer asks about them.
-
-1. **Nodes → Add node** — give it a name, the public IP/host clients dial, and a colour. You get a **one-time enrollment token** and the exact one-liner.
-2. **On the entry server**, paste that one-liner — it fetches the repo and runs the node installer:
-   ```
-   curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh \
-     | sudo bash -s node -key SECURE_NODE_KEY -host https://panel.example.net
-   ```
-   It runs **Node setup** — interfaces (each with its own endpoint IP) and an optional turn-proxy — and starts `swg-noded`. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
-3. Within a few seconds the node turns **online** in the Nodes screen.
-
-With a self-signed panel cert the node doesn't verify it by default — the token is the credential and the channel is still encrypted. To verify instead, use a real cert and answer yes to the TLS prompt, or pin the self-signed one with `TLS_FINGERPRINT=<sha256-hex>` (checked during the handshake, before the token is sent).
-
-**Per-node actions:** **Edit** (endpoint/colour — the endpoint goes into client configs), **Rotate token** (the old one stops working immediately; re-enroll), **Remove** (revokes the token and unassigns the node).
-
-## Managing peers
-
-A **peer** is one identity (a keypair + IP + PSK) that can be deployed to several nodes at once for redundancy — the client fails over between them by changing its `Endpoint`.
-
-- **Add peer** — pick the interface and one or more nodes, optionally a name. The panel allocates a free IP; your browser generates the keypair and PSK and builds the config(s). You are shown the **config + QR once** — the private key is never stored. The QR is large and tap-to-fullscreen for easy phone scanning.
-- **Assign / unassign** — deploying the same identity to more nodes just adds its public key + PSK there; the client config gains another endpoint to fail over to.
-- **Copy to another server** — from a peer's page, copy it to a server it isn't on yet. It reuses the same key + PSK but gets a **fresh IP** from that server's subnet (a distinct tunnel sharing the identity). Needs the client private key, so it works when `store_configs` is on or right after the peer was created.
-- **Remove** — drops the peer from the roster; every node it lived on removes it on the next sync.
-
-Live status (online, partial, dangling, …) is computed every refresh from the nodes' snapshots — a peer stays "online" while one replica is briefly unreachable. Each deployment also shows its **transport** — **direct** or **via turn-proxy** (inferred when the client's observed endpoint matches a node's turn-proxy) — and, where a turn-proxy is present, the proxy endpoint + **wrap key** to set up the vk-turn-proxy client app.
-
-**Account** — change the panel username/password under the **Account** tab; it takes effect immediately (you're asked to sign in again).
-
-## Docker
-
-**One-liners** — install Docker if missing, stage `docker-compose.yml` + `.env` under `/opt/swg-panel-docker`, bring up a profile, and **prompt for what they need**. Same two entry points as bare-metal:
-
-**Panel** — Step 1 asks the role, exactly like bare-metal: **master** (panel + this box also runs WG/AWG as a co-located node container, auto-enrolled in one pass) or **host** (panel only). `master` is the default.
-
-```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
-```
-
-**Node** — a separate entry server; asks for the panel URL + the key from **Nodes → Add node** (this is how the `host` role's nodes are deployed)
-
-```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker node
-```
-
-Flags skip the prompts (the panel's enroll command uses them): `-role master|host`, `-pass`, `-domain`, `-key`, `-host`, `-endpoint`, `-base`, `-port`, `-tls`, `-ifaces`, `-net host|bridge` — e.g. `… bash -s docker node -key NODE_KEY -host https://panel.example.net`.
-
-**Or by hand** — one compose file, three profiles named after the roles:
-
-**Panel + a local node** (role `master`)
-
-```
-docker compose --profile master up -d
-```
-
-**Panel only** (role `host`)
-
-```
-docker compose --profile host up -d
-```
-
-**Entry server only** (role `node`)
-
-```
-docker compose --profile node up -d
-```
-
-By hand the `master` profile does **not** auto-enroll the local node — add it in **Nodes → Add node**, set `NODE_TOKEN`, and point it at the panel's service name (`PANEL_URL=https://swg-panel:8443`). The `master` *installer role* does all of that for you. (`host-node` still works as an alias of `master` for older setups.)
-
-Configure via `.env` (copied from `.env.example`):
-
-- **Panel:** `PANEL_PASSWORD` (required), `PANEL_USER`, `PANEL_DOMAIN`, `PANEL_BASE` (optional subpath, e.g. `/swg`), `PANEL_PORT`, and `TLS` — `letsencrypt` · `cloudflare` · `cf15` · `selfsigned` · `none`, issued in-container by the bundled `acme.sh` exactly like bare-metal (set `ACME_EMAIL` / `CF_TOKEN` / `CF_ORIGIN_TOKEN` as the chosen mode needs; see [TLS](#installing-the-panel)).
-- **Node:** `PANEL_URL` (for a `master` on bridge use `https://swg-panel:8443`; host networking uses loopback), `NODE_TOKEN` (from the Nodes screen), `NODE_ENDPOINT`, `NODE_IFACE` / `NODE_IFACES`, `NODE_LISTEN_PORT`, `NODE_ADDRESS`, `NODE_NET` (`host` · `bridge`), `TLS_VERIFY`, `DNS`.
-
-**Networking** — the installer puts the node on **`network_mode: host`** by default (`NODE_NET=host`), so every interface UDP port — **including interfaces you later create from the panel** — is reachable with no per-port mapping, and throughput is better (no `docker-proxy`). On a `master` the node reaches the co-located panel over loopback. Choose **`bridge`** to isolate the node's network namespace instead; then each interface's `ListenPort` must be **published** in `docker-compose.yml` (the panel flags this and prints the exact line when you create an interface on a bridge node). The node reports its mode to the panel so the guidance only shows where it's needed.
-
-**Two images** (pulled prebuilt from GHCR by default; `--build` builds them locally). `swg-panel` is pure Python + the bundled `acme.sh`. `swg-node` carries the userspace **`amneziawg-go`** datapath + `awg` tools (a container can't load the host kernel module) and needs `NET_ADMIN` + `/dev/net/tun`. It manages one interface by default (AmneziaWG 2.0; `NODE_PLAIN_WG=yes` for plain WG), several via `NODE_IFACES` (`name:port:addr[:proto[:endpoint]],…`), or any confs you mount under `/etc/swg-node/*.conf`. Panel-created interfaces persist across `up -d` (the conf dir is a volume). Masquerade is automatic. For best throughput, prefer a **bare-metal** node with the kernel module. With turn-proxy management enabled, `swg-noded` runs each proxy as a sibling `swg-turn-*` container (host network, `--restart unless-stopped`) over the mounted Docker socket — editing one just recreates the container, no host systemd.
-
-**Re-running an installer is safe** — it detects an existing install, keeps your `.env` + `./data` (token, login, certificate, interfaces), and offers the current values as defaults; the wg/awg and turn-proxy steps show what's already there and let you add more. To start fresh, run the uninstaller first. (Docker: re-apply with `PULL_POLICY=always … bootstrap.sh docker host|node` so the new image + compose land.)
-
-## Converting between bare-metal and Docker
-
-Switch a box's **method** in place: re-run the installer asking for the *other* method, and it offers **convert · keep · abort**.
-
-```bash
-# the same one-liner with the other method — e.g. a Docker master ⇆ bare-metal:
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master         # → bare-metal (a bare role word means bare-metal)
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s master         # → bare-metal
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker master  # → Docker
 ```
+It stages the new version fully **before** removing the old one, so the switch takes only a few seconds and
+your people barely notice. (A “master” box can convert as a whole, or just its panel half or just its
+server half.)
 
-A convert **keeps everything** — the panel's URL, login, roster, nodes and TLS cert, and (for a `master`) the local node's token, interfaces and turn-proxies. It is **copy-first**: the new method is staged in full *before* the old one is torn down, so the only downtime is the few seconds of the atomic switch — nodes self-heal on their next sync.
+### Uninstall
 
-**Roles convert independently.** Converting a `master` first asks whether to move the whole box or just one half — **whole master** (panel + node, the default), **just the host** (only the panel), or **just the node** (only the node). A split leaves a **mixed-method box** (e.g. a Docker panel with a bare-metal node) that you manage in two places — handy for moving a node onto the kernel datapath while the panel stays on Docker.
-
-**Interfaces and turn-proxies migrate in the node stage.** As the node converts it lists the wg/awg interfaces and turn-proxy servers it manages and asks **“Transfer these … into the … node? (Y/n)”** for each set; keys, ports and endpoints carry over (copy-first), and the originals keep serving until the switch. Decline to leave them on the old method and start the new node empty. Both directions behave the same.
-
-**Live status.** The panel header — and the node tile, for a node or master — shows **converting → converted** as it runs (the *converting* tag the moment you confirm, *converted* with the final summary), so you can watch a convert from the console.
-
-> For nodes, **docker → bare-metal** is preferred — the host kernel module out-performs the container's userspace `amneziawg-go`. A node split off a co-located Docker master is automatically pointed at the panel's loopback port, since the compose DNS name isn't reachable from outside the container network.
-
-## Configuration reference
-
-**Panel — `/etc/swg-panel/fleet.json`**:
-
-```json
-{
-  "roster_path":   "/var/lib/swg-panel/users.json",
-  "nodes_path":    "/var/lib/swg-panel/nodes.json",
-  "stats_dir":     "/var/www/wgstats",
-  "store_configs": false,
-  "config_dir":    "/var/lib/swg-panel/configs",
-  "node_interval": 5
-}
+Removes swgPanel, asking about **each piece** first (the panel, a VPN server, the VPN software, any
+turn-proxies) — nothing goes without a yes, and you can keep your people/servers data for a future
+reinstall:
+```
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s uninstall
 ```
 
-`store_configs` keeps the generated client configs (including private keys) on the panel — off by default; leave it off unless you understand the trade-off.
+## A few things worth knowing
 
-**Node — `/etc/swg-agent/config.json`**:
+- **You decide how private it is.** A person’s keys are always created in your browser. **By default**, the
+  panel keeps a copy of each config (which includes the secret key) so you can re-show its QR code or
+  hand it out again later. Want maximum privacy instead? Flip **one setting** —
+  **Settings → Client configs → off** — and the panel keeps only the public parts (public key, address,
+  preshared key); the secret key is then shown **once** and never stored anywhere.
+- **A hiccup won’t lock anyone out.** If the panel is briefly unreachable, your servers keep running with
+  the access they already have and catch up on the next check-in.
+- **It’s early.** This is a Beta — great for tinkering and small setups, not yet for anything critical.
 
-```json
-{
-  "interfaces": { "awg0": { "cmd": ["awg"], "conf": "/etc/amnezia/amneziawg/awg0.conf" } },
-  "endpoint_host": "203.0.113.7",
-  "dns": ["1.1.1.1"],
-  "panel": { "url": "https://panel.example.net", "token": "…", "verify": false },
-  "node":  { "interval": 5, "agent": "/opt/swg-agent/swg-agent", "sudo": false }
-}
-```
+## Learn more
 
-A node can serve several interfaces — list them all under `interfaces`; each peer is applied to the one it belongs to. Set `panel.verify: true` for a real cert, or add `panel.fingerprint: "<sha256-hex>"` to pin a self-signed one.
-
-## Operations
-
-- **Logs:** `journalctl -u swg-panel-server -f` (panel), `journalctl -u swg-noded -f` (node). Docker: `docker compose logs -f`.
-- **Rotate a node's token:** Nodes → ⋯ → Rotate token, then re-run the install command (or update the node's `config.json`).
-- **Remove a node:** Nodes → Remove. Stop `swg-noded` on the box itself to take it offline.
-- **Back up:** `users.json` + `nodes.json` (under `/var/lib/swg-panel`) are the whole state. Copy them somewhere safe.
-- **Update:** `… | sudo bash -s update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
-- **Uninstall:** `… | sudo bash -s uninstall` (or `./uninstall.sh`). Lists every installed component — the panel, a bare-metal node, the Docker panel and node containers, AmneziaWG, WireGuard, and **each** turn-proxy server — then loops through and asks to uninstall or keep each one. Nothing is removed without a yes; can keep the roster / node store / Docker data dir for a reinstall. `--yes` removes everything, `--dry-run` previews.
-
-## Security
-
-- **Transport:** nodes only ever connect *out* to the panel over TLS. Prefer a real cert (`letsencrypt`/`cloudflare`) so nodes can `verify: true`; with a self-signed cert, pin its fingerprint.
-- **Node tokens** authenticate a node to the panel. They are shown once, stored only as a hash, and can be rotated. Treat the node's `config.json` (which holds the live token) as a secret — it is mode `600`.
-- **PSKs** are generated per peer and stored in the roster so every node stays consistent; keep `/var/lib/swg-panel` readable only by the panel user.
-- **Private keys** are generated in your browser and never sent to the server (unless you deliberately enable `store_configs`). If a peer's key is lost, re-issue the peer.
-
-## Troubleshooting
-
-- **A node stays "awaiting enroll" / never connects.** It hasn't synced yet. Check `journalctl -u swg-noded -f` on the node: a `fingerprint mismatch` means the pin is wrong; an HTTP `401` means the token is wrong or was rotated; a connection error means the panel URL/port or firewall is off.
-- **A node is "offline."** It synced before but has gone quiet — check the daemon and the node's outbound network.
-- **Peers don't appear on a node.** Confirm the peer is assigned to that node and that its interface matches one the node actually serves. Reads come from the node's latest snapshot, so a freshly added node needs one sync first.
-- **Browser warns about the certificate.** Expected with `selfsigned`. Use a real cert for production, or accept the warning behind a trusted tunnel.
-- **Client connects (handshake works) but has no internet / `rx` climbs while `tx` stays ~0.** The node is decrypting packets but not routing them out. Interfaces created by the installer set this up automatically; for a hand-made interface, enable forwarding (`net.ipv4.ip_forward=1`) and add a masquerade for the tunnel subnet out the WAN nic (`iptables -t nat -A POSTROUTING -s <subnet> -o <wan> -j MASQUERADE`).
-- **Smart routing doesn't switch instantly — give it a minute or two.** Enabling a list/category or changing its exit is *eventually consistent*, not immediate. The node applies routing on a periodic reconcile (~60s) after pulling the resolved list from the panel, so there's a short delay before matched traffic starts leaving via the new exit — and longer if a connection is already open, since it keeps flowing the old way until it reconnects. Category attribution lags a little further: a destination's IP set fills lazily (as its domains are resolved/seen), so freshly routed traffic can show as **uncategorized** for a bit before it lands in its category. Both converge on their own; nothing is wrong — re-checking after a minute or reconnecting the client speeds it up.
-- **`acme.sh` failed to issue.** `letsencrypt` needs port 80 reachable; if 80 is taken, use `cloudflare` (DNS-01, no port 80).
+- **[Technical guide (English)](README.technical.md)** — architecture, every install option and flag,
+  Docker by hand, converting, smart routing, the external API, backups & security, and troubleshooting.
+- **[Русский](README.ru.md)** · **[Техническое (RU)](README.technical.ru.md)**

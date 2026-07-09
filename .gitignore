@@ -13,3 +13,6 @@ __pycache__/
 # test-harness / screenshot cruft (never commit)
 .playwright-mcp/
 *.png
+# …except the README screenshots (committed, referenced by the README files)
+!screenshots/
+!screenshots/*.png

@@ -28,6 +28,7 @@ import json
 import os
 import random
 import re
+import secrets
 import shutil
 import sys
 import signal
@@ -39,7 +40,7 @@ import urllib.request
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 FLEET_PATH = os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
 IN_DOCKER  = os.path.exists("/.dockerenv")   # so the UI can show the right "enable store_configs" command
@@ -2245,6 +2246,10 @@ PANEL_SETTINGS_DEFAULTS = {
     # chosen cadence the panel resolves each deployed fork's latest release and stages a reinstall on any node
     # running an older build (the node re-downloads + restarts on its next sync). 0 = manual updates only.
     "turn_update": {"every_days": 0, "at": "04:00"},
+    # external integration API (read-only REST + Prometheus + webhooks). enabled=off until the operator mints a
+    # token in Settings → Integrations. tokens store only a sha256 HASH (raw shown once). webhooks POST a signed
+    # JSON body on peer.added/peer.removed/node.online/node.offline. See docs/API.md.
+    "api": {"enabled": False, "tokens": [], "webhooks": []},
 }
 
 
@@ -2252,7 +2257,7 @@ def load_panel_settings(path):
     """panel-settings.json merged over the defaults (one level deep for the sub-dicts)."""
     saved = load_settings_critical(path) or {}   # backup-recovering load (a clobbered/corrupt primary → newest good backup)
     out = {**PANEL_SETTINGS_DEFAULTS, **saved}
-    for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update", "turn_update"):
+    for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update", "turn_update", "api"):
         out[k] = {**PANEL_SETTINGS_DEFAULTS[k], **(saved.get(k) or {})}
     return out
 
@@ -2812,6 +2817,7 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False):
            "rx": [r[5] for r in rows], "tx": [r[6] for r in rows]}
     if slim:                                          # keep the /api/state bundle small; mrx/mtx let the hero net out mesh
         out["mrx"] = [r[9] for r in rows]; out["mtx"] = [r[10] for r in rows]
+        out["pon"] = [r[13] for r in rows]            # online-peer count per bucket → live online-bars read the ring (full + survives reload), not just a client accumulator
         return out
     out.update({"arx": [r[7] for r in rows], "atx": [r[8] for r in rows], "mrx": [r[9] for r in rows], "mtx": [r[10] for r in rows],
                 "inet_up": [r[11] for r in rows], "inet_down": [r[12] for r in rows],   # measured internet up/down (B/s means)
@@ -3008,7 +3014,7 @@ def api(method, path, qs, body, deps):
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
-            "panel_settings": panel_settings,            # Panel settings screen: interface defaults, mirrors, advanced thresholds
+            "panel_settings": {**panel_settings, "api": _api_public_view(deps)},   # Panel settings screen (api sub-dict redacted: no token hashes / webhook secrets to the browser)
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
@@ -3101,6 +3107,8 @@ def api(method, path, qs, body, deps):
             cur["hidden_categories"] = [c for c in hc if c in SMART_CATEGORIES and c != "all"]
         if "turn_enabled" in incoming:                  # master switch for all turn-proxy UI
             cur["turn_enabled"] = bool(incoming.get("turn_enabled"))
+        if "api_enabled" in incoming:                   # external integration API master switch (tokens stop working when off)
+            _a = dict(cur.get("api") or {}); _a["enabled"] = bool(incoming.get("api_enabled")); cur["api"] = _a
         tf = incoming.get("enabled_turn_forks")         # which turn-proxy forks the install-a-fork picker offers
         if isinstance(tf, list):
             seen_tf, out_tf = set(), []
@@ -3189,6 +3197,86 @@ def api(method, path, qs, body, deps):
             ev_append(roster_path, "panel", (str(_ev.get("first") or "").strip() or "settings"),
                       "Updated panel settings", str(_ev.get("sections") or "")[:200])
         return 200, {"ok": True, "data": cur}
+
+    # ── external integration API: token + webhook management (session-authed, mutations) ──
+    def _save_api(cur):
+        deps["panel_settings"] = cur
+        with contextlib.suppress(Exception):
+            save_critical(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")
+
+    if method == "POST" and path == "/api/integrations/token":       # mint a read-only token (raw shown once)
+        label = str(body.get("label") or "").strip()[:60] or "integration"
+        raw = API_TOKEN_PREFIX + secrets.token_hex(24)
+        cur = dict(deps.get("panel_settings") or {})
+        a = dict(cur.get("api") or {})
+        toks = list(a.get("tokens") or [])
+        tid = gen_id()
+        rec = {"id": tid, "label": label, "hash": _api_token_hash(raw), "created": now()}
+        toks.append(rec)
+        a["tokens"] = toks; a["enabled"] = True                       # minting a token turns the API on
+        cur["api"] = a; _save_api(cur)
+        ev_append(roster_path, "panel", "integrations", "Created API token", label)
+        return 200, {"ok": True, "data": {"id": tid, "label": label, "created": rec["created"], "token": raw}}
+
+    if method == "POST" and path == "/api/integrations/token/revoke":
+        tid = str(body.get("id") or "")
+        cur = dict(deps.get("panel_settings") or {})
+        a = dict(cur.get("api") or {})
+        before = a.get("tokens") or []
+        gone = next((t for t in before if t.get("id") == tid), None)
+        a["tokens"] = [t for t in before if t.get("id") != tid]
+        cur["api"] = a; _save_api(cur)
+        if gone:
+            ev_append(roster_path, "panel", "integrations", "Revoked API token", gone.get("label", tid))
+        return 200, {"ok": True, "data": {"id": tid}}
+
+    if method == "POST" and path == "/api/integrations/webhook":     # upsert a webhook (secret returned once)
+        url = str(body.get("url") or "").strip()[:512]
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return 400, {"ok": False, "error": "webhook url must start with http:// or https://", "code": "bad_request"}
+        events = [e for e in (body.get("events") or []) if e in WEBHOOK_EVENTS] or list(WEBHOOK_EVENTS)
+        cur = dict(deps.get("panel_settings") or {})
+        a = dict(cur.get("api") or {})
+        hooks = list(a.get("webhooks") or [])
+        wid = str(body.get("id") or "")
+        rec = next((h for h in hooks if h.get("id") == wid), None)
+        secret = str(body.get("secret") or "").strip()
+        if rec is None:
+            wid = gen_id()
+            secret = secret or (API_TOKEN_PREFIX + secrets.token_hex(16))
+            rec = {"id": wid}; hooks.append(rec)
+        rec["url"] = url; rec["events"] = events; rec["enabled"] = body.get("enabled", True) is not False
+        if secret:
+            rec["secret"] = secret
+        a["webhooks"] = hooks; a.setdefault("enabled", bool(a.get("tokens")))
+        cur["api"] = a; _save_api(cur)
+        ev_append(roster_path, "panel", "integrations", "Saved webhook", url)
+        return 200, {"ok": True, "data": {"id": wid, "url": url, "events": events,
+                                          "enabled": rec["enabled"], "secret": rec.get("secret")}}
+
+    if method == "POST" and path == "/api/integrations/webhook/delete":
+        wid = str(body.get("id") or "")
+        cur = dict(deps.get("panel_settings") or {})
+        a = dict(cur.get("api") or {})
+        gone = next((h for h in (a.get("webhooks") or []) if h.get("id") == wid), None)
+        a["webhooks"] = [h for h in (a.get("webhooks") or []) if h.get("id") != wid]
+        cur["api"] = a; _save_api(cur)
+        if gone:
+            ev_append(roster_path, "panel", "integrations", "Deleted webhook", gone.get("url", wid))
+        return 200, {"ok": True, "data": {"id": wid}}
+
+    if method == "POST" and path == "/api/integrations/webhook/test":   # deliver a synchronous ping so the UI shows the result
+        wid = str(body.get("id") or "")
+        h = next((w for w in (_api_settings(deps).get("webhooks") or []) if w.get("id") == wid), None)
+        if not h:
+            return 404, {"ok": False, "error": "unknown webhook", "code": "not_found"}
+        payload = json.dumps({"event": "ping", "ts": now(), "data": {"message": "swg-panel webhook test"}},
+                             separators=(",", ":")).encode()
+        try:
+            st = _webhook_post(h["url"], h.get("secret") or "", payload, timeout=8)
+            return 200, {"ok": True, "data": {"status": st}}
+        except Exception as e:
+            return 200, {"ok": False, "error": str(e)[:200]}
 
     if method == "POST" and path == "/api/panel/refresh-geo":   # bump the epoch nodes watch to force a geo re-fetch
         cur = dict(deps.get("panel_settings") or {})
@@ -3687,6 +3775,9 @@ def api(method, path, qs, body, deps):
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Created peer", peer_label(roster, p),
                   f"{len(targets)} target{'' if len(targets) == 1 else 's'} · {targets[0]['node']}/{targets[0]['iface']}")
+        webhook_emit(deps, "peer.added", {"peer_id": pid, "title": p.get("title") or None,
+                     "user": (roster["users"].get(uid) or {}).get("name") if uid else None,
+                     "targets": [{"node": t["node"], "iface": t["iface"], "address": t.get("ip")} for t in targets]})
         configs = body.get("configs") or {}
         for t in targets:
             conf = configs.get(t["node"] + "|" + t["iface"])
@@ -3819,10 +3910,12 @@ def api(method, path, qs, body, deps):
         for t in p["targets"]:
             del_config(store_configs, config_dir, p["pubkey"], t["node"], t["iface"])
         retire_pubkey(nodes, deps["nodes_path"], p.get("targets", []), p["pubkey"])   # drop it even on add-only ifaces
+        _tgts = [{"node": t.get("node"), "iface": t.get("iface"), "address": t.get("ip")} for t in (p.get("targets") or [])]
         del roster["peers"][pid]
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Deleted peer", label,
                   ("%d target%s" % (ntargets, "" if ntargets == 1 else "s")) if ntargets else "")
+        webhook_emit(deps, "peer.removed", {"peer_id": pid, "title": p.get("title") or None, "targets": _tgts})
         return 200, {"ok": True, "data": {"id": pid, "deleted": True}}
 
     if method == "POST" and path == "/api/peers/unassign":
@@ -4678,6 +4771,362 @@ def api(method, path, qs, body, deps):
     return 404, {"ok": False, "error": "not found", "code": "bad_request"}
 
 
+# ───────────────────────── external integration API (v1) ─────────────────────────
+# A READ-ONLY REST surface + Prometheus /metrics + outbound webhooks so external systems
+# (Grafana, Uptime Kuma, Prometheus, Terraform/Ansible) can observe the fleet. Nothing here
+# mutates state: no API token is ever accepted on a POST mutation, so a leaked token can read
+# but never change anything. Auth is a bearer API token (Settings → Integrations mints them;
+# only the sha256 hash is stored) OR a normal admin session (so the settings page can preview).
+# /healthz and /api/v1/health are unauthenticated liveness probes that expose no secrets.
+
+API_TOKEN_PREFIX = "swgp_"
+WEBHOOK_EVENTS = ("peer.added", "peer.removed", "node.online", "node.offline")
+
+
+def _api_token_hash(tok):
+    return hashlib.sha256(("swg-api\x00" + (tok or "")).encode()).hexdigest()
+
+
+def _api_settings(deps):
+    a = (deps.get("panel_settings") or {}).get("api")
+    return a if isinstance(a, dict) else {}
+
+
+def api_token_lookup(deps, tok):
+    """The stored token record matching a presented raw token, or None. Constant-time compare;
+    returns None when the API is disabled so a stale token stops working the moment it's turned off."""
+    tok = (tok or "").strip()
+    if not tok:
+        return None
+    a = _api_settings(deps)
+    if not a.get("enabled"):
+        return None
+    h = _api_token_hash(tok)
+    hit = None
+    for t in (a.get("tokens") or []):
+        if hmac.compare_digest(str(t.get("hash", "")), h):
+            hit = t
+    return hit
+
+
+def _api_public_view(deps):
+    """Redacted `api` settings for the browser (/api/state): token HASHES and webhook SECRETS never
+    leave the panel. last_used is an in-memory best-effort timestamp (no disk write per scrape)."""
+    a = _api_settings(deps)
+    seen = deps.get("api_seen") or {}
+    return {"enabled": bool(a.get("enabled")),
+            "tokens": [{"id": t.get("id"), "label": t.get("label"), "created": t.get("created"),
+                        "last_used": seen.get(t.get("hash"))} for t in (a.get("tokens") or [])],
+            "webhooks": [{"id": w.get("id"), "url": w.get("url"), "events": w.get("events") or [],
+                          "enabled": w.get("enabled", True) is not False, "has_secret": bool(w.get("secret"))}
+                         for w in (a.get("webhooks") or [])]}
+
+
+def _ipof(cidr):
+    s = (str(cidr or "")).split(",")[0].strip()
+    return (s.split("/")[0] or None)
+
+
+def _pct(used, total):
+    return round(100.0 * used / total, 1) if total else None
+
+
+def _ext_health_pcts(h):
+    """cpu/mem/disk percentages + uptime from a node's health block (see swg-noded collect_health)."""
+    h = h or {}
+    load = h.get("load") or []
+    ncpu = h.get("ncpu") or 1
+    cpu = round(min(100.0, 100.0 * (load[0] / ncpu)), 1) if load and ncpu else None
+    mem = h.get("mem") or {}
+    mem_pct = _pct(mem.get("used", 0), mem.get("total", 0)) if mem.get("total") else None
+    disks = h.get("disk") or []
+    disk_pct = _pct((disks[0] or {}).get("used", 0), (disks[0] or {}).get("total", 0)) if disks and disks[0].get("total") else None
+    return {"cpu_percent": cpu, "mem_percent": mem_pct, "disk_percent": disk_pct, "uptime_s": h.get("uptime")}
+
+
+# The external API reads the panel's live state (in-memory snapshots + the small nodes.json/users.json
+# state files) — the SAME data the SPA polls, never a separate copy and never through the browser. To keep
+# an aggressive scraper (or several dashboards) from re-parsing users.json on every hit, the whole-fleet
+# derivation is built at most once per EXT_CACHE_TTL and shared by every v1 endpoint + /metrics. Monitoring
+# tolerates a few seconds of staleness, so this is invisible to consumers and cheap on the panel.
+_EXT_CACHE = {"at": 0.0, "data": None}
+_ext_cache_lock = threading.Lock()
+EXT_CACHE_TTL = float(os.environ.get("SWG_PANEL_EXT_TTL", "3") or 3)
+
+
+def _ext_build(deps):
+    """Load nodes + roster ONCE and derive {servers, peers}. Memoized (EXT_CACHE_TTL) and double-checked
+    under a lock so concurrent scrapes build it a single time, then read the same result."""
+    c = _EXT_CACHE
+    if c["data"] is not None and (time.monotonic() - c["at"]) < EXT_CACHE_TTL:
+        return c["data"]
+    with _ext_cache_lock:
+        if c["data"] is not None and (time.monotonic() - c["at"]) < EXT_CACHE_TTL:
+            return c["data"]
+        nodes = nodes_load(deps["nodes_path"])
+        snaps = deps.get("node_snaps") or {}
+        seen = deps.get("node_seen") or {}
+        roster = roster_load(deps["roster_path"])
+        data = {"servers": _ext_servers_from(deps, nodes, snaps, seen),
+                "peers": _ext_peers_from(deps, nodes, snaps, seen, roster)}
+        c["data"] = data
+        c["at"] = time.monotonic()
+        return data
+
+
+def ext_servers(deps):
+    return _ext_build(deps)["servers"]
+
+
+def _ext_servers_from(deps, nodes, snaps, seen):
+    """The fleet as an external client sees it: one dict per node, status derived from sync staleness."""
+    now = deps.get("now", lambda: int(time.time()))()
+    out = []
+    for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
+        snap = snaps.get(nid) or {}
+        ls = seen.get(nid)
+        online = ls is not None and (now - ls) <= NODE_OFFLINE
+        pc = pon = 0
+        rx = tx = 0.0
+        ifaces = []
+        for ifn, blk in (snap.get("interfaces") or {}).items():
+            if is_system_iface(deps, nodes, nid, ifn):    # skip panel-managed mesh links — client-facing view only
+                continue
+            ps = blk.get("peers") or []
+            pc += len(ps)
+            pon += sum(1 for p in ps if p.get("online"))
+            rx += sum(p.get("rx_speed", 0) or 0 for p in ps)
+            tx += sum(p.get("tx_speed", 0) or 0 for p in ps)
+            ifaces.append(ifn)
+        rec = {"id": nid, "name": c.get("name", nid),
+               "status": "online" if online else ("never_seen" if ls is None else "offline"),
+               "online": bool(online),
+               "kind": snap.get("kind") or c.get("kind"),
+               "version": snap.get("noded_version"),
+               "hostname": snap.get("hostname"),
+               "endpoint_host": c.get("endpoint_host") or None,
+               "routing_mode": c.get("routing_mode") or "kernel",
+               "interfaces": ifaces,
+               "peers": pc, "peers_online": pon,
+               "rx_bytes_per_sec": int(rx), "tx_bytes_per_sec": int(tx),
+               "last_seen": ls, "last_seen_age_s": (now - ls) if ls is not None else None}
+        rec.update(_ext_health_pcts(snap.get("health")))
+        out.append(rec)
+    return out
+
+
+def _resolve_nid(nodes, ref):
+    """Accept a node id OR a display name (friendlier for hand-written dashboards)."""
+    if ref in nodes:
+        return ref
+    for k, c in nodes.items():
+        if c.get("name") == ref:
+            return k
+    return None
+
+
+def ext_peers_for_node(deps, ref):
+    """Peers observed on ONE node, with last-handshake timing, enriched from the roster. None if unknown."""
+    nodes = nodes_load(deps["nodes_path"])
+    nid = _resolve_nid(nodes, ref)
+    if nid is None:
+        return None
+    snap = (deps.get("node_snaps") or {}).get(nid) or {}
+    roster = roster_load(deps["roster_path"])
+    users = roster.get("users") or {}
+    by_pub = {p.get("pubkey"): (pid, p) for pid, p in (roster.get("peers") or {}).items()}
+    out = []
+    for ifn, blk in (snap.get("interfaces") or {}).items():
+        if is_system_iface(deps, nodes, nid, ifn):        # mesh links aren't user peers
+            continue
+        for p in (blk.get("peers") or []):
+            pid, pr = by_pub.get(p.get("public_key"), (None, {}))
+            uid = pr.get("user_id")
+            out.append({"peer_id": pid, "public_key": p.get("public_key"), "iface": ifn,
+                        "user": (users.get(uid) or {}).get("name") if uid else None,
+                        "title": pr.get("title") or None,
+                        "address": _ipof(p.get("allowed_ips")),
+                        "online": bool(p.get("online")),
+                        "endpoint": p.get("endpoint"),
+                        "last_handshake": p.get("last_handshake") or None,
+                        "handshake_age_s": p.get("handshake_age"),
+                        "rx_bytes": int(p.get("rx_bytes", 0) or 0), "tx_bytes": int(p.get("tx_bytes", 0) or 0),
+                        "rx_bytes_per_sec": int(p.get("rx_speed", 0) or 0), "tx_bytes_per_sec": int(p.get("tx_speed", 0) or 0)})
+    return {"node": nid, "name": nodes[nid].get("name", nid), "peers": out}
+
+
+def ext_peers_all(deps):
+    return _ext_build(deps)["peers"]
+
+
+def _ext_peers_from(deps, nodes, snaps, seen, roster):
+    """Roster-wide peer identities with per-target presence. A peer is `online` if it's online on ANY
+    of its deployed nodes (matches the panel's most-alive-wins view for multi-node peers)."""
+    now = deps.get("now", lambda: int(time.time()))()
+    users = roster.get("users") or {}
+    obs = {}
+    for nid, snap in snaps.items():
+        for blk in (snap.get("interfaces") or {}).values():
+            for p in (blk.get("peers") or []):
+                obs[(nid, p.get("public_key"))] = p
+    def node_live(nid):
+        ls = seen.get(nid)
+        return ls is not None and (now - ls) <= NODE_OFFLINE
+    out = []
+    for pid, p in (roster.get("peers") or {}).items():
+        pub = p.get("pubkey")
+        uid = p.get("user_id")
+        online = False
+        last_hs = None
+        targets = []
+        for t in (p.get("targets") or []):
+            o = obs.get((t.get("node"), pub))
+            on = bool(o and o.get("online"))
+            online = online or on
+            if o and o.get("last_handshake"):
+                last_hs = max(last_hs or 0, o["last_handshake"])
+            targets.append({"node": t.get("node"), "iface": t.get("iface"), "address": t.get("ip"),
+                            "online": on, "node_live": node_live(t.get("node"))})
+        out.append({"peer_id": pid, "public_key": pub, "title": p.get("title") or None,
+                    "user": (users.get(uid) or {}).get("name") if uid else None, "user_id": uid,
+                    "online": online, "last_handshake": last_hs, "targets": targets})
+    return out
+
+
+def ext_summary(deps):
+    b = _ext_build(deps)
+    servers = b["servers"]
+    peers = b["peers"]
+    now = deps.get("now", lambda: int(time.time()))()
+    return {"version": VERSIONS.get("panel"),
+            "nodes": {"total": len(servers), "online": sum(1 for s in servers if s["online"])},
+            "peers": {"total": len(peers), "online": sum(1 for p in peers if p["online"])},
+            "throughput": {"rx_bytes_per_sec": sum(s["rx_bytes_per_sec"] for s in servers),
+                           "tx_bytes_per_sec": sum(s["tx_bytes_per_sec"] for s in servers)},
+            "generated_at": now}
+
+
+def _prom_esc(v):
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def ext_metrics(deps):
+    """Prometheus text exposition (v0.0.4). Per-node cardinality only — never per-peer, which would
+    explode the series count on a large fleet; peer detail lives in the JSON API."""
+    servers = ext_servers(deps)
+    s = ext_summary(deps)
+    L = []
+    def g(name, help_, typ="gauge"):
+        L.append("# HELP %s %s" % (name, help_))
+        L.append("# TYPE %s %s" % (name, typ))
+    def row(_metric, val, **labels):
+        lbl = ",".join('%s="%s"' % (k, _prom_esc(v)) for k, v in labels.items() if v is not None)
+        L.append("%s{%s} %s" % (_metric, lbl, val) if lbl else "%s %s" % (_metric, val))
+    g("swg_panel_up", "1 whenever the panel answers a scrape.")
+    row("swg_panel_up", 1)
+    g("swg_panel_build_info", "Panel build/version info.")
+    row("swg_panel_build_info", 1, version=s["version"])
+    g("swg_nodes_total", "Configured nodes in the fleet.")
+    row("swg_nodes_total", s["nodes"]["total"])
+    g("swg_nodes_online", "Nodes that have synced within the offline window.")
+    row("swg_nodes_online", s["nodes"]["online"])
+    g("swg_peers_total", "Peer identities in the roster.")
+    row("swg_peers_total", s["peers"]["total"])
+    g("swg_peers_online", "Peers online on at least one node.")
+    row("swg_peers_online", s["peers"]["online"])
+    g("swg_fleet_rx_bytes_per_second", "Fleet aggregate download rate (bytes/s).")
+    row("swg_fleet_rx_bytes_per_second", s["throughput"]["rx_bytes_per_sec"])
+    g("swg_fleet_tx_bytes_per_second", "Fleet aggregate upload rate (bytes/s).")
+    row("swg_fleet_tx_bytes_per_second", s["throughput"]["tx_bytes_per_sec"])
+    g("swg_node_up", "1 if the node is online (synced within the offline window), else 0.")
+    for n in servers:
+        row("swg_node_up", 1 if n["online"] else 0, node=n["id"], name=n["name"])
+    g("swg_node_peers", "Peers configured on the node.")
+    for n in servers:
+        row("swg_node_peers", n["peers"], node=n["id"], name=n["name"])
+    g("swg_node_peers_online", "Peers currently online on the node.")
+    for n in servers:
+        row("swg_node_peers_online", n["peers_online"], node=n["id"], name=n["name"])
+    g("swg_node_rx_bytes_per_second", "Node download rate (bytes/s).")
+    for n in servers:
+        row("swg_node_rx_bytes_per_second", n["rx_bytes_per_sec"], node=n["id"], name=n["name"])
+    g("swg_node_tx_bytes_per_second", "Node upload rate (bytes/s).")
+    for n in servers:
+        row("swg_node_tx_bytes_per_second", n["tx_bytes_per_sec"], node=n["id"], name=n["name"])
+    g("swg_node_last_seen_timestamp_seconds", "Unix time of the node's last sync.")
+    for n in servers:
+        if n["last_seen"] is not None:
+            row("swg_node_last_seen_timestamp_seconds", n["last_seen"], node=n["id"], name=n["name"])
+    for metric, key, help_ in (("swg_node_cpu_percent", "cpu_percent", "Node CPU load as a percentage of its cores."),
+                               ("swg_node_memory_percent", "mem_percent", "Node memory used as a percentage."),
+                               ("swg_node_disk_percent", "disk_percent", "Node primary-disk used as a percentage."),
+                               ("swg_node_uptime_seconds", "uptime_s", "Node uptime in seconds.")):
+        g(metric, help_)
+        for n in servers:
+            if n.get(key) is not None:
+                row(metric, n[key], node=n["id"], name=n["name"])
+    return "\n".join(L) + "\n"
+
+
+def _webhook_post(url, secret, body_bytes, timeout=8):
+    headers = {"Content-Type": "application/json", "User-Agent": "swg-panel-webhook"}
+    if secret:
+        headers["X-SWG-Signature"] = "sha256=" + hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+    req = urllib.request.Request(url, data=body_bytes, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return getattr(r, "status", None) or r.getcode()
+
+
+def webhook_emit(deps, event, data):
+    """Fire-and-forget delivery to every enabled webhook subscribed to `event`, in a daemon thread so a
+    slow/unreachable endpoint never blocks the API. One retry on failure; delivery is best-effort."""
+    a = _api_settings(deps)
+    hooks = [h for h in (a.get("webhooks") or [])
+             if h.get("enabled", True) is not False and h.get("url")
+             and (not h.get("events") or event in h["events"])]
+    if not hooks:
+        return
+    body = json.dumps({"event": event, "ts": int(time.time()), "data": data}, separators=(",", ":")).encode()
+    def _deliver():
+        for h in hooks:
+            for attempt in range(2):
+                try:
+                    _webhook_post(h["url"], h.get("secret") or "", body)
+                    break
+                except Exception:
+                    if attempt == 0:
+                        time.sleep(1.5)
+    threading.Thread(target=_deliver, daemon=True).start()
+
+
+def _node_watch_loop(deps):
+    """Detect node online↔offline transitions (derived from sync staleness) and emit webhooks. Seeds
+    from the current state on the first pass so a panel restart doesn't replay a flood of transitions."""
+    state = {}
+    first = True
+    while True:
+        with contextlib.suppress(Exception):
+            if not (_api_settings(deps).get("webhooks")):   # nothing subscribed → do no work at all (re-seed when one is added)
+                first = True
+                time.sleep(10)
+                continue
+            now = int(time.time())
+            seen = deps.get("node_seen") or {}
+            nodes = nodes_load(deps["nodes_path"])
+            for nid in list(seen.keys()):
+                ls = seen.get(nid)
+                online = ls is not None and (now - ls) <= NODE_OFFLINE
+                prev = state.get(nid)
+                state[nid] = online
+                if first or prev is None or prev == online:
+                    continue
+                nm = (nodes.get(nid) or {}).get("name", nid)
+                webhook_emit(deps, "node.online" if online else "node.offline",
+                             {"id": nid, "name": nm, "last_seen": ls})
+            first = False
+        time.sleep(10)
+
+
 # ───────────────────────── HTTP shell ─────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -4700,6 +5149,66 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         with contextlib.suppress(BrokenPipeError, ConnectionError):
             self.wfile.write(payload); self.wfile.flush()   # flush so the body reaches the client before the socket closes
+
+    def _send_text(self, code, text, ctype="text/plain; charset=utf-8"):
+        payload = text.encode() if isinstance(text, str) else text
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with contextlib.suppress(BrokenPipeError, ConnectionError):
+            self.wfile.write(payload)
+
+    def _ext_token(self, u):
+        hdr = self.headers.get("Authorization", "")
+        if hdr.startswith("Bearer "):
+            return hdr[7:].strip()
+        xk = self.headers.get("X-API-Key", "")
+        if xk:
+            return xk.strip()
+        return (parse_qs(u.query).get("token") or [""])[0]   # ?token= for tools that can't set a header
+
+    def _ext_authed(self, u):
+        """A valid read-only API token (header or ?token=) OR a live admin session. On a token hit,
+        record a best-effort in-memory last-used stamp (no disk write, so scrapes stay cheap)."""
+        tok = self._ext_token(u)
+        if tok and api_token_lookup(self.deps, tok) is not None:
+            self.deps.setdefault("api_seen", {})[_api_token_hash(tok.strip())] = int(time.time())
+            return True
+        return self._authed_user() is not None
+
+    def _ext_api(self, path, u):
+        try:
+            if path == "/healthz":                              # bare liveness for uptime probes (no auth, no data)
+                return self._send_text(200, "ok\n")
+            if path == "/api/v1/health":                        # liveness + coarse counts (no secrets) — unauthenticated
+                s = ext_summary(self.deps)
+                return self._send(200, {"status": "ok", "version": s["version"], "nodes": s["nodes"], "peers": s["peers"]})
+            if not self._ext_authed(u):
+                return self._send(401, {"error": "unauthorized",
+                                        "detail": "send a read-only API token as 'Authorization: Bearer <token>' "
+                                                  "(mint one in Settings → Integrations, then enable the API)"})
+            if path == "/metrics":
+                return self._send_text(200, ext_metrics(self.deps), "text/plain; version=0.0.4; charset=utf-8")
+            if path == "/api/v1/servers":
+                return self._send(200, {"servers": ext_servers(self.deps)})
+            m = re.match(r"^/api/v1/servers/([^/]+)/peers$", path)
+            if m:
+                r = ext_peers_for_node(self.deps, unquote(m.group(1)))
+                return self._send(404, {"error": "unknown server"}) if r is None else self._send(200, r)
+            m = re.match(r"^/api/v1/servers/([^/]+)$", path)
+            if m:
+                sid = unquote(m.group(1))
+                hit = next((sv for sv in ext_servers(self.deps) if sv["id"] == sid or sv["name"] == sid), None)
+                return self._send(200, hit) if hit else self._send(404, {"error": "unknown server"})
+            if path == "/api/v1/peers":
+                return self._send(200, {"peers": ext_peers_all(self.deps)})
+            if path == "/api/v1/summary":
+                return self._send(200, ext_summary(self.deps))
+            return self._send(404, {"error": "not found"})
+        except Exception as e:
+            return self._send(500, {"error": "internal", "detail": str(e)})
 
     def _send_state(self):
         # Serve the memoized /api/state bytes (see _STATE_CACHE). Double-checked under a lock so a cold
@@ -5537,6 +6046,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._node_whoami()
         if path == "/api/node/list":       # node-token auth — serve a resolved provider list (raw text) for a routed cat/tier
             return self._node_list(u)
+        if path == "/healthz" or path == "/metrics" or path.startswith("/api/v1/"):
+            return self._ext_api(path, u)  # external integration API — its OWN token/session auth (read-only)
         if not self._require_auth():       # everything else (data) needs a session
             return
         if path.startswith("/wgstats/"):
@@ -5726,6 +6237,7 @@ def main():
         srv = ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler)
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
+    threading.Thread(target=_node_watch_loop, args=(Handler.deps,), daemon=True).start()   # node online/offline → webhooks
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
     print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     with contextlib.suppress(KeyboardInterrupt):
