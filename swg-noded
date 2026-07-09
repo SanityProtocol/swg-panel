@@ -1570,14 +1570,22 @@ def _dnsmasq_running():
         return 0
 
 
-def _dnsmasq_stop():
+def _dnsmasq_kill():
+    """Stop the running dnsmasq but KEEP its config file — for a restart that reloads changed nftset directives
+    (they're read only at startup). The conf was just rewritten and is about to be re-read; deleting it here (as
+    _dnsmasq_stop does for a full teardown) makes the immediate restart fail 'cannot read <conf>: No such file'."""
     pid = _dnsmasq_running()
     if pid:
         run(["kill", str(pid)])
     run(["pkill", "-f", "--", "conf-file=" + DNSMASQ_CONF])   # reap any stray instances the pid-file missed
-    for p in (DNSMASQ_PID, DNSMASQ_CONF):
-        with contextlib.suppress(OSError):
-            os.unlink(p)
+    with contextlib.suppress(OSError):
+        os.unlink(DNSMASQ_PID)                               # stale after the kill; the conf stays for the restart
+
+
+def _dnsmasq_stop():
+    _dnsmasq_kill()
+    with contextlib.suppress(OSError):
+        os.unlink(DNSMASQ_CONF)                              # full teardown — no restart coming, drop the conf too
 
 
 def _route_localnet_ok():
@@ -1679,7 +1687,7 @@ def _ensure_smart_dnsmasq(domains, smart_e, res, unchanged=False):
         except OSError as e:
             res["errors"].append("smart dnsmasq conf: " + str(e)); return
         if _dnsmasq_running():                                 # nftset directives are read only at startup → restart
-            _dnsmasq_stop()
+            _dnsmasq_kill()                                     # kill but KEEP the freshly-written conf (else restart can't read it)
     if not _dnsmasq_running():                                 # (re)start, also self-heals after a reboot/crash
         r = run([DNSMASQ_BIN, "--conf-file=" + DNSMASQ_CONF])
         if getattr(r, "returncode", 1) != 0:
@@ -3146,6 +3154,16 @@ def _dturn_run(tp):   # (re)create the container to match tp; returns the docker
                 "-v", _turn_bin_host(svc) + ":/turn-server:ro", "--entrypoint", "/turn-server",
                 SWG_TURN_IMAGE] + _dturn_args(tp), timeout=60)
 
+def _dturn_netns_current(svc):
+    """Bridge only: is the (running) turn container attached to OUR CURRENT netns? A swg-node recreate/update leaves
+    its netns-joined turns pointing at the OLD (now-dead) container — docker still reports them 'running', but they're
+    network-broken (can't reach the WG interface, invisible to nft capture). Our container id is our hostname, and the
+    turn's NetworkMode records the full id it joined, so a stale join no longer starts with our current id → recreate."""
+    if NODE_NET != "bridge":
+        return True
+    r = run(["docker", "inspect", "-f", "{{.HostConfig.NetworkMode}}", _turn_cname(svc)])
+    return (r.stdout or "").strip().startswith("container:" + socket.gethostname())
+
 def _dturn_verify(svc):
     time.sleep(1.5)
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
@@ -3291,9 +3309,11 @@ def _dturn_ensure(tp):   # make the container match the record entry (download b
         _TURN_INSTALLING.discard(svc)
         return
     r = run(["docker", "inspect", "-f", "{{.State.Running}}", _turn_cname(svc)])
-    if (r.stdout or "").strip() == "true":
+    if (r.stdout or "").strip() == "true" and _dturn_netns_current(svc):   # running AND (bridge) joined to our LIVE netns
         _TURN_INSTALLING.discard(svc); _TURN_FAILED.discard(svc); _TURN_ATTEMPTS.pop(svc, None); NODE_PROGRESS.pop(svc, None)
         return
+    if (r.stdout or "").strip() == "true":                                 # running but on a stale netns (post-recreate) → rebuild into ours
+        print("swg-noded: turn %s on a stale netns after a node recreate — rebuilding into the current one" % svc, flush=True)
     if _TURN_ATTEMPTS.get(svc, 0) >= TURN_MAX_ATTEMPTS and not os.path.exists(_turn_bin_local(svc)):
         _TURN_FAILED.add(svc); _TURN_INSTALLING.discard(svc); NODE_PROGRESS.pop(svc, None)   # given up — "install failed" (a manual Reinstall resets the counter)
         return
