@@ -3673,6 +3673,18 @@ def report_proc(panel, state, err=None):
 # never gated — the panel keeps seeing the node live every interval.
 ROUTING_RECONCILE_EVERY_S = 60
 
+# Silent-drift heal: the routing rebuilds above are signature-gated against DESIRED, so drift they don't inspect
+# (an nft chain flushed by another tool, a rule lost across a partial apply, a marker that says "converged" while
+# reality moved) would never repair on its own. Every VERIFY_EVERY_S we drop the rebuild sig-markers so the next
+# routing pass re-asserts every chain/table from scratch against live state — the ordinary rebuild path, just
+# forced. Cheap (rebuilds rules/chains, not set contents), so a large fleet pays it only twice an hour.
+VERIFY_EVERY_S = 1800
+def _force_reverify():
+    """Drop the rebuild sig-markers so the next routing reconcile re-asserts the smart / count / DoH chains."""
+    for fn in (".smart-sig", ".catcount-sig", ".doh.sig"):
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(GEO_DIR, fn))
+
 _STATE_LOCK_FD = None          # held for the process lifetime → single-instance-per-state-dir guard
 def _lock_state_dir():
     """Refuse to start a SECOND swg-noded on the same state dir. Two nodeds sharing /var/lib/swg-noded fight over
@@ -3708,6 +3720,7 @@ def main():
     os.makedirs(STATE_DIR, exist_ok=True)
     last_samples = {}
     last_route_sig = None; last_route_t = 0.0    # gate the heavy routing reconcile (see ROUTING_RECONCILE_EVERY_S)
+    last_verify_t = time.time()                  # periodic full re-verify (silent-drift heal, see VERIFY_EVERY_S)
     PANEL_IP_FILE = os.path.join(STATE_DIR, "panel-ip")   # node IP role: source IP to dial the panel (persisted)
     panel_ip = ""; bad_pip = ""                     # bad_pip = a panel_ip that failed to connect → don't keep re-binding it
     with contextlib.suppress(OSError):
@@ -3720,6 +3733,10 @@ def main():
     while True:
         t0 = time.time()
         _LOOP["n"] += 1                             # new loop → per-loop caches (nft table render) refresh
+        if t0 - last_verify_t >= VERIFY_EVERY_S:    # periodic drift heal: force the next routing pass to re-assert
+            _force_reverify(); last_route_sig = None   # (drop sig-markers + un-gate the routing reconcile this cycle)
+            last_verify_t = t0
+            print("reverify: re-asserting routing chains against live state", flush=True)
         try:
             snap = build_snapshot(node_cfg, online_max, last_samples)
             use_ip = panel_ip if (panel_ip and panel_ip != bad_pip) else ""
