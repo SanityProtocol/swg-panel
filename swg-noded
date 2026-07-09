@@ -308,6 +308,27 @@ def run(args, input_text=None, timeout=20):
         return subprocess.CompletedProcess(args, 124, "", "timeout")
 
 
+# ── Reconcile op backoff / quarantine ──────────────────────────────────────────────────────────────────────
+# A persistently-failing agent op (a datapath that keeps rejecting an add, a wedged iface, …) must not spawn the
+# agent and do futile work every sync — that is what pinned CPU before. Track failures per key: while a key is in
+# backoff we SKIP the op (still surfaced as an error so the panel sees it), then retry on an exponential, capped
+# schedule so it self-heals the moment the condition clears. Cleared on the first success. In-memory by design —
+# a restart re-attempts once (cheap) and re-quarantines if still broken.
+_OP_BACKOFF = {}   # key -> [fail_count, next_attempt_monotonic]
+def _op_ready(key):
+    st = _OP_BACKOFF.get(key)
+    return (not st) or time.monotonic() >= st[1]
+def _op_fail(key, base=5.0, cap=300.0):
+    st = _OP_BACKOFF.get(key) or [0, 0.0]
+    st[0] += 1; st[1] = time.monotonic() + min(base * (2 ** min(st[0], 8)), cap)   # 10s,20s,…→cap 5min
+    _OP_BACKOFF[key] = st; return st[0]
+def _op_ok(key):
+    _OP_BACKOFF.pop(key, None)
+def op_quarantined():
+    """keys wedged (≥3 consecutive fails) — merged into the snapshot so a stuck op is visible, not just silent."""
+    return sorted(k for k, v in _OP_BACKOFF.items() if v[0] >= 3)
+
+
 def run_agent(agent, sudo, payload):
     prefix = ["sudo", "-n"] if sudo else []
     try:
@@ -2425,6 +2446,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
+            "quarantined": op_quarantined(),   # ops in repeated-failure backoff — visible, not silently churning
             "node_ips": list_node_ips(_addrs), "node_ifaces": list_node_ifaces(_addrs),
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status()}
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
@@ -2602,6 +2624,8 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                         # duplicate add ("peer_exists"), and that failure was pinning the reconcile at the fast
                         # retry cadence forever (~17% CPU). A healthy link is left untouched.
                         applied_ep[ek] = want_ep; ep_dirty = True
+                    elif not _op_ready("redial|" + ek):             # a re-dial that keeps failing → back off, don't churn
+                        res["errors"].append(f"endpoint {pk[:8]}: retrying later (repeated failure)")
                     else:
                         _mkadd = lambda: {"op": "add-peer", "iface": iface, "public_key": pk,
                                           "allowed_ips": p.get("allowed_ips", ""),
@@ -2616,9 +2640,13 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                             run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
                             r = run_agent(agent, sudo, _mkadd())
                         if r.get("ok"):
-                            applied_ep[ek] = want_ep; ep_dirty = True; res["added"] += 1
+                            _op_ok("redial|" + ek); applied_ep[ek] = want_ep; ep_dirty = True; res["added"] += 1
                         else:
-                            res["errors"].append(f"endpoint {pk[:8]}: {r.get('error')}")
+                            _op_fail("redial|" + ek); res["errors"].append(f"endpoint {pk[:8]}: {r.get('error')}")
+                continue
+            akey = "add|" + iface + "|" + pk
+            if not _op_ready(akey):                                  # repeatedly rejected → in backoff; don't re-spawn the agent
+                res["errors"].append(f"add {pk[:8]}: retrying later (repeated failure)")
                 continue
             r = run_agent(agent, sudo, {
                 "op": "add-peer", "iface": iface, "public_key": pk,
@@ -2628,11 +2656,11 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                 "persistent_keepalive": p.get("persistent_keepalive"),
                 "name": p.get("name", "")})
             if r.get("ok"):
-                res["added"] += 1
+                _op_ok(akey); res["added"] += 1
                 if p.get("endpoint"):
                     applied_ep[iface + "|" + pk] = p.get("endpoint"); ep_dirty = True
             else:
-                res["errors"].append(f"add {pk[:8]}: {r.get('error')}")
+                _op_fail(akey); res["errors"].append(f"add {pk[:8]}: {r.get('error')}")
         # An onboarded interface is ADD-ONLY: the panel never removes peers it didn't create, so an
         # interface adopted from another tool (e.g. wg-easy) keeps its existing peers. They surface
         # as adoptable orphans instead of being wiped.
