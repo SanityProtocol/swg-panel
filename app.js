@@ -2657,9 +2657,12 @@ function Overview() {
     return {
       label: g.user ? g.user.name : (g.sample.title || "Unassigned peer"), value: g.rx + g.tx, count: peers.length,
       sub: dRanged ? xferCell(...dlul(g.rx, g.tx)) : rateCell(g.rx, g.tx),
-      // per-peer breakdown for the hover bubble — only when a user has >1 peer actually contributing traffic
-      bub: peers.length > 1 ? peers.map(pp => ({ name: pp.p.title || pp.p.name || "untitled", value: pp.rx + pp.tx,
-        sub: dRanged ? xferCell(...dlul(pp.rx, pp.tx)) : rateCell(pp.rx, pp.tx) })) : null,
+      // per-peer breakdown for the hover bubble — only when a user has >1 peer actually contributing traffic.
+      // Each row carries its protocol (wg/awg, from the live interface) + a name: the peer's title, or — when it has
+      // none — "Peer .<last octet of its tunnel IP>" (e.g. 10.99.3.43 → "Peer .43"), never the user's name.
+      bub: peers.length > 1 ? peers.map(pp => { const t = (pp.p.targets || [])[0] || {}; const oct = (t.ip || "").split(".").pop();
+        return { kind: targetType(t), name: pp.p.title || (oct ? "Peer ." + oct : "Peer"), value: pp.rx + pp.tx,
+          sub: dRanged ? xferCell(...dlul(pp.rx, pp.tx)) : rateCell(pp.rx, pp.tx) }; }) : null,
       color: dashRankColor(i, "talker"), href: "#/users",
       onClick: e => { e.preventDefault(); g.user ? revealUser(g.user.id) : revealPeer(g.sample); },
     };
@@ -6090,7 +6093,7 @@ function RankBars({ rows }) {
     // a talker aggregating several peers carries a per-peer breakdown, shown on hover as its own mini bar list
     const bmx = (r.bub && r.bub.length) ? Math.max(1, ...r.bub.map(b => b.value || 0)) : 1;
     const bub = (r.bub && r.bub.length) ? html`<span class="rb-bub">${r.bub.map(b => html`<${Fragment}>
-        <span class="rb-bub-n" title=${b.name}>${b.name}</span>
+        <span class="rb-bub-n">${b.kind ? html`<${Tag} kind=${b.kind} label=${b.kind}/>` : ""}<span class="rb-bub-nm" title=${b.name}>${b.name}</span></span>
         <span class="rb-bub-track"><i style=${"width:" + Math.max(3, (b.value || 0) / bmx * 100) + "%;background:" + (r.color || "var(--brand)")}></i></span>
         <span class="rb-bub-v">${b.sub}</span><//>`)}</span>` : null;
     // rows with an href/onClick are interactive; rows without (e.g. destinations — nothing to open) render static

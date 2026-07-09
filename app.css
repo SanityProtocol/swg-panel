@@ -1825,7 +1825,8 @@ a.tg:hover{filter:brightness(1.25)}
   box-shadow:0 8px 26px rgba(0,0,0,.45);white-space:nowrap}
 .rb.hasbub:hover .rb-bub{display:grid}
 .rb-bub::before{content:"";position:absolute;left:0;right:0;top:-9px;height:9px}
-.rb-bub-n{font-family:var(--mono);font-size:11px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;min-width:0}
+.rb-bub-n{display:flex;align-items:center;gap:6px;min-width:0;font-family:var(--mono);font-size:11px;color:var(--ink)}
+.rb-bub-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .rb-bub-track{height:7px;border-radius:5px;background:var(--track);overflow:hidden}
 .rb-bub-track i{display:block;height:100%;border-radius:5px;opacity:.9}
 .rb-bub-v{font-family:var(--mono);font-size:10.5px;color:var(--dim);text-align:right}
