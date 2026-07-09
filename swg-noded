@@ -423,37 +423,62 @@ def _turn_installing_markers():
         out[f] = {"listen": (ls[0] if len(ls) > 0 else ""), "connect": (ls[1] if len(ls) > 1 else ""), "owner": (ls[2] if len(ls) > 2 else "")}
     return out
 
-def _turn_conn_ips():
-    """listen-port(str) → set(established remote IPs), from one ss sweep (TCP+UDP). Best-effort; empty if ss is
-    missing/errors. Peer = the client's source IP; keyed by the LOCAL port so we can match a proxy's listen port.
-    NB: sees the netns swg-noded runs in — fine for host-networked turn nodes (the common case); a bridge-net
-    docker turn-proxy terminates connections inside its container, so those wouldn't show here."""
+TURN_CAP_TABLE = "swg_turn"        # our own inet nft table: capture turn-proxy CLIENT src IPs (UDP + TCP) into a dynamic set
+TURN_CLI_TTL   = "3m"              # a captured client IP lingers this long past its last packet, then auto-prunes (online is wg-tracked)
+
+
+def _ensure_turn_capture(ports):
+    """Keep an nft `swg_turn` table whose prerouting rule records each turn-proxy CLIENT's source IP into a dynamic,
+    self-expiring set `cli` (key = src-ip . dst-port). Replaces the old `ss` sweep: it works for UDP (which ss can't
+    see — a proxy serves every client from one unconnected socket) AND TCP, is read as O(turn-clients) (only OUR set,
+    not the whole socket/conntrack table), and needs no extra package. `ports` = the wanted turn listen ports.
+    Docker note: a bridge-net turn container terminates traffic in its own netns, so this host-netns rule won't see
+    those clients (same blind spot the ss sweep had)."""
+    want = sorted({int(p) for p in ports if str(p).isdigit()})
+    exists = run(["nft", "list", "table", "inet", TURN_CAP_TABLE]).returncode == 0
+    if not want:                                                   # no turn proxies → tear the table down
+        if exists:
+            run(["nft", "delete", "table", "inet", TURN_CAP_TABLE])
+        return
+    if not exists:
+        run(["nft", "add", "table", "inet", TURN_CAP_TABLE])
+        run(["nft", "add", "set", "inet", TURN_CAP_TABLE, "ports", "{ type inet_service; }"])
+        run(["nft", "add", "set", "inet", TURN_CAP_TABLE, "cli",
+             "{ type ipv4_addr . inet_service; flags dynamic,timeout; timeout " + TURN_CLI_TTL + "; }"])
+        run(["nft", "add", "chain", "inet", TURN_CAP_TABLE, "pre",   # prerouting @ mangle priority → sees the client src before any DNAT
+             "{ type filter hook prerouting priority mangle; policy accept; }"])
+        run(["nft", "add", "rule", "inet", TURN_CAP_TABLE, "pre",    # non-terminal: just record src-ip.dport, packet continues
+             "meta l4proto { tcp, udp } th dport @ports update @cli { ip saddr . th dport }"])
+    out = run(["nft", "list", "set", "inet", TURN_CAP_TABLE, "ports"]).stdout or ""   # sync @ports to the wanted list (drift-gated)
+    m = re.search(r"elements = \{([^}]*)\}", out)
+    cur = {int(x) for x in re.findall(r"\d+", m.group(1))} if m else set()
+    if cur != set(want):
+        run(["nft", "flush", "set", "inet", TURN_CAP_TABLE, "ports"])
+        run(["nft", "add", "element", "inet", TURN_CAP_TABLE, "ports", "{ " + ", ".join(str(p) for p in want) + " }"])
+
+
+def _turn_cli_ips():
+    """port(str) → set(client src IPs), read from OUR nft capture set (elements look like `203.0.113.9 . 56006 expires …`)."""
     m = {}
-    for proto in ("-t", "-u"):
-        try:
-            r = subprocess.run(["ss", "-Hn", proto, "state", "established"], capture_output=True, text=True, timeout=5)
-        except Exception:
-            continue
-        for line in (r.stdout or "").splitlines():
-            cols = line.split()
-            if len(cols) < 2:
-                continue
-            lp = cols[-2].rsplit(":", 1)[-1]                       # local addr:port → port
-            pip = cols[-1].rsplit(":", 1)[0].strip("[]")          # peer  addr:port → addr (the client source IP)
-            if lp.isdigit() and pip and pip not in ("*", "0.0.0.0", "::"):
-                m.setdefault(lp, set()).add(pip)
+    out = run(["nft", "list", "set", "inet", TURN_CAP_TABLE, "cli"]).stdout or ""
+    mm = re.search(r"elements = \{(.*)\}", out, re.S)
+    if mm:
+        for el in mm.group(1).split(","):
+            g = re.search(r"([0-9.]+)\s*\.\s*(\d+)", el)
+            if g:
+                m.setdefault(g.group(2), set()).add(g.group(1))
     return m
 
 
 def _attach_turn_src_ips(tp):
-    """Attach src_ips (unique client source IPs currently connected) to each turn-proxy by matching its listen
-    PORT against one ss sweep. Best-effort — any failure just leaves src_ips unset (the panel then shows none).
-    NB: works for a TCP-transport proxy (per-client established sockets); a UDP proxy serves all clients from ONE
-    unconnected socket, so ss can't see client IPs there (would need conntrack) — src_ips is left empty."""
+    """Attach src_ips (unique client source IPs) to each turn-proxy by matching its listen PORT against OUR nft
+    capture set (see _ensure_turn_capture — works for UDP and TCP). Best-effort — any failure leaves src_ips unset."""
     with contextlib.suppress(Exception):
         if not tp:
+            _ensure_turn_capture([])                               # no proxies → drop the capture table
             return
-        cmap = _turn_conn_ips()
+        _ensure_turn_capture([str(t.get("listen") or "").rsplit(":", 1)[-1] for t in tp])
+        cmap = _turn_cli_ips()
         for t in tp:
             lp = str(t.get("listen") or "").rsplit(":", 1)[-1]
             if lp.isdigit():
