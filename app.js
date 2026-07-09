@@ -2228,6 +2228,7 @@ const FLOW_ANIMS = [   // travelling-current styles for the flow lines (the ORIG
 ];
 function FlowMap2({ selIds, range, hist }) {
   const [hov, setHov] = useState(null);
+  const rankRef = useRef({ key: null, order: [] });   // frozen busyness ordering (see `ranked` below) — hook must sit above the early return
   const anim = (Store.panelSettings || {}).flow_anim || "off";   // HOST-WIDE setting — shared by every operator, persists across logins (default = OFF until an operator picks a style)
   const setAnim = m => { Store.panelSettings = { ...(Store.panelSettings || {}), flow_anim: m }; bus.emit(); api.panelSettings({ flow_anim: m }).catch(() => {}); };
   const G = flowGraph(selIds, range, hist);
@@ -2288,7 +2289,13 @@ function FlowMap2({ selIds, range, hist }) {
   const allIsle = N >= 2 && fleet.every(n => !connected(n.id)), maxSatR = Math.max(12, ...sats.map(s => satR(s.id)));
   const sep = 2 * maxNR + 50, Rc = N <= 1 ? 0 : sep / (2 * Math.sin(Math.PI / N));   // ring circumradius (connected layout)
   const start = N === 2 ? 0 : N === 4 ? -Math.PI / 4 : -Math.PI / 2, Rx = Rc * 1.34, Ry = Rc * 0.70;   // 2→left/right · 4→square corners · else polygon from top
-  const ranked = fleet.slice().sort((p, q) => (busy(q.id) - busy(p.id)) || (p.id < q.id ? -1 : 1));   // biggest traffic first
+  // Node POSITIONS are seeded by busyness, but FROZEN per selection — re-ranked only when nodes are selected/
+  // unselected, never on the 5s poll. Re-ranking live made the whole diagram reshuffle as traffic fluctuated
+  // (visual churn + wasted client CPU); the initial (or last selection-change) order now holds steady.
+  const _selKey = fleet.map(n => n.id).slice().sort().join(",");
+  if (rankRef.current.key !== _selKey)
+    rankRef.current = { key: _selKey, order: fleet.slice().sort((p, q) => (busy(q.id) - busy(p.id)) || (p.id < q.id ? -1 : 1)).map(n => n.id) };
+  const ranked = rankRef.current.order.map(id => fleet.find(n => n.id === id)).filter(Boolean);   // biggest traffic first, held stable
   const spos = {};
   if (allIsle) {
     // grid of independent island "stars": cell = down-fan width × (internet-up + node + fan-down) height; columns chosen to
@@ -7366,7 +7373,7 @@ function AddPeersSheet({ userId, userName }) {
           <span class=${"pc-kind " + cur.kind}>${cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg")}</span>
           <span class="pc-name">${carLabel(cur)}</span><span class="pc-count">${cursor + 1}/${items.length}</span></button>
         <button class="pc-arrow" title="Next peer" disabled=${cursor >= items.length - 1} onClick=${() => { setJump(false); setCursor(c => Math.min(items.length - 1, c + 1)); }}>▶</button>
-        <button class="pc-x" title="Remove this peer from the list" onClick=${removeCur}><${Ic} i="x"/></button>
+        <button class="pc-x" title="Remove this peer from the list" onClick=${removeCur}><${Ic} i="link"/></button>
         ${jump ? html`<div class="pc-menu">${items.map((it, i) => html`<button key=${it.key} class=${i === cursor ? "on" : ""} onClick=${() => { setCursor(i); setJump(false); }}><span class="pc-mi">${i + 1}</span> ${carLabel(it)}</button>`)}</div>` : null}
       </div>
       <div class="field"><label>Interfaces${cur.kind === "new" ? " · pick where to deploy" : ""}</label>
