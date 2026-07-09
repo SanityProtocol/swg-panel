@@ -71,6 +71,14 @@ if NODE_NET not in ("host", "bridge"):
 # (not the host net) to forward to 127.0.0.1:<port> and be seen by our nft client-IP capture. Our own container
 # id is our hostname (docker's default); overridable if the deployment sets a custom hostname.
 _SELF_CONTAINER = (os.environ.get("SWG_NODE_CONTAINER") or "").strip() or socket.gethostname()
+
+# A plain-wg interface persists cmd=["wg"], but the docker image ships ONLY `awg` (a superset that also reads/writes
+# plain-wg interfaces — they're even set up via `awg setconf`). With no `wg` binary every `wg show`/op would fail,
+# so the interface's peers report no handshake/transfer (dashboard throughput, online status, top-talkers all blank).
+# Resolve to the tool actually present: fall back to awg when wg is missing. Bare-metal with real wg is unchanged.
+_HAVE_WG = shutil.which("wg") is not None
+def _wgcmd(cmd):
+    return ["awg"] if (cmd == ["wg"] and not _HAVE_WG) else cmd
 # can the panel manage this node's host turn-proxy services? bare-metal: always (swg-noded is on the
 # host). docker: only when the installer mounted docker.sock (TURN_MANAGE=panel) so we can drive host
 # units via a privileged --pid=host helper. Reported so the panel only shows manage/onboard controls
@@ -2420,7 +2428,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
     interfaces = {}
     stopped_set = _load_stopped_ifaces()   # interfaces the operator deliberately stopped → "stopped", not "down"
     for iface, ic in (node_cfg.get("interfaces") or {}).items():
-        cmd = ic.get("cmd", ["awg"])
+        cmd = _wgcmd(ic.get("cmd", ["awg"]))
         try:                                        # one bad interface must never kill the whole snapshot
             _r = run(cmd + ["show", iface, "dump"])
             if _r.returncode != 0:                  # interface isn't up — flag it, but still surface its
@@ -2488,7 +2496,7 @@ def _iface_dump(node_cfg, iface):
     no such device). Lets a caller fetch the live interface ONCE and share it across current_pubkeys/
     current_allowed instead of shelling out per accessor every cycle."""
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
-    cmd = ic.get("cmd", ["awg"])
+    cmd = _wgcmd(ic.get("cmd", ["awg"]))
     try:
         r = run(cmd + ["show", iface, "dump"])
         if r.returncode != 0:
@@ -2546,7 +2554,7 @@ def current_handshakes(node_cfg, iface, dump=_UNSET):
 
 def current_listen_port(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
-    cmd = ic.get("cmd", ["awg"])
+    cmd = _wgcmd(ic.get("cmd", ["awg"]))
     try:
         r = run(cmd + ["show", iface, "dump"])
         if r.returncode == 0:
@@ -2851,7 +2859,7 @@ def apply_iface_keys(node_cfg, iface_key, agent, sudo):
         if not ic:
             continue
         action = (req or {}).get("action")
-        cmd = ic.get("cmd", ["awg"])
+        cmd = _wgcmd(ic.get("cmd", ["awg"]))
         try:
             if action == "rebaseline":
                 conf_text = ""
