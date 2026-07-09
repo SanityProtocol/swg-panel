@@ -7194,6 +7194,7 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
     const onKey = e => {
       if (qrZoomEl) return;   // a QR enlargement is open — let it handle Esc (collapse it, keep the modal)
       if (_sheetStack[_sheetStack.length - 1] !== tok) return;   // a child modal is on top — defer to it
+      if ((e.key === "Enter" || e.key === "Escape") && e.target && e.target.dataset && e.target.dataset.enter === "self") return;   // input handles its own Enter/Esc (e.g. inline rename) — don't submit/close the sheet
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryClose(); return; }
       if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
         const primary = root.querySelector(".sheet-foot .btn-primary:not([disabled])") || root.querySelector(".btn-primary:not([disabled])");
@@ -7317,7 +7318,8 @@ function AddPeersSheet({ userId, userName }) {
   const [items, setItems] = useState(() => orderPeers(userId ? Store.peersOfUser(userId) : []).map(p => mkExisting(p, true)));
   const [cursor, setCursor] = useState(0);
   const [jump, setJump] = useState(false);
-  const [editTitle, setEditTitle] = useState(false);   // click the title → inline edit; blur/Enter → back to static
+  const [editTitle, setEditTitle] = useState(false);   // click the title → inline edit; blur/Enter keeps, Esc reverts
+  const editOrig = useRef("");                          // the title as it was when edit started → restored on Esc
   const goTo = i => { setJump(false); setEditTitle(false); setCursor(i); };
   const [toUnassign, setToUnassign] = useState([]);   // saved peers the operator unlinked → unassigned on Save
   const dirty = useRef(false); const sheetClose = useRef(null);
@@ -7395,10 +7397,13 @@ function AddPeersSheet({ userId, userName }) {
         <div class="pc-face" title="Pick a peer" onClick=${e => { if (!editTitle && !e.target.closest(".pc-titletext")) setJump(j => !j); }}>
           <span class=${"pc-kind " + (cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg"))}>${cur.kind === "new" ? "new" : ((rep(cur.peer).type || "").toLowerCase() === "awg" ? "awg" : "wg")}</span>
           <span class="pc-name">${editTitle
-            ? html`<input class="pc-title" autofocus value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} onInput=${e => updateTitle(e.target.value)}
+            ? html`<input class="pc-title" data-enter="self" autofocus value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} onInput=${e => updateTitle(e.target.value)}
                 onBlur=${() => setEditTitle(false)} onClick=${e => e.stopPropagation()}
-                onKeyDown=${e => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setEditTitle(false); } }}/>`
-            : html`<span class="pc-titletext" title="Click to rename this peer" onClick=${e => { e.stopPropagation(); setEditTitle(true); }}>${(cur.title || "").trim() || (cur.kind === "new" ? "New peer" : "untitled")}</span>`}${cur.kind === "existing" ? html`<span class="pc-rest"> · ${peerCtx(cur.peer)}</span>` : null}</span>
+                onKeyDown=${e => {
+                  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); setEditTitle(false); }          // keep the new title, back to static
+                  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); updateTitle(editOrig.current); setEditTitle(false); }   // revert to the pre-edit title
+                }}/>`
+            : html`<span class="pc-titletext" title="Click to rename this peer" onClick=${e => { e.stopPropagation(); editOrig.current = cur.title || ""; setEditTitle(true); }}>${(cur.title || "").trim() || (cur.kind === "new" ? "New peer" : "untitled")}</span>`}${cur.kind === "existing" ? html`<span class="pc-rest"> · ${peerCtx(cur.peer)}</span>` : null}</span>
           <span class="pc-count">${cursor + 1}/${items.length}</span>
         </div>
         <button class="pc-arrow" title="Next peer" disabled=${cursor >= items.length - 1} onClick=${() => goTo(Math.min(items.length - 1, cursor + 1))}>▶</button>
