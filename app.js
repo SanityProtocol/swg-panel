@@ -1682,7 +1682,7 @@ const dashState = { nodes: null, range: "live", peers: true, mesh: true, ov: {} 
 (function () {
   try {
     const raw = JSON.parse(localStorage.getItem("swg-dash") || "{}");
-    if (Array.isArray(raw.nodes)) dashState.nodes = new Set(raw.nodes);
+    if (Array.isArray(raw.nodes) && raw.nodes.length) dashState.nodes = new Set(raw.nodes);   // ignore a stale empty selection → default to the whole fleet
     if (DASH_RANGES.some(r => r[0] === raw.range)) dashState.range = raw.range;
     if (typeof raw.peers === "boolean") dashState.peers = raw.peers;
     if (typeof raw.mesh === "boolean") dashState.mesh = raw.mesh;
@@ -1718,19 +1718,23 @@ function dashToggleTrafKey(key, which) {
 }
 // Effective selected node ids, reconciled against the CURRENT fleet (ids for departed nodes drop out).
 // An empty selection collapses back to the whole fleet — the dashboard is never blank.
+// null OR an empty set both mean "the whole fleet" — the selection can never be empty (nothing to show).
 function dashNodes() {
   const fleet = (Store.fleet || []).map(n => n.id);
-  if (!dashState.nodes) return fleet;
+  if (!dashState.nodes || !dashState.nodes.size) return fleet;
   const sel = fleet.filter(id => dashState.nodes.has(id));
   return sel.length ? sel : fleet;
 }
-function dashNodeOn(id) { return !dashState.nodes || dashState.nodes.has(id); }
+function dashNodeOn(id) { const s = dashState.nodes; return !s || !s.size || s.has(id); }
 function dashAllOn() { const f = (Store.fleet || []).length; return !dashState.nodes || dashNodes().length >= f; }
 function dashToggleNode(id) {
   const fleet = (Store.fleet || []).map(n => n.id);
-  const sel = new Set(dashState.nodes ? [...dashState.nodes].filter(x => fleet.includes(x)) : fleet);
-  if (sel.has(id)) sel.delete(id); else sel.add(id);
-  dashState.nodes = (sel.size === 0 || sel.size >= fleet.length) ? null : sel;   // all/none → canonical "fleet"
+  const sel = new Set(dashState.nodes && dashState.nodes.size ? [...dashState.nodes].filter(x => fleet.includes(x)) : fleet);
+  if (sel.has(id)) {
+    if (sel.size <= 1) return;   // the last selected node can NOT be deselected — the dashboard always shows ≥1 node
+    sel.delete(id);
+  } else sel.add(id);
+  dashState.nodes = (sel.size >= fleet.length) ? null : sel;   // all selected → canonical null (never an empty set)
   dashSave(); bus.emit();
 }
 function dashSetAll() { dashState.nodes = null; dashSave(); bus.emit(); }
@@ -2745,9 +2749,11 @@ function HealthDot({ issues }) {
 // mode: the current node highlighted, click navigates. Same markup/CSS as the dashboard's node selector.
 function NodeRail({ active }) {
   if ((Store.nodes || []).length < 2) return null;
-  return html`<div class="dashrail noderail"><div class="dashrail-stack">
+  // Render at <body> (Portal) so the fixed rail escapes the .screen "rise" transform — otherwise a fixed child of a
+  // transformed ancestor is positioned relative to THAT ancestor and rides the 0.32s enter animation into place.
+  return html`<${Portal}><div class="dashrail noderail"><div class="dashrail-stack">
     <${NodesRailPanel} nav=${true} active=${active}/>
-  </div></div>`;
+  </div></div><//>`;
 }
 function NodeDetail({ node: rawName }) {
   const name = decodeURIComponent(rawName);   // `name` is the node id (the connector); display uses dname
