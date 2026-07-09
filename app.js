@@ -2631,23 +2631,39 @@ function Overview() {
   // top talkers — peers ranked by traffic across the selected nodes. Live = current per-peer rx/tx from the
   // snapshot; a range = per-peer windowed VOLUME from the peer RRD (/api/peer-history), matched back to the peer
   // by pubkey. Same node-selector + perspective as every other figure.
-  let talkers;
+  let perPeer;   // per-PEER traffic first (live per-target speeds, or ranged per-peer volume from the RRD)…
   if (dRanged) {
     const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; });   // pubkey → reconciled peer
     const byPk = {};
     (rangeHist.peers || []).forEach(e => { if (!sel.has(e.node) || !pkPeer[e.pubkey]) return;
       const a = byPk[e.pubkey] = byPk[e.pubkey] || { rx: 0, tx: 0 }; a.rx += e.rx || 0; a.tx += e.tx || 0; });
-    talkers = Object.entries(byPk).map(([pk, v]) => ({ p: pkPeer[pk], rx: v.rx, tx: v.tx }))
-      .filter(x => x.p && x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
+    perPeer = Object.entries(byPk).map(([pk, v]) => ({ p: pkPeer[pk], rx: v.rx, tx: v.tx })).filter(x => x.p);
   } else {
-    talkers = sPeers.map(p => {
+    perPeer = sPeers.map(p => {
       let r = 0, t = 0; p.targets.forEach(tg => { if (!sel.has(tg.node)) return; const o = tg.observed; if (o) { r += o.rx_speed || 0; t += o.tx_speed || 0; } });
       return { p, rx: r, tx: t };
-    }).filter(x => x.rx + x.tx > 0).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
+    });
   }
-  const talkerRows = talkers.map((x, i) => ({ label: x.p.name || x.p.title || "Unassigned peer", value: x.rx + x.tx,
-    sub: dRanged ? xferCell(...dlul(x.rx, x.tx)) : rateCell(x.rx, x.tx),
-    color: dashRankColor(i, "talker"), href: "#/users", onClick: e => { e.preventDefault(); revealPeer(x.p); } }));
+  // …then COMBINE a user's peers into ONE talker (a user with several devices is one bar, not one per device; the
+  // hover bubble breaks the total down per peer). Unassigned peers have no user to merge under → each stays its own row.
+  const talkG = {};
+  perPeer.forEach(x => { if (x.rx + x.tx <= 0) return;
+    const key = x.p.user_id ? "u" + x.p.user_id : "p" + x.p.id;
+    const g = talkG[key] || (talkG[key] = { user: x.p.user_id ? Store.user(x.p.user_id) : null, sample: x.p, rx: 0, tx: 0, peers: [] });
+    g.rx += x.rx; g.tx += x.tx; g.peers.push(x); });
+  const talkers = Object.values(talkG).sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx)).slice(0, nTalk);
+  const talkerRows = talkers.map((g, i) => {
+    const peers = g.peers.slice().sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx));
+    return {
+      label: g.user ? g.user.name : (g.sample.title || "Unassigned peer"), value: g.rx + g.tx, count: peers.length,
+      sub: dRanged ? xferCell(...dlul(g.rx, g.tx)) : rateCell(g.rx, g.tx),
+      // per-peer breakdown for the hover bubble — only when a user has >1 peer actually contributing traffic
+      bub: peers.length > 1 ? peers.map(pp => ({ name: pp.p.title || pp.p.name || "untitled", value: pp.rx + pp.tx,
+        sub: dRanged ? xferCell(...dlul(pp.rx, pp.tx)) : rateCell(pp.rx, pp.tx) })) : null,
+      color: dashRankColor(i, "talker"), href: "#/users",
+      onClick: e => { e.preventDefault(); g.user ? revealUser(g.user.id) : revealPeer(g.sample); },
+    };
+  });
   // traffic by DESTINATION CATEGORY — each category's FULL total. Categories NEST (youtube ⊂ google, yandex ⊂ ru_net),
   // so a byte counts in EVERY category it matches: they OVERLAP on purpose and do NOT sum to the total (the distinct
   // total is the CLIENT traffic below). Live = per-node `cats` rates (panel-derived from the node's nft counters);
@@ -6068,11 +6084,20 @@ function RankBars({ rows }) {
   const mx = Math.max(1, ...rows.map(r => r.value || 0));
   if (!rows.length) return html`<div class="harea-empty">no data</div>`;
   return html`<div class="rankbars">${rows.map(r => {
-    const inner = html`<span class="rb-label">${r.label}</span>
+    const inner = html`<span class="rb-label"><span class="rb-nm">${r.label}</span>${r.count > 1 ? html`<span class="rb-n" title=${r.count + " peers"}>${r.count}</span>` : ""}</span>
       <span class="rb-track"><i style=${"width:" + Math.max(2, (r.value || 0) / mx * 100) + "%;background:" + (r.color || "var(--brand)")}></i></span>
       <span class="rb-val">${r.sub}</span>`;
+    // a talker aggregating several peers carries a per-peer breakdown, shown on hover as its own mini bar list
+    const bmx = (r.bub && r.bub.length) ? Math.max(1, ...r.bub.map(b => b.value || 0)) : 1;
+    const bub = (r.bub && r.bub.length) ? html`<span class="rb-bub">${r.bub.map(b => html`<${Fragment}>
+        <span class="rb-bub-n" title=${b.name}>${b.name}</span>
+        <span class="rb-bub-track"><i style=${"width:" + Math.max(3, (b.value || 0) / bmx * 100) + "%;background:" + (r.color || "var(--brand)")}></i></span>
+        <span class="rb-bub-v">${b.sub}</span><//>`)}</span>` : null;
     // rows with an href/onClick are interactive; rows without (e.g. destinations — nothing to open) render static
-    return (r.href || r.onClick) ? html`<a class="rb" href=${r.href || "#"} onClick=${r.onClick || null} key=${r.label}>${inner}</a>` : html`<div class="rb static" key=${r.label}>${inner}</div>`;
+    const cls = "rb" + (bub ? " hasbub" : "");
+    return (r.href || r.onClick)
+      ? html`<a class=${cls} href=${r.href || "#"} onClick=${r.onClick || null} key=${r.label}>${inner}${bub}</a>`
+      : html`<div class=${cls + " static"} key=${r.label}>${inner}${bub}</div>`;
   })}</div>`;
 }
 
