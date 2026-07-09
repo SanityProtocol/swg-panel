@@ -2480,6 +2480,17 @@ def current_allowed(node_cfg, iface, dump=_UNSET):
     return {p["public_key"]: _norm_allowed(p["allowed_ips"]) for p in dump[1]}
 
 
+def current_endpoints(node_cfg, iface, dump=_UNSET):
+    """{pubkey -> live 'ip:port' endpoint} on the interface, or None if it can't be read. Used to ADOPT a
+    mesh dial-out peer already dialed to the desired endpoint after our applied_ep memory is lost (restart /
+    docker convert) — so we neither re-add a duplicate (which the agent refuses) nor spin the reconcile."""
+    if dump is _UNSET:
+        dump = _iface_dump(node_cfg, iface)
+    if dump is None:
+        return None
+    return {p["public_key"]: p.get("endpoint") for p in dump[1]}
+
+
 def current_listen_port(node_cfg, iface):
     ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
     cmd = ic.get("cmd", ["awg"])
@@ -2557,6 +2568,7 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
             res["errors"].append(f"{iface}: cannot read interface")
             continue
         live_allowed = current_allowed(node_cfg, iface, dump) or {}   # for re-applying a CHANGED AllowedIPs (cascade /32→/0)
+        live_ep = current_endpoints(node_cfg, iface, dump) or {}       # live endpoints — adopt an already-dialed peer (see the re-assert below)
         # EXPLICIT retirements from the panel (a key it rotated/deleted) FIRST — removed even on an
         # add-only interface, and before the add below so the replacement key can take the freed IP.
         for pk in remove_by_iface.get(iface, []):
@@ -2583,16 +2595,30 @@ def reconcile(node_cfg, desired_by_iface, agent, sudo, remove_by_iface=None):
                 # the new endpoint. Keyed on the desired value so this fires once per real change, not per roam.
                 ek = iface + "|" + pk; want_ep = p.get("endpoint")
                 if want_ep and applied_ep.get(ek) != want_ep:
-                    r = run_agent(agent, sudo, {"op": "add-peer", "iface": iface, "public_key": pk,
-                                                "allowed_ips": p.get("allowed_ips", ""),
-                                                "preshared_key": p.get("preshared_key", "none"),
-                                                "endpoint": want_ep,
-                                                "persistent_keepalive": p.get("persistent_keepalive"),
-                                                "name": p.get("name", "")})
-                    if r.get("ok"):
-                        applied_ep[ek] = want_ep; ep_dirty = True; res["added"] += 1
+                    if live_ep.get(pk) == want_ep:
+                        # SELF-HEAL (no datapath change): the peer is ALREADY dialed to exactly the desired
+                        # endpoint — our applied_ep memory was simply lost (process restart / docker convert /
+                        # EP_FILE gone). Adopt it: record the endpoint WITHOUT re-adding. The agent refuses a
+                        # duplicate add ("peer_exists"), and that failure was pinning the reconcile at the fast
+                        # retry cadence forever (~17% CPU). A healthy link is left untouched.
+                        applied_ep[ek] = want_ep; ep_dirty = True
                     else:
-                        res["errors"].append(f"endpoint {pk[:8]}: {r.get('error')}")
+                        _mkadd = lambda: {"op": "add-peer", "iface": iface, "public_key": pk,
+                                          "allowed_ips": p.get("allowed_ips", ""),
+                                          "preshared_key": p.get("preshared_key", "none"),
+                                          "endpoint": want_ep,
+                                          "persistent_keepalive": p.get("persistent_keepalive"),
+                                          "name": p.get("name", "")}
+                        r = run_agent(agent, sudo, _mkadd())
+                        if not r.get("ok") and r.get("code") == "peer_exists":
+                            # genuine re-dial, but the peer lingers under a DIFFERENT endpoint and the agent won't
+                            # add a duplicate → self-heal: drop it, then re-add with the new endpoint.
+                            run_agent(agent, sudo, {"op": "remove-peer", "iface": iface, "public_key": pk})
+                            r = run_agent(agent, sudo, _mkadd())
+                        if r.get("ok"):
+                            applied_ep[ek] = want_ep; ep_dirty = True; res["added"] += 1
+                        else:
+                            res["errors"].append(f"endpoint {pk[:8]}: {r.get('error')}")
                 continue
             r = run_agent(agent, sudo, {
                 "op": "add-peer", "iface": iface, "public_key": pk,
