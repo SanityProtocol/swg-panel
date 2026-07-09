@@ -390,6 +390,47 @@ def load_json(path, default):
         return default
 
 
+# ── Critical-state durability (users.json / nodes.json) ─────────────────────────────────────────────────────
+# Atomic writes stop partial-write corruption, but not LOGICAL loss (a truncating tool, disk damage, a botched
+# migration). load_json can't tell "absent" (fresh install → empty is correct) from "present but corrupt"
+# (→ empty would WIPE the roster / node store). The critical stores keep rotating known-good backups on save and,
+# on a corrupt primary, recover from the newest good backup — or refuse to come up empty over data that existed.
+def _state_backups(path):
+    d = os.path.dirname(path) or "."; base = os.path.basename(path) + ".bak."
+    try:
+        names = [n for n in os.listdir(d) if n.startswith(base)]
+    except OSError:
+        return []
+    return [os.path.join(d, n) for n in sorted(names, reverse=True)]   # ts suffix → name sort == newest first
+
+def save_critical(path, text, mode=0o600, keep=8):
+    atomic_write(path, text, mode)                                     # primary (atomic)
+    with contextlib.suppress(Exception):                              # + a rotating known-good backup (never fatal)
+        atomic_write(path + ".bak." + str(int(time.time())), text, mode)
+        for old in _state_backups(path)[keep:]:
+            with contextlib.suppress(OSError):
+                os.unlink(old)
+
+def load_critical(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default                                                # legitimately absent → fresh install
+    except (json.JSONDecodeError, OSError) as e:
+        for b in _state_backups(path):                               # present but corrupt → recover newest good backup
+            try:
+                with open(b) as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+            sys.stderr.write("swg-panel: %s unreadable (%s) — recovered from %s\n" % (path, e, b))
+            with contextlib.suppress(Exception):
+                atomic_write(path, json.dumps(data, indent=2) + "\n", mode=0o600)   # promote back → stop limping
+            return data
+        raise RuntimeError("critical state %s is corrupt and no good backup exists — refusing to start empty" % path)
+
+
 # ───────────────────────── roster: users + peers ─────────────────────────
 #
 # users.json is a versioned envelope, NOT a flat dict:
@@ -408,7 +449,7 @@ ROSTER_VERSION = 1
 
 
 def roster_load(path):
-    r = load_json(path, {})
+    r = load_critical(path, {})
     if not isinstance(r, dict):
         r = {}
     r.setdefault("version", ROSTER_VERSION)
@@ -427,6 +468,11 @@ def roster_save(path, roster):
         fcntl.flock(f, fcntl.LOCK_EX)
         json.dump(roster, f, indent=2); f.write("\n"); f.flush(); os.fsync(f.fileno())
     os.replace(tmp, path)
+    with contextlib.suppress(Exception):   # rotating known-good backup — recovered by load_critical if the primary corrupts
+        atomic_write(path + ".bak." + str(int(time.time())), json.dumps(roster, indent=2) + "\n", mode=0o600)
+        for old in _state_backups(path)[8:]:
+            with contextlib.suppress(OSError):
+                os.unlink(old)
 
 
 # ─────────────── audit / activity log (panel host only) ───────────────
@@ -709,12 +755,12 @@ make_pw_hash = make_token_hash
 
 
 def nodes_load(path):
-    d = load_json(path, {})
+    d = load_critical(path, {})
     return d if isinstance(d, dict) else {}
 
 
 def nodes_save(path, nodes):
-    atomic_write(path, json.dumps(nodes, indent=2) + "\n", mode=0o600)
+    save_critical(path, json.dumps(nodes, indent=2) + "\n")
 
 
 def migrate_node_ids(nodes_path, roster_path, store_configs, config_dir):
