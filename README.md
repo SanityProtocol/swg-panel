@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.4-beta</code></p>
+<p align="center"><code>1.2.5-beta</code></p>
 
 ---
 
 # swgPanel
 
-**Your own private VPN, run from one simple web page.**
+**Easy-to-use self-hosted WireGuard & AmneziaWG control panel with TURN-PROXY support. Deploy your own VPN in minutes.**
 
 swgPanel is a control panel for running your own WireGuard / AmneziaWG VPN across one or more servers.
 You add your people in the browser, hand them a QR code, and they’re connected. Everything — who has

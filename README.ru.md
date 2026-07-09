@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <b>Русский</b> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.4-beta</code></p>
+<p align="center"><code>1.2.5-beta</code></p>
 
 ---
 
 # swgPanel
 
-**Ваш собственный приватный VPN, управляемый с одной простой веб-страницы.**
+**Простая в использовании самостоятельно разворачиваемая панель управления WireGuard и AmneziaWG с поддержкой TURN-PROXY. Разверните свой собственный VPN за считанные минуты.**
 
 swgPanel — это панель управления для запуска собственного VPN на WireGuard / AmneziaWG на одном или
 нескольких серверах. Вы добавляете своих людей прямо в браузере, выдаёте им QR-код — и они подключены.
