@@ -465,7 +465,7 @@ const api = {
   turnSeries(node, fork, range) { return this.get("/api/turn-series?node=" + encodeURIComponent(node) + "&fork=" + encodeURIComponent(fork) + "&range=" + encodeURIComponent(range)); },
   meshSeries(node, peer, range) { return this.get("/api/mesh-series?node=" + encodeURIComponent(node) + "&peer=" + encodeURIComponent(peer) + "&range=" + encodeURIComponent(range)); },
   turnIps() { return this.get("/api/turn-ips"); },
-  turnIpsFlush(body) { return this.post("/api/turn-ips/flush", body || {}); },   // {node?, ip?}: ip → delete one; else drop inactive (keep online)
+  turnIpsFlush(body) { return this.post("/api/turn-ips/flush", body || {}); },   // {node?, ip?, service?}: ip → delete one; service → this proxy's offline; else node/fleet inactive (keep online)
   catalog(search, page) { return this.get("/api/catalog?search=" + encodeURIComponent(search || "") + "&page=" + (page || 0)); },
   catalogIndex() { return this.get("/api/catalog/index"); },
   catalogRefresh() { return this.post("/api/catalog/refresh", {}); },
@@ -4345,7 +4345,10 @@ function TurnIpsHeader({ node, svc }) {
   const all = [...ips].map(ip => ({ ip, last: (recs[ip] || {}).last, on: active.has(ip) }))
     .sort((a, b) => (a.on === b.on ? (b.last || 0) - (a.last || 0) : a.on ? -1 : 1));
   const rows = all.slice(0, 10);   // show at most 10 here — the full list lives in Settings
-  const flush = async () => { await api.turnIpsFlush({ node, service: svc }); load(); };   // this proxy's recorded IPs only
+  const offlineN = all.filter(r => !r.on).length;   // only OFFLINE recorded IPs are flushable (online are kept)
+  const flush = () => openConfirm({ title: "Flush offline recorded IPs", confirmLabel: "Flush", danger: true,
+    body: html`Remove ${offlineN} offline recorded IP${offlineN === 1 ? "" : "s"} for <b>this turn-proxy only</b>. Currently-online clients are kept, and other proxies are untouched.`,
+    onConfirm: async () => { await api.turnIpsFlush({ node, service: svc }); load(); } });   // service-scoped on the backend → this proxy's offline IPs only
   const openSettings = () => { pendingSettingsSection = "turn"; pendingTurnIpsOpen = true; closeAllModals(); go("#/panel/settings"); };
   const trigger = html`<span class="turnips-hd" onClick=${openSettings}>Turn IPs${active.size ? html` · <b>${active.size}</b>` : ""}</span>`;
   return html`<${Popover} hoverOnly cls="turnips-wrap" popCls="turnips-pop" trigger=${trigger}>
@@ -4353,7 +4356,7 @@ function TurnIpsHeader({ node, svc }) {
     ${rows.length ? html`<${Fragment}>
       ${rows.map(r => html`<div class="tipbub-row" key=${r.ip}><span class=${"tipdot" + (r.on ? " on" : "")}></span><span class="tipbub-ip">${r.ip}</span><span class="grow"></span><span class="tipbub-when">${r.on ? "online" : _lastSeen(r.last)}</span></div>`)}
       ${all.length > rows.length ? html`<div class="tipbub-more">+${all.length - rows.length} more in Settings</div>` : null}
-      <button class="tipbub-flush" onClick=${flush}><${Ic} i="trash"/> Flush offline recorded IPs</button>
+      ${offlineN ? html`<button class="tipbub-flush" onClick=${flush}><${Ic} i="trash"/> Flush offline recorded IPs</button>` : null}
     <//>`
       : html`<div class="tipbub-empty">No connections seen yet.</div>`}
   <//>`;
