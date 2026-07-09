@@ -1,6 +1,6 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.2.9-beta</code></p>
+<p align="center"><code>1.2.10-beta</code></p>
 
 ---
 
@@ -164,7 +164,7 @@ peer.
   traffic is going — all live.
 - **Add or remove users anytime.** Changes reach your servers within seconds. Remove someone and their
   access stops on the next check-in.
-- **Change the panel’s login** under **⚙︎ → Account** — it takes effect immediately.
+- **Change the panel’s login** under **⚙︎ → Account** — it takes effect immediately. While you’re there, switch on **two-factor authentication** (Google Authenticator) for stronger sign-in security.
 - **Route certain sites through a certain country (optional).** For example, send streaming out through a
   server abroad and keep everything else local. Set it per server under **Settings → Routing lists**.
 - **Get past tougher blocks (optional).** If plain VPN traffic is blocked on a network, swgPanel can wrap
