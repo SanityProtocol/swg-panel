@@ -29,10 +29,13 @@ RUN apt-get update \
 
 WORKDIR /opt/swg-panel
 COPY swg-panel-server app.css app.js index.html reconcile.js VERSION ./
+# swg-sub — the public subscription surface + its buildless front-end. Rides in this image (pure
+# stdlib, no extra deps) but runs as a SEPARATE, read-only container (see docker-compose.yml).
+COPY swg-sub sub.html sub.js sub.css ./
 COPY swg-passwd /usr/local/bin/swg-passwd
 COPY vendor/ ./vendor/
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh ./swg-panel-server /usr/local/bin/swg-passwd
+RUN chmod +x /entrypoint.sh ./swg-panel-server ./swg-sub /usr/local/bin/swg-passwd
 
 ENV SWG_PANEL_WEB=/opt/swg-panel \
     SWG_PANEL_FLEET=/etc/swg-panel/fleet.json \

@@ -46,6 +46,35 @@ services:
       # - ./tls/fullchain.pem:/etc/swg-panel/tls/fullchain.pem:ro
       # - ./tls/key.pem:/etc/swg-panel/tls/key.pem:ro
 
+  # The public subscription surface. A SEPARATE container that serves per-user QR/config pages at
+  # https://sub.<domain>/<token>#<unlock-key>. It reuses the panel image (swg-sub is pure stdlib —
+  # no separate build) but runs its own read-only process: the state volumes are mounted `:ro`, it
+  # bypasses the panel entrypoint, and it holds no login/write/node code. So a compromise of this
+  # internet-facing surface yields only ciphertext (the unlock key rides in the URL fragment and
+  # never reaches the server), never the fleet. OFF until you enable it in Settings → Subscriptions.
+  swg-sub:
+    image: ghcr.io/sanityprotocol/swg-panel:latest
+    # build: .
+    pull_policy: ${PULL_POLICY:-missing}
+    container_name: swg-sub
+    restart: unless-stopped
+    profiles: ["host", "master", "host-node"]     # runs wherever the panel runs
+    depends_on: ["swg-panel"]
+    entrypoint: ["/opt/swg-panel/swg-sub"]        # NOT the panel entrypoint — no acme/fleet-write, just serve
+    ports:
+      - "${SUB_PORT:-8444}:8444"                  # host-published → container's 8444 (front with your reverse proxy)
+    environment:
+      SWG_SUB_FLEET: /etc/swg-panel/fleet.json    # locate the same state files the panel wrote
+      SWG_SUB_WEB: /opt/swg-panel                 # sub.html/sub.js/sub.css + vendor/qrcode.js live here in the image
+      SWG_SUB_HOST: "0.0.0.0"
+      SWG_SUB_PORT: "8444"
+      # Plain HTTP by default — terminate TLS at your reverse proxy / Cloudflare, or reuse the panel's
+      # cert by setting serve.cert_path=/etc/swg-panel/tls/fullchain.pem (+ key_path) in the panel.
+    volumes:
+      - ./data/etc:/etc/swg-panel:ro              # fleet.json (paths) + tls/ (cert reuse, read-only)
+      - ./data/lib:/var/lib/swg-panel:ro          # roster + nodes + panel-settings + subs (vault/blobs) — READ-ONLY
+      - ./data/stats:/var/www/wgstats:ro          # node snapshot mirrors (endpoint / server pubkey / awg params)
+
   swg-node:
     # Prebuilt image from GHCR. To build the userspace AmneziaWG datapath from source
     # instead, comment `image:` and uncomment the `build:` block.

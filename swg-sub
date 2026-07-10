@@ -366,27 +366,45 @@ class _TLSServer(ThreadingHTTPServer):
 
 
 def _serve_config(state):
-    """Listener host/port/TLS: panel-settings.json `subscriptions.serve` wins (config lives in the
-    panel), SWG_SUB_* env is the fallback, then a sane default. Read once at startup — changing the
-    bind or TLS needs a restart; the master enable flag is what's re-read live per request."""
+    """Listener host/port/TLS. Read once at startup — changing the bind or TLS needs a restart; the
+    master enable flag is what's re-read live per request.
+
+    Precedence is env-FIRST, then the panel's `subscriptions.serve`, then a default. The bind is an
+    infrastructure fact — the systemd unit's SWG_SUB_PORT, or the port the docker container publishes
+    (fixed at 8444 inside the container) — so it MUST win over a panel field; otherwise changing the
+    port in the panel would bind a port the container never published. The panel's serve.* is the
+    fallback for a hand-run bare-metal process with no unit, and the source of the TLS cert when the
+    infra didn't pin one (e.g. reusing the panel's cert)."""
     serve = state.subscriptions().get("serve") if isinstance(state.subscriptions().get("serve"), dict) else {}
-    host = (serve.get("host") or os.environ.get("SWG_SUB_HOST") or "0.0.0.0").strip() or "0.0.0.0"
+    host = (os.environ.get("SWG_SUB_HOST") or serve.get("host") or "0.0.0.0").strip() or "0.0.0.0"
     try:
-        port = int(serve.get("port") or os.environ.get("SWG_SUB_PORT") or 8444)
+        port = int(os.environ.get("SWG_SUB_PORT") or serve.get("port") or 8444)
     except (TypeError, ValueError):
         port = 8444
     port = max(1, min(65535, port))
-    mode = serve.get("tls_mode") or ("selfsigned" if os.environ.get("SWG_SUB_TLS_CERT") else "reverse-proxy")
-    cert = (serve.get("cert_path") or os.environ.get("SWG_SUB_TLS_CERT") or "").strip()
-    key = (serve.get("key_path") or os.environ.get("SWG_SUB_TLS_KEY") or "").strip()
-    # Plain HTTP behind the operator's own reverse proxy, or TLS terminated here when a cert is on disk.
-    if mode == "reverse-proxy" or not (cert and key and os.path.exists(cert) and os.path.exists(key)):
-        return host, port, None, None
-    return host, port, cert, key
+    env_cert, env_key = os.environ.get("SWG_SUB_TLS_CERT"), os.environ.get("SWG_SUB_TLS_KEY")
+    if env_cert and env_key:
+        cert, key = env_cert.strip(), env_key.strip()          # infra pinned a cert (e.g. bare-metal internal mode)
+    elif serve.get("tls_mode") == "reverse-proxy":
+        cert, key = "", ""                                      # operator terminates TLS upstream → plain HTTP here
+    else:
+        cert, key = (serve.get("cert_path") or "").strip(), (serve.get("key_path") or "").strip()
+    if cert and key and os.path.exists(cert) and os.path.exists(key):
+        return host, port, cert, key
+    return host, port, None, None                              # no usable cert → plain HTTP (front with a proxy)
 
 
 def main():
+    # Tolerate a cold start where the panel hasn't written fleet.json yet (docker: swg-sub and the
+    # panel come up together and share the config volume). Wait a bounded while, then let the process
+    # exit so the supervisor (systemd Restart / compose restart) retries — never spin forever.
     fleet = load_json(FLEET_PATH, None)
+    for _ in range(30):
+        if fleet is not None:
+            break
+        print(f"swg-sub: waiting for {FLEET_PATH} …", flush=True)
+        time.sleep(2)
+        fleet = load_json(FLEET_PATH, None)
     if fleet is None:
         raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
     state = State(fleet)
