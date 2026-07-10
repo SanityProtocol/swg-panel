@@ -926,6 +926,112 @@ def save_2fa(path, data):
     atomic_write(path, json.dumps(data, indent=2) + "\n", mode=0o600)
 
 
+# ───────────────────────── subscriptions: per-user shareable QR pages ─────────────────────────
+#
+# The panel NEVER holds a usable key here. Every secret is encrypted/wrapped in the ADMIN BROWSER
+# (WebCrypto) and the panel stores only opaque blobs it cannot read:
+#   vault.json   {salt, sk_by_pw, sk_check}   the panel-wide Subscription Key wrapped by the admin
+#                                             password (convenience cache). SK plaintext is shown once
+#                                             and never stored here.
+#   users.json   {user_id: {token_sha, token_hash, unlock_by_sk, enabled, created, rotated}}
+#                                             per-user: the URL token (hashed like a node token) + the
+#                                             user's unlock-key wrapped by the SK.
+#   blobs/<uid>.json {peer_id: {sec, at}}     per-peer secret (privkey‖psk) AES-GCM'd with the user's
+#                                             unlock-key. The user's URL FRAGMENT *is* that unlock-key.
+# There is deliberately NO code path here that decrypts a secret. The read side returns ciphertext +
+# non-secret params only, filtered at read time to peers CURRENTLY assigned to the user (the roster is
+# authoritative), so a stale blob can never surface.
+
+def _sub_dir(deps):
+    return deps.get("sub_dir") or os.path.join(os.path.dirname(deps["roster_path"]) or ".", "subs")
+
+def _sub_vault_path(deps): return os.path.join(_sub_dir(deps), "vault.json")
+def _sub_users_path(deps): return os.path.join(_sub_dir(deps), "users.json")
+def _sub_blob_path(deps, uid):
+    return os.path.join(_sub_dir(deps), "blobs", re.sub(r"[^A-Za-z0-9_-]", "_", str(uid)) + ".json")
+
+def _load_sub_json(path):
+    d = load_json(path, {}) if path else {}
+    return d if isinstance(d, dict) else {}
+
+def load_sub_vault(deps): return _load_sub_json(_sub_vault_path(deps))
+def save_sub_vault(deps, d):
+    os.makedirs(_sub_dir(deps), exist_ok=True)
+    atomic_write(_sub_vault_path(deps), json.dumps(d, indent=2) + "\n", mode=0o600)
+
+def load_sub_users(deps): return _load_sub_json(_sub_users_path(deps))
+def save_sub_users(deps, d):
+    os.makedirs(_sub_dir(deps), exist_ok=True)
+    atomic_write(_sub_users_path(deps), json.dumps(d, indent=2) + "\n", mode=0o600)
+
+def load_sub_blobs(deps, uid): return _load_sub_json(_sub_blob_path(deps, uid))
+def save_sub_blobs(deps, uid, d):
+    os.makedirs(os.path.dirname(_sub_blob_path(deps, uid)), exist_ok=True)
+    atomic_write(_sub_blob_path(deps, uid), json.dumps(d, indent=2) + "\n", mode=0o600)
+def drop_sub_blobs(deps, uid):
+    with contextlib.suppress(OSError):
+        os.remove(_sub_blob_path(deps, uid))
+
+def subs_enabled(deps):
+    return bool(((deps.get("panel_settings") or {}).get("subscriptions") or {}).get("enabled"))
+
+def sub_token_lookup(deps, token):
+    """Raw token → user_id via constant-time sha256 match; None if not found or that user is disabled."""
+    if not token:
+        return None
+    sha = hashlib.sha256(token.encode()).hexdigest()
+    for uid, rec in load_sub_users(deps).items():
+        if rec.get("enabled") and hmac.compare_digest(str(rec.get("token_sha", "")), sha):
+            return uid
+    return None
+
+def sub_live_peers(roster, uid):
+    """Peers CURRENTLY assigned to uid — the roster is authoritative, so this is the read-time gate."""
+    return {pid: p for pid, p in ((roster.get("peers") or {}).items()) if p.get("user_id") == uid}
+
+def sub_gc_user(deps, uid, roster):
+    """Prune the user's blob file to peers still assigned to them (housekeeping). Returns the live blobs."""
+    live = sub_live_peers(roster, uid)
+    blobs = load_sub_blobs(deps, uid)
+    pruned = {pid: v for pid, v in blobs.items() if pid in live}
+    if pruned != blobs:
+        if pruned:
+            save_sub_blobs(deps, uid, pruned)
+        else:
+            drop_sub_blobs(deps, uid)
+    return pruned
+
+def sub_read_data(deps, roster, describe, token):
+    """The public page's data for a token: the user's CURRENT peers, each target's NON-SECRET params +
+    the encrypted secret blob. Never returns a plaintext key. None if subscriptions are off or the token
+    is invalid. This is what `swg-sub` will serve (it reads the same files)."""
+    if not subs_enabled(deps):
+        return None
+    uid = sub_token_lookup(deps, token)
+    if uid is None:
+        return None
+    user = (roster.get("users") or {}).get(uid) or {}
+    live = sub_live_peers(roster, uid)
+    blobs = sub_gc_user(deps, uid, roster)            # read-time reconcile against the roster
+    peers_out = []
+    for pid, p in live.items():
+        sec = (blobs.get(pid) or {}).get("sec")       # None until the admin browser provisions it
+        n_t = len(p.get("targets") or [])
+        tgts = []
+        for i, t in enumerate(p.get("targets") or []):
+            meta = ((describe or {}).get(t.get("node")) or {}).get(t.get("iface")) or {}
+            tgts.append({
+                "node": t.get("node"), "iface": t.get("iface"), "type": t.get("type") or "wg",
+                "ip": t.get("ip"),
+                "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
+                "dns": meta.get("dns") or [], "subnet": meta.get("subnet"),
+                "awg": meta.get("awg_params") or {},
+                "primary": (n_t > 1 and i == 0),      # the default deployment, tagged first
+            })
+        peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts})
+    return {"user": {"id": uid, "name": user.get("name") or ""}, "peers": peers_out}
+
+
 def nodes_load(path):
     d = load_critical(path, {})
     return d if isinstance(d, dict) else {}
@@ -3772,6 +3878,85 @@ def api(method, path, qs, body, deps):
         save_2fa(deps["twofa_path"], {"enabled": False})
         ev_append(roster_path, "panel", "account", "Disabled two-factor auth", "")
         return 200, {"ok": True, "data": {"disabled": True}}
+
+    # ── subscriptions (admin session). The panel only stores opaque wrapped/encrypted blobs the browser
+    #    produced; it never generates or reads a key. See the subscriptions helper block. ──
+    if method == "GET" and path == "/api/sub/vault":
+        v = load_sub_vault(deps)
+        return 200, {"ok": True, "data": {"exists": bool(v.get("sk_by_pw")),
+                                          "salt": v.get("salt"), "sk_by_pw": v.get("sk_by_pw"), "sk_check": v.get("sk_check")}}
+
+    if method == "POST" and path == "/api/sub/vault":                # set on first enable / re-wrap on password change
+        salt, sk, chk = body.get("salt"), body.get("sk_by_pw"), body.get("sk_check")
+        if not (isinstance(salt, str) and isinstance(sk, str) and isinstance(chk, str)):
+            return 400, {"ok": False, "error": "salt, sk_by_pw and sk_check are required", "code": "bad_request"}
+        save_sub_vault(deps, {"salt": salt, "sk_by_pw": sk, "sk_check": chk, "at": now()})
+        return 200, {"ok": True, "data": {"saved": True}}
+
+    if method == "GET" and path == "/api/sub/users":                 # admin UI state: no secrets, just coverage
+        roster = roster_load(roster_path)
+        users = load_sub_users(deps)
+        out = {}
+        for uid, rec in users.items():
+            blobs = sub_gc_user(deps, uid, roster)
+            live = sub_live_peers(roster, uid)
+            out[uid] = {"enabled": bool(rec.get("enabled")), "created": rec.get("created"),
+                        "rotated": rec.get("rotated"), "peers": len(live), "provisioned": len(blobs)}
+        return 200, {"ok": True, "data": {"vault": bool(load_sub_vault(deps).get("sk_by_pw")), "users": out}}
+
+    if method == "POST" and path == "/api/sub/user/enable":          # browser mints token + wraps the unlock-key
+        uid = body.get("user_id") or ""
+        roster = roster_load(roster_path)
+        if uid not in (roster.get("users") or {}):
+            return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
+        tsha, thash, unl = body.get("token_sha"), body.get("token_hash"), body.get("unlock_by_sk")
+        if not (isinstance(tsha, str) and isinstance(thash, str) and isinstance(unl, str)):
+            return 400, {"ok": False, "error": "token_sha, token_hash and unlock_by_sk are required", "code": "bad_request"}
+        users = load_sub_users(deps)
+        prev = users.get(uid) or {}
+        users[uid] = {"token_sha": tsha, "token_hash": thash, "unlock_by_sk": unl, "enabled": True,
+                      "created": prev.get("created") or now(), "rotated": now()}
+        save_sub_users(deps, users)
+        ev_append(roster_path, "user", uid, "Enabled subscription", (roster["users"][uid] or {}).get("name", ""))
+        return 200, {"ok": True, "data": {"enabled": True}}
+
+    if method == "POST" and path == "/api/sub/user/rotate":          # new token (same unlock-key) → old URL dies
+        uid = body.get("user_id") or ""
+        users = load_sub_users(deps)
+        rec = users.get(uid)
+        if not rec:
+            return 404, {"ok": False, "error": "no subscription for this user", "code": "not_found"}
+        tsha, thash = body.get("token_sha"), body.get("token_hash")
+        if not (isinstance(tsha, str) and isinstance(thash, str)):
+            return 400, {"ok": False, "error": "token_sha and token_hash are required", "code": "bad_request"}
+        rec["token_sha"] = tsha; rec["token_hash"] = thash; rec["rotated"] = now()
+        if isinstance(body.get("unlock_by_sk"), str):                # a full re-key also rotates the unlock-key
+            rec["unlock_by_sk"] = body["unlock_by_sk"]
+        save_sub_users(deps, users)
+        return 200, {"ok": True, "data": {"rotated": True}}
+
+    if method == "POST" and path == "/api/sub/user/disable":         # kill the URL + drop the ciphertext
+        uid = body.get("user_id") or ""
+        users = load_sub_users(deps)
+        if uid in users:
+            del users[uid]; save_sub_users(deps, users)
+        drop_sub_blobs(deps, uid)
+        return 200, {"ok": True, "data": {"disabled": True}}
+
+    if method == "POST" and path == "/api/sub/blob":                 # store/replace one peer's encrypted secret
+        uid, pid, sec = body.get("user_id") or "", body.get("peer_id") or "", body.get("sec")
+        if not isinstance(sec, str) or not sec:
+            return 400, {"ok": False, "error": "sec (ciphertext) is required", "code": "bad_request"}
+        roster = roster_load(roster_path)
+        p = (roster.get("peers") or {}).get(pid)
+        if not p or p.get("user_id") != uid:
+            return 409, {"ok": False, "error": "peer is not assigned to this user", "code": "not_assigned"}
+        if uid not in load_sub_users(deps):
+            return 404, {"ok": False, "error": "no subscription for this user", "code": "not_found"}
+        blobs = sub_gc_user(deps, uid, roster)
+        blobs[pid] = {"sec": sec, "at": now()}
+        save_sub_blobs(deps, uid, blobs)
+        return 200, {"ok": True, "data": {"stored": True}}
 
     if method == "POST" and path == "/api/account":
         creds = deps.get("auth")
@@ -6838,6 +7023,7 @@ def main():
                     "auth": load_auth(),
                     "session_secret": load_session_secret(fleet.get("roster_path", "/var/lib/swg-panel/users.json")),
                     "twofa_path": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "2fa.json"),
+                    "sub_dir": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "subs"),
                     "now": lambda: int(time.time())}
     Handler.deps["turn_ips"] = load_json(_turn_ips_path(Handler.deps), {}) or {}   # unique turn-proxy source-IP history (survives restart)
     # panel version-change → one "Panel updated" activity event (from→to). Tracked in an isolated
