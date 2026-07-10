@@ -25,6 +25,7 @@ esac; done
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PANEL_DIR="${PANEL_DIR:-/opt/swg-panel}"
+SUB_DIR="${SUB_DIR:-/opt/swg-sub}"
 AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
 NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 DOCKER_DIR="${SWG_DOCKER_DIR:-/opt/swg-panel-docker}"
@@ -247,6 +248,15 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     install_update_unit                              # ensure one-click host self-update is wired
     if run systemctl restart swg-panel-server; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-panel-server"; note "bare-metal swg-panel: updated but RESTART FAILED"; fi
+    # swg-sub (the subscription surface) ships with the panel. Refresh it in place when already installed —
+    # first-time provisioning (binary + unit) is done by install-host.sh. Inert unless enabled in the panel.
+    if [ -f "$SUB_DIR/swg-sub" ] && [ -f "$SRC/swg-sub" ]; then
+      run cp "$SRC/swg-sub" "$SUB_DIR/"; run chmod 755 "$SUB_DIR/swg-sub"
+      for f in sub.html sub.js sub.css; do [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$SUB_DIR/"; done
+      [ -f "$SRC/vendor/qrcode.js" ] && { run mkdir -p "$SUB_DIR/vendor"; run cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"; }
+      stamp "$SUB_DIR"
+      run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"
+    fi
   else note "bare-metal swg-panel: unchanged (${pold})"; fi
 fi
 

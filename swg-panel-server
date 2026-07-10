@@ -1025,6 +1025,7 @@ def sub_read_data(deps, roster, describe, token):
                 "ip": t.get("ip"),
                 "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
                 "dns": meta.get("dns") or [], "subnet": meta.get("subnet"),
+                "mtu": meta.get("mtu") or 1280,
                 "awg": meta.get("awg_params") or {},
                 "primary": (n_t > 1 and i == 0),      # the default deployment, tagged first
             })
@@ -2464,6 +2465,12 @@ PANEL_SETTINGS_DEFAULTS = {
     # token in Settings → Integrations. tokens store only a sha256 HASH (raw shown once). webhooks POST a signed
     # JSON body on peer.added/peer.removed/node.online/node.offline. See docs/API.md.
     "api": {"enabled": False, "tokens": [], "webhooks": []},
+    # per-user shareable subscription pages (served by swg-sub). OFF by default after install — the whole public
+    # surface 404s until the operator turns it on in Settings → Subscriptions and sets up the encryption vault.
+    # base_url is the public origin (e.g. https://sub.example.net); serve.* is how swg-sub binds/terminates TLS.
+    "subscriptions": {"enabled": False, "base_url": "",
+                      "serve": {"host": "0.0.0.0", "port": 8444, "tls_mode": "reverse-proxy",
+                                "cert_path": "", "key_path": ""}},
 }
 
 
@@ -2471,7 +2478,7 @@ def load_panel_settings(path):
     """panel-settings.json merged over the defaults (one level deep for the sub-dicts)."""
     saved = load_settings_critical(path) or {}   # backup-recovering load (a clobbered/corrupt primary → newest good backup)
     out = {**PANEL_SETTINGS_DEFAULTS, **saved}
-    for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update", "turn_update", "api"):
+    for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update", "turn_update", "api", "subscriptions"):
         out[k] = {**PANEL_SETTINGS_DEFAULTS[k], **(saved.get(k) or {})}
     return out
 

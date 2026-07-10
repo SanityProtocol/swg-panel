@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark light">
+<title>Subscription</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231FC8D6'/%3E%3Ccircle cx='16' cy='14.5' r='5.5' fill='%230A0E15'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/_a/sub.css">
+</head>
+<body>
+<header class="bar">
+  <span class="brand"><span class="mark" aria-hidden="true"></span>swg<b>Sub</b></span>
+  <span class="who" id="who"></span>
+</header>
+<main id="app">
+  <div class="state" id="state"><div class="spin" aria-hidden="true"></div><p>Loading…</p></div>
+  <div id="peers" hidden></div>
+</main>
+<!-- qrcode is a UMD lib: load as a classic script so it sets the global `qrcode`. -->
+<script src="/_a/qrcode.js"></script>
+<script src="/_a/sub.js"></script>
+</body>
+</html>

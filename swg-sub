@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""
+swg-sub — the public subscription surface.
+
+A tiny, READ-ONLY companion to swg-panel-server. It runs on the panel host and
+serves one thing: a per-user shareable page of that user's WireGuard/AmneziaWG
+QRs + configs, reached at
+
+    https://sub.<domain>/<token>#<unlock-key>
+
+The <token> (URL path) is an opaque per-user id — the server sees it and uses it
+only to find which ciphertext bucket to serve. The <unlock-key> lives in the URL
+*fragment*, which browsers never send to any server, so this process can NEVER
+decrypt a peer's private key: it only ever serves ciphertext + non-secret params.
+The browser on the phone does the decrypt with the fragment key.
+
+By design this program has ZERO write, admin, or node code. It reads the same
+state files the panel writes (roster / nodes / per-node snapshots / panel
+settings / the subs vault+blobs), all read-only. A compromise of this surface
+yields only ciphertext, never the fleet. Config all happens in the panel:
+Settings → Subscriptions (master enable, base URL, this listener's host/port/TLS).
+
+Config: SWG_SUB_FLEET (defaults to the panel's /etc/swg-panel/fleet.json) locates
+the state files. The listener's host/port/TLS come from panel-settings.json's
+`subscriptions.serve` (set in the panel), with SWG_SUB_* env as fallback. The
+master `subscriptions.enabled` flag is re-read on EVERY request, so toggling it
+in the panel takes effect immediately — off ⇒ the whole surface 404s.
+"""
+
+import contextlib
+import hashlib
+import hmac
+import json
+import os
+import re
+import signal
+import ssl
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+FLEET_PATH = os.environ.get("SWG_SUB_FLEET") or os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
+WEB_DIR    = os.environ.get("SWG_SUB_WEB", os.path.dirname(os.path.abspath(__file__)))
+
+# A token is one opaque path segment. Kept tight so it can never escape into the
+# filesystem (the blob path re-sanitises again anyway) or collide with our routes.
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+
+CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+          ".js": "application/javascript; charset=utf-8", ".woff2": "font/woff2",
+          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
+
+# Static assets are served under this prefix so a bare "/<token>" is unambiguous.
+ASSET_PREFIX = "/_a/"
+STATIC = {"sub.js": "sub.js", "sub.css": "sub.css", "qrcode.js": "vendor/qrcode.js"}
+
+AWG_PARAM_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
+                  "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
+
+
+def _read_version():
+    for p in (os.path.join(WEB_DIR, "VERSION"),
+              os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")):
+        try:
+            with open(p) as f:
+                v = f.read().strip()
+                if v:
+                    return v
+        except OSError:
+            pass
+    return ""
+
+
+VERSION = _read_version()
+
+
+def load_json(path, default):
+    """Tolerant read: absent, unreadable, or a mid-write parse error all fall back to
+    `default`. atomic_write/os.replace on the panel side means we never see a partial
+    file — a JSONDecodeError here just means the primary is momentarily inconsistent."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except (json.JSONDecodeError, OSError, ValueError):
+        return default
+
+
+# ── describe (server/interface params for config building), mirrored from swg-panel-server ──
+# Kept byte-for-byte compatible so a subscription config matches the panel's own QR.
+
+def node_describe(snapshot):
+    """Server/interface info from a node's pushed snapshot."""
+    interfaces = {}
+    for iface, blk in (snapshot.get("interfaces") or {}).items():
+        meta = blk.get("meta") or {}
+        interfaces[iface] = {
+            "public_key": meta.get("public_key"), "listen_port": meta.get("listen_port"),
+            "endpoint": meta.get("endpoint"), "address": meta.get("address"),
+            "subnet": meta.get("subnet"), "awg_params": meta.get("awg_params", {}),
+            "dns": meta.get("dns", []),
+        }
+    return interfaces
+
+
+def apply_iface_meta(node_cfg, interfaces):
+    """Overlay the panel-side per-interface overrides (public endpoint host/port, DNS,
+    MTU, AmneziaWG obfuscation) onto node-reported metadata — exactly what the panel emits
+    into client configs. Read-only: never touches the node or any file. Returns interfaces."""
+    node_ep = (node_cfg or {}).get("endpoint_host")
+    ifov = (node_cfg or {}).get("ifaces") or {}
+    for ifn, ifc in interfaces.items():
+        ov = ifov.get(ifn) or {}
+        rep = ifc.get("endpoint") or ""
+        rep_host = rep.rsplit(":", 1)[0] if ":" in rep else rep
+        host = ov.get("endpoint_host") or node_ep or rep_host
+        port = ov.get("listen_port") or ifc.get("listen_port")
+        if host and port:
+            ifc["endpoint"] = f"{host}:{port}"
+        if ov.get("dns") is not None:
+            d = ov["dns"]
+            ifc["dns"] = d if isinstance(d, list) else [s.strip() for s in str(d).split(",") if s.strip()]
+        ifc["mtu"] = ov.get("mtu") or 1280
+        ovawg = ov.get("awg_params")
+        if isinstance(ovawg, dict) and ovawg:
+            rep_awg = dict(ifc.get("awg_params") or {})
+            ifc["awg_params"] = {**rep_awg, **{k: ovawg[k] for k in ovawg if ovawg[k] not in (None, "")}}
+    return interfaces
+
+
+# ── the subscription state (all read-only; the panel owns writes) ──
+
+class State:
+    """Resolved paths into the panel's state dir, from fleet.json + the panel's own defaults."""
+
+    def __init__(self, fleet):
+        self.roster_path = fleet.get("roster_path", "/var/lib/swg-panel/users.json")
+        self.nodes_path = fleet.get("nodes_path", "/var/lib/swg-panel/nodes.json")
+        self.stats_dir = fleet.get("stats_dir", "/var/www/wgstats")
+        state_dir = os.path.dirname(self.roster_path) or "."
+        self.sub_dir = fleet.get("sub_dir") or os.path.join(state_dir, "subs")
+        self.settings_path = (fleet.get("panel_settings_path")
+                              or os.path.join(os.path.dirname(self.nodes_path) or ".", "panel-settings.json"))
+
+    def subscriptions(self):
+        ps = load_json(self.settings_path, {}) or {}
+        s = ps.get("subscriptions")
+        return s if isinstance(s, dict) else {}
+
+    def enabled(self):
+        return bool(self.subscriptions().get("enabled"))
+
+    def sub_users(self):
+        d = load_json(os.path.join(self.sub_dir, "users.json"), {})
+        return d if isinstance(d, dict) else {}
+
+    def sub_blobs(self, uid):
+        safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(uid))
+        d = load_json(os.path.join(self.sub_dir, "blobs", safe + ".json"), {})
+        return d if isinstance(d, dict) else {}
+
+    def roster(self):
+        r = load_json(self.roster_path, {})
+        if not isinstance(r, dict):
+            r = {}
+        if not isinstance(r.get("users"), dict):
+            r["users"] = {}
+        if not isinstance(r.get("peers"), dict):
+            r["peers"] = {}
+        return r
+
+    def nodes(self):
+        d = load_json(self.nodes_path, {})
+        return d if isinstance(d, dict) else {}
+
+    def describe(self, nodes):
+        """Per-node interface metadata, keyed by node id — snapshots are read from the mirror
+        files the panel writes (stats-<id>.json), so this needs no running panel."""
+        out = {}
+        for nid, cfg in nodes.items():
+            snap = load_json(os.path.join(self.stats_dir, (cfg or {}).get("stats_file") or f"stats-{nid}.json"), None)
+            if not isinstance(snap, dict) or not snap:
+                continue
+            out[nid] = apply_iface_meta(cfg, node_describe(snap))
+        return out
+
+
+def token_lookup(users, token):
+    """Raw token → user_id via constant-time sha256 match; None if unknown or disabled."""
+    if not token:
+        return None
+    sha = hashlib.sha256(token.encode()).hexdigest()
+    for uid, rec in users.items():
+        if isinstance(rec, dict) and rec.get("enabled") and hmac.compare_digest(str(rec.get("token_sha", "")), sha):
+            return uid
+    return None
+
+
+def read_data(state, token):
+    """The public page's data for a token: the user's CURRENT peers, each target's NON-SECRET
+    params + the encrypted secret blob. Never returns a plaintext key. None if subscriptions are
+    off or the token is invalid.
+
+    READ-ONLY: unlike the panel's sub_read_data (which prunes stale blobs on read), this filters
+    the blob set against the live roster purely in memory — a peer no longer assigned to the user
+    is simply skipped, so a stale blob can never surface even though we never delete it. The
+    roster is authoritative; the blob store is a subordinate cache the panel keeps in sync."""
+    if not state.enabled():
+        return None
+    uid = token_lookup(state.sub_users(), token)
+    if uid is None:
+        return None
+    roster = state.roster()
+    user = (roster.get("users") or {}).get(uid) or {}
+    live = {pid: p for pid, p in (roster.get("peers") or {}).items()
+            if isinstance(p, dict) and p.get("user_id") == uid}
+    blobs = state.sub_blobs(uid)
+    describe = state.describe(state.nodes())
+    peers_out = []
+    for pid, p in live.items():
+        sec = (blobs.get(pid) or {}).get("sec")        # None until the admin browser provisions it
+        tgts_in = p.get("targets") or []
+        n_t = len(tgts_in)
+        tgts = []
+        for i, t in enumerate(tgts_in):
+            if not isinstance(t, dict):
+                continue
+            meta = ((describe.get(t.get("node")) or {}).get(t.get("iface")) or {})
+            tgts.append({
+                "node": t.get("node"), "iface": t.get("iface"), "type": t.get("type") or "wg",
+                "ip": t.get("ip"),
+                "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
+                "dns": meta.get("dns") or [], "subnet": meta.get("subnet"),
+                "mtu": meta.get("mtu") or 1280,
+                "awg": meta.get("awg_params") or {},
+                "primary": (n_t > 1 and i == 0),       # the default deployment, tagged first
+            })
+        peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts})
+    return {"user": {"name": user.get("name") or ""}, "peers": peers_out}
+
+
+# ── HTTP ──
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "swg-sub"
+    protocol_version = "HTTP/1.1"
+    state = None
+
+    def log_message(self, *a):
+        pass                                            # no request logging — the page is public, keep it quiet
+
+    def _headers(self, code, ctype, length, cache="no-store", extra=None):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", cache)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+
+    def _send(self, code, body, ctype="text/plain; charset=utf-8", cache="no-store", extra=None):
+        data = body if isinstance(body, (bytes, bytearray)) else str(body).encode()
+        self._headers(code, ctype, len(data), cache, extra)
+        if self.command != "HEAD":
+            with contextlib.suppress(BrokenPipeError, ConnectionError):
+                self.wfile.write(data)
+
+    def _json(self, code, obj):
+        self._send(code, json.dumps(obj).encode(), "application/json; charset=utf-8")
+
+    def _notfound(self):
+        # Uniform 404 for everything that isn't a live surface: an off master switch, an unknown
+        # or disabled token, a stray path. Reveals nothing about which tokens exist.
+        self._send(404, "not found\n")
+
+    # Strict CSP for the buildless page: same-origin scripts/styles, data: only for the QR images
+    # this page draws into <img>. No connect-src to anywhere but self; no framing.
+    _CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; "
+            "base-uri 'self'; frame-ancestors 'none'")
+
+    def _static(self, name):
+        rel = STATIC.get(name)
+        if not rel:
+            return self._notfound()
+        full = os.path.normpath(os.path.join(WEB_DIR, rel))
+        if not (full.startswith(os.path.realpath(WEB_DIR)) or full.startswith(WEB_DIR)):
+            return self._send(403, "forbidden\n")
+        try:
+            with open(full, "rb") as f:
+                data = f.read()
+        except OSError:
+            return self._notfound()
+        _, ext = os.path.splitext(full)
+        self._send(200, data, CTYPES.get(ext, "application/octet-stream"), cache="no-cache")
+
+    def _page(self):
+        # The single-page shell for every token. It carries no user data itself — the browser reads
+        # its token from the path and the unlock key from the fragment, then fetches /api/<token>.
+        full = os.path.join(WEB_DIR, "sub.html")
+        try:
+            with open(full, "rb") as f:
+                data = f.read()
+        except OSError:
+            return self._send(500, "subscription page missing\n")
+        if VERSION:
+            q = ("?v=" + VERSION).encode()
+            data = (data.replace(b'href="/_a/sub.css"', b'href="/_a/sub.css' + q + b'"')
+                        .replace(b'src="/_a/sub.js"', b'src="/_a/sub.js' + q + b'"')
+                        .replace(b'src="/_a/qrcode.js"', b'src="/_a/qrcode.js' + q + b'"'))
+        self._send(200, data, "text/html; charset=utf-8", cache="no-cache", extra={"Content-Security-Policy": self._CSP})
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0].split("#", 1)[0]
+        st = Handler.state
+
+        if path == "/healthz":
+            return self._send(200, "ok\n")
+
+        if path.startswith(ASSET_PREFIX):
+            return self._static(path[len(ASSET_PREFIX):])
+
+        if path.startswith("/api/"):
+            token = path[len("/api/"):]
+            if not TOKEN_RE.match(token):
+                return self._notfound()
+            data = read_data(st, token)
+            if data is None:
+                return self._notfound()
+            return self._json(200, {"ok": True, "data": data})
+
+        if path == "/" or path == "":
+            return self._notfound()
+
+        token = path[1:]
+        if "/" in token or not TOKEN_RE.match(token):
+            return self._notfound()
+        if not st.enabled():                            # surface off ⇒ nothing here, not even the shell
+            return self._notfound()
+        return self._page()
+
+
+class _TLSServer(ThreadingHTTPServer):
+    daemon_threads = True
+    ssl_ctx = None
+
+    def get_request(self):
+        sock, addr = self.socket.accept()
+        sock.settimeout(60)
+        return sock, addr
+
+    def finish_request(self, request, client_address):
+        if self.ssl_ctx is not None:
+            request = self.ssl_ctx.wrap_socket(request, server_side=True)
+        super().finish_request(request, client_address)
+
+    def handle_error(self, request, client_address):
+        pass                                            # failed handshake / scanner / vanished client — routine noise
+
+
+def _serve_config(state):
+    """Listener host/port/TLS: panel-settings.json `subscriptions.serve` wins (config lives in the
+    panel), SWG_SUB_* env is the fallback, then a sane default. Read once at startup — changing the
+    bind or TLS needs a restart; the master enable flag is what's re-read live per request."""
+    serve = state.subscriptions().get("serve") if isinstance(state.subscriptions().get("serve"), dict) else {}
+    host = (serve.get("host") or os.environ.get("SWG_SUB_HOST") or "0.0.0.0").strip() or "0.0.0.0"
+    try:
+        port = int(serve.get("port") or os.environ.get("SWG_SUB_PORT") or 8444)
+    except (TypeError, ValueError):
+        port = 8444
+    port = max(1, min(65535, port))
+    mode = serve.get("tls_mode") or ("selfsigned" if os.environ.get("SWG_SUB_TLS_CERT") else "reverse-proxy")
+    cert = (serve.get("cert_path") or os.environ.get("SWG_SUB_TLS_CERT") or "").strip()
+    key = (serve.get("key_path") or os.environ.get("SWG_SUB_TLS_KEY") or "").strip()
+    # Plain HTTP behind the operator's own reverse proxy, or TLS terminated here when a cert is on disk.
+    if mode == "reverse-proxy" or not (cert and key and os.path.exists(cert) and os.path.exists(key)):
+        return host, port, None, None
+    return host, port, cert, key
+
+
+def main():
+    fleet = load_json(FLEET_PATH, None)
+    if fleet is None:
+        raise SystemExit(f"cannot read fleet config: {FLEET_PATH}")
+    state = State(fleet)
+    Handler.state = state
+
+    host, port, cert, key = _serve_config(state)
+    scheme = "http"
+    if cert and key:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        srv = _TLSServer((host, port), Handler)
+        srv.ssl_ctx = ctx
+        scheme = "https"
+
+        def _reload_tls(_sig, _frm):                    # SIGHUP → pick up a renewed cert with no downtime
+            try:
+                ctx.load_cert_chain(cert, key)
+                print("swg-sub: reloaded TLS certificate (SIGHUP)", flush=True)
+            except Exception as e:
+                print(f"swg-sub: TLS reload failed (keeping old cert): {e}", flush=True)
+        with contextlib.suppress(ValueError, OSError, AttributeError):
+            signal.signal(signal.SIGHUP, _reload_tls)
+    else:
+        srv = ThreadingHTTPServer((host, port), Handler)
+
+    on = "enabled" if state.enabled() else "disabled (all requests 404 until turned on in the panel)"
+    print(f"swg-sub {VERSION} on {scheme}://{host}:{port} — subscriptions {on}", flush=True)
+    with contextlib.suppress(KeyboardInterrupt):
+        srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

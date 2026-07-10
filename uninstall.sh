@@ -48,9 +48,11 @@ REMOVED_PANEL=false; REMOVED_NODE=false
 rm_panel(){
   info "Removing swg-panel (control panel)"
   if [ -e $SD/swg-panel-server.service ]; then run systemctl disable --now swg-panel-server; fi
+  # swg-sub (the subscription surface) is a companion of the panel — remove it alongside
+  if [ -e $SD/swg-sub.service ]; then run systemctl disable --now swg-sub; fi
   # one-click self-update bits the panel installed (mk_update_unit): units, wrapper, and the env drop-in
   for _su in swg-update.timer swg-update.path; do [ -e "$SD/$_su" ] && run systemctl disable --now "$_su" 2>/dev/null || true; done
-  rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d \
+  rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d $SD/swg-sub.service $SD/swg-sub.service.d \
        $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
   run systemctl daemon-reload
   rmrf /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf \
@@ -61,7 +63,7 @@ rm_panel(){
       [ -n "$a" ] && [ -x "$a" ] && { info "Removing acme.sh renewal for $DOMAIN"; run "$a" --remove -d "$DOMAIN" --ecc; break; }
     done
   fi
-  rmrf /opt/swg-panel /etc/swg-panel /var/www/wgstats /var/www/acme
+  rmrf /opt/swg-panel /opt/swg-sub /etc/swg-panel /var/www/wgstats /var/www/acme
   # default NO = keep the roster for a future re-install (matches the docker data-dir prompt); yes = wipe it
   local PANEL_DATA_DEL="${PANEL_DATA_DEL:-}"
   ask_yn "  Delete the data dir /var/lib/swg-panel (users, peers, nodes)?" n PANEL_DATA_DEL

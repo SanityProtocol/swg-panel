@@ -37,6 +37,8 @@ BASIC_PASS="${BASIC_PASS:-}"           # blank -> random, printed at the end
 
 # paths / identities (defaults are sane)
 PANEL_DIR="${PANEL_DIR:-/opt/swg-panel}"
+SUB_DIR="${SUB_DIR:-/opt/swg-sub}"     # the public subscription surface (swg-sub); off until enabled in the panel
+SUB_PORT="${SUB_PORT:-8444}"           # swg-sub's listener (overridable in Settings → Subscriptions)
 AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
 NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 ETC_DIR="${ETC_DIR:-/etc/swg-panel}"
@@ -953,6 +955,19 @@ mkdir -p "$PREFIX$PANEL_DIR/vendor"; cp -a "$SRC/vendor/." "$PREFIX$PANEL_DIR/ve
 [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$PANEL_DIR/" || true   # version stamp (update.sh reports it)
 [ -f "$SRC/swg-passwd" ] && { mkdir -p "$PREFIX/usr/local/bin"; cp "$SRC/swg-passwd" "$PREFIX/usr/local/bin/swg-passwd"; chmod 755 "$PREFIX/usr/local/bin/swg-passwd"; }   # `sudo swg-passwd` — reset the panel login like the system passwd (mkdir so --dry-run's $PREFIX tree exists)
 ok "installed panel + SPA to $PANEL_DIR"
+
+# ───────────────────────── subscription surface (swg-sub) ─────────────────────────
+# A read-only companion serving per-user QR pages. Installed unconditionally but INERT: the whole
+# surface 404s until the operator enables it in Settings → Subscriptions (no prompts here by design).
+if [ -f "$SRC/swg-sub" ]; then
+  info "Subscription server (swg-sub)"
+  mkdir -p "$PREFIX$SUB_DIR/vendor"
+  cp "$SRC/swg-sub" "$PREFIX$SUB_DIR/"; chmod 755 "$PREFIX$SUB_DIR/swg-sub"
+  for f in sub.html sub.js sub.css; do [ -f "$SRC/$f" ] && cp "$SRC/$f" "$PREFIX$SUB_DIR/"; done
+  [ -f "$SRC/vendor/qrcode.js" ] && cp "$SRC/vendor/qrcode.js" "$PREFIX$SUB_DIR/vendor/"
+  [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$SUB_DIR/" || true
+  ok "installed swg-sub to $SUB_DIR (disabled until enabled in the panel)"
+fi
 mkdir -p "$PREFIX$STATE_DIR"; [ -f "$PREFIX$STATE_DIR/users.json" ] || { echo '{}' > "$PREFIX$STATE_DIR/users.json"; run chown "$PANEL_USER:swg" "$STATE_DIR/users.json"; ok "seeded empty users.json"; }
 
 # ───────────────────────── host-as-node (this box is also an entry server) ─────────────────────────
@@ -1149,6 +1164,44 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
   mk_update_unit                                   # wire one-click host self-update (root, own cgroup)
+}
+
+write_sub_unit(){   # swg-sub: the public subscription surface. Read-only; inert until enabled in the panel.
+  [ -f "$PREFIX$SUB_DIR/swg-sub" ] || return 0      # only if the binary shipped in this bundle
+  local subextra=""
+  # Sensible default bind/TLS baked into the unit; the panel's Settings → Subscriptions can override
+  # (swg-sub prefers panel-settings.json's serve.* over these env fallbacks). Reuse the panel's cert
+  # in internal mode; otherwise plain HTTP for the operator's own reverse proxy to terminate.
+  if [ "$SERVE_MODE" = internal ] && [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then
+    subextra="Environment=SWG_SUB_TLS_CERT=${CERT_FULLCHAIN}
+Environment=SWG_SUB_TLS_KEY=${CERT_KEY}"
+  fi
+  [ "${SUB_PORT}" -lt 1024 ] 2>/dev/null && subextra="$subextra
+AmbientCapabilities=CAP_NET_BIND_SERVICE"
+  writef /etc/systemd/system/swg-sub.service 644 <<EOF
+[Unit]
+Description=swg-sub subscription surface
+After=network.target
+
+[Service]
+Type=simple
+User=${PANEL_USER}
+ExecStart=${SUB_DIR}/swg-sub
+Environment=SWG_SUB_FLEET=${ETC_DIR}/fleet.json
+Environment=SWG_SUB_WEB=${SUB_DIR}
+Environment=SWG_SUB_HOST=0.0.0.0
+Environment=SWG_SUB_PORT=${SUB_PORT}
+${subextra}
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
 }
 
 # One-click self-update: a root systemd updater the (unprivileged) panel triggers by touching a
@@ -1527,6 +1580,7 @@ info "Enable services"
 run systemctl daemon-reload
 [ "$HOST_HAS_WG" = yes ] && { run systemctl enable --quiet swg-noded; run systemctl restart swg-noded || warn "couldn't start swg-noded"; }   # restart so a re-run picks up newly-added interfaces (config.json is read only at startup)
 run systemctl enable --quiet $_NOW swg-panel-server
+if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then write_sub_unit; run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"; fi   # inert until enabled in Settings → Subscriptions
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
 
 # ───────────────────────── SUMMARY ─────────────────────────

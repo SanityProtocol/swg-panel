@@ -1,0 +1,38 @@
+[Unit]
+Description=swg-sub — public per-user subscription surface
+After=network-online.target
+Wants=network-online.target
+
+# Reference copy. install-host.sh generates the live unit inline (write_sub_unit), reusing the
+# panel's TLS cert in internal serve mode; this file documents the shape for a manual install.
+
+[Service]
+Type=simple
+# A READ-ONLY companion to swg-panel-server. It serves one thing: per-user QR/config pages reached
+# at https://sub.<domain>/<token>#<unlock-key>. The unlock key rides in the URL fragment and never
+# reaches this process, so it can only ever serve ciphertext + non-secret params — never a private
+# key, never the fleet. It reads the same state files the panel writes (roster / nodes / snapshots /
+# panel settings / subs vault+blobs), all read-only; it writes nothing. Off until enabled in the panel.
+User=swgpanel
+Group=swg
+ExecStart=/opt/swg-sub/swg-sub
+Environment=SWG_SUB_FLEET=/etc/swg-panel/fleet.json
+Environment=SWG_SUB_WEB=/opt/swg-sub
+Environment=SWG_SUB_HOST=0.0.0.0
+Environment=SWG_SUB_PORT=8444
+# TLS terminated here (reuse the panel's cert) when not behind a reverse proxy — else omit for plain
+# HTTP and let nginx/caddy terminate. The panel's Settings → Subscriptions can override host/port/TLS.
+# Environment=SWG_SUB_TLS_CERT=/etc/swg-panel/tls/fullchain.pem
+# Environment=SWG_SUB_TLS_KEY=/etc/swg-panel/tls/key.pem
+Restart=on-failure
+RestartSec=2
+# hardening — read-only, so no ReadWritePaths (state is only read)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# only needed if SWG_SUB_PORT < 1024:
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
