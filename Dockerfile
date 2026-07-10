@@ -28,9 +28,10 @@ RUN apt-get update \
  && rm -rf /tmp/acme /tmp/acme.tar.gz
 
 WORKDIR /opt/swg-panel
-COPY swg-panel-server app.css app.js index.html reconcile.js VERSION ./
+COPY swg-panel-server app.css app.js index.html reconcile.js turn-artifacts.js VERSION ./
 # swg-sub — the public subscription surface + its buildless front-end. Rides in this image (pure
 # stdlib, no extra deps) but runs as a SEPARATE, read-only container (see docker-compose.yml).
+# turn-artifacts.js is shared by the admin app + the subscription page (already copied above).
 COPY swg-sub sub.html sub.js sub.css ./
 COPY swg-passwd /usr/local/bin/swg-passwd
 COPY vendor/ ./vendor/

@@ -408,137 +408,14 @@ function downloadConf(text, base) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-// ── wingsv:// link (WINGS V app) ── the payload is raw protobuf, NOT JSON:
-// wingsv:// + base64url( 0x12 ‖ zlib( proto.Marshal(wingsv.Config) ) ). We hand-serialize the Config
-// message (buildless — no protobuf lib) and use the browser's CompressionStream('deflate'), which emits
-// the RFC1950 zlib stream Go's zlib.NewWriter produces. Schema: WINGS-N/wingsv-proto/wingsv.proto.
-function _pbVarint(n) { const o = []; let v = Math.floor(n); while (v > 127) { o.push((v % 128) | 0x80); v = Math.floor(v / 128); } o.push(v & 0x7f); return o; }
-function _pbKey(f, w) { return _pbVarint((f << 3) | w); }
-function _pbLen(f, arr) { return [..._pbKey(f, 2), ..._pbVarint(arr.length), ...arr]; }          // length-delimited (string / bytes / message)
-function _pbVar(f, n) { return [..._pbKey(f, 0), ..._pbVarint(n)]; }                              // varint (uint / bool / enum)
-function _pbStr(f, s) { return _pbLen(f, [...new TextEncoder().encode(String(s))]); }
-function _pbBin(f, u8) { return _pbLen(f, [...u8]); }
+// Turn-proxy client-artifact encoders live in the shared turn-artifacts.js (window.SWGTurn) so the
+// admin app and the subscription page build byte-identical configs from ONE source. _b64ToBytes stays
+// here (used beyond turn, e.g. subDec).
 function _b64ToBytes(b64) { try { const s = atob(String(b64 || "").trim()); const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; } catch (_) { return new Uint8Array(0); } }
-function _hexToBytes(h) { h = String(h || "").replace(/[^0-9a-fA-F]/g, ""); const a = new Uint8Array(h.length >> 1); for (let i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16); return a; }
-function _ipToBytes(addr) {
-  addr = String(addr || "").trim();
-  if (addr.includes(":")) {                                        // IPv6 (handles :: expansion)
-    const [head, tail] = addr.split("::");
-    const h = head ? head.split(":").filter(Boolean) : [], t = tail ? tail.split(":").filter(Boolean) : [];
-    const groups = addr.includes("::") ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t] : addr.split(":");
-    const b = new Uint8Array(16); groups.slice(0, 8).forEach((g, i) => { const v = parseInt(g || "0", 16) || 0; b[i * 2] = v >> 8; b[i * 2 + 1] = v & 0xff; }); return b;
-  }
-  const p = addr.split("."); const b = new Uint8Array(4); for (let i = 0; i < 4; i++) b[i] = (+p[i]) || 0; return b;
-}
-function _epBytes(hostport) { const s = String(hostport || ""); const i = s.lastIndexOf(":"); if (i < 0) return null; return [..._pbStr(1, s.slice(0, i)), ..._pbVar(2, +s.slice(i + 1) || 0)]; }
-function _wingsvConfigBytes(cf, tp, vk, rawConf) {
-  // Sidecar model like the other configs: the transport dials the LOCAL turn client on 127.0.0.1:9000; the
-  // turn engine reaches the PUBLIC proxy (Turn.endpoint = the proxy's internet ip:listen). Do NOT put the
-  // public addr in local_endpoint, and don't dial the real server directly.
-  const LOCAL = "127.0.0.1:9000";
-  const isAwg = !!(cf.awg_params && Object.keys(cf.awg_params).length);   // AmneziaWG interface → ship an awg transport, not wg
-  const pep = _epBytes(tp.listen);
-  const turn = [];
-  if (pep) turn.push(..._pbLen(1, pep));                           // endpoint = public proxy (internet ip:listen)
-  turn.push(..._pbStr(2, vk));                                     // link
-  turn.push(..._pbLen(6, _epBytes(LOCAL)));                        // local_endpoint = local turn listen (127.0.0.1:9000)
-  turn.push(..._pbVar(4, 1));                                      // use_udp = true
-  turn.push(..._pbVar(18, isAwg ? 2 : 1));                         // tunnel_mode = AMNEZIAWG : WIREGUARD (transport discriminator)
-  if (tp.wrap_key) { turn.push(..._pbVar(19, 2), ..._pbBin(20, _hexToBytes(tp.wrap_key))); }   // wrap_mode = PREFERRED + key
-  // transport sub-message. AWG interfaces carry the full awg-quick config as a STRING in Config.awg (field 7);
-  // the WINGS V app parses it and overrides its Endpoint to the local turn client (AmneziaConfigFactory), so we
-  // still point it at LOCAL for self-consistency. WG interfaces use the binary WireGuard message (field 4).
-  let transport;
-  if (isAwg) {
-    const quick = String(rawConf || "").replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 " + LOCAL);
-    transport = _pbLen(7, _pbStr(1, quick));                       // Config.awg = AmneziaWG{ awg_quick_config }
-  } else {
-    const iface = [..._pbBin(1, _b64ToBytes(cf.privkey))];
-    (cf.address || "").split(",").map(s => s.trim()).filter(Boolean).forEach(a => iface.push(..._pbStr(2, a)));
-    (cf.dns || []).forEach(d => iface.push(..._pbStr(3, d)));
-    if (cf.mtu) iface.push(..._pbVar(4, +cf.mtu || 1280));
-    const peer = [..._pbBin(1, _b64ToBytes(cf.server_pubkey))];
-    if (cf.psk) peer.push(..._pbBin(2, _b64ToBytes(cf.psk)));
-    (cf.allowed || "").split(",").map(s => s.trim()).filter(Boolean).forEach(c => {
-      const [a, pfx] = c.split("/");
-      peer.push(..._pbLen(3, [..._pbBin(1, _ipToBytes(a)), ..._pbVar(2, pfx != null ? +pfx : (a.includes(":") ? 128 : 32))]));
-    });
-    transport = _pbLen(4, [..._pbLen(1, iface), ..._pbLen(2, peer), ..._pbLen(3, _epBytes(LOCAL))]);   // Config.wg (endpoint → local turn client)
-  }
-  // type: WG uses ALL (4) and works. AWG uses VK_TURN_PROFILE (10) — the type WINGS itself emits for a single
-  // VK-TURN profile share link (buildTurnProfileLink), which embeds + links the awg transport to the active VK
-  // TURN profile. ALL is a bulk-settings import and doesn't link the awg transport (the xray-userspace-WG engine
-  // reads flat wg settings so WG survives it; the native AmneziaWG engine needs the linked profile).
-  const type = isAwg ? 10 : 4;
-  return new Uint8Array([..._pbVar(1, 1), ..._pbVar(2, type), ..._pbLen(3, turn), ...transport, ..._pbVar(5, 7)]);   // ver=1, type, turn, wg|awg, backend=VK_TURN
-}
-async function wingsvLink(baseConf, tp, vk) {
-  if (typeof CompressionStream === "undefined") throw new Error("this browser can't build a wingsv:// link (no CompressionStream) — copy the fields into the WINGS V app manually");
-  const proto = _wingsvConfigBytes(parseFullConf(baseConf), tp, (vk || "").trim() || "<PASTE VK CALL LINK>", baseConf);
-  const cs = new CompressionStream("deflate"); const w = cs.writable.getWriter(); w.write(proto); w.close();
-  const comp = new Uint8Array(await new Response(cs.readable).arrayBuffer());
-  const payload = new Uint8Array(1 + comp.length); payload[0] = 0x12; payload.set(comp, 1);
-  let s = ""; for (const b of payload) s += String.fromCharCode(b);
-  return "wingsv://" + btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
 
-// Build the client-import artifact for a peer deployed BEHIND a turn-proxy, matching the DEPLOYED fork.
-// kiper292 → annotated WG .conf; anton48 → vkturnproxy:// link; every other (sidecar) fork → a WG .conf
-// pointed at the local client on :9000 + the client command to run alongside.
-//
-// FORMAT SYNC (checked 2026-07: only anton48 ships an actual generator — quick_link.py, git-only, not a
-// release asset — so reimplementing the documented, versioned formats here is equivalent and simpler.
-// These are the schema versions we target; bump deliberately if a fork changes its format on a major
-// release (the update flow only pulls a newer server binary, it can't change these):
-//   • anton48   vkturnproxy:// JSON  "version": 1
-//   • samosvalishe freeturn://  JSON "v": 1   (migrated to base64url(json) at v1.2.0; obf codecs evolve)
-//   • kiper292  #@wgt: comments, PeerType is SERVER-COUPLED — proxy_v2 = kiper292 v2 server (what a
-//     "kiper292" proxy IS), proxy_v1 = cacggghp server. We key off the deployed fork, so proxy_v2 is right.
-//   • WINGS-N   wingsv:// = 0x12 ‖ zlib(protobuf Config); hand-encoded (see wingsvLink). Config.ver = 1.
-// A descriptor may carry `text` (ready) OR `buildAsync` (a promise, e.g. wingsv:// needs zlib).
-function turnArtifact(baseConf, tp, vkLink) {
-  const fork = turnFork(tp.service);
-  const listen = tp.listen || "";
-  const vk = (vkLink || "").trim() || "<PASTE VK CALL LINK>";
-  const cf = parseFullConf(baseConf);
-  if (fork === "WINGS-N") {
-    return { fork, label: "WINGS-N · WINGS V (wingsv:// link)", ext: "txt", uri: true,
-      hint: "Import this wingsv:// link into the WINGS V app (paste it, or its Settings → import from link).",
-      buildAsync: () => wingsvLink(baseConf, tp, vk) };
-  }
-  if (fork === "kiper292") {
-    const block = ["", "#@wgt:EnableTURN = true", "#@wgt:UseUDP = false", "#@wgt:IPPort = " + listen,
-      "#@wgt:VKLink = " + vk, "#@wgt:Mode = vk_link", "#@wgt:PeerType = proxy_v2",
-      "#@wgt:StreamNum = 4", "#@wgt:LocalPort = 9000", "#@wgt:StreamsPerCred = 4"].join("\n");
-    return { fork, label: "kiper292 · WireGuard-TURN (Android)", ext: "conf",
-      hint: "Import this .conf into the kiper292 WireGuard-TURN app — the TURN settings ride along as #@wgt: comments (Endpoint stays the real server).",
-      text: baseConf.replace(/\s*$/, "") + "\n" + block + "\n" };
-  }
-  if (fork === "anton48") {
-    // Match anton48's own generator EXACTLY except the per-connection values (keys, tunnel addr, peerAddress, vkLink):
-    // allowedIPs (missing broke routing), dnsServers as a STRING not an array, useDTLS:true (off = degraded speed),
-    // no useWrapA. numConnections 12 like its reference link.
-    const s = { privateKey: cf.privkey, peerPublicKey: cf.server_pubkey, presharedKey: cf.psk,
-      tunnelAddress: cf.address, allowedIPs: "0.0.0.0/0",
-      dnsServers: (cf.dns && cf.dns.length ? cf.dns.join(",") : "1.1.1.1"),
-      peerAddress: listen, vkLink: vk, numConnections: 12,
-      useUDP: true, useDTLS: true, useSrtp: !tp.wrap_key,
-      useWrap: !!tp.wrap_key, wrapKeyHex: tp.wrap_key || "" };
-    const uri = "vkturnproxy://import?data=" + btoa(JSON.stringify({ settings: s, type: "connection", version: 1 }));
-    return { fork, label: "anton48 · VK TURN Proxy (iOS)", ext: "txt", uri: true,
-      hint: "Open this link on the iPhone (or the app's Settings → Import from connection link) to import into the anton48 app.",
-      text: uri };
-  }
-  // sidecar forks (WINGS-N / cacggghp / samosvalishe / Moroka8 / unknown): WG dials the local client on :9000
-  let sidecar = baseConf.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 127.0.0.1:9000");
-  sidecar = /^[ \t]*MTU[ \t]*=/m.test(sidecar) ? sidecar.replace(/^([ \t]*MTU[ \t]*=).*$/m, "$1 1280")
-    : sidecar.replace(/^([ \t]*Address[ \t]*=.*)$/m, "$1\nMTU = 1280");
-  const flags = tp.wrap_key ? (" -wrap-key " + tp.wrap_key) : "";
-  return { fork, label: fork + " · sidecar client", ext: "conf",
-    hint: "This fork runs a separate client binary. Import this .conf into WireGuard, then run the fork's client alongside it:",
-    cmd: "./client -listen 127.0.0.1:9000 -peer " + listen + " -vk-link " + vk + flags,
-    text: sidecar };
-}
+// Client-import artifact for a peer behind a turn-proxy — the per-fork wire formats live in the shared
+// turn-artifacts.js (window.SWGTurn), loaded by both the admin app and the subscription page.
+function turnArtifact(baseConf, tp, vkLink) { return SWGTurn.artifact(baseConf, tp, vkLink); }
 
 // ───────────────────────── QR ─────────────────────────
 function qrDataURL(text, targetPx) {

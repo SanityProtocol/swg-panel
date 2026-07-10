@@ -239,7 +239,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   found=1; pan_seen=yes; pold="$(oldver "$PANEL_DIR")"
   if should_update "bare-metal swg-panel" "$PANEL_DIR"; then
     info "updating bare-metal swg-panel ($PANEL_DIR)"
-    for f in swg-panel-server index.html app.css app.js reconcile.js; do
+    for f in swg-panel-server index.html app.css app.js reconcile.js turn-artifacts.js; do
       [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$PANEL_DIR/"
     done
     # whole vendor/ dir — the buildless SPA needs the vendored Preact + htm ESM, not just qrcode
@@ -252,7 +252,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     # first-time provisioning (binary + unit) is done by install-host.sh. Inert unless enabled in the panel.
     if [ -f "$SUB_DIR/swg-sub" ] && [ -f "$SRC/swg-sub" ]; then
       run cp "$SRC/swg-sub" "$SUB_DIR/"; run chmod 755 "$SUB_DIR/swg-sub"
-      for f in sub.html sub.js sub.css; do [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$SUB_DIR/"; done
+      for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$SUB_DIR/"; done
       [ -f "$SRC/vendor/qrcode.js" ] && { run mkdir -p "$SUB_DIR/vendor"; run cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"; }
       stamp "$SUB_DIR"
       run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"

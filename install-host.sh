@@ -962,7 +962,7 @@ for f in swg-panel-server index.html app.css app.js reconcile.js; do
   [ -f "$SRC/$f" ] || die "missing $f beside this script (unzip the bundle here)"
 done
 mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/swg-panel-server" "$PREFIX$PANEL_DIR/"; chmod 755 "$PREFIX$PANEL_DIR/swg-panel-server"
-for f in index.html app.css app.js reconcile.js; do mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/$f" "$PREFIX$PANEL_DIR/"; done
+for f in index.html app.css app.js reconcile.js turn-artifacts.js; do mkdir -p "$PREFIX$PANEL_DIR"; cp "$SRC/$f" "$PREFIX$PANEL_DIR/"; done
 mkdir -p "$PREFIX$PANEL_DIR/vendor"; cp -a "$SRC/vendor/." "$PREFIX$PANEL_DIR/vendor/"   # qrcode + vendored Preact/htm ESM (buildless SPA)
 [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$PANEL_DIR/" || true   # version stamp (update.sh reports it)
 [ -f "$SRC/swg-passwd" ] && { mkdir -p "$PREFIX/usr/local/bin"; cp "$SRC/swg-passwd" "$PREFIX/usr/local/bin/swg-passwd"; chmod 755 "$PREFIX/usr/local/bin/swg-passwd"; }   # `sudo swg-passwd` — reset the panel login like the system passwd (mkdir so --dry-run's $PREFIX tree exists)
@@ -975,7 +975,7 @@ if [ -f "$SRC/swg-sub" ]; then
   info "Subscription server (swg-sub)"
   mkdir -p "$PREFIX$SUB_DIR/vendor"
   cp "$SRC/swg-sub" "$PREFIX$SUB_DIR/"; chmod 755 "$PREFIX$SUB_DIR/swg-sub"
-  for f in sub.html sub.js sub.css; do [ -f "$SRC/$f" ] && cp "$SRC/$f" "$PREFIX$SUB_DIR/"; done
+  for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SRC/$f" ] && cp "$SRC/$f" "$PREFIX$SUB_DIR/"; done
   [ -f "$SRC/vendor/qrcode.js" ] && cp "$SRC/vendor/qrcode.js" "$PREFIX$SUB_DIR/vendor/"
   [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$SUB_DIR/" || true
   ok "installed swg-sub to $SUB_DIR (disabled until enabled in the panel)"

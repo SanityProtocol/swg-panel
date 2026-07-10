@@ -160,10 +160,61 @@
     return nav;
   }
 
+  // The direct WireGuard/AmneziaWG config for a deployment (byte-identical to the panel's buildConf).
+  function confFor(secret, tgt) {
+    return buildConf({
+      privkey: secret.k, address: (tgt.ip || "").split("/")[0] + "/32",
+      dns: tgt.dns || [], mtu: tgt.mtu || 1280, awg_params: tgt.awg || {},
+      server_pubkey: tgt.server_pubkey || "", psk: secret.p || "", endpoint: tgt.endpoint || "",
+      allowed: "0.0.0.0/0, ::/0", keepalive: 25,
+    });
+  }
+
+  var MODE_LABEL = { wg: "WireGuard", awg: "AmneziaWG", turn: "Turn" };
+
+  // A turn-proxy card: the deployment's turn artifacts, one fork at a time (sub-selector when several forks
+  // forward to it). Each fork's client format comes from the shared SWGTurn.artifact — the same builder the
+  // admin uses. Links (wingsv://, vkturnproxy://) get copy + show; .conf forks get copy + download; a QR is
+  // added when it fits.
+  function turnCard(userName, peer, tgt, conf, vkLink, reason) {
+    var card = el("div", "tgt");
+    if (tgt.primary) card.appendChild(el("div", "primary", "Primary"));
+    card.appendChild(el("div", "tgt-node", tgt.node || tgt.iface || "server"));
+    if (!conf) { card.appendChild(el("div", "qr-fail", reason || "Not ready yet — open this peer once in the panel to publish it.")); return card; }
+    var byFork = {}, order = [];
+    (tgt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (!byFork[f]) { byFork[f] = []; order.push(f); } byFork[f].push(tp); });
+    if (!order.length) { card.appendChild(el("div", "qr-fail", "No turn-proxy forwards to this server.")); return card; }
+    var sel = 0, body = el("div", "turnbody");
+    var bar = order.length > 1 ? el("div", "forktabs") : null;
+    function fill(art, text) {
+      body.innerHTML = "";
+      try { var img = el("img", "qrimg"); img.alt = "config QR"; img.src = qrDataURL(text, 320); var q = el("div", "qr"); q.appendChild(img); body.appendChild(q); } catch (_) { /* links can exceed QR capacity — copy instead */ }
+      body.appendChild(el("div", "turnlabel", art.label || art.fork));
+      var acts = el("div", "acts");
+      var cp = el("button", "btn ghost", art.uri ? "Copy link" : "Copy config");
+      cp.onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { cp.textContent = "Copied"; setTimeout(function () { cp.textContent = art.uri ? "Copy link" : "Copy config"; }, 1400); }, function () {}); };
+      acts.appendChild(cp);
+      if (!art.uri) { var dl = el("button", "btn", "Download ." + (art.ext || "conf")); dl.onclick = function () { download(text, fileName(userName, peer.title, tgt) + "-" + (art.fork || "turn")); }; acts.appendChild(dl); }
+      body.appendChild(acts);
+      if (art.hint) body.appendChild(el("div", "hint turnhint", art.hint));
+      if (art.cmd) { var dc = el("details", "cfg"); dc.appendChild(el("summary", null, "Client command")); dc.appendChild(el("pre", null, art.cmd)); body.appendChild(dc); }
+      var dt = el("details", "cfg"); dt.appendChild(el("summary", null, art.uri ? "Show link" : "Show config text")); dt.appendChild(el("pre", null, text)); body.appendChild(dt);
+    }
+    function renderFork() {
+      var art = SWGTurn.artifact(conf, byFork[order[sel]][0], vkLink);
+      if (art.text != null) { fill(art, art.text); return; }
+      body.innerHTML = ""; body.appendChild(el("div", "hint", "Generating…"));
+      Promise.resolve().then(art.buildAsync).then(function (t) { fill(art, t); }).catch(function (e) { body.innerHTML = ""; body.appendChild(el("div", "qr-fail", (e && e.message) || "couldn't generate this link")); });
+    }
+    if (bar) { order.forEach(function (f, k) { var b = el("button", "forktab" + (k === sel ? " on" : ""), f); b.onclick = function () { sel = k; [].forEach.call(bar.children, function (c, ci) { c.className = "forktab" + (ci === sel ? " on" : ""); }); renderFork(); }; bar.appendChild(b); }); card.appendChild(bar); }
+    card.appendChild(body);
+    renderFork();
+    return card;
+  }
+
   function render(data, cryptoKey) {
     var who = document.getElementById("who");
     who.textContent = data.user && data.user.name ? data.user.name : "";
-
     var wrap = document.getElementById("peers");
     wrap.innerHTML = "";
     var peers = data.peers || [];
@@ -171,64 +222,69 @@
       showState("No configs yet", "There are no active peers on this subscription. New peers will appear here automatically.");
       return Promise.resolve();
     }
+    var vkLink = data.vk_link || "", userName = data.user && data.user.name;
 
-    // Decrypt every peer's secret (privkey+psk) with the fragment key, then assemble configs.
+    // Decrypt every peer's secret (privkey+psk) with the fragment key.
     var jobs = peers.map(function (peer) {
       if (!peer.sec) return Promise.resolve({ peer: peer, secret: null });
       var all = b64ToBytes(peer.sec);
       return crypto.subtle.decrypt({ name: "AES-GCM", iv: all.slice(0, 12) }, cryptoKey, all.slice(12))
-        .then(function (buf) {
-          var obj = JSON.parse(new TextDecoder().decode(new Uint8Array(buf)));
-          return { peer: peer, secret: obj };            // {k: privkey, p: psk}
-        })
+        .then(function (buf) { return { peer: peer, secret: JSON.parse(new TextDecoder().decode(new Uint8Array(buf))) }; })
         .catch(function () { return { peer: peer, secret: null, bad: true }; });
     });
 
     return Promise.all(jobs).then(function (rows) {
-      var anyBad = false;
-      rows.forEach(function (row) {
-        var peer = row.peer, secret = row.secret;
-        if (row.bad) anyBad = true;
-        var sec = el("section", "peer");
-        var head = el("div", "peer-head");
-        head.appendChild(el("span", "peer-title", peer.title || "Peer"));
-        head.appendChild(el("span", "peer-count", (peer.targets || []).length + (peer.targets && peer.targets.length === 1 ? " server" : " servers")));
-        sec.appendChild(head);
+      var anyBad = rows.some(function (r) { return r.bad; });
+      // Which top-level tabs apply: WG/AWG if the user has ≥1 deployment of that protocol; TURN only when the
+      // feature is on AND ≥1 deployment has a proxy forwarding to it (same gate as the admin view).
+      var has = { wg: false, awg: false, turn: false };
+      rows.forEach(function (r) { (r.peer.targets || []).forEach(function (t) {
+        has[t.type === "awg" ? "awg" : "wg"] = true;
+        if (data.turn_enabled && (t.turn || []).length) has.turn = true;
+      }); });
+      var tabs = ["wg", "awg", "turn"].filter(function (m) { return has[m]; });
+      if (!tabs.length) { showState("No configs yet", "There are no active peers on this subscription."); return; }
+      var mode = tabs[0];   // WG first when present, else the first available
 
-        // Distinguish "couldn't decrypt" (stale/wrong link) from "not published yet" (no ciphertext).
-        var reason = row.bad ? "This link is out of date — ask your administrator for a fresh one."
-          : (!peer.sec ? "Not ready yet — open this peer once in the panel to publish it." : null);
-        var grid = el("div", "tgts");
-        (peer.targets || []).forEach(function (tgt) {
-          var conf = null;
-          if (secret && secret.k) {
-            conf = buildConf({
-              privkey: secret.k,
-              address: (tgt.ip || "").split("/")[0] + "/32",
-              dns: tgt.dns || [],
-              mtu: tgt.mtu || 1280,
-              awg_params: tgt.awg || {},
-              server_pubkey: tgt.server_pubkey || "",
-              psk: secret.p || "",
-              endpoint: tgt.endpoint || "",
-              allowed: "0.0.0.0/0, ::/0",
-              keepalive: 25
-            });
-          }
-          grid.appendChild(targetCard(data.user && data.user.name, peer, tgt, conf, reason));
-        });
-        sec.appendChild(grid);
-        // On a phone each peer is a one-QR-per-view carousel (primary first) — native swipe via scroll-snap,
-        // plus prev/next + dots. On a wide screen the CSS lays every deployment out in a row and hides the nav.
-        if ((peer.targets || []).length > 1) sec.appendChild(carouselNav(grid, peer.targets.length));
-        wrap.appendChild(sec);
+      var bar = el("div", "modebar"), listEl = el("div", "peer-list"), btns = {};
+      tabs.forEach(function (m) {
+        var b = el("button", "modetab" + (m === mode ? " on" : ""), MODE_LABEL[m]);
+        b.onclick = function () { if (mode === m) return; mode = m; tabs.forEach(function (x) { btns[x].className = "modetab" + (x === mode ? " on" : ""); }); paint(); };
+        btns[m] = b; bar.appendChild(b);
       });
+      if (tabs.length > 1) wrap.appendChild(bar);
+      wrap.appendChild(listEl);
+
+      function paint() {
+        listEl.innerHTML = "";
+        rows.forEach(function (row) {
+          var peer = row.peer, secret = row.secret;
+          var tgts = (peer.targets || []).filter(function (t) {
+            return mode === "turn" ? (t.turn || []).length > 0 : ((t.type === "awg") === (mode === "awg"));
+          });
+          if (!tgts.length) return;                        // this peer has nothing in the selected mode
+          var sec = el("section", "peer");
+          var head = el("div", "peer-head");
+          head.appendChild(el("span", "peer-title", peer.title || "Peer"));
+          head.appendChild(el("span", "peer-count", tgts.length + (tgts.length === 1 ? " server" : " servers")));
+          sec.appendChild(head);
+          var reason = row.bad ? "This link is out of date — ask your administrator for a fresh one."
+            : (!peer.sec ? "Not ready yet — open this peer once in the panel to publish it." : null);
+          var grid = el("div", "tgts");
+          tgts.forEach(function (tgt) {
+            var conf = secret && secret.k ? confFor(secret, tgt) : null;
+            grid.appendChild(mode === "turn" ? turnCard(userName, peer, tgt, conf, vkLink, reason)
+                                             : targetCard(userName, peer, tgt, conf, reason));
+          });
+          sec.appendChild(grid);
+          if (tgts.length > 1) sec.appendChild(carouselNav(grid, tgts.length));
+          listEl.appendChild(sec);
+        });
+      }
+      paint();
       document.getElementById("state").hidden = true;
       wrap.hidden = false;
-      if (anyBad) {
-        var warn = el("p", "foot-warn", "Some peers couldn't be decrypted — this link may be out of date. Ask your administrator for a fresh one.");
-        wrap.appendChild(warn);
-      }
+      if (anyBad) wrap.appendChild(el("p", "foot-warn", "Some peers couldn't be decrypted — this link may be out of date. Ask your administrator for a fresh one."));
     });
   }
 

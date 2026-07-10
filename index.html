@@ -50,6 +50,8 @@
 
 <!-- qrcode is a UMD lib: load as a classic script so it sets the global `qrcode`. -->
 <script src="vendor/qrcode.js"></script>
+<!-- shared turn-proxy client-config builders (window.SWGTurn) — one copy for the app + the subscription page. -->
+<script src="turn-artifacts.js"></script>
 <!-- Buildless: vendored Preact + htm as ESM, resolved via an import map. No bundler,
      no npm tree shipped — edit app.js and reload. Bare specifiers below resolve
      against <base href>, so they keep working under SWG_PANEL_BASE subpaths too. -->

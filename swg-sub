@@ -61,7 +61,8 @@ CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8"
 
 # Static assets are served under this prefix so a bare "/<token>" is unambiguous.
 ASSET_PREFIX = "/_a/"
-STATIC = {"sub.js": "sub.js", "sub.css": "sub.css", "qrcode.js": "vendor/qrcode.js"}
+STATIC = {"sub.js": "sub.js", "sub.css": "sub.css", "qrcode.js": "vendor/qrcode.js",
+          "turn-artifacts.js": "turn-artifacts.js"}
 
 AWG_PARAM_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
                   "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
@@ -184,15 +185,29 @@ class State:
         return d if isinstance(d, dict) else {}
 
     def describe(self, nodes):
-        """Per-node interface metadata, keyed by node id — snapshots are read from the mirror
-        files the panel writes (stats-<id>.json), so this needs no running panel."""
+        """Per-node {ifaces, turn} — snapshots are read from the mirror files the panel writes
+        (stats-<id>.json), so this needs no running panel. `turn` is the node's raw turn-proxy list
+        (non-secret client-config material: service / listen / wrap_key)."""
         out = {}
         for nid, cfg in nodes.items():
             snap = load_json(os.path.join(self.stats_dir, (cfg or {}).get("stats_file") or f"stats-{nid}.json"), None)
             if not isinstance(snap, dict) or not snap:
                 continue
-            out[nid] = apply_iface_meta(cfg, node_describe(snap))
+            out[nid] = {"ifaces": apply_iface_meta(cfg, node_describe(snap)),
+                        "turn": snap.get("turn_proxies") or []}
         return out
+
+
+def _port_of(hostport):
+    """Trailing :port of a host:port string → int, else None (mirrors the SPA's portOf)."""
+    s = str(hostport or "")
+    i = s.rfind(":")
+    if i < 0:
+        return None
+    try:
+        return int(s[i + 1:])
+    except ValueError:
+        return None
 
 
 def token_lookup(users, token):
@@ -288,18 +303,29 @@ def read_data(state, token):
         for i, t in enumerate(tgts_in):
             if not isinstance(t, dict):
                 continue
-            meta = ((describe.get(t.get("node")) or {}).get(t.get("iface")) or {})
+            nd = describe.get(t.get("node")) or {}
+            meta = (nd.get("ifaces") or {}).get(t.get("iface")) or {}
+            awg = meta.get("awg_params") or {}
+            lp = meta.get("listen_port")
+            # turn-proxies forwarding to THIS interface (same test as the admin's turnProxiesFor: the proxy
+            # connects to the iface's listen port). Only non-secret client-config material rides along.
+            turn = [{"service": tp.get("service"), "listen": tp.get("listen"), "wrap_key": tp.get("wrap_key")}
+                    for tp in (nd.get("turn") or []) if isinstance(tp, dict) and lp and _port_of(tp.get("connect")) == lp]
             tgts.append({
-                "node": t.get("node"), "iface": t.get("iface"), "type": t.get("type") or "wg",
+                "node": t.get("node"), "iface": t.get("iface"),
+                "type": "awg" if awg else (t.get("type") or "wg"),
                 "ip": t.get("ip"),
                 "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
                 "dns": meta.get("dns") or [], "subnet": meta.get("subnet"),
                 "mtu": meta.get("mtu") or 1280,
-                "awg": meta.get("awg_params") or {},
+                "awg": awg,
+                "turn": turn,
                 "primary": (n_t > 1 and i == 0),       # the default deployment, tagged first
             })
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts})
-    return {"user": {"name": user.get("name") or ""}, "peers": peers_out}
+    subs = state.subscriptions()
+    return {"user": {"name": user.get("name") or ""}, "peers": peers_out,
+            "turn_enabled": bool(subs.get("turn_enabled")), "vk_link": subs.get("vk_link") or ""}
 
 
 # ── HTTP ──
@@ -373,7 +399,8 @@ class Handler(BaseHTTPRequestHandler):
             q = ("?v=" + VERSION).encode()
             data = (data.replace(b'href="/_a/sub.css"', b'href="/_a/sub.css' + q + b'"')
                         .replace(b'src="/_a/sub.js"', b'src="/_a/sub.js' + q + b'"')
-                        .replace(b'src="/_a/qrcode.js"', b'src="/_a/qrcode.js' + q + b'"'))
+                        .replace(b'src="/_a/qrcode.js"', b'src="/_a/qrcode.js' + q + b'"')
+                        .replace(b'src="/_a/turn-artifacts.js"', b'src="/_a/turn-artifacts.js' + q + b'"'))
         self._send(200, data, "text/html; charset=utf-8", cache="no-cache", extra={"Content-Security-Policy": self._CSP})
 
     def _client_ident(self):

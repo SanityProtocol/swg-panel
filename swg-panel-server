@@ -279,7 +279,8 @@ def _turn_update_loop():
 STATIC = {
     "/": "index.html", "/index.html": "index.html",
     "/app.css": "app.css", "/app.js": "app.js",
-    "/reconcile.js": "reconcile.js", "/vendor/qrcode.js": "vendor/qrcode.js",
+    "/reconcile.js": "reconcile.js", "/turn-artifacts.js": "turn-artifacts.js",
+    "/vendor/qrcode.js": "vendor/qrcode.js",
     # vendored ESM (buildless Preact + htm)
     "/vendor/preact.module.js": "vendor/preact.module.js",
     "/vendor/hooks.module.js": "vendor/hooks.module.js",
@@ -994,9 +995,15 @@ def write_sub_serve(deps):
     """Mirror JUST {enabled, serve} to subs/serve.json (group-readable) so swg-sub reads its own config
     from a tiny dedicated file and never has to open panel-settings.json — which also carries webhook
     signing secrets and API token hashes that the public subscription surface has no business seeing."""
-    subs = ((deps.get("panel_settings") or {}).get("subscriptions") or {})
+    ps = deps.get("panel_settings") or {}
+    subs = ps.get("subscriptions") or {}
+    # turn_enabled + vk_link ride along so swg-sub can offer the TURN tab + build turn-proxy client artifacts
+    # without reading panel-settings.json (which also holds webhook secrets). Neither is a secret: vk_link is
+    # embedded in every turn config a client already receives.
     out = {"enabled": bool(subs.get("enabled")),
-           "serve": subs.get("serve") if isinstance(subs.get("serve"), dict) else {}}
+           "serve": subs.get("serve") if isinstance(subs.get("serve"), dict) else {},
+           "turn_enabled": ps.get("turn_enabled") is not False,
+           "vk_link": (ps.get("vk_link") or "")}
     with contextlib.suppress(Exception):
         os.makedirs(_sub_dir(deps), exist_ok=True)
         atomic_write(_sub_serve_path(deps), json.dumps(out, indent=2) + "\n", mode=0o640)
@@ -6144,7 +6151,8 @@ class Handler(BaseHTTPRequestHandler):
         if _av and STATIC[key] == "index.html":
             q = ("?v=" + _av).encode()
             data = (data.replace(b'href="app.css"', b'href="app.css' + q + b'"')
-                        .replace(b'src="app.js"', b'src="app.js' + q + b'"'))
+                        .replace(b'src="app.js"', b'src="app.js' + q + b'"')
+                        .replace(b'src="turn-artifacts.js"', b'src="turn-artifacts.js' + q + b'"'))
         elif _av and STATIC[key] == "app.js":
             data = data.replace(b'"./reconcile.js"', b'"./reconcile.js' + ("?v=" + _av).encode() + b'"')
         _, ext = os.path.splitext(full)

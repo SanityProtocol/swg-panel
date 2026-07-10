@@ -57,6 +57,20 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
 .spin { width: 30px; height: 30px; margin: 0 auto 16px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* WG / AWG / TURN mode tabs */
+.modebar { display: flex; gap: 6px; padding: 5px; margin: 0 0 18px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; }
+.modetab { flex: 1; appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 700; font-size: 13.5px; padding: 9px 10px; border-radius: 9px; background: transparent; color: var(--muted); }
+.modetab.on { background: var(--brand); color: var(--brand-ink); }
+.modetab:active { transform: translateY(1px); }
+
+/* turn card: per-fork selector + the artifact */
+.forktabs { align-self: stretch; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.forktab { appearance: none; border: 1px solid var(--line); cursor: pointer; font: inherit; font-weight: 700; font-size: 12px; padding: 5px 11px; border-radius: 20px; background: transparent; color: var(--ink); }
+.forktab.on { background: color-mix(in srgb, var(--brand) 16%, transparent); border-color: var(--brand); color: var(--brand); }
+.turnbody { align-self: stretch; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.turnlabel { align-self: stretch; text-align: center; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.turnhint { text-align: center; }
+
 /* peer group */
 .peer { margin: 0 0 20px; }
 .peer-head { display: flex; align-items: baseline; gap: 10px; margin: 0 2px 12px; }
