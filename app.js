@@ -5677,13 +5677,21 @@ function healthAlerts(health) {
   if (m && m.total && m.used / m.total > 0.9) out.push({ sev: "hot", msg: "memory " + Math.round(m.used / m.total * 100) + "%" });
   const ncpu = (health && health.ncpu) || 1;
   if (health && typeof health.cpu_pct === "number") {
-    if (health.cpu_pct >= SAT_PCT) out.push({ sev: "hot", msg: "CPU " + Math.round(health.cpu_pct) + "%" });
-    // Otherwise: any saturated vCPU while the mean stays below the threshold. A pinned single-threaded
-    // datapath (amneziawg-go, swg-sni) does this. Counted from the node's per-vCPU list, never inferred
-    // from (max - mean) — that can't tell 1 pinned core from 5, and goes silent at 6-of-8.
-    else {
-      const hot = hotCores(health);
-      if (hot) out.push({ sev: "warn", msg: hot + " " + cpuNamePl(health, hot) + " saturated of " + cpuCores(health).length + " (peak " + Math.max(...cpuCores(health)) + "%)" });
+    // Saturation is described per-CPU, counted from the node's per-vCPU list — never inferred from
+    // (max − mean), which can't tell 1 pinned CPU from 5 and goes silent at 6-of-8. The all-saturated case
+    // MUST be tested before any mean-based alert: when every CPU is hot the mean is necessarily ≥ SAT_PCT,
+    // so a mean-first branch would swallow it and "All … saturated" could never appear.
+    const cores = cpuCores(health), hot = hotCores(health), tot = cores.length;
+    const pk = tot ? " (peak " + Math.max(...cores) + "%)" : "";
+    if (!tot) {                                                    // older swg-noded: mean only, no per-CPU list
+      if (health.cpu_pct >= SAT_PCT) out.push({ sev: "hot", msg: "CPU " + Math.round(health.cpu_pct) + "%" });
+    } else if (hot && tot === 1) {
+      out.push({ sev: "hot", msg: "1 " + cpuName(health) + " saturated" + pk });
+    } else if (hot && hot === tot) {
+      out.push({ sev: "hot", msg: "All " + cpuNamePl(health, tot) + " saturated" + pk });
+    } else if (hot) {                                              // plural keyed off the TOTAL: "1 of 2 vCPUs"
+      out.push({ sev: health.cpu_pct >= SAT_PCT ? "hot" : "warn",
+                 msg: hot + " of " + tot + " " + cpuNamePl(health, tot) + " saturated" + pk });
     }
   }
   if (health && Array.isArray(health.load) && (health.load[0] || 0) / ncpu > 1.5) out.push({ sev: "warn", msg: "load " + health.load[0].toFixed(1) + " / " + ncpu + " " + cpuNamePl(health, ncpu) });
