@@ -5657,16 +5657,59 @@ function NodesScreen() {
 }
 // load/util tone: green under 70%, amber to 90%, red above.
 function htone(pct) { return pct >= 90 ? "hot" : (pct >= 70 ? "warn" : "ok"); }
-   // green→amber→red util ramp (matches hm-fill + the CPU loadColor ramp)
-// Threshold alerts for a node: disk/memory > 90%, CPU saturated (load-per-core > 1.5).
+   // green→amber→red util ramp (matches hm-fill + the CPU cpuColor ramp)
+// Threshold alerts for a node: disk/memory > 90%, CPU saturated, one core pinned, load > 1.5/core.
+// CPU and load are separate signals: load counts D-state tasks, so heavy disk I/O raises load while
+// the CPU sits idle. Reporting both keeps each honest.
 function healthAlerts(health) {
   const out = [];
   for (const d of (health && health.disk || [])) if (d.total && d.used / d.total > 0.9) out.push({ sev: "hot", msg: "disk " + d.mount + " " + Math.round(d.used / d.total * 100) + "%" });
   const m = health && health.mem;
   if (m && m.total && m.used / m.total > 0.9) out.push({ sev: "hot", msg: "memory " + Math.round(m.used / m.total * 100) + "%" });
-  if (health && Array.isArray(health.load) && (health.load[0] || 0) / (health.ncpu || 1) > 1.5) out.push({ sev: "warn", msg: "CPU load " + health.load[0].toFixed(1) });
+  const ncpu = (health && health.ncpu) || 1;
+  if (health && typeof health.cpu_pct === "number") {
+    if (health.cpu_pct >= SAT_PCT) out.push({ sev: "hot", msg: "CPU " + Math.round(health.cpu_pct) + "%" });
+    // Otherwise: any saturated vCPU while the mean stays below the threshold. A pinned single-threaded
+    // datapath (amneziawg-go, swg-sni) does this. Counted from the node's per-vCPU list, never inferred
+    // from (max - mean) — that can't tell 1 pinned core from 5, and goes silent at 6-of-8.
+    else {
+      const hot = hotCores(health);
+      if (hot) out.push({ sev: "warn", msg: hot + " " + cpuNamePl(health, hot) + " saturated of " + cpuCores(health).length + " (peak " + Math.max(...cpuCores(health)) + "%)" });
+    }
+  }
+  if (health && Array.isArray(health.load) && (health.load[0] || 0) / ncpu > 1.5) out.push({ sev: "warn", msg: "load " + health.load[0].toFixed(1) + " / " + ncpu + " " + cpuNamePl(health, ncpu) });
   return out;
 }
+const SAT_PCT = 90;                                     // a logical CPU at/above this is "saturated" (matches CPU_SAT_PCT in swg-panel-server)
+const cpuCores = h => (h && Array.isArray(h.cpu_cores)) ? h.cpu_cores : [];
+const hotCores = h => cpuCores(h).reduce((n, c) => n + (c >= SAT_PCT ? 1 : 0), 0);
+// /proc/stat's cpuN are LOGICAL cpus: vCPUs under a hypervisor, hardware threads on bare metal. Never
+// "cores" — an 8-core box with hyperthreading lists 16. The node reports `virt`; unknown ⇒ plain "CPU".
+const cpuName = h => (h && h.virt) ? "vCPU" : "CPU";
+const cpuNamePl = (h, n) => cpuName(h) + (n === 1 ? "" : "s");
+
+// The CPU bar+number is ALWAYS the hover target — per-vCPU detail is useful on a healthy node too.
+// The triangle is only an attention marker, added when at least one vCPU is saturated.
+// `idle` is 100 - usage (i.e. it folds in that vCPU's iowait share). Per-CPU iowait is not reported:
+// the kernel credits it to whichever CPU was idle when the I/O completed, so only the node-level
+// figure in the header is meaningful — and it's the share that used to masquerade as CPU.
+function CpuPop({ health, trigger, alignRight }) {
+  const cores = cpuCores(health);
+  if (!cores.length) return trigger;                    // older swg-noded: no per-vCPU data, no bubble
+  const hot = hotCores(health), iow = health.cpu_iowait_pct;
+  return html`<${Popover} cls="cpupop" popCls="cpu-bubble" alignRight=${alignRight} trigger=${trigger}>
+    <div class="onpop-h">${cores.length} ${cpuNamePl(health, cores.length)} · mean ${Math.round(health.cpu_pct)}%${typeof iow === "number" && iow >= 1 ? " · iowait " + Math.round(iow) + "%" : ""}${hot ? html` · <b class="cpu-hot-n">${hot} saturated</b>` : ""}</div>
+    ${cores.map((c, i) => html`<div class=${"onrow cpu-row" + (c >= SAT_PCT ? " hot" : "")} key=${i}>
+      <span class="on-name">${cpuName(health)} ${i}</span>
+      <span class="hm-bar cpu-corebar"><i class="hm-fill" style=${"width:" + Math.min(100, c) + "%;background:" + cpuColor(c)}></i></span>
+      <span class="cpu-use" style=${"color:" + cpuColor(c)}>${c}%</span>
+      <span class="cpu-idle">idle ${Math.max(0, 100 - c)}%</span>
+      <span class="cpu-sat">${c >= SAT_PCT ? html`<${Ic} i="warn"/>` : null}</span>
+    </div>`)}
+  </${Popover}>`;
+}
+// The attention triangle itself — rendered inside the trigger, so it hovers with the bar.
+const CpuWarnIc = ({ health }) => hotCores(health) ? html`<span class="cpu-warn" aria-label=${cpuNamePl(health, hotCores(health)) + " saturated"}><${Ic} i="warn"/></span>` : null;
 // Tiny inline-SVG sparkline (no charting lib). `points` is an array of numbers 0..100.
 function Sparkline({ points, color, w, h }) {
   w = w || 90; h = h || 22;
@@ -5705,15 +5748,17 @@ function ChartHover({ xp, dots, label }) {
     <div class="ch-tip" style=${"left:" + xp + "%;transform:" + anchor}>${label}</div>
   <//>`;
 }
-// CPU-load colour ramp for the history line: green ≤60%, green→orange 60–90%, orange→red
-// 90–120%, solid red beyond. v is load-per-core as a percentage (so an overloaded box reads >100).
+// CPU colour ramp for the meters + history line: green ≤60%, green→orange 60–85%, orange→red
+// 85–100%. v is utilization (mean across cores, 0–100), so it means the same on every node.
+// A node still on an older swg-noded sends load-per-core instead, which can exceed 100 — that
+// pins to solid red, the right signal for a genuinely overloaded box.
 const LOAD_G_DARK = [63, 216, 154], LOAD_G_LIGHT = [14, 158, 99], LOAD_O = [242, 163, 60], LOAD_R = [242, 84, 91];
-function loadColor(v) {
+function cpuColor(v) {
   const mix = (a, b, t) => "rgb(" + a.map((x, i) => Math.round(x + (b[i] - x) * t)).join(",") + ")";
   const LOAD_G = resolvedTheme() === "light" ? LOAD_G_LIGHT : LOAD_G_DARK;   // the low-load green must stay legible on white
   if (v <= 60) return mix(LOAD_G, LOAD_G, 0);
-  if (v <= 90) return mix(LOAD_G, LOAD_O, (v - 60) / 30);
-  if (v <= 120) return mix(LOAD_O, LOAD_R, (v - 90) / 30);
+  if (v <= 85) return mix(LOAD_G, LOAD_O, (v - 60) / 25);
+  if (v <= 100) return mix(LOAD_O, LOAD_R, (v - 85) / 15);
   return mix(LOAD_R, LOAD_R, 0);
 }
 function MiniArea({ points, h, times, range, cap }) {
@@ -5742,12 +5787,12 @@ function MiniArea({ points, h, times, range, cap }) {
   const line = xy.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
   const area = xy[0][0].toFixed(1) + "," + h + " " + line + " " + xy[n - 1][0].toFixed(1) + "," + h;
   const id = "ha" + (MiniArea._n = (MiniArea._n || 0) + 1);
-  // vertical stroke gradient: colour each height by its absolute load value (green→orange→red).
+  // vertical stroke gradient: colour each height by its absolute utilization (green→orange→red).
   // Stops at the band edges that fall inside the visible [lo,hi] window — linear between them
   // reproduces the ramp exactly (both colour and y are linear in value within a band).
   // offsets are normalised to the polyline's own bounding box (objectBoundingBox): top = hi → 0, bottom = lo → 1
-  const edges = [...new Set([lo, 60, 90, 120, hi].filter(v => v >= lo && v <= hi))].sort((a, b) => b - a);
-  const stops = edges.map(v => ({ off: Math.max(0, Math.min(1, (hi - v) / rng)), col: loadColor(v) }));
+  const edges = [...new Set([lo, 60, 85, hi].filter(v => v >= lo && v <= hi))].sort((a, b) => b - a);
+  const stops = edges.map(v => ({ off: Math.max(0, Math.min(1, (hi - v) / rng)), col: cpuColor(v) }));
   const cur = pts[n - 1];   // area fade is tinted by the latest value
   return html`<div class="harea-wrap" ref=${wref} style=${"height:" + h + "px"} onMouseMove=${onMove} onMouseLeave=${() => setHov(null)}>
     <svg class="harea" viewBox=${"0 0 " + w + " " + h} preserveAspectRatio="none" height=${h}>
@@ -5756,14 +5801,14 @@ function MiniArea({ points, h, times, range, cap }) {
           ${stops.map(s => html`<stop offset=${s.off} stop-color=${s.col}/>`)}
         </linearGradient>
         <linearGradient id=${id + "a"} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stop-color=${loadColor(cur)} stop-opacity="0.30"/><stop offset="1" stop-color=${loadColor(cur)} stop-opacity="0"/>
+          <stop offset="0" stop-color=${cpuColor(cur)} stop-opacity="0.30"/><stop offset="1" stop-color=${cpuColor(cur)} stop-opacity="0"/>
         </linearGradient>
       </defs>
       ${n >= 2 ? html`<polygon points=${area} fill=${"url(#" + id + "a)"}/>
       <polyline points=${line} fill="none" stroke=${"url(#" + id + "s)"} stroke-width="1.4" vector-effect="non-scaling-stroke"/>` : null}
     </svg>
-    ${n === 1 ? html`<div class="ch-dot" style=${"left:" + xy[0][0] + "%;top:" + (xy[0][1] / h * 100) + "%;background:" + loadColor(cur)}></div>` : null}
-    ${(hov != null && hov < n) ? html`<${ChartHover} xp=${xy[hov][0]} dots=${[{ yp: xy[hov][1] / h * 100, color: loadColor(pts[hov]) }]}
+    ${n === 1 ? html`<div class="ch-dot" style=${"left:" + xy[0][0] + "%;top:" + (xy[0][1] / h * 100) + "%;background:" + cpuColor(cur)}></div>` : null}
+    ${(hov != null && hov < n) ? html`<${ChartHover} xp=${xy[hov][0]} dots=${[{ yp: xy[hov][1] / h * 100, color: cpuColor(pts[hov]) }]}
       label=${histTime(T[hov], range) + " · " + Math.round(pts[hov]) + "%"}/>` : null}
   </div>`;
 }
@@ -6091,9 +6136,16 @@ function RangedHistory({ node, kind, live, h, head, liveFine, fetch, traf, range
 // chart row) and inside NodeHealth (overview cards).
 function healthCols(health) {
   const cols = [];
-  if (Array.isArray(health.load)) {
-    const ncpu = health.ncpu || 1, l1 = health.load[0] || 0;
-    cols.push({ label: "CPU load", pct: l1 / ncpu * 100, text: l1.toFixed(2) + " / " + ncpu + (ncpu === 1 ? " cpu" : " cpus") });
+  const ncpu = health.ncpu || 1;
+  const l1 = Array.isArray(health.load) ? (health.load[0] || 0) : null;
+  const loadTxt = () => l1.toFixed(2) + " / " + ncpu + " " + cpuNamePl(health, ncpu);
+  if (typeof health.cpu_pct === "number") {
+    // Utilization and load are different measurements — give each its own meter rather than
+    // letting one stand in for the other. Per-vCPU detail lives in the CPU meter's hover bubble.
+    cols.push({ label: "CPU", heat: true, cpu: true, pct: health.cpu_pct, text: Math.round(health.cpu_pct) + "%" });
+    if (l1 !== null) cols.push({ label: "Load", pct: Math.min(100, l1 / ncpu * 100), text: loadTxt() });
+  } else if (l1 !== null) {
+    cols.push({ label: "CPU load", heat: true, pct: l1 / ncpu * 100, text: loadTxt() });   // older swg-noded: no cpu_pct, load-per-core as before
   }
   const m = health.mem;
   if (m && m.total) cols.push({ label: "Memory", pct: m.used / m.total * 100, text: fmtBytes(m.used) + " / " + fmtBytes(m.total) });
@@ -6104,12 +6156,14 @@ function healthCols(health) {
 function HealthMeters({ health }) {
   return html`<div class="health-cols">${healthCols(health).map(c => {
     const p = Math.min(100, Math.max(0, c.pct || 0));
-    const heat = c.label === "CPU load";                 // CPU bar+number: continuous green→red by load, like the graph
-    const col = heat ? loadColor(c.pct) : null;          // uncapped pct → a badly overloaded core reads full red
-    return html`<div class="hcol">
-      <div class="hcol-top"><span class="hcol-l">${c.label}</span><span class="hcol-v" style=${col ? "color:" + col : ""}>${c.text}</span></div>
+    const heat = !!c.heat;                               // CPU bar+number: continuous green→red, like the graph
+    const col = heat ? cpuColor(c.pct) : null;          // uncapped pct → an old node's overloaded load-per-core reads full red
+    const body = html`<div class="hcol">
+      <div class="hcol-top"><span class="hcol-l">${c.label}</span><span class="hcol-v" style=${col ? "color:" + col : ""}>${c.text}${c.cpu ? html`<${CpuWarnIc} health=${health}/>` : null}</span></div>
       <div class="hm-bar"><i class=${"hm-fill" + (heat ? "" : " " + htone(p))} style=${"width:" + p + "%" + (col ? ";background:" + col : "")}></i></div>
     </div>`;
+    // the whole CPU meter (number + bar) is the hover target, saturated or not
+    return c.cpu ? html`<${CpuPop} health=${health} trigger=${body}/>` : body;
   })}</div>`;
 }
 function HealthAlerts({ health }) {
@@ -6217,8 +6271,12 @@ function NodeCard({ n, reorder }) {
   const tps = (snap && snap.turn_proxies) || [];
   const ifTags = ifaceTags(n.id);   // every interface tag, one wrapping line
   const turnChip = tp => html`<span class=${"tg tg-turn tf-" + turnFork(tp.service) + ((nodeStale(n.id) || turnDown(tp)) ? " muted" : "")}>${turnLabel(tp.service, portOf(tp.listen) || portOf(tp.connect))}</span>`;
-  const h = n.health, hasCpu = h && Array.isArray(h.load);
-  const l1 = hasCpu ? (h.load[0] || 0) : 0, cpctRaw = l1 / ((h && h.ncpu) || 1) * 100, cpct = Math.min(100, cpctRaw);   // cpctRaw (uncapped) colours the bar+number green→red like the graph; cpct caps the bar width
+  const h = n.health, cpuUtil = h && typeof h.cpu_pct === "number";
+  const hasCpu = cpuUtil || (h && Array.isArray(h.load));
+  const l1 = (h && Array.isArray(h.load)) ? (h.load[0] || 0) : 0;
+  // Utilization when the node reports it; load-per-core for an older swg-noded (which can exceed 100).
+  const cpctRaw = cpuUtil ? h.cpu_pct : l1 / ((h && h.ncpu) || 1) * 100, cpct = Math.min(100, cpctRaw);   // cpctRaw (uncapped) colours the bar+number green→red like the graph; cpct caps the bar width
+  const cpuLabel = cpuUtil ? "CPU" : "CPU load", cpuText = cpuUtil ? Math.round(cpctRaw) + "%" : l1.toFixed(2);
   const removing = n.removing;
   const ndown = st !== "online" && !inProc(n.proc_status);    // genuinely not reporting (recover state) → mirror the detail: disable card actions
   const nblocked = st !== "online" || inProc(n.proc_status);  // down OR mid convert/re-install
@@ -6241,7 +6299,7 @@ function NodeCard({ n, reorder }) {
       ${removing ? html`<span class="nstat removing" style="margin-left:14px"><${Ic} i="trash"/> flagged for removal</span>` : null}
     </div>
     <div class="nc-mesh nm-item">${(n.mesh_peers || []).length ? html`<${MeshStat} nodeId=${n.id} mode="both"/>` : null}</div>
-    <div class="nc-cpu nm-item"><span class="nm-l">CPU load</span>${hasCpu ? html`<span class="nm-cpu"><span class="hm-bar"><i class="hm-fill" style=${"width:" + cpct + "%;background:" + loadColor(cpctRaw)}></i></span><span class="nm-v" style=${"color:" + loadColor(cpctRaw)}>${l1.toFixed(2)}</span></span>` : html`<span class="nm-v faint">—</span>`}</span>
+    <div class="nc-cpu nm-item"><span class="nm-l">${cpuLabel}</span>${hasCpu ? html`<${CpuPop} health=${h} alignRight=${true} trigger=${html`<span class="nm-cpu"><span class="hm-bar"><i class="hm-fill" style=${"width:" + cpct + "%;background:" + cpuColor(cpctRaw)}></i></span><span class="nm-v" style=${"color:" + cpuColor(cpctRaw)}>${cpuText}</span><${CpuWarnIc} health=${h}/></span>`}/>` : html`<span class="nm-v faint">—</span>`}</span>
     <button class="iconbtn nc-ctl" disabled=${nblocked} title=${nblocked ? "Unavailable while the node is down / converting" : "Node settings"} onClick=${e => { e.stopPropagation(); openNodeEdit(n); }}><${Ic} i="gear"/></button>
 
     <span class="nc-peers nm-item">${here.length

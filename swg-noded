@@ -267,6 +267,34 @@ def read_uptime(proc_root="/proc"):
     return float(_read_proc(proc_root, "uptime").split()[0])
 
 
+_virt = None
+
+
+def read_virt(proc_root="/proc"):
+    """True when this kernel runs under a hypervisor — i.e. /proc/stat's cpuN are vCPUs, not physical CPUs.
+
+    Static for the life of the box, so it is detected once and cached. Read-only, no subprocess (deliberately
+    not `systemd-detect-virt`). x86 kernels set the `hypervisor` CPU flag under any mainstream hypervisor;
+    /sys/hypervisor/type catches Xen and some ARM guests. A container inherits its host's answer, which is
+    correct: /proc is the host's.
+    """
+    global _virt
+    if _virt is not None:
+        return _virt
+    v = False
+    if proc_root == "/proc":                       # absolute path — skip it for injected fixtures
+        with contextlib.suppress(Exception):
+            v = os.path.exists("/sys/hypervisor/type")
+    if not v:
+        with contextlib.suppress(Exception):
+            for ln in _read_proc(proc_root, "cpuinfo").splitlines():
+                if ln.startswith("flags") and " hypervisor" in (" " + ln.split(":", 1)[-1] + " "):
+                    v = True
+                    break
+    _virt = v
+    return v
+
+
 def read_ncpu(proc_root="/proc"):
     with contextlib.suppress(Exception):
         n = sum(1 for ln in _read_proc(proc_root, "stat").splitlines()
@@ -274,6 +302,80 @@ def read_ncpu(proc_root="/proc"):
         if n:
             return n
     return os.cpu_count() or 1
+
+
+# /proc/stat exposes cumulative jiffy counters, not a rate, so utilization needs two samples.
+# Keyed by proc_root so an injected fixture never diffs against the real /proc.
+_cpu_prev = {}
+
+
+def _cpu_fields(proc_root="/proc"):
+    """{"cpu": (busy, total, iowait), "cpu0": (busy, total, iowait), ...} from /proc/stat.
+
+    Sums user..steal only: the kernel folds `guest` into `user` and `guest_nice` into `nice`,
+    so adding all ten fields double-counts them. Not-busy is idle + iowait — excluding iowait is
+    what stops a disk wait from reading as CPU. `steal` stays in busy: the hypervisor took the
+    core, so the node genuinely cannot get work done.
+    """
+    out = {}
+    for ln in _read_proc(proc_root, "stat").splitlines():
+        f = ln.split()
+        if not f or not f[0].startswith("cpu"):
+            continue
+        vals = [int(x) for x in f[1:9]]      # user nice system idle iowait irq softirq steal
+        vals += [0] * (8 - len(vals))        # kernels before 2.6.11 have no `steal`
+        total = sum(vals)
+        out[f[0]] = (total - vals[3] - vals[4], total, vals[4])
+    return out
+
+
+def read_cpu_pct(proc_root="/proc"):
+    """(mean, [per-vcpu…], iowait) utilization % since the previous call — None until a baseline exists.
+
+    `mean` comes from the aggregate `cpu` line, which the kernel already sums across cores, so it
+    is inherently 0-100 and directly comparable between nodes of different core counts (a fully
+    busy 8-core node reads 100, not 800). The per-vCPU list is what the mean hides: a pinned
+    single-threaded datapath (amneziawg-go, swg-sni) saturates one core, and on an 8-vCPU box that
+    is a mean of ~12%. Reporting every vCPU lets the panel say exactly which and how many are hot
+    rather than inferring a count from (max - mean), which is only ever right by accident.
+
+    The list is ordered by vCPU index (cpu0, cpu1, …), so position is meaningful.
+    """
+    cur = _cpu_fields(proc_root)
+    prev = _cpu_prev.get(proc_root)
+    if not prev or "cpu" not in cur or "cpu" not in prev:
+        _cpu_prev[proc_root] = cur
+        return None                          # first call after start: nothing to diff against
+    dt0 = cur["cpu"][1] - prev["cpu"][1]
+    if dt0 < 0:                              # counters went backwards (reboot / cpu hotplug) — re-baseline
+        _cpu_prev[proc_root] = cur
+        return None
+    if dt0 == 0:
+        # Two calls inside one clock tick (USER_HZ=100 → 10 ms). KEEP the older baseline rather than
+        # overwrite it with an identical sample, so the next call still has a usable window to diff.
+        return None
+    _cpu_prev[proc_root] = cur
+
+    def pct(key, idx=0):
+        v0, v1 = prev[key], cur[key]
+        dt = v1[1] - v0[1]
+        if dt <= 0:                          # this core idle-halted, or was hotplugged in
+            return None
+        return max(0.0, min(100.0, (v1[idx] - v0[idx]) / dt * 100.0))
+
+    mean = pct("cpu")
+    if mean is None:
+        return None
+    # Aggregate iowait only. Per-CPU iowait is unreliable (the kernel credits it to whichever CPU was
+    # idle when the I/O completed), so we never report it per core — see Documentation/filesystems/proc.rst.
+    iowait = pct("cpu", 2) or 0.0
+    cores = []
+    for k in sorted((k for k in cur if k != "cpu"), key=lambda k: int(k[3:])):   # cpu0, cpu1, … in index order
+        if k not in prev:
+            continue
+        p = pct(k)
+        cores.append(mean if p is None else p)      # a core that reported no elapsed ticks: fall back to the mean
+    return (round(mean, 1), cores, round(iowait, 1))
 
 
 def disk_usage(mount, statvfs=os.statvfs):
@@ -291,6 +393,19 @@ def collect_health(proc_root="/proc", mounts=None, statvfs=os.statvfs):
     h = {}
     with contextlib.suppress(Exception):
         h["load"] = read_loadavg(proc_root)
+    with contextlib.suppress(Exception):
+        # Real utilization, additive: an older panel ignores it, and a panel that has it prefers it
+        # over the load-derived figure. Absent on the very first sync (no baseline) — see read_cpu_pct.
+        # cpu_cores is per-vCPU (rounded ints, index order); the panel derives peak + saturated count
+        # from it. One int per vCPU is cheaper on the wire than the two summary scalars it replaces.
+        cpu = read_cpu_pct(proc_root)
+        if cpu is not None:
+            h["cpu_pct"] = cpu[0]
+            if cpu[1]:
+                h["cpu_cores"] = [int(round(c)) for c in cpu[1]]
+            h["cpu_iowait_pct"] = cpu[2]     # aggregate only — this is the share that used to masquerade as CPU
+    with contextlib.suppress(Exception):
+        h["virt"] = read_virt(proc_root)     # cpuN are vCPUs (VM) vs CPUs (bare metal) — only the label differs
     with contextlib.suppress(Exception):
         h["ncpu"] = read_ncpu(proc_root)
     with contextlib.suppress(Exception):
@@ -3814,6 +3929,8 @@ def main():
     online_max = nd.get("online_max", 180)
     agent = nd.get("agent", "/opt/swg-agent/swg-agent")
     sudo = bool(nd.get("sudo"))
+    with contextlib.suppress(Exception):
+        read_cpu_pct()               # prime the CPU baseline so the first sync reports utilization, not nothing
     os.makedirs(STATE_DIR, exist_ok=True)
     last_samples = {}
     last_route_sig = None; last_route_t = 0.0    # gate the heavy routing reconcile (see ROUTING_RECONCILE_EVERY_S)

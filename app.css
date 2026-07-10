@@ -839,6 +839,21 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .nc-turn{grid-column:3 / 7;min-width:0}         /* turn-proxies start by peers, room to the right */
 .nc-mesh{grid-column:5;min-width:0;justify-self:end}   /* mesh sits at the right of its col, hugging cpu */
 .nc-cpu.nm-item{grid-column:6;justify-self:end;gap:9px}    /* right-aligned in col6; label↔bar = 9 (needs .nm-item specificity to beat the generic .nm-item gap:8) */
+/* CPU meter → per-vCPU bubble. The bar+number is always the hover target; the triangle is only an
+   attention marker, shown when at least one vCPU is saturated. */
+.cpupop{display:inline-flex;align-items:center;cursor:default}
+.health-cols > .cpupop{display:block;min-width:0}      /* the Popover span is the grid item — keep the column shape */
+.cpu-warn{display:inline-flex;align-items:center;margin-left:5px;color:var(--dangling)}
+.cpu-warn svg{width:13px;height:13px}
+.cpu-hot-n{color:var(--dangling);font-weight:600}
+.deppop.cpu-bubble{min-width:264px;width:max-content}
+.cpu-bubble .cpu-row{display:grid;grid-template-columns:auto 1fr 38px 58px 14px;align-items:center;gap:9px;padding:4px 8px;border-radius:6px;white-space:nowrap}
+.cpu-bubble .cpu-row.hot .on-name{color:var(--dangling)}
+.cpu-bubble .cpu-corebar{width:100%;min-width:56px}
+.cpu-bubble .cpu-use{font-family:var(--mono);font-size:11px;text-align:right}
+.cpu-bubble .cpu-idle{font-family:var(--mono);font-size:10px;color:var(--faint);text-align:right}
+.cpu-bubble .cpu-sat{display:inline-flex;color:var(--dangling)}
+.cpu-bubble .cpu-sat svg{width:12px;height:12px}
 .nc-thru{grid-column:6;justify-self:end}   /* right-aligned so the upload "/s" sits exactly under the cpu number */
 .nc-ctl{grid-column:7;flex:none}
 .ncard .nname{font-family:var(--mono);font-size:15px;line-height:1;font-weight:600;color:var(--ink)}
@@ -926,7 +941,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 /* node health meters */
 .health{display:flex;flex-direction:column;gap:12px}
 /* CPU / Memory / Disk side by side — each takes a third */
-.health-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.health-cols{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:18px}   /* one equal column per meter: 3 (CPU load/mem/disk) on an old node, 4 once it reports cpu + load separately */
 .hcol{display:flex;flex-direction:column;gap:6px;min-width:0}
 .hcol-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 .hcol-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}

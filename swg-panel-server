@@ -2712,19 +2712,29 @@ def snap_traffic(snap):
     return int(rx), int(tx)
 
 
+CPU_SAT_PCT = 90        # a vCPU at/above this is "saturated" (must match SAT_PCT in app.js)
+
+
 def health_pcts(health):
     """(cpu, mem, disk) integer percentages from a snapshot health block, NA where absent.
-    CPU is load-per-core; disk is the busiest mount."""
+    CPU is real utilization (0-100, mean across cores); disk is the busiest mount."""
     if not isinstance(health, dict):
         return None
     def pc(used, total):
         return HRRD_NA if not total else max(0, min(100, round(used / total * 100)))
     cpu = HRRD_NA
+    cpu_pct = health.get("cpu_pct")
     load = health.get("load")
-    if isinstance(load, list) and load:
-        # NOT capped at 100: CPU is load-per-core, so an overloaded node reads >100% (e.g. load 2.0
-        # on 1 core = 200%). The chart's colour gradient turns red past ~120% — clamp only at the
-        # ring byte's ceiling (254; 255 is the NA sentinel).
+    if isinstance(cpu_pct, (int, float)):
+        # Utilization, sampled from /proc/stat by the node (swg-noded.read_cpu_pct). The kernel's
+        # aggregate `cpu` line is already summed across cores, so this is 0-100 on any box and is
+        # directly comparable across a fleet of differently-sized nodes.
+        cpu = max(0, min(100, round(cpu_pct)))
+    elif isinstance(load, list) and load:
+        # FALLBACK for a node still running an older swg-noded (no cpu_pct): load-per-core, as before.
+        # NOT capped at 100 — load 2.0 on 1 core = 200%; clamp only at the ring byte's ceiling
+        # (254; 255 is the NA sentinel). Beware: load counts D-state tasks, so disk I/O and a brief
+        # fork storm (an ssh login) both read as "CPU" here. That is why cpu_pct supersedes it.
         cpu = max(0, min(254, round((load[0] or 0) / (health.get("ncpu") or 1) * 100)))
     m = health.get("mem") or {}
     mem = pc(m.get("used", 0), m.get("total", 0))
@@ -4992,16 +5002,34 @@ def _pct(used, total):
 
 
 def _ext_health_pcts(h):
-    """cpu/mem/disk percentages + uptime from a node's health block (see swg-noded collect_health)."""
+    """cpu/mem/disk percentages + uptime from a node's health block (see swg-noded collect_health).
+
+    `cpu_percent` is real utilization (0-100, mean across cores) when the node reports it; it falls
+    back to load-per-core for a node on an older swg-noded. Must track health_pcts() so /metrics and
+    /api/v1 never disagree with the UI about the same node.
+    """
     h = h or {}
     load = h.get("load") or []
     ncpu = h.get("ncpu") or 1
-    cpu = round(min(100.0, 100.0 * (load[0] / ncpu)), 1) if load and ncpu else None
+    cpu_pct = h.get("cpu_pct")
+    if isinstance(cpu_pct, (int, float)):
+        cpu = round(max(0.0, min(100.0, float(cpu_pct))), 1)
+    else:
+        cpu = round(min(100.0, 100.0 * (load[0] / ncpu)), 1) if load and ncpu else None
     mem = h.get("mem") or {}
     mem_pct = _pct(mem.get("used", 0), mem.get("total", 0)) if mem.get("total") else None
     disks = h.get("disk") or []
     disk_pct = _pct((disks[0] or {}).get("used", 0), (disks[0] or {}).get("total", 0)) if disks and disks[0].get("total") else None
-    return {"cpu_percent": cpu, "mem_percent": mem_pct, "disk_percent": disk_pct, "uptime_s": h.get("uptime")}
+    # Peak + saturated-vCPU count are DERIVED from the per-vCPU list the node sends — never inferred
+    # from (max - mean), which cannot distinguish 1 pinned core from 5 and goes silent at 6-of-8.
+    cores = [c for c in (h.get("cpu_cores") or []) if isinstance(c, (int, float))]
+    cpu_max = round(max(cores), 1) if cores else None
+    cpu_hot = sum(1 for c in cores if c >= CPU_SAT_PCT) if cores else None
+    iow = h.get("cpu_iowait_pct")
+    iow = round(max(0.0, min(100.0, float(iow))), 1) if isinstance(iow, (int, float)) else None
+    return {"cpu_percent": cpu, "cpu_max_percent": cpu_max, "cpu_saturated_cores": cpu_hot,
+            "cpu_cores": cores or None, "cpu_iowait_percent": iow,
+            "mem_percent": mem_pct, "disk_percent": disk_pct, "uptime_s": h.get("uptime")}
 
 
 # The external API reads the panel's live state (in-memory snapshots + the small nodes.json/users.json
@@ -5217,7 +5245,12 @@ def ext_metrics(deps):
     for n in servers:
         if n["last_seen"] is not None:
             row("swg_node_last_seen_timestamp_seconds", n["last_seen"], node=n["id"], name=n["name"])
-    for metric, key, help_ in (("swg_node_cpu_percent", "cpu_percent", "Node CPU load as a percentage of its cores."),
+    # HELP is fleet-wide, so it must not say "vCPU" (VMs) or "core" (bare metal, where hyperthreads inflate
+    # the count) — /proc/stat's cpuN are logical CPUs either way. Only the UI picks a per-node label.
+    for metric, key, help_ in (("swg_node_cpu_percent", "cpu_percent", "Node CPU utilization, mean across logical CPUs (0-100)."),
+                               ("swg_node_cpu_max_percent", "cpu_max_percent", "Node CPU utilization of its busiest single logical CPU (0-100)."),
+                               ("swg_node_cpu_saturated_cores", "cpu_saturated_cores", "Number of the node's logical CPUs at or above %d%% utilization." % CPU_SAT_PCT),
+                               ("swg_node_cpu_iowait_percent", "cpu_iowait_percent", "Node time waiting on I/O (0-100). Raises load average but is NOT CPU."),
                                ("swg_node_memory_percent", "mem_percent", "Node memory used as a percentage."),
                                ("swg_node_disk_percent", "disk_percent", "Node primary-disk used as a percentage."),
                                ("swg_node_uptime_seconds", "uptime_s", "Node uptime in seconds.")):
