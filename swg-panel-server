@@ -2905,6 +2905,180 @@ def hrrd_update(path, ts, M):
                 _hrrd_feed(f, ts, M)
 
 
+# ───────────────────── presence rings: WHICH peers were online in each bucket ─────────────────────
+#
+# "How many different peers were online between 13:00 and 14:00" is a SET CARDINALITY, and the health ring
+# answers it with `pon`, a MEAN. A mean cannot express it: five peers online twelve minutes each average to
+# one. Neither can a max (one peer leaving as another joins reads as 1, not 2). The only consolidation
+# operator that preserves a distinct count is set UNION.
+#
+# So each bucket stores a BITMAP — one bit per peer — and a coarse ring's bucket is the bitwise OR of its
+# children. Popcount of the OR over any span is then the exact distinct count for that span, at any bar width.
+# Presence is recorded from the peer's `online` flag, never from traffic, so an online-but-idle peer counts
+# (the per-peer traffic rings deliberately skip those, which is why they can't answer this).
+#
+# Cost: one bitmap per node per bucket. At 512 peers that is 64 B/bucket → ~88 KiB per node for all four
+# rings. Compare with a presence bit inside each per-peer ring: 61 KiB × peers × nodes, and a ranged query
+# would have to read every one of them.
+PRES_MAGIC = b"SWGP"
+PRES_VER = 1
+PRES_BITS0 = 512                                   # initial bitmap width; grows (doubling) as the fleet does
+PRES_HEAD = struct.Struct("<4sBIII")               # magic, ver, ring0_step, ring0_slots, bits
+_pres_lock = threading.Lock()
+
+
+def pres_path(stats_dir, nid):
+    return os.path.join(stats_dir, "presence-" + nid + ".rrd")
+
+
+def _pres_slot(bits):
+    return 4 + bits // 8                           # u32 bucket + bitmap
+
+
+def _pres_base(i, bits):
+    return PRES_HEAD.size + sum(n for _, n in HRRD_RINGS[:i]) * _pres_slot(bits)
+
+
+def _pres_size(bits):
+    return PRES_HEAD.size + sum(n for _, n in HRRD_RINGS) * _pres_slot(bits)
+
+
+def pres_index_path(stats_dir):
+    return os.path.join(stats_dir, "presence-index.json")
+
+
+def pres_bits_for(pubkeys, stats_dir):
+    """Stable fleet-wide pubkey → bit index. Bits are never reused while the map lives, so a bitmap written
+    yesterday still means the same peers today. Returns {pubkey: bit} for the requested keys."""
+    path = pres_index_path(stats_dir)
+    with _pres_lock:
+        try:
+            idx = json.loads(open(path).read())
+        except Exception:
+            idx = {}
+        changed = False
+        for pk in pubkeys:
+            if pk not in idx:
+                idx[pk] = len(idx)                 # append-only: next free bit
+                changed = True
+        if changed:
+            with contextlib.suppress(Exception):
+                atomic_write(path, json.dumps(idx), mode=0o600)
+        return idx
+
+
+def pres_width(npeers):
+    """Bitmap width for a fleet of `npeers` — powers of two from PRES_BITS0."""
+    bits = PRES_BITS0
+    while bits < max(1, npeers):
+        bits *= 2
+    return bits
+
+
+def _pres_ensure(path, bits):
+    """Create the file, or widen it when the fleet outgrows the bitmap. Returns the width actually on disk.
+
+    Widening rewrites the file empty: bitmaps cannot be re-packed in place, and a fleet crossing a power of
+    two is a once-ever event. Losing presence history is strictly better than silently reinterpreting bits.
+    """
+    with contextlib.suppress(OSError):
+        with open(path, "rb") as f:
+            head = f.read(PRES_HEAD.size)
+        if len(head) == PRES_HEAD.size:
+            magic, ver, s0, n0, obits = PRES_HEAD.unpack(head)
+            if magic == PRES_MAGIC and ver == PRES_VER and (s0, n0) == HRRD_RINGS[0] \
+               and obits >= bits and os.path.getsize(path) >= _pres_size(obits):
+                return obits
+    with open(path, "wb") as f:                    # (re)create, zeroed
+        f.write(PRES_HEAD.pack(PRES_MAGIC, PRES_VER, HRRD_RINGS[0][0], HRRD_RINGS[0][1], bits))
+        f.write(b"\x00" * (_pres_size(bits) - PRES_HEAD.size))
+    os.chmod(path, 0o644)
+    return bits
+
+
+def pres_feed(path, ts, bit_list, bits):
+    """OR `bit_list` into ring0's bucket for ts, then rebuild each coarser ring's current bucket as the OR of
+    its children. OR is the whole point: union loses nothing, unlike the mean/max the numeric rings use.
+    In-place slot writes only — never rewrites the file."""
+    with _pres_lock:
+        bits = _pres_ensure(path, bits)
+        slot = _pres_slot(bits); nb = bits // 8
+        with open(path, "r+b") as f:
+            def rd(i, bucket):
+                ns = HRRD_RINGS[i][1]
+                f.seek(_pres_base(i, bits) + (bucket % ns) * slot)
+                raw = f.read(slot)
+                if len(raw) != slot:
+                    return (0, bytearray(nb))
+                return (struct.unpack_from("<I", raw, 0)[0], bytearray(raw[4:]))
+
+            def wr(i, bucket, bm):
+                ns = HRRD_RINGS[i][1]
+                f.seek(_pres_base(i, bits) + (bucket % ns) * slot)
+                f.write(struct.pack("<I", bucket & 0xFFFFFFFF) + bytes(bm))
+
+            b0 = _bucket_of(ts, HRRD_RINGS[0][0])
+            cur, bm = rd(0, b0)
+            acc = bytearray(nb) if cur != (b0 & 0xFFFFFFFF) else bm      # a new bucket starts clean (stale wrap)
+            for bit in bit_list:
+                if 0 <= bit < bits:
+                    acc[bit >> 3] |= 1 << (bit & 7)
+            wr(0, b0, acc)
+
+            for i in range(1, len(HRRD_RINGS)):
+                bucket = _bucket_of(ts, HRRD_RINGS[i][0])
+                ratio = HRRD_RATIO[i]
+                un = bytearray(nb)
+                for k in range(bucket * ratio, bucket * ratio + ratio):
+                    cb, cbm = rd(i - 1, k)
+                    if cb == (k & 0xFFFFFFFF):
+                        for j in range(nb):
+                            un[j] |= cbm[j]
+                wr(i, bucket, un)
+
+
+def pres_scan(path, ring, since, until=None):
+    """[(bucket_epoch, bitmap_bytes)] for in-window buckets of `ring`. Same stale-bucket rule as hrrd_read."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return []
+    if len(data) < PRES_HEAD.size or data[:4] != PRES_MAGIC:
+        return []
+    _, ver, s0, n0, bits = PRES_HEAD.unpack_from(data, 0)
+    if ver != PRES_VER or (s0, n0) != HRRD_RINGS[0] or len(data) < _pres_size(bits):
+        return []
+    step, ns = HRRD_RINGS[ring]
+    base = _pres_base(ring, bits); slot = _pres_slot(bits); nb = bits // 8
+    out = []
+    for i in range(ns):
+        off = base + i * slot
+        b = struct.unpack_from("<I", data, off)[0]
+        if not b:
+            continue
+        ep = _bucket_epoch(b, step)
+        if ep < since or (until is not None and ep >= until):
+            continue
+        out.append((ep, data[off + 4:off + 4 + nb]))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _bm_or(dst, src):
+    for i in range(len(src)):
+        dst[i] |= src[i]
+    return dst
+
+
+def _bm_bits(bm):
+    for i, byte in enumerate(bm):
+        while byte:
+            b = byte & -byte
+            yield (i << 3) + b.bit_length() - 1
+            byte ^= b
+
+
 def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None):
     """Most recent `want` buckets from ring index `ring`, optionally only those at/after `since` (epoch).
 
@@ -3725,6 +3899,84 @@ def api(method, path, qs, body, deps):
                 d = hrrd_read(mesh_rrd_path(stats_dir, a, b), ring=ring, want=want, since=time.time() - win) if stats_dir else None
                 pairs.append({"a": a, "b": b, "ab": mean((d or {}).get("rx") or []), "ba": mean((d or {}).get("tx") or [])})
         return 200, {"ok": True, "data": {"range": rng, "pairs": pairs}}
+
+    if method == "GET" and path == "/api/presence":
+        # DISTINCT peers/users seen online over a range — drives the Online-peers bars, the node cards' "N users",
+        # and the "online" figure in the peers doughnuts. Everything here is a set union of per-bucket bitmaps
+        # (see the presence-ring block); nothing is a mean, a max, or a traffic proxy, so an idle-but-connected
+        # peer is counted and a peer that reconnects twice is counted once.
+        rng = (qs.get("range") or ["day"])[0]
+        spec = RANGE_SPEC.get(rng)
+        if not spec:
+            return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
+        ring, _want, win = spec
+        try:
+            nblocks = max(1, min(64, int((qs.get("blocks") or ["24"])[0])))
+            bstep = max(HRRD_RINGS[0][0], int((qs.get("step") or [str(win // 24)])[0]))
+        except ValueError:
+            return 400, {"ok": False, "error": "blocks/step must be integers", "code": "bad_request"}
+        want_nodes = [n for n in ((qs.get("nodes") or [""])[0].split(",")) if n] or list(nodes.keys())
+        want_nodes = [n for n in want_nodes if n in nodes]
+
+        idx = {}
+        with contextlib.suppress(Exception):
+            idx = json.loads(open(pres_index_path(stats_dir)).read()) if stats_dir else {}
+        bit2pk = {b: pk for pk, b in idx.items()}
+        _ros = roster_load(roster_path)
+        users_by_id = _ros.get("users") or {}
+        peers_by_pk = {}
+        for p in (_ros.get("peers") or {}).values():
+            if p.get("pubkey"):
+                peers_by_pk[p["pubkey"]] = p
+
+        end = time.time()
+        start = end - nblocks * bstep                       # the bars span exactly what they claim to
+        floor = min(start, end - win)
+        scans = {nid: (pres_scan(pres_path(stats_dir, nid), ring, since=floor) if stats_dir else [])
+                 for nid in want_nodes}
+        nb = max([len(bm) for s in scans.values() for _, bm in s] or [0])
+        blocks = [bytearray(nb) for _ in range(nblocks)]
+        total = bytearray(nb)
+        per_node = {}
+        for nid, scan in scans.items():
+            acc = bytearray(nb)
+            for ep, bm in scan:
+                if ep >= end - win:                         # range totals use the FULL window …
+                    _bm_or(acc, bm); _bm_or(total, bm)
+                b = int((ep - start) // bstep)
+                if 0 <= b < nblocks:
+                    _bm_or(blocks[b], bm)                   # … a bar, only what falls inside that bar
+            per_node[nid] = acc
+
+        def live_peers(bm):
+            """Bits that still map to a peer in the roster. A deleted peer keeps its bit in old bitmaps —
+            counting it would resurrect it in historical bars."""
+            for bit in _bm_bits(bm):
+                pr = peers_by_pk.get(bit2pk.get(bit) or "")
+                if pr:
+                    yield pr
+
+        def summarise(bm, nid=None):
+            uids, ifc, npeers = {}, {}, 0
+            for pr in live_peers(bm):
+                npeers += 1
+                uid = pr.get("user_id") or "_un"            # mirrors onlineUserRows: all unassigned = one group
+                uids[uid] = uids.get(uid, 0) + 1
+                if nid:
+                    for t in (pr.get("targets") or []):
+                        if t.get("node") == nid and t.get("iface"):
+                            ifc[t["iface"]] = ifc.get(t["iface"], 0) + 1
+            rows = sorted(({"id": None if u == "_un" else u, "unassigned": u == "_un",
+                            "name": "Unassigned" if u == "_un" else ((users_by_id.get(u) or {}).get("name") or "(unnamed)"),
+                            "count": c} for u, c in uids.items()), key=lambda r: -r["count"])[:50]
+            return {"peers": npeers, "users": len(uids), "ifaces": ifc, "userRows": rows}
+
+        out_nodes = {nid: summarise(bm, nid) for nid, bm in per_node.items()}
+        tot = summarise(total)
+        return 200, {"ok": True, "data": {
+            "range": rng, "step": bstep, "start": int(start), "end": int(end),
+            "blocks": [sum(1 for _ in live_peers(b)) for b in blocks],
+            "nodes": out_nodes, "total": {"peers": tot["peers"], "users": tot["users"]}}}
 
     if method == "GET" and path == "/api/category-history":
         # Per-(node,category) destination traffic over a range — drives the "Traffic by category" doughnut. Reads
@@ -5830,15 +6082,25 @@ class Handler(BaseHTTPRequestHandler):
             # peer's rx/tx across this node's ifaces, then lazily ring it — only peers moving ≥ PEER_MIN_BPS get a
             # file, throttled ≤1/min per (node,peer). Panel-derived: rx_speed/tx_speed are already in the snapshot.
             pagg = {}
+            online_pks = set()                                  # presence: seen online this sync, traffic or not
             for ifn, blk in (snap.get("interfaces") or {}).items():
                 meta = blk.get("meta") or {}; o = ov_ifaces.get(ifn) or {}
                 if o.get("system") or meta.get("system"):
-                    continue
+                    continue                                    # client ifaces only — mesh peers are never "online users"
                 for p in (blk.get("peers") or []):
                     pk = p.get("public_key")
                     if not pk:
                         continue
                     a = pagg.setdefault(pk, [0, 0]); a[0] += p.get("rx_speed", 0) or 0; a[1] += p.get("tx_speed", 0) or 0
+                    if p.get("online"):
+                        online_pks.add(pk)
+            # PRESENCE: union the online peers into this node's bitmap ring. Recorded from `online`, never from
+            # traffic, so an idle-but-connected peer still counts — the per-peer traffic rings below cannot.
+            if stats_dir:
+                with contextlib.suppress(Exception):
+                    idx = pres_bits_for(online_pks, stats_dir)
+                    pres_feed(pres_path(stats_dir, nid), now_i,
+                              [idx[pk] for pk in online_pks if pk in idx], pres_width(len(idx)))
             plast_w = Handler.deps.setdefault("_peer_last_w", {})   # (nid,pubkey) → last RRD write time
             for pk, (prx, ptx) in pagg.items():
                 if (prx + ptx) >= PEER_MIN_BPS and now_i - plast_w.get((nid, pk), 0) >= MESH_THROTTLE_S:
