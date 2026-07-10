@@ -5697,8 +5697,9 @@ function CpuPop({ health, trigger, alignRight }) {
   const cores = cpuCores(health);
   if (!cores.length) return trigger;                    // older swg-noded: no per-vCPU data, no bubble
   const hot = hotCores(health), iow = health.cpu_iowait_pct;
+  const l1 = Array.isArray(health.load) ? (health.load[0] || 0) : null;   // system-wide; the kernel keeps no per-CPU load
   return html`<${Popover} cls="cpupop" popCls="cpu-bubble" alignRight=${alignRight} trigger=${trigger}>
-    <div class="onpop-h">${cores.length} ${cpuNamePl(health, cores.length)} · mean ${Math.round(health.cpu_pct)}%${typeof iow === "number" && iow >= 1 ? " · iowait " + Math.round(iow) + "%" : ""}${hot ? html` · <b class="cpu-hot-n">${hot} saturated</b>` : ""}</div>
+    <div class="onpop-h">${cores.length} ${cpuNamePl(health, cores.length)} · mean ${Math.round(health.cpu_pct)}%${l1 !== null ? " · load " + l1.toFixed(2) : ""}${typeof iow === "number" && iow >= 1 ? " · iowait " + Math.round(iow) + "%" : ""}${hot ? html` · <b class="cpu-hot-n">${hot} saturated</b>` : ""}</div>
     ${cores.map((c, i) => html`<div class=${"onrow cpu-row" + (c >= SAT_PCT ? " hot" : "")} key=${i}>
       <span class="on-name">${cpuName(health)} ${i}</span>
       <span class="hm-bar cpu-corebar"><i class="hm-fill" style=${"width:" + Math.min(100, c) + "%;background:" + cpuColor(c)}></i></span>
@@ -6140,10 +6141,10 @@ function healthCols(health) {
   const l1 = Array.isArray(health.load) ? (health.load[0] || 0) : null;
   const loadTxt = () => l1.toFixed(2) + " / " + ncpu + " " + cpuNamePl(health, ncpu);
   if (typeof health.cpu_pct === "number") {
-    // Utilization and load are different measurements — give each its own meter rather than
-    // letting one stand in for the other. Per-vCPU detail lives in the CPU meter's hover bubble.
+    // Only bounded percentages get a bar. Load is unbounded and system-wide, so a bar clamped at 100%
+    // would erase the one thing load adds over utilization: how DEEP the run queue is (util reads 100%
+    // at load 1.0 and at load 8.0 alike). It lives as a plain number in the CPU hover bubble instead.
     cols.push({ label: "CPU", heat: true, cpu: true, pct: health.cpu_pct, text: Math.round(health.cpu_pct) + "%" });
-    if (l1 !== null) cols.push({ label: "Load", pct: Math.min(100, l1 / ncpu * 100), text: loadTxt() });
   } else if (l1 !== null) {
     cols.push({ label: "CPU load", heat: true, pct: l1 / ncpu * 100, text: loadTxt() });   // older swg-noded: no cpu_pct, load-per-core as before
   }

@@ -941,7 +941,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 /* node health meters */
 .health{display:flex;flex-direction:column;gap:12px}
 /* CPU / Memory / Disk side by side — each takes a third */
-.health-cols{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:18px}   /* one equal column per meter: 3 (CPU load/mem/disk) on an old node, 4 once it reports cpu + load separately */
+.health-cols{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:18px}   /* one equal column per meter — only BOUNDED percentages get a bar (cpu/mem/disk). Load is unbounded and system-wide, so it is a plain number in the CPU bubble, never a clamped bar. */
 .hcol{display:flex;flex-direction:column;gap:6px;min-width:0}
 .hcol-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 .hcol-l{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);white-space:nowrap}
