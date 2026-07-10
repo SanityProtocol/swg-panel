@@ -1991,16 +1991,24 @@ a.tg:hover{filter:brightness(1.25)}
 .usercfg-peer{display:flex;flex-direction:column;gap:8px}
 .usercfg-plabel{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink)}
 .usercfg-pcount{font-size:10px;font-weight:400;color:var(--faint);letter-spacing:.03em}
-.usercfg-row{display:flex;gap:14px;overflow-x:auto;padding-bottom:2px}   /* stays ONE line per peer; scrolls if a peer has many deployments */
-.usercfg-row .deploy{width:256px;flex:none}
-.usercfg-row .deploy .qr{flex:1;min-width:0}
-.usercfg-row .deploy .qr .qrimg{width:100%}
-.usercfg-row .deploy .acts{justify-content:center}
+/* One peer's QR cards on a single line — never wraps; pages with ‹ › when there are more than 3.
+   Used by BOTH the peer QR modal and each peer row of the user QR modal. */
+.qrrowwrap{display:flex;flex-direction:column;gap:10px}
+.qrrow{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;padding-bottom:2px}
+.qrrow::-webkit-scrollbar{display:none}
+.qrrow > .deploy{width:256px;flex:none;scroll-snap-align:start}
+.qrrow > .deploy .qr{flex:1;min-width:0}
+.qrrow > .deploy .qr .qrimg{width:100%}
+.qrrow > .deploy .acts{justify-content:center}
+.qrnav{display:flex;align-items:center;justify-content:center;gap:16px}
+.qrnavbtn{appearance:none;width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:18px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0}
+.qrnavbtn:disabled{opacity:.35;cursor:default}
+.qrnavbtn:active:not(:disabled){transform:scale(.94)}
+.qrnavcount{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:44px;text-align:center}
 .nmwrap{display:flex;flex-direction:column;gap:1px;min-width:0}
 .deploy-primary{font-family:var(--mono);font-size:8.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--online);line-height:1}
 .fieldrow{display:flex;gap:14px;flex-wrap:wrap}
 .fieldrow > .field{flex:1;min-width:140px;margin:0}
-.cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:flex-start}
 
 /* ── subscription: per-user panel + the URL/copy strip ── */
 .subpanel{margin:0 0 18px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2,rgba(127,127,127,.05));display:flex;flex-direction:column;gap:10px}

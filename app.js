@@ -5415,15 +5415,33 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
   </div>`;
 }
 // A peer's configs as a modal: one QR/download card per target (reuses TargetCard).
+// One peer's QR cards on a SINGLE line — up to 3 per view, paged with ‹ › when the peer has more
+// (never wraps to a second row). The card cards are passed in already built.
+const QR_PAGE = 3;
+function QRRow({ cards }) {
+  const ref = useRef(null);
+  const [pg, setPg] = useState(0);
+  const pages = Math.ceil(cards.length / QR_PAGE);
+  const many = cards.length > QR_PAGE;
+  const go = d => { const el = ref.current; if (el) el.scrollBy({ left: d * el.clientWidth, behavior: "smooth" }); };
+  const onScroll = () => { const el = ref.current; if (el) setPg(Math.round(el.scrollLeft / (el.clientWidth || 1))); };
+  return html`<div class=${"qrrowwrap" + (many ? " paged" : "")}>
+    <div class="qrrow" ref=${ref} onScroll=${many ? onScroll : undefined}>${cards}</div>
+    ${many ? html`<div class="qrnav">
+      <button class="qrnavbtn" disabled=${pg <= 0} onClick=${() => go(-1)} aria-label="Previous servers">‹</button>
+      <span class="qrnavcount">${pg + 1} / ${pages}</span>
+      <button class="qrnavbtn" disabled=${pg >= pages - 1} onClick=${() => go(1)} aria-label="More servers">›</button>
+    </div>` : null}
+  </div>`;
+}
+
 function openPeerConfigs(peer, back) {
-  const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per row; the modal sizes to fit
-  // border-box width: 256·cols + 14·gaps + 40 body padding + 2 border + slack (so a row never
-  // wraps early from rounding). cols caps at 3, so 4→row 2, 7→row 3, etc.
+  const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per view; the modal sizes to fit (more → page with ‹ ›)
   const width = cols * 256 + (cols - 1) * 14 + 56;
   // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
   openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width} onClose=${back || closeModal}>
     <${SubPeerUrl} peer=${peer}/>
-    <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}</div>
+    <${QRRow} cards=${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}/>
   <//>`);
 }
 function openUserEdit(user) {
@@ -5534,7 +5552,7 @@ function openUserConfigs(user, back) {
     <${SubUserPanel} user=${user}/>
     ${peers.length ? html`<div class="usercfg">${peers.map(p => html`<div class="usercfg-peer" key=${p.id}>
       <div class="usercfg-plabel">${p.title || "Peer"}${(p.targets || []).length ? html`<span class="usercfg-pcount">${p.targets.length} deployment${p.targets.length === 1 ? "" : "s"}</span>` : null}</div>
-      <div class="usercfg-row">${(p.targets || []).map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${p} t=${t} bare=${true} primary=${p.targets.length > 1 && i === 0}/>`)}</div>
+      <${QRRow} key=${"row" + p.id} cards=${(p.targets || []).map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${p} t=${t} bare=${true} primary=${p.targets.length > 1 && i === 0}/>`)}/>
     </div>`)}</div>` : html`<div class="empty" style="padding:24px">This user has no peers yet.</div>`}
   <//>`);
 }
