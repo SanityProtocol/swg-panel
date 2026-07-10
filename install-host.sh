@@ -39,6 +39,7 @@ BASIC_PASS="${BASIC_PASS:-}"           # blank -> random, printed at the end
 PANEL_DIR="${PANEL_DIR:-/opt/swg-panel}"
 SUB_DIR="${SUB_DIR:-/opt/swg-sub}"     # the public subscription surface (swg-sub); off until enabled in the panel
 SUB_PORT="${SUB_PORT:-8444}"           # swg-sub's listener (overridable in Settings → Subscriptions)
+SUB_USER="${SUB_USER:-swgsub}"         # swg-sub's own unprivileged user (group swg, read-only) — NOT the panel user
 AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
 NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
 ETC_DIR="${ETC_DIR:-/etc/swg-panel}"
@@ -936,8 +937,19 @@ info "Users, groups, directories"
 run groupadd -f swg
 id "$PANEL_USER" >/dev/null 2>&1 || run useradd -r -g swg -d "$STATE_DIR" -s /usr/sbin/nologin "$PANEL_USER"
 run usermod -d "$STATE_DIR" -g swg "$PANEL_USER"
+# swg-sub runs as its OWN unprivileged user in group swg — it only READS the state (never the panel
+# user's identity), and only the group-readable subset (roster/nodes/subs blobs+serve). The secrets it
+# must never see — the login hash, the TLS key, the subscription-key vault — stay 0600/owner-only, so
+# this user simply can't open them. See swg-sub's least-privilege note + write_sub_unit's InaccessiblePaths.
+if [ -f "$SRC/swg-sub" ]; then
+  id "$SUB_USER" >/dev/null 2>&1 || run useradd -r -g swg -d "$SUB_DIR" -s /usr/sbin/nologin "$SUB_USER"
+  run usermod -d "$SUB_DIR" -g swg "$SUB_USER"
+fi
 for d in "$PANEL_DIR" "$ETC_DIR" "$STATE_DIR" "$STATS_DIR"; do mkdir -p "$PREFIX$d"; done
-run chown "$PANEL_USER:swg" "$STATE_DIR"; run chmod 750 "$STATE_DIR"
+run chown "$PANEL_USER:swg" "$STATE_DIR"; run chmod 750 "$STATE_DIR"   # group(swg) traverse → swg-sub can reach the files it may read
+# subs/ (vault + token map + blobs + serve.json) — group-traversable so swg-sub reaches the token map,
+# blobs, and serve.json; the vault inside stays 0600 (owner-only) so swg-sub still can't read it.
+mkdir -p "$PREFIX$STATE_DIR/subs/blobs"; run chown -R "$PANEL_USER:swg" "$STATE_DIR/subs"; run chmod 750 "$STATE_DIR/subs" "$STATE_DIR/subs/blobs"
 run chown "$PANEL_USER:swg" "$STATS_DIR"; run chmod 2775 "$STATS_DIR"   # panel writes node snapshots here for the dashboard
 # the panel user must rewrite the auth file (Account tab) — that's an atomic temp+rename in
 # ETC_DIR, so the dir needs group(swg) write; setgid keeps new files in group swg.
@@ -968,7 +980,7 @@ if [ -f "$SRC/swg-sub" ]; then
   [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$SUB_DIR/" || true
   ok "installed swg-sub to $SUB_DIR (disabled until enabled in the panel)"
 fi
-mkdir -p "$PREFIX$STATE_DIR"; [ -f "$PREFIX$STATE_DIR/users.json" ] || { echo '{}' > "$PREFIX$STATE_DIR/users.json"; run chown "$PANEL_USER:swg" "$STATE_DIR/users.json"; ok "seeded empty users.json"; }
+mkdir -p "$PREFIX$STATE_DIR"; [ -f "$PREFIX$STATE_DIR/users.json" ] || { echo '{}' > "$PREFIX$STATE_DIR/users.json"; run chown "$PANEL_USER:swg" "$STATE_DIR/users.json"; run chmod 640 "$STATE_DIR/users.json"; ok "seeded empty users.json"; }
 
 # ───────────────────────── host-as-node (this box is also an entry server) ─────────────────────────
 LOCAL_TOKHASH=""
@@ -1169,35 +1181,45 @@ EOF
 write_sub_unit(){   # swg-sub: the public subscription surface. Read-only; inert until enabled in the panel.
   [ -f "$PREFIX$SUB_DIR/swg-sub" ] || return 0      # only if the binary shipped in this bundle
   local subextra=""
-  # Sensible default bind/TLS baked into the unit; the panel's Settings → Subscriptions can override
-  # (swg-sub prefers panel-settings.json's serve.* over these env fallbacks). Reuse the panel's cert
-  # in internal mode; otherwise plain HTTP for the operator's own reverse proxy to terminate.
-  if [ "$SERVE_MODE" = internal ] && [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then
-    subextra="Environment=SWG_SUB_TLS_CERT=${CERT_FULLCHAIN}
-Environment=SWG_SUB_TLS_KEY=${CERT_KEY}"
-  fi
-  [ "${SUB_PORT}" -lt 1024 ] 2>/dev/null && subextra="$subextra
-AmbientCapabilities=CAP_NET_BIND_SERVICE"
+  [ "${SUB_PORT}" -lt 1024 ] 2>/dev/null && subextra="AmbientCapabilities=CAP_NET_BIND_SERVICE
+"
+  # NOTE: swg-sub is served as PLAIN HTTP here and is meant to sit behind the operator's TLS
+  # (reverse proxy / Cloudflare), or terminate TLS with ITS OWN cert (Settings → Subscriptions →
+  # custom cert path). It deliberately does NOT reuse the panel's certificate: a page that renders
+  # private keys in the browser must be HTTPS, but handing the panel's TLS *private key* to this
+  # internet-facing process would let a compromise of it impersonate the panel. Off by default, so
+  # nothing is exposed until the operator enables subscriptions AND puts TLS in front.
   writef /etc/systemd/system/swg-sub.service 644 <<EOF
 [Unit]
-Description=swg-sub subscription surface
+Description=swg-sub subscription surface (public, read-only)
 After=network.target
 
 [Service]
 Type=simple
-User=${PANEL_USER}
+User=${SUB_USER}
+Group=swg
 ExecStart=${SUB_DIR}/swg-sub
 Environment=SWG_SUB_FLEET=${ETC_DIR}/fleet.json
 Environment=SWG_SUB_WEB=${SUB_DIR}
 Environment=SWG_SUB_HOST=0.0.0.0
 Environment=SWG_SUB_PORT=${SUB_PORT}
-${subextra}
-Restart=on-failure
+${subextra}Restart=on-failure
 RestartSec=2
+# hardening — read-only (no ReadWritePaths), and the secrets are masked at the kernel level so even a
+# bug in this internet-facing process cannot open the login hash, the TLS key, the subscription-key
+# vault, panel-settings (webhook secrets), or any stored configs, regardless of file permissions.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+InaccessiblePaths=-${ETC_DIR}/auth -${TLS_DIR} -${STATE_DIR}/subs/vault.json -${STATE_DIR}/panel-settings.json -${STATE_DIR}/configs
 
 [Install]
 WantedBy=multi-user.target

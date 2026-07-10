@@ -413,6 +413,7 @@ def atomic_write(path, text, mode=0o600):
     tmp = path + ".tmp." + uuid.uuid4().hex[:8]
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        os.fchmod(fd, mode)   # force the exact mode regardless of the process umask (0640 must stay group-readable for swg-sub)
         with os.fdopen(fd, "w") as f:
             f.write(text); f.flush(); os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -557,6 +558,7 @@ def roster_save(path, roster):
     os.makedirs(d, exist_ok=True)
     tmp = path + ".tmp." + uuid.uuid4().hex[:8]
     with open(tmp, "w") as f:
+        os.fchmod(f.fileno(), 0o640)   # group(swg)-readable: the read-only swg-sub user reads the roster, no others
         fcntl.flock(f, fcntl.LOCK_EX)
         json.dump(roster, f, indent=2); f.write("\n"); f.flush(); os.fsync(f.fileno())
     os.replace(tmp, path)
@@ -954,23 +956,56 @@ def _load_sub_json(path):
     d = load_json(path, {}) if path else {}
     return d if isinstance(d, dict) else {}
 
+# File modes matter here: the read-only `swg-sub` process runs as a SEPARATE, unprivileged user in
+# group `swg`. The files it must read are group-readable (0640); the ones it must NEVER read — the
+# vault (the SK escrow that could unwrap every peer's key) — stay owner-only (0600), so a compromised
+# swg-sub simply cannot open them. See swg-sub's "least privilege" note.
 def load_sub_vault(deps): return _load_sub_json(_sub_vault_path(deps))
 def save_sub_vault(deps, d):
     os.makedirs(_sub_dir(deps), exist_ok=True)
-    atomic_write(_sub_vault_path(deps), json.dumps(d, indent=2) + "\n", mode=0o600)
+    atomic_write(_sub_vault_path(deps), json.dumps(d, indent=2) + "\n", mode=0o600)   # owner-only — swg-sub must never read the SK escrow
 
 def load_sub_users(deps): return _load_sub_json(_sub_users_path(deps))
 def save_sub_users(deps, d):
     os.makedirs(_sub_dir(deps), exist_ok=True)
-    atomic_write(_sub_users_path(deps), json.dumps(d, indent=2) + "\n", mode=0o600)
+    atomic_write(_sub_users_path(deps), json.dumps(d, indent=2) + "\n", mode=0o640)   # group-readable: swg-sub maps token→uid
 
 def load_sub_blobs(deps, uid): return _load_sub_json(_sub_blob_path(deps, uid))
 def save_sub_blobs(deps, uid, d):
     os.makedirs(os.path.dirname(_sub_blob_path(deps, uid)), exist_ok=True)
-    atomic_write(_sub_blob_path(deps, uid), json.dumps(d, indent=2) + "\n", mode=0o600)
+    atomic_write(_sub_blob_path(deps, uid), json.dumps(d, indent=2) + "\n", mode=0o640)   # group-readable: swg-sub serves the ciphertext
 def drop_sub_blobs(deps, uid):
     with contextlib.suppress(OSError):
         os.remove(_sub_blob_path(deps, uid))
+
+def _sub_serve_path(deps): return os.path.join(_sub_dir(deps), "serve.json")
+def write_sub_serve(deps):
+    """Mirror JUST {enabled, serve} to subs/serve.json (group-readable) so swg-sub reads its own config
+    from a tiny dedicated file and never has to open panel-settings.json — which also carries webhook
+    signing secrets and API token hashes that the public subscription surface has no business seeing."""
+    subs = ((deps.get("panel_settings") or {}).get("subscriptions") or {})
+    out = {"enabled": bool(subs.get("enabled")),
+           "serve": subs.get("serve") if isinstance(subs.get("serve"), dict) else {}}
+    with contextlib.suppress(Exception):
+        os.makedirs(_sub_dir(deps), exist_ok=True)
+        atomic_write(_sub_serve_path(deps), json.dumps(out, indent=2) + "\n", mode=0o640)
+
+def normalize_sub_perms(deps):
+    """On startup, make the files swg-sub is allowed to read group(swg)-readable (0640), and keep the
+    vault owner-only (0600). New writes already use these modes; this fixes files left 0600 by an older
+    build so an upgraded panel doesn't leave swg-sub unable to read the roster until the next write."""
+    grp = [deps.get("roster_path"), deps.get("nodes_path"),
+           _sub_users_path(deps), _sub_serve_path(deps)]
+    blobdir = os.path.join(_sub_dir(deps), "blobs")
+    with contextlib.suppress(Exception):
+        grp += [os.path.join(blobdir, n) for n in os.listdir(blobdir) if n.endswith(".json")]
+    for p in grp:
+        if p:
+            with contextlib.suppress(OSError):
+                os.chmod(p, 0o640)
+    with contextlib.suppress(OSError):
+        os.chmod(_sub_vault_path(deps), 0o600)   # belt-and-suspenders: the SK escrow stays owner-only
+
 
 def subs_enabled(deps):
     return bool(((deps.get("panel_settings") or {}).get("subscriptions") or {}).get("enabled"))
@@ -1039,7 +1074,7 @@ def nodes_load(path):
 
 
 def nodes_save(path, nodes):
-    save_critical(path, json.dumps(nodes, indent=2) + "\n")
+    save_critical(path, json.dumps(nodes, indent=2) + "\n", mode=0o640)   # group(swg)-readable for swg-sub (token HASHES only, no raw secrets)
 
 
 def migrate_node_ids(nodes_path, roster_path, store_configs, config_dir):
@@ -3692,6 +3727,7 @@ def api(method, path, qs, body, deps):
         deps["panel_settings"] = cur
         with contextlib.suppress(Exception):
             save_critical(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")   # rotating backups (recoverable)
+        write_sub_serve(deps)   # keep subs/serve.json (what swg-sub reads) in step with the enable/serve settings
         # The browser knows which settings sections it changed (it drives the dirty-dots), so an
         # explicit Save passes a summary + the first changed section id — recorded for the activity
         # one-liner and so a click can deep-link to that exact section. Autosaves (flow-anim toggle,
@@ -7054,6 +7090,8 @@ def main():
                     "sub_dir": os.path.join(os.path.dirname(fleet.get("roster_path", "/var/lib/swg-panel/users.json")) or ".", "subs"),
                     "now": lambda: int(time.time())}
     Handler.deps["turn_ips"] = load_json(_turn_ips_path(Handler.deps), {}) or {}   # unique turn-proxy source-IP history (survives restart)
+    write_sub_serve(Handler.deps)   # seed/refresh subs/serve.json so swg-sub has current enable/serve config from boot (even when subscriptions were never touched)
+    normalize_sub_perms(Handler.deps)   # make swg-sub's readable subset group-readable (fixes 0600 files from older builds)
     # panel version-change → one "Panel updated" activity event (from→to). Tracked in an isolated
     # marker file so it never rides on the settings dict. First-ever boot just records the baseline.
     with contextlib.suppress(Exception):

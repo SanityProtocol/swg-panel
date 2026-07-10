@@ -73,6 +73,7 @@ rm_panel(){
     ok "Kept /var/lib/swg-panel (users, peers, nodes) for a future re-install"
   fi
   if id swgpanel >/dev/null 2>&1; then run userdel swgpanel; fi
+  if id swgsub >/dev/null 2>&1; then run userdel swgsub; fi   # swg-sub's dedicated read-only user
   REMOVED_PANEL=true; ok "swg-panel removed"
 }
 

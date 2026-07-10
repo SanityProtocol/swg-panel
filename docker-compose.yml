@@ -71,9 +71,18 @@ services:
       # Plain HTTP by default — terminate TLS at your reverse proxy / Cloudflare, or reuse the panel's
       # cert by setting serve.cert_path=/etc/swg-panel/tls/fullchain.pem (+ key_path) in the panel.
     volumes:
-      - ./data/etc:/etc/swg-panel:ro              # fleet.json (paths) + tls/ (cert reuse, read-only)
-      - ./data/lib:/var/lib/swg-panel:ro          # roster + nodes + panel-settings + subs (vault/blobs) — READ-ONLY
+      - ./data/etc:/etc/swg-panel:ro              # fleet.json (paths) — read-only
+      - ./data/lib:/var/lib/swg-panel:ro          # roster + nodes + subs (token map / blobs / serve.json) — READ-ONLY
       - ./data/stats:/var/www/wgstats:ro          # node snapshot mirrors (endpoint / server pubkey / awg params)
+      # Defence-in-depth: mask the secrets this public surface must never read (containers run as root,
+      # so :ro alone wouldn't stop a compromise from opening them). swg-sub reads NONE of these — it takes
+      # its config from subs/serve.json. /dev/null masks a file; tmpfs masks a directory.
+      - /dev/null:/etc/swg-panel/auth:ro                      # the panel login hash
+      - /dev/null:/var/lib/swg-panel/panel-settings.json:ro   # webhook signing secrets / API token hashes
+      - /dev/null:/var/lib/swg-panel/subs/vault.json:ro       # the subscription-key vault (SK escrow → every peer's key)
+    tmpfs:
+      - /etc/swg-panel/tls        # the panel's TLS PRIVATE KEY — never hand it to the internet-facing surface
+      - /var/lib/swg-panel/configs   # stored client configs (if store_configs is ever on)
 
   swg-node:
     # Prebuilt image from GHCR. To build the userspace AmneziaWG datapath from source

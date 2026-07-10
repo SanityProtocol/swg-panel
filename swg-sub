@@ -14,17 +14,26 @@ only to find which ciphertext bucket to serve. The <unlock-key> lives in the URL
 decrypt a peer's private key: it only ever serves ciphertext + non-secret params.
 The browser on the phone does the decrypt with the fragment key.
 
-By design this program has ZERO write, admin, or node code. It reads the same
-state files the panel writes (roster / nodes / per-node snapshots / panel
-settings / the subs vault+blobs), all read-only. A compromise of this surface
-yields only ciphertext, never the fleet. Config all happens in the panel:
-Settings → Subscriptions (master enable, base URL, this listener's host/port/TLS).
+By design this program has ZERO write, admin, or node code. It reads only the
+subset of state it needs (roster, nodes, per-node snapshots, the subs token map +
+blobs, and a tiny subs/serve.json), all read-only. It never reads the secrets that
+would let a compromise escalate — the login hash, the TLS key, the subscription-key
+vault, panel-settings (webhook secrets) — which is why it runs as its OWN
+unprivileged user and the installer masks those paths from it. A compromise of this
+internet-facing surface yields only ciphertext, never the fleet.
 
-Config: SWG_SUB_FLEET (defaults to the panel's /etc/swg-panel/fleet.json) locates
-the state files. The listener's host/port/TLS come from panel-settings.json's
-`subscriptions.serve` (set in the panel), with SWG_SUB_* env as fallback. The
-master `subscriptions.enabled` flag is re-read on EVERY request, so toggling it
-in the panel takes effect immediately — off ⇒ the whole surface 404s.
+Least privilege: bare-metal runs it as user `swgsub` (group swg, read-only) with the
+secret paths made InaccessiblePaths in the unit; docker runs it as a separate
+container with the state mounted :ro and the same secrets masked (/dev/null + tmpfs).
+The files it DOES read are group-readable (0640); the vault + login hash stay 0600.
+
+Config all happens in the panel: Settings → Subscriptions (master enable, base URL,
+this listener's host/port/TLS). SWG_SUB_FLEET (defaults to the panel's
+/etc/swg-panel/fleet.json) locates the state files; enable + host/port/TLS are read
+from subs/serve.json (which the panel mirrors from its settings) — NOT from
+panel-settings.json, so this surface never opens the file that holds webhook secrets.
+The bind is set once at startup; the master `subscriptions.enabled` flag is re-read on
+EVERY request, so toggling it in the panel takes effect immediately — off ⇒ 404.
 """
 
 import contextlib
@@ -140,13 +149,13 @@ class State:
         self.stats_dir = fleet.get("stats_dir", "/var/www/wgstats")
         state_dir = os.path.dirname(self.roster_path) or "."
         self.sub_dir = fleet.get("sub_dir") or os.path.join(state_dir, "subs")
-        self.settings_path = (fleet.get("panel_settings_path")
-                              or os.path.join(os.path.dirname(self.nodes_path) or ".", "panel-settings.json"))
 
     def subscriptions(self):
-        ps = load_json(self.settings_path, {}) or {}
-        s = ps.get("subscriptions")
-        return s if isinstance(s, dict) else {}
+        # Read {enabled, serve} from the tiny subs/serve.json the panel mirrors — NOT panel-settings.json.
+        # That file also holds webhook signing secrets + API token hashes, which this public, internet-
+        # facing surface has no business being able to open (least privilege). serve.json is all we need.
+        d = load_json(os.path.join(self.sub_dir, "serve.json"), {})
+        return d if isinstance(d, dict) else {}
 
     def enabled(self):
         return bool(self.subscriptions().get("enabled"))
@@ -197,6 +206,60 @@ def token_lookup(users, token):
     return None
 
 
+# Short-TTL cache for the HEAVY shared read — the roster, the token map, and the describe (which
+# reads EVERY node's snapshot mirror). Without it, each /api hit re-parses the whole roster + all
+# stats-<id>.json from disk, so a flood on one valid token turns into a disk-I/O storm (the panel
+# guards its own /api/state the same way). The enable flag is deliberately NOT cached — it's read
+# live per request so a panel toggle takes effect at once.
+_READ_TTL = 3.0
+_read_lock = threading.Lock()
+_READ_CACHE = {"at": -1e9, "roster": None, "describe": None, "users": None}
+
+def _shared_read(state):
+    now = time.monotonic()
+    c = _READ_CACHE
+    if c["roster"] is not None and (now - c["at"]) < _READ_TTL:
+        return c["roster"], c["describe"], c["users"]
+    with _read_lock:
+        now = time.monotonic()
+        if c["roster"] is not None and (now - c["at"]) < _READ_TTL:
+            return c["roster"], c["describe"], c["users"]
+        roster = state.roster()
+        describe = state.describe(state.nodes())
+        users = state.sub_users()
+        c.update({"at": time.monotonic(), "roster": roster, "describe": describe, "users": users})
+        return roster, describe, users
+
+
+# Per-client token-bucket backstop. This is NOT the authoritative rate limit — put swg-sub behind a
+# reverse proxy and set real per-client limits there. It only blunts a runaway flood hitting the
+# process directly. Behind a proxy every request appears to come from the proxy IP (one shared
+# bucket), so set SWG_SUB_TRUST_XFF=1 ONLY when a trusted proxy fronts swg-sub — then the left-most
+# X-Forwarded-For hop is used instead (never trust XFF on a directly-exposed instance: clients spoof it).
+_TRUST_XFF = bool(os.environ.get("SWG_SUB_TRUST_XFF"))
+_RL_CAP = 120           # burst allowance per client
+_RL_RATE = 20.0         # sustained refill (tokens/sec)
+_RL_MAX = 8192          # cap the tracking table so a spoofed/rotating-IP flood can't grow memory
+_rl_lock = threading.Lock()
+_RL = {}                # ident -> [tokens, last_monotonic]
+
+def _rate_ok(ident):
+    now = time.monotonic()
+    with _rl_lock:
+        if len(_RL) > _RL_MAX:
+            _RL.clear()                                # crude but bounded: a many-IP flood resets the table, not RAM
+        b = _RL.get(ident)
+        if b is None:
+            _RL[ident] = [_RL_CAP - 1.0, now]
+            return True
+        b[0] = min(_RL_CAP, b[0] + (now - b[1]) * _RL_RATE)
+        b[1] = now
+        if b[0] < 1.0:
+            return False
+        b[0] -= 1.0
+        return True
+
+
 def read_data(state, token):
     """The public page's data for a token: the user's CURRENT peers, each target's NON-SECRET
     params + the encrypted secret blob. Never returns a plaintext key. None if subscriptions are
@@ -208,15 +271,14 @@ def read_data(state, token):
     roster is authoritative; the blob store is a subordinate cache the panel keeps in sync."""
     if not state.enabled():
         return None
-    uid = token_lookup(state.sub_users(), token)
+    roster, describe, users = _shared_read(state)
+    uid = token_lookup(users, token)
     if uid is None:
         return None
-    roster = state.roster()
     user = (roster.get("users") or {}).get(uid) or {}
     live = {pid: p for pid, p in (roster.get("peers") or {}).items()
             if isinstance(p, dict) and p.get("user_id") == uid}
-    blobs = state.sub_blobs(uid)
-    describe = state.describe(state.nodes())
+    blobs = state.sub_blobs(uid)                        # per-user file — small, read fresh so a new peer shows at once
     peers_out = []
     for pid, p in live.items():
         sec = (blobs.get(pid) or {}).get("sec")        # None until the admin browser provisions it
@@ -314,6 +376,16 @@ class Handler(BaseHTTPRequestHandler):
                         .replace(b'src="/_a/qrcode.js"', b'src="/_a/qrcode.js' + q + b'"'))
         self._send(200, data, "text/html; charset=utf-8", cache="no-cache", extra={"Content-Security-Policy": self._CSP})
 
+    def _client_ident(self):
+        if _TRUST_XFF:
+            xff = self.headers.get("X-Forwarded-For", "")
+            if xff:
+                return xff.split(",")[0].strip()
+        try:
+            return self.client_address[0]
+        except Exception:
+            return "?"
+
     def do_HEAD(self):
         self.do_GET()
 
@@ -323,6 +395,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/healthz":
             return self._send(200, "ok\n")
+
+        if not _rate_ok(self._client_ident()):
+            return self._send(429, "slow down\n", extra={"Retry-After": "5"})
 
         if path.startswith(ASSET_PREFIX):
             return self._static(path[len(ASSET_PREFIX):])
