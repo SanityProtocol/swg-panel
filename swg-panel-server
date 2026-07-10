@@ -2635,14 +2635,20 @@ def _turn_ips_path(deps):   # unique turn-proxy source-IP store {nid:{ip:{first,
 def _rrd_series(path, rng):
     """Per-time-point {t, rx, tx} from one RRD ring, for the on-demand per-entity throughput graphs (turn /
     mesh / interface). None on a bad range. Same ring→range mapping as /api/node-history."""
-    spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+    spec = RANGE_SPEC.get(rng)
     if not spec:
         return None
-    ring, want = spec
-    d = hrrd_read(path, ring=ring, want=want) if path else None
+    ring, want, win = spec
+    d = hrrd_read(path, ring=ring, want=want, since=time.time() - win) if path else None
     return {"t": (d or {}).get("t") or [], "rx": (d or {}).get("rx") or [], "tx": (d or {}).get("tx") or []}
 def peer_rrd_path(stats_dir, nid, pubkey):   # per-(node,peer) throughput ring for ranged top-talkers. Filename uses a short pubkey hash (hex, no '-') so the endpoint splits nid off the last '-'; the endpoint reverses hash→pubkey via the roster
     return os.path.join(stats_dir, "peer-" + nid + "-" + hashlib.sha256((pubkey or "").encode()).hexdigest()[:16] + ".rrd")
+# range → (ring index, buckets to read, WINDOW seconds). The window is the semantic range, not the ring's
+# capacity: ring1 holds 300×300s = 25h, but "day" means 24h. Every ranged read passes `since = now - window`
+# so a lazily-written ring can never contribute buckets from outside the range the operator asked for.
+RANGE_SPEC = {"live": (0, 200, 200 * 15), "hour": (0, 250, 3600), "day": (1, 300, 86400),
+              "week": (2, 350, 7 * 86400), "month": (3, 400, 30 * 86400)}
+
 HRRD_HEAD = struct.Struct("<4sBII")           # magic, version, ring0_step, ring0_slots
 # One slot's metrics live as a flat vector M (below), plus a bucket id + write-time sample count. All extra
 # fields are DERIVED PANEL-SIDE from the snapshot the node already sends (snap_aggregates) — no node change.
@@ -2899,11 +2905,19 @@ def hrrd_update(path, ts, M):
                 _hrrd_feed(f, ts, M)
 
 
-def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False):
-    """Most recent `want` buckets from ring index `ring`. slim=True returns only the legacy fields
-    {t,cpu,mem,disk,rx,tx} (for the /api/state bundle — keeps the 5s hot path small); slim=False adds the
-    dashboard fields {arx,atx,mrx,mtx,pon,ptot,paon,patot}. NA percentages → None. Timestamps are the real
-    epoch of each bucket's local-time boundary."""
+def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None):
+    """Most recent `want` buckets from ring index `ring`, optionally only those at/after `since` (epoch).
+
+    **`since` is what makes a ranged read honest.** A ring is circular and its slots are never cleared, so a
+    lazily-written ring — peer rings are gated on PEER_MIN_BPS, category rings only get written when that
+    category sees traffic — keeps its last buckets forever once the peer/category goes idle. Without a cutoff
+    a "last hour" query happily sums traffic from a day ago (observed: peer rings whose newest bucket was 22h
+    old still contributing every byte to `range=hour`). The health ring is written every sync so it self-heals,
+    which is why this went unnoticed there.
+
+    slim=True returns only the legacy fields {t,cpu,mem,disk,rx,tx} (for the /api/state bundle — keeps the 5s
+    hot path small); slim=False adds the dashboard fields {arx,atx,mrx,mtx,pon,ptot,paon,patot}. NA percentages
+    → None. Timestamps are the real epoch of each bucket's local-time boundary."""
     with _hrrd_lock:
         try:
             with open(path, "rb") as f:
@@ -2928,6 +2942,10 @@ def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False):
     if not rows:
         return None
     rows.sort(key=lambda r: r[0])
+    if since is not None:                                    # drop stale buckets left behind by a lazily-written ring
+        rows = [r for r in rows if _bucket_epoch(r[0], step) >= since]
+        if not rows:
+            return None
     rows = rows[-want:]
     na = lambda v: None if v == HRRD_NA else v
     out = {"t": [_bucket_epoch(r[0], step) for r in rows],
@@ -3592,11 +3610,11 @@ def api(method, path, qs, body, deps):
         rrd = os.path.join(stats_dir, f"health-{node}.rrd") if stats_dir else None
         # each range = one ring's most-recent points: hour=15s(250) day=5min(300) week=30min(350) month=2h(400).
         # live also comes straight off the 15s ring as a fallback (the SPA prefers the raw 5s buffer).
-        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        spec = RANGE_SPEC.get(rng)
         if not spec:
             return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want = spec
-        data = hrrd_read(rrd, ring=ring, want=want) if rrd else None
+        ring, want, win = spec
+        data = hrrd_read(rrd, ring=ring, want=want, since=time.time() - win) if rrd else None
         return 200, {"ok": True, "data": data or {"t": [], "cpu": [], "mem": [], "disk": [], "rx": [], "tx": []}}
 
     # Per-entity throughput SERIES (on-demand; never in /api/state → 5s hot path untouched). {t,rx,tx} from the
@@ -3690,10 +3708,10 @@ def api(method, path, qs, body, deps):
         # Per node-PAIR directed mesh flow over a range — drives the flow-map ranges. Reads each pair's tiny ring
         # (rx slot = a→b, tx slot = b→a) and returns the MEAN rate over the window (the map shows one value/edge).
         rng = (qs.get("range") or ["day"])[0]
-        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        spec = RANGE_SPEC.get(rng)
         if not spec:
             return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want = spec
+        ring, want, win = spec
         mean = lambda xs: (round(sum(xs) / len(xs)) if xs else 0)
         pairs, seen = [], set()
         for anid, c in nodes.items():
@@ -3704,7 +3722,7 @@ def api(method, path, qs, body, deps):
                 if key in seen:
                     continue
                 seen.add(key)
-                d = hrrd_read(mesh_rrd_path(stats_dir, a, b), ring=ring, want=want) if stats_dir else None
+                d = hrrd_read(mesh_rrd_path(stats_dir, a, b), ring=ring, want=want, since=time.time() - win) if stats_dir else None
                 pairs.append({"a": a, "b": b, "ab": mean((d or {}).get("rx") or []), "ba": mean((d or {}).get("tx") or [])})
         return 200, {"ok": True, "data": {"range": rng, "pairs": pairs}}
 
@@ -3714,10 +3732,10 @@ def api(method, path, qs, body, deps):
         # volume (× window secs) and sums across the selected nodes. Category ids are sanitised → no '-', so the
         # filename splits on the LAST '-' even when a node id contains one.
         rng = (qs.get("range") or ["day"])[0]
-        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        spec = RANGE_SPEC.get(rng)
         if not spec:
             return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want = spec
+        ring, want, win = spec
         step = HRRD_RINGS[ring][0]                              # seconds/bucket → volume = Σ(per-bucket mean B/s)·step
         vol = lambda xs: int(sum(xs or []) * step)
         out = []
@@ -3734,23 +3752,29 @@ def api(method, path, qs, body, deps):
             nid, cat = body.rsplit("-", 1)
             if nid not in nodes:
                 continue
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want)
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
             if d:
                 out.append({"node": nid, "cat": cat, "up": vol(d.get("rx")), "dn": vol(d.get("tx"))})   # total bytes over the window
         return 200, {"ok": True, "data": {"range": rng, "cats": out}}
 
     if method == "GET" and path == "/api/turn-history":
         # Per-(node,fork) turn-proxy stats over a range — drives the "by turn-proxy" doughnuts. Reads each
-        # turn-<nid>-<fork>.rrd (rx/tx slots = throughput, pon/ptot = peers online/total) → rx/tx MEAN → volume;
-        # pon/ptot MEAN over the window. Fork ids are sanitised → no '-', so the filename splits on the LAST '-'.
+        # turn-<nid>-<fork>.rrd (rx/tx slots = throughput, pon/ptot = peers online/total). Fork ids are
+        # sanitised → no '-', so the filename splits on the LAST '-'.
+        #
+        # rx/tx are SUMMED into a volume; pon/ptot must therefore NOT be meaned. Averaging a headcount over the
+        # window divides by every idle bucket: a proxy that carried one peer for ten minutes of a day read
+        # `mean(pon) = 0.003` → rounded to 0, and the card showed "0 / 0 peers" beside 72 MB of its traffic.
+        # `peak` (max over the in-window buckets) is the honest scalar a single ring can give — it is a lower
+        # bound on the distinct peers seen, and never zero when the proxy actually carried someone.
         rng = (qs.get("range") or ["day"])[0]
-        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        spec = RANGE_SPEC.get(rng)
         if not spec:
             return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want = spec
+        ring, want, win = spec
         step = HRRD_RINGS[ring][0]
         vol = lambda xs: int(sum(xs or []) * step)
-        mean = lambda xs: (sum(xs) / len(xs)) if xs else 0
+        peak = lambda xs: (max(xs) if xs else 0)
         out = []
         try:
             files = os.listdir(stats_dir) if stats_dir else []
@@ -3765,10 +3789,10 @@ def api(method, path, qs, body, deps):
             nid, fork = body.rsplit("-", 1)
             if nid not in nodes:
                 continue
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want)
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
             if d:
                 out.append({"node": nid, "fork": fork, "rx": vol(d.get("rx")), "tx": vol(d.get("tx")),
-                            "pon": mean(d.get("pon")), "ptot": mean(d.get("ptot"))})
+                            "pon": peak(d.get("pon")), "ptot": peak(d.get("ptot"))})
         return 200, {"ok": True, "data": {"range": rng, "turn": out}}
 
     if method == "GET" and path == "/api/peer-history":
@@ -3776,10 +3800,10 @@ def api(method, path, qs, body, deps):
         # reverses the pubkey hash via the roster (orphaned files → deleted peers → unlinked), and returns only the
         # top-N peers by fleet-total volume so the scan/payload stays bounded. The SPA sums per selected node + ranks.
         rng = (qs.get("range") or ["day"])[0]
-        spec = {"live": (0, 200), "hour": (0, 250), "day": (1, 300), "week": (2, 350), "month": (3, 400)}.get(rng)
+        spec = RANGE_SPEC.get(rng)
         if not spec:
             return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, want = spec
+        ring, want, win = spec
         step = HRRD_RINGS[ring][0]
         vol = lambda xs: int(sum(xs or []) * step)
         h2pk = {}
@@ -3806,7 +3830,7 @@ def api(method, path, qs, body, deps):
                 with contextlib.suppress(Exception):
                     os.unlink(os.path.join(stats_dir, fn))
                 continue
-            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want)
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=time.time() - win)
             if d:
                 rows.append({"node": nid2, "pubkey": pk, "rx": vol(d.get("rx")), "tx": vol(d.get("tx"))})
         tot = {}

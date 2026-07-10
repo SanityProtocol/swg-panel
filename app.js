@@ -1269,15 +1269,24 @@ function turnConnRows(nodeId, iface, service) {
 }
 // shared online-breakdown bubble: a Live-linked header, top-10 rows (already handshake-sorted), an
 // optional "n orphan peers" line, and a "view all" link past 10. trigger: (count)=>vnode.
+// Open Live on the tab that matches the bubble that was clicked. `connView.mode` is module state that
+// remembers the last toggle, so without this a Users bubble could land on the Peers table (or vice versa).
+// The appbar bubble is visible ON the Live screen too, where the hash does not change — so nudge the bus.
+const openLiveTab = mode => e => {
+  e.stopPropagation();
+  connView.mode = mode; connView.page = 1;
+  if (location.hash === "#/connections") bus.emit();     // already there: no hashchange to re-render us
+};
 function OnlPop({ title, rows, peer, orphans, orphHref, trigger, cls }) {
+  const tab = peer ? "peers" : "users";                  // this bubble lists peers, or users
   const renderRow = peer
     ? r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.title}</span><span class="on-user faint">${r.user}${r.iface ? " · " + r.iface : ""}${r.ip ? " · " + r.ip : ""}</span></div>`
     : r => html`<div class=${"onrow" + (r.unassigned ? " un" : "")}><span class="on-name">${r.name}</span><span class="on-ct">${r.count} <span class="faint">peer${r.count > 1 ? "s" : ""}</span></span></div>`;
   return html`<${Popover} cls=${"onlinetag " + (cls || "")} trigger=${trigger(rows.length)}>
-    <a class="onpop-h onpop-link" href="#/connections" onClick=${e => e.stopPropagation()}>${title} · ${rows.length} →</a>
+    <a class="onpop-h onpop-link" href="#/connections" onClick=${openLiveTab(tab)}>${title} · ${rows.length} →</a>
     ${rows.length ? rows.slice(0, 10).map(renderRow) : html`<div class="onrow faint">${peer ? "no peers online" : "no one online"}</div>`}
-    ${orphans ? html`<a class="onpop-orph" href=${orphHref || "#/connections"} onClick=${e => e.stopPropagation()}>${orphans} unmanaged orphan peer${orphans > 1 ? "s" : ""}</a>` : null}
-    ${rows.length > 10 ? html`<a class="onpop-viewall" href="#/connections" onClick=${e => e.stopPropagation()}>view all ${rows.length} connections →</a>` : null}
+    ${orphans ? html`<a class="onpop-orph" href=${orphHref || "#/connections"} onClick=${openLiveTab("peers")}>${orphans} unmanaged orphan peer${orphans > 1 ? "s" : ""}</a>` : null}
+    ${rows.length > 10 ? html`<a class="onpop-viewall" href="#/connections" onClick=${openLiveTab(tab)}>view all ${rows.length} connections →</a>` : null}
   </${Popover}>`;
 }
 // ───── mesh health: per-node, per-direction link status (down = other→this · up = this→other) ─────
@@ -2644,7 +2653,7 @@ function Overview() {
     <${StoreOffBanner}/>
     <${DashRail}/>
     <div class="statgrid">
-      <a class="stat accent clk" href="#/connections"><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">live connections →</div></div></a>
+      <a class="stat accent clk" href="#/connections" onClick=${openLiveTab("peers")}><span class="stat-ic"><${Ic} i="activity"/></span><div class="stat-c"><div class="k">Online now</div><div class="v">${online}<small> / ${sPeers.length}</small></div><div class="sub">live connections →</div></div></a>
       <a class="stat clk" href="#/users"><span class="stat-ic"><${Ic} i="users"/></span><div class="stat-c"><div class="k">Users</div><div class="v">${sUsers.length}</div><div class="sub">${sPeers.length} peers${scoped ? " here" : " total"}</div></div></a>
       <a class="stat clk" href="#/peers"><span class="stat-ic"><${Ic} i="device"/></span><div class="stat-c"><div class="k">Peers</div><div class="v" style="font-size:19px"><span style="color:var(--ink)">${pAssigned}</span> · <span style="color:var(--dim)">${pUnassigned}</span></div><div class="sub">assigned · unassigned</div>${orphans.length ? html`<div class="sub" style="color:#E8912D;font-weight:600">Orphan peers ${orphans.length}</div>` : ""}</div></a>
       <a class="stat clk" href="#/nodes"><span class="stat-ic"><${Ic} i="server"/></span><div class="stat-c"><div class="k">Nodes</div><div class="v">${liveNodes}<small> / ${fleetSel.length}</small></div><div class="sub">${ifaceCount} interface${ifaceCount === 1 ? "" : "s"}${nodesAlerting ? html` · <span style="color:var(--dangling)">${nodesAlerting} alerting</span>` : ""}</div></div></a>
