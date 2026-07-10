@@ -480,6 +480,15 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .ifcard.tp.clickable{cursor:pointer}
 .ifcard.down{opacity:.5;border-color:color-mix(in srgb,var(--dangling) 35%,var(--line-solid))}
 .ifcard.down:hover{opacity:.72}
+/* Two distinct dims, and they can co-occur:
+     .down   — THIS card's own state needs attention (iface down/stopped/error, proxy failed, mesh link down).
+               Red-tinted border: something here is wrong.
+     .locked — the NODE forbids editing right now (offline, converting, re-installing, updating). Nothing is
+               wrong with the card, so no red: just muted, matching the disabled buttons. Every card on the
+               page carries it together, so a node-wide state never dims one section and leaves the rest lit. */
+.ifcard.locked{opacity:.55}
+.ifcard.locked:hover{opacity:.75}
+.ifcard.locked.down{opacity:.45}             /* both → keep the red border, dim a little further */
 .ifcard.tp.clickable:hover{border-color:var(--turn,#A974F2);transform:translateY(-1px)}
 .cmderr{display:inline-flex;align-items:center;color:var(--dangling);cursor:pointer}
 .cmderr:hover{color:#ff8585}

@@ -720,7 +720,12 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   // actively downloading/recreating — signalled by the install marker or a live progress note).
   const pendLabel = updating ? ((installing || prog) ? "updating" : "pending")
     : (pend && pend !== "install" && pend !== "reinstall") ? (TURN_PEND[pend] || "creating") : "creating";
-  const dim = converting || nodeStale(node) || (!justRestarted && (installing || queued || pend || failed || down || stopped || err));   // dim through the WHOLE 'creating' phase (installing/queued/assigned) like the pending card + attention states (failed/down/stopped/deleting) — only a settled/ready card is full-bright
+  // Two dims (see app.css): `dim` = THIS proxy needs attention or is in flight — dim through the whole
+  // 'creating' phase (installing/queued/assigned) plus failed/down/stopped/deleting; only a settled card is
+  // full-bright. `nblocked` = the NODE forbids editing (offline / converting / re-installing / updating), which
+  // is exactly what disables the buttons — so every card on the page dims together, not just the mesh ones.
+  const dim = !justRestarted && (installing || queued || pend || failed || down || stopped || err);
+  const nblocked = nodeStale(node) || inProc(nrec.proc_status);
   const _busy = !!(queued || installing || (pend && pend !== "delete"));   // any in-flight create / install / op
   const _bad = !!(failed || down || converting || stopped);
   const _settled = !!fronted && !_bad && !_busy;                           // up + healthy
@@ -734,8 +739,8 @@ function TurnCard({ node, tp, nrec, metas, showForwards = true, reorder }) {
   turnWasBusy[k] = _busy;
   const turnReadyNow = !_bad && !!fronted && !!turnReady[k] && Date.now() < turnReady[k];
   const conn = fronted ? turnConnRows(node, fronted, tp.service) : [];   // online peers via THIS specific proxy → header count
-  const canOpen = nrec.turn_manage && !converting && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting (don't open a half-created proxy)
-  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} data-rid=${it ? it.rid : null}>
+  const canOpen = nrec.turn_manage && !nblocked && !_busy && pend !== "delete";   // clickable only once it settles — NOT while creating/queued/deleting, and never while the node blocks edits (don't open a half-created proxy)
+  return html`<div class=${"ifcard tp" + (canOpen ? " clickable" : "") + (dim ? " down" : "") + (nblocked ? " locked" : "") + (it ? it.cls : "")} onClick=${canOpen ? () => openTurnManage(node, tp) : null} data-rid=${it ? it.rid : null}>
     <div class="ifcard-top">${reorder ? html`<span class="drag-grip" title="Drag to reorder" onClick=${e => e.stopPropagation()} ...${reorder.grip(tp.service)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>` : null}<span class=${"iftype turn tf-" + turnFork(tp.service)}>turn</span><span class="ifname">${tp.title || turnFork(tp.service)}</span><span class="grow"></span>${conn.length ? html`<${OnlPop} peer title="Via this turn-proxy" cls="ifc-conn" rows=${conn} trigger=${c => html`<b class="oncount on">${c}</b>`}/>` : null}${converting
       ? html`<${StatusTag} cls="tg-convert" icon="clock" label="converting" title="The node is converting between bare-metal and docker"/>`
       : pend === "delete"
@@ -2885,7 +2890,7 @@ function NodeDetail({ node: rawName }) {
         const carried = reprov ? [] : userKeys.filter(k => meta[k].egress_mode === "forward" && meta[k].egress_node === peer);   // user iface NAMES forwarded whole (cascade) out through THIS link
         const smartCarried = reprov ? [] : userKeys.filter(k => meta[k].egress_mode === "smart" && (meta[k].routing || []).some(r => r.action === "exit" && r.node === peer));   // ifaces SMART-routing some destinations out via THIS link
         const canOpen = !reprov && !!ifn && !blocked;   // node unavailable (converting / down / mid-proc) → dim + not editable, matching the interface/turn cards
-        return html`<div key=${peer} class=${"ifcard tp" + (canOpen ? " clickable" : "") + ((muted || blocked) ? " down" : "")} onClick=${canOpen ? () => openConnectionEdit(name, ifn) : null}>
+        return html`<div key=${peer} class=${"ifcard tp" + (canOpen ? " clickable" : "") + (muted ? " down" : "") + (blocked ? " locked" : "")} onClick=${canOpen ? () => openConnectionEdit(name, ifn) : null}>
           <div class="ifcard-top"><span class="iftype turn" style=${"--tfc:" + col}><${Ic} i="server"/></span><span class="ifname">${Store.nodeName(peer)}</span><span class="grow"></span>${smartCarried.length ? html`<span class="egb egb-smart" title=${"Smart cascade: routes selected destinations out via " + Store.nodeName(peer)}><${Ic} i="cascade"/>smart cascade</span>` : carried.length ? html`<span class="egb egb-cascade" title=${"Cascade: relays " + carried.length + " interface" + (carried.length === 1 ? "" : "s") + " out via " + Store.nodeName(peer)}><${Ic} i="cascade"/>cascade</span>` : null}${reprov ? html`<span class="tg tg-busy" title="Rebuilding this node's mesh link — it reconnects in a few seconds"><${Ic} i="clock"/>re-provisioning</span>` : html`<span class=${"lkdot " + lk} title=${lkTitle}></span>`}</div>
           <div class="ifcard-rows">
             <div class="ifrow"><span class="l">Endpoint</span><span class="r addr">${(m && m.peer_endpoint) || "—"}</span></div>
@@ -2956,8 +2961,12 @@ function NodeDetail({ node: rawName }) {
               // a wide status badge is showing → keep it on one line by compacting the turn badges (turn→t) and
               // letting the name ellipsize; reverts to full once no such status is shown
               const tight = iopBusy || iconverting || deleting || idown || irestarting || !!(nrec.cmd_errors || {})[ifn];
-              const idim = iconverting || deleting || idown || istopped || irestarting || iopBusy || !!iprog || nodeStale(name) || !!(nrec.cmd_errors || {})[ifn];   // attention / stopped / in-flight / node gone dark → dim
-              return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
+              // `.down` = THIS interface needs attention or is in flight. Node-wide states (offline, converting,
+              // re-installing, updating) are `.locked` instead — nothing is wrong with the interface, it just
+              // can't be edited, and every card on the page gets it at once. `iconverting`/`nodeStale` moved out
+              // of here into `blocked` for exactly that reason.
+              const idim = deleting || idown || istopped || irestarting || iopBusy || !!iprog || !!(nrec.cmd_errors || {})[ifn];
+              return html`<a key=${ifn} class=${"ifcard" + (deleting ? " pending" : "") + (idim ? " down" : "") + (blocked ? " locked" : "") + it.cls} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} draggable=${false} data-rid=${it.rid}>
                 <div class="ifcard-top"><span class="drag-grip" title="Drag to reorder" onClick=${e => e.preventDefault()} ...${ifReorder.grip(ifn)} dangerouslySetInnerHTML=${{ __html: GRIP_SVG }}></span>${blocked ? html`<span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span>` : html`<button class="ifc-edit" title=${"Edit interface · " + type.toUpperCase()} onClick=${e => { e.preventDefault(); e.stopPropagation(); openEditIface(name, ifn); }}><span class=${"iftype " + type}>${type}</span><span class="ifname">${ifn}</span><span class="ifc-pic"><${Ic} i="pencil"/></span></button>`}<span class="grow"></span>${ifaceTurnBadges(name, fwdTurns, tight)}${iprog ? html`<${CmdErr} err=${iprog} cls="warn" title="Working on the node"/>` : null}${iopBusy ? html`<span class="tg tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[iop.verb] || iop.verb}</span>` : iconverting ? html`<span class="tg tg-convert" title="The node is converting between bare-metal and docker"><${Ic} i="clock"/>converting</span>` : deleting ? html`<${StatusTag} cls="tg-del" icon="clock" label="deleting" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : istopped ? html`<span class="tg-off" title="Stopped by you — open to Start it"><${Ic} i="stop"/>stopped</span>` : idown ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="down" msg=${(nrec.cmd_errors || {})[ifn] || ("interface is down on the node — awg-quick couldn't bring it up: " + idown)} title="Interface down on the node"/>` : irestarting ? html`<span class="tg tg-busy"><${Ic} i="clock"/>restarting</span>` : ((nrec.cmd_errors || {})[ifn] ? html`<${StatusTag} cls="tg-busy del" icon="warn" label="error" msg=${(nrec.cmd_errors || {})[ifn]} title="Command failed on the node"/>` : (m.drift && Object.keys(m.drift).length) ? html`<span class="tg tg-pending" title="A setting was edited directly on the server — open to Adopt or Restore"><${Ic} i="warn"/>modified</span>` : (ifaceReady[name + "|" + ifn] && Date.now() < ifaceReady[name + "|" + ifn]) ? html`<span class="tg tg-ready"><${Ic} i="check"/>ready</span>` : null)}</div>
                 <div class="ifcard-rows">
                   <div class="ifrow"><span class="l">Listen</span><span class="r addr">${m.endpoint || ((m.address || "").split("/")[0] + (m.listen_port ? ":" + m.listen_port : "")) || "—"}</span></div>
