@@ -3611,7 +3611,10 @@ function CatPicker({ value, mode, customLists, catalogCats, listTitle, onChange,
               class=${"catpick-row" + (value === it.id ? " sel" : "") + (ok ? "" : " off")} onClick=${() => ok && pick(it.id)}
               title=${ok ? "" : "Host-only list — switch this node to Force-DNS to use it"}>
               <span class="catpick-rlbl">${it.label}${it.src ? html`<${ProvTag} id=${it.id} label=${it.src} plain=${it.legacy || it.src === "Custom"}/>` : null}</span>
-              ${it.caps ? capBadge(it.caps) : null}${it.list ? html`<${ListInfo} list=${it.list}/>` : (isProviderCat(it.id) ? html`<${ListInfo} cat=${it.id}/>` : null)}
+              ${/* A curated preset is a first-class provider ("Curated") but keeps a BARE id, so isProviderCat()
+                    alone hid its size: the panel ships cat_sizes for curated cats too (they resolve on the panel,
+                    same as provider lists), the row just never asked for it. */
+                it.caps ? capBadge(it.caps) : null}${it.list ? html`<${ListInfo} list=${it.list}/>` : ((isProviderCat(it.id) || isCuratedCat(it.id)) ? html`<${ListInfo} cat=${it.id}/>` : null)}
               ${isProviderCat(it.id) && catListUrl(it.id, it.caps) ? html`<a class="catrow-info" href=${catListUrl(it.id, it.caps)} target="_blank" rel="noopener" title="View this list on GitHub" onClick=${e => e.stopPropagation()}><${Ic} i="info"/></a>`
                 : (!isProviderCat(it.id) && catDescOf(it.id)) ? html`<${DescInfo} text=${catDescOf(it.id)}/>` : null}</button>`; })}`)}
           ${localEmpty ? html`<div class="catpick-empty">No list on this node matches “${q}”. Add more in Settings → Routing lists.</div>` : null}
