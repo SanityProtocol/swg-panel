@@ -137,6 +137,29 @@
     return card;
   }
 
+  // Prev/next + dots for a peer's deployment carousel. The scroll container does the swiping (CSS
+  // scroll-snap); this just drives it from buttons and reflects the position. Offsets are measured
+  // live so it's robust to gaps and to the desktop→mobile layout switch. Hidden on wide screens via CSS.
+  function carouselNav(grid, count) {
+    var nav = el("div", "peer-nav");
+    var prev = el("button", "nav-btn", "‹"); prev.setAttribute("aria-label", "Previous server"); prev.type = "button";
+    var next = el("button", "nav-btn", "›"); next.setAttribute("aria-label", "Next server"); next.type = "button";
+    var dots = el("div", "nav-dots"), dotEls = [];
+    for (var i = 0; i < count; i++) { var d = el("span", "nav-dot"); dotEls.push(d); dots.appendChild(d); }
+    function offset(i) { return grid.children[i].getBoundingClientRect().left - grid.getBoundingClientRect().left + grid.scrollLeft; }
+    function current() { var sl = grid.scrollLeft, best = 0, bd = Infinity; for (var i = 0; i < count; i++) { var dd = Math.abs(offset(i) - sl); if (dd < bd) { bd = dd; best = i; } } return best; }
+    function go(i) { i = Math.max(0, Math.min(count - 1, i)); grid.scrollTo({ left: offset(i), behavior: "smooth" }); }
+    prev.onclick = function () { go(current() - 1); };
+    next.onclick = function () { go(current() + 1); };
+    function sync() { var idx = current(); for (var i = 0; i < dotEls.length; i++) dotEls[i].className = "nav-dot" + (i === idx ? " on" : ""); prev.disabled = idx <= 0; next.disabled = idx >= count - 1; }
+    var raf = 0;
+    grid.addEventListener("scroll", function () { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; sync(); }); }, { passive: true });
+    dotEls.forEach(function (d, i) { d.onclick = function () { go(i); }; });
+    nav.appendChild(prev); nav.appendChild(dots); nav.appendChild(next);
+    setTimeout(sync, 0);
+    return nav;
+  }
+
   function render(data, cryptoKey) {
     var who = document.getElementById("who");
     who.textContent = data.user && data.user.name ? data.user.name : "";
@@ -195,6 +218,9 @@
           grid.appendChild(targetCard(data.user && data.user.name, peer, tgt, conf, reason));
         });
         sec.appendChild(grid);
+        // On a phone each peer is a one-QR-per-view carousel (primary first) — native swipe via scroll-snap,
+        // plus prev/next + dots. On a wide screen the CSS lays every deployment out in a row and hides the nav.
+        if ((peer.targets || []).length > 1) sec.appendChild(carouselNav(grid, peer.targets.length));
         wrap.appendChild(sec);
       });
       document.getElementById("state").hidden = true;

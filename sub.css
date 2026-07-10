@@ -96,6 +96,26 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
 
 .foot-warn { margin: 18px 2px 0; padding: 12px 14px; border-radius: 10px; background: color-mix(in srgb, #f0a020 16%, var(--panel)); border: 1px solid color-mix(in srgb, #f0a020 40%, var(--line)); color: var(--ink); font-size: 13px; }
 
-@media (max-width: 480px) {
-  .tgt { flex-basis: 100%; }
+/* deployment carousel nav — hidden on wide screens (every card is shown in a row there) */
+.peer-nav { display: none; }
+.nav-btn {
+  appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  width: 40px; height: 40px; border-radius: 50%; font-size: 22px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0;
+}
+.nav-btn:disabled { opacity: .35; cursor: default; }
+.nav-btn:active:not(:disabled) { transform: scale(.94); }
+.nav-dots { display: flex; gap: 7px; align-items: center; }
+.nav-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); transition: background .15s, transform .15s; cursor: pointer; }
+.nav-dot.on { background: var(--brand); transform: scale(1.35); }
+
+/* Phone: one deployment per view — swipe (native scroll-snap) or tap prev/next; primary shows first. */
+@media (max-width: 560px) {
+  .tgts {
+    flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none; margin: 0 -16px; padding: 0 16px;
+  }
+  .tgts::-webkit-scrollbar { display: none; }
+  .tgt { flex: 0 0 100%; scroll-snap-align: center; }
+  .peer-nav { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 12px; }
 }
