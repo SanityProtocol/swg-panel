@@ -7328,6 +7328,12 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
   // lets a caller flag changes the input/change listener can't see (e.g. click-toggled grids).
   const tryClose = () => { if ((dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current) { setDiscarding(true); return; } onClose(); };
   if (closeRef) closeRef.current = tryClose;   // expose the guarded close so a footer Cancel routes through it too
+  // The keydown listener below is registered ONCE (useEffect []), but openModal REPLACES one <Sheet> with
+  // another at the same position, so Preact reuses this instance and only updates props — the effect never
+  // re-runs. Without this ref, Esc would keep calling the FIRST render's onClose: a config sheet reached via a
+  // `back` (turn configs → back to QR) closed everything on Esc while ✕/backdrop/Back (recreated each render)
+  // correctly went back. Route Esc through the live tryClose instead.
+  const tryCloseRef = useRef(tryClose); tryCloseRef.current = tryClose;
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
@@ -7341,7 +7347,7 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
       if (qrZoomEl) return;   // a QR enlargement is open — let it handle Esc (collapse it, keep the modal)
       if (_sheetStack[_sheetStack.length - 1] !== tok) return;   // a child modal is on top — defer to it
       if ((e.key === "Enter" || e.key === "Escape") && e.target && e.target.dataset && e.target.dataset.enter === "self") return;   // input handles its own Enter/Esc (e.g. inline rename) — don't submit/close the sheet
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryClose(); return; }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryCloseRef.current(); return; }
       if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
         const primary = root.querySelector(".sheet-foot .btn-primary:not([disabled])") || root.querySelector(".btn-primary:not([disabled])");
         if (primary) { e.preventDefault(); primary.click(); }
