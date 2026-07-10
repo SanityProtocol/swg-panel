@@ -3580,6 +3580,20 @@ def api(method, path, qs, body, deps):
             cur["reserved"] = base
         if "store_configs" in incoming:
             cur["store_configs"] = None if incoming["store_configs"] is None else bool(incoming["store_configs"])
+        sub = incoming.get("subscriptions")
+        if isinstance(sub, dict):
+            srv = sub.get("serve") if isinstance(sub.get("serve"), dict) else {}
+            _tls = srv.get("tls_mode")
+            cur["subscriptions"] = {
+                "enabled": bool(sub.get("enabled")),
+                "base_url": (sub.get("base_url") or "").strip()[:300],
+                "serve": {
+                    "host": (srv.get("host") or "0.0.0.0").strip()[:120] or "0.0.0.0",
+                    "port": max(1, min(65535, int(srv.get("port") or 8444))),
+                    "tls_mode": _tls if _tls in ("reverse-proxy", "selfsigned", "letsencrypt", "custom") else "reverse-proxy",
+                    "cert_path": (srv.get("cert_path") or "").strip()[:300],
+                    "key_path": (srv.get("key_path") or "").strip()[:300],
+                }}
         adv = incoming.get("advanced")
         if isinstance(adv, dict):
             cur["advanced"] = {"node_stale_ms": max(5000, int(adv.get("node_stale_ms") or 30000)),
@@ -3957,6 +3971,13 @@ def api(method, path, qs, body, deps):
         blobs[pid] = {"sec": sec, "at": now()}
         save_sub_blobs(deps, uid, blobs)
         return 200, {"ok": True, "data": {"stored": True}}
+
+    if method == "POST" and path == "/api/sub/reset":                # wipe the whole vault → invalidates every URL
+        d = _sub_dir(deps)
+        with contextlib.suppress(Exception):
+            import shutil; shutil.rmtree(d, ignore_errors=True)
+        ev_append(roster_path, "panel", "account", "Reset subscription encryption", "")
+        return 200, {"ok": True, "data": {"reset": True}}
 
     if method == "POST" and path == "/api/account":
         creds = deps.get("auth")

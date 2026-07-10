@@ -221,6 +221,33 @@ async function genKeys() {
 }
 function genPSK() { const b = new Uint8Array(32); crypto.getRandomValues(b); return b64(b); }
 
+// ── subscription vault crypto — all client-side (AES-GCM + PBKDF2 via WebCrypto). The panel only ever
+//    receives wrapped/ciphertext blobs it can't read. See swg-panel-server's subscriptions helper block. ──
+const SUB_CHECK = "swg-sub-v1";   // known plaintext → lets the browser verify it unwrapped the vault correctly
+async function subWrapKey(password, saltBytes) {   // password → AES key, via PBKDF2 (never leaves the browser)
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt: saltBytes, iterations: 200000, hash: "SHA-256" },
+    base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function subEnc(key, bytes) {   // → base64( iv(12) ‖ ciphertext )
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, bytes));
+  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12); return b64(out);
+}
+async function subDec(key, b64s) {    // base64(iv‖ct) → bytes; throws on wrong key / tamper (GCM auth)
+  const all = _b64ToBytes(b64s); return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: all.slice(0, 12) }, key, all.slice(12)));
+}
+// First-time setup: mint the Subscription Key, wrap it with the password (convenience cache), store the
+// wrapped form + a verifier. Returns the SK (base64) to SHOW ONCE — it is never sent to the server in the clear.
+async function subVaultCreate(password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const wk = await subWrapKey(password, salt);
+  const sk = crypto.getRandomValues(new Uint8Array(32));
+  const r = await api.subVaultSet({ salt: b64(salt), sk_by_pw: await subEnc(wk, sk), sk_check: await subEnc(wk, new TextEncoder().encode(SUB_CHECK)) });
+  if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't save the vault");
+  return b64(sk);
+}
+
 const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
 // IPv6 leak-guard: a FULL v4 tunnel (AllowedIPs contains 0.0.0.0/0) MUST also capture v6 (::/0), else the client's
 // IPv6 traffic escapes the tunnel over its real IP (the tunnels are v4-only, so captured v6 is dropped node-side and
@@ -490,6 +517,9 @@ const api = {
   nodeUpdate(b) { return this.post("/api/nodes/update", b); },
   connectionUpdate(b) { return this.post("/api/connection/update", b); },
   panelSettings(b) { return this.post("/api/panel/settings", b); },
+  subVault() { return this.get("/api/sub/vault"); },
+  subVaultSet(b) { return this.post("/api/sub/vault", b); },
+  subReset() { return this.post("/api/sub/reset", {}); },
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
   // external integration API (Settings → Integrations): read-only tokens + webhooks
   apiTokenCreate(label) { return this.post("/api/integrations/token", { label }); },
@@ -6555,6 +6585,52 @@ function IntegrationsSettings() {
   </div>`;
 }
 
+// Subscription encryption setup. The Subscription Key is generated + wrapped IN THE BROWSER; the server only
+// ever gets the wrapped form. It's shown once (like 2FA recovery codes) and is independent of the login password.
+function SubVaultCard() {
+  const [state, setState] = useState({ loading: true });
+  const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
+  const [sk, setSk] = useState(null);                    // the shown-once Subscription Key
+  const [resetMode, setResetMode] = useState(false); const [confirm, setConfirm] = useState("");
+  const load = () => api.subVault().then(r => setState({ loading: false, exists: !!(r && r.ok && r.data && r.data.exists) })).catch(() => setState({ loading: false, exists: false }));
+  useEffect(() => { load(); }, []);
+  const create = async () => {
+    if (!pw) return; setBusy(true);
+    try { setSk(await subVaultCreate(pw)); setPw(""); }
+    catch (e) { toast((e && e.message) || "Setup failed", "err"); }
+    setBusy(false);
+  };
+  const doReset = async () => {
+    setBusy(true); const r = await api.subReset(); setBusy(false);
+    if (r && r.ok) { setResetMode(false); setConfirm(""); setSk(null); load(); toast("Subscription encryption reset.", "ok"); }
+    else toast((r && r.error) || "Reset failed", "err");
+  };
+  if (state.loading) return html`<div class="hint">Checking…</div>`;
+  if (sk) return html`<div class="notice ok"><div style="min-width:0">
+    <b>Save your Subscription Key now — it is shown only once.</b> It protects every subscription and is independent of your login password; store it somewhere safe (a password manager).
+    <div class="tokenbox" style="margin:8px 0;word-break:break-all">${sk}</div>
+    <div class="chiprow">
+      <button class="btn btn-mini" onClick=${() => copy(sk, "Subscription Key copied")}><${Ic} i="copy"/> Copy</button>
+      <button class="btn btn-mini" onClick=${() => downloadConf(sk, "swg-subscription-key")}><${Ic} i="download"/> Download</button>
+      <span class="grow"></span>
+      <button class="btn btn-primary btn-mini" onClick=${() => { setSk(null); load(); }}>I've saved it</button>
+    </div></div></div>`;
+  if (!state.exists) return html`<${Fragment}>
+    <p class="hint" style="margin:0 0 8px">Set up once. Confirm your panel password — a Subscription Key is generated in your browser and shown once; the server only ever stores it wrapped, so it can't read your users' keys.</p>
+    <div class="fieldrow">
+      <div class="field"><label>Confirm password</label><input type="password" value=${pw} onInput=${e => setPw(e.target.value)} autocomplete="current-password"/></div>
+      <div class="field" style="flex:none;align-self:end"><button class="btn btn-primary" disabled=${busy || !pw} onClick=${create}>${busy ? "Setting up…" : "Set up encryption"}</button></div>
+    </div><//>`;
+  return html`<${Fragment}>
+    <div class="notice ok" style="margin-bottom:8px"><${Ic} i="check"/><span>Encryption is configured — new peers are wrapped automatically, and users' links keep working across your password changes.</span></div>
+    ${resetMode
+      ? html`<div class="notice warn"><div style="min-width:0"><b>Reset invalidates every subscription URL and drops all stored ciphertext.</b> You'll set up a new Subscription Key afterwards. Type <b>RESET</b> to confirm.
+          <div class="chiprow" style="margin-top:8px"><input type="text" placeholder="RESET" value=${confirm} onInput=${e => setConfirm(e.target.value)} style="max-width:120px"/>
+            <button class="btn btn-danger btn-mini" disabled=${busy || confirm !== "RESET"} onClick=${doReset}>Reset encryption</button>
+            <button class="btn btn-ghost btn-mini" onClick=${() => { setResetMode(false); setConfirm(""); }}>Cancel</button></div></div></div>`
+      : html`<button class="btn btn-ghost btn-mini danger" onClick=${() => setResetMode(true)}>Reset encryption…</button>`}
+  <//>`;
+}
 function PanelSettingsScreen() {
   // NOTE: deliberately NOT subscribed to the 5s poll (no useStore) — this is an edit form seeded from a
   // snapshot at mount. Re-rendering every poll re-diffs every controlled input (the source of the checkbox
@@ -6730,6 +6806,16 @@ function PanelSettingsScreen() {
   const awgSet = AWG_KEYS.some(k => String(awg[k] ?? "").trim() !== "");
   const [showAdv, setShowAdv] = useState(false);
   const [msg, setMsg] = useState(null);
+  // subscriptions section state (config fields ride the global save; the vault ceremony uses /api/sub/*)
+  const subCfg = ps.subscriptions || {};
+  const subServe = subCfg.serve || {};
+  const [subsOn, setSubsOn] = useState(!!subCfg.enabled);
+  const [subBase, setSubBase] = useState(subCfg.base_url || "");
+  const [subHost, setSubHost] = useState(subServe.host || "0.0.0.0");
+  const [subPort, setSubPort] = useState(String(subServe.port || 8444));
+  const [subTls, setSubTls] = useState(subServe.tls_mode || "reverse-proxy");
+  const [subCert, setSubCert] = useState(subServe.cert_path || "");
+  const [subKeyP, setSubKeyP] = useState(subServe.key_path || "");
   // per-node pending edits (mode / mesh / egress) — lifted here so switching node or section keeps unsaved
   // changes; the single Save commits the global settings AND one nodeUpdate per changed node.
   const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
@@ -6758,6 +6844,9 @@ function PanelSettingsScreen() {
         custom_lists_enabled: customEnabled,
         geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
         store_configs: sc === "off" ? false : true,
+        subscriptions: { enabled: subsOn, base_url: subBase.trim(),
+          serve: { host: subHost.trim() || "0.0.0.0", port: Math.max(1, Math.min(65535, parseInt(subPort) || 8444)),
+                   tls_mode: subTls, cert_path: subCert.trim(), key_path: subKeyP.trim() } },
         throughput_perspective: tput,
         top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
@@ -6858,7 +6947,7 @@ function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: "Delete custom list", confirmLabel: "Delete", danger: true,
     body: html`Delete <b>${l.title || "Untitled list"}</b>? It's removed from <b>every node</b> it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.`,
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"], ["integrations", "Integrations"]];
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"], ["integrations", "Integrations"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   const entryPreview = t => {   // as many WHOLE entries as fit ~one line, then a "(N more)" tail — never cuts an entry
@@ -6917,6 +7006,7 @@ function PanelSettingsScreen() {
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
+    sec === "subs" ? (subsOn !== !!subCfg.enabled || subBase.trim() !== (subCfg.base_url || "") || subHost.trim() !== (subServe.host || "0.0.0.0") || subPort !== String(subServe.port || 8444) || subTls !== (subServe.tls_mode || "reverse-proxy") || subCert.trim() !== (subServe.cert_path || "") || subKeyP.trim() !== (subServe.key_path || "")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
@@ -7175,6 +7265,35 @@ function PanelSettingsScreen() {
               { value: "on", label: "On — keep configs (QRs re-viewable anytime)" },
               { value: "off", label: "Off — never store private keys" }]}/>
             <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off" ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute." : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
+        </div>` : null}
+        ${section === "subs" ? html`<div class="card">
+          <div class="seclabel" style="margin-top:0">Subscriptions</div>
+          <p class="hint" style="margin:0 0 12px">A shareable, themed, mobile page per user showing their QRs. The page's private keys ride in the URL <b>fragment</b> and are never sent to the panel — nothing readable is stored on the server. Treat each user's URL as a credential (whoever holds it holds that user's configs). A separate <b>swg-sub</b> service serves the page; configure it here and install it on the panel host.</p>
+          <div class="field"><label>Enable subscriptions</label>
+            <${Dropdown} value=${subsOn ? "on" : "off"} onChange=${v => setSubsOn(v === "on")} options=${[
+              { value: "off", label: "Off — the subscription page is blocked entirely" },
+              { value: "on", label: "On — per-user subscription URLs are served" }]}/>
+            <div class="hint">Off returns 404 for every subscription URL, regardless of the rest.</div></div>
+          <div class="field"><label>Public base URL</label>
+            <input type="text" placeholder="https://sub.example.com/" value=${subBase} onInput=${e => setSubBase(e.target.value)}/>
+            <div class="hint">The domain/subdomain (and path) the page is reached at. Used to build each user's link shown in the QR modals.</div></div>
+          <div class="seclabel">swg-sub service</div>
+          <div class="fieldrow">
+            <div class="field"><label>Listen host</label><input type="text" value=${subHost} onInput=${e => setSubHost(e.target.value)}/></div>
+            <div class="field"><label>Port</label><input type="text" value=${subPort} onInput=${e => setSubPort(e.target.value)}/></div>
+          </div>
+          <div class="field"><label>TLS</label>
+            <${Dropdown} value=${subTls} onChange=${v => setSubTls(v)} options=${[
+              { value: "reverse-proxy", label: "Behind a reverse proxy (nginx/Caddy terminates TLS)" },
+              { value: "selfsigned", label: "Self-signed (swg-sub generates a cert)" },
+              { value: "letsencrypt", label: "Let's Encrypt (swg-sub obtains a cert)" },
+              { value: "custom", label: "Custom certificate (paths below)" }]}/></div>
+          ${subTls === "custom" ? html`<div class="fieldrow">
+            <div class="field"><label>Certificate path</label><input type="text" placeholder="/etc/swg-sub/fullchain.pem" value=${subCert} onInput=${e => setSubCert(e.target.value)}/></div>
+            <div class="field"><label>Key path</label><input type="text" placeholder="/etc/swg-sub/privkey.pem" value=${subKeyP} onInput=${e => setSubKeyP(e.target.value)}/></div>
+          </div>` : null}
+          <div class="seclabel">Encryption</div>
+          <${SubVaultCard}/>
         </div>` : null}
         ${section === "display" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Interface theme<span class="grow"></span>

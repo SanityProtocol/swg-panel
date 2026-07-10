@@ -1998,6 +1998,8 @@ a.tg:hover{filter:brightness(1.25)}
 .usercfg-row .deploy .acts{justify-content:center}
 .nmwrap{display:flex;flex-direction:column;gap:1px;min-width:0}
 .deploy-primary{font-family:var(--mono);font-size:8.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--online);line-height:1}
+.fieldrow{display:flex;gap:14px;flex-wrap:wrap}
+.fieldrow > .field{flex:1;min-width:140px;margin:0}
 .cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:flex-start}
 .cfgsheet .deploy{width:256px;flex:none}
 .cfgsheet .deploy .qr{flex:1;min-width:0}
