@@ -77,18 +77,24 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
 .peer-title { font-size: 17px; font-weight: 700; }
 .peer-count { color: var(--muted); font-size: 12.5px; font-weight: 600; }
 
-/* deployments — one line per peer on wide screens, stacks on phones */
-.tgts { display: flex; flex-wrap: wrap; gap: 12px; }
+/* deployments — ONE server per view at every width (subscribers are mostly on phones): one peer per
+   line, one QR at a time, swipe or tap ‹ › to cycle a peer's servers. The WG/AWG/TURN tab picks which
+   configs show. */
+.tgts {
+  display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.tgts::-webkit-scrollbar { display: none; }
 .tgt {
-  flex: 1 1 220px; min-width: 0;
+  flex: 0 0 100%; min-width: 0; scroll-snap-align: center;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 18px 14px; display: flex; flex-direction: column; align-items: center; gap: 12px;
 }
 .primary { align-self: stretch; text-align: center; font-size: 11px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--brand); }
 .tgt-node { align-self: stretch; text-align: center; font-weight: 700; font-size: 14px; word-break: break-word; }
 
 .qr { background: #fff; padding: 10px; border-radius: 10px; line-height: 0; }
-.qrimg { width: 100%; max-width: 240px; height: auto; image-rendering: pixelated; display: block; }
+.qrimg { width: 100%; max-width: 300px; height: auto; image-rendering: pixelated; display: block; }
 .qr-fail { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 8px; }
 
 .acts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; width: 100%; }
@@ -110,8 +116,8 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
 
 .foot-warn { margin: 18px 2px 0; padding: 12px 14px; border-radius: 10px; background: color-mix(in srgb, #f0a020 16%, var(--panel)); border: 1px solid color-mix(in srgb, #f0a020 40%, var(--line)); color: var(--ink); font-size: 13px; }
 
-/* deployment carousel nav — hidden on wide screens (every card is shown in a row there) */
-.peer-nav { display: none; }
+/* deployment carousel nav — ‹ dots › under any peer with more than one server (present at every width) */
+.peer-nav { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 12px; }
 .nav-btn {
   appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
   width: 40px; height: 40px; border-radius: 50%; font-size: 22px; line-height: 1; cursor: pointer;
@@ -123,13 +129,7 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
 .nav-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); transition: background .15s, transform .15s; cursor: pointer; }
 .nav-dot.on { background: var(--brand); transform: scale(1.35); }
 
-/* Phone: one deployment per view — swipe (native scroll-snap) or tap prev/next; primary shows first. */
+/* Phone: let the carousel bleed to the screen edges for a full-width swipe. */
 @media (max-width: 560px) {
-  .tgts {
-    flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x mandatory;
-    -webkit-overflow-scrolling: touch; scrollbar-width: none; margin: 0 -16px; padding: 0 16px;
-  }
-  .tgts::-webkit-scrollbar { display: none; }
-  .tgt { flex: 0 0 100%; scroll-snap-align: center; }
-  .peer-nav { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 12px; }
+  .tgts { margin: 0 -16px; padding: 0 16px; }
 }
