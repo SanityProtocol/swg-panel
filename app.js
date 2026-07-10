@@ -460,6 +460,13 @@ const api = {
   categoryHistory(range) { return this.get("/api/category-history?range=" + encodeURIComponent(range)); },
   turnHistory(range) { return this.get("/api/turn-history?range=" + encodeURIComponent(range)); },
   peerHistory(range) { return this.get("/api/peer-history?range=" + encodeURIComponent(range)); },
+  // DISTINCT peers/users seen online over a range — set-union of per-bucket presence bitmaps, never a mean
+  // and never a traffic proxy (so an idle-but-connected peer counts). One call feeds the bars, the node
+  // cards and the doughnuts' "online" figure, so they can no longer disagree.
+  presence(range, blocks, step, nodes) {
+    return this.get("/api/presence?range=" + encodeURIComponent(range) + "&blocks=" + blocks + "&step=" + step
+      + (nodes && nodes.length ? "&nodes=" + encodeURIComponent(nodes.join(",")) : ""));
+  },
   ifaceSeries(node, iface, range) { return this.get("/api/iface-series?node=" + encodeURIComponent(node) + "&iface=" + encodeURIComponent(iface) + "&range=" + encodeURIComponent(range)); },
   turnSeries(node, fork, range) { return this.get("/api/turn-series?node=" + encodeURIComponent(node) + "&fork=" + encodeURIComponent(fork) + "&range=" + encodeURIComponent(range)); },
   meshSeries(node, peer, range) { return this.get("/api/mesh-series?node=" + encodeURIComponent(node) + "&peer=" + encodeURIComponent(peer) + "&range=" + encodeURIComponent(range)); },
@@ -1328,8 +1335,12 @@ function MeshStat({ nodeId, mode }) {
   </${Popover}>`;
 }
 // "N online" tag → users bubble. nodeId null = whole fleet. trigger: optional (count)=>vnode.
-function OnlineUsersTag({ nodeId, cls, trigger }) {
-  return html`<${OnlPop} title="Online users" rows=${onlineUserRows(nodeId)} cls=${cls}
+// `presence` (from /api/presence, per node) switches this from "online right now" to "distinct users seen
+// online during the selected range" — the question the range picker is actually asking. Without it the card
+// answered "nobody is connected this instant" while the Day doughnut reported peers online that day.
+function OnlineUsersTag({ nodeId, cls, trigger, presence, rangeLabel }) {
+  const rows = presence ? (presence.userRows || []).map(r => ({ ...r, lastAge: null })) : onlineUserRows(nodeId);
+  return html`<${OnlPop} title=${presence ? "Users online · " + (rangeLabel || "range") : "Online users"} rows=${rows} cls=${cls}
     trigger=${trigger || (c => html`<span class="dot"></span><b class=${"oncount" + (c ? " on" : "")}>${c}</b> online`)}/>`;
 }
 // "N online" peers bubble (device · user · ip). orphans: count to append. Used on interface cards/screens.
@@ -1545,7 +1556,7 @@ function DangerButton({ label, confirm, onConfirm, className }) {
 // One fleet entry: main block (identity/traffic/sync) on the left, health block on the right.
 // `traffic` = this node's client (non-mesh) rx/tx for the SELECTED range — a live rate, or windowed volume
 // when `ranged`. Computed once in Overview (nodeTraffic) so the card agrees with the doughnuts/top-nodes.
-function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist }) {
+function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist, presence }) {
   const live = Store.recon.nodeStatus[n.id] === "live";
   const snap = Store.stats[n.id];
   const nrec = (Store.nodes || []).find(x => x.id === n.id) || {};   // health lives on the node-store record
@@ -1563,7 +1574,7 @@ function FleetNodeCard({ n, traffic, ranged, histRange, nodeHist }) {
       <div class="fnode-top"><span class="dot ${live ? "live" : "stale"}"></span><span class="fnode-name">${n.name}</span>${al.length ? html`<span class="halert hot"><${Ic} i="warn"/> ${al.length}</span>` : ""}<span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>
       <div class="fnode-stats">
         <div><span class="fl">Traffic</span>${trafCell}</div>
-        <div><span class="fl">Online</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} trigger=${c => html`${c} <span class="faint">user${c === 1 ? "" : "s"}</span>`}/></span></div>
+        <div><span class="fl">Online</span><span class="fv"><${OnlineUsersTag} nodeId=${n.id} presence=${presence} rangeLabel=${histRange} trigger=${c => html`${c} <span class="faint">user${c === 1 ? "" : "s"}</span>`}/></span></div>
         <div><span class="fl">Sync</span><span class="fv">${sync}</span></div>
         ${ifBadges.length ? html`<div class="fnode-ifs">${ifBadges.map(([t, c]) => html`<span key=${t} class=${"iftype " + t}>${t}${c > 1 ? " ×" + c : ""}</span>`)}</div>` : null}
       </div>
@@ -1871,18 +1882,20 @@ const RANGE_STEP = { hour: 15, day: 300, week: 1800, month: 7200 };   // seconds
 // One fetch burst per range/selection change, shared by the doughnuts AND the flow map (lifted to Overview so
 // they don't each hit the API). Pulls per-node RRD + per-pair mesh means. Live → empty (widgets use the bundle).
 function useRangeHistory(range, selIds) {
-  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], peers: [], range: "live" });
+  const [st, setSt] = useState({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], peers: [], presence: null, range: "live" });
   const key = range + "|" + selIds.slice().sort().join(",");
   useEffect(() => {
-    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], peers: [], range: "live" }); return; }
+    if (range === "live") { setSt({ loading: false, byNode: {}, mesh: [], cats: [], turn: [], peers: [], presence: null, range: "live" }); return; }
     let alive = true; setSt(s => ({ ...s, loading: true }));
+    const [obN, obStep] = ONLINE_BLOCKS[range] || ONLINE_BLOCKS.live;   // the bars ask for exactly the blocks they draw
     Promise.all([
       Promise.all(selIds.map(id => api.nodeHistory(id, range).then(r => [id, (r && r.data) || null]).catch(() => [id, null]))),
       api.meshHistory(range).then(r => (r && r.data && r.data.pairs) || []).catch(() => []),
       api.categoryHistory(range).then(r => (r && r.data && r.data.cats) || []).catch(() => []),
       api.turnHistory(range).then(r => (r && r.data && r.data.turn) || []).catch(() => []),
       api.peerHistory(range).then(r => (r && r.data && r.data.peers) || []).catch(() => []),
-    ]).then(([rows, mesh, cats, turn, peers]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, turn, peers, range }); });
+      api.presence(range, obN, obStep, selIds).then(r => (r && r.data) || null).catch(() => null),
+    ]).then(([rows, mesh, cats, turn, peers, presence]) => { if (!alive) return; const byNode = {}; rows.forEach(([id, d]) => { byNode[id] = d; }); setSt({ loading: false, byNode, mesh, cats, turn, peers, presence, range }); });
     return () => { alive = false; };
   }, [key]);
   return st;
@@ -1946,7 +1959,6 @@ function DashDoughnuts({ selIds, range, hist }) {
   //    all count once — not the peak or the mean). ──
   const nodeCnt = {}, typeCnt = { wg: { tot: 0, on: 0 }, awg: { tot: 0, on: 0 } };
   fleet.forEach(n => nodeCnt[n.id] = { tot: 0, on: 0 });
-  const pkPeer = {}; sPeers.forEach(p => { if (p.pubkey) pkPeer[p.pubkey] = p; });
   // live interface is authoritative; the stored target.type is only a fallback for interfaces the node isn't reporting.
   const tyOf = t => { const m = Store.describe[t.node] && Store.describe[t.node][t.iface]; return m ? ifType(t.node, t.iface) : ((t.type === "awg") ? "awg" : "wg"); };
   sPeers.forEach(p => p.targets.forEach(t => {
@@ -1955,16 +1967,20 @@ function DashDoughnuts({ selIds, range, hist }) {
     nodeCnt[t.node].tot++; (typeCnt[ty] = typeCnt[ty] || { tot: 0, on: 0 }).tot++;
     if (!ranged && t.online) { nodeCnt[t.node].on++; typeCnt[ty].on++; }
   }));
-  if (ranged) {   // distinct peers active during the window, per node + per iface type
-    const onNode = {}, onType = {};
-    (hist.peers || []).forEach(e => {
-      if (!sel.has(e.node) || (e.rx || 0) + (e.tx || 0) <= 0) return;
-      const p = pkPeer[e.pubkey]; if (!p) return;
-      (onNode[e.node] = onNode[e.node] || new Set()).add(e.pubkey);
-      const tg = p.targets.find(t => t.node === e.node); if (tg) (onType[tyOf(tg)] = onType[tyOf(tg)] || new Set()).add(e.pubkey);
+  if (ranged) {
+    // DISTINCT peers seen online during the window, from the presence bitmaps. This used to be derived from the
+    // per-peer TRAFFIC rings (rx+tx>0), which is wrong twice over: those rings skip idle peers (PEER_MIN_BPS), and
+    // before the window fix a peer that moved bytes a day ago still counted as "online this hour".
+    const pnodes = (hist.presence && hist.presence.nodes) || {};
+    fleet.forEach(n => nodeCnt[n.id].on = ((pnodes[n.id] || {}).peers) || 0);
+    Object.keys(typeCnt).forEach(ty => typeCnt[ty].on = 0);
+    Object.entries(pnodes).forEach(([nid, v]) => {
+      if (!sel.has(nid)) return;
+      Object.entries(v.ifaces || {}).forEach(([ifn, c]) => {   // the peer's target iface on that node → its protocol
+        const ty = ifType(nid, ifn);
+        if (typeCnt[ty]) typeCnt[ty].on += c;
+      });
     });
-    fleet.forEach(n => nodeCnt[n.id].on = (onNode[n.id] || new Set()).size);
-    Object.keys(typeCnt).forEach(ty => typeCnt[ty].on = (onType[ty] || new Set()).size);
   }
 
   const nodeName = id => Store.nodeName(id), nodeColor = id => Store.nodeColor(id);
@@ -2588,7 +2604,12 @@ function Overview() {
   const fleetHist = fleetHistory(selIds, effRange, rangeHist);
   const tputRange = effRange === "live" ? "hour" : effRange;   // fleet live feed IS the 15s (hour) ring
   const [obN, obStep] = ONLINE_BLOCKS[effRange] || ONLINE_BLOCKS.live;
-  const onlineBlocks = resampleBlocks(fleetHist.onT, fleetHist.on, obN, obStep);
+  // Each bar = DISTINCT peers seen online in that bar's span, unioned from the presence bitmaps. `pon` (the
+  // health ring) is a mean of concurrency and cannot answer this: five peers online 12 min each average to 1.
+  // Live keeps the client-side accumulator — a 30s bar of "online now" needs no server round-trip.
+  const _pres = rangeHist.presence;
+  const onlineBlocks = (dRanged && _pres && _pres.blocks) ? _pres.blocks : resampleBlocks(fleetHist.onT, fleetHist.on, obN, obStep);
+  const onlineEndTs = (dRanged && _pres) ? _pres.end : fleetHist.onT[fleetHist.onT.length - 1];
   const hasOnline = onlineBlocks.some(v => v != null);
   // how many rows the ranked lists show — operator-set in Panel settings → Display (1–50, default 10)
   const nTalk = Math.max(1, Math.min(50, (Store.panelSettings || {}).top_talkers || 10));
@@ -2669,13 +2690,13 @@ function Overview() {
           : html`<div class="harea-empty">gathering — no history yet</div>`}
       </div>
       <div class="trendcard">
-        <div class="donutcard-h"><h3>Online peers</h3><span class="grow"></span><span class="trend-now">${online}</span></div>
+        <div class="donutcard-h"><h3>Online peers</h3><span class="grow"></span><span class="trend-now">${dRanged && _pres ? _pres.total.peers : online}</span></div>
         ${hasOnline
-          ? html`<${OnlineBlocks} blocks=${onlineBlocks} step=${obStep} endTs=${fleetHist.onT[fleetHist.onT.length - 1]} range=${effRange} color="var(--online)" h=${70}/>`
+          ? html`<${OnlineBlocks} blocks=${onlineBlocks} step=${obStep} endTs=${onlineEndTs} range=${effRange} color="var(--online)" h=${70}/>`
           : html`<div class="harea-empty">gathering — fills as it polls</div>`}
       </div>
     </div>` : null}
-    ${fleetSel.length ? html`<div class="fleet2">${fleetSel.map(n => html`<${FleetNodeCard} key=${n.id} n=${n} traffic=${nodeTraffic.find(x => x.id === n.id)} ranged=${dRanged} histRange=${effRange} nodeHist=${(rangeHist.byNode || {})[n.id] || null}/>`)}</div>`
+    ${fleetSel.length ? html`<div class="fleet2">${fleetSel.map(n => html`<${FleetNodeCard} key=${n.id} n=${n} traffic=${nodeTraffic.find(x => x.id === n.id)} ranged=${dRanged} histRange=${effRange} nodeHist=${(rangeHist.byNode || {})[n.id] || null} presence=${dRanged && _pres ? (_pres.nodes || {})[n.id] || null : null}/>`)}</div>`
       : html`<div class="allclear">No servers configured in fleet.json.</div>`}
 
     ${fleetSel.length ? html`<${Fragment}>
