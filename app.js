@@ -8438,6 +8438,12 @@ function showLogin() { if (_loginShown) return; _loginShown = true; document.bod
 function LoginScreen() {
   const [u, setU] = useState(""); const [p, setP] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const [twofa, setTwofa] = useState(false); const [code, setCode] = useState("");
+  // The `autofocus` attribute is inert here: showLogin() renders this form long after page load, and a
+  // browser only honours autofocus for elements present when the document flushes its autofocus candidates
+  // (Preact doesn't special-case it either). Focus explicitly — on mount, and again when the 2FA step
+  // replaces the form, so the code can be typed without reaching for the mouse.
+  const focusRef = useRef(null);
+  useEffect(() => { focusRef.current && focusRef.current.focus(); }, [twofa]);
   const submit = async e => {
     if (e) e.preventDefault();
     if (busy) return;
@@ -8446,7 +8452,13 @@ function LoginScreen() {
       const r = await api.login({ username: u, password: p, code: twofa ? code.trim() : undefined });
       if (r && r.ok) { location.reload(); return; }
       if (r && r.twofa_required) {                       // password OK — panel wants the 6-digit code
-        setTwofa(true); setErr((r && r.error) || ""); setBusy(false); return;
+        const msg = (r && r.error) || "";
+        setTwofa(true); setErr(msg);
+        if (msg) {                                       // a REJECTED code: clear it (else the next digits append) and
+          setCode("");                                   // take focus back from the Verify button so retyping just works.
+          focusRef.current && focusRef.current.focus();  // same DOM node — `twofa` didn't flip, so it is not remounted
+        }
+        setBusy(false); return;
       }
       setErr((r && r.error) || "Login failed."); setBusy(false);
     } catch (_) { setErr("Couldn't reach the panel."); setBusy(false); }
@@ -8456,12 +8468,12 @@ function LoginScreen() {
     <h2>${twofa ? "Two-factor" : "Sign in"}</h2>
     ${twofa ? html`
       <p class="muted" style="margin:-4px 0 12px">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
-      <div class="field"><label>Authentication code</label><input autofocus value=${code} onInput=${e => setCode(e.target.value)} inputmode="text" autocomplete="one-time-code" placeholder="123 456"/></div>
+      <div class="field"><label>Authentication code</label><input ref=${focusRef} value=${code} onInput=${e => setCode(e.target.value)} inputmode="text" autocomplete="one-time-code" placeholder="123 456"/></div>
       ${err ? html`<div class="formmsg err">${err}</div>` : null}
       <button class="btn btn-primary" type="submit" disabled=${busy} style="width:100%;justify-content:center;margin-top:4px">${busy ? "Verifying…" : "Verify"}</button>
       <button class="btn btn-ghost" type="button" onClick=${() => { setTwofa(false); setCode(""); setErr(""); }} style="width:100%;justify-content:center;margin-top:8px">Back</button>
     ` : html`
-      <div class="field"><label>Username</label><input autofocus value=${u} onInput=${e => setU(e.target.value)} autocomplete="username"/></div>
+      <div class="field"><label>Username</label><input ref=${focusRef} value=${u} onInput=${e => setU(e.target.value)} autocomplete="username"/></div>
       <div class="field"><label>Password</label><input type="password" value=${p} onInput=${e => setP(e.target.value)} autocomplete="current-password"/></div>
       ${err ? html`<div class="formmsg err">${err}</div>` : null}
       <button class="btn btn-primary" type="submit" disabled=${busy} style="width:100%;justify-content:center;margin-top:4px">${busy ? "Signing in…" : "Sign in"}</button>
