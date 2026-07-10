@@ -1006,7 +1006,9 @@ def write_sub_serve(deps):
            "vk_link": (ps.get("vk_link") or ""),
            # brand theme colours (per light/dark) so the subscription page's logo + favicon follow the panel
            "theme_color": (ps.get("theme_color") or ""),
-           "theme_color_light": (ps.get("theme_color_light") or "")}
+           "theme_color_light": (ps.get("theme_color_light") or ""),
+           # offered UI languages + the default (the page hides its selector when only one is enabled)
+           "languages": subs.get("languages") if isinstance(subs.get("languages"), dict) else {"enabled": ["en"], "default": "en"}}
     with contextlib.suppress(Exception):
         os.makedirs(_sub_dir(deps), exist_ok=True)
         atomic_write(_sub_serve_path(deps), json.dumps(out, indent=2) + "\n", mode=0o640)
@@ -2472,6 +2474,9 @@ def custom_cat_id(domains, cidrs=()):
     key = ",".join(sorted(domains)) + "|" + ",".join(sorted(cidrs))
     return "custom_" + hashlib.sha1(key.encode()).hexdigest()[:10]
 
+# Languages the subscription page (swg-sub) ships translations for — the Settings picker offers these.
+SUB_LANGS = {"en": "English", "ru": "Русский"}
+
 # Panel settings (persisted to panel-settings.json; surfaced + edited via the Panel settings screen).
 # store_configs=None means "use the fleet.json default"; geo_epoch is bumped by the Refresh-geo button.
 PANEL_SETTINGS_DEFAULTS = {
@@ -2527,7 +2532,10 @@ PANEL_SETTINGS_DEFAULTS = {
     # base_url is the public origin (e.g. https://sub.example.net); serve.* is how swg-sub binds/terminates TLS.
     "subscriptions": {"enabled": False, "base_url": "",
                       "serve": {"host": "0.0.0.0", "port": 8444, "tls_mode": "reverse-proxy",
-                                "cert_path": "", "key_path": ""}},
+                                "cert_path": "", "key_path": ""},
+                      # which UI languages the public page offers + the default. One enabled ⇒ the
+                      # subscription page hides its selector and just loads that language.
+                      "languages": {"enabled": ["en"], "default": "en"}},
 }
 
 
@@ -3648,6 +3656,10 @@ def api(method, path, qs, body, deps):
         if isinstance(sub, dict):
             srv = sub.get("serve") if isinstance(sub.get("serve"), dict) else {}
             _tls = srv.get("tls_mode")
+            lg = sub.get("languages") if isinstance(sub.get("languages"), dict) else {}
+            _en = [l for l in (lg.get("enabled") or []) if l in SUB_LANGS]      # only the languages the page ships
+            _en = list(dict.fromkeys(_en)) or ["en"]                            # de-dup, never empty
+            _def = lg.get("default") if lg.get("default") in _en else _en[0]    # default must be an enabled one
             cur["subscriptions"] = {
                 "enabled": bool(sub.get("enabled")),
                 "base_url": (sub.get("base_url") or "").strip()[:300],
@@ -3657,7 +3669,8 @@ def api(method, path, qs, body, deps):
                     "tls_mode": _tls if _tls in ("reverse-proxy", "selfsigned", "letsencrypt", "custom") else "reverse-proxy",
                     "cert_path": (srv.get("cert_path") or "").strip()[:300],
                     "key_path": (srv.get("key_path") or "").strip()[:300],
-                }}
+                },
+                "languages": {"enabled": _en, "default": _def}}
         adv = incoming.get("advanced")
         if isinstance(adv, dict):
             cur["advanced"] = {"node_stale_ms": max(5000, int(adv.get("node_stale_ms") or 30000)),

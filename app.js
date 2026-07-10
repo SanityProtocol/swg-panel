@@ -317,6 +317,7 @@ async function subRecover(escRec) {
 
 // The shareable URL for a user, from their escrow record. Blank base_url → null (operator must set it).
 function subBaseUrl() { return String(((Store.panelSettings || {}).subscriptions || {}).base_url || "").replace(/\/+$/, ""); }
+const SUB_LANG_LIST = [["en", "English"], ["ru", "Русский"]];   // languages the swgSub page ships (must match swg-panel-server SUB_LANGS)
 async function subUrlFor(escRec) {
   const base = subBaseUrl(); if (!base) return null;
   const { token, unlockKeyB64 } = await subRecover(escRec);
@@ -6923,6 +6924,15 @@ function PanelSettingsScreen() {
   const [subTls, setSubTls] = useState(subServe.tls_mode || "reverse-proxy");
   const [subCert, setSubCert] = useState(subServe.cert_path || "");
   const [subKeyP, setSubKeyP] = useState(subServe.key_path || "");
+  const subLangCfg = (subCfg.languages && typeof subCfg.languages === "object") ? subCfg.languages : {};
+  const [subLangs, setSubLangs] = useState((subLangCfg.enabled && subLangCfg.enabled.length) ? [...subLangCfg.enabled] : ["en"]);
+  const [subLangDef, setSubLangDef] = useState(subLangCfg.default || "en");
+  const toggleSubLang = (id, on) => {
+    let next = on ? [...new Set([...subLangs, id])] : subLangs.filter(l => l !== id);
+    if (!next.length) next = [id];                 // never empty — at least one language
+    setSubLangs(next);
+    if (next.indexOf(subLangDef) < 0) setSubLangDef(next[0]);   // default must stay enabled
+  };
   // per-node pending edits (mode / mesh / egress) — lifted here so switching node or section keeps unsaved
   // changes; the single Save commits the global settings AND one nodeUpdate per changed node.
   const eq = (a, b) => { const c = v => v == null ? "" : Array.isArray(v) ? JSON.stringify([...v].sort()) : typeof v === "object" ? JSON.stringify(Object.keys(v).sort().reduce((o, k) => (o[k] = v[k], o), {})) : String(v); return c(a) === c(b); };
@@ -6953,7 +6963,8 @@ function PanelSettingsScreen() {
         store_configs: sc === "off" ? false : true,
         subscriptions: { enabled: subsOn, base_url: subBase.trim(),
           serve: { host: subHost.trim() || "0.0.0.0", port: Math.max(1, Math.min(65535, parseInt(subPort) || 8444)),
-                   tls_mode: subTls, cert_path: subCert.trim(), key_path: subKeyP.trim() } },
+                   tls_mode: subTls, cert_path: subCert.trim(), key_path: subKeyP.trim() },
+          languages: { enabled: subLangs, default: subLangDef } },
         throughput_perspective: tput,
         top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
@@ -7113,7 +7124,7 @@ function PanelSettingsScreen() {
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
-    sec === "subs" ? (subsOn !== !!subCfg.enabled || subBase.trim() !== (subCfg.base_url || "") || subHost.trim() !== (subServe.host || "0.0.0.0") || subPort !== String(subServe.port || 8444) || subTls !== (subServe.tls_mode || "reverse-proxy") || subCert.trim() !== (subServe.cert_path || "") || subKeyP.trim() !== (subServe.key_path || "")) :
+    sec === "subs" ? (subsOn !== !!subCfg.enabled || subBase.trim() !== (subCfg.base_url || "") || subHost.trim() !== (subServe.host || "0.0.0.0") || subPort !== String(subServe.port || 8444) || subTls !== (subServe.tls_mode || "reverse-proxy") || subCert.trim() !== (subServe.cert_path || "") || subKeyP.trim() !== (subServe.key_path || "") || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
@@ -7399,6 +7410,13 @@ function PanelSettingsScreen() {
             <div class="field"><label>Certificate path</label><input type="text" placeholder="/etc/swg-sub/fullchain.pem" value=${subCert} onInput=${e => setSubCert(e.target.value)}/></div>
             <div class="field"><label>Key path</label><input type="text" placeholder="/etc/swg-sub/privkey.pem" value=${subKeyP} onInput=${e => setSubKeyP(e.target.value)}/></div>
           </div>` : null}
+          <div class="seclabel">Languages</div>
+          <div class="field"><label>Offered on the subscription page</label>
+            <div class="sublangs">${SUB_LANG_LIST.map(([id, name]) => html`<div class=${"sublang" + (subLangs.includes(id) ? " on" : "")} key=${id}>
+              <label class="sublang-en"><input type="checkbox" checked=${subLangs.includes(id)} onChange=${e => toggleSubLang(id, e.target.checked)}/><span>${name}</span></label>
+              <button class=${"sublang-def" + (subLangDef === id ? " on" : "")} disabled=${!subLangs.includes(id)} onClick=${() => setSubLangDef(id)} title="Load this language by default">${subLangDef === id ? "Default" : "Set default"}</button>
+            </div>`)}</div>
+            <div class="hint">Which languages the page offers. With just one enabled, it hides the selector and loads that language; the <b>default</b> is what loads first when several are offered.</div></div>
           <div class="seclabel">Encryption</div>
           <${SubVaultCard}/>
         </div>` : null}

@@ -14,17 +14,17 @@
   --brand-ink: #06222a;
   --radius: 14px;
 }
+/* Light palette: applied from the OS preference (unless the viewer forced a theme) OR when the
+   viewer's toggle stamps data-theme="light". data-theme (the manual choice) always wins. */
 @media (prefers-color-scheme: light) {
-  :root {
-    --bg: #eef2f7;
-    --panel: #ffffff;
-    --panel-2: #f4f7fb;
-    --line: #d9e1ec;
-    --ink: #16202e;
-    --ink-2: #33424F;
-    --muted: #5a6a80;
-    --brand-ink: #06222a;
+  :root:not([data-theme]) {
+    --bg: #eef2f7; --panel: #ffffff; --panel-2: #f4f7fb; --line: #d9e1ec;
+    --ink: #16202e; --ink-2: #33424F; --muted: #5a6a80; --brand-ink: #06222a;
   }
+}
+:root[data-theme="light"] {
+  --bg: #eef2f7; --panel: #ffffff; --panel-2: #f4f7fb; --line: #d9e1ec;
+  --ink: #16202e; --ink-2: #33424F; --muted: #5a6a80; --brand-ink: #06222a;
 }
 
 * { box-sizing: border-box; }
@@ -54,6 +54,14 @@ body {
 .brand-name span { color: var(--ink-2); font-weight: 600; }
 .who { color: var(--ink); font-weight: 700; font-size: 17px; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who:empty { display: none; }
+
+/* top-right controls: language selector (EN/RU) + light/dark toggle */
+.topctl { position: fixed; top: calc(10px + env(safe-area-inset-top)); right: 12px; z-index: 10; display: flex; gap: 8px; }
+.ctl { appearance: none; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter: blur(6px); color: var(--ink); border-radius: 10px; height: 34px; min-width: 34px; padding: 0 9px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-weight: 700; font-size: 12.5px; letter-spacing: .04em; }
+.ctl svg { width: 17px; height: 17px; display: block; }
+.ctl:hover { border-color: var(--brand); color: var(--brand); }
+.ctl:active { transform: scale(.95); }
+.ctl[hidden] { display: none; }
 
 main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
 

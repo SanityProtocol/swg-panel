@@ -14,6 +14,71 @@
 (function () {
   "use strict";
 
+  // ── theme + language bootstrap (runs before the page fetches/renders) ──
+  var _ls = function (k) { try { return localStorage.getItem(k); } catch (_) { return null; } };
+  var _lsSet = function (k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (_) {} };
+  (function () {
+    var m = _ls("swgsub-theme"); if (m === "light" || m === "dark") document.documentElement.setAttribute("data-theme", m);
+    var l = _ls("swgsub-lang"); if (l === "ru" || l === "en") document.documentElement.lang = l;
+  })();
+
+  // ── i18n (English + Russian) ──
+  var LANG = (function () { var s = _ls("swgsub-lang"); if (s === "en" || s === "ru") return s; return (navigator.language || "").slice(0, 2).toLowerCase() === "ru" ? "ru" : "en"; })();
+  var STR = {
+    en: {
+      loading: "Loading…", noConfigs: "No configs yet",
+      noConfigsSub: "There are no active peers on this subscription. New peers will appear here automatically.",
+      peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config", copyLink: "Copy link",
+      copied: "Copied", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link",
+      clientCmd: "Client command", generating: "Generating…", qrTooBig: "config too large to encode as QR",
+      noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
+      notReady: "Not ready yet — open this peer once in the panel to publish it.",
+      outOfDate: "This link is out of date — ask your administrator for a fresh one.",
+      someBad: "Some peers couldn’t be decrypted — this link may be out of date. Ask your administrator for a fresh one.",
+      invalid: "Invalid link", invalidSub: "This subscription link is missing its identifier.",
+      badKey: "The unlock key in this link isn’t valid.",
+      incomplete: "Incomplete link",
+      incompleteSub: "This link is missing the part after “#”. Copy the whole URL — the section after the # is what unlocks your configs and it never leaves your device.",
+      notFound: "Link not found", notFoundSub: "This subscription doesn’t exist, was revoked, or subscriptions are turned off.",
+      err: "Something went wrong", errServer: "Couldn’t load this subscription (server error). Please try again later.",
+      errNet: "Couldn’t load this subscription. Check your connection and try again.",
+      errResp: "The server returned an unexpected response.",
+      unsupported: "Unsupported browser",
+      unsupportedSub: "This page needs a modern browser with Web Crypto (and a secure https:// connection) to decrypt your configs.",
+      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn",
+      langName: "EN", themeToLight: "Switch to light", themeToDark: "Switch to dark", langLabel: "Language",
+    },
+    ru: {
+      loading: "Загрузка…", noConfigs: "Пока нет конфигураций",
+      noConfigsSub: "На этой подписке нет активных пиров. Новые появятся здесь автоматически.",
+      peer: "Пир", primary: "Основной", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать", copyLink: "Скопировать ссылку",
+      copied: "Скопировано", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку",
+      clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
+      noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
+      notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
+      outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
+      someBad: "Некоторые пиры не удалось расшифровать — возможно, ссылка устарела. Попросите у администратора новую.",
+      invalid: "Неверная ссылка", invalidSub: "В этой ссылке отсутствует идентификатор.",
+      badKey: "Ключ разблокировки в этой ссылке недействителен.",
+      incomplete: "Неполная ссылка",
+      incompleteSub: "В ссылке отсутствует часть после «#». Скопируйте URL целиком — часть после # разблокирует ваши конфиги и никогда не покидает ваше устройство.",
+      notFound: "Ссылка не найдена", notFoundSub: "Эта подписка не существует, была отозвана или подписки отключены.",
+      err: "Что-то пошло не так", errServer: "Не удалось загрузить подписку (ошибка сервера). Попробуйте позже.",
+      errNet: "Не удалось загрузить подписку. Проверьте соединение и попробуйте снова.",
+      errResp: "Сервер вернул неожиданный ответ.",
+      unsupported: "Браузер не поддерживается",
+      unsupportedSub: "Для расшифровки конфигов нужен современный браузер с Web Crypto и защищённое соединение https://.",
+      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn",
+      langName: "RU", themeToLight: "Светлая тема", themeToDark: "Тёмная тема", langLabel: "Язык",
+    },
+  };
+  function t(k) { return (STR[LANG] && STR[LANG][k]) || STR.en[k] || k; }
+  function servers(n) {
+    if (LANG === "ru") { var f = ["сервер", "сервера", "серверов"], a = Math.abs(n) % 100, n1 = a % 10;
+      var w = (a > 10 && a < 20) ? f[2] : (n1 > 1 && n1 < 5) ? f[1] : (n1 === 1) ? f[0] : f[2]; return n + " " + w; }
+    return n + " " + (n === 1 ? "server" : "servers");
+  }
+
   var AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
 
   // ── base64 (both standard and url-safe, padding optional) → bytes ──
@@ -100,7 +165,47 @@
     de.style.setProperty("--brand-ink", hexLum(brand) > 0.55 ? "#04232A" : "#EAFBFF");
     applyFavicon(brand, light);
   }
-  try { if (window.matchMedia) matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyBrand); } catch (_) {}
+  try { if (window.matchMedia) matchMedia("(prefers-color-scheme: light)").addEventListener("change", function () { applyBrand(); paintCtl(); }); } catch (_) {}
+
+  // ── language + theme controls (top-right) ──
+  var SUPPORTED = ["en", "ru"];
+  var LANGS = ["en"], LANG_DEFAULT = "en";       // which languages the admin enabled + the default (from the served data)
+  var _lastData = null, _lastKey = null;
+  function resolveLang() {
+    var enabled = LANGS.filter(function (l) { return SUPPORTED.indexOf(l) >= 0; });
+    if (!enabled.length) enabled = ["en"];
+    var saved = _ls("swgsub-lang");
+    LANG = (saved && enabled.indexOf(saved) >= 0) ? saved
+         : (enabled.indexOf(LANG_DEFAULT) >= 0 ? LANG_DEFAULT : enabled[0]);
+    document.documentElement.lang = LANG;
+    return enabled;
+  }
+  function setLang(l) { LANG = l; _lsSet("swgsub-lang", l); document.documentElement.lang = l; paintCtl(); if (_lastData && _lastKey) render(_lastData, _lastKey); }
+  function setTheme(mode) {   // "light" | "dark" | "" (auto)
+    _lsSet("swgsub-theme", mode);
+    if (mode) document.documentElement.setAttribute("data-theme", mode); else document.documentElement.removeAttribute("data-theme");
+    applyBrand(); paintCtl();
+  }
+  var _iconSun = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><circle cx='12' cy='12' r='4.2'/><path d='M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4'/></svg>";
+  var _iconMoon = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8z'/></svg>";
+  function paintCtl() {
+    var enabled = LANGS.filter(function (l) { return SUPPORTED.indexOf(l) >= 0; }); if (!enabled.length) enabled = ["en"];
+    var lb = document.getElementById("lang-btn");
+    if (lb) {
+      if (enabled.length > 1) { lb.hidden = false; lb.textContent = (STR[LANG] || STR.en).langName; lb.title = t("langLabel"); }
+      else lb.hidden = true;                       // one language → no selector, just the default
+    }
+    var tb = document.getElementById("theme-btn");
+    if (tb) { var light = isLight(); tb.innerHTML = light ? _iconMoon : _iconSun; tb.title = light ? t("themeToDark") : t("themeToLight"); }
+  }
+  function wireControls() {
+    var lb = document.getElementById("lang-btn"), tb = document.getElementById("theme-btn");
+    if (lb && !lb._wired) { lb._wired = 1; lb.onclick = function () {
+      var en = LANGS.filter(function (l) { return SUPPORTED.indexOf(l) >= 0; }); if (!en.length) en = ["en"];
+      setLang(en[(en.indexOf(LANG) + 1) % en.length]); }; }
+    if (tb && !tb._wired) { tb._wired = 1; tb.onclick = function () { setTheme(isLight() ? "dark" : "light"); }; }
+  }
+
   function showState(msg, sub) {
     var s = document.getElementById("state");
     s.hidden = false;
@@ -128,12 +233,11 @@
   // A single deployment (node/iface) card: QR + actions + collapsible config text.
   function targetCard(userName, peer, tgt, conf, reason) {
     var card = el("div", "tgt");
-    if (tgt.primary) card.appendChild(el("div", "primary", "Primary"));
+    if (tgt.primary) card.appendChild(el("div", "primary", t("primary")));
     card.appendChild(el("div", "tgt-node", tgt.node_name || tgt.node || tgt.iface || "server"));
 
     if (!conf) {
-      card.appendChild(el("div", "qr-fail", reason ||
-        "Not ready yet — open this peer once in the panel to publish it."));
+      card.appendChild(el("div", "qr-fail", reason || t("notReady")));
       return card;
     }
 
@@ -144,26 +248,26 @@
       img.src = qrDataURL(conf, 320);
       qwrap.appendChild(img);
     } catch (_) {
-      qwrap.appendChild(el("div", "qr-fail", "config too large to encode as QR"));
+      qwrap.appendChild(el("div", "qr-fail", t("qrTooBig")));
     }
     card.appendChild(qwrap);
 
     var acts = el("div", "acts");
     var name = fileName(userName, peer.title, tgt);
-    var dl = el("button", "btn", "Download .conf");
+    var dl = el("button", "btn", t("download"));
     dl.onclick = function () { download(conf, name); };
     acts.appendChild(dl);
-    var cp = el("button", "btn ghost", "Copy config");
+    var cp = el("button", "btn ghost", t("copyConfig"));
     cp.onclick = function () {
       (navigator.clipboard ? navigator.clipboard.writeText(conf) : Promise.reject()).then(function () {
-        cp.textContent = "Copied"; setTimeout(function () { cp.textContent = "Copy config"; }, 1400);
-      }, function () { cp.textContent = "Copy failed"; setTimeout(function () { cp.textContent = "Copy config"; }, 1400); });
+        cp.textContent = t("copied"); setTimeout(function () { cp.textContent = t("copyConfig"); }, 1400);
+      }, function () { cp.textContent = t("copyFailed"); setTimeout(function () { cp.textContent = t("copyConfig"); }, 1400); });
     };
     acts.appendChild(cp);
     card.appendChild(acts);
 
     var det = el("details", "cfg");
-    det.appendChild(el("summary", null, "Show config text"));
+    det.appendChild(el("summary", null, t("showConfig")));
     det.appendChild(el("pre", null, conf));
     card.appendChild(det);
     return card;
@@ -202,7 +306,6 @@
     });
   }
 
-  var MODE_LABEL = { wg: "WireGuard", awg: "AmneziaWG", turn: "Turn" };
 
   // A turn-proxy card: the deployment's turn artifacts, one fork at a time (sub-selector when several forks
   // forward to it). Each fork's client format comes from the shared SWGTurn.artifact — the same builder the
@@ -210,12 +313,12 @@
   // added when it fits.
   function turnCard(userName, peer, tgt, conf, vkLink, reason) {
     var card = el("div", "tgt");
-    if (tgt.primary) card.appendChild(el("div", "primary", "Primary"));
+    if (tgt.primary) card.appendChild(el("div", "primary", t("primary")));
     card.appendChild(el("div", "tgt-node", tgt.node_name || tgt.node || tgt.iface || "server"));
-    if (!conf) { card.appendChild(el("div", "qr-fail", reason || "Not ready yet — open this peer once in the panel to publish it.")); return card; }
+    if (!conf) { card.appendChild(el("div", "qr-fail", reason || t("notReady"))); return card; }
     var byFork = {}, order = [];
     (tgt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (!byFork[f]) { byFork[f] = []; order.push(f); } byFork[f].push(tp); });
-    if (!order.length) { card.appendChild(el("div", "qr-fail", "No turn-proxy forwards to this server.")); return card; }
+    if (!order.length) { card.appendChild(el("div", "qr-fail", t("noTurn"))); return card; }
     var sel = 0, body = el("div", "turnbody");
     var bar = order.length > 1 ? el("div", "forktabs") : null;
     function fill(art, text) {
@@ -223,20 +326,20 @@
       try { var img = el("img", "qrimg"); img.alt = "config QR"; img.src = qrDataURL(text, 320); var q = el("div", "qr"); q.appendChild(img); body.appendChild(q); } catch (_) { /* links can exceed QR capacity — copy instead */ }
       body.appendChild(el("div", "turnlabel", art.label || art.fork));
       var acts = el("div", "acts");
-      var cp = el("button", "btn ghost", art.uri ? "Copy link" : "Copy config");
-      cp.onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { cp.textContent = "Copied"; setTimeout(function () { cp.textContent = art.uri ? "Copy link" : "Copy config"; }, 1400); }, function () {}); };
+      var cp = el("button", "btn ghost", art.uri ? t("copyLink") : t("copyConfig"));
+      cp.onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { cp.textContent = t("copied"); setTimeout(function () { cp.textContent = art.uri ? t("copyLink") : t("copyConfig"); }, 1400); }, function () {}); };
       acts.appendChild(cp);
-      if (!art.uri) { var dl = el("button", "btn", "Download ." + (art.ext || "conf")); dl.onclick = function () { download(text, fileName(userName, peer.title, tgt) + "-" + (art.fork || "turn")); }; acts.appendChild(dl); }
+      if (!art.uri) { var dl = el("button", "btn", t("dl") + " ." + (art.ext || "conf")); dl.onclick = function () { download(text, fileName(userName, peer.title, tgt) + "-" + (art.fork || "turn")); }; acts.appendChild(dl); }
       body.appendChild(acts);
       if (art.hint) body.appendChild(el("div", "hint turnhint", art.hint));
-      if (art.cmd) { var dc = el("details", "cfg"); dc.appendChild(el("summary", null, "Client command")); dc.appendChild(el("pre", null, art.cmd)); body.appendChild(dc); }
-      var dt = el("details", "cfg"); dt.appendChild(el("summary", null, art.uri ? "Show link" : "Show config text")); dt.appendChild(el("pre", null, text)); body.appendChild(dt);
+      if (art.cmd) { var dc = el("details", "cfg"); dc.appendChild(el("summary", null, t("clientCmd"))); dc.appendChild(el("pre", null, art.cmd)); body.appendChild(dc); }
+      var dt = el("details", "cfg"); dt.appendChild(el("summary", null, art.uri ? t("showLink") : t("showConfig"))); dt.appendChild(el("pre", null, text)); body.appendChild(dt);
     }
     function renderFork() {
       var art = SWGTurn.artifact(conf, byFork[order[sel]][0], vkLink);
       if (art.text != null) { fill(art, art.text); return; }
-      body.innerHTML = ""; body.appendChild(el("div", "hint", "Generating…"));
-      Promise.resolve().then(art.buildAsync).then(function (t) { fill(art, t); }).catch(function (e) { body.innerHTML = ""; body.appendChild(el("div", "qr-fail", (e && e.message) || "couldn't generate this link")); });
+      body.innerHTML = ""; body.appendChild(el("div", "hint", t("generating")));
+      Promise.resolve().then(art.buildAsync).then(function (txt) { fill(art, txt); }).catch(function (e) { body.innerHTML = ""; body.appendChild(el("div", "qr-fail", (e && e.message) || t("cantGen"))); });
     }
     if (bar) { order.forEach(function (f, k) { var b = el("button", "forktab" + (k === sel ? " on" : ""), f); b.onclick = function () { sel = k; [].forEach.call(bar.children, function (c, ci) { c.className = "forktab" + (ci === sel ? " on" : ""); }); renderFork(); }; bar.appendChild(b); }); card.appendChild(bar); }
     card.appendChild(body);
@@ -245,6 +348,10 @@
   }
 
   function render(data, cryptoKey) {
+    _lastData = data; _lastKey = cryptoKey;
+    LANGS = (data.langs && data.langs.enabled && data.langs.enabled.length) ? data.langs.enabled : ["en"];
+    LANG_DEFAULT = (data.langs && data.langs.default) || "en";
+    resolveLang(); wireControls(); paintCtl();     // the admin controls which languages are offered + the default
     THEME.color = data.theme_color || ""; THEME.light = data.theme_color_light || "";
     applyBrand();                                    // logo + favicon follow the panel's theme colour
     var who = document.getElementById("who");
@@ -253,7 +360,7 @@
     wrap.innerHTML = "";
     var peers = data.peers || [];
     if (!peers.length) {
-      showState("No configs yet", "There are no active peers on this subscription. New peers will appear here automatically.");
+      showState(t("noConfigs"), t("noConfigsSub"));
       return Promise.resolve();
     }
     var vkLink = data.vk_link || "", userName = data.user && data.user.name;
@@ -277,12 +384,12 @@
         if (data.turn_enabled && (t.turn || []).length) has.turn = true;
       }); });
       var tabs = ["wg", "awg", "turn"].filter(function (m) { return has[m]; });
-      if (!tabs.length) { showState("No configs yet", "There are no active peers on this subscription."); return; }
+      if (!tabs.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
       var mode = tabs[0];   // WG first when present, else the first available
 
       var bar = el("div", "modebar"), listEl = el("div", "peer-list"), btns = {};
       tabs.forEach(function (m) {
-        var b = el("button", "modetab" + (m === mode ? " on" : ""), MODE_LABEL[m]);
+        var b = el("button", "modetab" + (m === mode ? " on" : ""), t(m));
         b.onclick = function () { if (mode === m) return; mode = m; tabs.forEach(function (x) { btns[x].className = "modetab" + (x === mode ? " on" : ""); }); paint(); };
         btns[m] = b; bar.appendChild(b);
       });
@@ -299,11 +406,11 @@
           if (!tgts.length) return;                        // this peer has nothing in the selected mode
           var sec = el("section", "peer");
           var head = el("div", "peer-head");
-          head.appendChild(el("span", "peer-title", peer.title || "Peer"));
-          head.appendChild(el("span", "peer-count", tgts.length + (tgts.length === 1 ? " server" : " servers")));
+          head.appendChild(el("span", "peer-title", peer.title || t("peer")));
+          head.appendChild(el("span", "peer-count", servers(tgts.length)));
           sec.appendChild(head);
-          var reason = row.bad ? "This link is out of date — ask your administrator for a fresh one."
-            : (!peer.sec ? "Not ready yet — open this peer once in the panel to publish it." : null);
+          var reason = row.bad ? t("outOfDate")
+            : (!peer.sec ? t("notReady") : null);
           var grid = el("div", "tgts");
           tgts.forEach(function (tgt) {
             var conf = secret && secret.k ? confFor(secret, tgt) : null;
@@ -318,44 +425,46 @@
       paint();
       document.getElementById("state").hidden = true;
       wrap.hidden = false;
-      if (anyBad) wrap.appendChild(el("p", "foot-warn", "Some peers couldn't be decrypted — this link may be out of date. Ask your administrator for a fresh one."));
+      if (anyBad) wrap.appendChild(el("p", "foot-warn", t("someBad")));
     });
   }
 
   function start() {
+    wireControls(); paintCtl();                    // theme toggle works even before the data loads
+    var lp = document.querySelector("#state p"); if (lp) lp.textContent = t("loading");
     var seg = location.pathname.split("/").filter(Boolean);
     var token = seg.length ? seg[seg.length - 1] : "";
     var keyB64 = (location.hash || "").replace(/^#/, "").trim();
 
-    if (!token) return showState("Invalid link", "This subscription link is missing its identifier.");
-    if (!keyB64) return showState("Incomplete link", "This link is missing the part after “#”. Copy the whole URL — the section after the # is what unlocks your configs and it never leaves your device.");
+    if (!token) return showState(t("invalid"), t("invalidSub"));
+    if (!keyB64) return showState(t("incomplete"), t("incompleteSub"));
 
     var keyBytes;
     try {
       keyBytes = b64ToBytes(keyB64);
       if (keyBytes.length !== 32) throw new Error("bad key length");
     } catch (_) {
-      return showState("Invalid link", "The unlock key in this link isn’t valid.");
+      return showState(t("invalid"), t("badKey"));
     }
 
     crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["decrypt"])
       .then(function (cryptoKey) {
         return fetch("/api/" + encodeURIComponent(token), { cache: "no-store" }).then(function (res) {
-          if (res.status === 404) { showState("Link not found", "This subscription doesn’t exist, was revoked, or subscriptions are turned off."); return null; }
-          if (!res.ok) { showState("Something went wrong", "Couldn’t load this subscription (server error). Please try again later."); return null; }
+          if (res.status === 404) { showState(t("notFound"), t("notFoundSub")); return null; }
+          if (!res.ok) { showState(t("err"), t("errServer")); return null; }
           return res.json().then(function (j) {
-            if (!j || !j.ok || !j.data) { showState("Something went wrong", "The server returned an unexpected response."); return null; }
+            if (!j || !j.ok || !j.data) { showState(t("err"), t("errResp")); return null; }
             return render(j.data, cryptoKey);
           });
         });
       })
       .catch(function () {
-        showState("Something went wrong", "Couldn’t load this subscription. Check your connection and try again.");
+        showState(t("err"), t("errNet"));
       });
   }
 
   if (!window.crypto || !crypto.subtle) {
-    showState("Unsupported browser", "This page needs a modern browser with Web Crypto (and a secure https:// connection) to decrypt your configs.");
+    showState(t("unsupported"), t("unsupportedSub"));
   } else {
     start();
   }

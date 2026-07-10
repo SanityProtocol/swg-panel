@@ -326,9 +326,11 @@ def read_data(state, token):
             })
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts})
     subs = state.subscriptions()
+    langs = subs.get("languages") if isinstance(subs.get("languages"), dict) else {}
     return {"user": {"name": user.get("name") or ""}, "peers": peers_out,
             "turn_enabled": bool(subs.get("turn_enabled")), "vk_link": subs.get("vk_link") or "",
-            "theme_color": subs.get("theme_color") or "", "theme_color_light": subs.get("theme_color_light") or ""}
+            "theme_color": subs.get("theme_color") or "", "theme_color_light": subs.get("theme_color_light") or "",
+            "langs": {"enabled": langs.get("enabled") or ["en"], "default": langs.get("default") or "en"}}
 
 
 # ── HTTP ──
