@@ -5534,8 +5534,11 @@ function UsersScreen() {
   if (!ifaceIsAll(usersView.iface) && !ifaceOpts.includes(usersView.iface)) usersView.iface = "";
   // node/iface filter the user LIST (has a peer there); each expanded row still shows ALL of that user's peers
   const users = sortUsers(allUsers.filter(u => userMatchesQ(u, q) && userOnNodeIface(u, usersView.node, usersView.iface)), usersView.sort, usersView.dir);
-  const allUnassigned = Store.unassignedPeers();
-  const unassigned = q ? allUnassigned.filter(p => peerMatchesQ(p, q)) : allUnassigned;
+  // The toolbar search filters the USER list only. The unassigned grid is deliberately NOT filtered by it:
+  // the whole point of searching for a user here is to then assign an unassigned peer to them, and filtering
+  // both by the same term hid every peer whose title didn't happen to match the user's name. The grid has its
+  // own search box (unassignedView.q, applied inside EmbeddedPeers) for filtering the peers themselves.
+  const unassigned = Store.unassignedPeers();
 
   const pageSize = usersView.pageSize || 20;
   const totalPages = Math.max(1, Math.ceil(users.length / pageSize));
@@ -5575,7 +5578,7 @@ function UsersScreen() {
       <button class="btn btn-ghost" disabled=${page >= totalPages} onClick=${e => { setPage(page + 1); pageScroll(e, 1); }}>Next ›</button>
     </div>` : null}
 
-    ${allUnassigned.length ? html`<${Fragment}>
+    ${unassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">Unassigned peers</h2><span class="count">${unassigned.length}</span></div>
       <${EmbeddedPeers} peers=${unassigned} view=${unassignedView} collapse=${true}/>
     <//>` : null}
