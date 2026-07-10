@@ -3078,6 +3078,74 @@ def _bm_bits(bm):
             byte ^= b
 
 
+def hrrd_repair_counts(path):
+    """One-shot: rebuild rings 1..3's u16 HEADCOUNTS as the MAX of their children.
+
+    Buckets written before headcount consolidation changed from mean→max hold averaged counts that round to 0
+    in the coarse rings: a turn-proxy carrying one peer for ten minutes of a two-hour bucket stored `pon = 0`,
+    so Month reported "0 peers" beside real traffic while Hour reported 1. Those buckets are never rewritten,
+    so without this they keep lying until they age out — up to 33 days for ring3.
+
+    Only buckets whose children still exist can be repaired (ring0 holds 62 min, ring1 25 h, ring2 7.3 d), so
+    the deep past keeps its old values and ages out. Rates (u32/pct) are untouched: their mean is correct."""
+    changed = False
+    with _hrrd_lock:
+        if not _hrrd_ok(path):
+            return False
+        try:
+            with open(path, "r+b") as f:
+                for i in range(1, len(HRRD_RINGS)):
+                    slots = HRRD_RINGS[i][1]
+                    cbase, cslots = _ring_base(i - 1), HRRD_RINGS[i - 1][1]
+                    ratio = HRRD_RATIO[i]
+                    for si in range(slots):
+                        f.seek(_ring_base(i) + si * HRRD_SLOT.size)
+                        raw = f.read(HRRD_SLOT.size)
+                        if len(raw) != HRRD_SLOT.size:
+                            break
+                        b = HRRD_SLOT.unpack(raw)[0]
+                        if not b:
+                            continue
+                        cur = _slot_read(f, _ring_base(i), slots, b)
+                        if cur is None:
+                            continue
+                        M, cnt = cur
+                        kids = [r[0] for k in range(b * ratio, b * ratio + ratio)
+                                if (r := _slot_read(f, cbase, cslots, k)) is not None]
+                        if not kids:
+                            continue
+                        newM = list(M)
+                        for j in _U16_IDX:
+                            newM[j] = max(k[j] for k in kids)
+                        if newM != M:
+                            _slot_write(f, _ring_base(i), slots, b, newM, cnt)
+                            changed = True
+        except OSError:
+            return False
+    return changed
+
+
+def hrrd_repair_all(stats_dir):
+    """Run hrrd_repair_counts over every ring in stats_dir, once per install (marker file)."""
+    if not stats_dir:
+        return
+    marker = os.path.join(stats_dir, ".counts-repaired-v1")
+    if os.path.exists(marker):
+        return
+    n = fixed = 0
+    with contextlib.suppress(OSError):
+        for fn in sorted(os.listdir(stats_dir)):
+            if not fn.endswith(".rrd") or fn.startswith("presence-"):
+                continue
+            n += 1
+            with contextlib.suppress(Exception):
+                if hrrd_repair_counts(os.path.join(stats_dir, fn)):
+                    fixed += 1
+    with contextlib.suppress(Exception):
+        atomic_write(marker, str(int(time.time())), mode=0o644)
+    print("headcount repair: rebuilt peak counts in %d of %d rings" % (fixed, n), flush=True)
+
+
 def hrrd_read(path, ring=0, want=HRRD_VIEW, slim=False, since=None):
     """Most recent `want` buckets from ring index `ring`, optionally only those at/after `since` (epoch).
 
@@ -6739,6 +6807,10 @@ def main():
                          f"Stop the other instance first, or point this one at a separate state dir.")
     os.ftruncate(_lockfd, 0); os.write(_lockfd, (str(os.getpid()) + "\n").encode())
     globals()["_STATE_LOCK_FD"] = _lockfd     # keep the fd open for the process lifetime → lock held until exit
+    # After the state-dir lock (so two panels can't repair concurrently) and before serving: one-shot rebuild of
+    # the coarse rings' headcounts, which older builds averaged into zeros. Marker file → runs once per install.
+    with contextlib.suppress(Exception):
+        hrrd_repair_all(fleet.get("stats_dir"))
     _rp = fleet.get("roster_path", "/var/lib/swg-panel/users.json")
     _sc = fleet.get("store_configs", True) is not False
     _cd = fleet.get("config_dir") or os.path.join(os.path.dirname(_rp) or ".", "configs")
