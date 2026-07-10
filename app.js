@@ -1123,15 +1123,24 @@ function connDot(r) {
   return html`<span class=${"condot " + (r.online ? "on" : "off")} title=${r.online ? "online" : "idle"}></span>`;
 }
 // Endpoint cell for the live grids. A peer that came IN through a turn-proxy has its endpoint on the node's
-// loopback (127.0.0.1) — the relay forwards locally — so instead of the bare IP show "Local turn-proxy" tinted
-// with the fork colour + the same "Connected via <fork>" hover bubble the status dot uses.
+// loopback (127.0.0.1) — the relay forwards locally — so instead of the bare IP show "turn-proxy" tinted with
+// the fork colour + the same "Connected via <fork>" hover bubble the status dot uses.
+//
+// This holds once the peer goes OFFLINE too: wg keeps the last endpoint, so `via` is still "turn" and printing
+// the raw 127.0.0.1 tells the operator nothing at all. Keep the attribution, dim it, and say "Last connected
+// via". If the exact fork can no longer be resolved (the proxy was removed, or the node predates wg_sports) we
+// still know it was relayed — say so rather than fall back to a loopback address.
 function endpointCell(t) {
   const obs = t.observed;
-  if (t.online && t.viaTurn) {
-    const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
+  if (t.via === "turn") {
+    const tn = t.viaTurn ? turnLabel(t.viaTurn) : null;
+    const tc = tn ? turnColor(tn) : "var(--dim)";
+    const ptitle = t.viaTurn ? turnProxyTitle(t.node, t.viaTurn) : null;
     return html`<span class="turnwrap">
-      <span class="addr turnep" style=${"color:" + tc}>turn-proxy</span>
-      <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
+      <span class=${"addr turnep" + (t.online ? "" : " off")} style=${"color:" + (t.online ? tc : "var(--dim)")}>turn-proxy</span>
+      <span class="turnbub">${t.online ? "Connected via" : "Last connected via"} ${tn
+          ? html`<span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>`
+          : html`<span class="faint">a turn-proxy</span>`}${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
   }
   return html`<span class="addr" title=${(obs && obs.endpoint) || ""}>${(obs && ipOf(obs.endpoint)) || "—"}</span>`;
 }

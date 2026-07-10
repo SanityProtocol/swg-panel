@@ -2812,7 +2812,10 @@ def _hrrd_put_raw(f, base, slots, bucket, M):
         M0, cnt = cur
         for j in _PCT_IDX: M[j] = _avg_pct(M0[j], M[j], cnt)
         for j in _U32_IDX: M[j] = _avg_u(M0[j], M[j], cnt, HRRD_U32)
-        for j in _U16_IDX: M[j] = _avg_u(M0[j], M[j], cnt, HRRD_U16)
+        # u16 are HEADCOUNTS (peers online/total), not rates. Averaging a headcount divides it by every idle
+        # sample, and by the coarsest ring it rounds to 0: a proxy that carried one peer for ten minutes of a
+        # two-hour bucket read `pon = 0` on Month while Hour showed 1. Peak within the bucket, always.
+        for j in _U16_IDX: M[j] = min(max(M0[j], M[j]), HRRD_U16)
         _slot_write(f, base, slots, bucket, M, cnt + 1)
     else:
         _slot_write(f, base, slots, bucket, M, 1)
@@ -2833,8 +2836,10 @@ def _hrrd_consolidate(f, i, ts):
     for j in _PCT_IDX:
         vs = [k[j] for k in kids if k[j] != HRRD_NA]
         out[j] = round(sum(vs) / len(vs)) if vs else HRRD_NA
-    for j in _U32_IDX + _U16_IDX:
+    for j in _U32_IDX:                         # rates → mean over the children
         out[j] = round(sum(k[j] for k in kids) / len(kids))
+    for j in _U16_IDX:                         # headcounts → PEAK over the children (see _hrrd_put_raw)
+        out[j] = max(k[j] for k in kids)
     _slot_write(f, _ring_base(i), slots, bucket, out, len(kids))
 
 
@@ -3063,12 +3068,6 @@ def pres_scan(path, ring, since, until=None):
         out.append((ep, data[off + 4:off + 4 + nb]))
     out.sort(key=lambda x: x[0])
     return out
-
-
-def _bm_or(dst, src):
-    for i in range(len(src)):
-        dst[i] |= src[i]
-    return dst
 
 
 def _bm_bits(bm):
@@ -3902,14 +3901,22 @@ def api(method, path, qs, body, deps):
 
     if method == "GET" and path == "/api/presence":
         # DISTINCT peers/users seen online over a range — drives the Online-peers bars, the node cards' "N users",
-        # and the "online" figure in the peers doughnuts. Everything here is a set union of per-bucket bitmaps
-        # (see the presence-ring block); nothing is a mean, a max, or a traffic proxy, so an idle-but-connected
-        # peer is counted and a peer that reconnects twice is counted once.
+        # and the "online" figure in the peers doughnuts. Everything here is a SET UNION over per-bucket sets of
+        # pubkeys; nothing is a mean or a max, so an idle-but-connected peer is counted and a peer that reconnects
+        # twice is counted once.
+        #
+        # Two sources, unioned per (node, bucket):
+        #   (a) the presence bitmaps — authoritative, recorded from each peer's `online` flag.
+        #   (b) the per-peer TRAFFIC rings — a peer that moved bytes in a bucket was certainly online then.
+        # (b) exists because the presence rings only start recording when the panel is upgraded: without it every
+        # historical range reads 0 while the traffic charts show gigabytes from last week. It is a LOWER BOUND
+        # (peer rings skip peers under PEER_MIN_BPS, so an idle-but-connected peer is invisible to it), which is
+        # exactly why (a) supersedes it going forward rather than replacing it.
         rng = (qs.get("range") or ["day"])[0]
         spec = RANGE_SPEC.get(rng)
         if not spec:
             return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
-        ring, _want, win = spec
+        ring, want, win = spec
         try:
             nblocks = max(1, min(64, int((qs.get("blocks") or ["24"])[0])))
             bstep = max(HRRD_RINGS[0][0], int((qs.get("step") or [str(win // 24)])[0]))
@@ -3924,41 +3931,75 @@ def api(method, path, qs, body, deps):
         bit2pk = {b: pk for pk, b in idx.items()}
         _ros = roster_load(roster_path)
         users_by_id = _ros.get("users") or {}
-        peers_by_pk = {}
+        peers_by_pk, h2pk = {}, {}
         for p in (_ros.get("peers") or {}).values():
-            if p.get("pubkey"):
-                peers_by_pk[p["pubkey"]] = p
+            pk = p.get("pubkey")
+            if pk:
+                peers_by_pk[pk] = p
+                h2pk[hashlib.sha256(pk.encode()).hexdigest()[:16]] = pk
 
         end = time.time()
         start = end - nblocks * bstep                       # the bars span exactly what they claim to
         floor = min(start, end - win)
-        scans = {nid: (pres_scan(pres_path(stats_dir, nid), ring, since=floor) if stats_dir else [])
-                 for nid in want_nodes}
-        nb = max([len(bm) for s in scans.values() for _, bm in s] or [0])
-        blocks = [bytearray(nb) for _ in range(nblocks)]
-        total = bytearray(nb)
-        per_node = {}
-        for nid, scan in scans.items():
-            acc = bytearray(nb)
-            for ep, bm in scan:
+        seen = {nid: {} for nid in want_nodes}              # nid -> {bucket_epoch: set(pubkey)}
+
+        # (a) presence bitmaps
+        for nid in want_nodes:
+            if not stats_dir:
+                break
+            for ep, bm in pres_scan(pres_path(stats_dir, nid), ring, since=floor):
+                s = seen[nid].setdefault(ep, set())
+                for bit in _bm_bits(bm):
+                    pk = bit2pk.get(bit)
+                    if pk:
+                        s.add(pk)
+
+        # (b) per-peer traffic rings (the same files /api/peer-history reads, so no new scan cost class)
+        try:
+            files = os.listdir(stats_dir) if stats_dir else []
+        except OSError:
+            files = []
+        for fn in files:
+            if not (fn.startswith("peer-") and fn.endswith(".rrd")):
+                continue
+            body = fn[5:-4]
+            if "-" not in body:
+                continue
+            nid, h = body.rsplit("-", 1)
+            if nid not in seen:
+                continue
+            pk = h2pk.get(h)
+            if not pk:
+                continue                                    # orphaned ring → deleted peer
+            d = hrrd_read(os.path.join(stats_dir, fn), ring=ring, want=want, since=floor)
+            if not d:
+                continue
+            for t, rx, tx in zip(d["t"], d["rx"], d["tx"]):
+                if (rx or 0) + (tx or 0) > 0:
+                    seen[nid].setdefault(t, set()).add(pk)
+
+        blocks = [set() for _ in range(nblocks)]
+        per_node = {nid: set() for nid in want_nodes}
+        total = set()
+        for nid, buckets in seen.items():
+            for ep, pks in buckets.items():
                 if ep >= end - win:                         # range totals use the FULL window …
-                    _bm_or(acc, bm); _bm_or(total, bm)
+                    per_node[nid] |= pks; total |= pks
                 b = int((ep - start) // bstep)
                 if 0 <= b < nblocks:
-                    _bm_or(blocks[b], bm)                   # … a bar, only what falls inside that bar
-            per_node[nid] = acc
+                    blocks[b] |= pks                        # … a bar, only what falls inside that bar
 
-        def live_peers(bm):
-            """Bits that still map to a peer in the roster. A deleted peer keeps its bit in old bitmaps —
-            counting it would resurrect it in historical bars."""
-            for bit in _bm_bits(bm):
-                pr = peers_by_pk.get(bit2pk.get(bit) or "")
+        def live(pks):
+            """Pubkeys that still map to a roster peer. A deleted peer keeps its bit/ring — counting it would
+            resurrect it in historical bars."""
+            for pk in pks:
+                pr = peers_by_pk.get(pk)
                 if pr:
                     yield pr
 
-        def summarise(bm, nid=None):
+        def summarise(pks, nid=None):
             uids, ifc, npeers = {}, {}, 0
-            for pr in live_peers(bm):
+            for pr in live(pks):
                 npeers += 1
                 uid = pr.get("user_id") or "_un"            # mirrors onlineUserRows: all unassigned = one group
                 uids[uid] = uids.get(uid, 0) + 1
@@ -3971,11 +4012,11 @@ def api(method, path, qs, body, deps):
                             "count": c} for u, c in uids.items()), key=lambda r: -r["count"])[:50]
             return {"peers": npeers, "users": len(uids), "ifaces": ifc, "userRows": rows}
 
-        out_nodes = {nid: summarise(bm, nid) for nid, bm in per_node.items()}
+        out_nodes = {nid: summarise(pks, nid) for nid, pks in per_node.items()}
         tot = summarise(total)
         return 200, {"ok": True, "data": {
             "range": rng, "step": bstep, "start": int(start), "end": int(end),
-            "blocks": [sum(1 for _ in live_peers(b)) for b in blocks],
+            "blocks": [sum(1 for _ in live(b)) for b in blocks],
             "nodes": out_nodes, "total": {"peers": tot["peers"], "users": tot["users"]}}}
 
     if method == "GET" and path == "/api/category-history":

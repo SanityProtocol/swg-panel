@@ -992,6 +992,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .onlbtn.on{background:color-mix(in srgb,var(--brand) 20%,transparent);color:var(--sel-ink);border-color:color-mix(in srgb,var(--brand) 45%,transparent)}
 /* endpoint cell: "Local turn-proxy" (fork-coloured) — hover shows the same Connected-via bubble as the dot */
 .peergrid .turnep{cursor:help}
+.turnep.off{opacity:.65;font-style:italic}   /* offline: it WAS relayed — attribution kept, just muted */
 .condot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--unknown)}
 /* online / turn dots glow with the same animated pulse as the peer-grid status badge (.sdot) */
 .condot.on{background:var(--online);color:var(--online);animation:sdotpulse 1.6s ease-in-out infinite}
