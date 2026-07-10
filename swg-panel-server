@@ -1003,7 +1003,10 @@ def write_sub_serve(deps):
     out = {"enabled": bool(subs.get("enabled")),
            "serve": subs.get("serve") if isinstance(subs.get("serve"), dict) else {},
            "turn_enabled": ps.get("turn_enabled") is not False,
-           "vk_link": (ps.get("vk_link") or "")}
+           "vk_link": (ps.get("vk_link") or ""),
+           # brand theme colours (per light/dark) so the subscription page's logo + favicon follow the panel
+           "theme_color": (ps.get("theme_color") or ""),
+           "theme_color_light": (ps.get("theme_color_light") or "")}
     with contextlib.suppress(Exception):
         os.makedirs(_sub_dir(deps), exist_ok=True)
         atomic_write(_sub_serve_path(deps), json.dumps(out, indent=2) + "\n", mode=0o640)

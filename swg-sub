@@ -228,22 +228,23 @@ def token_lookup(users, token):
 # live per request so a panel toggle takes effect at once.
 _READ_TTL = 3.0
 _read_lock = threading.Lock()
-_READ_CACHE = {"at": -1e9, "roster": None, "describe": None, "users": None}
+_READ_CACHE = {"at": -1e9, "roster": None, "describe": None, "users": None, "nodes": None}
 
 def _shared_read(state):
     now = time.monotonic()
     c = _READ_CACHE
     if c["roster"] is not None and (now - c["at"]) < _READ_TTL:
-        return c["roster"], c["describe"], c["users"]
+        return c["roster"], c["describe"], c["users"], c["nodes"]
     with _read_lock:
         now = time.monotonic()
         if c["roster"] is not None and (now - c["at"]) < _READ_TTL:
-            return c["roster"], c["describe"], c["users"]
+            return c["roster"], c["describe"], c["users"], c["nodes"]
         roster = state.roster()
-        describe = state.describe(state.nodes())
+        nodes = state.nodes()
+        describe = state.describe(nodes)
         users = state.sub_users()
-        c.update({"at": time.monotonic(), "roster": roster, "describe": describe, "users": users})
-        return roster, describe, users
+        c.update({"at": time.monotonic(), "roster": roster, "describe": describe, "users": users, "nodes": nodes})
+        return roster, describe, users, nodes
 
 
 # Per-client token-bucket backstop. This is NOT the authoritative rate limit — put swg-sub behind a
@@ -286,7 +287,7 @@ def read_data(state, token):
     roster is authoritative; the blob store is a subordinate cache the panel keeps in sync."""
     if not state.enabled():
         return None
-    roster, describe, users = _shared_read(state)
+    roster, describe, users, nodes = _shared_read(state)
     uid = token_lookup(users, token)
     if uid is None:
         return None
@@ -313,6 +314,7 @@ def read_data(state, token):
                     for tp in (nd.get("turn") or []) if isinstance(tp, dict) and lp and _port_of(tp.get("connect")) == lp]
             tgts.append({
                 "node": t.get("node"), "iface": t.get("iface"),
+                "node_name": (nodes.get(t.get("node")) or {}).get("name") or t.get("node"),
                 "type": "awg" if awg else (t.get("type") or "wg"),
                 "ip": t.get("ip"),
                 "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
@@ -325,7 +327,8 @@ def read_data(state, token):
         peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts})
     subs = state.subscriptions()
     return {"user": {"name": user.get("name") or ""}, "peers": peers_out,
-            "turn_enabled": bool(subs.get("turn_enabled")), "vk_link": subs.get("vk_link") or ""}
+            "turn_enabled": bool(subs.get("turn_enabled")), "vk_link": subs.get("vk_link") or "",
+            "theme_color": subs.get("theme_color") or "", "theme_color_light": subs.get("theme_color_light") or ""}
 
 
 # ── HTTP ──

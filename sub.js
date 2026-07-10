@@ -69,6 +69,38 @@
     if (txt != null) e.textContent = txt;
     return e;
   }
+
+  // ── brand theme — follow the panel's per-mode accent colour (drives the logo, tabs, buttons, favicon) ──
+  var THEME = { color: "", light: "" };   // set from the served subscription data
+  function isLight() {
+    var d = document.documentElement.getAttribute("data-theme");   // manual override wins; else the OS preference
+    if (d === "light") return true; if (d === "dark") return false;
+    return !!(window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches);
+  }
+  function hexLum(h) {
+    h = String(h).replace("#", ""); if (h.length === 3) h = h.split("").map(function (c) { return c + c; }).join("");
+    var r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
+    return isNaN(r) ? 0.5 : 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+  function applyFavicon(accent, light) {
+    var centre = light ? "#FFFFFF" : "#0A0E15";
+    var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+      + "<rect width='32' height='32' rx='8' fill='" + accent + "'/>"
+      + "<circle cx='16' cy='14.5' r='5.5' fill='" + centre + "'/></svg>";
+    var link = document.querySelector("link[rel~='icon']");
+    if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+    link.setAttribute("href", "data:image/svg+xml," + encodeURIComponent(svg));
+  }
+  function applyBrand() {
+    var light = isLight();
+    var brand = (light ? THEME.light : THEME.color) || (light ? "#0E9BB0" : "#1FC8D6");   // panel's per-mode defaults
+    var de = document.documentElement;
+    de.style.setProperty("--brand", brand);
+    de.style.setProperty("--brand-2", "color-mix(in srgb, " + brand + " 70%, #fff)");
+    de.style.setProperty("--brand-ink", hexLum(brand) > 0.55 ? "#04232A" : "#EAFBFF");
+    applyFavicon(brand, light);
+  }
+  try { if (window.matchMedia) matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyBrand); } catch (_) {}
   function showState(msg, sub) {
     var s = document.getElementById("state");
     s.hidden = false;
@@ -97,7 +129,7 @@
   function targetCard(userName, peer, tgt, conf, reason) {
     var card = el("div", "tgt");
     if (tgt.primary) card.appendChild(el("div", "primary", "Primary"));
-    card.appendChild(el("div", "tgt-node", tgt.node || tgt.iface || "server"));
+    card.appendChild(el("div", "tgt-node", tgt.node_name || tgt.node || tgt.iface || "server"));
 
     if (!conf) {
       card.appendChild(el("div", "qr-fail", reason ||
@@ -179,7 +211,7 @@
   function turnCard(userName, peer, tgt, conf, vkLink, reason) {
     var card = el("div", "tgt");
     if (tgt.primary) card.appendChild(el("div", "primary", "Primary"));
-    card.appendChild(el("div", "tgt-node", tgt.node || tgt.iface || "server"));
+    card.appendChild(el("div", "tgt-node", tgt.node_name || tgt.node || tgt.iface || "server"));
     if (!conf) { card.appendChild(el("div", "qr-fail", reason || "Not ready yet — open this peer once in the panel to publish it.")); return card; }
     var byFork = {}, order = [];
     (tgt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (!byFork[f]) { byFork[f] = []; order.push(f); } byFork[f].push(tp); });
@@ -213,6 +245,8 @@
   }
 
   function render(data, cryptoKey) {
+    THEME.color = data.theme_color || ""; THEME.light = data.theme_color_light || "";
+    applyBrand();                                    // logo + favicon follow the panel's theme colour
     var who = document.getElementById("who");
     who.textContent = data.user && data.user.name ? data.user.name : "";
     var wrap = document.getElementById("peers");
