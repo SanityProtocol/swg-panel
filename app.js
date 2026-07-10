@@ -5405,6 +5405,20 @@ function openPeerConfigs(peer, back) {
 function openUserEdit(user) {
   openModal(html`<${Sheet} title=${"Edit · " + user.name}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
 }
+// Every QR/config the user owns, grouped by peer — one horizontal row of deployment QRs per peer (the peer's
+// PRIMARY deployment first, tagged, when it has more than one). Same TargetCard the peer QR modal uses, so a
+// stored-config / session-config peer renders its QR and an un-stored one shows the same hint.
+function openUserConfigs(user, back) {
+  const peers = Store.peersOfUser(user.id);
+  const maxT = Math.min(3, peers.reduce((m, p) => Math.max(m, (p.targets || []).length || 1), 1));   // widest peer row, capped at 3 QRs
+  const width = maxT * 256 + (maxT - 1) * 14 + 56;
+  openModal(html`<${Sheet} title=${user.name} width=${width} onClose=${back || closeModal}>
+    ${peers.length ? html`<div class="usercfg">${peers.map(p => html`<div class="usercfg-peer" key=${p.id}>
+      <div class="usercfg-plabel">${p.title || "Peer"}${(p.targets || []).length ? html`<span class="usercfg-pcount">${p.targets.length} deployment${p.targets.length === 1 ? "" : "s"}</span>` : null}</div>
+      <div class="usercfg-row">${(p.targets || []).map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${p} t=${t} bare=${true} primary=${p.targets.length > 1 && i === 0}/>`)}</div>
+    </div>`)}</div>` : html`<div class="empty" style="padding:24px">This user has no peers yet.</div>`}
+  <//>`);
+}
 // Turn-proxy client configs for one deployment — one section per turn-proxy on the interface, generated
 // on the fly for the DEPLOYED fork. `conf` is the base WG config (needs the private key, so session/stored).
 function openTurnConfigs(peer, t, conf) {
@@ -5529,6 +5543,7 @@ function UserRow({ user, live, onlineOnly, q }) {
         <span class="u-total">${xferCell(db, ub)}</span>
         ${live ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
           <button class="iconbtn" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
+          <button class="iconbtn" title="Show QR / configs" onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
           <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
           <button class="iconbtn danger" title="Delete user" onClick=${delUser}><${Ic} i="trash"/></button>
         </span>`}
@@ -5650,7 +5665,7 @@ function UserEditCard({ user, done }) {
 
 // one credential: its targets, each a QR card; owner controls + edit + add-target
 
-function TargetCard({ peer, t, bare }) {
+function TargetCard({ peer, t, bare, primary }) {
   useStore();   // re-render on each poll so the status badge stays live (t is a snapshot from open)
   const [conf, setConf] = useState(null);
   const [loaded, setLoaded] = useState(false);
@@ -5669,7 +5684,7 @@ function TargetCard({ peer, t, bare }) {
     + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-${ltype}">${esc(t.iface)}</span>`;
 
   return html`<div class="deploy">
-    <div class="deploy-head"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>
+    <div class="deploy-head"><div class="nmwrap">${primary ? html`<span class="deploy-primary">Primary</span>` : null}<a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>
     <div class="deploy-body">
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? "loading…"

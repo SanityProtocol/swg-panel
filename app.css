@@ -1986,6 +1986,18 @@ a.tg:hover{filter:brightness(1.25)}
 .advtoggle{background:none;border:0;color:var(--ink-2);cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:7px;margin:16px 0 2px;padding:0;letter-spacing:.02em}
 .advtoggle:hover{color:var(--brand)}
 .advtoggle .advcaret{font-size:10px;color:var(--faint);width:10px;display:inline-block}
+/* User QR modal: one group per peer, its deployment QRs on a single (scrollable) horizontal line. */
+.usercfg{display:flex;flex-direction:column;gap:18px}
+.usercfg-peer{display:flex;flex-direction:column;gap:8px}
+.usercfg-plabel{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink)}
+.usercfg-pcount{font-size:10px;font-weight:400;color:var(--faint);letter-spacing:.03em}
+.usercfg-row{display:flex;gap:14px;overflow-x:auto;padding-bottom:2px}   /* stays ONE line per peer; scrolls if a peer has many deployments */
+.usercfg-row .deploy{width:256px;flex:none}
+.usercfg-row .deploy .qr{flex:1;min-width:0}
+.usercfg-row .deploy .qr .qrimg{width:100%}
+.usercfg-row .deploy .acts{justify-content:center}
+.nmwrap{display:flex;flex-direction:column;gap:1px;min-width:0}
+.deploy-primary{font-family:var(--mono);font-size:8.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--online);line-height:1}
 .cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:flex-start}
 .cfgsheet .deploy{width:256px;flex:none}
 .cfgsheet .deploy .qr{flex:1;min-width:0}
