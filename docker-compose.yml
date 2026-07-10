@@ -79,7 +79,8 @@ services:
       # its config from subs/serve.json. /dev/null masks a file; tmpfs masks a directory.
       - /dev/null:/etc/swg-panel/auth:ro                      # the panel login hash
       - /dev/null:/var/lib/swg-panel/panel-settings.json:ro   # webhook signing secrets / API token hashes
-      - /dev/null:/var/lib/swg-panel/subs/vault.json:ro       # the subscription-key vault (SK escrow → every peer's key)
+      - /dev/null:/var/lib/swg-panel/subs/vault.json:ro       # the subscription-key vault (SK → every peer's key)
+      - /dev/null:/var/lib/swg-panel/subs/escrow.json:ro      # the SK-wrapped per-user unlock keys + tokens
     tmpfs:
       - /etc/swg-panel/tls        # the panel's TLS PRIVATE KEY — never hand it to the internet-facing surface
       - /var/lib/swg-panel/configs   # stored client configs (if store_configs is ever on)

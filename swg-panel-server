@@ -978,6 +978,17 @@ def drop_sub_blobs(deps, uid):
     with contextlib.suppress(OSError):
         os.remove(_sub_blob_path(deps, uid))
 
+# The escrow is split OUT of the public token map (users.json). users.json holds ONLY {token_sha,
+# enabled} — the minimum swg-sub needs — and is group-readable (0640). escrow.json holds the SK-wrapped
+# unlock-key + token (so the admin can rebuild a URL and encrypt new peers later) and stays 0600
+# owner-only, so the public surface never even has the option of reading it. Both are opaque to the
+# panel: unlock_by_sk / token_by_sk are ciphertext it can't unwrap (the SK never reaches the server).
+def _sub_escrow_path(deps): return os.path.join(_sub_dir(deps), "escrow.json")
+def load_sub_escrow(deps): return _load_sub_json(_sub_escrow_path(deps))
+def save_sub_escrow(deps, d):
+    os.makedirs(_sub_dir(deps), exist_ok=True)
+    atomic_write(_sub_escrow_path(deps), json.dumps(d, indent=2) + "\n", mode=0o600)   # owner-only — swg-sub must never read the escrow
+
 def _sub_serve_path(deps): return os.path.join(_sub_dir(deps), "serve.json")
 def write_sub_serve(deps):
     """Mirror JUST {enabled, serve} to subs/serve.json (group-readable) so swg-sub reads its own config
@@ -1003,8 +1014,9 @@ def normalize_sub_perms(deps):
         if p:
             with contextlib.suppress(OSError):
                 os.chmod(p, 0o640)
-    with contextlib.suppress(OSError):
-        os.chmod(_sub_vault_path(deps), 0o600)   # belt-and-suspenders: the SK escrow stays owner-only
+    for p in (_sub_vault_path(deps), _sub_escrow_path(deps)):
+        with contextlib.suppress(OSError):
+            os.chmod(p, 0o600)   # belt-and-suspenders: the SK vault + the wrapped-key escrow stay owner-only
 
 
 def subs_enabled(deps):
@@ -3950,55 +3962,66 @@ def api(method, path, qs, body, deps):
         save_sub_vault(deps, {"salt": salt, "sk_by_pw": sk, "sk_check": chk, "at": now()})
         return 200, {"ok": True, "data": {"saved": True}}
 
-    if method == "GET" and path == "/api/sub/users":                 # admin UI state: no secrets, just coverage
+    if method == "GET" and path == "/api/sub/users":                 # admin UI state (authed): coverage + the SK-wrapped escrow
         roster = roster_load(roster_path)
         users = load_sub_users(deps)
+        escrow = load_sub_escrow(deps)
         out = {}
         for uid, rec in users.items():
             blobs = sub_gc_user(deps, uid, roster)
             live = sub_live_peers(roster, uid)
-            out[uid] = {"enabled": bool(rec.get("enabled")), "created": rec.get("created"),
-                        "rotated": rec.get("rotated"), "peers": len(live), "provisioned": len(blobs)}
+            esc = escrow.get(uid) or {}
+            out[uid] = {"enabled": bool(rec.get("enabled")), "created": esc.get("created"),
+                        "rotated": esc.get("rotated"), "peers": len(live), "provisioned": len(blobs),
+                        # the escrow is ciphertext (SK-wrapped) — safe to hand the AUTHENTICATED admin browser,
+                        # which unwraps it locally with the Subscription Key to rebuild the URL / encrypt peers.
+                        "unlock_by_sk": esc.get("unlock_by_sk"), "token_by_sk": esc.get("token_by_sk")}
         return 200, {"ok": True, "data": {"vault": bool(load_sub_vault(deps).get("sk_by_pw")), "users": out}}
 
-    if method == "POST" and path == "/api/sub/user/enable":          # browser mints token + wraps the unlock-key
+    if method == "POST" and path == "/api/sub/user/enable":          # browser mints token + wraps the unlock-key + token
         uid = body.get("user_id") or ""
         roster = roster_load(roster_path)
         if uid not in (roster.get("users") or {}):
             return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
-        tsha, thash, unl = body.get("token_sha"), body.get("token_hash"), body.get("unlock_by_sk")
-        if not (isinstance(tsha, str) and isinstance(thash, str) and isinstance(unl, str)):
-            return 400, {"ok": False, "error": "token_sha, token_hash and unlock_by_sk are required", "code": "bad_request"}
-        users = load_sub_users(deps)
-        prev = users.get(uid) or {}
-        users[uid] = {"token_sha": tsha, "token_hash": thash, "unlock_by_sk": unl, "enabled": True,
-                      "created": prev.get("created") or now(), "rotated": now()}
-        save_sub_users(deps, users)
+        tsha, unl, tbs = body.get("token_sha"), body.get("unlock_by_sk"), body.get("token_by_sk")
+        if not (isinstance(tsha, str) and isinstance(unl, str) and isinstance(tbs, str)):
+            return 400, {"ok": False, "error": "token_sha, unlock_by_sk and token_by_sk are required", "code": "bad_request"}
+        users = load_sub_users(deps); escrow = load_sub_escrow(deps)
+        prev = escrow.get(uid) or {}
+        users[uid] = {"token_sha": tsha, "enabled": True}            # PUBLIC map (swg-sub reads this) — no secrets
+        escrow[uid] = {"unlock_by_sk": unl, "token_by_sk": tbs,      # panel-only, SK-wrapped
+                       "created": prev.get("created") or now(), "rotated": now()}
+        save_sub_users(deps, users); save_sub_escrow(deps, escrow)
         ev_append(roster_path, "user", uid, "Enabled subscription", (roster["users"][uid] or {}).get("name", ""))
         return 200, {"ok": True, "data": {"enabled": True}}
 
     if method == "POST" and path == "/api/sub/user/rotate":          # new token (same unlock-key) → old URL dies
         uid = body.get("user_id") or ""
-        users = load_sub_users(deps)
-        rec = users.get(uid)
-        if not rec:
+        users = load_sub_users(deps); escrow = load_sub_escrow(deps)
+        if uid not in users:
             return 404, {"ok": False, "error": "no subscription for this user", "code": "not_found"}
-        tsha, thash = body.get("token_sha"), body.get("token_hash")
-        if not (isinstance(tsha, str) and isinstance(thash, str)):
-            return 400, {"ok": False, "error": "token_sha and token_hash are required", "code": "bad_request"}
-        rec["token_sha"] = tsha; rec["token_hash"] = thash; rec["rotated"] = now()
+        tsha, tbs = body.get("token_sha"), body.get("token_by_sk")
+        if not (isinstance(tsha, str) and isinstance(tbs, str)):
+            return 400, {"ok": False, "error": "token_sha and token_by_sk are required", "code": "bad_request"}
+        users[uid]["token_sha"] = tsha; users[uid]["enabled"] = True
+        rec = escrow.get(uid) or {}
+        rec["token_by_sk"] = tbs; rec["rotated"] = now()
         if isinstance(body.get("unlock_by_sk"), str):                # a full re-key also rotates the unlock-key
             rec["unlock_by_sk"] = body["unlock_by_sk"]
-        save_sub_users(deps, users)
+        escrow[uid] = rec
+        save_sub_users(deps, users); save_sub_escrow(deps, escrow)
         return 200, {"ok": True, "data": {"rotated": True}}
 
-    if method == "POST" and path == "/api/sub/user/disable":         # kill the URL + drop the ciphertext
+    if method == "POST" and path == "/api/sub/user/disable":         # kill the URL + drop the ciphertext + escrow
         uid = body.get("user_id") or ""
-        users = load_sub_users(deps)
+        users = load_sub_users(deps); escrow = load_sub_escrow(deps)
+        changed = False
         if uid in users:
-            del users[uid]; save_sub_users(deps, users)
+            del users[uid]; save_sub_users(deps, users); changed = True
+        if uid in escrow:
+            del escrow[uid]; save_sub_escrow(deps, escrow); changed = True
         drop_sub_blobs(deps, uid)
-        return 200, {"ok": True, "data": {"disabled": True}}
+        return 200, {"ok": True, "data": {"disabled": True, "changed": changed}}
 
     if method == "POST" and path == "/api/sub/blob":                 # store/replace one peer's encrypted secret
         uid, pid, sec = body.get("user_id") or "", body.get("peer_id") or "", body.get("sec")

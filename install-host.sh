@@ -1219,7 +1219,7 @@ ProtectKernelTunables=true
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
-InaccessiblePaths=-${ETC_DIR}/auth -${TLS_DIR} -${STATE_DIR}/subs/vault.json -${STATE_DIR}/panel-settings.json -${STATE_DIR}/configs
+InaccessiblePaths=-${ETC_DIR}/auth -${TLS_DIR} -${STATE_DIR}/subs/vault.json -${STATE_DIR}/subs/escrow.json -${STATE_DIR}/panel-settings.json -${STATE_DIR}/configs
 
 [Install]
 WantedBy=multi-user.target

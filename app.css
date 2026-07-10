@@ -2001,6 +2001,27 @@ a.tg:hover{filter:brightness(1.25)}
 .fieldrow{display:flex;gap:14px;flex-wrap:wrap}
 .fieldrow > .field{flex:1;min-width:140px;margin:0}
 .cfgsheet{display:flex;flex-wrap:wrap;gap:14px;justify-content:flex-start}
+
+/* ── subscription: per-user panel + the URL/copy strip ── */
+.subpanel{margin:0 0 18px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2,rgba(127,127,127,.05));display:flex;flex-direction:column;gap:10px}
+.subpanel-hd{display:flex;align-items:center;gap:7px;font-weight:700;font-size:13.5px}
+.subpanel-hd .ic{color:var(--brand,#1FC8D6)}
+.subpanel-on{margin-left:auto;font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 45%,transparent);border-radius:20px;padding:2px 9px}
+.subpanel .hint{margin:0;font-size:12px;line-height:1.5;color:var(--muted,#8a97ad)}
+.subpanel .hint.err{color:var(--danger,#e5484d)}
+.subpanel .hint.warn{color:var(--warn,#f0a020)}
+.subpanel .btn{align-self:flex-start}
+.subpanel-actions{display:flex;gap:8px;flex-wrap:wrap}
+.subpw{width:100%;max-width:420px;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font:inherit;font-size:13px}
+/* the URL + copy row — one hover target; clicking anywhere copies */
+.suburl{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--bg);cursor:pointer;transition:border-color .12s,background .12s}
+.suburl:hover{border-color:var(--brand,#1FC8D6);background:color-mix(in srgb,var(--brand,#1FC8D6) 7%,var(--bg))}
+.suburl > .ic{color:var(--brand,#1FC8D6);flex:none}
+.suburl-txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:12px;color:var(--ink)}
+.suburl-copy{flex:none;display:inline-flex;color:var(--muted,#8a97ad)}
+.suburl:hover .suburl-copy{color:var(--brand,#1FC8D6)}
+.suburl-copy.ok{color:var(--online)}
+.suburl-hint{font-style:italic}
 .cfgsheet .deploy{width:256px;flex:none}
 .cfgsheet .deploy .qr{flex:1;min-width:0}
 .cfgsheet .deploy .qr .qrimg{width:100%}

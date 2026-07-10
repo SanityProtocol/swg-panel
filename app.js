@@ -248,6 +248,115 @@ async function subVaultCreate(password) {
   return b64(sk);
 }
 
+// ── Subscription Key session cache + the token/URL/blob operations that ride on it ──
+// The Subscription Key (SK) is unwrapped from the vault ONCE per session with the login password
+// (the "convenience cache") and held only in memory as an AES-GCM key — never persisted, never sent
+// to the server. Every per-user secret (the unlock-key, the URL token, each peer's config) is wrapped
+// with it in the browser; the panel only ever stores ciphertext it can't read.
+const b64url = u => b64(u).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function sha256hex(s) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+const _importAes = (bytes, uses) => crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, uses);
+
+let _subSK = null;                       // the unwrapped Subscription Key (CryptoKey), cached for this session
+function subSKCached() { return _subSK; }
+function subForget() { _subSK = null; }   // drop on logout / password change
+async function subUnlock(password) {      // unwrap the SK from the vault with the password → cache it
+  const v = await api.subVault();
+  if (!v || v.ok === false || !v.data || !v.data.exists) throw new Error("Subscription encryption isn't set up yet.");
+  const wk = await subWrapKey(password, _b64ToBytes(v.data.salt));
+  let skBytes;
+  try {
+    if (new TextDecoder().decode(await subDec(wk, v.data.sk_check)) !== SUB_CHECK) throw new Error("bad");
+    skBytes = await subDec(wk, v.data.sk_by_pw);        // GCM auth fails here on a wrong password
+  } catch (_) { throw new Error("That password didn't unlock the Subscription Key."); }
+  _subSK = await _importAes(skBytes, ["encrypt", "decrypt"]);
+  return _subSK;
+}
+
+// Enable a user's subscription: mint a fresh 256-bit URL token + 256-bit unlock-key, wrap BOTH with the
+// SK for the escrow (so the panel stores only ciphertext), and register the public token hash. Returns
+// {token, unlockKeyB64} for immediate URL display. Requires the SK to be unlocked.
+async function subEnableUser(uid) {
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the Subscription Key first.");
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = b64url(tokenBytes);                     // the URL path segment (opaque, 256-bit)
+  const unlockKey = crypto.getRandomValues(new Uint8Array(32));   // the URL fragment key (AES-GCM, 256-bit)
+  const r = await api.subUserEnable({
+    user_id: uid, token_sha: await sha256hex(token),
+    unlock_by_sk: await subEnc(sk, unlockKey),
+    token_by_sk: await subEnc(sk, new TextEncoder().encode(token)),
+  });
+  if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't enable the subscription");
+  return { token, unlockKeyB64: b64url(unlockKey) };
+}
+
+// Rotate a user's URL (kill the old link): fresh token, SAME unlock-key, so existing ciphertext stays valid.
+async function subRotateUser(uid) {
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the Subscription Key first.");
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = b64url(tokenBytes);
+  const r = await api.subUserRotate({
+    user_id: uid, token_sha: await sha256hex(token),
+    token_by_sk: await subEnc(sk, new TextEncoder().encode(token)),
+  });
+  if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't rotate the URL");
+  return { token };
+}
+
+// Recover a user's {token, unlockKey(CryptoKey), unlockKeyB64} from their escrow record via the SK.
+async function subRecover(escRec) {
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the Subscription Key first.");
+  if (!escRec || !escRec.unlock_by_sk || !escRec.token_by_sk) throw new Error("no subscription for this user");
+  const unlockBytes = await subDec(sk, escRec.unlock_by_sk);
+  const token = new TextDecoder().decode(await subDec(sk, escRec.token_by_sk));
+  return { token, unlockKey: await _importAes(unlockBytes, ["encrypt"]), unlockKeyB64: b64url(unlockBytes) };
+}
+
+// The shareable URL for a user, from their escrow record. Blank base_url → null (operator must set it).
+function subBaseUrl() { return String(((Store.panelSettings || {}).subscriptions || {}).base_url || "").replace(/\/+$/, ""); }
+async function subUrlFor(escRec) {
+  const base = subBaseUrl(); if (!base) return null;
+  const { token, unlockKeyB64 } = await subRecover(escRec);
+  return base + "/" + token + "#" + unlockKeyB64;
+}
+
+// Encrypt one peer's secret (private key + PSK) under the user's unlock-key and store the ciphertext.
+// This is the ONLY way a peer's key reaches the subscription page — encrypted here, decrypted only by
+// whoever holds the URL fragment. Best-effort: callers must not let a failure here break peer creation.
+async function subEncryptPeer(uid, pid, privkey, psk, unlockKey) {
+  const sec = await subEnc(unlockKey, new TextEncoder().encode(JSON.stringify({ k: privkey, p: psk || "" })));
+  const r = await api.subBlob({ user_id: uid, peer_id: pid, sec });
+  if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't store the subscription config");
+}
+
+// Is the subscriptions feature switched on for this panel?
+function subFeatureOn() { return !!(((Store.panelSettings || {}).subscriptions || {}).enabled); }
+// The per-user subscription records (enabled + the SK-wrapped escrow), briefly cached.
+let _subUsersCache = { at: 0, map: null };
+async function subUsersMap(force) {
+  if (!force && _subUsersCache.map && Date.now() - _subUsersCache.at < 4000) return _subUsersCache.map;
+  try { const r = await api.subUsers(); _subUsersCache = { at: Date.now(), map: (r && r.ok && r.data && r.data.users) || {} }; }
+  catch (_) { _subUsersCache = { at: Date.now(), map: {} }; }
+  return _subUsersCache.map;
+}
+function subUsersForget() { _subUsersCache = { at: 0, map: null }; }
+// Publish a peer's freshly-minted secret to its owner's subscription — the ONLY moment the browser holds
+// the private key. Best-effort and silent: if the feature is off, the user isn't subscribed, or the
+// Subscription Key isn't unlocked this session, it simply skips (the config publishes on a later rekey,
+// or when the operator opens the user's subscription with the key unlocked). NEVER breaks peer creation.
+async function subMaybePublish(userId, peerId, privkey, psk) {
+  try {
+    if (!subFeatureOn() || !userId || !peerId || !subSKCached()) return;
+    const rec = (await subUsersMap())[userId];
+    if (!rec || !rec.enabled || !rec.unlock_by_sk) return;
+    const { unlockKey } = await subRecover(rec);
+    await subEncryptPeer(userId, peerId, privkey, psk, unlockKey);
+  } catch (_) { /* a subscription hiccup must never break the peer flow */ }
+}
+
 const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
 // IPv6 leak-guard: a FULL v4 tunnel (AllowedIPs contains 0.0.0.0/0) MUST also capture v6 (::/0), else the client's
 // IPv6 traffic escapes the tunnel over its real IP (the tunnels are v4-only, so captured v6 is dropped node-side and
@@ -520,6 +629,11 @@ const api = {
   subVault() { return this.get("/api/sub/vault"); },
   subVaultSet(b) { return this.post("/api/sub/vault", b); },
   subReset() { return this.post("/api/sub/reset", {}); },
+  subUsers() { return this.get("/api/sub/users"); },
+  subUserEnable(b) { return this.post("/api/sub/user/enable", b); },
+  subUserRotate(b) { return this.post("/api/sub/user/rotate", b); },
+  subUserDisable(b) { return this.post("/api/sub/user/disable", b); },
+  subBlob(b) { return this.post("/api/sub/blob", b); },
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
   // external integration API (Settings → Integrations): read-only tokens + webhooks
   apiTokenCreate(label) { return this.post("/api/integrations/token", { label }); },
@@ -1415,7 +1529,8 @@ async function assignPeerToUser(peer, userId) {
   await mutate({
     key,
     call: () => api.peerRekey({ peer_id: peer.id, user_id: userId, pubkey: keys.pub, psk, configs }),
-    onOk: () => { Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; revealAssignedPeer(userId, peer.id); },
+    onOk: () => { Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; revealAssignedPeer(userId, peer.id);
+      subMaybePublish(userId, peer.id, keys.priv, psk); },
   });
 }
 
@@ -1442,7 +1557,8 @@ async function rotatePeerKeys(peer) {
   await mutate({
     key,
     call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk, configs }),
-    onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; },
+    onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
+      subMaybePublish(peer.user_id, peer.id, keys.priv, psk); },
   });
 }
 
@@ -5429,6 +5545,7 @@ function openPeerConfigs(peer, back) {
   const width = cols * 256 + (cols - 1) * 14 + 56;
   // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
   openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width} onClose=${back || closeModal}>
+    <${SubPeerUrl} peer=${peer}/>
     <div class="cfgsheet">${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}</div>
   <//>`);
 }
@@ -5438,11 +5555,106 @@ function openUserEdit(user) {
 // Every QR/config the user owns, grouped by peer — one horizontal row of deployment QRs per peer (the peer's
 // PRIMARY deployment first, tagged, when it has more than one). Same TargetCard the peer QR modal uses, so a
 // stored-config / session-config peer renders its QR and an un-stored one shows the same hint.
+// The subscription URL + one-tap copy. Hovering highlights the whole row (URL + button) as a single
+// click target; clicking anywhere copies. Used under the title in the user + peer QR modals.
+function SubUrlBar({ url }) {
+  const [copied, setCopied] = useState(false);
+  if (!url) return null;
+  const copy = () => { (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
+    .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, () => {}); };
+  return html`<div class="suburl" onClick=${copy} title="Copy subscription link">
+    <${Ic} i="link"/><span class="suburl-txt">${url}</span>
+    <span class=${"suburl-copy" + (copied ? " ok" : "")}><${Ic} i=${copied ? "check" : "copy"}/></span>
+  </div>`;
+}
+
+// The owning user's subscription link, shown under the title in the peer QR modal. Only appears when the
+// peer is assigned to a subscription-enabled user; if the Subscription Key isn't unlocked this session it
+// points the operator to the user's QR view (where unlocking lives), rather than a dead control here.
+function SubPeerUrl({ peer }) {
+  useStore();                          // re-render when the store loads (panel settings arrive after mount)
+  const on = subFeatureOn();
+  const [url, setUrl] = useState(null);
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => { let ok = true;
+    (async () => {
+      if (!on || !peer.user_id) return;
+      const rec = (await subUsersMap())[peer.user_id];
+      if (!rec || !rec.enabled) return;
+      if (ok) setEnabled(true);
+      if (subSKCached()) { try { const u = await subUrlFor(rec); if (ok) setUrl(u); } catch (_) {} }
+    })();
+    return () => { ok = false; }; }, [peer.id, peer.user_id, on]);
+  if (!on || !peer.user_id || !enabled) return null;
+  return url ? html`<${SubUrlBar} url=${url}/>`
+    : html`<div class="hint suburl-hint">Subscription active — open this user's QR view to copy the shareable link.</div>`;
+}
+
+// Per-user subscription control: enable/create the shareable link, show + copy it, rotate (kill the old
+// link), or disable. All the crypto is client-side — enabling needs the Subscription Key, which is
+// unlocked once per session with the panel password (the convenience cache). Off entirely unless the
+// subscriptions feature is enabled in Settings.
+function SubUserPanel({ user }) {
+  useStore();                          // re-render when the store loads (panel settings arrive after mount)
+  const on = subFeatureOn();
+  const [rec, setRec] = useState(undefined);   // undefined=loading · null=none · object=record
+  const [url, setUrl] = useState(null);
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [vault, setVault] = useState(null);    // null=loading · bool
+  const [skReady, setSkReady] = useState(!!subSKCached());
+  const base = subBaseUrl();
+  const load = async () => {
+    const r = await api.subUsers();
+    setVault(!!(r && r.ok && r.data && r.data.vault));
+    setRec((r && r.ok && r.data && r.data.users && r.data.users[user.id]) || null);
+  };
+  useEffect(() => { if (on) load(); }, [user.id, on]);
+  useEffect(() => { let ok = true;
+    (async () => { if (rec && rec.enabled && subSKCached()) { try { const u = await subUrlFor(rec); if (ok) setUrl(u); } catch (_) { if (ok) setUrl(null); } } else if (ok) setUrl(null); })();
+    return () => { ok = false; }; }, [rec, skReady]);
+  if (!subFeatureOn()) return null;
+  const settingsLink = html`<a href="#/panel/settings" onClick=${() => closeAllModals()}>Settings → Subscriptions</a>`;
+  const run = fn => async () => { setBusy(true); setErr(""); try { await fn(); } catch (e) { setErr(e.message || String(e)); } setBusy(false); };
+  const unlock = async () => { await subUnlock(pw); setPw(""); setSkReady(true); };
+  const doEnable = run(async () => { if (!subSKCached()) await unlock(); await subEnableUser(user.id); subUsersForget(); await load(); });
+  const doRotate = run(async () => { if (!subSKCached()) await unlock(); await subRotateUser(user.id); subUsersForget(); await load(); });
+  const doUnlock = run(unlock);
+  const doDisable = run(async () => { await api.subUserDisable({ user_id: user.id }); subUsersForget(); setUrl(null); await load(); });
+  const pwField = html`<input class="subpw" type="password" autocomplete="off" placeholder="Panel password (unlocks the Subscription Key)"
+    value=${pw} onInput=${e => setPw(e.target.value)} onKeyDown=${e => { if (e.key === "Enter" && pw && !busy) doUnlock(); }}/>`;
+  let bodyEl;
+  if (vault === null || rec === undefined) bodyEl = html`<div class="hint">Loading…</div>`;
+  else if (vault === false) bodyEl = html`<div class="hint">Set up subscription encryption in ${settingsLink} first.</div>`;
+  else if (!rec || !rec.enabled) bodyEl = html`
+    <div class="hint">A shareable, mobile-friendly page of this user's QRs. New peers appear automatically; the unlock secret rides in the link and never reaches the server.</div>
+    ${!subSKCached() ? pwField : null}
+    <button class="btn" disabled=${busy || (!subSKCached() && !pw)} onClick=${doEnable}>Create subscription link</button>`;
+  else bodyEl = html`
+    ${url ? html`<${SubUrlBar} url=${url}/>` : !base
+      ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the shareable link.</div>`
+      : subSKCached() ? html`<div class="hint">Building link…</div>`
+      : html`<div class="hint">Unlock the Subscription Key to view this user's link.</div>${pwField}
+             <button class="btn" disabled=${busy || !pw} onClick=${doUnlock}>Unlock</button>`}
+    <div class="subpanel-actions">
+      <button class="btn ghost" disabled=${busy} onClick=${doRotate} title="Issue a new link and invalidate the old one">New link</button>
+      <button class="btn ghost danger" disabled=${busy} onClick=${doDisable}>Disable</button>
+    </div>
+    <div class="hint">Replacing or disabling the link stops serving new configs — but a config already scanned keeps working until you rekey or remove the peer.</div>`;
+  return html`<div class="subpanel">
+    <div class="subpanel-hd"><${Ic} i="link"/> Subscription${rec && rec.enabled ? html`<span class="subpanel-on">active</span>` : null}</div>
+    ${err ? html`<div class="hint err">${err}</div>` : null}
+    ${bodyEl}
+  </div>`;
+}
+
 function openUserConfigs(user, back) {
   const peers = Store.peersOfUser(user.id);
   const maxT = Math.min(3, peers.reduce((m, p) => Math.max(m, (p.targets || []).length || 1), 1));   // widest peer row, capped at 3 QRs
   const width = maxT * 256 + (maxT - 1) * 14 + 56;
   openModal(html`<${Sheet} title=${user.name} width=${width} onClose=${back || closeModal}>
+    <${SubUserPanel} user=${user}/>
     ${peers.length ? html`<div class="usercfg">${peers.map(p => html`<div class="usercfg-peer" key=${p.id}>
       <div class="usercfg-plabel">${p.title || "Peer"}${(p.targets || []).length ? html`<span class="usercfg-pcount">${p.targets.length} deployment${p.targets.length === 1 ? "" : "s"}</span>` : null}</div>
       <div class="usercfg-row">${(p.targets || []).map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${p} t=${t} bare=${true} primary=${p.targets.length > 1 && i === 0}/>`)}</div>
@@ -7841,6 +8053,7 @@ async function createOneMultiTargetPeer(userId, targets, opts, title) {
     if (!r.ok) return { ok: false, fails: ["create: " + (r.error || r.code || "failed")] };
     Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
     if (r.data && r.data.id) Store.recentlyCreated[r.data.id] = Date.now();
+    await subMaybePublish(userId, r.data && r.data.id, keys.priv, psk);   // publish to the user's subscription (best-effort)
     return { ok: true, id: r.data && r.data.id };
   } catch (e) { return { ok: false, fails: [e.message || String(e)] }; }
 }
