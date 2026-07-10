@@ -7,8 +7,10 @@
   --panel-2: #0e1420;
   --line: #1e2636;
   --ink: #e7edf5;
+  --ink-2: #C2D0E0;
   --muted: #8a97ad;
   --brand: #1FC8D6;
+  --brand-2: #5FE2EC;
   --brand-ink: #06222a;
   --radius: 14px;
 }
@@ -19,6 +21,7 @@
     --panel-2: #f4f7fb;
     --line: #d9e1ec;
     --ink: #16202e;
+    --ink-2: #33424F;
     --muted: #5a6a80;
     --brand-ink: #06222a;
   }
@@ -41,10 +44,14 @@ body {
   padding: 48px 18px 26px; padding-top: calc(48px + env(safe-area-inset-top));
   border-bottom: 1px solid var(--line); text-align: center;
 }
-.brand { display: inline-flex; align-items: center; gap: 11px; font-size: 23px; font-weight: 600; letter-spacing: .3px; }
-.brand b { color: var(--brand); font-weight: 700; }
-.mark { width: 36px; height: 36px; border-radius: 9px; background: var(--brand); position: relative; flex: none; }
-.mark::after { content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%; top: 10px; left: 50%; transform: translateX(-50%); background: var(--bg); }
+/* the exact swgPanel lockup: indicator-LED mark (dot dead-centre) + tight swg·Sub wordmark */
+.brand { display: inline-flex; align-items: center; gap: 10px; }
+.brand-mark { width: 18px; height: 18px; border-radius: 6px; position: relative; flex: none;
+  background: radial-gradient(circle at 50% 38%, var(--brand-2), var(--brand));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent), 0 0 14px color-mix(in srgb, var(--brand) 50%, transparent); }
+.brand-mark::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: var(--bg); }
+.brand-name { font-weight: 700; letter-spacing: .01em; font-size: 16px; color: var(--brand); }
+.brand-name span { color: var(--ink-2); font-weight: 600; }
 .who { color: var(--ink); font-weight: 700; font-size: 17px; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who:empty { display: none; }
 
