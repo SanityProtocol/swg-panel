@@ -32,6 +32,7 @@ Security model:
 stdlib-only Python 3, single file — same as the other swg programs.
 """
 
+import contextlib
 import grp
 import ipaddress
 import json
@@ -199,59 +200,83 @@ def do_restart(service):
     return "restarted " + svc["unit"]
 
 
-def do_issue_cert(service, domain):
-    svc = SERVICES[v_service(service)]
-    v_service(service)
-    v_domain(domain)
+def _load_access_tls():
+    """TLS creds for issuance. Preferred source is the panel's Access & TLS settings — root reads
+    panel-settings.json DIRECTLY (swgsub is masked from it), so the CF token NEVER has to ride in a queue
+    request (which is group-swg readable). Falls back to install.conf for anything unset."""
+    acc = {}
+    with contextlib.suppress(OSError, ValueError):
+        with open(os.path.join(STATE_DIR, "panel-settings.json")) as f:
+            acc = ((json.load(f).get("access") or {}).get("tls")) or {}
     cfg = load_conf()
-    mode = cfg.get("TLS_MODE", "") or "letsencrypt"
+    g = lambda k, ck: (str(acc.get(k) or cfg.get(ck) or "")).strip()
+    return {"mode": g("mode", "TLS_MODE"), "email": g("email", "ACME_EMAIL"),
+            "cf_token": g("cf_token", "CF_TOKEN"), "cf_account": (cfg.get("CF_ACCOUNT_ID") or "").strip(),
+            "cf_origin_token": g("cf_origin_token", "CF_ORIGIN_TOKEN")}
+
+
+def _fix_cert_perms(svc):
+    # acme/openssl install root-owned; the service (swgpanel/swgsub, both in group swg) must READ the key.
+    # root:swg with a group-readable key, and root keeps write — a service compromise can't rewrite it.
+    with contextlib.suppress(KeyError, PermissionError, OSError):
+        gid = grp.getgrnam(PANEL_GROUP).gr_gid
+        for f, m in ((svc["cert"], 0o644), (svc["key"], 0o640)):
+            if os.path.exists(f):
+                os.chown(f, 0, gid); os.chmod(f, m)
+
+
+def _issue_selfsigned(svc, domain):
+    if DRYRUN:
+        log("would openssl-selfsign CN=%s -> %s / %s" % (domain, svc["cert"], svc["key"])); return
+    rc, out = run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
+                   "-subj", "/CN=" + domain, "-addext", "subjectAltName=DNS:" + domain,
+                   "-keyout", svc["key"], "-out", svc["cert"]])
+    if rc:
+        raise Reject("openssl self-signed failed (rc %d): %s" % (rc, out.strip()[-300:]))
+
+
+def _issue_acme(svc, service, domain, mode, creds):
     acme = find_acme()
     env = dict(os.environ)
-
     issue = [acme, "--issue", "-d", domain, "--server", "letsencrypt", "--keylength", "ec-256"]
     if mode == "cloudflare":
-        tok = cfg.get("CF_TOKEN", "")
-        if not tok:
-            raise Reject("TLS_MODE=cloudflare but no CF_TOKEN in install.conf")
-        env["CF_Token"] = tok
-        if cfg.get("CF_ACCOUNT_ID"):
-            env["CF_Account_ID"] = cfg["CF_ACCOUNT_ID"]
+        if not creds["cf_token"]:
+            raise Reject("cloudflare mode but no CF token (set it in Access & TLS or install.conf)")
+        env["CF_Token"] = creds["cf_token"]
+        if creds["cf_account"]:
+            env["CF_Account_ID"] = creds["cf_account"]
         issue += ["--dns", "dns_cf"]
-    elif mode == "letsencrypt":
-        issue += ["--standalone"]           # HTTP-01, needs :80 reachable
-    else:
-        # cf15 (CF Origin CA) and letsencrypt-ip use different issuance paths — wired in a later phase.
-        raise Reject("issue-cert not yet implemented for TLS_MODE=%r" % (mode,))
-
-    if cfg.get("ACME_EMAIL"):
-        run([acme, "--register-account", "-m", cfg["ACME_EMAIL"], "--server", "letsencrypt"], env=env)
-
-    if not DRYRUN:
-        os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
+    else:  # letsencrypt (HTTP-01)
+        issue += ["--standalone"]
+    if creds["email"]:
+        run([acme, "--register-account", "-m", creds["email"], "--server", "letsencrypt"], env=env)
     rc, out = run(issue, env=env)
-    # acme.sh: 0 = issued, 2 = RENEW_SKIP (a still-valid cert already exists). Anything else is a
-    # failure UNLESS a cert is already on disk in acme's home (e.g. a prior partial run).
+    # acme.sh: 0 = issued, 2 = RENEW_SKIP (a still-valid cert already exists). Else a failure.
     if rc not in (0, 2) and not DRYRUN:
         raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, domain, out.strip()[-400:]))
-
-    inst = [acme, "--install-cert", "-d", domain, "--ecc",
-            "--key-file", svc["key"], "--fullchain-file", svc["cert"],
-            "--reloadcmd", reload_cmd_for(service)]
-    rc, out = run(inst, env=env)
+    rc, out = run([acme, "--install-cert", "-d", domain, "--ecc",
+                   "--key-file", svc["key"], "--fullchain-file", svc["cert"],
+                   "--reloadcmd", reload_cmd_for(service)], env=env)
     if rc:
         raise Reject("acme --install-cert failed (rc %d): %s" % (rc, out.strip()[-400:]))
-    # acme installs root-owned; the service (swgpanel/swgsub, both in group swg) must be able to READ the
-    # key. root:swg with a group-readable key, and root keeps write — a service compromise can't rewrite it.
+
+
+def do_issue_cert(service, domain):
+    svc = SERVICES[v_service(service)]
+    v_domain(domain)
+    creds = _load_access_tls()
+    mode = creds["mode"] or "letsencrypt"
     if not DRYRUN:
-        try:
-            gid = grp.getgrnam(PANEL_GROUP).gr_gid
-            for f, mode in ((svc["cert"], 0o644), (svc["key"], 0o640)):
-                if os.path.exists(f):
-                    os.chown(f, 0, gid)
-                    os.chmod(f, mode)
-        except (KeyError, PermissionError, OSError) as e:
-            log("warn: could not set cert perms: %s" % (e,))
-    return "issued+installed cert for %s (%s) via %s" % (domain, service, mode)
+        os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
+    if mode == "selfsigned":
+        _issue_selfsigned(svc, domain)
+    elif mode in ("cloudflare", "letsencrypt"):
+        _issue_acme(svc, service, domain, mode, creds)
+    else:
+        # cf15 (CF Origin CA) and letsencrypt-ip use different issuance paths — wired in a later phase.
+        raise Reject("issue-cert not yet implemented for TLS mode %r" % (mode,))
+    _fix_cert_perms(svc)
+    return "issued cert for %s (%s) via %s" % (domain, service, mode)
 
 
 def do_drop_cert(service, domain):
