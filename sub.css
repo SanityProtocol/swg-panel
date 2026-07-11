@@ -41,8 +41,8 @@ body {
 
 /* header — a prominent brand lockup: the LED mark + swgSub wordmark, the user's name beneath it */
 .bar {
-  flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: calc(14px + env(safe-area-inset-top)) 64px 12px;
+  flex: none; display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: calc(26px + env(safe-area-inset-top)) 64px 14px;
   border-bottom: 1px solid var(--line); text-align: center;
 }
 .brand { display: inline-flex; align-items: center; gap: 12px; }
@@ -95,14 +95,16 @@ body {
 /* horizontal swipe row of a peer's servers */
 .srow { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
 .srow::-webkit-scrollbar { display: none; }
-.scell { flex: 0 0 100%; min-width: 0; scroll-snap-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 0 16px 6px; }
+.scell { flex: 0 0 100%; min-width: 0; scroll-snap-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 0 16px 6px; }
 
 /* the node label + protocol / fork tags */
-.scell-node { flex: none; display: flex; flex-direction: column; align-items: center; gap: 5px; text-align: center; max-width: 100%; }
+.scell-node { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; max-width: 100%; }
+.scell-srv { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; max-width: 100%; }
 .scell-server { font-weight: 700; font-size: clamp(15px, 4.6vw, 18px); word-break: break-word; }
 .scell-primary { font-size: 11px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase; color: var(--brand); }
-.scell-tag { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: 11.5px; font-weight: 700; letter-spacing: .2px; line-height: 1; color: var(--brand); background: color-mix(in srgb, var(--brand) 14%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 32%, transparent); padding: 4px 9px; border-radius: 999px; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.scell-paste { color: var(--muted); font-size: 12.5px; font-weight: 600; }
+/* fork tag — beside the server name, sized to its text (never truncated) */
+.scell-tag { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: 13px; font-weight: 700; letter-spacing: .2px; line-height: 1.15; color: var(--brand); background: color-mix(in srgb, var(--brand) 15%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 34%, transparent); padding: 5px 12px; border-radius: 999px; white-space: nowrap; }
+.scell-paste { color: var(--muted); font-size: 13px; font-weight: 600; margin-top: 2px; }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }

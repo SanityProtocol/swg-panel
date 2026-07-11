@@ -33,7 +33,7 @@
       toQR: "QR", toConfig: "Config", toLink: "Link", copyShort: "Copy", dlShort: "Download",
       clientCmd: "Client command", generating: "Generating…", qrTooBig: "config too large to encode as QR",
       noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
-      pasteInto: "Paste into", tapCopy: "Tap to copy",
+      pasteInto: "Use in", tapCopy: "Tap to copy",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
       someBad: "Some peers couldn’t be decrypted — this link may be out of date. Ask your administrator for a fresh one.",
@@ -58,7 +58,7 @@
       toQR: "QR", toConfig: "Конфиг", toLink: "Ссылка", copyShort: "Копир.", dlShort: "Скачать",
       clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
       noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
-      pasteInto: "Вставьте в", tapCopy: "Нажмите, чтобы скопировать",
+      pasteInto: "Использовать в", tapCopy: "Нажмите, чтобы скопировать",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
       someBad: "Некоторые пиры не удалось расшифровать — возможно, ссылка устарела. Попросите у администратора новую.",
@@ -84,6 +84,10 @@
   }
 
   var AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
+  // Turn-proxy fork display order — mirrors the panel's TURN_FORKS so the sub lists forks the same way the
+  // admin sees them in settings.
+  var FORK_ORDER = ["cacggghp", "WINGS-N", "samosvalishe", "Moroka8", "kiper292", "anton48"];
+  function forkRank(f) { var i = FORK_ORDER.indexOf(f); return i < 0 ? FORK_ORDER.length : i; }
 
   // ── base64 (both standard and url-safe, padding optional) → bytes ──
   function b64ToBytes(s) {
@@ -249,15 +253,22 @@
       btn.textContent = t("copied"); setTimeout(function () { btn.textContent = label; }, 1400);
     }, function () {});
   }
+  // Decode a data: URL to a Blob WITHOUT fetch() — the sub's strict CSP (connect-src) would block fetching it.
+  function dataUrlToBlob(url) {
+    var comma = url.indexOf(","), mime = (url.slice(0, comma).match(/:(.*?);/) || [])[1] || "image/png";
+    var bin = atob(url.slice(comma + 1)), arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: mime });
+  }
   // Copy / save the QR itself (a PNG) — used when the QR is the thing on screen, so Copy/Download act on
   // what you see, not the hidden config text.
   function copyImage(url, btn, restore) {
     function done(ok) { if (btn) { btn.textContent = ok ? t("copied") : t("copyFailed"); setTimeout(function () { btn.textContent = restore; }, 1400); } }
     if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) return done(false);
-    fetch(url).then(function (r) { return r.blob(); }).then(function (blob) {
-      var item = {}; item[blob.type] = blob;
-      return navigator.clipboard.write([new ClipboardItem(item)]);
-    }).then(function () { done(true); }, function () { done(false); });
+    try {
+      var blob = dataUrlToBlob(url), item = {}; item[blob.type] = blob;
+      navigator.clipboard.write([new ClipboardItem(item)]).then(function () { done(true); }, function () { done(false); });
+    } catch (_) { done(false); }
   }
   function downloadImage(url, name) {
     var a = document.createElement("a");
@@ -282,7 +293,9 @@
     var tgt = it.tgt, cell = el("div", "scell");
     var node = el("div", "scell-node");
     if (mode !== "turn" && tgt.primary && (peer.targets || []).length > 1) node.appendChild(el("span", "scell-primary", t("primary")));
-    node.appendChild(el("span", "scell-server", tgt.node_name || tgt.node || tgt.iface || "server"));
+    var srvRow = el("div", "scell-srv");   // server name + (turn fork tag) on one line
+    srvRow.appendChild(el("span", "scell-server", tgt.node_name || tgt.node || tgt.iface || "server"));
+    node.appendChild(srvRow);
     var stage = el("div", "scell-stage");
     cell.appendChild(node); cell.appendChild(stage);
 
@@ -325,7 +338,7 @@
 
     if (mode === "turn") {
       var tp = it.tp;
-      node.appendChild(el("span", "scell-tag", SWGTurn.fork(tp.service)));
+      srvRow.appendChild(el("span", "scell-tag", SWGTurn.fork(tp.service)));   // fork tag beside the server name
       if (!conf) { draw(); return { el: cell, ctrl: ctrl }; }
       var art = SWGTurn.artifact(conf, tp, vkLink);
       node.appendChild(el("span", "scell-paste", t("pasteInto") + " " + (art.app || art.fork)));
@@ -349,7 +362,12 @@
   function peerPage(row, mode, vkLink, userName) {
     var peer = row.peer, secret = row.secret, items = [];
     if (mode === "turn") {
-      (peer.targets || []).forEach(function (tt) { var seen = {}; (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return; seen[f] = 1; items.push({ tgt: tt, tp: tp }); }); });
+      (peer.targets || []).forEach(function (tt) {
+        var seen = {}, tps = [];
+        (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return; seen[f] = 1; tps.push({ tp: tp, f: f }); });
+        tps.sort(function (a, b) { return forkRank(a.f) - forkRank(b.f); });   // canonical fork order (as in the panel)
+        tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp }); });
+      });
     } else {
       (peer.targets || []).forEach(function (tt) { if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });
     }
