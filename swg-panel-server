@@ -4521,6 +4521,32 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "config not stored", "code": "not_found"}
         return 200, {"ok": True, "data": {"config": text}}
 
+    if method == "POST" and path == "/api/config/purge-plaintext":
+        # Delete LEGACY plaintext configs — but ONLY for a peer whose encrypted blob already exists, and the
+        # server re-checks that per peer (never purge ahead of ciphertext). Called by the browser migration
+        # ceremony after it has encrypted + verified each peer. Optional {peer_ids} scopes it; else every peer.
+        roster = roster_load(roster_path)
+        peers = roster.get("peers") or {}
+        want = body.get("peer_ids")
+        pids = want if isinstance(want, list) else list(peers.keys())
+        purged = 0; kept = 0
+        for pid in pids:
+            p = peers.get(pid)
+            if not isinstance(p, dict):
+                continue
+            uid = p.get("user_id")
+            has_blob = bool(uid) and (pid in load_sub_blobs(deps, uid))   # the ciphertext must exist first
+            if not has_blob:
+                kept += 1                                                 # no blob → keep the plaintext (un-migratable / not yet done)
+                continue
+            for t in p.get("targets", []):
+                fp = os.path.join(config_dir, cfg_hash(p.get("pubkey", ""), t.get("node", ""), t.get("iface", "")))
+                with contextlib.suppress(OSError):
+                    if os.path.exists(fp):
+                        os.unlink(fp); purged += 1
+        return 200, {"ok": True, "data": {"purged": purged, "kept": kept,
+                                          "remaining": count_plaintext_configs(config_dir)}}
+
     if method == "GET" and path == "/api/describe":
         node = (qs.get("node") or [""])[0]
         if not known(node):

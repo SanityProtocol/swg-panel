@@ -397,22 +397,71 @@ async function subMaybePublish(userId, peerId, privkey, psk) {
 // `missing` so the caller can warn instead of leaving a silently-empty page. Best-effort per peer.
 async function subBackfillUser(uid, unlockKey) {
   const peers = Store.peersOfUser(uid);
-  let published = 0, missing = 0;
+  let published = 0, missing = 0; const missingPeers = [];
   for (const p of peers) {
     let conf = anySessionConf(p.pubkey);                          // just-created config still in this session
     // the private key is the same on every deployment, so any target that has a stored config will do —
-    // try them all rather than give up if only the first is missing/unreadable
-    if (!conf && Store.storeConfigs) {
+    // try them all rather than give up if only the first is missing/unreadable (legacy plaintext or session)
+    if (!conf) {
       for (const t of (p.targets || [])) {
         try { const r = await api.config(p.pubkey, t.node, t.iface); if (r && r.ok && r.data && r.data.config) { conf = r.data.config; break; } } catch (_) {}
       }
     }
     const parsed = conf ? parseFullConf(conf) : null;
-    if (!parsed || !parsed.privkey) { missing++; continue; }      // no private key available → no QR on the page
-    try { await subEncryptPeer(uid, p.id, parsed.privkey, parsed.psk, unlockKey); published++; }
-    catch (_) { missing++; }
+    if (!parsed || !parsed.privkey) {
+      // no readable config — but if it's ALREADY encrypted (blob exists), it's covered, not a failure (idempotent resume)
+      try { const g = await api.subBlobGet(p.id); if (g && g.ok && g.data && g.data.sec) { published++; continue; } } catch (_) {}
+      missing++; missingPeers.push(p.id); continue;                 // no key available → can't encrypt / flag for rekey
+    }
+    try {
+      await subEncryptPeer(uid, p.id, parsed.privkey, parsed.psk, unlockKey);
+      await captureOverridesFrom(p, parsed);                       // move the config's non-secret DNS/MTU/AllowedIPs into the roster
+      published++;
+    } catch (_) { missing++; missingPeers.push(p.id); }
   }
-  return { published, missing, total: peers.length };
+  return { published, missing, total: peers.length, missingPeers };
+}
+
+// Migrating a plaintext config → blob keeps ONLY {k,p}; its non-secret DNS/MTU/AllowedIPs/keepalive would be
+// lost, so capture them into the roster (once — never clobber an existing override). Sparse vs the interface default.
+async function captureOverridesFrom(peer, parsed) {
+  if (peer.overrides && Object.keys(peer.overrides).length) return;   // already has roster overrides
+  const t0 = (peer.targets || [])[0]; if (!t0) return;
+  const ov = configOverrides({ dns: (parsed.dns || []).join(", "), mtu: parsed.mtu, allowed: parsed.allowed, keepalive: parsed.keepalive },
+                             Store.ifaceMeta(t0.node, t0.iface));
+  if (Object.keys(ov).length) { try { await api.peerUpdate({ peer_id: peer.id, overrides: ov }); } catch (_) {} }
+}
+
+// The one-time migration pass: encrypt every ASSIGNED peer's legacy plaintext (or session) config into its
+// blob, capture non-secret overrides, then purge the plaintext ONLY where a blob now exists (server re-checks).
+// Resumable — re-running processes only the stragglers. Returns a report; `flagged` = peers that couldn't be
+// encrypted (unassigned, or no stored key) → the rekey affordance. Requires the vault unlocked.
+async function runConfigMigration() {
+  if (!subSKCached()) throw new Error("Unlock the encryption key first.");
+  const users = Object.values((Store._server && Store._server.roster && Store._server.roster.users) || {});
+  let migrated = 0, total = 0; const flagged = [];
+  for (const u of users) {
+    const peers = Store.peersOfUser(u.id);
+    if (!peers.length) continue;
+    total += peers.length;
+    const unlockKey = await ensureUserUnlockKey(u.id);
+    if (!unlockKey) { peers.forEach(p => flagged.push(p.id)); continue; }
+    const res = await subBackfillUser(u.id, unlockKey);
+    migrated += res.published; flagged.push(...res.missingPeers);
+  }
+  // Unassigned peers can't be encrypted (the blob store is per-user) — flag any that still hold plaintext.
+  for (const p of (Store.recon.peers || [])) {
+    if (p.user_id) continue;
+    let hasPlain = false;
+    for (const t of (p.targets || [])) {
+      try { const r = await api.config(p.pubkey, t.node, t.iface); if (r && r.ok && r.data && r.data.config) { hasPlain = true; break; } } catch (_) {}
+    }
+    if (hasPlain) flagged.push(p.id);
+  }
+  const pr = await api.purgePlaintext({});                         // deletes plaintext ONLY where a blob exists
+  await Store.poll();                                              // refresh the plaintext count
+  return { migrated, total, flagged: [...new Set(flagged)], purged: (pr && pr.data && pr.data.purged) || 0,
+           remaining: (pr && pr.data && pr.data.remaining) || 0 };
 }
 
 const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
@@ -590,6 +639,7 @@ const api = {
   subBlob(b) { return this.post("/api/sub/blob", b); },
   subBlobGet(pid) { return this.get("/api/sub/blob?peer_id=" + encodeURIComponent(pid)); },   // read one peer's ciphertext for in-browser Show-QR decrypt
   subEscrow(b) { return this.post("/api/sub/escrow", b); },   // ensure a user holds an encryption unlock-key (encrypted config storage, no subscription)
+  purgePlaintext(b) { return this.post("/api/config/purge-plaintext", b || {}); },   // migration: delete legacy plaintext where a blob exists
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
   // external integration API (Settings → Integrations): read-only tokens + webhooks
   apiTokenCreate(label) { return this.post("/api/integrations/token", { label }); },
@@ -7032,6 +7082,51 @@ function SubVaultCard() {
       : html`<button class="btn btn-ghost btn-mini danger" onClick=${() => setResetMode(true)}>Reset encryption…</button>`}
   <//>`;
 }
+// The one-time "Encrypt stored configs" migration prompt — shown in Client configs whenever LEGACY plaintext
+// configs are still on the panel (Store.configsPlaintext). Requires the vault (set it up in the card above first)
+// + the encryption key unlocked; runs runConfigMigration (encrypt-all → capture overrides → purge plaintext where
+// a blob exists), then reports peers that couldn't be encrypted (→ rekey). Resumable: re-running does the rest.
+function ConfigMigrationCard() {
+  useStore();                          // re-render as the plaintext count drops after a pass
+  const [busy, setBusy] = useState(false);
+  const [pw, setPw] = useState("");
+  const [report, setReport] = useState(null);
+  const [vaultExists, setVaultExists] = useState(true);
+  useEffect(() => { api.subVault().then(r => setVaultExists(!!(r && r.ok && r.data && r.data.exists))).catch(() => {}); }, []);
+  const n = Store.configsPlaintext || 0;
+  if (n <= 0 && !report) return null;                          // nothing to migrate
+  const flaggedNames = report ? report.flagged.map(pid => {
+    const p = (Store.recon.peers || []).find(x => x.id === pid) || {};
+    return (p.name ? p.name + " · " : "") + (p.title || "peer");
+  }) : [];
+  const run = async () => {
+    if (!vaultExists) { toast("Set up the encryption key above first.", "err"); return; }
+    if (!subSKCached()) {
+      if (!pw) { toast("Enter your panel password to unlock the encryption key.", "err"); return; }
+      try { await subUnlock(pw); setPw(""); } catch (e) { toast((e && e.message) || "Unlock failed", "err"); return; }
+    }
+    setBusy(true);
+    try {
+      const rep = await runConfigMigration();
+      setReport(rep);
+      toast(`Encrypted ${rep.migrated} config${rep.migrated === 1 ? "" : "s"}${rep.purged ? `, purged ${rep.purged} plaintext` : ""}.`, "ok");
+    } catch (e) { toast((e && e.message) || "Migration failed", "err"); }
+    setBusy(false);
+  };
+  const pwField = html`<input class="subpw" type="password" style="max-width:220px" value=${pw} autocomplete="off"
+    placeholder="Panel password (unlocks the encryption key)" onKeyDown=${e => { if (e.key === "Enter") run(); }} onInput=${e => setPw(e.target.value)}/>`;
+  return html`<div class=${"notice " + (n > 0 ? "warn" : "ok")} style="margin-top:10px"><div style="min-width:0">
+    ${n > 0
+      ? html`<b>${n} plaintext config${n === 1 ? "" : "s"} still on the panel.</b> Encrypt them so the server can no longer read a client private key. Safe and resumable — the plaintext is deleted only after its encrypted copy exists.`
+      : html`<b>All stored configs are encrypted.</b>`}
+    ${report ? html`<div class="hint" style="margin-top:8px">Encrypted <b>${report.migrated}</b> of ${report.total} · purged <b>${report.purged}</b> plaintext${report.remaining ? ` · ${report.remaining} still plaintext` : ""}.
+      ${report.flagged.length ? html`<div style="margin-top:6px"><b>${report.flagged.length} peer${report.flagged.length === 1 ? "" : "s"}</b> couldn't be encrypted (unassigned, or no stored key) — <b>rekey</b> or assign ${report.flagged.length === 1 ? "it" : "them"} to include: ${flaggedNames.slice(0, 8).join(", ")}${flaggedNames.length > 8 ? ` +${flaggedNames.length - 8} more` : ""}.</div>` : html`<div style="margin-top:6px">Every assigned peer with a stored key is encrypted.</div>`}</div>` : null}
+    <div class="chiprow" style="margin-top:8px">
+      ${(n > 0 && !subSKCached()) ? pwField : null}
+      ${n > 0 ? html`<button class="btn btn-primary btn-mini" disabled=${busy || !vaultExists} onClick=${run}>${busy ? "Encrypting…" : (report ? "Encrypt remaining" : "Encrypt stored configs")}</button>` : null}
+    </div>
+  </div></div>`;
+}
 function PanelSettingsScreen() {
   // NOTE: deliberately NOT subscribed to the 5s poll (no useStore) — this is an edit form seeded from a
   // snapshot at mount. Re-rendering every poll re-diffs every controlled input (the source of the checkbox
@@ -7674,6 +7769,7 @@ function PanelSettingsScreen() {
           <div class="seclabel">Encryption</div>
           <p class="hint" style="margin:0 0 8px">An encryption key held only by you (independent of your login password) protects stored client configs so the server can't read the private keys, and unlocks a peer's QR any time you're signed in. The same key powers subscriptions when you turn them on.</p>
           <${SubVaultCard}/>
+          <${ConfigMigrationCard}/>
         </div>` : null}
         ${section === "subs" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Subscriptions</div>
