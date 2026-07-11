@@ -137,6 +137,17 @@
     return e;
   }
 
+  // Shrink a config/link <pre> so it fits its box in BOTH axes without scrolling — down to a legible floor
+  // (past which overflow:auto lets it scroll). A ceiling keeps it from looking oversized on big/tablet screens.
+  function fitText(pre) {
+    var CEIL = 14, FLOOR = 7;
+    pre.style.fontSize = CEIL + "px";
+    for (var i = 0, f = CEIL; i < 40 && f > FLOOR; i++) {
+      if (pre.scrollHeight <= pre.clientHeight + 1 && pre.scrollWidth <= pre.clientWidth + 1) break;
+      f -= 0.5; pre.style.fontSize = f + "px";
+    }
+  }
+
   // ── brand theme — follow the panel's per-mode accent colour (drives the logo, tabs, buttons, favicon) ──
   var THEME = { color: "", light: "" };   // set from the served subscription data
   function isLight() {
@@ -236,87 +247,6 @@
       btn.textContent = t("copied"); setTimeout(function () { btn.textContent = label; }, 1400);
     }, function () {});
   }
-  // A collapsible section (config text / QR / client command). Opening reveals content below the fold, so
-  // nudge the page down by roughly the revealed height (capped); closing scrolls back up by the same.
-  function cfgDetails(summaryText, contentEl) {
-    var det = el("details", "cfg");
-    det.appendChild(el("summary", null, summaryText));
-    det.appendChild(contentEl);
-    det.addEventListener("toggle", function () {
-      if (det.open) {
-        var amt = Math.min((contentEl.offsetHeight || 0) + 24, Math.round(window.innerHeight * 0.5));
-        det._amt = amt;
-        window.scrollBy({ top: amt, behavior: "smooth" });
-      } else {
-        window.scrollBy({ top: -(det._amt || 0), behavior: "smooth" });
-      }
-    });
-    return det;
-  }
-
-  // A single deployment (node/iface) card: QR + actions + collapsible config text.
-  function targetCard(userName, peer, tgt, conf, reason) {
-    var card = el("div", "tgt");
-    if (tgt.primary) card.appendChild(el("div", "primary", t("primary")));
-    card.appendChild(el("div", "tgt-node", tgt.node_name || tgt.node || tgt.iface || "server"));
-
-    if (!conf) {
-      card.appendChild(el("div", "qr-fail", reason || t("notReady")));
-      return card;
-    }
-
-    var qwrap = el("div", "qr");
-    try {
-      var img = el("img", "qrimg");
-      img.alt = "config QR";
-      img.src = qrDataURL(conf, 320);
-      qwrap.appendChild(img);
-    } catch (_) {
-      qwrap.appendChild(el("div", "qr-fail", t("qrTooBig")));
-    }
-    card.appendChild(qwrap);
-
-    var acts = el("div", "acts");
-    var name = fileName(userName, peer.title, tgt);
-    var dl = el("button", "btn", t("download"));
-    dl.onclick = function () { download(conf, name); };
-    acts.appendChild(dl);
-    var cp = el("button", "btn ghost", t("copyConfig"));
-    cp.onclick = function () {
-      (navigator.clipboard ? navigator.clipboard.writeText(conf) : Promise.reject()).then(function () {
-        cp.textContent = t("copied"); setTimeout(function () { cp.textContent = t("copyConfig"); }, 1400);
-      }, function () { cp.textContent = t("copyFailed"); setTimeout(function () { cp.textContent = t("copyConfig"); }, 1400); });
-    };
-    acts.appendChild(cp);
-    card.appendChild(acts);
-
-    card.appendChild(cfgDetails(t("showConfig"), el("pre", null, conf)));
-    return card;
-  }
-
-  // Prev/next + dots for a peer's deployment carousel. The scroll container does the swiping (CSS
-  // scroll-snap); this just drives it from buttons and reflects the position. Offsets are measured
-  // live so it's robust to gaps and to the desktop→mobile layout switch. Hidden on wide screens via CSS.
-  function carouselNav(grid, count) {
-    var nav = el("div", "peer-nav");
-    var prev = el("button", "nav-btn", "‹"); prev.setAttribute("aria-label", "Previous server"); prev.type = "button";
-    var next = el("button", "nav-btn", "›"); next.setAttribute("aria-label", "Next server"); next.type = "button";
-    var dots = el("div", "nav-dots"), dotEls = [];
-    for (var i = 0; i < count; i++) { var d = el("span", "nav-dot"); dotEls.push(d); dots.appendChild(d); }
-    function offset(i) { return grid.children[i].getBoundingClientRect().left - grid.getBoundingClientRect().left + grid.scrollLeft; }
-    function current() { var sl = grid.scrollLeft, best = 0, bd = Infinity; for (var i = 0; i < count; i++) { var dd = Math.abs(offset(i) - sl); if (dd < bd) { bd = dd; best = i; } } return best; }
-    function go(i) { i = Math.max(0, Math.min(count - 1, i)); grid.scrollTo({ left: offset(i), behavior: "smooth" }); }
-    prev.onclick = function () { go(current() - 1); };
-    next.onclick = function () { go(current() + 1); };
-    function sync() { var idx = current(); for (var i = 0; i < dotEls.length; i++) dotEls[i].className = "nav-dot" + (i === idx ? " on" : ""); prev.disabled = idx <= 0; next.disabled = idx >= count - 1; }
-    var raf = 0;
-    grid.addEventListener("scroll", function () { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; sync(); }); }, { passive: true });
-    dotEls.forEach(function (d, i) { d.onclick = function () { go(i); }; });
-    nav.appendChild(prev); nav.appendChild(dots); nav.appendChild(next);
-    setTimeout(sync, 0);
-    return nav;
-  }
-
   // The direct WireGuard/AmneziaWG config for a deployment (byte-identical to the panel's buildConf).
   function confFor(secret, tgt) {
     return buildConf({
@@ -327,50 +257,128 @@
     });
   }
 
+  // ── ONE server deployment as a full-viewport cell: a big centred QR (default) or the config/link text,
+  //    toggled IN PLACE. Returns { el, ctrl }. ctrl drives the peer's fixed bottom bar (toggle/copy/download)
+  //    so the currently-swiped cell's actions live in one steady spot. A turn artifact may resolve async
+  //    (wingsv:// needs zlib) — the cell shows "Generating…" then fills. ──
+  function makeCell(userName, peer, it, mode, secret, vkLink, reason) {
+    var tgt = it.tgt, cell = el("div", "scell");
+    var node = el("div", "scell-node");
+    if (mode !== "turn" && tgt.primary && (peer.targets || []).length > 1) node.appendChild(el("span", "scell-primary", t("primary")));
+    node.appendChild(el("span", "scell-server", tgt.node_name || tgt.node || tgt.iface || "server"));
+    var stage = el("div", "scell-stage");
+    cell.appendChild(node); cell.appendChild(stage);
 
-  // One turn-proxy config for a peer (a single deployment × fork). The fork tag sits top-right. A turn
-  // artifact is either an app-import format that itself scans as a QR (kiper292 .conf, wingsv://,
-  // vkturnproxy://) or a "dual" one (sidecar forks): a plain wg/awg .conf you import into WireGuard PLUS a
-  // separate client command. QR-capable turn formats show the QR by default with a "Show config text"
-  // toggle; dual configs show the wg/awg text with a "Show QR" toggle (scan it into WireGuard). Cards are
-  // laid out one-per-view by paint()'s carousel so a peer's turn configs swipe left/right.
-  function turnConfigCard(userName, peer, tgt, tp, conf, vkLink, reason) {
-    var card = el("div", "tgt turn");
-    card.appendChild(el("div", "turn-fork", SWGTurn.fork(tp.service)));   // fork tag, top-right
-    card.appendChild(el("div", "tgt-node", tgt.node_name || tgt.node || tgt.iface || "server"));
-    if (!conf) { card.appendChild(el("div", "qr-fail", reason || t("notReady"))); return card; }
-    var art = SWGTurn.artifact(conf, tp, vkLink);
-    card.appendChild(el("div", "turn-app", t("pasteInto") + " " + (art.app || art.fork)));   // which app to paste into
-    var box = el("div", "turntext-wrap"), acts = el("div", "acts");
-    card.appendChild(box); card.appendChild(acts);
-    function qrEl(text) {
-      try { var w = el("div", "qr"), img = el("img", "qrimg"); img.alt = "config QR"; img.src = qrDataURL(text, 320); w.appendChild(img); return w; }
-      catch (_) { return null; }
+    var conf = secret && secret.k ? confFor(secret, tgt) : null;
+    var ctrl = { ready: false, payload: "", ext: "conf", isLink: false, hasQR: false, cmd: null, view: "qr",
+                 base: fileName(userName, peer.title, tgt), redraw: null, notify: null };
+
+    ctrl.copyInto = function (btn, restore) {
+      (navigator.clipboard ? navigator.clipboard.writeText(ctrl.payload) : Promise.reject()).then(function () {
+        if (btn) { btn.textContent = t("copied"); setTimeout(function () { btn.textContent = restore; }, 1400); }
+      }, function () { if (btn) { btn.textContent = t("copyFailed"); setTimeout(function () { btn.textContent = restore; }, 1400); } });
+    };
+
+    function draw() {
+      if (ctrl._ro) { ctrl._ro.disconnect(); ctrl._ro = null; }
+      stage.innerHTML = "";
+      if (!ctrl.ready) { stage.appendChild(el("div", "cfg-fail", reason || (mode === "turn" ? t("generating") : t("notReady")))); if (ctrl.notify) ctrl.notify(); return; }
+      if (ctrl.view === "qr" && ctrl.hasQR) {
+        var box = el("div", "qrbox");
+        try { var img = el("img", "qrimg"); img.alt = "config QR"; img.src = qrDataURL(ctrl.payload, 760); box.appendChild(img); }
+        catch (_) { ctrl.hasQR = false; ctrl.view = "text"; return draw(); }
+        stage.appendChild(box);
+      } else {
+        var wrap = el("div", "textwrap");
+        var pre = el("pre", "cfgtext", ctrl.payload); pre.title = t("tapCopy");
+        pre.onclick = function () { ctrl.copyInto(null, ""); };
+        wrap.appendChild(pre);
+        if (ctrl.cmd) { var c = el("div", "cmdblk"); c.appendChild(el("div", "cmdlbl", t("clientCmd")));
+          var cp = el("pre", "cfgtext cmdtext", ctrl.cmd); cp.title = t("tapCopy");
+          cp.onclick = function () { if (navigator.clipboard) navigator.clipboard.writeText(ctrl.cmd); };
+          c.appendChild(cp); wrap.appendChild(c); }
+        stage.appendChild(wrap);
+        // auto-fit the config to the stage (re-fits on rotation / cell resize)
+        if (window.ResizeObserver) { ctrl._ro = new ResizeObserver(function () { fitText(pre); }); ctrl._ro.observe(stage); }
+        else setTimeout(function () { fitText(pre); }, 0);
+      }
+      if (ctrl.notify) ctrl.notify();
     }
-    function fill(text) {
-      box.innerHTML = ""; acts.innerHTML = "";
-      while (card.lastChild && card.lastChild.classList && card.lastChild.classList.contains("cfg")) card.removeChild(card.lastChild);
-      var copyLabel = art.uri ? t("copyLink") : t("copyConfig");
-      var isDual = !!art.cmd;                          // sidecar: `text` is a wg/awg config imported into WireGuard
-      var qr = art.qr ? qrEl(text) : null;             // only forks whose client imports via a scannable QR
-      var cp = el("button", "btn ghost", copyLabel);
-      var pre = el("pre", "turntext", text); pre.title = t("tapCopy");
-      pre.onclick = function () { copyText(text, cp, copyLabel); };
-      if (qr && !isDual) { box.appendChild(qr); }      // QR-capable turn format → QR by default
-      else { box.appendChild(pre); }
-      cp.onclick = function () { copyText(text, cp, copyLabel); };
-      var dl = el("button", "btn", t("dl") + " ." + (art.ext || "conf"));
-      dl.onclick = function () { download(text, fileName(userName, peer.title, tgt) + "-" + (art.fork || "turn"), art.ext || "conf"); };
-      acts.appendChild(cp); acts.appendChild(dl);
-      if (qr && !isDual) card.appendChild(cfgDetails(t("showConfig"), pre));   // QR default → text under a toggle
-      else if (qr) card.appendChild(cfgDetails(t("showQR"), qr));              // dual: wg/awg text default → QR under a toggle
-      // else: forks with no QR support (app-scheme links) stay text-only, no toggle
-      if (art.cmd) card.appendChild(cfgDetails(t("clientCmd"), el("pre", null, art.cmd)));
+    ctrl.redraw = draw;
+
+    if (mode === "turn") {
+      var tp = it.tp;
+      node.appendChild(el("span", "scell-tag", SWGTurn.fork(tp.service)));
+      if (!conf) { draw(); return { el: cell, ctrl: ctrl }; }
+      var art = SWGTurn.artifact(conf, tp, vkLink);
+      node.appendChild(el("span", "scell-paste", t("pasteInto") + " " + (art.app || art.fork)));
+      var apply = function (text) {
+        ctrl.payload = text; ctrl.ready = true; ctrl.ext = art.ext || "conf";
+        ctrl.isLink = !!art.uri; ctrl.hasQR = !!art.qr; ctrl.cmd = art.cmd || null;
+        ctrl.view = (art.qr && !art.cmd) ? "qr" : "text";   // scannable link/conf → QR; sidecar dual → wg text first
+        draw();
+      };
+      if (art.text != null) apply(art.text);
+      else { draw(); Promise.resolve().then(art.buildAsync).then(apply).catch(function (e) { ctrl.ready = false; stage.innerHTML = ""; stage.appendChild(el("div", "cfg-fail", (e && e.message) || t("cantGen"))); if (ctrl.notify) ctrl.notify(); }); }
+    } else {
+      if (conf) { ctrl.payload = conf; ctrl.ready = true; ctrl.hasQR = true; ctrl.ext = "conf"; ctrl.view = "qr"; }
+      draw();
     }
-    if (art.text != null) fill(art.text);
-    else { box.appendChild(el("div", "hint", t("generating")));
-      Promise.resolve().then(art.buildAsync).then(fill).catch(function (e) { box.innerHTML = ""; box.appendChild(el("div", "qr-fail", (e && e.message) || t("cantGen"))); }); }
-    return card;
+    return { el: cell, ctrl: ctrl };
+  }
+
+  // ── ONE peer as a full-viewport page: head (title + server dots) · a horizontal swipe row of server
+  //    cells · a fixed bottom bar (toggle / copy / download) that always acts on the visible cell. ──
+  function peerPage(row, mode, vkLink, userName) {
+    var peer = row.peer, secret = row.secret, items = [];
+    if (mode === "turn") {
+      (peer.targets || []).forEach(function (tt) { var seen = {}; (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return; seen[f] = 1; items.push({ tgt: tt, tp: tp }); }); });
+    } else {
+      (peer.targets || []).forEach(function (tt) { if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });
+    }
+    if (!items.length) return null;
+    var reason = row.bad ? t("outOfDate") : (!peer.sec ? t("notReady") : null);
+
+    var page = el("section", "ppage");
+    var head = el("div", "ppage-head");
+    head.appendChild(el("span", "ppage-title", peer.title || t("peer")));
+    var dotEls = [];
+    if (items.length > 1) { var dots = el("div", "ppage-dots"); for (var i = 0; i < items.length; i++) { var d = el("span", "pdot"); dotEls.push(d); dots.appendChild(d); } head.appendChild(dots); }
+    page.appendChild(head);
+
+    var srow = el("div", "srow");
+    var ctrls = items.map(function (it) { var c = makeCell(userName, peer, it, mode, secret, vkLink, reason); srow.appendChild(c.el); return c.ctrl; });
+    page.appendChild(srow);
+
+    var bar = el("div", "pbar");
+    var toggle = el("button", "pbtn ghost", ""); toggle.type = "button";
+    var copyB = el("button", "pbtn ghost", ""); copyB.type = "button";
+    var dlB = el("button", "pbtn primary", ""); dlB.type = "button";
+    bar.appendChild(toggle); bar.appendChild(copyB); bar.appendChild(dlB);
+    page.appendChild(bar);
+
+    var curIdx = 0;
+    function cur() { return ctrls[curIdx]; }
+    function syncBar() {
+      var c = cur();
+      if (c && c.ready && c.hasQR) { toggle.hidden = false; toggle.textContent = (c.view === "qr") ? (c.isLink ? t("showLink") : t("showConfig")) : t("showQR"); }
+      else toggle.hidden = true;
+      var can = !!(c && c.ready && c.payload);
+      copyB.hidden = dlB.hidden = !can;
+      if (can) { copyB.textContent = c.isLink ? t("copyLink") : t("copyConfig"); dlB.textContent = t("dl") + " ." + (c.ext || "conf"); }
+      for (var i = 0; i < dotEls.length; i++) dotEls[i].className = "pdot" + (i === curIdx ? " on" : "");
+    }
+    ctrls.forEach(function (c) { c.notify = function () { if (ctrls[curIdx] === c) syncBar(); }; });
+    toggle.onclick = function () { var c = cur(); if (!c || !c.hasQR) return; c.view = (c.view === "qr") ? "text" : "qr"; c.redraw(); syncBar(); };
+    copyB.onclick = function () { var c = cur(); if (c) c.copyInto(copyB, c.isLink ? t("copyLink") : t("copyConfig")); };
+    dlB.onclick = function () { var c = cur(); if (c) download(c.payload, c.base + (mode === "turn" ? "-turn" : ""), c.ext || "conf"); };
+
+    function current() { var sl = srow.scrollLeft, best = 0, bd = Infinity; for (var i = 0; i < srow.children.length; i++) { var dd = Math.abs((srow.children[i].offsetLeft - srow.offsetLeft) - sl); if (dd < bd) { bd = dd; best = i; } } return best; }
+    var raf = 0;
+    srow.addEventListener("scroll", function () { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; var i = current(); if (i !== curIdx) { curIdx = i; syncBar(); } }); }, { passive: true });
+    dotEls.forEach(function (d, i) { d.onclick = function () { srow.scrollTo({ left: srow.children[i].offsetLeft - srow.offsetLeft, behavior: "smooth" }); }; });
+    setTimeout(syncBar, 0);
+    return page;
   }
 
   function render(data, cryptoKey) {
@@ -413,47 +421,19 @@
       if (!tabs.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
       var mode = tabs[0];   // WG first when present, else the first available
 
-      var bar = el("div", "modebar"), listEl = el("div", "peer-list"), btns = {};
+      var bar = el("div", "modebar"), pager = el("div", "pager"), btns = {};
       tabs.forEach(function (m) {
         var b = el("button", "modetab" + (m === mode ? " on" : ""), t(m));
         b.onclick = function () { if (mode === m) return; mode = m; tabs.forEach(function (x) { btns[x].className = "modetab" + (x === mode ? " on" : ""); }); paint(); };
         btns[m] = b; bar.appendChild(b);
       });
       if (tabs.length > 1) wrap.appendChild(bar);
-      wrap.appendChild(listEl);
+      wrap.appendChild(pager);
 
       function paint() {
-        listEl.innerHTML = "";
-        rows.forEach(function (row) {
-          var peer = row.peer, secret = row.secret;
-          // Items for the selected tab. WG/AWG: one per matching deployment. TURN: one per (deployment × fork)
-          // config, so a peer with several turn-proxies is a swipeable set of configs.
-          var items = [];
-          if (mode === "turn") {
-            (peer.targets || []).forEach(function (tt) {
-              var seen = {};
-              (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return; seen[f] = 1; items.push({ tgt: tt, tp: tp }); });
-            });
-          } else {
-            (peer.targets || []).forEach(function (tt) { if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });
-          }
-          if (!items.length) return;                       // this peer has nothing in the selected mode
-          var sec = el("section", "peer");
-          var head = el("div", "peer-head");
-          head.appendChild(el("span", "peer-title", peer.title || t("peer")));
-          head.appendChild(el("span", "peer-count", servers(items.length)));
-          sec.appendChild(head);
-          var reason = row.bad ? t("outOfDate") : (!peer.sec ? t("notReady") : null);
-          var grid = el("div", "tgts");
-          items.forEach(function (it) {
-            var conf = secret && secret.k ? confFor(secret, it.tgt) : null;
-            grid.appendChild(mode === "turn" ? turnConfigCard(userName, peer, it.tgt, it.tp, conf, vkLink, reason)
-                                             : targetCard(userName, peer, it.tgt, conf, reason));
-          });
-          sec.appendChild(grid);
-          if (items.length > 1) sec.appendChild(carouselNav(grid, items.length));
-          listEl.appendChild(sec);
-        });
+        pager.scrollTop = 0; pager.innerHTML = "";
+        rows.forEach(function (row) { var pg = peerPage(row, mode, vkLink, userName); if (pg) pager.appendChild(pg); });
+        if (!pager.children.length) pager.appendChild(el("div", "ppage cfg-fail", t("noConfigs")));
       }
       paint();
       document.getElementById("state").hidden = true;

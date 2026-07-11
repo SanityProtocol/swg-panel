@@ -1,5 +1,6 @@
-/* swg-sub — the public subscription page. Mobile-first, dark by default, self-contained
-   (no external fonts/assets — the CSP forbids them). Phase 5 will layer swipe/prev-next on top. */
+/* swg-sub — the public subscription page. Mobile-first, full-screen paging: one peer per screen (scroll
+   down for the next), swipe a peer's servers left/right, a big centred QR that toggles to the config text,
+   and a steady bottom action bar. Dark by default, self-contained (no external fonts — the CSP forbids them). */
 
 :root {
   --bg: #0a0e15;
@@ -12,10 +13,8 @@
   --brand: #1FC8D6;
   --brand-2: #5FE2EC;
   --brand-ink: #06222a;
-  --radius: 14px;
+  --radius: 16px;
 }
-/* Light palette: applied from the OS preference (unless the viewer forced a theme) OR when the
-   viewer's toggle stamps data-theme="light". data-theme (the manual choice) always wins. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --bg: #eef2f7; --panel: #ffffff; --panel-2: #f4f7fb; --line: #d9e1ec;
@@ -28,146 +27,122 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
+html, body { margin: 0; padding: 0; height: 100%; }
 body {
-  background: var(--bg);
-  color: var(--ink);
+  background: var(--bg); color: var(--ink);
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-text-size-adjust: 100%;
-  min-height: 100vh;
+  height: 100dvh; overflow: hidden; overscroll-behavior: none;
 }
 
-/* Centered hero header: the logo, then the username underneath — with room above the logo and
-   between the logo and the name. */
+/* app shell — a full-height column: header · (loading OR peers) */
+#app { height: 100dvh; display: flex; flex-direction: column; min-height: 0; }
+
+/* compact header — bigger logo than before, username beside/under it, minimal vertical cost */
 .bar {
-  display: flex; flex-direction: column; align-items: center; gap: 16px;
-  padding: 48px 18px 26px; padding-top: calc(48px + env(safe-area-inset-top));
+  flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: calc(12px + env(safe-area-inset-top)) 16px 10px;
   border-bottom: 1px solid var(--line); text-align: center;
 }
-/* the exact swgPanel lockup: indicator-LED mark (dot dead-centre) + tight swg·Sub wordmark */
 .brand { display: inline-flex; align-items: center; gap: 10px; }
-.brand-mark { width: 18px; height: 18px; border-radius: 6px; position: relative; flex: none;
+.brand-mark { width: 26px; height: 26px; border-radius: 8px; position: relative; flex: none;
   background: radial-gradient(circle at 50% 38%, var(--brand-2), var(--brand));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent), 0 0 14px color-mix(in srgb, var(--brand) 50%, transparent); }
-.brand-mark::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: var(--bg); }
-.brand-name { font-weight: 700; letter-spacing: .01em; font-size: 16px; color: var(--brand); }
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent), 0 0 16px color-mix(in srgb, var(--brand) 50%, transparent); }
+.brand-mark::after { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: var(--bg); }
+.brand-name { font-weight: 700; letter-spacing: .01em; font-size: clamp(20px, 6vw, 24px); color: var(--brand); }
 .brand-name span { color: var(--ink-2); font-weight: 600; }
-.who { color: var(--ink); font-weight: 700; font-size: 17px; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who { color: var(--ink); font-weight: 700; font-size: clamp(14px, 4vw, 16px); max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who:empty { display: none; }
 
-/* top-right controls: language selector (EN/RU) + light/dark toggle */
-.topctl { position: fixed; top: calc(10px + env(safe-area-inset-top)); right: 12px; z-index: 10; display: flex; gap: 8px; }
-.ctl { appearance: none; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter: blur(6px); color: var(--ink); border-radius: 10px; height: 34px; min-width: 34px; padding: 0 9px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-weight: 700; font-size: 12.5px; letter-spacing: .04em; }
-.ctl svg { width: 17px; height: 17px; display: block; }
-.ctl:hover { border-color: var(--brand); color: var(--brand); }
-.ctl:active { transform: scale(.95); }
+/* top-right controls: language (EN/RU) + light/dark — comfortable tap targets */
+.topctl { position: fixed; top: calc(10px + env(safe-area-inset-top)); right: 12px; z-index: 30; display: flex; gap: 8px; }
+.ctl { appearance: none; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 78%, transparent); backdrop-filter: blur(6px); color: var(--ink); border-radius: 11px; height: 40px; min-width: 40px; padding: 0 11px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-weight: 700; font-size: 13px; letter-spacing: .04em; }
+.ctl svg { width: 19px; height: 19px; display: block; }
+.ctl:active { transform: scale(.94); }
 .ctl[hidden] { display: none; }
 
-main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
-
-/* loading / empty / error */
-.state { text-align: center; padding: 64px 20px; color: var(--muted); }
-.state-msg { margin: 0 0 6px; font-size: 18px; font-weight: 700; color: var(--ink); }
+/* loading / empty / error — centred in the remaining space */
+.state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; padding: 32px 24px; color: var(--muted); }
+.state-msg { margin: 0; font-size: 19px; font-weight: 700; color: var(--ink); }
 .state-sub { margin: 0 auto; max-width: 34em; }
-.spin { width: 30px; height: 30px; margin: 0 auto 16px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
+.spin { width: 34px; height: 34px; margin: 0 auto 16px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* WG / AWG / TURN mode tabs */
-.modebar { display: flex; gap: 6px; padding: 5px; margin: 0 0 18px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; }
-.modetab { flex: 1; appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 700; font-size: 13.5px; padding: 9px 10px; border-radius: 9px; background: transparent; color: var(--muted); }
-.modetab.on { background: var(--brand); color: var(--brand-ink); }
+/* the peers region fills the rest and hosts the tabs + the vertical pager */
+#peers { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#peers[hidden] { display: none; }
+
+/* WG / AWG / TURN tabs — full-width, generous tap targets, capped on wide screens */
+.modebar { flex: none; display: flex; gap: 6px; padding: 8px 12px; width: 100%; max-width: 620px; margin: 0 auto; }
+.modetab { flex: 1; appearance: none; border: 1px solid var(--line); cursor: pointer; font: inherit; font-weight: 700; font-size: clamp(13px, 3.6vw, 15px); min-height: 44px; padding: 8px 10px; border-radius: 11px; background: var(--panel-2); color: var(--muted); }
+.modetab.on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
 .modetab:active { transform: translateY(1px); }
 
-/* turn card: per-fork selector + the artifact */
-.forktabs { align-self: stretch; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
-.forktab { appearance: none; border: 1px solid var(--line); cursor: pointer; font: inherit; font-weight: 700; font-size: 12px; padding: 5px 11px; border-radius: 20px; background: transparent; color: var(--ink); }
-.forktab.on { background: color-mix(in srgb, var(--brand) 16%, transparent); border-color: var(--brand); color: var(--brand); }
-.turnbody { align-self: stretch; display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.turnlabel { align-self: stretch; text-align: center; font-size: 12.5px; font-weight: 600; color: var(--muted); }
-.turnhint { text-align: center; }
+/* vertical pager — one peer per screen, snap between them */
+.pager { flex: 1; min-height: 0; overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.pager::-webkit-scrollbar { display: none; }
 
-/* peer group */
-.peer { margin: 0 0 20px; }
-.peer-head { display: flex; align-items: baseline; gap: 10px; margin: 0 2px 12px; }
-.peer-title { font-size: 17px; font-weight: 700; }
-.peer-count { color: var(--muted); font-size: 12.5px; font-weight: 600; }
+/* one peer page — head · swipe-row · bottom bar, filling exactly one screen */
+.ppage { height: 100%; scroll-snap-align: start; scroll-snap-stop: always; flex: none; display: flex; flex-direction: column; min-height: 0; padding-top: 8px; }
+.ppage-head { flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 4px 16px 8px; }
+.ppage-title { font-weight: 700; font-size: clamp(15px, 4.6vw, 19px); text-align: center; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ppage-dots { display: flex; gap: 8px; align-items: center; }
+.pdot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); transition: background .15s, transform .15s; cursor: pointer; }
+.pdot.on { background: var(--brand); transform: scale(1.4); }
 
-/* deployments — ONE server per view at every width (subscribers are mostly on phones): one peer per
-   line, one QR at a time, swipe or tap ‹ › to cycle a peer's servers. The WG/AWG/TURN tab picks which
-   configs show. */
-.tgts {
-  display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory;
-  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+/* horizontal swipe row of a peer's servers */
+.srow { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.srow::-webkit-scrollbar { display: none; }
+.scell { flex: 0 0 100%; min-width: 0; scroll-snap-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 0 16px 6px; }
+
+/* the node label + protocol / fork tags */
+.scell-node { flex: none; display: flex; flex-direction: column; align-items: center; gap: 5px; text-align: center; max-width: 100%; }
+.scell-server { font-weight: 700; font-size: clamp(15px, 4.6vw, 18px); word-break: break-word; }
+.scell-primary { font-size: 11px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase; color: var(--brand); }
+.scell-tag { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: 11.5px; font-weight: 700; letter-spacing: .2px; line-height: 1; color: var(--brand); background: color-mix(in srgb, var(--brand) 14%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 32%, transparent); padding: 4px 9px; border-radius: 999px; max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scell-paste { color: var(--muted); font-size: 12.5px; font-weight: 600; }
+
+/* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
+.scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 460px; display: flex; align-items: center; justify-content: center; }
+
+/* big centred QR — ceiling caps it on large screens, floor keeps it scannable on small ones */
+.qrbox { background: #fff; padding: clamp(8px, 2.4vw, 14px); border-radius: 14px; line-height: 0; box-shadow: 0 6px 22px rgba(0, 0, 0, .18); max-width: 100%; }
+.qrimg { width: min(82vw, 56vh, 420px); height: auto; image-rendering: pixelated; display: block; }
+
+/* config / link text — fills the stage; JS auto-fits the font between a ceiling and floor, then overflow scrolls */
+.textwrap { width: 100%; height: 100%; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.cfgtext { margin: 0; flex: 1; min-height: 0; width: 100%; overflow: auto; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 13px; line-height: 1.45; color: var(--ink);
+  white-space: pre-wrap; word-break: break-all; -webkit-overflow-scrolling: touch; }
+.cfgtext:active { transform: translateY(1px); }
+.cmdblk { flex: none; display: flex; flex-direction: column; }
+.cmdlbl { font-size: 10.5px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px 2px; }
+.cmdtext { flex: none; max-height: 28vh; }
+
+.cfg-fail { color: var(--muted); font-size: 14px; text-align: center; padding: 24px 16px; align-self: center; margin: auto; }
+
+/* steady bottom action bar — same spot regardless of which peer/server is showing */
+.pbar { flex: none; display: flex; gap: 10px; width: 100%; max-width: 560px; margin: 0 auto;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+.pbtn { flex: 1; appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 700;
+  font-size: clamp(13px, 3.7vw, 15px); min-height: 52px; padding: 0 12px; border-radius: 13px;
+  display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; }
+.pbtn.primary { background: var(--brand); color: var(--brand-ink); }
+.pbtn.ghost { background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+.pbtn[hidden] { display: none; }
+.pbtn:active { transform: translateY(1px); }
+
+.foot-warn { flex: none; margin: 0; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); text-align: center; background: color-mix(in srgb, #f0a020 16%, var(--panel)); border-top: 1px solid color-mix(in srgb, #f0a020 40%, var(--line)); color: var(--ink); font-size: 13px; }
+
+/* larger / landscape screens (tablets, desktop): keep the swipe edge-to-edge but centre the content column
+   and give the QR a touch more room without ballooning. */
+@media (min-width: 640px) {
+  .scell-stage { max-width: 400px; }
+  .qrimg { width: min(52vh, 380px); }
+  .cfgtext { font-size: 13px; }
 }
-.tgts::-webkit-scrollbar { display: none; }
-.tgt {
-  position: relative;
-  flex: 0 0 100%; min-width: 0; scroll-snap-align: center;
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 18px 14px; display: flex; flex-direction: column; align-items: center; gap: 12px;
-}
-.turn-fork {
-  position: absolute; top: 12px; right: 12px;
-  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
-  font-size: 11px; font-weight: 700; letter-spacing: .2px; line-height: 1;
-  color: var(--brand); background: color-mix(in srgb, var(--brand) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--brand) 32%, transparent);
-  padding: 4px 8px; border-radius: 999px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.turn.tgt .tgt-node { padding: 0 52px; }   /* keep the centered node name clear of the fork tag */
-.primary { align-self: stretch; text-align: center; font-size: 11px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--brand); }
-.tgt-node { align-self: stretch; text-align: center; font-weight: 700; font-size: 14px; word-break: break-word; }
-
-.qr { background: #fff; padding: 10px; border-radius: 10px; line-height: 0; }
-.qrimg { width: 100%; max-width: 300px; height: auto; image-rendering: pixelated; display: block; }
-.qr-fail { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 8px; }
-
-.acts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; width: 100%; }
-.btn {
-  appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 700; font-size: 13.5px;
-  padding: 9px 14px; border-radius: 10px; background: var(--brand); color: var(--brand-ink);
-}
-.btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
-.btn:active { transform: translateY(1px); }
-
-.cfg { align-self: stretch; }
-.cfg summary { cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 600; list-style: none; padding: 4px 0; text-align: center; }
-.cfg summary::-webkit-details-marker { display: none; }
-
-/* Turn-proxy configs: text, not QR. "Paste into <app>" line, then a tap-to-copy block. */
-.turn-app { align-self: stretch; text-align: center; font-size: 12.5px; font-weight: 700; color: var(--muted); }
-.turn-app b, .turn-app strong { color: var(--ink); }
-.turntext-wrap { align-self: stretch; }
-.turntext {
-  margin: 0; cursor: pointer; background: var(--card-2, rgba(127,127,127,.08));
-  border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
-  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
-  font-size: 12px; line-height: 1.5; color: var(--ink);
-  white-space: pre-wrap; word-break: break-all;
-}
-.turntext:active { transform: translateY(1px); }
-.cfg pre {
-  margin: 8px 0 0; padding: 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line);
-  color: var(--ink); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  white-space: pre-wrap; word-break: break-all; overflow-x: auto;
-}
-
-.foot-warn { margin: 18px 2px 0; padding: 12px 14px; border-radius: 10px; background: color-mix(in srgb, #f0a020 16%, var(--panel)); border: 1px solid color-mix(in srgb, #f0a020 40%, var(--line)); color: var(--ink); font-size: 13px; }
-
-/* deployment carousel nav — ‹ dots › under any peer with more than one server (present at every width) */
-.peer-nav { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 12px; }
-.nav-btn {
-  appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
-  width: 40px; height: 40px; border-radius: 50%; font-size: 22px; line-height: 1; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0;
-}
-.nav-btn:disabled { opacity: .35; cursor: default; }
-.nav-btn:active:not(:disabled) { transform: scale(.94); }
-.nav-dots { display: flex; gap: 7px; align-items: center; }
-.nav-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); transition: background .15s, transform .15s; cursor: pointer; }
-.nav-dot.on { background: var(--brand); transform: scale(1.35); }
-
-/* Phone: let the carousel bleed to the screen edges for a full-width swipe. */
-@media (max-width: 560px) {
-  .tgts { margin: 0 -16px; padding: 0 16px; }
+@media (min-height: 780px) {
+  .qrimg { width: min(82vw, 460px); }
 }
