@@ -6995,7 +6995,9 @@ function AccessTLSCard({ onChange }) {
   // the bind back to the live one, so the form never keeps showing a value the panel rejected.
   const resync = async () => {
     const r = await api.get("/api/state").catch(() => null);
-    const a = (((r || {}).data || {}).panel_settings || {}).access || {};
+    const ps = ((r || {}).data || {}).panel_settings;
+    if (ps) { Store.panelSettings = ps; bus.emit(); }   // refresh the GLOBAL store too, so a remount/reload can't rehydrate the rejected value the apply rolled back
+    const a = (ps || {}).access || {};
     const pp = a.panel || {}, ss = a.sub || {}, tt = a.tls || {};
     setPUrl(pp.url || ""); setPHost(pp.host || "0.0.0.0"); setPPort(String(pp.port || 443));
     setSUrl(ss.url || ""); setSHost(ss.host || "0.0.0.0"); setSPort(String(ss.port || 8444));
@@ -7046,7 +7048,7 @@ function AccessTLSCard({ onChange }) {
         options=${ipOpts(host, withLocal)}/>
       ${val === "__custom" ? html`<input class="mt8" type="text" placeholder="e.g. 203.0.113.5" value=${host} onInput=${e => setHost(e.target.value)}/>` : null}</div>`;
   };
-  const portField = (port, setPort, bad) => html`<div class="field"><label>Port${bad ? html` <span class="ci" title="Cloudflare can't reach this port">ⓘ</span>` : null}</label>
+  const portField = (port, setPort, bad) => html`<div class="field"><label>Port${bad ? html` <span class="ciw" title="Cloudflare can't reach this port"><${Ic} i="warn"/></span>` : null}</label>
     <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
   const cfNote = html`<div class=${"notice " + (hard ? "err" : "warn")}><${Ic} i="warn"/><span>
     Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}
