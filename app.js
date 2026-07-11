@@ -315,8 +315,9 @@ async function subRecover(escRec) {
   return { token, unlockKey: await _importAes(unlockBytes, ["encrypt"]), unlockKeyB64: b64url(unlockBytes) };
 }
 
-// The shareable URL for a user, from their escrow record. Blank base_url → null (operator must set it).
-function subBaseUrl() { return String(((Store.panelSettings || {}).subscriptions || {}).base_url || "").replace(/\/+$/, ""); }
+// The shareable URL base for a user. Canonical source is Access & TLS (access.sub.url); falls back to the
+// legacy subscriptions.base_url. Blank → null (operator must set it in Access & TLS).
+function subBaseUrl() { const ps = Store.panelSettings || {}; return String(((ps.access || {}).sub || {}).url || (ps.subscriptions || {}).base_url || "").replace(/\/+$/, ""); }
 const SUB_LANG_LIST = [["en", "English"], ["ru", "Русский"]];   // languages the swgSub page ships (must match swg-panel-server SUB_LANGS)
 async function subUrlFor(escRec) {
   const base = subBaseUrl(); if (!base) return null;
@@ -7033,16 +7034,10 @@ function PanelSettingsScreen() {
   const awgSet = AWG_KEYS.some(k => String(awg[k] ?? "").trim() !== "");
   const [showAdv, setShowAdv] = useState(false);
   const [msg, setMsg] = useState(null);
-  // subscriptions section state (config fields ride the global save; the vault ceremony uses /api/sub/*)
+  // subscriptions section state — enable + languages ride the global save; the vault ceremony uses /api/sub/*.
+  // The sub's address, URL and certificate now live in the Access & TLS section (access.sub / access.tls).
   const subCfg = ps.subscriptions || {};
-  const subServe = subCfg.serve || {};
   const [subsOn, setSubsOn] = useState(!!subCfg.enabled);
-  const [subBase, setSubBase] = useState(subCfg.base_url || "");
-  const [subHost, setSubHost] = useState(subServe.host || "0.0.0.0");
-  const [subPort, setSubPort] = useState(String(subServe.port || 8444));
-  const [subTls, setSubTls] = useState(subServe.tls_mode || "reverse-proxy");
-  const [subCert, setSubCert] = useState(subServe.cert_path || "");
-  const [subKeyP, setSubKeyP] = useState(subServe.key_path || "");
   const subLangCfg = (subCfg.languages && typeof subCfg.languages === "object") ? subCfg.languages : {};
   const [subLangs, setSubLangs] = useState((subLangCfg.enabled && subLangCfg.enabled.length) ? [...subLangCfg.enabled] : ["en"]);
   const [subLangDef, setSubLangDef] = useState(subLangCfg.default || "en");
@@ -7080,9 +7075,7 @@ function PanelSettingsScreen() {
         custom_lists_enabled: customEnabled,
         geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
         store_configs: sc === "off" ? false : true,
-        subscriptions: { enabled: subsOn, base_url: subBase.trim(),
-          serve: { host: subHost.trim() || "0.0.0.0", port: Math.max(1, Math.min(65535, parseInt(subPort) || 8444)),
-                   tls_mode: subTls, cert_path: subCert.trim(), key_path: subKeyP.trim() },
+        subscriptions: { enabled: subsOn,   // base_url + serve now live in Access & TLS (access.sub/access.tls)
           languages: { enabled: subLangs, default: subLangDef } },
         throughput_perspective: tput,
         top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
@@ -7243,7 +7236,7 @@ function PanelSettingsScreen() {
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
     sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
-    sec === "subs" ? (subsOn !== !!subCfg.enabled || subBase.trim() !== (subCfg.base_url || "") || subHost.trim() !== (subServe.host || "0.0.0.0") || subPort !== String(subServe.port || 8444) || subTls !== (subServe.tls_mode || "reverse-proxy") || subCert.trim() !== (subServe.cert_path || "") || subKeyP.trim() !== (subServe.key_path || "") || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
+    sec === "subs" ? (subsOn !== !!subCfg.enabled || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
@@ -7512,24 +7505,13 @@ function PanelSettingsScreen() {
               { value: "off", label: "Off — the subscription page is blocked entirely" },
               { value: "on", label: "On — per-user subscription URLs are served" }]}/>
             <div class="hint">Off returns 404 for every subscription URL, regardless of the rest.</div></div>
-          <div class="field"><label>Public base URL</label>
-            <input type="text" placeholder="https://sub.example.com/" value=${subBase} onInput=${e => setSubBase(e.target.value)}/>
-            <div class="hint">The domain/subdomain (and path) the page is reached at. Used to build each user's link shown in the QR modals.</div></div>
-          <div class="seclabel">swg-sub service</div>
-          <div class="fieldrow">
-            <div class="field"><label>Listen host</label><input type="text" value=${subHost} onInput=${e => setSubHost(e.target.value)}/></div>
-            <div class="field"><label>Port</label><input type="text" value=${subPort} onInput=${e => setSubPort(e.target.value)}/></div>
+          <div class="seclabel">Address & certificate</div>
+          <div class="subaddr">
+            <div class="subaddr-row"><span class="subaddr-k">Public URL</span><span class="subaddr-v mono">${subBaseUrl() || html`<span class="faint">not set</span>`}</span></div>
+            <div class="subaddr-row"><span class="subaddr-k">Listen</span><span class="subaddr-v mono">${(((ps.access || {}).sub || {}).host || "0.0.0.0")}:${(((ps.access || {}).sub || {}).port || 8444)}</span></div>
+            <div class="subaddr-row"><span class="subaddr-k">Certificate</span><span class="subaddr-v mono">${(TLS_MODE_OPTS.find(o => o.value === (((ps.access || {}).tls || {}).mode || "")) || {}).label || "—"}</span></div>
           </div>
-          <div class="field"><label>TLS</label>
-            <${Dropdown} value=${subTls} onChange=${v => setSubTls(v)} options=${[
-              { value: "reverse-proxy", label: "Behind a reverse proxy (nginx/Caddy terminates TLS)" },
-              { value: "selfsigned", label: "Self-signed (swg-sub generates a cert)" },
-              { value: "letsencrypt", label: "Let's Encrypt (swg-sub obtains a cert)" },
-              { value: "custom", label: "Custom certificate (paths below)" }]}/></div>
-          ${subTls === "custom" ? html`<div class="fieldrow">
-            <div class="field"><label>Certificate path</label><input type="text" placeholder="/etc/swg-sub/fullchain.pem" value=${subCert} onInput=${e => setSubCert(e.target.value)}/></div>
-            <div class="field"><label>Key path</label><input type="text" placeholder="/etc/swg-sub/privkey.pem" value=${subKeyP} onInput=${e => setSubKeyP(e.target.value)}/></div>
-          </div>` : null}
+          <div class="hint" style="margin:6px 0 0">The subscription page's URL, listen address and certificate are configured in <button class="linkbtn" onClick=${() => setSection("access")}>Access & TLS</button>.</div>
           <div class="seclabel">Languages</div>
           <div class="field"><label>Offered on the subscription page</label>
             <div class="sublangs">${SUB_LANG_LIST.map(([id, name]) => html`<div class=${"sublang" + (subLangs.includes(id) ? " on" : "")} key=${id}>
