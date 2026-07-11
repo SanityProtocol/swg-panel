@@ -444,6 +444,48 @@ async function subMaybePublish(userId, peerId, privkey, psk) {
     await subEncryptPeer(userId, peerId, privkey, psk, unlockKey);
   } catch (_) { /* an encryption hiccup must never break the peer flow */ }
 }
+// Ensure the encryption vault is unlocked before an action that needs it. Resolves true when the key is
+// available (already unlocked, or the operator just unlocked it) or not needed (store mode isn't encrypted);
+// false when the operator chose to skip. Shows a modal (VaultPromptSheet) explaining the action + the cost of
+// skipping. Never throws.
+function ensureVaultUnlocked(opts) {
+  return new Promise(function (resolve) {
+    if (Store.storeMode !== "encrypted") return resolve(true);   // nothing is stored encrypted → no key needed
+    if (subSKCached()) return resolve(true);                      // already unlocked this session
+    pushModal(html`<${VaultPromptSheet} opts=${opts || {}} onDone=${resolve}/>`);
+  });
+}
+// subMaybePublish, but if the vault is locked it PROMPTS the operator (instead of silently skipping) so they can
+// unlock + publish or knowingly skip. Use for user-triggered actions (create / rekey / reassign a peer).
+async function subPublishOrPrompt(userId, peerId, privkey, psk) {
+  if (Store.storeMode !== "encrypted" || !userId || !peerId) return;
+  if (!subSKCached()) {
+    const ok = await ensureVaultUnlocked({
+      title: "Unlock to publish this config",
+      reason: "This peer's config is stored encrypted — only you can read it, with your encryption key. Unlock the key to publish this peer now, so its QR appears on the user's subscription page and stays re-viewable in the panel later.",
+      consequence: "the peer is created and works right away, but its config isn't stored — its QR won't appear on the subscription page and you won't be able to re-view it later. You'd have to rekey the peer to re-issue and publish it.",
+    });
+    if (!ok) return;   // operator chose to skip — the peer already exists, just not published
+  }
+  await subMaybePublish(userId, peerId, privkey, psk);
+}
+// Peers whose encrypted blob we've already ensured this session (so viewing a multi-deployment peer's QRs
+// doesn't re-encrypt the same blob repeatedly).
+const _blobEnsured = new Set();
+// Viewing a peer's QR/config with the vault unlocked PUBLISHES its blob if it's missing — this is the real
+// "open the peer once to publish it" path for a peer created while the vault was locked (its config lives in
+// this session or the plaintext store, but no blob was written). Idempotent + best-effort; never throws.
+async function ensurePeerBlob(peer, conf) {
+  if (Store.storeMode !== "encrypted" || !subSKCached() || !peer || !peer.id || !peer.user_id || !conf) return;
+  if (_blobEnsured.has(peer.id)) return;
+  _blobEnsured.add(peer.id);
+  try {
+    const g = await api.subBlobGet(peer.id);
+    if (g && g.ok && g.data && g.data.sec) return;             // already published — nothing to do
+    const parsed = parseFullConf(conf);
+    if (parsed && parsed.privkey) await subMaybePublish(peer.user_id, peer.id, parsed.privkey, parsed.psk);
+  } catch (_) { _blobEnsured.delete(peer.id); }                // let a later open retry
+}
 
 // Publish every EXISTING peer of a user to their (just-enabled) subscription — subMaybePublish only fires
 // at peer creation, so without this a user's current peers would never reach the sub page. One blob per
@@ -1647,7 +1689,7 @@ async function assignPeerToUser(peer, userId) {
     key,
     call: () => api.peerRekey({ peer_id: peer.id, user_id: userId, pubkey: keys.pub, psk }),   // no plaintext to the server
     onOk: () => { Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; revealAssignedPeer(userId, peer.id);
-      subMaybePublish(userId, peer.id, keys.priv, psk); },
+      subPublishOrPrompt(userId, peer.id, keys.priv, psk); },
   });
 }
 
@@ -1675,7 +1717,7 @@ async function rotatePeerKeys(peer) {
     key,
     call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk }),   // no plaintext to the server
     onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
-      subMaybePublish(peer.user_id, peer.id, keys.priv, psk); },
+      subPublishOrPrompt(peer.user_id, peer.id, keys.priv, psk); },
   });
 }
 
@@ -5699,6 +5741,33 @@ function openUserEdit(user) {
 // session: the stored configs are ciphertext, so a peer's QR can't be rebuilt until the admin unlocks the
 // key with the panel password. Unlocking caches the SK (subUnlock) and bumps configEpoch so every open
 // TargetCard re-resolves via the blob. Renders nothing when there's no vault or it's already unlocked.
+// A blocking prompt for a user-triggered action that needs the encryption key when it isn't unlocked this
+// session. Explains WHY the key is needed and the cost of skipping; "Unlock & continue" proceeds, "Skip"
+// continues without the encrypted step. Resolves the ensureVaultUnlocked() promise with true/false.
+function VaultPromptSheet({ opts, onDone }) {
+  const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
+  const [exists, setExists] = useState(null);   // null = checking; whether an encryption vault is set up at all
+  useEffect(() => { let ok = true; api.subVault().then(r => { if (ok) setExists(!!(r && r.ok && r.data && r.data.exists)); }).catch(() => { if (ok) setExists(false); }); return () => { ok = false; }; }, []);
+  const done = v => { closeModal(); onDone(v); };
+  const unlock = async () => {
+    if (!pw || busy) return; setBusy(true);
+    try { await subUnlock(pw); Store.configEpoch++; bus.emit(); setBusy(false); done(true); }
+    catch (e) { setBusy(false); toast((e && e.message) || "That password didn’t unlock the encryption key.", "err"); }
+  };
+  return html`<${Sheet} title=${opts.title || "Enter your password to continue"} width=${480} onClose=${() => done(false)}
+    foot=${html`<${Fragment}><span class="grow"></span>
+      <button class="btn btn-ghost" disabled=${busy} onClick=${() => done(false)}>Skip</button>
+      <button class="btn btn-primary" disabled=${busy || !pw || exists === false} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock & continue"}</button></>`}>
+    <div class="vaultprompt">
+      <p class="vp-reason">${opts.reason || "This action needs your encryption key, which isn’t unlocked in this session."}</p>
+      ${exists === false
+        ? html`<div class="notice err"><${Ic} i="warn"/><span>No encryption key is set up yet — set one up in <a href="#/panel/settings" onClick=${() => done(false)}>Settings → Client configs → Encryption</a>, then try again.</span></div>`
+        : html`<div class="field"><label>Panel password</label>
+            <input class="subpw" type="password" autofocus value=${pw} autocomplete="off" placeholder="Panel password"
+              onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/></div>`}
+      <div class="notice warn vp-skip"><${Ic} i="info"/><span><b>If you skip:</b> ${opts.consequence || "the action completes, but anything that needed the key won’t be saved."}</span></div>
+    </div>`;
+}
 function VaultUnlockBar() {
   const [exists, setExists] = useState(false);
   const [ready, setReady] = useState(!!subSKCached());
@@ -6082,7 +6151,7 @@ function TargetCard({ peer, t, bare, primary }) {
   useStore();   // re-render on each poll so the status badge stays live (t is a snapshot from open)
   const [conf, setConf] = useState(null);
   const [loaded, setLoaded] = useState(false);
-  useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface, Store.configEpoch]);
+  useEffect(() => { let ok = true; getConfig(peer.pubkey, t.node, t.iface).then(c => { if (ok) { setConf(c); setLoaded(true); ensurePeerBlob(peer, c); } }); return () => { ok = false; }; }, [peer.pubkey, t.node, t.iface, Store.configEpoch]);
   // live target (status / observed) from the store, falling back to the passed-in snapshot
   const ft = (Store.recon.peers.find(p => p.id === peer.id) || {}).targets;
   const lt = (ft && ft.find(d => d.node === t.node && d.iface === t.iface)) || t;
@@ -8502,7 +8571,7 @@ async function createOneMultiTargetPeer(userId, targets, opts, title) {
     if (!r.ok) return { ok: false, fails: ["create: " + (r.error || r.code || "failed")] };
     Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
     if (r.data && r.data.id) Store.recentlyCreated[r.data.id] = Date.now();
-    await subMaybePublish(userId, r.data && r.data.id, keys.priv, psk);   // publish to the user's subscription (best-effort)
+    await subPublishOrPrompt(userId, r.data && r.data.id, keys.priv, psk);   // publish to the user's subscription (prompt to unlock if locked)
     return { ok: true, id: r.data && r.data.id };
   } catch (e) { return { ok: false, fails: [e.message || String(e)] }; }
 }
@@ -8603,7 +8672,7 @@ function CreatePeerSheet({ prefill }) {
       patch: s => { s.roster.peers[tempId] = optimistic; },        // shows instantly with status "creating"
       call: () => api.peerCreate(body),
       onOk: r => { if (r && r.data && r.data.id) { Store.recentlyCreated[r.data.id] = Date.now();
-        subMaybePublish(userId || null, r.data.id, keys.priv, pskV); } },   // encrypt {k,p} → blob (the config store)
+        subPublishOrPrompt(userId || null, r.data.id, keys.priv, pskV); } },   // encrypt {k,p} → blob (prompt to unlock if locked)
     });
   };
 

@@ -2046,6 +2046,10 @@ a.tg:hover{filter:brightness(1.25)}
 .subpanel .btn{align-self:flex-start}
 .subpanel-actions{display:flex;gap:8px;flex-wrap:wrap}
 .subpw{width:100%;max-width:420px;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font:inherit;font-size:13px}
+/* vault-unlock prompt (encryption key needed for a user-triggered action) */
+.vaultprompt{display:flex;flex-direction:column;gap:12px}
+.vaultprompt .vp-reason{margin:0;color:var(--ink-2);line-height:1.55}
+.vaultprompt .vp-skip{margin-top:2px}
 /* the URL + copy row — one hover target; clicking anywhere copies */
 .suburl{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--bg);cursor:pointer;transition:border-color .12s,background .12s}
 .suburl:hover{border-color:var(--brand,#1FC8D6);background:color-mix(in srgb,var(--brand,#1FC8D6) 7%,var(--bg))}
