@@ -827,15 +827,50 @@ def iface_type(snaps, node, iface):
 
 
 def save_config(store_configs, config_dir, pubkey, node, iface, conf):
+    # Legacy PLAINTEXT write path — retired in the encrypted-configs modes (the browser encrypts {k,p} into a
+    # blob instead). `store_configs` is False in both modes, so this never writes new plaintext; kept intact for
+    # the transition and deleted in the plan's Phase 6. See resolve_store_mode.
     if store_configs and config_dir and isinstance(conf, str) and conf:
         with contextlib.suppress(OSError):
             atomic_write(os.path.join(config_dir, cfg_hash(pubkey, node, iface)), conf, mode=0o600)
 
 
 def del_config(store_configs, config_dir, pubkey, node, iface):
-    if store_configs and config_dir:
+    # Always clean up a LEGACY plaintext config when its peer/target is removed (the `store_configs` arg is kept
+    # only for call-site compatibility): reducing plaintext-at-rest exposure is desirable regardless of mode, and
+    # unlinking a file that isn't there is a suppressed no-op.
+    if config_dir:
         with contextlib.suppress(OSError):
             os.unlink(os.path.join(config_dir, cfg_hash(pubkey, node, iface)))
+
+
+def resolve_store_mode(panel_settings, fleet):
+    """Resolve how the panel keeps client configs at rest, as an enum:
+      "encrypted" — new peers store an AES-GCM blob the server can't read (the vault gates decrypt). Default.
+      "off"       — nothing kept; a peer's QR is shown once at creation.
+    Compat: the legacy boolean (panel_settings/fleet) maps True→"encrypted" (its plaintext is migrated by the
+    browser ceremony) and False→"off". A fresh install with no setting defaults to "encrypted"."""
+    v = (panel_settings or {}).get("store_configs")
+    if v is None:
+        v = (fleet or {}).get("store_configs")      # legacy fleet.json default (absent → new-install default)
+    if v is True or v == "encrypted":
+        return "encrypted"
+    if v is False or v == "off":
+        return "off"
+    return "encrypted"
+
+
+def count_plaintext_configs(config_dir):
+    """How many LEGACY plaintext client configs are on disk — drives the migration prompt + the encrypted-store
+    'still have plaintext' banner. Config files are sha256-named (64 hex chars), so match only those."""
+    if not config_dir:
+        return 0
+    n = 0
+    with contextlib.suppress(OSError):
+        for fn in os.listdir(config_dir):
+            if re.fullmatch(r"[0-9a-f]{64}\.conf", fn):   # cfg_hash() = sha256(...).hexdigest() + ".conf"
+                n += 1
+    return n
 
 
 def user_set(roster, uid, fields, now):
@@ -3593,13 +3628,16 @@ def api(method, path, qs, body, deps):
     nodes = nodes_load(deps["nodes_path"])
     snaps = deps.get("node_snaps") or {}; seen = deps.get("node_seen") or {}
     now = deps.get("now", lambda: int(time.time()))
-    # store_configs defaults ON: client configs (with the private key) are kept on the panel host
-    # so QR codes / config downloads stay available any time, not just at creation. Set it to
-    # false in fleet.json to keep no client secrets at rest. config_dir defaults next to the roster.
+    # How client configs are kept at rest: "encrypted" (an AES-GCM blob the server can't read; default) or
+    # "off" (nothing kept). The legacy plaintext-on mode is retired — new peers store an encrypted blob the
+    # browser produces, never plaintext. See resolve_store_mode.
     panel_settings = deps.get("panel_settings") or {}
-    _sc_override = panel_settings.get("store_configs")          # Panel settings override of the fleet.json default
-    store_configs = (fleet.get("store_configs", True) is not False) if _sc_override is None else bool(_sc_override)
+    store_mode = resolve_store_mode(panel_settings, fleet)
     config_dir = fleet.get("config_dir") or os.path.join(os.path.dirname(roster_path) or ".", "configs")
+    # PLAINTEXT write path is disabled in both modes (the browser encrypts instead). Kept as a flag threaded into
+    # save_config (→ no-op) / del_config (still cleans up any LEGACY plaintext). config_dir stays set so the
+    # transitional GET /api/config read + the migration ceremony can still reach pre-encryption plaintext.
+    store_configs = False
 
     def known(node):
         return node in nodes
@@ -3608,7 +3646,7 @@ def api(method, path, qs, body, deps):
         out = [{"id": nid, "name": c.get("name", nid), "color": c.get("color"), "transport": "https",
                 "stats_file": c.get("stats_file", f"stats-{nid}.json")}
                for nid, c in nodes.items()]
-        return 200, {"ok": True, "data": {"nodes": out, "store_configs": store_configs, "versions": VERSIONS}}
+        return 200, {"ok": True, "data": {"nodes": out, "store_configs": store_mode, "versions": VERSIONS}}
 
     stats_dir = deps.get("stats_dir")
 
@@ -3774,7 +3812,9 @@ def api(method, path, qs, body, deps):
             "nodes": nodes_view(),                       # fleet metadata + live counters
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
-            "store_configs": store_configs, "versions": VERSIONS,
+            "store_configs": store_mode,                 # enum "encrypted" | "off"
+            "configs_plaintext": count_plaintext_configs(config_dir),   # LEGACY plaintext files still on disk → drives the migration prompt
+            "versions": VERSIONS,
             "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps)},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
@@ -3857,7 +3897,13 @@ def api(method, path, qs, body, deps):
                 base["iface_prefix"] = pfx
             cur["reserved"] = base
         if "store_configs" in incoming:
-            cur["store_configs"] = None if incoming["store_configs"] is None else bool(incoming["store_configs"])
+            _sc = incoming["store_configs"]
+            if _sc is None:
+                cur["store_configs"] = None                                       # inherit the fleet/new-install default
+            elif _sc is False or _sc == "off":
+                cur["store_configs"] = "off"
+            else:                                                                 # True (legacy) / "encrypted" → encrypted
+                cur["store_configs"] = "encrypted"
         sub = incoming.get("subscriptions")
         if isinstance(sub, dict):
             _cursub = cur.get("subscriptions") or {}
@@ -3872,12 +3918,11 @@ def api(method, path, qs, body, deps):
                 "base_url": (sub.get("base_url") if "base_url" in sub else _cursub.get("base_url")) or "",
                 "serve": (sub.get("serve") if isinstance(sub.get("serve"), dict) else _cursub.get("serve")) or {},
                 "languages": {"enabled": _en, "default": _def}}
-        # Subscriptions serve the (encrypted) stored configs — with config storage OFF there are no blobs to
-        # serve, so the state is impossible. Reject it even if the UI is bypassed. (store_configs None = use the
-        # fleet default, which keeps configs; only an explicit False is "off".)
-        if (cur.get("subscriptions") or {}).get("enabled") and cur.get("store_configs") is False:
+        # Subscriptions serve the encrypted config blobs — with config storage OFF there are none, so the state
+        # is impossible. Reject it even if the UI is bypassed. (store_mode resolves the enum + legacy default.)
+        if (cur.get("subscriptions") or {}).get("enabled") and resolve_store_mode(cur, fleet) == "off":
             return 400, {"ok": False, "code": "needs_store_configs",
-                         "error": "Subscriptions need client configs stored on the panel — turn on config storage first."}
+                         "error": "Subscriptions need encrypted config storage — turn on 'Keep encrypted configs' first."}
         adv = incoming.get("advanced")
         if isinstance(adv, dict):
             cur["advanced"] = {"node_stale_ms": max(5000, int(adv.get("node_stale_ms") or 30000)),
@@ -4320,16 +4365,38 @@ def api(method, path, qs, body, deps):
         users = load_sub_users(deps)
         escrow = load_sub_escrow(deps)
         out = {}
-        for uid, rec in users.items():
+        # Union of subscription-enabled users AND users that merely hold an encryption escrow (they own an
+        # encrypted-stored peer but have no public subscription). The browser needs the escrow for BOTH so it can
+        # encrypt/decrypt configs; `enabled` distinguishes an actual subscription (swg-sub serves it).
+        for uid in (set(users) | set(escrow)):
+            rec = users.get(uid) or {}
+            esc = escrow.get(uid) or {}
             blobs = sub_gc_user(deps, uid, roster)
             live = sub_live_peers(roster, uid)
-            esc = escrow.get(uid) or {}
             out[uid] = {"enabled": bool(rec.get("enabled")), "created": esc.get("created"),
                         "rotated": esc.get("rotated"), "peers": len(live), "provisioned": len(blobs),
                         # the escrow is ciphertext (SK-wrapped) — safe to hand the AUTHENTICATED admin browser,
-                        # which unwraps it locally with the Subscription Key to rebuild the URL / encrypt peers.
+                        # which unwraps it locally with the encryption key to rebuild the URL / encrypt peers.
                         "unlock_by_sk": esc.get("unlock_by_sk"), "token_by_sk": esc.get("token_by_sk")}
         return 200, {"ok": True, "data": {"vault": bool(load_sub_vault(deps).get("sk_by_pw")), "users": out}}
+
+    if method == "POST" and path == "/api/sub/escrow":               # ensure a user holds an encryption unlock-key (for encrypted config storage), no subscription
+        uid = body.get("user_id") or ""
+        roster = roster_load(roster_path)
+        if uid not in (roster.get("users") or {}):
+            return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
+        unl = body.get("unlock_by_sk")
+        if not isinstance(unl, str) or not unl:
+            return 400, {"ok": False, "error": "unlock_by_sk is required", "code": "bad_request"}
+        escrow = load_sub_escrow(deps)
+        rec = escrow.get(uid) or {}
+        if not rec.get("unlock_by_sk"):          # NEVER overwrite an existing key — every blob is encrypted under it
+            rec["unlock_by_sk"] = unl
+            rec.setdefault("created", now())
+            escrow[uid] = rec
+            save_sub_escrow(deps, escrow)
+        # return the EFFECTIVE escrow (an existing key wins) so the browser encrypts under the authoritative key
+        return 200, {"ok": True, "data": {"unlock_by_sk": rec.get("unlock_by_sk"), "token_by_sk": rec.get("token_by_sk")}}
 
     if method == "POST" and path == "/api/sub/user/enable":          # browser mints token + wraps the unlock-key + token
         uid = body.get("user_id") or ""
@@ -4365,15 +4432,17 @@ def api(method, path, qs, body, deps):
         save_sub_users(deps, users); save_sub_escrow(deps, escrow)
         return 200, {"ok": True, "data": {"rotated": True}}
 
-    if method == "POST" and path == "/api/sub/user/disable":         # kill the URL + drop the ciphertext + escrow
+    if method == "POST" and path == "/api/sub/user/disable":         # kill the public URL, but KEEP the encrypted config store
         uid = body.get("user_id") or ""
         users = load_sub_users(deps); escrow = load_sub_escrow(deps)
         changed = False
-        if uid in users:
+        if uid in users:                             # drop the token map → swg-sub 404s this user (URL dies)
             del users[uid]; save_sub_users(deps, users); changed = True
-        if uid in escrow:
-            del escrow[uid]; save_sub_escrow(deps, escrow); changed = True
-        drop_sub_blobs(deps, uid)
+        # KEEP escrow.unlock_by_sk + the blobs: they're the encrypted CONFIG store (panel Show-QR still needs them).
+        # Only the subscription token is retired — a re-enable mints a fresh URL over the same blobs.
+        rec = escrow.get(uid)
+        if rec and rec.get("token_by_sk"):
+            rec.pop("token_by_sk", None); escrow[uid] = rec; save_sub_escrow(deps, escrow); changed = True
         return 200, {"ok": True, "data": {"disabled": True, "changed": changed}}
 
     if method == "GET" and path == "/api/sub/blob":                  # read one peer's encrypted secret (authed admin → in-browser decrypt for Show-QR)
@@ -4396,8 +4465,8 @@ def api(method, path, qs, body, deps):
         p = (roster.get("peers") or {}).get(pid)
         if not p or p.get("user_id") != uid:
             return 409, {"ok": False, "error": "peer is not assigned to this user", "code": "not_assigned"}
-        if uid not in load_sub_users(deps):
-            return 404, {"ok": False, "error": "no subscription for this user", "code": "not_found"}
+        if uid not in load_sub_escrow(deps):     # the blob is encrypted under this user's escrow unlock-key
+            return 404, {"ok": False, "error": "no encryption key for this user — set up config encryption first", "code": "not_found"}
         blobs = sub_gc_user(deps, uid, roster)
         blobs[pid] = {"sec": sec, "at": now()}
         save_sub_blobs(deps, uid, blobs)
@@ -4440,7 +4509,9 @@ def api(method, path, qs, body, deps):
     if method == "GET" and path == "/api/config":
         pk = (qs.get("pubkey") or [""])[0]; node = (qs.get("node") or [""])[0]
         iface = (qs.get("iface") or [""])[0]
-        if not (store_configs and config_dir and pk and node):
+        # LEGACY plaintext read — transitional (used by the migration ceremony + as a Show-QR fallback until the
+        # plaintext is migrated). Gated on the file existing, not on the mode. Removed with the migration trigger.
+        if not (config_dir and pk and node):
             return 404, {"ok": False, "error": "config not stored", "code": "not_found"}
         text = None
         with contextlib.suppress(OSError):

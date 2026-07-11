@@ -260,19 +260,28 @@ async function sha256hex(s) {
 }
 const _importAes = (bytes, uses) => crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, uses);
 
-let _subSK = null;                       // the unwrapped Subscription Key (CryptoKey), cached for this session
+let _subSK = null;                       // the unwrapped encryption key (CryptoKey), cached for this session
+const _SK_CACHE = "swg_ck";              // sessionStorage key for the convenience cache (see subUnlock)
 function subSKCached() { return _subSK; }
-function subForget() { _subSK = null; }   // drop on logout / password change
+function subForget() { _subSK = null; try { sessionStorage.removeItem(_SK_CACHE); } catch (_) {} }   // drop on logout / password change
+// Restore the session convenience cache after a reload (login reloads the page). Raw key bytes live in
+// sessionStorage — tab-scoped, cleared on logout, never sent to the server; the deliberate convenience-cache
+// tradeoff so a normal login auto-unlocks config encryption without re-typing the password.
+async function subBootRestore() {
+  if (_subSK) return;
+  try { const s = sessionStorage.getItem(_SK_CACHE); if (s) _subSK = await _importAes(_b64ToBytes(s), ["encrypt", "decrypt"]); } catch (_) {}
+}
 async function subUnlock(password) {      // unwrap the SK from the vault with the password → cache it
   const v = await api.subVault();
-  if (!v || v.ok === false || !v.data || !v.data.exists) throw new Error("Subscription encryption isn't set up yet.");
+  if (!v || v.ok === false || !v.data || !v.data.exists) throw new Error("Config encryption isn't set up yet.");
   const wk = await subWrapKey(password, _b64ToBytes(v.data.salt));
   let skBytes;
   try {
     if (new TextDecoder().decode(await subDec(wk, v.data.sk_check)) !== SUB_CHECK) throw new Error("bad");
     skBytes = await subDec(wk, v.data.sk_by_pw);        // GCM auth fails here on a wrong password
-  } catch (_) { throw new Error("That password didn't unlock the Subscription Key."); }
+  } catch (_) { throw new Error("That password didn't unlock the encryption key."); }
   _subSK = await _importAes(skBytes, ["encrypt", "decrypt"]);
+  try { sessionStorage.setItem(_SK_CACHE, b64(skBytes)); } catch (_) {}   // convenience cache (tab-scoped) — survives the post-login reload
   return _subSK;
 }
 
@@ -304,6 +313,14 @@ async function subRotateUser(uid) {
   });
   if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't rotate the URL");
   return { token };
+}
+
+// Recover ONLY the unlock-key (CryptoKey, encrypt+decrypt) from a user's escrow — works for a plain
+// encrypted-config user (no subscription token) as well as a subscribed one. Used to encrypt/decrypt blobs.
+async function subRecoverUnlock(escRec) {
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the encryption key first.");
+  if (!escRec || !escRec.unlock_by_sk) throw new Error("no encryption key for this user");
+  return _importAes(await subDec(sk, escRec.unlock_by_sk), ["encrypt", "decrypt"]);
 }
 
 // Recover a user's {token, unlockKey(CryptoKey), unlockKeyB64} from their escrow record via the SK.
@@ -346,18 +363,31 @@ async function subUsersMap(force) {
   return _subUsersCache.map;
 }
 function subUsersForget() { _subUsersCache = { at: 0, map: null }; }
-// Publish a peer's freshly-minted secret to its owner's subscription — the ONLY moment the browser holds
-// the private key. Best-effort and silent: if the feature is off, the user isn't subscribed, or the
-// Subscription Key isn't unlocked this session, it simply skips (the config publishes on a later rekey,
-// or when the operator opens the user's subscription with the key unlocked). NEVER breaks peer creation.
+// Get a user's encryption unlock-key, minting an escrow entry (unlock-key wrapped by the SK) the first time
+// they own an encrypted-stored peer. Idempotent: an existing key is returned as-is (every blob is encrypted
+// under it), and the server returns the authoritative one so a race can't fork keys. null if the vault is locked.
+async function ensureUserUnlockKey(uid) {
+  const sk = subSKCached(); if (!sk || !uid) return null;
+  const rec = (await subUsersMap(true))[uid];
+  if (rec && rec.unlock_by_sk) { try { return await subRecoverUnlock(rec); } catch (_) { return null; } }
+  const unlockKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+  const r = await api.subEscrow({ user_id: uid, unlock_by_sk: await subEnc(sk, unlockKeyBytes) });
+  if (!r || r.ok === false || !r.data || !r.data.unlock_by_sk) return null;
+  subUsersForget();
+  try { return await subRecoverUnlock(r.data); } catch (_) { return null; }
+}
+// Publish a peer's freshly-minted secret to the encrypted config store — the ONLY moment the browser holds the
+// private key (create / rekey / reassign). In encrypted mode this IS the config store (and doubles as the
+// subscription blob when the user is subscribed). Best-effort and silent: skips in "off" mode or while the
+// vault is locked (then the peer publishes on a later rekey, or via the migration/encrypt-all pass). NEVER
+// breaks peer creation.
 async function subMaybePublish(userId, peerId, privkey, psk) {
   try {
-    if (!subFeatureOn() || !userId || !peerId || !subSKCached()) return;
-    const rec = (await subUsersMap())[userId];
-    if (!rec || !rec.enabled || !rec.unlock_by_sk) return;
-    const { unlockKey } = await subRecover(rec);
+    if (Store.storeMode !== "encrypted" || !userId || !peerId || !subSKCached()) return;
+    const unlockKey = await ensureUserUnlockKey(userId);
+    if (!unlockKey) return;
     await subEncryptPeer(userId, peerId, privkey, psk, unlockKey);
-  } catch (_) { /* a subscription hiccup must never break the peer flow */ }
+  } catch (_) { /* an encryption hiccup must never break the peer flow */ }
 }
 
 // Publish every EXISTING peer of a user to their (just-enabled) subscription — subMaybePublish only fires
@@ -559,6 +589,7 @@ const api = {
   subUserDisable(b) { return this.post("/api/sub/user/disable", b); },
   subBlob(b) { return this.post("/api/sub/blob", b); },
   subBlobGet(pid) { return this.get("/api/sub/blob?peer_id=" + encodeURIComponent(pid)); },   // read one peer's ciphertext for in-browser Show-QR decrypt
+  subEscrow(b) { return this.post("/api/sub/escrow", b); },   // ensure a user holds an encryption unlock-key (encrypted config storage, no subscription)
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
   // external integration API (Settings → Integrations): read-only tokens + webhooks
   apiTokenCreate(label) { return this.post("/api/integrations/token", { label }); },
@@ -651,7 +682,11 @@ const Store = {
     this._server = { roster: d.roster || { version: 1, users: {}, peers: {} }, nodes: d.nodes || [] };
     this.describe = d.describe || {};
     this.stats = d.snapshots || {};
-    this.storeConfigs = !!d.store_configs;
+    // store_configs is now an enum: "encrypted" (blob at rest) | "off". storeConfigs stays a convenience bool
+    // meaning "the panel keeps configs" (now encrypted). configsPlaintext = legacy plaintext files awaiting migration.
+    this.storeMode = (d.store_configs === "off" || d.store_configs === false) ? "off" : "encrypted";
+    this.storeConfigs = this.storeMode !== "off";
+    this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
     applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
@@ -918,7 +953,7 @@ async function blobConfig(peer, node, iface) {
     const r = await api.subBlobGet(peer.id);
     if (!r || !r.ok || !r.data || !r.data.sec) return null;
     sec = r.data.sec;
-    unlockKey = (await subRecover(rec)).unlockKey;
+    unlockKey = await subRecoverUnlock(rec);   // unlock-key only (works whether or not the user is subscribed)
   } catch (_) { return null; }
   try {
     const secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));   // GCM auth fails on a wrong key
@@ -7058,7 +7093,8 @@ function PanelSettingsScreen() {
     const t = setTimeout(() => setProvFlash(f => ({ ...f })), Math.min(...exps) - Date.now() + 50);
     return () => clearTimeout(t);
   }, [provFlash]);
-  const [sc, setSc] = useState(ps.store_configs === false ? "off" : "on");   // ON and "default" merged — both keep configs
+  const _scMode = Store.storeMode || "encrypted";   // the RESOLVED enum (server considers the panel/fleet default)
+  const [sc, setSc] = useState(_scMode);
   const [tput, setTput] = useState(ps.throughput_perspective === "peers" ? "peers" : "nodes");
   const [staleS, setStaleS] = useState(String(Math.round((adv.node_stale_ms || 30000) / 1000)));
   const [graceS, setGraceS] = useState(String(Math.round((adv.peer_grace_ms || 60000) / 1000)));
@@ -7212,7 +7248,7 @@ function PanelSettingsScreen() {
         provider_colors: provColorOverrides(),
         custom_lists_enabled: customEnabled,
         geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
-        store_configs: sc === "off" ? false : true,
+        store_configs: sc === "off" ? "off" : "encrypted",
         subscriptions: { enabled: subsOn,   // base_url + serve now live in Access & TLS (access.sub/access.tls)
           languages: { enabled: subLangs, default: subLangDef } },
         throughput_perspective: tput,
@@ -7271,7 +7307,7 @@ function PanelSettingsScreen() {
     if (glDirty("turn")) out.push("Turn proxies — forks / colours / VK link");
     if (glDirty("geo")) out.push("Geo data");
     if (glDirty("defaults")) out.push("Interfaces — colours / defaults");
-    if (glDirty("configs")) out.push("Client configs → " + (sc === "off" ? "off" : "on"));
+    if (glDirty("configs")) out.push("Client configs → " + (sc === "off" ? "off" : "encrypted"));
     if (glDirty("display")) out.push("Display — theme / status timing");
     if (glDirty("mesh")) out.push("System mesh defaults");
     for (const n of (Store.nodes || [])) {
@@ -7373,7 +7409,7 @@ function PanelSettingsScreen() {
     sec === "security" ? secChanged() :
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
     sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
-    sec === "configs" ? (sc !== (ps.store_configs === false ? "off" : "on")) :
+    sec === "configs" ? (sc !== _scMode) :
     sec === "subs" ? (subsOn !== !!subCfg.enabled || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
@@ -7631,10 +7667,10 @@ function PanelSettingsScreen() {
           <div class="seclabel" style="margin-top:0">Client configs</div>
           <div class="field"><label>Store client configs</label>
             <${Dropdown} value=${sc} onChange=${v => setSc(v)} options=${[
-              { value: "on", label: "On — keep configs (QRs re-viewable anytime)" },
-              { value: "off", label: "Off — never store private keys" }]}/>
-            <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off" ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute." : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
-          ${sc === "off" && subsOn ? html`<div class="hint warn" style="margin-top:10px"><${Ic} i="warn"/> Subscriptions are on and need stored configs. Turn <button class="linkbtn" onClick=${() => setSection("subs")}>Subscriptions</button> off first, or keep storage on — saving this as-is will be rejected.</div>` : null}
+              { value: "encrypted", label: "Keep encrypted configs — QRs re-viewable anytime" },
+              { value: "off", label: "Keep nothing — QR shown once" }]}/>
+            <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off" ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute." : "Client configs are stored encrypted at rest (the server can't read the private keys) so a peer's QR stays re-viewable — you unlock it with your encryption key below. Requires the encryption key."}</div></div>
+          ${sc === "off" && subsOn ? html`<div class="hint warn" style="margin-top:10px"><${Ic} i="warn"/> Subscriptions are on and need encrypted config storage. Turn <button class="linkbtn" onClick=${() => setSection("subs")}>Subscriptions</button> off first, or keep encrypted storage on — saving this as-is will be rejected.</div>` : null}
           <div class="seclabel">Encryption</div>
           <p class="hint" style="margin:0 0 8px">An encryption key held only by you (independent of your login password) protects stored client configs so the server can't read the private keys, and unlocks a peer's QR any time you're signed in. The same key powers subscriptions when you turn them on.</p>
           <${SubVaultCard}/>
@@ -7647,7 +7683,7 @@ function PanelSettingsScreen() {
               { value: "off", label: "Off — the subscription page is blocked entirely" },
               { value: "on", label: "On — per-user subscription URLs are served" }]}/>
             ${sc === "off"
-              ? html`<div class="hint warn">Subscriptions serve the stored client configs — turn on config storage in <button class="linkbtn" onClick=${() => setSection("configs")}>Client configs</button> first.</div>`
+              ? html`<div class="hint warn">Subscriptions serve the encrypted config blobs — turn on <b>Keep encrypted configs</b> in <button class="linkbtn" onClick=${() => setSection("configs")}>Client configs</button> first.</div>`
               : html`<div class="hint">Off returns 404 for every subscription URL, regardless of the rest.</div>`}</div>
           <div class="seclabel">Address & certificate</div>
           <div class="subaddr">
@@ -8209,7 +8245,7 @@ async function createOneMultiTargetPeer(userId, targets, opts, title) {
     if (title) body.title = title;
     const _ov = configOverrides(opts, Store.ifaceMeta(targets[0].node, targets[0].iface));
     if (Object.keys(_ov).length) body.overrides = _ov;
-    if (Store.storeConfigs) body.configs = configs;
+    // No plaintext to the server: the private key stays in the browser, encrypted into the blob by subMaybePublish below.
     const r = await api.peerCreate(body);
     if (!r.ok) return { ok: false, fails: ["create: " + (r.error || r.code || "failed")] };
     Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
@@ -8298,7 +8334,8 @@ function CreatePeerSheet({ prefill }) {
       body = { user_id: userId || null, title: title.trim(), pubkey: keys.pub, psk: pskV, targets: tgts };
       const _ov = configOverrides(cf.opts(), Store.ifaceMeta(chosen[0].node, chosen[0].iface));
       if (Object.keys(_ov).length) body.overrides = _ov;
-      if (Store.storeConfigs) body.configs = configs;
+      // No plaintext to the server: the key stays in the browser (session config for the immediate QR) and is
+      // encrypted into the blob by subMaybePublish (below, after the create POST succeeds).
     } catch (e) { setBusy(false); return setMsg({ k: "err", t: "Error: " + e.message }); }
     // Optimistic: stash the config, drop a "creating" peer onto the grid, close the modal NOW, and let
     // the create POST run in the background (mutate reverts + toasts on failure; the next poll supersedes).
@@ -8313,7 +8350,8 @@ function CreatePeerSheet({ prefill }) {
     mutate({
       patch: s => { s.roster.peers[tempId] = optimistic; },        // shows instantly with status "creating"
       call: () => api.peerCreate(body),
-      onOk: r => { if (r && r.data && r.data.id) Store.recentlyCreated[r.data.id] = Date.now(); },
+      onOk: r => { if (r && r.data && r.data.id) { Store.recentlyCreated[r.data.id] = Date.now();
+        subMaybePublish(userId || null, r.data.id, keys.priv, pskV); } },   // encrypt {k,p} → blob (the config store)
     });
   };
 
@@ -8371,7 +8409,7 @@ function AddTargetSheet({ peer, back }) {
       let conf = null;
       if (srcConf) { const s = parseFullConf(srcConf); conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); }
       const body = { peer_id: peer.id, target: { node: t.node, iface: t.iface, ip: ipClean, type: info.awg_params && Object.keys(info.awg_params).length ? "awg" : "wg" } };
-      if (Store.storeConfigs && conf) body.config = conf;
+      // Same key as the existing deployments → the peer's blob already covers it; no plaintext to the server.
       const r = await api.peerAddTarget(body);
       if (r.ok) { if (conf) (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(t.node, t.iface)] = conf; }
       else fails.push(Store.nodeName(t.node) + "/" + t.iface + " (add)");
@@ -8380,7 +8418,8 @@ function AddTargetSheet({ peer, back }) {
       const info = Store.ifaceMeta(t.node, t.iface);
       const ipClean = String(t.ip || "").split("/")[0];
       const body = { peer_id: peer.id, node: t.node, iface: t.iface, ip: ipClean };
-      if (srcConf && Store.storeConfigs) { const s = parseFullConf(srcConf); const conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); body.config = conf; (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(t.node, t.iface)] = conf; }
+      // address lives in the roster (rendered live); rebuild the session config for the QR, but send no plaintext.
+      if (srcConf) { const s = parseFullConf(srcConf); const conf = buildConf({ privkey: s.privkey, address: ipClean + "/32", dns: s.dns, mtu: s.mtu, awg_params: info.awg_params, server_pubkey: info.public_key, psk: s.psk || peer.psk, endpoint: info.endpoint, allowed: s.allowed, keepalive: s.keepalive }); (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[tkey(t.node, t.iface)] = conf; }
       const r = await api.peerUpdateTarget(body);
       if (!r.ok) fails.push(Store.nodeName(t.node) + "/" + t.iface + " (address)");
     }
@@ -8551,8 +8590,9 @@ function EditPeerSheet({ peer, focus, done, flash }) {
         const addr = (changed ? newIP : (s.address || "").split("/")[0]) + "/32";
         const conf = buildConf({ privkey: s.privkey, address: addr, dns: editable ? dnsArr : s.dns, mtu: (mtu.trim() || 1280), awg_params: s.awg_params, server_pubkey: s.server_pubkey, psk: s.psk, endpoint: s.endpoint, allowed: (allowed.trim() || "0.0.0.0/0, ::/0"), keepalive: keepalive.trim() });
         (Store.sessionConfigs[peer.pubkey] = Store.sessionConfigs[peer.pubkey] || {})[k] = conf;
-        if (changed) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP, config: conf }); if (!r.ok) fails++; }
-        else if (Store.storeConfigs) { const r = await api.peerSaveConfig({ pubkey: peer.pubkey, node: t.node, iface: t.iface, config: conf }); if (!r.ok) fails++; }
+        // No plaintext to the server: the address moves via the roster, and the DNS/MTU/AllowedIPs edits are
+        // persisted as roster overrides (the peerUpdate above); the key is unchanged, so the blob still holds it.
+        if (changed) { const r = await api.peerUpdateTarget({ peer_id: peer.id, node: t.node, iface: t.iface, ip: newIP }); if (!r.ok) fails++; }
       }
     } catch (e) { setBusy(false); return setMsg({ k: "err", t: String(e.message || e) }); }
     setBusy(false); Store.configEpoch++;
@@ -9048,7 +9088,10 @@ function LoginScreen() {
     setBusy(true); setErr("");
     try {
       const r = await api.login({ username: u, password: p, code: twofa ? code.trim() : undefined });
-      if (r && r.ok) { location.reload(); return; }
+      if (r && r.ok) {
+        try { await subUnlock(p); } catch (_) {}   // convenience cache: auto-unlock config encryption with the login password (no-op if no vault); survives the reload via sessionStorage
+        location.reload(); return;
+      }
       if (r && r.twofa_required) {                       // password OK — panel wants the 6-digit code
         const msg = (r && r.error) || "";
         setTwofa(true); setErr(msg);
@@ -9081,7 +9124,7 @@ function LoginScreen() {
 function doLogout() {
   openConfirm({ title: "Log out", confirmLabel: "Log out",
     body: "Are you sure you want to logout?",
-    onConfirm: async () => { try { await api.logout(); } catch (_) {} location.reload(); } });
+    onConfirm: async () => { subForget(); try { await api.logout(); } catch (_) {} location.reload(); } });
 }
 // Account form as a modal (same chrome as the node sheets).
 
@@ -9089,6 +9132,7 @@ function doLogout() {
 const viewEl = $("#view");
 viewEl.innerHTML = `<div class="loading"><span class="spin"></span>connecting…</div>`;
 (async () => {
+  await subBootRestore();   // restore the config-encryption convenience cache from sessionStorage (post-login reload)
   try { await Store.init(); }
   catch (e) { if (!_loginShown) viewEl.innerHTML = `<div class="empty"><b>Can't reach the panel</b>${esc(e.message)}</div>`; return; }
   if (!location.hash) location.hash = "#/";
