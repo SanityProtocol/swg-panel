@@ -39,26 +39,26 @@ body {
 /* app shell — fills the space under the header and hosts (loading OR peers) */
 #app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-/* compact header — bigger logo than before, username beside/under it, minimal vertical cost */
+/* header — a prominent brand lockup: the LED mark + swgSub wordmark, the user's name beneath it */
 .bar {
-  flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding: calc(12px + env(safe-area-inset-top)) 16px 10px;
+  flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: calc(14px + env(safe-area-inset-top)) 64px 12px;
   border-bottom: 1px solid var(--line); text-align: center;
 }
-.brand { display: inline-flex; align-items: center; gap: 10px; }
-.brand-mark { width: 26px; height: 26px; border-radius: 8px; position: relative; flex: none;
+.brand { display: inline-flex; align-items: center; gap: 12px; }
+.brand-mark { width: clamp(30px, 8.5vw, 38px); aspect-ratio: 1; border-radius: 9px; position: relative; flex: none;
   background: radial-gradient(circle at 50% 38%, var(--brand-2), var(--brand));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent), 0 0 16px color-mix(in srgb, var(--brand) 50%, transparent); }
-.brand-mark::after { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: var(--bg); }
-.brand-name { font-weight: 700; letter-spacing: .01em; font-size: clamp(20px, 6vw, 24px); color: var(--brand); }
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent), 0 0 18px color-mix(in srgb, var(--brand) 50%, transparent); }
+.brand-mark::after { content: ""; position: absolute; inset: 33%; border-radius: 50%; background: var(--bg); }
+.brand-name { font-weight: 800; letter-spacing: .005em; font-size: clamp(25px, 8vw, 33px); color: var(--brand); line-height: 1; }
 .brand-name span { color: var(--ink-2); font-weight: 600; }
-.who { color: var(--ink); font-weight: 700; font-size: clamp(14px, 4vw, 16px); max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who { color: var(--ink); font-weight: 700; font-size: clamp(17px, 5vw, 21px); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who:empty { display: none; }
 
-/* top-right controls: language (EN/RU) + light/dark — comfortable tap targets */
+/* top-right controls: language (EN/RU) + light/dark — solid, high-contrast, comfortable tap targets */
 .topctl { position: fixed; top: calc(10px + env(safe-area-inset-top)); right: 12px; z-index: 30; display: flex; gap: 8px; }
-.ctl { appearance: none; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 78%, transparent); backdrop-filter: blur(6px); color: var(--ink); border-radius: 11px; height: 40px; min-width: 40px; padding: 0 11px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-weight: 700; font-size: 13px; letter-spacing: .04em; }
-.ctl svg { width: 19px; height: 19px; display: block; }
+.ctl { appearance: none; border: 1.5px solid color-mix(in srgb, var(--brand) 40%, var(--line)); background: var(--panel); color: var(--brand); border-radius: 12px; height: 46px; min-width: 46px; padding: 0 12px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-weight: 800; font-size: 14px; letter-spacing: .04em; box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
+.ctl svg { width: 23px; height: 23px; display: block; }
 .ctl:active { transform: scale(.94); }
 .ctl[hidden] { display: none; }
 
