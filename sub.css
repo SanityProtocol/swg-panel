@@ -121,8 +121,21 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
 .btn:active { transform: translateY(1px); }
 
 .cfg { align-self: stretch; }
-.cfg summary { cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 600; list-style: none; padding: 4px 0; }
+.cfg summary { cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 600; list-style: none; padding: 4px 0; text-align: center; }
 .cfg summary::-webkit-details-marker { display: none; }
+
+/* Turn-proxy configs: text, not QR. "Paste into <app>" line, then a tap-to-copy block. */
+.turn-app { align-self: stretch; text-align: center; font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.turn-app b, .turn-app strong { color: var(--ink); }
+.turntext-wrap { align-self: stretch; }
+.turntext {
+  margin: 0; cursor: pointer; background: var(--card-2, rgba(127,127,127,.08));
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  font-size: 12px; line-height: 1.5; color: var(--ink);
+  white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto;
+}
+.turntext:active { transform: translateY(1px); }
 .cfg pre {
   margin: 8px 0 0; padding: 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line);
   color: var(--ink); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;

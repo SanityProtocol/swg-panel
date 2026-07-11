@@ -32,6 +32,7 @@
       copied: "Copied", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link",
       clientCmd: "Client command", generating: "Generating…", qrTooBig: "config too large to encode as QR",
       noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
+      pasteInto: "Paste into", tapCopy: "Tap to copy",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
       someBad: "Some peers couldn’t be decrypted — this link may be out of date. Ask your administrator for a fresh one.",
@@ -55,6 +56,7 @@
       copied: "Скопировано", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку",
       clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
       noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
+      pasteInto: "Вставьте в", tapCopy: "Нажмите, чтобы скопировать",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
       someBad: "Некоторые пиры не удалось расшифровать — возможно, ссылка устарела. Попросите у администратора новую.",
@@ -221,13 +223,18 @@
     var s = (user || "peer") + "-" + (peer || "") + "-" + (tgt.node || "");
     return s.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "swg";
   }
-  function download(text, name) {
+  function download(text, name, ext) {
     var blob = new Blob([text], { type: "application/octet-stream" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = name.replace(/\.conf$/i, "") + ".conf";
+    a.download = name.replace(/\.(conf|txt)$/i, "") + "." + (ext || "conf");
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+  function copyText(text, btn, label) {
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () {
+      btn.textContent = t("copied"); setTimeout(function () { btn.textContent = label; }, 1400);
+    }, function () {});
   }
 
   // A single deployment (node/iface) card: QR + actions + collapsible config text.
@@ -307,43 +314,34 @@
   }
 
 
-  // A turn-proxy card: the deployment's turn artifacts, one fork at a time (sub-selector when several forks
-  // forward to it). Each fork's client format comes from the shared SWGTurn.artifact — the same builder the
-  // admin uses. Links (wingsv://, vkturnproxy://) get copy + show; .conf forks get copy + download; a QR is
-  // added when it fits.
-  function turnCard(userName, peer, tgt, conf, vkLink, reason) {
+  // One turn-proxy config for a peer (a single deployment × fork). Turn artifacts aren't QRs — they're
+  // config TEXT or app links — so we show the text (tap to copy) with a "Paste into <app>" line above it
+  // and Copy/Download beneath. The shared SWGTurn.artifact builds it (same as the admin). A peer's turn
+  // configs are laid out as swipeable cards (one per view) by paint()'s carousel.
+  function turnConfigCard(userName, peer, tgt, tp, conf, vkLink, reason) {
     var card = el("div", "tgt");
-    if (tgt.primary) card.appendChild(el("div", "primary", t("primary")));
     card.appendChild(el("div", "tgt-node", tgt.node_name || tgt.node || tgt.iface || "server"));
     if (!conf) { card.appendChild(el("div", "qr-fail", reason || t("notReady"))); return card; }
-    var byFork = {}, order = [];
-    (tgt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (!byFork[f]) { byFork[f] = []; order.push(f); } byFork[f].push(tp); });
-    if (!order.length) { card.appendChild(el("div", "qr-fail", t("noTurn"))); return card; }
-    var sel = 0, body = el("div", "turnbody");
-    var bar = order.length > 1 ? el("div", "forktabs") : null;
-    function fill(art, text) {
-      body.innerHTML = "";
-      try { var img = el("img", "qrimg"); img.alt = "config QR"; img.src = qrDataURL(text, 320); var q = el("div", "qr"); q.appendChild(img); body.appendChild(q); } catch (_) { /* links can exceed QR capacity — copy instead */ }
-      body.appendChild(el("div", "turnlabel", art.label || art.fork));
-      var acts = el("div", "acts");
-      var cp = el("button", "btn ghost", art.uri ? t("copyLink") : t("copyConfig"));
-      cp.onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { cp.textContent = t("copied"); setTimeout(function () { cp.textContent = art.uri ? t("copyLink") : t("copyConfig"); }, 1400); }, function () {}); };
-      acts.appendChild(cp);
-      if (!art.uri) { var dl = el("button", "btn", t("dl") + " ." + (art.ext || "conf")); dl.onclick = function () { download(text, fileName(userName, peer.title, tgt) + "-" + (art.fork || "turn")); }; acts.appendChild(dl); }
-      body.appendChild(acts);
-      if (art.hint) body.appendChild(el("div", "hint turnhint", art.hint));
-      if (art.cmd) { var dc = el("details", "cfg"); dc.appendChild(el("summary", null, t("clientCmd"))); dc.appendChild(el("pre", null, art.cmd)); body.appendChild(dc); }
-      var dt = el("details", "cfg"); dt.appendChild(el("summary", null, art.uri ? t("showLink") : t("showConfig"))); dt.appendChild(el("pre", null, text)); body.appendChild(dt);
+    var art = SWGTurn.artifact(conf, tp, vkLink);
+    card.appendChild(el("div", "turn-app", t("pasteInto") + " " + (art.app || art.fork)));   // which app to paste into
+    var box = el("div", "turntext-wrap"), acts = el("div", "acts");
+    card.appendChild(box); card.appendChild(acts);
+    function fill(text) {
+      box.innerHTML = ""; acts.innerHTML = "";
+      var copyLabel = art.uri ? t("copyLink") : t("copyConfig");
+      var pre = el("pre", "turntext", text); pre.title = t("tapCopy");
+      box.appendChild(pre);
+      var cp = el("button", "btn ghost", copyLabel);
+      pre.onclick = function () { copyText(text, cp, copyLabel); };
+      cp.onclick = function () { copyText(text, cp, copyLabel); };
+      var dl = el("button", "btn", t("dl") + " ." + (art.ext || "conf"));
+      dl.onclick = function () { download(text, fileName(userName, peer.title, tgt) + "-" + (art.fork || "turn"), art.ext || "conf"); };
+      acts.appendChild(cp); acts.appendChild(dl);
+      if (art.cmd) { var dc = el("details", "cfg"); dc.appendChild(el("summary", null, t("clientCmd"))); dc.appendChild(el("pre", null, art.cmd)); card.appendChild(dc); }
     }
-    function renderFork() {
-      var art = SWGTurn.artifact(conf, byFork[order[sel]][0], vkLink);
-      if (art.text != null) { fill(art, art.text); return; }
-      body.innerHTML = ""; body.appendChild(el("div", "hint", t("generating")));
-      Promise.resolve().then(art.buildAsync).then(function (txt) { fill(art, txt); }).catch(function (e) { body.innerHTML = ""; body.appendChild(el("div", "qr-fail", (e && e.message) || t("cantGen"))); });
-    }
-    if (bar) { order.forEach(function (f, k) { var b = el("button", "forktab" + (k === sel ? " on" : ""), f); b.onclick = function () { sel = k; [].forEach.call(bar.children, function (c, ci) { c.className = "forktab" + (ci === sel ? " on" : ""); }); renderFork(); }; bar.appendChild(b); }); card.appendChild(bar); }
-    card.appendChild(body);
-    renderFork();
+    if (art.text != null) fill(art.text);
+    else { box.appendChild(el("div", "hint", t("generating")));
+      Promise.resolve().then(art.buildAsync).then(fill).catch(function (e) { box.innerHTML = ""; box.appendChild(el("div", "qr-fail", (e && e.message) || t("cantGen"))); }); }
     return card;
   }
 
@@ -400,25 +398,32 @@
         listEl.innerHTML = "";
         rows.forEach(function (row) {
           var peer = row.peer, secret = row.secret;
-          var tgts = (peer.targets || []).filter(function (t) {
-            return mode === "turn" ? (t.turn || []).length > 0 : ((t.type === "awg") === (mode === "awg"));
-          });
-          if (!tgts.length) return;                        // this peer has nothing in the selected mode
+          // Items for the selected tab. WG/AWG: one per matching deployment. TURN: one per (deployment × fork)
+          // config, so a peer with several turn-proxies is a swipeable set of configs.
+          var items = [];
+          if (mode === "turn") {
+            (peer.targets || []).forEach(function (tt) {
+              var seen = {};
+              (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return; seen[f] = 1; items.push({ tgt: tt, tp: tp }); });
+            });
+          } else {
+            (peer.targets || []).forEach(function (tt) { if ((tt.type === "awg") === (mode === "awg")) items.push({ tgt: tt }); });
+          }
+          if (!items.length) return;                       // this peer has nothing in the selected mode
           var sec = el("section", "peer");
           var head = el("div", "peer-head");
           head.appendChild(el("span", "peer-title", peer.title || t("peer")));
-          head.appendChild(el("span", "peer-count", servers(tgts.length)));
+          head.appendChild(el("span", "peer-count", servers(items.length)));
           sec.appendChild(head);
-          var reason = row.bad ? t("outOfDate")
-            : (!peer.sec ? t("notReady") : null);
+          var reason = row.bad ? t("outOfDate") : (!peer.sec ? t("notReady") : null);
           var grid = el("div", "tgts");
-          tgts.forEach(function (tgt) {
-            var conf = secret && secret.k ? confFor(secret, tgt) : null;
-            grid.appendChild(mode === "turn" ? turnCard(userName, peer, tgt, conf, vkLink, reason)
-                                             : targetCard(userName, peer, tgt, conf, reason));
+          items.forEach(function (it) {
+            var conf = secret && secret.k ? confFor(secret, it.tgt) : null;
+            grid.appendChild(mode === "turn" ? turnConfigCard(userName, peer, it.tgt, it.tp, conf, vkLink, reason)
+                                             : targetCard(userName, peer, it.tgt, conf, reason));
           });
           sec.appendChild(grid);
-          if (tgts.length > 1) sec.appendChild(carouselNav(grid, tgts.length));
+          if (items.length > 1) sec.appendChild(carouselNav(grid, items.length));
           listEl.appendChild(sec);
         });
       }
