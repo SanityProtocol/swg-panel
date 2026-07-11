@@ -312,7 +312,8 @@ async function subRecover(escRec) {
   if (!escRec || !escRec.unlock_by_sk || !escRec.token_by_sk) throw new Error("no subscription for this user");
   const unlockBytes = await subDec(sk, escRec.unlock_by_sk);
   const token = new TextDecoder().decode(await subDec(sk, escRec.token_by_sk));
-  return { token, unlockKey: await _importAes(unlockBytes, ["encrypt"]), unlockKeyB64: b64url(unlockBytes) };
+  // encrypt (publish a peer's secret) AND decrypt (Show-QR reads the peer's blob back) — same key material.
+  return { token, unlockKey: await _importAes(unlockBytes, ["encrypt", "decrypt"]), unlockKeyB64: b64url(unlockBytes) };
 }
 
 // The shareable URL base for a user. Canonical source is Access & TLS (access.sub.url); falls back to the
@@ -557,6 +558,7 @@ const api = {
   subUserRotate(b) { return this.post("/api/sub/user/rotate", b); },
   subUserDisable(b) { return this.post("/api/sub/user/disable", b); },
   subBlob(b) { return this.post("/api/sub/blob", b); },
+  subBlobGet(pid) { return this.get("/api/sub/blob?peer_id=" + encodeURIComponent(pid)); },   // read one peer's ciphertext for in-browser Show-QR decrypt
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
   // external integration API (Settings → Integrations): read-only tokens + webhooks
   apiTokenCreate(label) { return this.post("/api/integrations/token", { label }); },
@@ -888,11 +890,56 @@ function rerenderConf(text, node, iface) {
   }
   return out;
 }
+// Per-peer render params — the peer's stored overrides where set, else the interface's LIVE defaults.
+// Mirrors the server's effective_client_params so a blob-only render matches what the sub page produces.
+function effectiveClientParams(peer, meta) {
+  const ov = (peer && peer.overrides) || {}; meta = meta || {};
+  return {
+    dns: ("dns" in ov) ? ov.dns : (meta.dns || []),
+    mtu: ov.mtu || meta.mtu || 1280,
+    allowed: ov.allowed || "0.0.0.0/0, ::/0",
+    keepalive: ("keepalive" in ov) ? ov.keepalive : 25,
+  };
+}
+
+// The ENCRYPTED-AT-REST config path: fetch the peer's ciphertext blob, decrypt it in-browser with the
+// user's unlock-key (recovered from the vault), and rebuild the config LIVE from the decrypted {k,p} +
+// the peer's overrides + the interface's current params. Returns null (caller falls back to plaintext /
+// session) when the peer is unassigned, the vault is locked, or no blob exists yet. Never sends a key.
+async function blobConfig(peer, node, iface) {
+  if (!peer || !peer.user_id || !subSKCached()) return null;
+  const t = (peer.targets || []).find(x => x.node === node && x.iface === iface);
+  const meta = Store.ifaceMeta(node, iface);
+  if (!t || !meta) return null;
+  let sec, unlockKey;
+  try {
+    const rec = (await subUsersMap())[peer.user_id];
+    if (!rec || !rec.unlock_by_sk) return null;
+    const r = await api.subBlobGet(peer.id);
+    if (!r || !r.ok || !r.data || !r.data.sec) return null;
+    sec = r.data.sec;
+    unlockKey = (await subRecover(rec)).unlockKey;
+  } catch (_) { return null; }
+  try {
+    const secret = JSON.parse(new TextDecoder().decode(await subDec(unlockKey, sec)));   // GCM auth fails on a wrong key
+    if (!secret || !secret.k) return null;
+    const eff = effectiveClientParams(peer, meta);
+    return buildConf({ privkey: secret.k, address: (t.ip || "").split("/")[0] + "/32",
+      dns: eff.dns, mtu: eff.mtu, awg_params: meta.awg_params, server_pubkey: meta.public_key,
+      psk: secret.p || peer.psk, endpoint: meta.endpoint, allowed: eff.allowed, keepalive: eff.keepalive });
+  } catch (_) { return null; }
+}
+
 function getConfig(pubkey, node, iface) {
   const s = Store.sessionConfigs[pubkey];
   if (s && s[tkey(node, iface)]) return Promise.resolve(rerenderConf(s[tkey(node, iface)], node, iface));
-  if (Store.storeConfigs) return api.config(pubkey, node, iface).then(r => rerenderConf(r.ok ? r.data.config : null, node, iface)).catch(() => null);
-  return Promise.resolve(null);
+  // encrypted-at-rest blob first (assigned peer + vault unlocked); else the transitional plaintext store.
+  const peer = (Store.recon.peers || []).find(p => p.pubkey === pubkey);
+  return blobConfig(peer, node, iface).then(c => {
+    if (c) return c;
+    if (Store.storeConfigs) return api.config(pubkey, node, iface).then(r => rerenderConf(r.ok ? r.data.config : null, node, iface)).catch(() => null);
+    return null;
+  });
 }
 function anySessionConf(pubkey) {
   const s = Store.sessionConfigs[pubkey]; return s ? (Object.values(s)[0] || null) : null;
@@ -5487,6 +5534,7 @@ function openPeerConfigs(peer, back) {
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
   openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width} onClose=${back || closeModal}>
+    <${VaultUnlockBar}/>
     <${SubPeerUrl} peer=${peer}/>
     <${QRRow} cards=${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}/>
   <//>`);
@@ -5499,6 +5547,31 @@ function openUserEdit(user) {
 // stored-config / session-config peer renders its QR and an un-stored one shows the same hint.
 // The subscription URL + one-tap copy. Hovering highlights the whole row (URL + button) as a single
 // click target; clicking anywhere copies. Used under the title in the user + peer QR modals.
+// Shown at the top of the QR/config modals when the encryption vault is configured but not unlocked this
+// session: the stored configs are ciphertext, so a peer's QR can't be rebuilt until the admin unlocks the
+// key with the panel password. Unlocking caches the SK (subUnlock) and bumps configEpoch so every open
+// TargetCard re-resolves via the blob. Renders nothing when there's no vault or it's already unlocked.
+function VaultUnlockBar() {
+  const [exists, setExists] = useState(false);
+  const [ready, setReady] = useState(!!subSKCached());
+  const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
+  useEffect(() => { if (subSKCached()) { setReady(true); return; }
+    let ok = true; api.subVault().then(r => { if (ok) setExists(!!(r && r.ok && r.data && r.data.exists)); }).catch(() => {});
+    return () => { ok = false; }; }, []);
+  if (ready || subSKCached() || !exists) return null;
+  const unlock = async () => {
+    if (!pw) return; setBusy(true);
+    try { await subUnlock(pw); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }
+    catch (e) { toast((e && e.message) || "Unlock failed", "err"); }
+    setBusy(false);
+  };
+  return html`<div class="notice" style="margin-bottom:12px;align-items:center;gap:8px;flex-wrap:wrap">
+    <${Ic} i="lock"/><span style="min-width:120px;flex:1">Unlock your encryption key to show stored QRs.</span>
+    <input class="subpw" type="password" style="max-width:200px" value=${pw} autocomplete="off" placeholder="Panel password"
+      onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
+    <button class="btn btn-primary btn-mini" disabled=${busy || !pw} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock"}</button>
+  </div>`;
+}
 function SubUrlBar({ url }) {
   const [copied, setCopied] = useState(false);
   if (!url) return null;
@@ -5609,6 +5682,7 @@ function openUserConfigs(user, back) {
   const wcols = Math.max(maxT, 2);                        // hold 2 QRs wide even for a single deployment (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   openModal(html`<${Sheet} title=${user.name} width=${width} onClose=${back || closeModal}>
+    <${VaultUnlockBar}/>
     <${SubUserPanel} user=${user}/>
     ${peers.length ? html`<div class="usercfg">${peers.map(p => html`<div class="usercfg-peer" key=${p.id}>
       <div class="usercfg-plabel">${p.title || "Peer"}${(p.targets || []).length ? html`<span class="usercfg-pcount">${p.targets.length} deployment${p.targets.length === 1 ? "" : "s"}</span>` : null}</div>

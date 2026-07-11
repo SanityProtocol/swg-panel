@@ -4376,6 +4376,18 @@ def api(method, path, qs, body, deps):
         drop_sub_blobs(deps, uid)
         return 200, {"ok": True, "data": {"disabled": True, "changed": changed}}
 
+    if method == "GET" and path == "/api/sub/blob":                  # read one peer's encrypted secret (authed admin → in-browser decrypt for Show-QR)
+        pid = (qs.get("peer_id") or [""])[0]
+        roster = roster_load(roster_path)
+        p = (roster.get("peers") or {}).get(pid)
+        if not p or not p.get("user_id"):
+            return 404, {"ok": False, "error": "no encrypted config for this peer", "code": "not_found"}
+        uid = p["user_id"]
+        sec = (load_sub_blobs(deps, uid).get(pid) or {}).get("sec")   # ciphertext only — the panel can't read it
+        if not sec:
+            return 404, {"ok": False, "error": "no encrypted config for this peer", "code": "not_found"}
+        return 200, {"ok": True, "data": {"sec": sec, "user_id": uid}}
+
     if method == "POST" and path == "/api/sub/blob":                 # store/replace one peer's encrypted secret
         uid, pid, sec = body.get("user_id") or "", body.get("peer_id") or "", body.get("sec")
         if not isinstance(sec, str) or not sec:
