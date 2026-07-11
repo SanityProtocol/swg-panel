@@ -6708,6 +6708,7 @@ const TLS_MODE_OPTS = [
   { value: "", label: "None — plain HTTP (behind a reverse proxy / Cloudflare)" },
   { value: "letsencrypt", label: "Let's Encrypt (HTTP-01 — needs port 80 reachable)" },
   { value: "cloudflare", label: "Let's Encrypt via Cloudflare DNS (no port 80; needs a token)" },
+  { value: "cf15", label: "Cloudflare Origin certificate (15y — only valid behind Cloudflare)" },
   { value: "selfsigned", label: "Self-signed" }];
 
 // The panel + swg-sub network address (bindable IP + port) and the ONE certificate config both derive from.
@@ -6721,7 +6722,7 @@ function AccessTLSCard() {
   const [sUrl, setSUrl] = useState(s0.url || ""); const [sHost, setSHost] = useState(s0.host || "0.0.0.0"); const [sPort, setSPort] = useState(String(s0.port || 8444));
   const [mode, setMode] = useState(t0.mode || ""); const [email, setEmail] = useState(t0.email || "");
   const [cfTok, setCfTok] = useState(""); const [cfOrig, setCfOrig] = useState("");
-  const hasCfTok = !!t0.has_cf_token, hasCfOrig = !!t0.has_cf_origin_token;
+  const [hasCfTok, setHasCfTok] = useState(!!t0.has_cf_token); const [hasCfOrig, setHasCfOrig] = useState(!!t0.has_cf_origin_token);
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const [st, setSt] = useState(null); const [polling, setPolling] = useState(false);
   useEffect(() => { api.get("/api/access/ips").then(r => { if (r && r.ok) setIps(r.ips || []); }); }, []);
@@ -6776,6 +6777,8 @@ function AccessTLSCard() {
       tls: { mode, email: email.trim(), cf_token: cfTok, cf_origin_token: cfOrig } } };
     const r = await api.panelSettings(body); setBusy(false);
     if (!r || r.ok === false) return setMsg({ ok: false, t: (r && (r.error || (r.errors || []).join("; "))) || "Save failed." });
+    const rtls = ((r.data || {}).access || {}).tls || {};        // the redacted echo → refresh the "(set)" markers
+    setHasCfTok(!!rtls.has_cf_token); setHasCfOrig(!!rtls.has_cf_origin_token);
     setCfTok(""); setCfOrig("");
     const w = (r.warnings || []);
     setMsg({ ok: true, t: w.length ? ("Saved — " + w.join(" ")) : "Saved. Apply to activate the new address." });
@@ -6808,6 +6811,8 @@ function AccessTLSCard() {
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>Account email</label><input type="text" placeholder="admin@example.com" value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
     ${mode === "cloudflare" ? html`<div class="field"><label>Cloudflare API token</label><input type="password" placeholder=${hasCfTok ? "•••••••• (set — leave blank to keep)" : "Zone:DNS:Edit token"} value=${cfTok} onInput=${e => setCfTok(e.target.value)}/>
       <div class="hint">Used for DNS-01 validation. Stored on the panel only; never sent to the browser. Enter "-" to clear.</div></div>` : null}
+    ${mode === "cf15" ? html`<div class="field"><label>Cloudflare Origin CA token</label><input type="password" placeholder=${hasCfOrig ? "•••••••• (set — leave blank to keep)" : "Zone:SSL and Certificates:Edit token"} value=${cfOrig} onInput=${e => setCfOrig(e.target.value)}/>
+      <div class="hint">Requests a 15-year Cloudflare Origin certificate — valid <b>only</b> behind Cloudflare's proxy. Stored on the panel only. Enter "-" to clear.</div></div>` : null}
 
     <div class="setsave"><button class="btn btn-primary" disabled=${busy || blocked} onClick=${save}>${busy ? "Saving…" : "Save"}</button></div>
   </div>`;

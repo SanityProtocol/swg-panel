@@ -38,6 +38,8 @@ import ipaddress
 import json
 import os
 import pwd
+import urllib.error
+import urllib.request
 import re
 import stat
 import subprocess
@@ -261,6 +263,45 @@ def _issue_acme(svc, service, domain, mode, creds):
         raise Reject("acme --install-cert failed (rc %d): %s" % (rc, out.strip()[-400:]))
 
 
+def _issue_cf15(svc, domain, creds):
+    """Cloudflare Origin CA cert (15 years) via the CF API — a private EC key + CSR generated locally, the
+    cert signed by CF. ONLY valid behind Cloudflare's proxy. Uses the Origin CA token (Zone:SSL:Edit)."""
+    tok = creds["cf_origin_token"]
+    if not tok:
+        raise Reject("cf15 needs a Cloudflare Origin CA token (set it in Access & TLS or install.conf CF_ORIGIN_TOKEN)")
+    if DRYRUN:
+        log("would request a 15-year Cloudflare Origin cert (CN=%s) -> %s" % (domain, svc["cert"]))
+        return
+    # generate the key + CSR with output CAPTURED (never routed through run(), which logs — the key is secret)
+    key = subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout"],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+    if not key:
+        raise Reject("openssl EC key generation failed")
+    csr = subprocess.run(["openssl", "req", "-new", "-key", "/dev/stdin", "-subj", "/CN=" + domain],
+                         input=key, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
+    if not csr.strip():
+        raise Reject("openssl CSR generation failed")
+    body = json.dumps({"hostnames": [domain], "requested_validity": 5475,
+                       "request_type": "origin-ecc", "csr": csr}).encode()
+    req = urllib.request.Request("https://api.cloudflare.com/client/v4/certificates", data=body, method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + tok})
+    log("requesting a Cloudflare Origin cert for %s" % domain)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        d = json.load(e)
+    except Exception as e:
+        raise Reject("Cloudflare API request failed: %s" % (e,))
+    if not d.get("success"):
+        msgs = "; ".join(str(x.get("message")) for x in (d.get("errors") or [])) or "unknown error"
+        raise Reject("Cloudflare rejected the Origin cert request (check the token + that %s is on this account): %s" % (domain, msgs))
+    with open(svc["cert"], "w") as f:
+        f.write(d["result"]["certificate"].rstrip("\n") + "\n")
+    with open(svc["key"], "wb") as f:
+        f.write(key)
+
+
 def do_issue_cert(service, domain):
     svc = SERVICES[v_service(service)]
     v_domain(domain)
@@ -268,14 +309,21 @@ def do_issue_cert(service, domain):
     mode = creds["mode"] or "letsencrypt"
     if not DRYRUN:
         os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
+    reload_after = True
     if mode == "selfsigned":
         _issue_selfsigned(svc, domain)
+    elif mode == "cf15":
+        _issue_cf15(svc, domain, creds)
     elif mode in ("cloudflare", "letsencrypt"):
-        _issue_acme(svc, service, domain, mode, creds)
+        _issue_acme(svc, service, domain, mode, creds)   # acme --install-cert already SIGHUPs via --reloadcmd
+        reload_after = False
     else:
-        # cf15 (CF Origin CA) and letsencrypt-ip use different issuance paths — wired in a later phase.
+        # letsencrypt-ip issues for a public IP (not a domain) — a separate path, deferred.
         raise Reject("issue-cert not yet implemented for TLS mode %r" % (mode,))
     _fix_cert_perms(svc)
+    if reload_after:                                     # renewal → pick up the new cert (no-op on first issue over plain HTTP)
+        with contextlib.suppress(Exception):
+            run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
     return "issued cert for %s (%s) via %s" % (domain, service, mode)
 
 
