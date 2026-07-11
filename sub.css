@@ -118,7 +118,8 @@ body {
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
   font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
   font-size: 14px; line-height: 1.5; color: var(--ink);
-  white-space: pre-wrap; word-break: break-all; -webkit-overflow-scrolling: touch; }
+  white-space: pre; -webkit-overflow-scrolling: touch; }   /* config keys stay on one line; JS shrinks the font so the widest fits */
+.cfgtext.wrap { white-space: pre-wrap; word-break: break-all; }   /* a long single-string link wraps instead of shrinking to nothing */
 .cfgtext:active { transform: translateY(1px); }
 .cmdblk { flex: none; display: flex; flex-direction: column; }
 .cmdlbl { font-size: 10.5px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px 2px; }

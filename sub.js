@@ -145,7 +145,7 @@
     var CEIL = 20, FLOOR = 7;
     pre.style.fontSize = CEIL + "px";                // grow to the ceiling; a short config fills its box…
     for (var i = 0, f = CEIL; i < 60 && f > FLOOR; i++) {
-      if (pre.scrollHeight <= pre.clientHeight + 1) break;   // …a tall one shrinks until it fits (then scrolls)
+      if (pre.scrollHeight <= pre.clientHeight + 1 && pre.scrollWidth <= pre.clientWidth + 1) break;   // …shrink until it fits both axes (keys stay one line), then scroll
       f -= 0.5; pre.style.fontSize = f + "px";
     }
   }
@@ -249,6 +249,21 @@
       btn.textContent = t("copied"); setTimeout(function () { btn.textContent = label; }, 1400);
     }, function () {});
   }
+  // Copy / save the QR itself (a PNG) — used when the QR is the thing on screen, so Copy/Download act on
+  // what you see, not the hidden config text.
+  function copyImage(url, btn, restore) {
+    function done(ok) { if (btn) { btn.textContent = ok ? t("copied") : t("copyFailed"); setTimeout(function () { btn.textContent = restore; }, 1400); } }
+    if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) return done(false);
+    fetch(url).then(function (r) { return r.blob(); }).then(function (blob) {
+      var item = {}; item[blob.type] = blob;
+      return navigator.clipboard.write([new ClipboardItem(item)]);
+    }).then(function () { done(true); }, function () { done(false); });
+  }
+  function downloadImage(url, name) {
+    var a = document.createElement("a");
+    a.href = url; a.download = (name || "qr").replace(/\.(conf|txt|png)$/i, "") + ".png";
+    document.body.appendChild(a); a.click(); a.remove();
+  }
   // The direct WireGuard/AmneziaWG config for a deployment (byte-identical to the panel's buildConf).
   function confFor(secret, tgt) {
     return buildConf({
@@ -287,12 +302,12 @@
       if (!ctrl.ready) { stage.appendChild(el("div", "cfg-fail", reason || (mode === "turn" ? t("generating") : t("notReady")))); if (ctrl.notify) ctrl.notify(); return; }
       if (ctrl.view === "qr" && ctrl.hasQR) {
         var box = el("div", "qrbox");
-        try { var img = el("img", "qrimg"); img.alt = "config QR"; img.src = qrDataURL(ctrl.payload, 760); box.appendChild(img); }
-        catch (_) { ctrl.hasQR = false; ctrl.view = "text"; return draw(); }
+        try { ctrl.qrUrl = qrDataURL(ctrl.payload, 760); var img = el("img", "qrimg"); img.alt = "config QR"; img.src = ctrl.qrUrl; box.appendChild(img); }
+        catch (_) { ctrl.qrUrl = null; ctrl.hasQR = false; ctrl.view = "text"; return draw(); }
         stage.appendChild(box);
       } else {
         var wrap = el("div", "textwrap");
-        var pre = el("pre", "cfgtext", ctrl.payload); pre.title = t("tapCopy");
+        var pre = el("pre", "cfgtext" + (ctrl.isLink ? " wrap" : ""), ctrl.payload); pre.title = t("tapCopy");
         pre.onclick = function () { ctrl.copyInto(null, ""); };
         wrap.appendChild(pre);
         if (ctrl.cmd) { var c = el("div", "cmdblk"); c.appendChild(el("div", "cmdlbl", t("clientCmd")));
@@ -372,8 +387,8 @@
     }
     ctrls.forEach(function (c) { c.notify = function () { if (ctrls[curIdx] === c) syncBar(); }; });
     toggle.onclick = function () { var c = cur(); if (!c || !c.hasQR) return; c.view = (c.view === "qr") ? "text" : "qr"; c.redraw(); syncBar(); };
-    copyB.onclick = function () { var c = cur(); if (c) c.copyInto(copyB, t("copyShort")); };
-    dlB.onclick = function () { var c = cur(); if (c) download(c.payload, c.base + (mode === "turn" ? "-turn" : ""), c.ext || "conf"); };
+    copyB.onclick = function () { var c = cur(); if (!c) return; if (c.view === "qr" && c.qrUrl) copyImage(c.qrUrl, copyB, t("copyShort")); else c.copyInto(copyB, t("copyShort")); };
+    dlB.onclick = function () { var c = cur(); if (!c) return; var nm = c.base + (mode === "turn" ? "-turn" : ""); if (c.view === "qr" && c.qrUrl) downloadImage(c.qrUrl, nm); else download(c.payload, nm, c.ext || "conf"); };
 
     function current() { var sl = srow.scrollLeft, best = 0, bd = Infinity; for (var i = 0; i < srow.children.length; i++) { var dd = Math.abs((srow.children[i].offsetLeft - srow.offsetLeft) - sl); if (dd < bd) { bd = dd; best = i; } } return best; }
     var raf = 0;
