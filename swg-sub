@@ -535,8 +535,14 @@ def main():
         scheme = "https"
 
         def _reload_tls(_sig, _frm):                    # SIGHUP → pick up a renewed cert with no downtime
+            # Swap in a FRESH context, not load_cert_chain() over the live one: an SSLContext keeps one cert
+            # PER KEY TYPE, so loading a cert of a different key type (e.g. an acme renewal that flips ECDSA↔RSA)
+            # leaves the OLD cert active and clients keep negotiating it — a silent no-op. A new context holds
+            # only the new cert, so the swap always takes.
             try:
-                ctx.load_cert_chain(cert, key)
+                nctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                nctx.load_cert_chain(cert, key)
+                srv.ssl_ctx = nctx
                 print("swg-sub: reloaded TLS certificate (SIGHUP)", flush=True)
             except Exception as e:
                 print(f"swg-sub: TLS reload failed (keeping old cert): {e}", flush=True)

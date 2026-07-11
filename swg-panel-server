@@ -3978,10 +3978,12 @@ def api(method, path, qs, body, deps):
                 return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
             _APPLY["pending"] = {"phase": "starting"}       # reserve so a concurrent apply is rejected
         if same_bind and need_cert:
-            # domain/cert change with NO bind change → no lockout risk (the panel stays reachable, at worst
-            # with a cert warning), so just issue the new cert and reload it live. No dual-listen/confirm.
+            # domain/cert change with NO bind change (no second listener possible on the same address): issue
+            # the new cert live over the old one, then confirm/revert on the CERT — so a Cloudflare-fronted
+            # panel whose new cert CF rejects (526) self-heals by restoring the previous cert on timeout.
             threading.Thread(target=_apply_panel_cert_only, name="access-apply-cert",
-                             args=(deps, d_domain, _cert_primary_domain(cur.get("cert"))), daemon=True).start()
+                             args=(deps, d_host, d_port, d_url, d_domain, _cert_primary_domain(cur.get("cert"))),
+                             daemon=True).start()
             _apply_status("issuing", "issuing a certificate for %s" % d_domain)
             return 200, {"ok": True, "applied": False, "async": True, "message": "issuing a certificate"}
         if need_cert:
@@ -4014,11 +4016,12 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, "error": "no matching pending change", "code": "bad_request"}
             if here != pend["new_lid"]:
                 return 400, {"ok": False, "error": "confirm must be made on the new address", "code": "wrong_listener"}
-            _netctl_enqueue(deps, "set-listen", ["panel", pend["host"], pend["port"]])   # persist across restarts (root helper)
-            new_srv = LISTENERS.get(pend["new_lid"])
-            if new_srv is not None:
-                new_srv._swg["primary"] = True                # the new listener is now the panel
-            LISTENERS.remove(pend["old_lid"])
+            if pend.get("kind") != "cert-only":              # rebind: promote the new listener, drop the old
+                _netctl_enqueue(deps, "set-listen", ["panel", pend["host"], pend["port"]])   # persist across restarts (root helper)
+                new_srv = LISTENERS.get(pend["new_lid"])
+                if new_srv is not None:
+                    new_srv._swg["primary"] = True            # the new listener is now the panel
+                LISTENERS.remove(pend["old_lid"])
             nd, od = pend.get("new_domain"), pend.get("old_domain")
             _APPLY["pending"] = None
             _apply_status("saved", "panel now on %s:%d" % (pend["host"], pend["port"]))
@@ -7415,13 +7418,20 @@ class _Listeners:
                     return lid, srv
         return None, None
     def reload_tls(self):                              # SIGHUP → every TLS listener re-reads its cert
+        # Build a FRESH SSLContext per listener and swap it in, rather than load_cert_chain()-ing over the
+        # live one. An SSLContext keeps ONE cert PER KEY TYPE, so loading (say) an RSA cert over an existing
+        # ECDSA one leaves BOTH active and clients keep negotiating the OLD (ECDSA) cert — a silent no-op
+        # whenever the key type changes (Let's Encrypt ECDSA → selfsigned/cf15 RSA, a mode switch, or an acme
+        # renewal that flips key type). A fresh context holds only the new cert, so the swap always takes.
         with self._lock:
             srvs = list(self._by_id.values())
         for srv in srvs:
             m = getattr(srv, "_swg", {})
             if srv.ssl_ctx is not None and m.get("cert") and m.get("key"):
                 with contextlib.suppress(Exception):
-                    srv.ssl_ctx.load_cert_chain(m["cert"], m["key"])
+                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                    ctx.load_cert_chain(m["cert"], m["key"])
+                    srv.ssl_ctx = ctx                  # atomic swap; in-flight handshakes keep the old ctx
 
 
 LISTENERS = _Listeners()
@@ -7530,25 +7540,28 @@ def _apply_timeout(nonce, deps):
         pend = _APPLY["pending"]
         if not pend or pend.get("nonce") != nonce:
             return                       # already confirmed, or a newer apply superseded this one
-        LISTENERS.remove(pend["new_lid"])
+        if pend.get("kind") != "cert-only":
+            LISTENERS.remove(pend["new_lid"])   # rebind: drop the un-confirmed listener (cert-only kept the same one)
         nd = pend.get("new_domain")
         _APPLY["pending"] = None
     _apply_status("reverted", "the new address didn't confirm in time — reverted to the previous one")
     if nd:                               # a domain-change apply issued a cert over the live path → undo it
-        _netctl_enqueue(deps, "restore-cert", ["panel"])          # put the previous cert back on disk
+        _netctl_enqueue(deps, "restore-cert", ["panel"])          # put the previous cert back on disk (+ SIGHUP reload)
         _netctl_enqueue(deps, "drop-cert", ["panel", nd])         # stop acme renewing the reverted-away domain
 
 
-def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_domain=""):
+def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_domain="", kind="rebind"):
     """Register the freshly-bound listener as the pending change, publish nonce+redirect for the UI, and
-    arm the revert timer. Caller holds _APPLY['lock']. old/new_domain drive the cert commit/revert."""
+    arm the revert timer. Caller holds _APPLY['lock']. old/new_domain drive the cert commit/revert.
+    kind="cert-only" is a same-bind domain change (no new listener): confirm/timeout swap the cert, not
+    the listener — so a Cloudflare-fronted panel whose new cert CF rejects (526) self-heals on timeout."""
     nonce = secrets.token_hex(12)
     deadline = int(time.time()) + APPLY_TIMEOUT
     sep = "&" if ("?" in url) else "?"
     redirect = (url + sep + "__apply=" + nonce) if url else None
     _APPLY["pending"] = {"nonce": nonce, "new_lid": new_lid, "old_lid": old_lid,
                          "host": host, "port": port, "deadline": deadline,
-                         "old_domain": old_domain, "new_domain": new_domain}
+                         "old_domain": old_domain, "new_domain": new_domain, "kind": kind}
     _apply_status("verifying", "waiting for %s:%d to confirm" % (host, port),
                   nonce=nonce, redirect=redirect, host=host, port=port, expires=deadline)
     threading.Timer(APPLY_TIMEOUT + 1, _apply_timeout, args=(nonce, deps)).start()
@@ -7582,24 +7595,29 @@ def _apply_panel_cert_then_bind(deps, d_host, d_port, d_url, d_domain, old_lid, 
         _fail("internal error: %s" % (e,))
 
 
-def _apply_panel_cert_only(deps, d_domain, old_domain):
-    """A domain/cert change with the SAME bind (no new listener): issue the new cert and reload it into the
-    running listener. No lockout risk (a bad cert still leaves the panel reachable + SSH-fixable), so no
-    dual-listen/confirm — but we still stop renewing the old domain so acme's cron doesn't fight the new one."""
+def _apply_panel_cert_only(deps, d_host, d_port, d_url, d_domain, old_domain):
+    """A domain/cert change with the SAME bind (no new listener): back up the live cert, issue the new one
+    and reload it into the running listener, then WAIT for the browser to confirm it can still reach the
+    panel on the new cert. If it can't in time (e.g. a Cloudflare-fronted panel whose new cert CF rejects →
+    526), the timer restores the previous cert (which SIGHUP-reloads) so the old URL self-heals — no lockout.
+    On confirm, the backup is cleared and the old domain stops renewing."""
+    def _fail(msg):
+        _netctl_enqueue(deps, "restore-cert", ["panel"])          # undo any partial clobber (+ SIGHUP reload)
+        with _APPLY["lock"]:
+            _APPLY["pending"] = None
+        _apply_status("failed", msg)
     try:
         _apply_status("issuing", "issuing a certificate for %s" % d_domain)
-        ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["panel", d_domain]), 180)  # reload=on
-        with _APPLY["lock"]:
-            _APPLY["pending"] = None
+        _netctl_wait(deps, _netctl_enqueue(deps, "backup-cert", ["panel"]), 30)   # snapshot the live cert first
+        ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["panel", d_domain]), 180)  # reload=on: serve it live
         if not ok:
-            return _apply_status("failed", "certificate issuance failed: " + (msg or "unavailable"))
-        if old_domain and old_domain != d_domain:
-            _netctl_enqueue(deps, "drop-cert", ["panel", old_domain])
-        _apply_status("saved", "certificate updated for %s" % d_domain)
+            return _fail("certificate issuance failed: " + (msg or "unavailable"))
+        lid, _ = LISTENERS.primary()
+        with _APPLY["lock"]:                     # same bind → confirm/revert swaps the CERT, not the listener
+            _arm_pending(deps, lid, lid, d_host, d_port, d_url,
+                         old_domain=old_domain, new_domain=d_domain, kind="cert-only")
     except Exception as e:
-        with _APPLY["lock"]:
-            _APPLY["pending"] = None
-        _apply_status("failed", "internal error: %s" % (e,))
+        _fail("internal error: %s" % (e,))
 
 
 # swg-sub's apply is separate + simpler: it's a distinct process, and restarting it can't lock the admin
