@@ -4075,10 +4075,9 @@ def api(method, path, qs, body, deps):
             return 500, {"ok": False, "error": "no primary listener", "code": "internal"}
         cur = srv._swg
         mode = (acc.get("tls") or {}).get("mode") or ""
-        # a cert is needed only when we currently HAVE TLS, the domain changed, the current cert doesn't
-        # cover it, and the mode actually issues certs (not plain/reverse-proxy).
-        need_cert = bool(cur.get("cert")) and bool(d_domain) and not _cert_covers(cur.get("cert"), d_domain) \
-            and mode in ("cloudflare", "letsencrypt", "selfsigned", "cf15", "letsencrypt-ip")
+        # a cert is needed only when we currently HAVE TLS and either the domain changed (current cert doesn't
+        # cover it) or a real-CA mode is still serving a self-signed placeholder — for a mode that issues certs.
+        need_cert = bool(cur.get("cert")) and _cert_needs_issue(cur.get("cert"), d_domain, mode)
         same_bind = (d_host, d_port) == (cur["host"], cur["port"])
         if same_bind and not need_cert:
             _apply_status("saved", "already serving on %s:%d" % (d_host, d_port))
@@ -7713,6 +7712,35 @@ def _cert_primary_domain(cert_path):
     return ""
 
 
+# TLS modes whose cert must be issued by a real CA (trusted by Cloudflare Full-strict / browsers) — a
+# self-signed placeholder that merely *covers* the domain is NOT acceptable for these and must be replaced.
+REAL_CA_MODES = ("cloudflare", "letsencrypt", "cf15", "letsencrypt-ip")
+
+
+def _cert_selfsigned(cert_path):
+    """True if the cert at cert_path is self-signed (issuer == subject) — the placeholder swg-sub/panel
+    serves before a real cert is issued. It covers the domain but Cloudflare Full-strict rejects it (526)."""
+    if not cert_path or not os.path.exists(cert_path):
+        return False
+    try:
+        info = ssl._ssl._test_decode_cert(cert_path)
+        return dict(x[0] for x in info.get("issuer", ())) == dict(x[0] for x in info.get("subject", ()))
+    except Exception:
+        return False
+
+
+def _cert_needs_issue(cert_path, domain, mode):
+    """Should we (re)issue a cert before serving `domain` under `mode`? Yes when the current cert doesn't
+    cover the domain, OR the mode expects a real CA cert (LE / Cloudflare Origin CA) but what's on disk is a
+    self-signed placeholder — which covers the name yet Cloudflare Full-strict / browsers reject (526). A
+    'selfsigned' mode is content with a self-signed cert, so coverage alone settles it there."""
+    if not domain or mode not in ("cloudflare", "letsencrypt", "selfsigned", "cf15", "letsencrypt-ip"):
+        return False
+    if not _cert_covers(cert_path, domain):
+        return True
+    return mode in REAL_CA_MODES and _cert_selfsigned(cert_path)
+
+
 def _netctl_wait(deps, rid, timeout=180):
     """Poll swg-netctl's status dir for the result of request `rid`. Returns (ok, message)."""
     if not rid:
@@ -7871,8 +7899,7 @@ def _subapply_status(state, message="", **extra):
 
 def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
     try:
-        if d_domain and mode in ("cloudflare", "letsencrypt", "selfsigned", "cf15", "letsencrypt-ip") \
-                and not _cert_covers(SUB_CERT_PATH, d_domain):
+        if _cert_needs_issue(SUB_CERT_PATH, d_domain, mode):
             _subapply_status("issuing", "issuing a certificate for %s" % d_domain)
             ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["sub", d_domain]), 180)
             if not ok:
