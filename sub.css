@@ -33,10 +33,11 @@ body {
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-text-size-adjust: 100%;
   height: 100dvh; overflow: hidden; overscroll-behavior: none;
+  display: flex; flex-direction: column;   /* header (.bar) · #app fill exactly one screen */
 }
 
-/* app shell — a full-height column: header · (loading OR peers) */
-#app { height: 100dvh; display: flex; flex-direction: column; min-height: 0; }
+/* app shell — fills the space under the header and hosts (loading OR peers) */
+#app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* compact header — bigger logo than before, username beside/under it, minimal vertical cost */
 .bar {
@@ -63,6 +64,7 @@ body {
 
 /* loading / empty / error — centred in the remaining space */
 .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; padding: 32px 24px; color: var(--muted); }
+.state[hidden] { display: none; }   /* the class sets display:flex, which would otherwise defeat the hidden attribute */
 .state-msg { margin: 0; font-size: 19px; font-weight: 700; color: var(--ink); }
 .state-sub { margin: 0 auto; max-width: 34em; }
 .spin { width: 34px; height: 34px; margin: 0 auto 16px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
@@ -103,18 +105,19 @@ body {
 .scell-paste { color: var(--muted); font-size: 12.5px; font-weight: 600; }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
-.scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 460px; display: flex; align-items: center; justify-content: center; }
+.scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }
 
-/* big centred QR — ceiling caps it on large screens, floor keeps it scannable on small ones */
-.qrbox { background: #fff; padding: clamp(8px, 2.4vw, 14px); border-radius: 14px; line-height: 0; box-shadow: 0 6px 22px rgba(0, 0, 0, .18); max-width: 100%; }
-.qrimg { width: min(82vw, 56vh, 420px); height: auto; image-rendering: pixelated; display: block; }
+/* big centred QR — fills most of a phone's width; ceilings keep it sane on tablets/desktop */
+.qrbox { background: #fff; padding: clamp(9px, 2.6vw, 14px); border-radius: 16px; line-height: 0; box-shadow: 0 6px 22px rgba(0, 0, 0, .18); max-width: 100%; }
+.qrimg { width: min(90vw, 62vh, 500px); height: auto; image-rendering: pixelated; display: block; }
 
-/* config / link text — fills the stage; JS auto-fits the font between a ceiling and floor, then overflow scrolls */
-.textwrap { width: 100%; height: 100%; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-.cfgtext { margin: 0; flex: 1; min-height: 0; width: 100%; overflow: auto; cursor: pointer;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+/* config / link text — a content-sized box centred in the stage (never a giant empty panel); JS grows the
+   font to fill up to a ceiling and shrinks it to fit tall configs, then overflow scrolls past the floor */
+.textwrap { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 10px; min-height: 0; }
+.cfgtext { margin: 0; max-height: 100%; width: 100%; overflow: auto; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
   font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
-  font-size: 13px; line-height: 1.45; color: var(--ink);
+  font-size: 14px; line-height: 1.5; color: var(--ink);
   white-space: pre-wrap; word-break: break-all; -webkit-overflow-scrolling: touch; }
 .cfgtext:active { transform: translateY(1px); }
 .cmdblk { flex: none; display: flex; flex-direction: column; }

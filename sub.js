@@ -30,6 +30,7 @@
       noConfigsSub: "There are no active peers on this subscription. New peers will appear here automatically.",
       peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config", copyLink: "Copy link",
       copied: "Copied", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
+      toQR: "QR", toConfig: "Config", toLink: "Link", copyShort: "Copy", dlShort: "Download",
       clientCmd: "Client command", generating: "Generating…", qrTooBig: "config too large to encode as QR",
       noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
       pasteInto: "Paste into", tapCopy: "Tap to copy",
@@ -54,6 +55,7 @@
       noConfigsSub: "На этой подписке нет активных пиров. Новые появятся здесь автоматически.",
       peer: "Пир", primary: "Основной", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать", copyLink: "Скопировать ссылку",
       copied: "Скопировано", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
+      toQR: "QR", toConfig: "Конфиг", toLink: "Ссылка", copyShort: "Копир.", dlShort: "Скачать",
       clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
       noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
       pasteInto: "Вставьте в", tapCopy: "Нажмите, чтобы скопировать",
@@ -140,10 +142,10 @@
   // Shrink a config/link <pre> so it fits its box in BOTH axes without scrolling — down to a legible floor
   // (past which overflow:auto lets it scroll). A ceiling keeps it from looking oversized on big/tablet screens.
   function fitText(pre) {
-    var CEIL = 14, FLOOR = 7;
-    pre.style.fontSize = CEIL + "px";
-    for (var i = 0, f = CEIL; i < 40 && f > FLOOR; i++) {
-      if (pre.scrollHeight <= pre.clientHeight + 1 && pre.scrollWidth <= pre.clientWidth + 1) break;
+    var CEIL = 20, FLOOR = 7;
+    pre.style.fontSize = CEIL + "px";                // grow to the ceiling; a short config fills its box…
+    for (var i = 0, f = CEIL; i < 60 && f > FLOOR; i++) {
+      if (pre.scrollHeight <= pre.clientHeight + 1) break;   // …a tall one shrinks until it fits (then scrolls)
       f -= 0.5; pre.style.fontSize = f + "px";
     }
   }
@@ -361,16 +363,16 @@
     function cur() { return ctrls[curIdx]; }
     function syncBar() {
       var c = cur();
-      if (c && c.ready && c.hasQR) { toggle.hidden = false; toggle.textContent = (c.view === "qr") ? (c.isLink ? t("showLink") : t("showConfig")) : t("showQR"); }
+      if (c && c.ready && c.hasQR) { toggle.hidden = false; toggle.textContent = (c.view === "qr") ? (c.isLink ? t("toLink") : t("toConfig")) : t("toQR"); }
       else toggle.hidden = true;
       var can = !!(c && c.ready && c.payload);
       copyB.hidden = dlB.hidden = !can;
-      if (can) { copyB.textContent = c.isLink ? t("copyLink") : t("copyConfig"); dlB.textContent = t("dl") + " ." + (c.ext || "conf"); }
+      if (can) { copyB.textContent = t("copyShort"); dlB.textContent = t("dlShort"); }
       for (var i = 0; i < dotEls.length; i++) dotEls[i].className = "pdot" + (i === curIdx ? " on" : "");
     }
     ctrls.forEach(function (c) { c.notify = function () { if (ctrls[curIdx] === c) syncBar(); }; });
     toggle.onclick = function () { var c = cur(); if (!c || !c.hasQR) return; c.view = (c.view === "qr") ? "text" : "qr"; c.redraw(); syncBar(); };
-    copyB.onclick = function () { var c = cur(); if (c) c.copyInto(copyB, c.isLink ? t("copyLink") : t("copyConfig")); };
+    copyB.onclick = function () { var c = cur(); if (c) c.copyInto(copyB, t("copyShort")); };
     dlB.onclick = function () { var c = cur(); if (c) download(c.payload, c.base + (mode === "turn" ? "-turn" : ""), c.ext || "conf"); };
 
     function current() { var sl = srow.scrollLeft, best = 0, bd = Infinity; for (var i = 0; i < srow.children.length; i++) { var dd = Math.abs((srow.children[i].offsetLeft - srow.offsetLeft) - sl); if (dd < bd) { bd = dd; best = i; } } return best; }
