@@ -6827,9 +6827,19 @@ function AccessTLSCard() {
   const stLine = (which, s) => s && s.state && s.state !== "idle" ? html`<div class=${"formmsg " + (s.state === "failed" ? "err" : s.state === "saved" ? "ok" : "")}>${which}: ${s.message || s.state}</div>` : null;
 
   return html`<div class="card">
-    <div class="seclabel" style="margin-top:0">Panel</div>
-    <p class="hint" style="margin:0 0 12px">How the panel is reached, and the certificate. Changing the address is applied live — the panel serves the new address alongside the old and only switches once your browser confirms the new one loads, so a wrong value can't lock you out.</p>
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
+
+    <div class="seclabel" style="margin-top:0">Certificate</div>
+    <p class="hint" style="margin:0 0 12px">Pick this first — it decides how TLS is terminated and which ports are valid below. One certificate config issues both certs (the panel's and swg-sub's — always separate keys); swg-sub inherits this method.</p>
+    <div class="field"><label>Type</label><${Dropdown} value=${mode} onChange=${setMode} options=${TLS_MODE_OPTS}/></div>
+    ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>Account email</label><input type="text" placeholder="admin@example.com" value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
+    ${mode === "cloudflare" ? html`<div class="field"><label>Cloudflare API token</label><input type="password" placeholder=${hasCfTok ? "•••••••• (set — leave blank to keep)" : "Zone:DNS:Edit token"} value=${cfTok} onInput=${e => setCfTok(e.target.value)}/>
+      <div class="hint">Used for DNS-01 validation. Stored on the panel only; never sent to the browser. Enter "-" to clear.</div></div>` : null}
+    ${mode === "cf15" ? html`<div class="field"><label>Cloudflare Origin CA token</label><input type="password" placeholder=${hasCfOrig ? "•••••••• (set — leave blank to keep)" : "Zone:SSL and Certificates:Edit token"} value=${cfOrig} onInput=${e => setCfOrig(e.target.value)}/>
+      <div class="hint">Requests a 15-year Cloudflare Origin certificate — valid <b>only</b> behind Cloudflare's proxy. Stored on the panel only. Enter "-" to clear.</div></div>` : null}
+
+    <div class="seclabel">Panel</div>
+    <p class="hint" style="margin:0 0 12px">How the panel is reached. Changing the address is applied live — the panel serves the new address alongside the old and only switches once your browser confirms the new one loads, so a wrong value can't lock you out.</p>
     <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
     <div class="fieldrow">${ipField(pHost, setPHost, true)}${portField(pPort, setPPort, pBad)}</div>
     ${pBad ? cfNote : null}
@@ -6843,15 +6853,6 @@ function AccessTLSCard() {
       ${sBad ? cfNote : null}
       ${st ? stLine("Subscriptions", st.sub) : null}
       <div class="mt8"><button class="btn btn-ghost" disabled=${polling} onClick=${applySub}><${Ic} i="refresh"/> Apply</button></div>` : null}
-
-    <div class="seclabel">Certificate</div>
-    <p class="hint" style="margin:0 0 12px">One certificate config issues both certs (the panel's and swg-sub's — always separate keys). swg-sub inherits this method.</p>
-    <div class="field"><label>Type</label><${Dropdown} value=${mode} onChange=${setMode} options=${TLS_MODE_OPTS}/></div>
-    ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>Account email</label><input type="text" placeholder="admin@example.com" value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
-    ${mode === "cloudflare" ? html`<div class="field"><label>Cloudflare API token</label><input type="password" placeholder=${hasCfTok ? "•••••••• (set — leave blank to keep)" : "Zone:DNS:Edit token"} value=${cfTok} onInput=${e => setCfTok(e.target.value)}/>
-      <div class="hint">Used for DNS-01 validation. Stored on the panel only; never sent to the browser. Enter "-" to clear.</div></div>` : null}
-    ${mode === "cf15" ? html`<div class="field"><label>Cloudflare Origin CA token</label><input type="password" placeholder=${hasCfOrig ? "•••••••• (set — leave blank to keep)" : "Zone:SSL and Certificates:Edit token"} value=${cfOrig} onInput=${e => setCfOrig(e.target.value)}/>
-      <div class="hint">Requests a 15-year Cloudflare Origin certificate — valid <b>only</b> behind Cloudflare's proxy. Stored on the panel only. Enter "-" to clear.</div></div>` : null}
 
     <div class="setsave"><button class="btn btn-primary" disabled=${busy || blocked} onClick=${save}>${busy ? "Saving…" : "Save"}</button></div>
   </div>`;
