@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""swg-netctl — the privileged network/TLS helper for swg-panel.
+
+The panel and swg-sub run UNPRIVILEGED (users swgpanel / swgsub). They cannot bind
+low ports, edit their own systemd units, or run acme.sh. This root helper performs a
+FIXED, strictly-validated set of exactly those operations on their behalf — nothing
+else — so a compromise of the panel can't turn into arbitrary root.
+
+Invoked two ways:
+
+    swg-netctl <verb> <args...>     # direct (install scripts / manual / testing)
+    swg-netctl run                  # drain the request queue (systemd .path/.timer trigger)
+
+Verbs — each touches exactly ONE unit or cert path, chosen by a hard service map the
+caller can't escape (callers pass only "panel"/"sub", never a unit name or file path):
+
+    set-listen  <panel|sub> <ip> <port>   persist the bind addr as a systemd drop-in + daemon-reload
+                                          (does NOT restart — the panel binds the new socket live first;
+                                          the drop-in just makes it survive the next restart)
+    issue-cert  <panel|sub> <domain>      acme.sh issue+install to that service's cert path (+ SIGHUP reload hook)
+    drop-cert   <panel|sub> <domain>      stop auto-renewing one domain (after a confirmed domain switch)
+    restart     <panel|sub>               restart one service unit
+
+Security model:
+  - no shell, ever — every external command is an argv list (no interpolation, no word-splitting);
+  - strict per-arg validation (service enum, IP literal, 1..65535 port, FQDN regex);
+  - a hard service->{unit,cert,key,env} map — the caller can never name a unit, path, or reload command;
+  - queue requests must be regular files OWNED BY THE PANEL USER (another local user can't inject);
+  - requests/results carry NO secrets (the CF token etc. are read here, from install.conf, never passed in);
+  - every action is logged to stderr (the journal).
+
+stdlib-only Python 3, single file — same as the other swg programs.
+"""
+
+import grp
+import ipaddress
+import json
+import os
+import pwd
+import re
+import stat
+import subprocess
+import sys
+import time
+
+# ── configuration (env-overridable so the installer / tests can relocate) ─────────
+PANEL_USER = os.environ.get("SWG_PANEL_USER", "swgpanel")
+PANEL_GROUP = os.environ.get("SWG_PANEL_GROUP", "swg")
+STATE_DIR = os.environ.get("SWG_STATE_DIR", "/var/lib/swg-panel")
+ETC_DIR = os.environ.get("SWG_ETC_DIR", "/etc/swg-panel")
+SUB_TLS_DIR = os.environ.get("SWG_SUB_TLS_DIR", "/etc/swg-sub/tls")
+UNIT_DIR = os.environ.get("SWG_UNIT_DIR", "/etc/systemd/system")
+CONF = os.path.join(ETC_DIR, "install.conf")
+QUEUE_DIR = os.path.join(STATE_DIR, "netctl", "queue")
+STATUS_DIR = os.path.join(STATE_DIR, "netctl", "status")
+DRYRUN = os.environ.get("SWG_NETCTL_DRYRUN") == "1"
+
+# The ONLY things the helper is allowed to touch, keyed by the service names callers may pass.
+# There is no way for a request to name a unit, cert path, or reload command directly.
+SERVICES = {
+    "panel": {
+        "unit": "swg-panel-server.service",
+        "cert": os.path.join(ETC_DIR, "tls", "fullchain.pem"),
+        "key": os.path.join(ETC_DIR, "tls", "key.pem"),
+        "env_host": "SWG_PANEL_HOST",
+        "env_port": "SWG_PANEL_PORT",
+    },
+    "sub": {
+        "unit": "swg-sub.service",
+        "cert": os.path.join(SUB_TLS_DIR, "fullchain.pem"),
+        "key": os.path.join(SUB_TLS_DIR, "key.pem"),
+        "env_host": "SWG_SUB_HOST",
+        "env_port": "SWG_SUB_PORT",
+    },
+}
+
+# FQDN: 1..253 chars, dot-separated labels of [A-Za-z0-9-] (no leading/trailing hyphen), ≥2 labels.
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
+)
+
+
+def log(msg):
+    print("swg-netctl: " + msg, file=sys.stderr, flush=True)
+
+
+class Reject(Exception):
+    """A request that failed validation or execution — reported, never fatal to the queue."""
+
+
+# ── validators (reject first, act later) ─────────────────────────────────────────
+def v_service(s):
+    if s not in SERVICES:
+        raise Reject("unknown service %r (expected panel|sub)" % (s,))
+    return s
+
+
+def v_ip(s):
+    try:
+        ipaddress.ip_address(s)          # accepts v4/v6 literals incl. 0.0.0.0 / ::/ 127.0.0.1
+    except (ValueError, TypeError):
+        raise Reject("not an IP address: %r" % (s,))
+    return s
+
+
+def v_port(s):
+    try:
+        p = int(str(s), 10)
+    except (TypeError, ValueError):
+        raise Reject("not a port number: %r" % (s,))
+    if not (1 <= p <= 65535):
+        raise Reject("port out of range: %r" % (s,))
+    return p
+
+
+def v_domain(s):
+    if not isinstance(s, str) or not DOMAIN_RE.match(s):
+        raise Reject("not a valid domain: %r" % (s,))
+    return s
+
+
+# ── low-level helpers ─────────────────────────────────────────────────────────────
+def run(argv, env=None):
+    """Run an argv list (never a shell string). Returns (rc, combined_output)."""
+    log("exec: " + " ".join(argv))
+    if DRYRUN:
+        return 0, "(dry-run)"
+    p = subprocess.run(argv, env=env, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True)
+    if p.stdout:
+        for line in p.stdout.rstrip().splitlines():
+            log("  | " + line)
+    return p.returncode, p.stdout or ""
+
+
+def load_conf():
+    """Read /etc/swg-panel/install.conf (KEY=value / KEY="value"). The CF token lives here,
+    never in a request — the helper reads it itself."""
+    cfg = {}
+    try:
+        with open(CONF) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, val = line.partition("=")
+                cfg[k.strip()] = val.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return cfg
+
+
+def find_acme():
+    for a in ("/root/.acme.sh/acme.sh", "/opt/acme.sh/acme.sh",
+              os.path.expanduser("~/.acme.sh/acme.sh")):
+        if os.path.isfile(a) and os.access(a, os.X_OK):
+            return a
+    if DRYRUN:
+        return "/root/.acme.sh/acme.sh"      # so the argv is visible without a live install
+    raise Reject("acme.sh not found (looked in /root/.acme.sh, /opt/acme.sh)")
+
+
+def reload_cmd_for(service):
+    # both the panel and swg-sub reload their cert on SIGHUP with zero downtime.
+    return "systemctl kill -s HUP %s" % SERVICES[service]["unit"]
+
+
+# ── verbs ─────────────────────────────────────────────────────────────────────────
+def do_set_listen(service, ip, port):
+    svc = SERVICES[v_service(service)]
+    ip = v_ip(ip)
+    port = v_port(port)
+    dropdir = os.path.join(UNIT_DIR, svc["unit"] + ".d")
+    path = os.path.join(dropdir, "10-access.conf")
+    body = ("# managed by swg-netctl — from the panel's Access & TLS settings; do not edit by hand\n"
+            "[Service]\n"
+            "Environment=%s=%s\n"
+            "Environment=%s=%d\n" % (svc["env_host"], ip, svc["env_port"], port))
+    if DRYRUN:
+        log("would write %s:\n%s" % (path, body))
+    else:
+        os.makedirs(dropdir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(body)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    rc, out = run(["systemctl", "daemon-reload"])
+    if rc:
+        raise Reject("daemon-reload failed: " + out.strip())
+    return "persisted %s listen = %s:%d (takes effect on next restart)" % (service, ip, port)
+
+
+def do_restart(service):
+    svc = SERVICES[v_service(service)]
+    rc, out = run(["systemctl", "restart", svc["unit"]])
+    if rc:
+        raise Reject("restart %s failed: %s" % (svc["unit"], out.strip()))
+    return "restarted " + svc["unit"]
+
+
+def do_issue_cert(service, domain):
+    svc = SERVICES[v_service(service)]
+    v_service(service)
+    v_domain(domain)
+    cfg = load_conf()
+    mode = cfg.get("TLS_MODE", "") or "letsencrypt"
+    acme = find_acme()
+    env = dict(os.environ)
+
+    issue = [acme, "--issue", "-d", domain, "--server", "letsencrypt", "--keylength", "ec-256"]
+    if mode == "cloudflare":
+        tok = cfg.get("CF_TOKEN", "")
+        if not tok:
+            raise Reject("TLS_MODE=cloudflare but no CF_TOKEN in install.conf")
+        env["CF_Token"] = tok
+        if cfg.get("CF_ACCOUNT_ID"):
+            env["CF_Account_ID"] = cfg["CF_ACCOUNT_ID"]
+        issue += ["--dns", "dns_cf"]
+    elif mode == "letsencrypt":
+        issue += ["--standalone"]           # HTTP-01, needs :80 reachable
+    else:
+        # cf15 (CF Origin CA) and letsencrypt-ip use different issuance paths — wired in a later phase.
+        raise Reject("issue-cert not yet implemented for TLS_MODE=%r" % (mode,))
+
+    if cfg.get("ACME_EMAIL"):
+        run([acme, "--register-account", "-m", cfg["ACME_EMAIL"], "--server", "letsencrypt"], env=env)
+
+    if not DRYRUN:
+        os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
+    rc, out = run(issue, env=env)
+    # acme.sh: 0 = issued, 2 = RENEW_SKIP (a still-valid cert already exists). Anything else is a
+    # failure UNLESS a cert is already on disk in acme's home (e.g. a prior partial run).
+    if rc not in (0, 2) and not DRYRUN:
+        raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, domain, out.strip()[-400:]))
+
+    inst = [acme, "--install-cert", "-d", domain, "--ecc",
+            "--key-file", svc["key"], "--fullchain-file", svc["cert"],
+            "--reloadcmd", reload_cmd_for(service)]
+    rc, out = run(inst, env=env)
+    if rc:
+        raise Reject("acme --install-cert failed (rc %d): %s" % (rc, out.strip()[-400:]))
+    return "issued+installed cert for %s (%s) via %s" % (domain, service, mode)
+
+
+def do_drop_cert(service, domain):
+    v_service(service)
+    v_domain(domain)
+    acme = find_acme()
+    rc, out = run([acme, "--remove", "-d", domain, "--ecc"])
+    if rc:
+        raise Reject("acme --remove failed (rc %d): %s" % (rc, out.strip()[-200:]))
+    return "stopped auto-renewing %s" % (domain,)
+
+
+VERBS = {
+    "set-listen": (do_set_listen, 3),
+    "issue-cert": (do_issue_cert, 2),
+    "drop-cert": (do_drop_cert, 2),
+    "restart": (do_restart, 1),
+}
+
+
+def dispatch(verb, args):
+    if verb not in VERBS:
+        raise Reject("unknown verb %r" % (verb,))
+    fn, argc = VERBS[verb]
+    if len(args) != argc:
+        raise Reject("%s takes %d arg(s), got %d" % (verb, argc, len(args)))
+    for a in args:
+        if not isinstance(a, (str, int)):
+            raise Reject("%s: args must be strings/ints" % (verb,))
+    return fn(*[str(a) for a in args])
+
+
+# ── request queue (systemd trigger drains it) ─────────────────────────────────────
+def _panel_uid():
+    try:
+        return pwd.getpwnam(PANEL_USER).pw_uid
+    except KeyError:
+        return None
+
+
+def _write_status(rid, status, message, nonce):
+    # writing a status file is not a privileged/system mutation, so it happens even in DRYRUN.
+    os.makedirs(STATUS_DIR, exist_ok=True)
+    doc = {"id": rid, "status": status, "message": message,
+           "nonce": nonce, "at": int(time.time())}
+    tmp = os.path.join(STATUS_DIR, rid + ".json.tmp")
+    final = os.path.join(STATUS_DIR, rid + ".json")
+    with open(tmp, "w") as f:
+        json.dump(doc, f)
+    os.chmod(tmp, 0o640)
+    try:                                             # group-readable by the panel (group swg)
+        os.chown(tmp, 0, grp.getgrnam(PANEL_GROUP).gr_gid)
+    except (KeyError, PermissionError, OSError):
+        pass
+    os.replace(tmp, final)
+
+
+def _safe_rid(name):
+    # request filename → id, but never let it escape STATUS_DIR
+    rid = os.path.basename(name)
+    if rid.endswith(".json"):
+        rid = rid[:-5]
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", rid) or "req"
+
+
+def process_queue():
+    if not os.path.isdir(QUEUE_DIR):
+        return
+    puid = _panel_uid()
+    for name in sorted(os.listdir(QUEUE_DIR)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(QUEUE_DIR, name)
+        rid = _safe_rid(name)
+        try:
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode):
+                raise Reject("not a regular file")
+            if puid is not None and st.st_uid != puid:
+                raise Reject("request not owned by %s (uid %d) — ignored" % (PANEL_USER, st.st_uid))
+            with open(path) as f:
+                req = json.load(f)
+            rid = _safe_rid(str(req.get("id") or rid))
+            msg = dispatch(req.get("verb"), req.get("args") or [])
+            log("ok [%s]: %s" % (rid, msg))
+            _write_status(rid, "ok", msg, req.get("nonce"))
+        except Reject as e:
+            log("reject [%s]: %s" % (rid, e))
+            _write_status(rid, "error", str(e), None)
+        except Exception as e:                      # never let one bad request wedge the queue
+            log("error [%s]: %s" % (rid, e))
+            _write_status(rid, "error", "internal error: %s" % (e,), None)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def main(argv):
+    if len(argv) < 2:
+        print("usage: swg-netctl run | <verb> <args...>", file=sys.stderr)
+        return 2
+    if argv[1] == "run":
+        process_queue()
+        return 0
+    try:
+        msg = dispatch(argv[1], argv[2:])
+        print(json.dumps({"status": "ok", "message": msg}))
+        return 0
+    except Reject as e:
+        print(json.dumps({"status": "error", "message": str(e)}), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

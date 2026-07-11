@@ -257,6 +257,11 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
       stamp "$SUB_DIR"
       run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"
     fi
+    # swg-netctl (privileged network/TLS helper) — refresh the binary in place when already installed
+    # (first-time provisioning of the binary + trigger units is done by install-host.sh).
+    if [ -f /usr/local/bin/swg-netctl ] && [ -f "$SRC/swg-netctl" ]; then
+      run cp "$SRC/swg-netctl" /usr/local/bin/swg-netctl; run chmod 755 /usr/local/bin/swg-netctl; ok "swg-netctl refreshed"
+    fi
   else note "bare-metal swg-panel: unchanged (${pold})"; fi
 fi
 

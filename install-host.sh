@@ -1226,6 +1226,57 @@ WantedBy=multi-user.target
 EOF
 }
 
+# swg-netctl: the privileged network/TLS helper. The unprivileged panel can't bind low ports, edit its
+# own unit, or run acme.sh — it drops a validated JSON request into a queue only IT can write, and this
+# root helper drains it. A .path watch fires instantly on bare-metal; a slow timer is the fallback (a
+# docker container's write to a bind-mounted queue wouldn't cross to a host inotify watch — that path is
+# wired in a later phase). Requests/results carry no secrets; the helper reads the CF token itself.
+write_netctl(){
+  [ -f "$SRC/swg-netctl" ] || return 0
+  run mkdir -p "$PREFIX/usr/local/bin"; cp "$SRC/swg-netctl" "$PREFIX/usr/local/bin/swg-netctl"; chmod 755 "$PREFIX/usr/local/bin/swg-netctl"
+  # queue/ — panel-owned so ONLY the panel can enqueue (group swg can't write); status/ — root-written, group-readable by the panel.
+  mkdir -p "$PREFIX$STATE_DIR/netctl/queue" "$PREFIX$STATE_DIR/netctl/status"
+  run chown "$PANEL_USER:swg" "$STATE_DIR/netctl" "$STATE_DIR/netctl/queue"; run chmod 750 "$STATE_DIR/netctl" "$STATE_DIR/netctl/queue"
+  run chown root:swg "$STATE_DIR/netctl/status"; run chmod 750 "$STATE_DIR/netctl/status"
+  writef /etc/systemd/system/swg-netctl.service 644 <<EOF
+[Unit]
+Description=swg-panel privileged network/TLS helper (drains the panel's request queue)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/swg-netctl run
+Environment=SWG_PANEL_USER=${PANEL_USER}
+Environment=SWG_PANEL_GROUP=swg
+Environment=SWG_STATE_DIR=${STATE_DIR}
+Environment=SWG_ETC_DIR=${ETC_DIR}
+EOF
+  writef /etc/systemd/system/swg-netctl.path 644 <<EOF
+[Unit]
+Description=watch for swg-netctl requests from the panel
+
+[Path]
+DirectoryNotEmpty=${STATE_DIR}/netctl/queue
+Unit=swg-netctl.service
+
+[Install]
+WantedBy=paths.target
+EOF
+  writef /etc/systemd/system/swg-netctl.timer 644 <<EOF
+[Unit]
+Description=poll for swg-netctl requests (fallback for the path watch)
+
+[Timer]
+OnActiveSec=10s
+OnUnitActiveSec=10s
+
+[Install]
+WantedBy=timers.target
+EOF
+  run systemctl daemon-reload
+  run systemctl enable --quiet $_NOW swg-netctl.path 2>/dev/null || warn "couldn't enable swg-netctl.path"
+  run systemctl enable --quiet $_NOW swg-netctl.timer 2>/dev/null || warn "couldn't enable swg-netctl.timer"
+}
+
 # One-click self-update: a root systemd updater the (unprivileged) panel triggers by touching a
 # file. swg-update.path watches the trigger and starts swg-update.service, which runs in its OWN
 # cgroup so 'systemctl restart swg-panel-server' mid-update can't kill it. swg programs only.
@@ -1603,6 +1654,7 @@ run systemctl daemon-reload
 [ "$HOST_HAS_WG" = yes ] && { run systemctl enable --quiet swg-noded; run systemctl restart swg-noded || warn "couldn't start swg-noded"; }   # restart so a re-run picks up newly-added interfaces (config.json is read only at startup)
 run systemctl enable --quiet $_NOW swg-panel-server
 if [ -f "$PREFIX$SUB_DIR/swg-sub" ]; then write_sub_unit; run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-sub || warn "couldn't start swg-sub"; fi   # inert until enabled in Settings → Subscriptions
+write_netctl   # privileged network/TLS helper for the panel's Access & TLS settings (root; drains a validated queue)
 [ "$SERVE_MODE" = nginx ] && { run nginx -t && run systemctl reload nginx || warn "nginx -t failed; fix the vhost then: systemctl reload nginx"; }
 
 # ───────────────────────── SUMMARY ─────────────────────────
