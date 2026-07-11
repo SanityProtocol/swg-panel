@@ -3927,6 +3927,64 @@ def api(method, path, qs, body, deps):
     if method == "GET" and path == "/api/access/ips":   # bindable local addresses for the Access & TLS IP dropdown
         return 200, {"ok": True, "ips": _bindable_ips()}
 
+    if method == "GET" and path == "/api/access/status":   # the apply state machine (UI polls this during a change)
+        return 200, {"ok": True, "status": _APPLY["status"], "pending": bool(_APPLY["pending"])}
+
+    if method == "POST" and path == "/api/access/apply":
+        # Activate the panel's SAVED bind (access.panel) by dual-listening on the new address. Cert is the
+        # panel's CURRENT one (domain-change issuance lands in a follow-up); an IP/port change reuses it.
+        p = ((deps.get("panel_settings") or {}).get("access") or {}).get("panel") or {}
+        d_host = (str(p.get("host") or "0.0.0.0")).strip() or "0.0.0.0"
+        try:
+            d_port = max(1, min(65535, int(p.get("port") or 443)))
+        except (TypeError, ValueError):
+            d_port = 443
+        d_url = (str(p.get("url") or "")).strip()
+        lid, srv = LISTENERS.primary()
+        if srv is None:
+            return 500, {"ok": False, "error": "no primary listener", "code": "internal"}
+        cur = srv._swg
+        if (d_host, d_port) == (cur["host"], cur["port"]):
+            _apply_status("saved", "already serving on %s:%d" % (d_host, d_port))
+            return 200, {"ok": True, "applied": True, "message": "already on this address"}
+        with _APPLY["lock"]:
+            if _APPLY["pending"]:
+                return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
+            try:
+                new_lid = LISTENERS.add(d_host, d_port, cur.get("cert"), cur.get("key"))
+            except OSError as e:
+                _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
+                return 400, {"ok": False, "error": "couldn't bind %s:%d — %s" % (d_host, d_port, e), "code": "bind_failed"}
+            nonce = secrets.token_hex(12)
+            deadline = int(time.time()) + APPLY_TIMEOUT
+            _APPLY["pending"] = {"nonce": nonce, "new_lid": new_lid, "old_lid": lid,
+                                 "host": d_host, "port": d_port, "deadline": deadline}
+            _apply_status("verifying", "waiting for %s:%d to confirm" % (d_host, d_port))
+        threading.Timer(APPLY_TIMEOUT + 1, _apply_timeout, args=(nonce, deps)).start()
+        sep = "&" if ("?" in d_url) else "?"
+        return 200, {"ok": True, "applied": False, "nonce": nonce, "host": d_host, "port": d_port,
+                     "expires": deadline, "redirect": (d_url + sep + "__apply=" + nonce) if d_url else None}
+
+    if method == "POST" and path == "/api/access/confirm":
+        # The reachability proof: this MUST arrive on the newly-bound listener (the redirect pointed the
+        # browser there). Then we persist the bind, drop the old listener, and it's done — no restart.
+        nonce = (str(body.get("nonce") or "")).strip()
+        here = getattr(_REQ, "listener_id", None)
+        with _APPLY["lock"]:
+            pend = _APPLY["pending"]
+            if not pend or not nonce or not hmac.compare_digest(pend["nonce"], nonce):
+                return 400, {"ok": False, "error": "no matching pending change", "code": "bad_request"}
+            if here != pend["new_lid"]:
+                return 400, {"ok": False, "error": "confirm must be made on the new address", "code": "wrong_listener"}
+            _netctl_enqueue(deps, "set-listen", ["panel", pend["host"], pend["port"]])   # persist across restarts (root helper)
+            new_srv = LISTENERS.get(pend["new_lid"])
+            if new_srv is not None:
+                new_srv._swg["primary"] = True                # the new listener is now the panel
+            LISTENERS.remove(pend["old_lid"])
+            _APPLY["pending"] = None
+            _apply_status("saved", "panel now on %s:%d" % (pend["host"], pend["port"]))
+        return 200, {"ok": True, "saved": True}
+
     # ── external integration API: token + webhook management (session-authed, mutations) ──
     def _save_api(cur):
         deps["panel_settings"] = cur
@@ -7149,6 +7207,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"ok": True, "data": {"id": nid, "name": name}})
 
     def do_GET(self):
+        _REQ.listener_id = getattr(self.server, "listener_id", None)   # which listener → the Access-apply confirm gate
         u = urlparse(self.path)
         path = strip_base(u.path)
         if path is None:
@@ -7176,6 +7235,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
+        _REQ.listener_id = getattr(self.server, "listener_id", None)   # which listener → the Access-apply confirm gate
         u = urlparse(self.path)
         path = strip_base(u.path)
         if path == "/api/node/sync":
@@ -7228,6 +7288,113 @@ def passwd_cmd(argv):
     if os.path.exists(sp):
         os.execv(sp, [sp] + list(argv[2:]))
     raise SystemExit("reset the panel login with:  sudo swg-passwd")
+
+
+# ───────────────────────── live listeners + Access & TLS apply ─────────────────────────
+# The panel normally serves on ONE socket. Changing its OWN bind (IP/port) can't just restart onto the
+# new address — a bad value would lock the operator out. So the apply flow binds a SECOND listener on the
+# new address, keeps the OLD one serving, and drops the old only after the browser CONFIRMS the new one
+# works (a redirect that lands and POSTs /api/access/confirm ON the new listener). No confirm in time →
+# the new listener is dropped and the old never stopped. All in-process, so rollback needs no restart.
+APPLY_TIMEOUT = 30                       # seconds the operator's browser has to confirm the new address
+
+class _TLSServer(ThreadingHTTPServer):
+    # TLS is wrapped PER CONNECTION in the worker thread (not on the listening socket): wrapping the
+    # listener does the handshake inside accept(), so one stalled/half-open client (a scanner, a Cloudflare
+    # probe, a dropped packet) wedges the accept loop and the whole panel stops answering. ssl_ctx=None →
+    # plain HTTP (behind a reverse proxy, or the local dev panel).
+    daemon_threads = True
+    allow_reuse_address = True
+    ssl_ctx = None
+    listener_id = None
+    def get_request(self):
+        sock, addr = self.socket.accept(); sock.settimeout(60); return sock, addr
+    def finish_request(self, request, client_address):
+        if self.ssl_ctx is not None:
+            request = self.ssl_ctx.wrap_socket(request, server_side=True)
+        super().finish_request(request, client_address)
+    def handle_error(self, request, client_address):
+        pass                             # failed handshake / scanner / client vanished — routine noise
+
+
+class _Listeners:
+    """Registry of the panel's live listening sockets, each served in its own daemon thread. Add/remove
+    at runtime so Access & TLS can dual-listen during an address change."""
+    def __init__(self):
+        self._lock = threading.Lock(); self._by_id = {}; self._seq = 0
+    def add(self, host, port, cert, key, primary=False):
+        srv = _TLSServer((host, port), Handler)        # binds here — raises OSError if the port is taken
+        if cert and key:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(cert, key); srv.ssl_ctx = ctx
+        with self._lock:
+            self._seq += 1; lid = self._seq
+            srv.listener_id = lid
+            srv._swg = {"host": host, "port": port, "cert": cert, "key": key, "primary": primary}
+            self._by_id[lid] = srv
+        threading.Thread(target=srv.serve_forever, name="listener-%d" % lid, daemon=True).start()
+        return lid
+    def remove(self, lid):
+        with self._lock:
+            srv = self._by_id.pop(lid, None)
+        if srv is None:
+            return False
+        with contextlib.suppress(Exception): srv.shutdown()
+        with contextlib.suppress(Exception): srv.server_close()
+        return True
+    def get(self, lid):
+        with self._lock:
+            return self._by_id.get(lid)
+    def primary(self):
+        with self._lock:
+            for lid, srv in self._by_id.items():
+                if getattr(srv, "_swg", {}).get("primary"):
+                    return lid, srv
+        return None, None
+    def reload_tls(self):                              # SIGHUP → every TLS listener re-reads its cert
+        with self._lock:
+            srvs = list(self._by_id.values())
+        for srv in srvs:
+            m = getattr(srv, "_swg", {})
+            if srv.ssl_ctx is not None and m.get("cert") and m.get("key"):
+                with contextlib.suppress(Exception):
+                    srv.ssl_ctx.load_cert_chain(m["cert"], m["key"])
+
+
+LISTENERS = _Listeners()
+_REQ = threading.local()                 # per-request: which listener this request arrived on (set in do_GET/POST)
+_APPLY = {"lock": threading.Lock(), "pending": None,
+          "status": {"state": "idle", "message": "", "at": 0}}
+
+
+def _apply_status(state, message=""):
+    _APPLY["status"] = {"state": state, "message": message, "at": int(time.time())}
+
+
+def _netctl_enqueue(deps, verb, args):
+    """Drop a validated request for the root helper (swg-netctl) into its queue. Best-effort: no queue dir
+    (dev rig / not installed) → no-op, and the live in-process change still holds until the next restart."""
+    qdir = os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "netctl", "queue")
+    if not os.path.isdir(qdir):
+        return None
+    rid = "acc-" + secrets.token_hex(6)
+    with contextlib.suppress(Exception):
+        tmp = os.path.join(qdir, rid + ".json.tmp")
+        with open(tmp, "w") as f:
+            json.dump({"id": rid, "verb": verb, "args": [str(a) for a in args], "nonce": rid}, f)
+        os.replace(tmp, os.path.join(qdir, rid + ".json"))
+        return rid
+    return None
+
+
+def _apply_timeout(nonce, deps):
+    """Fires APPLY_TIMEOUT after an apply: if the new address never confirmed, drop it and keep the old."""
+    with _APPLY["lock"]:
+        pend = _APPLY["pending"]
+        if not pend or pend["nonce"] != nonce:
+            return                       # already confirmed, or a newer apply superseded this one
+        LISTENERS.remove(pend["new_lid"])
+        _APPLY["pending"] = None
+        _apply_status("reverted", "the new address didn't confirm in time — reverted to the previous one")
 
 
 def main():
@@ -7319,49 +7486,28 @@ def main():
         _lb = load_json(os.path.join(Handler.deps["stats_dir"], f"live-{_nid}.json"), None)
         if isinstance(_lb, list) and _lb:
             Handler.deps["live_samples"][_nid] = [tuple(s) for s in _lb if isinstance(s, (list, tuple)) and len(s) >= 6][-LIVE_MAX:]
-    # TLS is wrapped PER CONNECTION in the worker thread (not on the listening socket): wrapping
-    # the listener does the handshake inside accept(), so one stalled/half-open client (a scanner,
-    # a Cloudflare probe, a dropped packet) wedges the accept loop and the whole panel stops
-    # answering — the cause of intermittent Cloudflare 522s that a restart "fixes". Each socket
-    # also gets a timeout so a slow handshake can't pin a thread forever.
-    class _TLSServer(ThreadingHTTPServer):
-        daemon_threads = True
-        ssl_ctx = None
-        def get_request(self):                       # main accept loop — stays cheap, no handshake here
-            sock, addr = self.socket.accept(); sock.settimeout(60); return sock, addr
-        def finish_request(self, request, client_address):
-            if self.ssl_ctx is not None:             # handshake happens here, in the spawned thread
-                request = self.ssl_ctx.wrap_socket(request, server_side=True)
-            super().finish_request(request, client_address)
-        def handle_error(self, request, client_address):
-            pass                                     # failed handshake / scanner / client vanished — routine noise
-    scheme = "http"
+    # The primary listener goes into the live registry (so Access & TLS can add a second one on a new
+    # address and drop this one only after the browser confirms). _TLSServer with ssl_ctx=None is plain HTTP.
+    scheme = "https" if (TLS_CERT and TLS_KEY) else "http"
     if TLS_CERT and TLS_KEY:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(TLS_CERT, TLS_KEY)
-        srv = _TLSServer((BIND_HOST, BIND_PORT), Handler); srv.ssl_ctx = ctx
-        scheme = "https"
-        # SIGHUP reloads the cert into the live context (new connections pick it up) so
-        # automated renewal — e.g. acme.sh --reloadcmd in the container — has zero downtime.
+        # SIGHUP reloads the cert into every live TLS listener (new connections pick it up) so automated
+        # renewal — e.g. acme.sh --reloadcmd — has zero downtime.
         def _reload_tls(_sig, _frm):
-            try:
-                ctx.load_cert_chain(TLS_CERT, TLS_KEY)
-                print("reloaded TLS certificate (SIGHUP)", flush=True)
-                _refresh_tls_status()                # a renewal just landed → refresh days-left immediately
-            except Exception as e:
-                print(f"TLS reload failed (keeping old cert): {e}", flush=True)
+            LISTENERS.reload_tls()
+            print("reloaded TLS certificate (SIGHUP)", flush=True)
+            _refresh_tls_status()                # a renewal just landed → refresh days-left immediately
         with contextlib.suppress(ValueError, OSError, AttributeError):
             signal.signal(signal.SIGHUP, _reload_tls)
         threading.Thread(target=_tls_watch_loop, daemon=True).start()   # watch cert expiry; warn before a stalled renewal goes dark
-    else:
-        srv = ThreadingHTTPServer((BIND_HOST, BIND_PORT), Handler)
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
     threading.Thread(target=_node_watch_loop, args=(Handler.deps,), daemon=True).start()   # node online/offline → webhooks
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
+    LISTENERS.add(BIND_HOST, BIND_PORT, TLS_CERT if scheme == "https" else None,
+                  TLS_KEY if scheme == "https" else None, primary=True)
     print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     with contextlib.suppress(KeyboardInterrupt):
-        srv.serve_forever()
+        threading.Event().wait()             # the listeners serve in their own threads; block here forever
 
 
 if __name__ == "__main__":
