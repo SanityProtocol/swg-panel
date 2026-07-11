@@ -201,27 +201,37 @@ def do_set_listen(service, ip, port):
     return "persisted %s listen = %s:%d (takes effect on next restart)" % (service, ip, port)
 
 
+def _nrestarts(unit):
+    """systemd's cumulative automatic-restart counter for `unit`, or -1 if unavailable."""
+    rc, out = run(["systemctl", "show", unit, "-p", "NRestarts", "--value"])
+    try:
+        return int((out or "").strip())
+    except ValueError:
+        return -1
+
+
 def do_restart(service):
     svc = SERVICES[v_service(service)]
-    rc, out = run(["systemctl", "restart", svc["unit"]])
+    unit = svc["unit"]
+    before = _nrestarts(unit)
+    rc, out = run(["systemctl", "restart", unit])
     if rc:
-        raise Reject("restart %s failed: %s" % (svc["unit"], out.strip()))
-    # A restart onto a port already in use (Errno 98) exits ExecStart immediately, and Restart=on-failure then
-    # bounces the unit forever — `systemctl restart` may still report success. So verify it actually STAYS up:
-    # settle past RestartSec (2s), then require an active unit. Lets the caller (panel apply) self-heal a bad bind.
+        raise Reject("restart %s failed: %s" % (unit, out.strip()))
+    # Verify it actually STAYS up. These units are Type=simple, so systemd reports "active" the instant the
+    # process is exec'd — BEFORE it binds. A bad bind (Errno 98) crashes it right after, and Restart=on-failure
+    # bounces it forever, so a momentary is-active lies. Settle well past RestartSec (2s), then require it active
+    # AND that systemd logged NO automatic restart in the meantime — the reliable crash-loop signal. This lets
+    # the caller (the panel's sub apply) detect a doomed bind and self-heal back to the previous address.
     if not DRYRUN:
-        active = False
-        for _ in range(6):                       # ~4.5s: covers one RestartSec bounce
-            time.sleep(0.75)
-            st, _out = run(["systemctl", "is-active", svc["unit"]])
-            if st == 0:
-                active = True
-                break
-        if not active:
-            _r, detail = run(["systemctl", "--no-pager", "-n", "5", "status", svc["unit"]])
-            raise Reject("%s did not come up after restart (likely the address is already in use): %s"
-                         % (svc["unit"], (detail or "").strip()[-300:]))
-    return "restarted " + svc["unit"]
+        time.sleep(4.5)                          # > 2×RestartSec: a crash-loop auto-restarts at least once here
+        st, _o = run(["systemctl", "is-active", unit])
+        after = _nrestarts(unit)
+        looped = before >= 0 and after >= 0 and after > before
+        if st != 0 or looped:
+            _r, detail = run(["systemctl", "--no-pager", "-n", "6", "status", unit])
+            raise Reject("%s did not stay up after restart (the address is likely already in use): %s"
+                         % (unit, (detail or "").strip()[-300:]))
+    return "restarted " + unit
 
 
 def _load_access_tls():
