@@ -101,10 +101,20 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
 }
 .tgts::-webkit-scrollbar { display: none; }
 .tgt {
+  position: relative;
   flex: 0 0 100%; min-width: 0; scroll-snap-align: center;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 18px 14px; display: flex; flex-direction: column; align-items: center; gap: 12px;
 }
+.turn-fork {
+  position: absolute; top: 12px; right: 12px;
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  font-size: 11px; font-weight: 700; letter-spacing: .2px; line-height: 1;
+  color: var(--brand); background: color-mix(in srgb, var(--brand) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 32%, transparent);
+  padding: 4px 8px; border-radius: 999px; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.turn.tgt .tgt-node { padding: 0 52px; }   /* keep the centered node name clear of the fork tag */
 .primary { align-self: stretch; text-align: center; font-size: 11px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--brand); }
 .tgt-node { align-self: stretch; text-align: center; font-weight: 700; font-size: 14px; word-break: break-word; }
 
@@ -133,7 +143,7 @@ main { max-width: 720px; margin: 0 auto; padding: 18px 16px 48px; }
   border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
   font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
   font-size: 12px; line-height: 1.5; color: var(--ink);
-  white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto;
+  white-space: pre-wrap; word-break: break-all;
 }
 .turntext:active { transform: translateY(1px); }
 .cfg pre {

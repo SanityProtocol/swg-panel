@@ -29,7 +29,7 @@
       loading: "Loading…", noConfigs: "No configs yet",
       noConfigsSub: "There are no active peers on this subscription. New peers will appear here automatically.",
       peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config", copyLink: "Copy link",
-      copied: "Copied", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link",
+      copied: "Copied", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
       clientCmd: "Client command", generating: "Generating…", qrTooBig: "config too large to encode as QR",
       noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
       pasteInto: "Paste into", tapCopy: "Tap to copy",
@@ -53,7 +53,7 @@
       loading: "Загрузка…", noConfigs: "Пока нет конфигураций",
       noConfigsSub: "На этой подписке нет активных пиров. Новые появятся здесь автоматически.",
       peer: "Пир", primary: "Основной", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать", copyLink: "Скопировать ссылку",
-      copied: "Скопировано", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку",
+      copied: "Скопировано", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
       clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
       noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
       pasteInto: "Вставьте в", tapCopy: "Нажмите, чтобы скопировать",
@@ -314,29 +314,45 @@
   }
 
 
-  // One turn-proxy config for a peer (a single deployment × fork). Turn artifacts aren't QRs — they're
-  // config TEXT or app links — so we show the text (tap to copy) with a "Paste into <app>" line above it
-  // and Copy/Download beneath. The shared SWGTurn.artifact builds it (same as the admin). A peer's turn
-  // configs are laid out as swipeable cards (one per view) by paint()'s carousel.
+  // One turn-proxy config for a peer (a single deployment × fork). The fork tag sits top-right. A turn
+  // artifact is either an app-import format that itself scans as a QR (kiper292 .conf, wingsv://,
+  // vkturnproxy://) or a "dual" one (sidecar forks): a plain wg/awg .conf you import into WireGuard PLUS a
+  // separate client command. QR-capable turn formats show the QR by default with a "Show config text"
+  // toggle; dual configs show the wg/awg text with a "Show QR" toggle (scan it into WireGuard). Cards are
+  // laid out one-per-view by paint()'s carousel so a peer's turn configs swipe left/right.
   function turnConfigCard(userName, peer, tgt, tp, conf, vkLink, reason) {
-    var card = el("div", "tgt");
+    var card = el("div", "tgt turn");
+    card.appendChild(el("div", "turn-fork", SWGTurn.fork(tp.service)));   // fork tag, top-right
     card.appendChild(el("div", "tgt-node", tgt.node_name || tgt.node || tgt.iface || "server"));
     if (!conf) { card.appendChild(el("div", "qr-fail", reason || t("notReady"))); return card; }
     var art = SWGTurn.artifact(conf, tp, vkLink);
     card.appendChild(el("div", "turn-app", t("pasteInto") + " " + (art.app || art.fork)));   // which app to paste into
     var box = el("div", "turntext-wrap"), acts = el("div", "acts");
     card.appendChild(box); card.appendChild(acts);
+    function qrEl(text) {
+      try { var w = el("div", "qr"), img = el("img", "qrimg"); img.alt = "config QR"; img.src = qrDataURL(text, 320); w.appendChild(img); return w; }
+      catch (_) { return null; }
+    }
     function fill(text) {
       box.innerHTML = ""; acts.innerHTML = "";
+      while (card.lastChild && card.lastChild.classList && card.lastChild.classList.contains("cfg")) card.removeChild(card.lastChild);
       var copyLabel = art.uri ? t("copyLink") : t("copyConfig");
-      var pre = el("pre", "turntext", text); pre.title = t("tapCopy");
-      box.appendChild(pre);
+      var isDual = !!art.cmd;                          // sidecar: `text` is a wg/awg config imported into WireGuard
+      var qr = qrEl(text);                             // null when the text is too long to encode as a QR
       var cp = el("button", "btn ghost", copyLabel);
+      var pre = el("pre", "turntext", text); pre.title = t("tapCopy");
       pre.onclick = function () { copyText(text, cp, copyLabel); };
+      if (qr && !isDual) { box.appendChild(qr); }      // QR-capable turn format → QR by default
+      else { box.appendChild(pre); }
       cp.onclick = function () { copyText(text, cp, copyLabel); };
       var dl = el("button", "btn", t("dl") + " ." + (art.ext || "conf"));
       dl.onclick = function () { download(text, fileName(userName, peer.title, tgt) + "-" + (art.fork || "turn"), art.ext || "conf"); };
       acts.appendChild(cp); acts.appendChild(dl);
+      if (qr && !isDual) {                             // the alternate view lives under a toggle
+        var dt = el("details", "cfg"); dt.appendChild(el("summary", null, t("showConfig"))); dt.appendChild(pre); card.appendChild(dt);
+      } else if (qr) {                                 // dual/sidecar: text is default, offer the wg/awg QR
+        var dq = el("details", "cfg"); dq.appendChild(el("summary", null, t("showQR"))); dq.appendChild(qr); card.appendChild(dq);
+      }
       if (art.cmd) { var dc = el("details", "cfg"); dc.appendChild(el("summary", null, t("clientCmd"))); dc.appendChild(el("pre", null, art.cmd)); card.appendChild(dc); }
     }
     if (art.text != null) fill(art.text);
