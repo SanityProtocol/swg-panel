@@ -376,8 +376,21 @@ async function subRecover(escRec) {
 }
 
 // The shareable URL base for a user. Canonical source is Access & TLS (access.sub.url); falls back to the
-// legacy subscriptions.base_url. Blank → null (operator must set it in Access & TLS).
-function subBaseUrl() { const ps = Store.panelSettings || {}; return String(((ps.access || {}).sub || {}).url || (ps.subscriptions || {}).base_url || "").replace(/\/+$/, ""); }
+// legacy subscriptions.base_url. Blank → null (operator must set it in Access & TLS). When the public URL
+// carries no explicit port, we append the sub's listen port so a directly-reached sub — or one behind
+// Cloudflare on an alt HTTPS port like 8443 — links to the right place. 443/80 are scheme defaults → left
+// implicit; a reverse proxy that remaps the port overrides this by putting an explicit port in the URL.
+function subBaseUrl() {
+  const ps = Store.panelSettings || {};
+  const sub = (ps.access || {}).sub || {};
+  let base = String(sub.url || (ps.subscriptions || {}).base_url || "").replace(/\/+$/, "");
+  if (!base) return "";
+  try {
+    const u = new URL(base), lp = parseInt(sub.port, 10);
+    if (!u.port && lp && lp !== 443 && lp !== 80) { u.port = String(lp); base = u.toString().replace(/\/+$/, ""); }
+  } catch (_) {}
+  return base;
+}
 const SUB_LANG_LIST = [["en", "English"], ["ru", "Русский"]];   // languages the swgSub page ships (must match swg-panel-server SUB_LANGS)
 async function subUrlFor(escRec) {
   const base = subBaseUrl(); if (!base) return null;
@@ -7051,8 +7064,8 @@ function AccessTLSCard({ onChange }) {
   const portField = (port, setPort, bad) => html`<div class="field"><label>Port${bad ? html` <span class="ciw" title="Cloudflare can't reach this port"><${Ic} i="warn"/></span>` : null}</label>
     <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
   const cfNote = html`<div class=${"notice " + (hard ? "err" : "warn")}><${Ic} i="warn"/><span>
-    Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}<br/><br/>
-    If it IS behind Cloudflare, restrict this port to Cloudflare's IP ranges:
+    Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}<br/>
+    If it IS behind Cloudflare, restrict this port to Cloudflare's IP ranges:<br/>
     <button class="btn btn-mini mt8" onClick=${() => copy(CF_IP_RANGES.join("\n"), "Cloudflare IP ranges")}><${Ic} i="copy"/> Copy Cloudflare IP ranges</button></span></div>`;
 
   // ── ONE action. The operator never chooses "save" vs "apply" or an order: this saves the config, then runs
