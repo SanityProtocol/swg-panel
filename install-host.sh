@@ -39,6 +39,8 @@ BASIC_PASS="${BASIC_PASS:-}"           # blank -> random, printed at the end
 PANEL_DIR="${PANEL_DIR:-/opt/swg-panel}"
 SUB_DIR="${SUB_DIR:-/opt/swg-sub}"     # the public subscription surface (swg-sub); off until enabled in the panel
 SUB_PORT="${SUB_PORT:-8444}"           # swg-sub's listener (overridable in Settings → Subscriptions)
+SUB_DOMAIN="${SUB_DOMAIN:-}"           # subscription page hostname, for the printed reverse-proxy config (blank = placeholder)
+SUB_BIND="${SUB_BIND:-0.0.0.0}"        # swg-sub bind addr; set to 127.0.0.1 in reverse-proxy modes so only the proxy reaches it
 SUB_USER="${SUB_USER:-swgsub}"         # swg-sub's own unprivileged user (group swg, read-only) — NOT the panel user
 AGENT_DIR="${AGENT_DIR:-/opt/swg-agent}"
 NODED_DIR="${NODED_DIR:-/opt/swg-noded}"
@@ -676,6 +678,7 @@ if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
     PORT_SAVED="$(sed -n 's/^PORT=//p'               "$ETC_DIR/install.conf" | head -1)"
     TLS_SAVED="$(sed -n 's/^TLS_MODE=//p'            "$ETC_DIR/install.conf" | head -1)"
     SERVE_SAVED="$(sed -n 's/^SERVE_MODE=//p'        "$ETC_DIR/install.conf" | head -1)"
+    [ -z "$SUB_DOMAIN" ] && SUB_DOMAIN="$(sed -n 's/^SUB_DOMAIN=//p' "$ETC_DIR/install.conf" | head -1)"
     ROLE_SAVED="$(sed -n 's/^ROLE_SEL=//p'           "$ETC_DIR/install.conf" | head -1)"
     EMAIL_SAVED="$(sed -n 's/^ACME_EMAIL=//p'        "$ETC_DIR/install.conf" | head -1)"
     NODENAME_SAVED="$(sed -n 's/^HOST_NODE_NAME=//p' "$ETC_DIR/install.conf" | head -1)"
@@ -884,11 +887,14 @@ fi
 _sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $_int_lbl"        "Self-contained, no separate web-server is required"
 _sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $(key n 'ginx')"  "Web content will be served via an Nginx reverse proxy"
 _sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $(key c 'addy')"  "Web content will be served via a Caddy reverse proxy"
-_sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $(key s 'kip')"   "If you are planning to configure the web server manually"
+_sn=$((_sn+1)); menu "$(col "$C_BLUE" "[$_sn]") $(key s 'kip')"   "You'll run your own reverse proxy — prints ready nginx + Caddy configs for the panel + subscription page (installs nothing)"
 case "$SERVE_MODE" in standalone) SERVE_MODE=internal;; esac
 ask_choice "Select web server (number, letter or name)" "$_srv_def" SERVE_MODE "$_srv_opts"
 case "$SERVE_MODE" in r) SERVE_MODE=reuse;; i) SERVE_MODE=internal;; n) SERVE_MODE=nginx;; c) SERVE_MODE=caddy;; s) SERVE_MODE=skip;; esac
 [ "$SERVE_MODE" = reuse ] && SERVE_MODE="${SERVE_SAVED:-internal}"
+
+# subscription-page hostname for the printed reverse-proxy config (manual mode only; blank = placeholder)
+[ "$SERVE_MODE" = skip ] && ask "Subscription page hostname for the proxy config (blank to fill in later)" "" SUB_DOMAIN
 
 # port: internal serves the public port itself; proxy/manual modes keep the panel on a loopback port
 if [ "$SERVE_MODE" = internal ]; then
@@ -1131,6 +1137,7 @@ PANEL_BASE=${PANEL_BASE}
 PORT=${PORT}
 TLS_MODE=${TLS_MODE}
 SERVE_MODE=${SERVE_MODE}
+SUB_DOMAIN=${SUB_DOMAIN:-}
 ACME_EMAIL=${ACME_EMAIL}
 CF_TOKEN=${CF_TOKEN:-}
 CF_ORIGIN_TOKEN=${CF_ORIGIN_TOKEN:-}
@@ -1204,8 +1211,9 @@ Group=swg
 ExecStart=${SUB_DIR}/swg-sub
 Environment=SWG_SUB_FLEET=${ETC_DIR}/fleet.json
 Environment=SWG_SUB_WEB=${SUB_DIR}
-Environment=SWG_SUB_HOST=0.0.0.0
+Environment=SWG_SUB_HOST=${SUB_BIND}
 Environment=SWG_SUB_PORT=${SUB_PORT}
+Environment=SWG_SUB_TRUST_XFF=${SUB_TRUST_XFF:-0}
 ${subextra}Restart=on-failure
 RestartSec=2
 # hardening — read-only (no ReadWritePaths), and the secrets are masked at the kernel level so even a
@@ -1593,6 +1601,7 @@ EOF
   elif [ -d /etc/nginx/conf.d ]; then cp "$PREFIX/etc/nginx/sites-available/swg-panel.conf" "$PREFIX/etc/nginx/conf.d/swg-panel.conf"; fi
 }
 serve_nginx(){
+  SUB_BIND=127.0.0.1; SUB_TRUST_XFF=1        # the panel vhost is auto-managed; swg-sub stays on loopback until you proxy it too
   mkdir -p "$PREFIX$ACME_WEBROOT"
   write_panel_unit
   run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-panel-server
@@ -1604,6 +1613,7 @@ serve_nginx(){
     run nginx -t && run systemctl reload nginx || warn "nginx -t failed after enabling TLS — check $CERT_FULLCHAIN"
     ok "nginx: TLS enabled for https://${PANEL_DOMAIN}${PANEL_BASE}/"
   else warn "nginx: serving on :80 without TLS — front with TLS before exposing."; fi
+  note_sub_proxy
 }
 
 ensure_caddy_import(){   # make the main Caddyfile import our drop-in
@@ -1629,6 +1639,7 @@ EOF
   ensure_caddy_import
 }
 serve_caddy(){
+  SUB_BIND=127.0.0.1; SUB_TRUST_XFF=1        # the panel site is auto-managed; swg-sub stays on loopback until you proxy it too
   have caddy || warn "caddy not found — install it (https://caddyserver.com), then re-run or 'systemctl reload caddy'"
   write_panel_unit
   run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-panel-server
@@ -1637,14 +1648,91 @@ serve_caddy(){
   run systemctl reload caddy 2>/dev/null || run systemctl restart caddy 2>/dev/null || warn "couldn't (re)load caddy — start it after checking /etc/caddy/conf.d/swg-panel.caddy"
   local sch="https"; { [ "$TLS_MODE" = skip ] && [ -z "${CERT_FULLCHAIN:-}" ]; } && sch="http"
   ok "caddy: serving ${sch}://${PANEL_DOMAIN}${PANEL_BASE}/"
+  note_sub_proxy
+}
+
+# ---- manual reverse proxy ("skip"): print ready-to-paste nginx + caddy configs for BOTH panel and sub,
+# ---- bind both services to loopback, and DON'T touch any web server (the operator wires it up).
+sub_shipped(){ [ -f "$PREFIX$SUB_DIR/swg-sub" ]; }
+
+gen_nginx_conf(){   # full nginx config (panel + sub) -> stdout
+  local loc; loc="$(proxy_loc)"
+  cat <<EOF
+# swg-panel reverse proxy for nginx. Get certificates first, e.g.:
+#   certbot --nginx -d ${PANEL_DOMAIN}$(sub_shipped && printf ' -d %s' "${SUB_DOMAIN:-sub.example.com}")
+server {                                     # redirect HTTP -> HTTPS
+    listen 80;
+    server_name ${PANEL_DOMAIN}$(sub_shipped && printf ' %s' "${SUB_DOMAIN:-sub.example.com}");
+    location / { return 301 https://\$host\$request_uri; }
+}
+server {                                     # admin panel
+    listen 443 ssl http2;
+    server_name ${PANEL_DOMAIN};
+    ssl_certificate     /etc/letsencrypt/live/${PANEL_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${PANEL_DOMAIN}/privkey.pem;
+    client_max_body_size 4m;
+    location ${loc} {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+  sub_shipped && cat <<EOF
+server {                                     # subscription page (public, read-only)
+    listen 443 ssl http2;
+    server_name ${SUB_DOMAIN:-sub.example.com};
+    ssl_certificate     /etc/letsencrypt/live/${SUB_DOMAIN:-sub.example.com}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${SUB_DOMAIN:-sub.example.com}/privkey.pem;
+    client_max_body_size 2m;
+    location / {
+        proxy_pass http://127.0.0.1:${SUB_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;   # swg-sub trusts this only with SWG_SUB_TRUST_XFF=1 (set in reverse-proxy installs)
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+}
+
+gen_caddy_conf(){   # full Caddyfile (panel + sub) -> stdout; auto-HTTPS
+  cat <<EOF
+# swg-panel reverse proxy for Caddy (auto-HTTPS). Point DNS at this host first.
+${PANEL_DOMAIN} {
+$( [ -n "$PANEL_BASE" ] && printf '    handle %s/* {\n        reverse_proxy 127.0.0.1:%s\n    }' "$PANEL_BASE" "$PORT" || printf '    reverse_proxy 127.0.0.1:%s' "$PORT" )
+}
+EOF
+  sub_shipped && cat <<EOF
+${SUB_DOMAIN:-sub.example.com} {
+    reverse_proxy 127.0.0.1:${SUB_PORT}
+}
+EOF
+}
+
+print_proxy_configs(){
+  local dir="$ETC_DIR/reverse-proxy"
+  gen_nginx_conf | writef "$dir/swg-nginx.conf" 644 >/dev/null
+  gen_caddy_conf | writef "$dir/swg-Caddyfile" 644 >/dev/null
+  echo; ok "Reverse-proxy configs saved to ${dir}/ — nothing was installed or reloaded."
+  sub "Panel  → 127.0.0.1:${PORT}${PANEL_BASE}"
+  sub_shipped && sub "Sub    → 127.0.0.1:${SUB_PORT}   (${SUB_DOMAIN:-set the hostname in Settings → Access & TLS})"
+  echo; echo "  $(b "── nginx ──  ${dir}/swg-nginx.conf")"; gen_nginx_conf | sed 's/^/    /'
+  echo; echo "  $(b "── Caddy ──  ${dir}/swg-Caddyfile")"; gen_caddy_conf | sed 's/^/    /'
+  echo
+}
+
+note_sub_proxy(){   # auto modes manage the PANEL vhost only; point the operator at the sub block for later
+  sub_shipped || return 0
+  sub "swg-sub is on 127.0.0.1:${SUB_PORT} (off until enabled in the panel). When you turn subscriptions on, add a proxy block for ${SUB_DOMAIN:-your sub hostname} → 127.0.0.1:${SUB_PORT} (same shape as the panel block)."
 }
 
 serve_skip(){
+  SUB_BIND=127.0.0.1; SUB_TRUST_XFF=1        # behind the operator's proxy → loopback + trust the proxy's X-Forwarded-For
   write_panel_unit
   run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-panel-server
-  ok "Panel running on 127.0.0.1:${PORT}${PANEL_BASE} — configure your web server to proxy to it."
-  echo "    nginx example:"
-  echo "      location $(proxy_loc) { proxy_pass http://127.0.0.1:${PORT}; proxy_set_header Host \$host; }"
+  ok "Panel on 127.0.0.1:${PORT}${PANEL_BASE}$(sub_shipped && printf ', swg-sub on 127.0.0.1:%s' "${SUB_PORT}") — configure your web server to proxy to them."
+  print_proxy_configs
 }
 
 info "Login + TLS ($SERVE_MODE)"
