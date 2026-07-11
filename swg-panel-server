@@ -826,15 +826,6 @@ def iface_type(snaps, node, iface):
     return "awg" if (blk.get("meta") or {}).get("awg_params") else "wg"
 
 
-def save_config(store_configs, config_dir, pubkey, node, iface, conf):
-    # Legacy PLAINTEXT write path — retired in the encrypted-configs modes (the browser encrypts {k,p} into a
-    # blob instead). `store_configs` is False in both modes, so this never writes new plaintext; kept intact for
-    # the transition and deleted in the plan's Phase 6. See resolve_store_mode.
-    if store_configs and config_dir and isinstance(conf, str) and conf:
-        with contextlib.suppress(OSError):
-            atomic_write(os.path.join(config_dir, cfg_hash(pubkey, node, iface)), conf, mode=0o600)
-
-
 def del_config(store_configs, config_dir, pubkey, node, iface):
     # Always clean up a LEGACY plaintext config when its peer/target is removed (the `store_configs` arg is kept
     # only for call-site compatibility): reducing plaintext-at-rest exposure is desirable regardless of mode, and
@@ -3634,9 +3625,10 @@ def api(method, path, qs, body, deps):
     panel_settings = deps.get("panel_settings") or {}
     store_mode = resolve_store_mode(panel_settings, fleet)
     config_dir = fleet.get("config_dir") or os.path.join(os.path.dirname(roster_path) or ".", "configs")
-    # PLAINTEXT write path is disabled in both modes (the browser encrypts instead). Kept as a flag threaded into
-    # save_config (→ no-op) / del_config (still cleans up any LEGACY plaintext). config_dir stays set so the
-    # transitional GET /api/config read + the migration ceremony can still reach pre-encryption plaintext.
+    # The plaintext write path is GONE (the browser encrypts {k,p} into a blob). `store_configs` stays only as a
+    # flag threaded into del_config, which still cleans up any LEGACY plaintext when a peer/target is removed.
+    # config_dir stays set so the transitional GET /api/config read + the migration ceremony can still reach
+    # pre-encryption plaintext (both removed with the migration trigger, a few releases out).
     store_configs = False
 
     def known(node):
@@ -5054,12 +5046,8 @@ def api(method, path, qs, body, deps):
         webhook_emit(deps, "peer.added", {"peer_id": pid, "title": p.get("title") or None,
                      "user": (roster["users"].get(uid) or {}).get("name") if uid else None,
                      "targets": [{"node": t["node"], "iface": t["iface"], "address": t.get("ip")} for t in targets]})
-        configs = body.get("configs") or {}
-        for t in targets:
-            conf = configs.get(t["node"] + "|" + t["iface"])
-            if conf is None and len(targets) == 1:
-                conf = body.get("config")   # single-target back-compat
-            save_config(store_configs, config_dir, pubkey, t["node"], t["iface"], conf)
+        # No plaintext at rest: the browser encrypts {k,p} into the peer's blob (the config store). Any
+        # body.configs a legacy client still sends is ignored.
         return 200, {"ok": True, "data": p}
 
     if method == "POST" and path == "/api/peers/add-target":
@@ -5088,7 +5076,7 @@ def api(method, path, qs, body, deps):
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Added deployment", peer_label(roster, p2),
                   f"{target['node']}/{target['iface']}")
-        save_config(store_configs, config_dir, p["pubkey"], target["node"], target["iface"], body.get("config"))
+        # same key as the peer's other deployments → its existing blob already covers this target; no write.
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/remove-target":
@@ -5169,8 +5157,7 @@ def api(method, path, qs, body, deps):
         targets = [dict(t, ip=ip) if (t["node"] == node and t["iface"] == iface) else t for t in p["targets"]]
         p2 = peer_set(roster, pid, {"targets": targets}, now())
         roster_save(roster_path, roster)
-        if isinstance(body.get("config"), str) and body["config"]:
-            save_config(store_configs, config_dir, p["pubkey"], node, iface, body["config"])
+        # the address is rendered live from the roster; nothing to persist and no plaintext to write.
         ev_append(roster_path, "peer", pid, "Changed address", peer_label(roster, p2), f"{node}/{iface} → {ip}")
         return 200, {"ok": True, "data": p2}
 
@@ -5244,10 +5231,7 @@ def api(method, path, qs, body, deps):
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Assigned peer", peer_label(roster, p2),
                   "fresh key issued")
-        configs = body.get("configs") or {}
-        for t in p2["targets"]:
-            save_config(store_configs, config_dir, pubkey, t["node"], t["iface"],
-                        configs.get(t["node"] + "|" + t["iface"]))
+        # the fresh key is encrypted into the peer's blob by the browser (subMaybePublish); no plaintext at rest.
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/adopt":
@@ -5288,23 +5272,6 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "peer", pid, "Adopted peer", peer_label(roster, roster["peers"][pid]),
                   f"{target['node']}/{target['iface']}")
         return 200, {"ok": True, "data": roster["peers"][pid]}
-
-    if method == "POST" and path == "/api/peers/save-config":
-        # Persist a re-issued client config (e.g. after an edit). Only meaningful with
-        # store_configs on; the config carries the private key, so it must match a real target.
-        pubkey = (body.get("pubkey") or "").strip()
-        node = body.get("node") or ""; iface = body.get("iface") or ""
-        conf = body.get("config")
-        if not (pubkey and node and iface and isinstance(conf, str) and conf):
-            return 400, {"ok": False, "error": "need pubkey, node, iface, config", "code": "bad_request"}
-        if not store_configs:
-            return 400, {"ok": False, "error": "store_configs is off — nothing is persisted", "code": "disabled"}
-        roster = roster_load(roster_path)
-        p = find_peer_by_pubkey(roster, pubkey)
-        if not p or not any(t["node"] == node and t["iface"] == iface for t in p["targets"]):
-            return 404, {"ok": False, "error": "no such target for this key", "code": "not_found"}
-        save_config(store_configs, config_dir, pubkey, node, iface, conf)
-        return 200, {"ok": True, "data": {"pubkey": pubkey, "node": node, "iface": iface}}
 
     if method == "POST" and path == "/api/nodes/create":
         name = (body.get("name") or "").strip()

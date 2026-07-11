@@ -668,7 +668,6 @@ const api = {
   peerUnassign(b) { return this.post("/api/peers/unassign", b); },
   peerRekey(b) { return this.post("/api/peers/rekey", b); },
   peerAdopt(b) { return this.post("/api/peers/adopt", b); },
-  peerSaveConfig(b) { return this.post("/api/peers/save-config", b); },
   ifaceUpdate(b) { return this.post("/api/iface/update", b); },
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
