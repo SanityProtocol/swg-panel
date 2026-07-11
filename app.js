@@ -6875,29 +6875,29 @@ function SubVaultCard() {
   };
   const doReset = async () => {
     setBusy(true); const r = await api.subReset(); setBusy(false);
-    if (r && r.ok) { setResetMode(false); setConfirm(""); setSk(null); load(); toast("Subscription encryption reset.", "ok"); }
+    if (r && r.ok) { setResetMode(false); setConfirm(""); setSk(null); load(); toast("Config encryption reset.", "ok"); }
     else toast((r && r.error) || "Reset failed", "err");
   };
   if (state.loading) return html`<div class="hint">Checking…</div>`;
   if (sk) return html`<div class="notice ok"><div style="min-width:0">
-    <b>Save your Subscription Key now — it is shown only once.</b> It protects every subscription and is independent of your login password; store it somewhere safe (a password manager).
+    <b>Save your encryption key now — it is shown only once.</b> It protects every stored client config (and your subscriptions) and is independent of your login password; store it somewhere safe (a password manager). Lose it and your login both, and you'd re-key the affected peers.
     <div class="tokenbox" style="margin:8px 0;word-break:break-all">${sk}</div>
     <div class="chiprow">
-      <button class="btn btn-mini" onClick=${() => copy(sk, "Subscription Key copied")}><${Ic} i="copy"/> Copy</button>
-      <button class="btn btn-mini" onClick=${() => downloadConf(sk, "swg-subscription-key")}><${Ic} i="download"/> Download</button>
+      <button class="btn btn-mini" onClick=${() => copy(sk, "Encryption key copied")}><${Ic} i="copy"/> Copy</button>
+      <button class="btn btn-mini" onClick=${() => downloadConf(sk, "swg-config-key")}><${Ic} i="download"/> Download</button>
       <span class="grow"></span>
       <button class="btn btn-primary btn-mini" onClick=${() => { setSk(null); load(); }}>I've saved it</button>
     </div></div></div>`;
   if (!state.exists) return html`<${Fragment}>
-    <p class="hint" style="margin:0 0 8px">Set up once. Confirm your panel password — a Subscription Key is generated in your browser and shown once; the server only ever stores it wrapped, so it can't read your users' keys.</p>
+    <p class="hint" style="margin:0 0 8px">Set up once. Confirm your panel password — an encryption key is generated in your browser and shown once; the server only ever stores it wrapped, so it can't read your clients' private keys.</p>
     <div class="fieldrow">
       <div class="field"><label>Confirm password</label><input type="password" value=${pw} onInput=${e => setPw(e.target.value)} autocomplete="current-password"/></div>
       <div class="field" style="flex:none;align-self:end"><button class="btn btn-primary" disabled=${busy || !pw} onClick=${create}>${busy ? "Setting up…" : "Set up encryption"}</button></div>
     </div><//>`;
   return html`<${Fragment}>
-    <div class="notice ok" style="margin-bottom:8px"><${Ic} i="check"/><span>Encryption is configured — new peers are wrapped automatically, and users' links keep working across your password changes.</span></div>
+    <div class="notice ok" style="margin-bottom:8px"><${Ic} i="check"/><span>Encryption is configured — stored configs are wrapped automatically, and their QRs (and any subscription links) keep working across your password changes.</span></div>
     ${resetMode
-      ? html`<div class="notice warn"><div style="min-width:0"><b>Reset invalidates every subscription URL and drops all stored ciphertext.</b> You'll set up a new Subscription Key afterwards. Type <b>RESET</b> to confirm.
+      ? html`<div class="notice warn"><div style="min-width:0"><b>Reset drops all stored encrypted configs and invalidates every subscription URL.</b> You'll set up a new encryption key afterwards, then re-issue affected peers. Type <b>RESET</b> to confirm.
           <div class="chiprow" style="margin-top:8px"><input type="text" placeholder="RESET" value=${confirm} onInput=${e => setConfirm(e.target.value)} style="max-width:120px"/>
             <button class="btn btn-danger btn-mini" disabled=${busy || confirm !== "RESET"} onClick=${doReset}>Reset encryption</button>
             <button class="btn btn-ghost btn-mini" onClick=${() => { setResetMode(false); setConfirm(""); }}>Cancel</button></div></div></div>`
@@ -7542,6 +7542,9 @@ function PanelSettingsScreen() {
               { value: "off", label: "Off — never store private keys" }]}/>
             <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off" ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute." : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
           ${sc === "off" && subsOn ? html`<div class="hint warn" style="margin-top:10px"><${Ic} i="warn"/> Subscriptions are on and need stored configs. Turn <button class="linkbtn" onClick=${() => setSection("subs")}>Subscriptions</button> off first, or keep storage on — saving this as-is will be rejected.</div>` : null}
+          <div class="seclabel">Encryption</div>
+          <p class="hint" style="margin:0 0 8px">An encryption key held only by you (independent of your login password) protects stored client configs so the server can't read the private keys, and unlocks a peer's QR any time you're signed in. The same key powers subscriptions when you turn them on.</p>
+          <${SubVaultCard}/>
         </div>` : null}
         ${section === "subs" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Subscriptions</div>
@@ -7568,7 +7571,7 @@ function PanelSettingsScreen() {
             </div>`)}</div>
             <div class="hint">Which languages the page offers. With just one enabled, it hides the selector and loads that language; the <b>default</b> is what loads first when several are offered.</div></div>
           <div class="seclabel">Encryption</div>
-          <${SubVaultCard}/>
+          <p class="hint" style="margin:0">Subscriptions reuse the same encryption key that protects your stored client configs — set it up under <button class="linkbtn" onClick=${() => setSection("configs")}>Client configs → Encryption</button>. No separate key.</p>
         </div>` : null}
         ${section === "display" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Interface theme<span class="grow"></span>
