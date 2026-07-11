@@ -284,6 +284,22 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
   try { sessionStorage.setItem(_SK_CACHE, b64(skBytes)); } catch (_) {}   // convenience cache (tab-scoped) — survives the post-login reload
   return _subSK;
 }
+// Re-wrap the vault under a NEW panel password so the convenience cache keeps auto-unlocking after a password
+// change (the SK itself is unchanged — every blob stays valid). Uses the raw SK from the session cache; returns
+// false if it isn't cached (then the operator unlocks with the old password or the shown-once key). Best-effort.
+async function subRewrap(newPassword) {
+  let skB64 = null; try { skB64 = sessionStorage.getItem(_SK_CACHE); } catch (_) {}
+  if (!skB64 || !newPassword) return false;
+  try {
+    const skBytes = _b64ToBytes(skB64);
+    const v = await api.subVault(); if (!v || !v.ok || !v.data || !v.data.exists) return false;
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const wk = await subWrapKey(newPassword, salt);
+    const r = await api.subVaultSet({ salt: b64(salt), sk_by_pw: await subEnc(wk, skBytes),
+      sk_check: await subEnc(wk, new TextEncoder().encode(SUB_CHECK)) });
+    return !!(r && r.ok !== false);
+  } catch (_) { return false; }
+}
 
 // Enable a user's subscription: mint a fresh 256-bit URL token + 256-bit unlock-key, wrap BOTH with the
 // SK for the escrow (so the panel stores only ciphertext), and register the public token hash. Returns
@@ -6764,6 +6780,7 @@ function AccountScreen() {
     setMsg({ ok: true, t: "Saving…" });
     const r = await api.accountSave({ username: user.trim(), current_password: cur, new_password: np });
     if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to update." });
+    if (np) await subRewrap(np);   // keep the config-encryption convenience cache unlockable with the new password
     setMsg({ ok: true, t: "Updated. Reloading — sign in with your new credentials…" });
     setTimeout(() => location.reload(), 1400);
   };
@@ -7384,6 +7401,7 @@ function PanelSettingsScreen() {
     if (secChanged()) {
       const ar = await api.accountSave({ username: secUser.trim(), current_password: secCur, new_password: secNp });
       if (!ar.ok) return setMsg({ ok: false, t: ar.error || "Couldn't update credentials." });
+      if (secNp) await subRewrap(secNp);   // keep the config-encryption convenience cache unlockable with the new password
       setMsg({ ok: true, t: "Saved. Reloading — sign in with your new credentials…" });
       return setTimeout(() => location.reload(), 1400);
     }
@@ -7906,6 +7924,7 @@ function AccountSheet() {
     setMsg({ ok: true, t: "Saving…" });
     const r = await api.accountSave({ username: user.trim(), current_password: cur, new_password: np });
     if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to update." });
+    if (np) await subRewrap(np);   // keep the config-encryption convenience cache unlockable with the new password
     setMsg({ ok: true, t: "Updated. Reloading — sign in with your new credentials…" });
     setTimeout(() => location.reload(), 1400);
   };
