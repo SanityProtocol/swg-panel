@@ -341,6 +341,7 @@ def read_data(state, token):
     return {"user": {"name": user.get("name") or ""}, "peers": peers_out,
             "turn_enabled": bool(subs.get("turn_enabled")), "vk_link": subs.get("vk_link") or "",
             "theme_color": subs.get("theme_color") or "", "theme_color_light": subs.get("theme_color_light") or "",
+            "turn_fork_colors": subs.get("turn_fork_colors") or {}, "iface_colors": subs.get("iface_colors") or {},
             "langs": {"enabled": langs.get("enabled") or ["en"], "default": langs.get("default") or "en"}}
 
 

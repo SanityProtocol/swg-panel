@@ -77,7 +77,7 @@ body {
 /* WG / AWG / TURN tabs — full-width, generous tap targets, capped on wide screens */
 .modebar { flex: none; display: flex; gap: 6px; padding: 8px 12px; width: 100%; max-width: 620px; margin: 0 auto; }
 .modetab { flex: 1; appearance: none; border: 1px solid var(--line); cursor: pointer; font: inherit; font-weight: 700; font-size: clamp(13px, 3.6vw, 15px); min-height: 44px; padding: 8px 10px; border-radius: 11px; background: var(--panel-2); color: var(--muted); }
-.modetab.on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.modetab.on { background: var(--mc, var(--brand)); border-color: var(--mc, var(--brand)); color: var(--mc-ink, var(--brand-ink)); }
 .modetab:active { transform: translateY(1px); }
 
 /* vertical pager — one peer per screen, snap between them */
@@ -151,4 +151,21 @@ body {
 }
 @media (min-height: 780px) {
   .qrimg { width: min(82vw, 460px); }
+}
+
+/* ── Landscape (phone sideways, or a desktop window): the one-screen pager needs vertical room a wide-but-short
+   viewport doesn't have, so fall back to a normal scrolling document centred in a column — desktop style. The
+   servers still swipe within a peer; the action bar sits inline under each peer. ── */
+@media (orientation: landscape) {
+  body { height: auto; min-height: 100dvh; overflow-x: hidden; overflow-y: auto; display: block; }
+  #app, #peers, .pager { display: block; height: auto; min-height: 0; overflow: visible; }
+  .pager { scroll-snap-type: none; }
+  .modebar { position: sticky; top: 0; z-index: 5; background: var(--bg); padding-top: 12px; padding-bottom: 12px; }
+  .ppage { height: auto; display: block; scroll-snap-align: none; padding: 16px 0 22px; border-bottom: 1px solid var(--line); max-width: 760px; margin: 0 auto; }
+  .ppage-head { padding: 2px 16px 12px; }
+  .srow { height: min(74vh, 460px); }
+  .scell-stage { max-width: 440px; }
+  .qrimg { width: min(64vh, 380px); }
+  .pbar { position: static; border-top: 1px solid var(--line); margin-top: 14px; }
+  .state { min-height: 66vh; }
 }

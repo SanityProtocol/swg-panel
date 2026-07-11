@@ -155,7 +155,14 @@
   }
 
   // ── brand theme — follow the panel's per-mode accent colour (drives the logo, tabs, buttons, favicon) ──
-  var THEME = { color: "", light: "" };   // set from the served subscription data
+  // FORK/IFACE default colours mirror the panel's TURN_FORKS / IFACE_COLOR_DEFAULTS so the sub's fork tags and
+  // WG/AWG tabs match the admin view; the panel's per-fork / per-protocol OVERRIDES ride in the served data.
+  var FORK_COLORS = {
+    "cacggghp": { dark: "#5FB0E0", light: "#2C7EC0" }, "WINGS-N": { dark: "#C98BE0", light: "#9B4FC7" },
+    "samosvalishe": { dark: "#E0A85F", light: "#C07A1E" }, "Moroka8": { dark: "#E07A9A", light: "#C24468" },
+    "kiper292": { dark: "#6FD9A8", light: "#12A46B" }, "anton48": { dark: "#D9CF5F", light: "#8E8420" } };
+  var IFACE_COLORS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" } };
+  var THEME = { color: "", light: "", forkOv: {}, ifaceOv: {} };   // set from the served subscription data
   function isLight() {
     var d = document.documentElement.getAttribute("data-theme");   // manual override wins; else the OS preference
     if (d === "light") return true; if (d === "dark") return false;
@@ -166,6 +173,16 @@
     var r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
     return isNaN(r) ? 0.5 : 0.299 * r + 0.587 * g + 0.114 * b;
   }
+  // Resolve a themed override ({dark,light} | string | null) for the current mode — mirrors the panel's pickThemed.
+  function pickThemed(v, defDark, defLight) {
+    var light = isLight();
+    if (v && typeof v === "object") return (light ? v.light : v.dark) || (light ? defLight : defDark);
+    if (typeof v === "string" && v) return v;
+    return light ? defLight : defDark;
+  }
+  function forkColor(fork) { var d = FORK_COLORS[fork] || { dark: "#8FA8C0", light: "#5E7085" }; return pickThemed(THEME.forkOv[fork], d.dark, d.light); }
+  function ifaceColor(type) { var k = (type || "").toLowerCase() === "awg" ? "awg" : "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
+  function modeColor(m) { return m === "turn" ? ((isLight() ? THEME.light : THEME.color) || IFACE_COLORS.awg.dark) : ifaceColor(m); }
   function applyFavicon(accent, light) {
     var centre = light ? "#FFFFFF" : "#0A0E15";
     var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
@@ -184,7 +201,7 @@
     de.style.setProperty("--brand-ink", hexLum(brand) > 0.55 ? "#04232A" : "#EAFBFF");
     applyFavicon(brand, light);
   }
-  try { if (window.matchMedia) matchMedia("(prefers-color-scheme: light)").addEventListener("change", function () { applyBrand(); paintCtl(); }); } catch (_) {}
+  try { if (window.matchMedia) matchMedia("(prefers-color-scheme: light)").addEventListener("change", function () { applyBrand(); paintCtl(); if (_lastData && _lastKey) render(_lastData, _lastKey); }); } catch (_) {}
 
   // ── language + theme controls (top-right) ──
   var SUPPORTED = ["en", "ru"];
@@ -204,6 +221,7 @@
     _lsSet("swgsub-theme", mode);
     if (mode) document.documentElement.setAttribute("data-theme", mode); else document.documentElement.removeAttribute("data-theme");
     applyBrand(); paintCtl();
+    if (_lastData && _lastKey) render(_lastData, _lastKey);   // re-tint the fork tags + mode tabs for the new mode
   }
   var _iconSun = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><circle cx='12' cy='12' r='4.2'/><path d='M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4'/></svg>";
   var _iconMoon = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8z'/></svg>";
@@ -337,8 +355,12 @@
     ctrl.redraw = draw;
 
     if (mode === "turn") {
-      var tp = it.tp;
-      srvRow.appendChild(el("span", "scell-tag", SWGTurn.fork(tp.service)));   // fork tag beside the server name
+      var tp = it.tp, tag = el("span", "scell-tag", SWGTurn.fork(tp.service));   // fork tag beside the server name
+      var fc = forkColor(SWGTurn.fork(tp.service));                             // the panel's colour for this fork
+      tag.style.color = fc;
+      tag.style.borderColor = "color-mix(in srgb, " + fc + " 42%, transparent)";
+      tag.style.background = "color-mix(in srgb, " + fc + " 15%, transparent)";
+      srvRow.appendChild(tag);
       if (!conf) { draw(); return { el: cell, ctrl: ctrl }; }
       var art = SWGTurn.artifact(conf, tp, vkLink);
       node.appendChild(el("span", "scell-paste", t("pasteInto") + " " + (art.app || art.fork)));
@@ -422,6 +444,7 @@
     LANG_DEFAULT = (data.langs && data.langs.default) || "en";
     resolveLang(); wireControls(); paintCtl();     // the admin controls which languages are offered + the default
     THEME.color = data.theme_color || ""; THEME.light = data.theme_color_light || "";
+    THEME.forkOv = data.turn_fork_colors || {}; THEME.ifaceOv = data.iface_colors || {};   // panel colour overrides
     applyBrand();                                    // logo + favicon follow the panel's theme colour
     var who = document.getElementById("who");
     who.textContent = data.user && data.user.name ? data.user.name : "";
@@ -459,6 +482,7 @@
       var bar = el("div", "modebar"), pager = el("div", "pager"), btns = {};
       tabs.forEach(function (m) {
         var b = el("button", "modetab" + (m === mode ? " on" : ""), t(m));
+        var mc = modeColor(m); b.style.setProperty("--mc", mc); b.style.setProperty("--mc-ink", hexLum(mc) > 0.6 ? "#06222a" : "#EAFBFF");   // WG/AWG/turn colour when active
         b.onclick = function () { if (mode === m) return; mode = m; tabs.forEach(function (x) { btns[x].className = "modetab" + (x === mode ? " on" : ""); }); paint(); };
         btns[m] = b; bar.appendChild(b);
       });

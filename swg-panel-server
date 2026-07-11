@@ -1094,6 +1094,9 @@ def write_sub_serve(deps):
            # brand theme colours (per light/dark) so the subscription page's logo + favicon follow the panel
            "theme_color": (ps.get("theme_color") or ""),
            "theme_color_light": (ps.get("theme_color_light") or ""),
+           # per-fork + per-protocol colour overrides so the sub's fork tags + WG/AWG tabs match the admin's picks
+           "turn_fork_colors": (ps.get("turn_fork_colors") or {}),
+           "iface_colors": (ps.get("iface_colors") or {}),
            # offered UI languages + the default (the page hides its selector when only one is enabled)
            "languages": subs.get("languages") if isinstance(subs.get("languages"), dict) else {"enabled": ["en"], "default": "en"}}
     with contextlib.suppress(Exception):
