@@ -1995,6 +1995,7 @@ a.tg:hover{filter:brightness(1.25)}
    Used by BOTH the peer QR modal and each peer row of the user QR modal. */
 .qrrowwrap{display:flex;flex-direction:column;gap:10px}
 .qrrow{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;padding-bottom:2px}
+.qrrow:has(> .deploy:only-child){justify-content:center}
 .qrrow::-webkit-scrollbar{display:none}
 .qrrow > .deploy{width:256px;flex:none;scroll-snap-align:start}
 .qrrow > .deploy .qr{flex:1;min-width:0}

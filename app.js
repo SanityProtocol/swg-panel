@@ -359,6 +359,31 @@ async function subMaybePublish(userId, peerId, privkey, psk) {
   } catch (_) { /* a subscription hiccup must never break the peer flow */ }
 }
 
+// Publish every EXISTING peer of a user to their (just-enabled) subscription — subMaybePublish only fires
+// at peer creation, so without this a user's current peers would never reach the sub page. One blob per
+// peer (the private key is shared across a peer's deployments). A peer whose config isn't available
+// (store_configs off, or a pre-existing/imported peer with no stored key) can't be published — counted in
+// `missing` so the caller can warn instead of leaving a silently-empty page. Best-effort per peer.
+async function subBackfillUser(uid, unlockKey) {
+  const peers = Store.peersOfUser(uid);
+  let published = 0, missing = 0;
+  for (const p of peers) {
+    let conf = anySessionConf(p.pubkey);                          // just-created config still in this session
+    // the private key is the same on every deployment, so any target that has a stored config will do —
+    // try them all rather than give up if only the first is missing/unreadable
+    if (!conf && Store.storeConfigs) {
+      for (const t of (p.targets || [])) {
+        try { const r = await api.config(p.pubkey, t.node, t.iface); if (r && r.ok && r.data && r.data.config) { conf = r.data.config; break; } } catch (_) {}
+      }
+    }
+    const parsed = conf ? parseFullConf(conf) : null;
+    if (!parsed || !parsed.privkey) { missing++; continue; }      // no private key available → no QR on the page
+    try { await subEncryptPeer(uid, p.id, parsed.privkey, parsed.psk, unlockKey); published++; }
+    catch (_) { missing++; }
+  }
+  return { published, missing, total: peers.length };
+}
+
 const AWG_ORDER = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"];
 // IPv6 leak-guard: a FULL v4 tunnel (AllowedIPs contains 0.0.0.0/0) MUST also capture v6 (::/0), else the client's
 // IPv6 traffic escapes the tunnel over its real IP (the tunnels are v4-only, so captured v6 is dropped node-side and
@@ -5439,7 +5464,8 @@ function QRRow({ cards }) {
 
 function openPeerConfigs(peer, back) {
   const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per view; the modal sizes to fit (more → page with ‹ ›)
-  const width = cols * 256 + (cols - 1) * 14 + 56;
+  const wcols = Math.max(cols, 2);                       // hold 2 QRs wide even for a single deployment (roomier layout)
+  const width = wcols * 256 + (wcols - 1) * 14 + 56;
   // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
   openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width} onClose=${back || closeModal}>
     <${SubPeerUrl} peer=${peer}/>
@@ -5499,6 +5525,7 @@ function SubUserPanel({ user }) {
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [warn, setWarn] = useState("");
   const [vault, setVault] = useState(null);    // null=loading · bool
   const [skReady, setSkReady] = useState(!!subSKCached());
   const base = subBaseUrl();
@@ -5513,9 +5540,19 @@ function SubUserPanel({ user }) {
     return () => { ok = false; }; }, [rec, skReady]);
   if (!subFeatureOn()) return null;
   const settingsLink = html`<a href="#/panel/settings" onClick=${() => closeAllModals()}>Settings → Subscriptions</a>`;
-  const run = fn => async () => { setBusy(true); setErr(""); try { await fn(); } catch (e) { setErr(e.message || String(e)); } setBusy(false); };
+  const run = fn => async () => { setBusy(true); setErr(""); setWarn(""); try { await fn(); } catch (e) { setErr(e.message || String(e)); } setBusy(false); };
   const unlock = async () => { await subUnlock(pw); setPw(""); setSkReady(true); };
-  const doEnable = run(async () => { if (!subSKCached()) await unlock(); await subEnableUser(user.id); subUsersForget(); await load(); });
+  const doEnable = run(async () => {
+    if (!subSKCached()) await unlock();
+    await subEnableUser(user.id); subUsersForget(); await load();
+    // publish the user's EXISTING peers now (subMaybePublish only covers newly-created ones)
+    const rec2 = (await subUsersMap(true))[user.id];
+    if (rec2 && rec2.enabled && rec2.unlock_by_sk) {
+      const { unlockKey } = await subRecover(rec2);
+      const res = await subBackfillUser(user.id, unlockKey);
+      if (res.missing) setWarn(`${res.missing} of ${res.total} peer${res.total === 1 ? "" : "s"} ${res.missing === 1 ? "has" : "have"} no stored config, so ${res.missing === 1 ? "its QR won't" : "their QRs won't"} appear on the page. Re-issue ${res.missing === 1 ? "that peer" : "those peers"}${Store.storeConfigs ? "" : ", or enable “Keep configs” in Settings,"} to publish ${res.missing === 1 ? "it" : "them"}.`);
+    }
+  });
   const doRotate = run(async () => { if (!subSKCached()) await unlock(); await subRotateUser(user.id); subUsersForget(); await load(); });
   const doUnlock = run(unlock);
   const doDisable = run(async () => { await api.subUserDisable({ user_id: user.id }); subUsersForget(); setUrl(null); await load(); });
@@ -5542,6 +5579,7 @@ function SubUserPanel({ user }) {
   return html`<div class="subpanel">
     <div class="subpanel-hd"><${Ic} i="link"/> Subscription${rec && rec.enabled ? html`<span class="subpanel-on">active</span>` : null}</div>
     ${err ? html`<div class="hint err">${err}</div>` : null}
+    ${warn ? html`<div class="hint warn"><${Ic} i="warn"/> ${warn}</div>` : null}
     ${bodyEl}
   </div>`;
 }
@@ -5549,7 +5587,8 @@ function SubUserPanel({ user }) {
 function openUserConfigs(user, back) {
   const peers = Store.peersOfUser(user.id);
   const maxT = Math.min(3, peers.reduce((m, p) => Math.max(m, (p.targets || []).length || 1), 1));   // widest peer row, capped at 3 QRs
-  const width = maxT * 256 + (maxT - 1) * 14 + 56;
+  const wcols = Math.max(maxT, 2);                        // hold 2 QRs wide even for a single deployment (roomier layout)
+  const width = wcols * 256 + (wcols - 1) * 14 + 56;
   openModal(html`<${Sheet} title=${user.name} width=${width} onClose=${back || closeModal}>
     <${SubUserPanel} user=${user}/>
     ${peers.length ? html`<div class="usercfg">${peers.map(p => html`<div class="usercfg-peer" key=${p.id}>
