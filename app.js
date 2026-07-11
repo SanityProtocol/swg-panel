@@ -4602,7 +4602,7 @@ function DeleteTurnSheet({ node, service, label }) {
 const TURN_FORKS = [
   { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", color: "#5FB0E0", colorL: "#2C7EC0" },
   { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7" },
-  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/vk-turn-proxy", wrap: "-wrap", color: "#E0A85F", colorL: "#C07A1E" },
+  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E" },
   { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468" },
   { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", color: "#6FD9A8", colorL: "#12A46B" },
   { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420" },
@@ -4950,7 +4950,7 @@ function SetupTurnSheet({ node }) {
   const [custom, setCustom] = useState("127.0.0.1:51820");
   const [title, setTitle] = useState("");
   const [wrapKey] = useState(randWrapKey);            // one fresh key, reused so a fork switch is deterministic
-  const dflParams = fk => fk.wrap ? (fk.wrap + " -wrap-key " + wrapKey) : "";
+  const dflParams = fk => fk.wrap ? (fk.wrap + " " + (fk.keyflag || "-wrap-key") + " " + wrapKey) : "";
   const [params, setParams] = useState(dflParams(FORKS[0] || TURN_FORKS[0]));
   const [showExec, setShowExec] = useState(false);   // Additional ExecStart params collapsed by default
   const [path, setPath] = useState("");

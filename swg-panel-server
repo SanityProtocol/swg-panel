@@ -250,7 +250,7 @@ def _turn_autoupdate_tick():
             svc = (tp.get("service") or "").strip(); ver = (tp.get("version") or "").strip()
             if not svc or not ver:
                 continue
-            fork = turn_fork(svc); owner = fork + "/vk-turn-proxy"
+            fork = turn_fork(svc); owner = turn_fork_owner(fork)
             if fork not in latest:
                 latest[fork] = _resolve_turn_tag(owner)
             tag = latest[fork]
@@ -3052,6 +3052,8 @@ def turn_fork(service):   # fork id baked into a service name (vk-turn-proxy-<fo
     s = re.sub(r"^vk-turn-proxy-?", "", service or "turn-proxy") or "turn"
     s = re.sub(r"-\d+$", "", s) or "turn"
     return "cacggghp" if s == "main" else s
+def turn_fork_owner(fork):   # owner/repo for a fork — samosvalishe moved to free-turn-proxy (vk-turn-proxy is archived)
+    return "samosvalishe/free-turn-proxy" if fork == "samosvalishe" else (fork + "/vk-turn-proxy")
 def _ip_of(hp):   # "ip:port" → ip ("" if none)
     hp = hp or ""; return hp.rsplit(":", 1)[0] if ":" in hp else hp
 def _port_of(hp):   # "ip:port" → port str ("" if none)

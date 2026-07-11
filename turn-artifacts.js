@@ -15,7 +15,8 @@
  * Schema versions targeted (bump deliberately on a fork's major release — the update flow only pulls a
  * newer server binary, it can't change these):
  *   • anton48   vkturnproxy:// JSON  "version": 1
- *   • samosvalishe freeturn://  JSON "v": 1
+ *   • samosvalishe freeturn:// JSON "v": 1 — the free-turn-proxy server (vk-turn-proxy is archived); the
+ *                 link embeds the WG config + rtpopus obf key. Imported by turn-proxy-android + the CLI.
  *   • kiper292  #@wgt: comments, PeerType SERVER-COUPLED → proxy_v2 (what a "kiper292" proxy IS)
  *   • WINGS-N   wingsv:// = 0x12 ‖ zlib(protobuf Config); hand-encoded. Config.ver = 1.
  */
@@ -122,6 +123,34 @@
     });
   }
 
+  // ── samosvalishe freeturn:// link ── `freeturn://` + base64url(JSON), matching turn-proxy-android's
+  // FreeturnLink (which mirrors free-turn-proxy docs/uri.md, v1). The WG config rides in the "wg" field
+  // (comments + MTU stripped, Endpoint → the app's local turn listen 127.0.0.1:9000); the VK call link is
+  // NOT included — the recipient supplies their own in the app. Obfuscation is rtpopus and its key MUST
+  // match the free-turn-proxy server's -obf-profile/-obf-key on the node.
+  function b64urlUtf8(s) {
+    var bytes = new TextEncoder().encode(String(s)), bin = "";
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  // Strip comments, blank lines and any MTU line (MTU rides in its own link field) — shorter link, denser
+  // QR. Mirrors ShareLinkBuilder.normalizeConf so our links look like the app's own.
+  function freeturnConf(conf) {
+    return String(conf || "").split("\n").map(function (l) { return l.trim(); }).filter(function (l) {
+      if (!l || l.charAt(0) === "#" || l.charAt(0) === ";") return false;
+      if (/^MTU/i.test(l) && l.indexOf("=") >= 0) return false;
+      return true;
+    }).join("\n");
+  }
+  function freeturnLink(tp, rawConf) {
+    var wg = freeturnConf(String(rawConf || "").replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 127.0.0.1:9000"));
+    var o = { v: 1, provider: "vk", peer: tp.listen || "" };        // key order matches FreeturnLink.encode()
+    var key = (tp.wrap_key || "").trim();
+    if (key) { o.obf = "rtpopus"; o.key = key; }                    // omitted → server must also run obf none
+    o.wg = wg;
+    return "freeturn://" + b64urlUtf8(JSON.stringify(o));
+  }
+
   // Build the client-import artifact for a peer deployed BEHIND a turn-proxy, matching the DEPLOYED fork.
   // Returns a descriptor: { fork, label, ext, qr, hint, uri?, cmd?, text? OR buildAsync } — `text` is ready,
   // `buildAsync` is a promise (wingsv:// needs zlib). `qr` = the fork's client imports via a scannable QR:
@@ -156,7 +185,15 @@
         hint: "Open this link on the iPhone (or the app's Settings → Import from connection link) to import into the anton48 app.",
         text: uri };
     }
-    // sidecar forks (cacggghp / samosvalishe / Moroka8 / unknown): WG dials the local client on :9000
+    if (fork === "samosvalishe") {
+      // samosvalishe now = free-turn-proxy server (the old standalone vk-turn-proxy server is archived). Its
+      // clients (turn-proxy-android + free-turn-proxy CLI) import a freeturn:// link — one scannable QR that
+      // carries the proxy endpoint, the rtpopus obfuscation key, and the whole WG config.
+      return { fork: fork, app: "FreeTurn", label: "samosvalishe · FreeTurn (freeturn:// link)", ext: "txt", uri: true, qr: true,
+        hint: "Scan this QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link into it / the free-turn-proxy CLI. You supply your own VK call link in the app.",
+        text: freeturnLink(tp, baseConf) };
+    }
+    // sidecar forks (cacggghp / Moroka8 / unknown): WG dials the local client on :9000
     var sidecar = baseConf.replace(/^([ \t]*Endpoint[ \t]*=).*$/m, "$1 127.0.0.1:9000");
     sidecar = /^[ \t]*MTU[ \t]*=/m.test(sidecar) ? sidecar.replace(/^([ \t]*MTU[ \t]*=).*$/m, "$1 1280")
       : sidecar.replace(/^([ \t]*Address[ \t]*=.*)$/m, "$1\nMTU = 1280");

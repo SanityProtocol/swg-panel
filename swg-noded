@@ -3130,7 +3130,7 @@ def _parse_tp(svc, execl):
         m = re.search(r"-" + re.escape(flag) + r"[ =]+(\S+)", execl)
         return m.group(1) if m else ""
     return {"service": svc, "listen": g("listen"), "connect": g("connect"),
-            "wrap_key": g("wrap-key"), "params": _exec_params(execl)}
+            "wrap_key": g("wrap-key") or g("obf-key"), "params": _exec_params(execl)}   # free-turn-proxy carries the key in -obf-key
 
 def _installed_tp(svc):
     """Re-read a turn unit (after install/edit) so the record carries the real ExecStart, incl. the
@@ -3160,9 +3160,13 @@ def _turn_fork_in_use(svc, rec):   # is any OTHER instance of this fork still in
     return any(isinstance(tp, dict) and tp.get("service") and tp["service"] != svc and _turn_fork(tp["service"]) == fork for tp in items)
 
 def _params_wrapkey(params):
-    m = re.search(r"-wrap-key[ =]+(\S+)", params or ""); return m.group(1) if m else ""
+    m = re.search(r"-(?:wrap|obf)-key[ =]+(\S+)", params or ""); return m.group(1) if m else ""
 def _params_set_wrapkey(params, key):
     params = params or ""
+    # rotate whichever obfuscation-key flag the unit already carries (free-turn-proxy = -obf-key,
+    # the vk-turn-proxy forks = -wrap-key); only fall back to appending -wrap-key on a keyless unit.
+    if re.search(r"-obf-key[ =]+\S+", params):
+        return re.sub(r"-obf-key[ =]+\S+", "-obf-key " + key, params)
     if re.search(r"-wrap-key[ =]+\S+", params):
         return re.sub(r"-wrap-key[ =]+\S+", "-wrap-key " + key, params)
     return (params + " -wrap-key " + key).strip()

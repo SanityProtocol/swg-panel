@@ -328,7 +328,7 @@ lc_clear_convert_leftover(){
 
 # ── turn-proxy: the 6 forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
 turn_repo_owner(){ case "$1" in
-  WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/vk-turn-proxy";;
+  WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/free-turn-proxy";;
   kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
   Moroka8) echo "Moroka8/vk-turn-proxy";;
   cacggghp) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }

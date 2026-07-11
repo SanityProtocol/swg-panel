@@ -493,11 +493,13 @@ TURN_RECORD="${TURN_RECORD:-/etc/swg-agent/turn-proxy.json}"
 declare -A TP_LISTEN TP_CONNECT TP_WRAP
 gen_wrap_key(){ $DRYRUN && { echo "GENERATED-ON-REAL-RUN"; return 0; }   # 32-byte key as 64 hex chars
   openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
-# Per-fork obfuscation flags (verified from each binary's -h). Echoes the flags WITH a
-# freshly generated -wrap-key baked in (kiper292 has no wrap support → empty).
+# Per-fork obfuscation flags (verified from each binary's -h). Echoes the flags WITH a freshly generated
+# 64-hex key baked in (kiper292 has no obfuscation → empty). samosvalishe is now the free-turn-proxy server
+# (the standalone vk-turn-proxy is archived): it uses -obf-profile rtpopus + -obf-key, and its clients
+# (turn-proxy-android / free-turn-proxy CLI) import a freeturn:// link carrying the same rtpopus key.
 turn_wrap_flags(){ local k; case "$1" in
   anton48)      k="$(gen_wrap_key)"; printf -- '-wrap-srtp -wrap-key %s' "$k";;
-  samosvalishe) k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;
+  samosvalishe) k="$(gen_wrap_key)"; printf -- '-obf-profile rtpopus -obf-key %s' "$k";;
   WINGS-N)      k="$(gen_wrap_key)"; printf -- '-wrap-mode on -wrap-key %s' "$k";;
   Moroka8)      k="$(gen_wrap_key)"; printf -- '-wrap -wrap-key %s' "$k";;   # verified from its README: -wrap -wrap-key
   *) printf '';; esac; }
@@ -523,11 +525,13 @@ detect_turn(){   # any systemd unit whose ExecStart carries both -listen and -co
         lis="$(sed -n 's/^SWG_LISTEN=//p' "$envf" 2>/dev/null | head -1)"
         con="$(sed -n 's/^SWG_CONNECT=//p' "$envf" 2>/dev/null | head -1)"
         params="$(sed -n 's/^SWG_PARAMS=//p' "$envf" 2>/dev/null | head -1)"
-        wk="$(printf '%s\n' "$params" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
+        wk="$(printf '%s\n' "$params" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
+        [ -n "$wk" ] || wk="$(printf '%s\n' "$params" | sed -n 's/.*-obf-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;   # free-turn-proxy uses -obf-key
       *)            # legacy baked-ExecStart form
         lis="$(printf '%s\n' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"
         con="$(printf '%s\n' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"
-        wk="$(printf '%s\n' "$exe" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
+        wk="$(printf '%s\n' "$exe" | sed -n 's/.*-wrap-key[ =]\{1,\}\([^ ]*\).*/\1/p')"
+        [ -n "$wk" ] || wk="$(printf '%s\n' "$exe" | sed -n 's/.*-obf-key[ =]\{1,\}\([^ ]*\).*/\1/p')" ;;
     esac
     TP_LISTEN[$name]="$lis"; TP_CONNECT[$name]="$con"; TP_WRAP[$name]="$wk"
   done
@@ -700,7 +704,7 @@ choose_turn_proxy(){   # one looped step: list installed (if any) + available br
     echo
     menu "$(col "$C_BLUE" '[0] [c]acggghp')"     "The original project - https://github.com/cacggghp/vk-turn-proxy"
     menu "$(col "$C_BLUE" '[1] [W]INGS-N')"      "Fork by WINGS-N - https://github.com/WINGS-N/vk-turn-proxy"
-    menu "$(col "$C_BLUE" '[2] [s]amosvalishe')" "Fork by samosvalishe - https://github.com/samosvalishe/vk-turn-proxy"
+    menu "$(col "$C_BLUE" '[2] [s]amosvalishe')" "free-turn-proxy by samosvalishe - https://github.com/samosvalishe/free-turn-proxy"
     menu "$(col "$C_BLUE" '[3] [k]iper292')"     "Fork by kiper292 - https://github.com/kiper292/vk-turn-proxy"
     menu "$(col "$C_BLUE" '[4] [M]oroka8')"      "Fork by Moroka8 - https://github.com/Moroka8/vk-turn-proxy"
     menu "$(col "$C_BLUE" '[5] [a]nton48')"      "Fork by anton48 - https://github.com/anton48/vk-turn-proxy"
