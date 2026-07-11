@@ -7051,7 +7051,7 @@ function AccessTLSCard({ onChange }) {
   const portField = (port, setPort, bad) => html`<div class="field"><label>Port${bad ? html` <span class="ciw" title="Cloudflare can't reach this port"><${Ic} i="warn"/></span>` : null}</label>
     <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
   const cfNote = html`<div class=${"notice " + (hard ? "err" : "warn")}><${Ic} i="warn"/><span>
-    Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}
+    Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}<br/><br/>
     If it IS behind Cloudflare, restrict this port to Cloudflare's IP ranges:
     <button class="btn btn-mini mt8" onClick=${() => copy(CF_IP_RANGES.join("\n"), "Cloudflare IP ranges")}><${Ic} i="copy"/> Copy Cloudflare IP ranges</button></span></div>`;
 

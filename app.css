@@ -2021,8 +2021,10 @@ a.tg:hover{filter:brightness(1.25)}
 .setsave{margin-top:20px;display:flex;justify-content:flex-end}
 .ci{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;
   font-size:11px;font-weight:700;font-style:normal;color:var(--brand-ink);background:var(--warn,#e0a030);cursor:help;vertical-align:middle}
-/* inline "port not reachable" hint — exclamation-in-triangle in the warn colour (no circle background) */
-.ciw{display:inline-flex;align-items:center;color:var(--warn,#e0a030);cursor:help;vertical-align:middle}
+/* inline "port not reachable" hint — exclamation-in-triangle in the warn colour (no circle background).
+   Sized to the 10.5px uppercase label and nudged up so it sits on the caps line, not below it. */
+.ciw{display:inline-flex;align-items:center;color:var(--dangling);cursor:help;vertical-align:middle;position:relative;top:-2px}
+.ciw svg{width:13px;height:13px}
 /* subscription languages picker (Settings → Subscriptions) */
 .sublangs{display:flex;flex-direction:column;gap:8px}
 .sublang{display:flex;align-items:center;gap:12px;padding:8px 12px;border:1px solid var(--line);border-radius:9px}
