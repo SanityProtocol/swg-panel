@@ -251,6 +251,11 @@ def _turn_autoupdate_tick():
             if not svc or not ver:
                 continue
             fork = turn_fork(svc); owner = turn_fork_owner(fork)
+            # samosvalishe moved vk-turn-proxy → free-turn-proxy (a different, incompatible server). Never
+            # AUTO-reinstall an OLD -wrap install onto the new binary — it would keep the -wrap params and crash.
+            # The operator recreates it as a free-turn-proxy proxy; one already on -obf-profile updates normally.
+            if fork == "samosvalishe" and "-wrap" in (tp.get("params") or "") and "-obf" not in (tp.get("params") or ""):
+                continue
             if fork not in latest:
                 latest[fork] = _resolve_turn_tag(owner)
             tag = latest[fork]
