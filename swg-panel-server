@@ -4343,13 +4343,20 @@ def api(method, path, qs, body, deps):
     if method == "GET" and path == "/api/sub/vault":
         v = load_sub_vault(deps)
         return 200, {"ok": True, "data": {"exists": bool(v.get("sk_by_pw")),
-                                          "salt": v.get("salt"), "sk_by_pw": v.get("sk_by_pw"), "sk_check": v.get("sk_check")}}
+                                          "salt": v.get("salt"), "sk_by_pw": v.get("sk_by_pw"), "sk_check": v.get("sk_check"),
+                                          "sk_verify": v.get("sk_verify")}}   # SK self-verifier → the browser validates a cached SK against THIS vault
 
     if method == "POST" and path == "/api/sub/vault":                # set on first enable / re-wrap on password change
         salt, sk, chk = body.get("salt"), body.get("sk_by_pw"), body.get("sk_check")
         if not (isinstance(salt, str) and isinstance(sk, str) and isinstance(chk, str)):
             return 400, {"ok": False, "error": "salt, sk_by_pw and sk_check are required", "code": "bad_request"}
-        save_sub_vault(deps, {"salt": salt, "sk_by_pw": sk, "sk_check": chk, "at": now()})
+        rec = {"salt": salt, "sk_by_pw": sk, "sk_check": chk, "at": now()}
+        # sk_verify: preserve an existing one on a password re-wrap (the SK is unchanged), set it on first create.
+        _prev = load_sub_vault(deps)
+        _sv = body.get("sk_verify") if isinstance(body.get("sk_verify"), str) else _prev.get("sk_verify")
+        if _sv:
+            rec["sk_verify"] = _sv
+        save_sub_vault(deps, rec)
         return 200, {"ok": True, "data": {"saved": True}}
 
     if method == "GET" and path == "/api/sub/users":                 # admin UI state (authed): coverage + the SK-wrapped escrow
@@ -4401,7 +4408,9 @@ def api(method, path, qs, body, deps):
         users = load_sub_users(deps); escrow = load_sub_escrow(deps)
         prev = escrow.get(uid) or {}
         users[uid] = {"token_sha": tsha, "enabled": True}            # PUBLIC map (swg-sub reads this) — no secrets
-        escrow[uid] = {"unlock_by_sk": unl, "token_by_sk": tbs,      # panel-only, SK-wrapped
+        # NEVER overwrite an existing unlock-key: a user may already hold encrypted-config blobs (from the config
+        # store) encrypted under it — replacing it would orphan them. Enabling only adds the URL token on top.
+        escrow[uid] = {"unlock_by_sk": prev.get("unlock_by_sk") or unl, "token_by_sk": tbs,
                        "created": prev.get("created") or now(), "rotated": now()}
         save_sub_users(deps, users); save_sub_escrow(deps, escrow)
         ev_append(roster_path, "user", uid, "Enabled subscription", (roster["users"][uid] or {}).get("name", ""))
@@ -4513,15 +4522,43 @@ def api(method, path, qs, body, deps):
             return 404, {"ok": False, "error": "config not stored", "code": "not_found"}
         return 200, {"ok": True, "data": {"config": text}}
 
+    if method == "GET" and path == "/api/config/plaintext-peers":
+        # Which roster peers still hold a LEGACY plaintext config — so the browser migration touches ONLY those
+        # (O(plaintext), not O(all-peers): no full-fleet 404 storm on big fleets). Also reports ORPHAN plaintext
+        # files that map to no current peer/target (dead keys from deleted peers) — cleanup fodder.
+        roster = roster_load(roster_path)
+        peers = roster.get("peers") or {}
+        valid = set(); out = []
+        for pid, p in peers.items():
+            if not isinstance(p, dict):
+                continue
+            has = False
+            for t in p.get("targets", []):
+                fn = cfg_hash(p.get("pubkey", ""), t.get("node", ""), t.get("iface", ""))
+                valid.add(fn)
+                if not has and config_dir and os.path.exists(os.path.join(config_dir, fn)):
+                    has = True
+            if has:
+                out.append({"peer_id": pid, "assigned": bool(p.get("user_id"))})
+        orphans = 0
+        if config_dir:
+            with contextlib.suppress(OSError):
+                for fn in os.listdir(config_dir):
+                    if re.fullmatch(r"[0-9a-f]{64}\.conf", fn) and fn not in valid:
+                        orphans += 1
+        return 200, {"ok": True, "data": {"peers": out, "orphans": orphans}}
+
     if method == "POST" and path == "/api/config/purge-plaintext":
         # Delete LEGACY plaintext configs — but ONLY for a peer whose encrypted blob already exists, and the
         # server re-checks that per peer (never purge ahead of ciphertext). Called by the browser migration
         # ceremony after it has encrypted + verified each peer. Optional {peer_ids} scopes it; else every peer.
+        # `purge_orphans` additionally removes .conf files that belong to NO current peer/target (dead keys from
+        # deleted peers) — safe (that peer is gone, its config already revoked) and clears the last plaintext.
         roster = roster_load(roster_path)
         peers = roster.get("peers") or {}
         want = body.get("peer_ids")
         pids = want if isinstance(want, list) else list(peers.keys())
-        purged = 0; kept = 0
+        purged = 0; kept = 0; valid = set()
         for pid in pids:
             p = peers.get(pid)
             if not isinstance(p, dict):
@@ -4536,7 +4573,18 @@ def api(method, path, qs, body, deps):
                 with contextlib.suppress(OSError):
                     if os.path.exists(fp):
                         os.unlink(fp); purged += 1
-        return 200, {"ok": True, "data": {"purged": purged, "kept": kept,
+        orphans_purged = 0
+        if body.get("purge_orphans") and config_dir:
+            for pid, p in peers.items():                                  # rebuild the FULL set of valid cfg names
+                if isinstance(p, dict):
+                    for t in p.get("targets", []):
+                        valid.add(cfg_hash(p.get("pubkey", ""), t.get("node", ""), t.get("iface", "")))
+            with contextlib.suppress(OSError):
+                for fn in os.listdir(config_dir):
+                    if re.fullmatch(r"[0-9a-f]{64}\.conf", fn) and fn not in valid:
+                        with contextlib.suppress(OSError):
+                            os.unlink(os.path.join(config_dir, fn)); orphans_purged += 1
+        return 200, {"ok": True, "data": {"purged": purged, "kept": kept, "orphans_purged": orphans_purged,
                                           "remaining": count_plaintext_configs(config_dir)}}
 
     if method == "GET" and path == "/api/describe":
@@ -4987,6 +5035,17 @@ def api(method, path, qs, body, deps):
                 unassign_peer(p, store_configs, config_dir, now()); freed += 1
         del roster["users"][uid]
         roster_save(roster_path, roster)
+        # Clean up the user's encryption/subscription artifacts too — the blobs, the SK-wrapped escrow, and the
+        # public token map. (Their peers are now unassigned, so the blobs would be GC'd on the next read anyway,
+        # but escrow + the sub-token entry would otherwise linger.)
+        with contextlib.suppress(Exception):
+            drop_sub_blobs(deps, uid)
+            _esc = load_sub_escrow(deps)
+            if uid in _esc:
+                del _esc[uid]; save_sub_escrow(deps, _esc)
+            _su = load_sub_users(deps)
+            if uid in _su:
+                del _su[uid]; save_sub_users(deps, _su)
         ev_append(roster_path, "user", uid, "Deleted user", uname,
                   f"{freed} peer{'' if freed == 1 else 's'} unassigned" if freed else "")
         return 200, {"ok": True, "data": {"id": uid, "unassigned_peers": freed}}

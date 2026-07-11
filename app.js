@@ -243,8 +243,15 @@ async function subVaultCreate(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const wk = await subWrapKey(password, salt);
   const sk = crypto.getRandomValues(new Uint8Array(32));
-  const r = await api.subVaultSet({ salt: b64(salt), sk_by_pw: await subEnc(wk, sk), sk_check: await subEnc(wk, new TextEncoder().encode(SUB_CHECK)) });
+  const skKey = await _importAes(sk, ["encrypt", "decrypt"]);
+  const r = await api.subVaultSet({ salt: b64(salt), sk_by_pw: await subEnc(wk, sk),
+    sk_check: await subEnc(wk, new TextEncoder().encode(SUB_CHECK)),
+    // SK self-verifier (encrypted UNDER the SK) so a cached SK can be validated against THIS vault on boot —
+    // a stale cache left over from a previous (reset) vault is then detected + discarded, never trusted.
+    sk_verify: await subEnc(skKey, new TextEncoder().encode(SUB_CHECK)) });
   if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't save the vault");
+  _subSK = skKey;                                          // unlock immediately with the NEW SK (replaces any stale cache)
+  try { sessionStorage.setItem(_SK_CACHE, b64(sk)); } catch (_) {}
   return b64(sk);
 }
 
@@ -269,7 +276,19 @@ function subForget() { _subSK = null; try { sessionStorage.removeItem(_SK_CACHE)
 // tradeoff so a normal login auto-unlocks config encryption without re-typing the password.
 async function subBootRestore() {
   if (_subSK) return;
-  try { const s = sessionStorage.getItem(_SK_CACHE); if (s) _subSK = await _importAes(_b64ToBytes(s), ["encrypt", "decrypt"]); } catch (_) {}
+  let s = null; try { s = sessionStorage.getItem(_SK_CACHE); } catch (_) {}
+  if (!s) return;
+  try {
+    const key = await _importAes(_b64ToBytes(s), ["encrypt", "decrypt"]);
+    const v = await api.subVault();
+    if (!v || !v.ok || !v.data || !v.data.exists) { subForget(); return; }   // vault gone (reset) → the cache is stale
+    if (v.data.sk_verify) {                                                    // validate the cache matches THIS vault's SK
+      let ok = false;
+      try { ok = new TextDecoder().decode(await subDec(key, v.data.sk_verify)) === SUB_CHECK; } catch (_) {}
+      if (!ok) { subForget(); return; }                                       // stale SK (a different/reset vault) → discard, never trust
+    }
+    _subSK = key;
+  } catch (_) { subForget(); }
 }
 async function subUnlock(password) {      // unwrap the SK from the vault with the password → cache it
   const v = await api.subVault();
@@ -282,6 +301,11 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
   } catch (_) { throw new Error("That password didn't unlock the encryption key."); }
   _subSK = await _importAes(skBytes, ["encrypt", "decrypt"]);
   try { sessionStorage.setItem(_SK_CACHE, b64(skBytes)); } catch (_) {}   // convenience cache (tab-scoped) — survives the post-login reload
+  // self-heal: give an older vault (pre-sk_verify) an SK self-verifier so a cached SK can be validated on boot.
+  if (!v.data.sk_verify) {
+    try { await api.subVaultSet({ salt: v.data.salt, sk_by_pw: v.data.sk_by_pw, sk_check: v.data.sk_check,
+      sk_verify: await subEnc(_subSK, new TextEncoder().encode(SUB_CHECK)) }); } catch (_) {}
+  }
   return _subSK;
 }
 // Re-wrap the vault under a NEW panel password so the convenience cache keeps auto-unlocking after a password
@@ -301,21 +325,23 @@ async function subRewrap(newPassword) {
   } catch (_) { return false; }
 }
 
-// Enable a user's subscription: mint a fresh 256-bit URL token + 256-bit unlock-key, wrap BOTH with the
-// SK for the escrow (so the panel stores only ciphertext), and register the public token hash. Returns
-// {token, unlockKeyB64} for immediate URL display. Requires the SK to be unlocked.
+// Enable a user's subscription: mint a fresh 256-bit URL token, and REUSE the user's existing unlock-key if
+// they already hold one (their encrypted-config blobs are encrypted under it — minting a fresh key would orphan
+// them); only mint a fresh unlock-key for a brand-new escrow. Returns {token, unlockKeyB64} for the URL. SK unlocked.
 async function subEnableUser(uid) {
-  const sk = subSKCached(); if (!sk) throw new Error("Unlock the Subscription Key first.");
-  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
-  const token = b64url(tokenBytes);                     // the URL path segment (opaque, 256-bit)
-  const unlockKey = crypto.getRandomValues(new Uint8Array(32));   // the URL fragment key (AES-GCM, 256-bit)
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the encryption key first.");
+  const token = b64url(crypto.getRandomValues(new Uint8Array(32)));   // the URL path segment (opaque, 256-bit)
+  const rec = (await subUsersMap(true))[uid];
+  let unlockBytes, unlock_by_sk;
+  if (rec && rec.unlock_by_sk) { unlockBytes = await subDec(sk, rec.unlock_by_sk); unlock_by_sk = rec.unlock_by_sk; }
+  else { unlockBytes = crypto.getRandomValues(new Uint8Array(32)); unlock_by_sk = await subEnc(sk, unlockBytes); }
   const r = await api.subUserEnable({
     user_id: uid, token_sha: await sha256hex(token),
-    unlock_by_sk: await subEnc(sk, unlockKey),
+    unlock_by_sk,
     token_by_sk: await subEnc(sk, new TextEncoder().encode(token)),
   });
   if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't enable the subscription");
-  return { token, unlockKeyB64: b64url(unlockKey) };
+  return { token, unlockKeyB64: b64url(unlockBytes) };
 }
 
 // Rotate a user's URL (kill the old link): fresh token, SAME unlock-key, so existing ciphertext stays valid.
@@ -448,35 +474,42 @@ async function captureOverridesFrom(peer, parsed) {
   if (Object.keys(ov).length) { try { await api.peerUpdate({ peer_id: peer.id, overrides: ov }); } catch (_) {} }
 }
 
-// The one-time migration pass: encrypt every ASSIGNED peer's legacy plaintext (or session) config into its
-// blob, capture non-secret overrides, then purge the plaintext ONLY where a blob now exists (server re-checks).
-// Resumable — re-running processes only the stragglers. Returns a report; `flagged` = peers that couldn't be
-// encrypted (unassigned, or no stored key) → the rekey affordance. Requires the vault unlocked.
+// The one-time migration pass. Touches ONLY the peers the server says still hold plaintext (O(plaintext), so a
+// 1000-peer fleet isn't a full-fleet probe): encrypt each ASSIGNED one's config into its blob, capture non-secret
+// overrides, then purge plaintext ONLY where a blob now exists (server re-checks) + clean orphan .conf files
+// (dead keys, no live peer). Resumable — re-running does only the stragglers. `flagged` = peers that couldn't be
+// encrypted (unassigned, or no stored/importable key) → the rekey affordance. Requires the vault unlocked.
 async function runConfigMigration() {
   if (!subSKCached()) throw new Error("Unlock the encryption key first.");
-  const users = Object.values((Store._server && Store._server.roster && Store._server.roster.users) || {});
-  let migrated = 0, total = 0; const flagged = [];
-  for (const u of users) {
-    const peers = Store.peersOfUser(u.id);
-    if (!peers.length) continue;
-    total += peers.length;
-    const unlockKey = await ensureUserUnlockKey(u.id);
-    if (!unlockKey) { peers.forEach(p => flagged.push(p.id)); continue; }
-    const res = await subBackfillUser(u.id, unlockKey);
-    migrated += res.published; flagged.push(...res.missingPeers);
+  let list = [];
+  try { const pp = await api.plaintextPeers(); list = (pp && pp.data && pp.data.peers) || []; } catch (_) {}
+  let migrated = 0; const flagged = [];
+  // group the assigned plaintext-holders by user (one unlock-key each); unassigned can't be encrypted → flag.
+  const byUser = {};
+  for (const it of list) {
+    const p = (Store.recon.peers || []).find(x => x.id === it.peer_id);
+    if (!p) continue;
+    if (!p.user_id) { flagged.push(p.id); continue; }
+    (byUser[p.user_id] = byUser[p.user_id] || []).push(p);
   }
-  // Unassigned peers can't be encrypted (the blob store is per-user) — flag any that still hold plaintext.
-  for (const p of (Store.recon.peers || [])) {
-    if (p.user_id) continue;
-    let hasPlain = false;
-    for (const t of (p.targets || [])) {
-      try { const r = await api.config(p.pubkey, t.node, t.iface); if (r && r.ok && r.data && r.data.config) { hasPlain = true; break; } } catch (_) {}
+  for (const uid of Object.keys(byUser)) {
+    const unlockKey = await ensureUserUnlockKey(uid);
+    if (!unlockKey) { byUser[uid].forEach(p => flagged.push(p.id)); continue; }
+    for (const p of byUser[uid]) {
+      let conf = anySessionConf(p.pubkey);
+      if (!conf) for (const t of (p.targets || [])) {
+        try { const r = await api.config(p.pubkey, t.node, t.iface); if (r && r.ok && r.data && r.data.config) { conf = r.data.config; break; } } catch (_) {}
+      }
+      const parsed = conf ? parseFullConf(conf) : null;
+      if (!parsed || !parsed.privkey) { flagged.push(p.id); continue; }
+      try { await subEncryptPeer(uid, p.id, parsed.privkey, parsed.psk, unlockKey); await captureOverridesFrom(p, parsed); migrated++; }
+      catch (_) { flagged.push(p.id); }
     }
-    if (hasPlain) flagged.push(p.id);
   }
-  const pr = await api.purgePlaintext({});                         // deletes plaintext ONLY where a blob exists
+  const pr = await api.purgePlaintext({ purge_orphans: true });    // blob-gated purge + orphan cleanup (dead keys)
   await Store.poll();                                              // refresh the plaintext count
-  return { migrated, total, flagged: [...new Set(flagged)], purged: (pr && pr.data && pr.data.purged) || 0,
+  return { migrated, total: list.length, flagged: [...new Set(flagged)],
+           purged: (pr && pr.data && pr.data.purged) || 0, orphansPurged: (pr && pr.data && pr.data.orphans_purged) || 0,
            remaining: (pr && pr.data && pr.data.remaining) || 0 };
 }
 
@@ -656,6 +689,7 @@ const api = {
   subBlobGet(pid) { return this.get("/api/sub/blob?peer_id=" + encodeURIComponent(pid)); },   // read one peer's ciphertext for in-browser Show-QR decrypt
   subEscrow(b) { return this.post("/api/sub/escrow", b); },   // ensure a user holds an encryption unlock-key (encrypted config storage, no subscription)
   purgePlaintext(b) { return this.post("/api/config/purge-plaintext", b || {}); },   // migration: delete legacy plaintext where a blob exists
+  plaintextPeers() { return this.get("/api/config/plaintext-peers"); },   // migration: exactly which peers still hold plaintext (+ orphan count)
   refreshGeo() { return this.post("/api/panel/refresh-geo", {}); },
   // external integration API (Settings → Integrations): read-only tokens + webhooks
   apiTokenCreate(label) { return this.post("/api/integrations/token", { label }); },
@@ -7069,7 +7103,7 @@ function SubVaultCard() {
   };
   const doReset = async () => {
     setBusy(true); const r = await api.subReset(); setBusy(false);
-    if (r && r.ok) { setResetMode(false); setConfirm(""); setSk(null); load(); toast("Config encryption reset.", "ok"); }
+    if (r && r.ok) { subForget(); setResetMode(false); setConfirm(""); setSk(null); load(); toast("Config encryption reset.", "ok"); }   // drop the now-stale cached SK
     else toast((r && r.error) || "Reset failed", "err");
   };
   if (state.loading) return html`<div class="hint">Checking…</div>`;
@@ -7116,8 +7150,8 @@ function ConfigMigrationCard() {
     return (p.name ? p.name + " · " : "") + (p.title || "peer");
   }) : [];
   const run = async () => {
-    if (!vaultExists) { toast("Set up the encryption key above first.", "err"); return; }
-    if (!subSKCached()) {
+    if (!subSKCached()) {                                  // a cached SK ⇒ the vault exists (e.g. just set up this session)
+      if (!vaultExists) { toast("Set up the encryption key above first.", "err"); return; }
       if (!pw) { toast("Enter your panel password to unlock the encryption key.", "err"); return; }
       try { await subUnlock(pw); setPw(""); } catch (e) { toast((e && e.message) || "Unlock failed", "err"); return; }
     }
@@ -7135,11 +7169,11 @@ function ConfigMigrationCard() {
     ${n > 0
       ? html`<b>${n} plaintext config${n === 1 ? "" : "s"} still on the panel.</b> Encrypt them so the server can no longer read a client private key. Safe and resumable — the plaintext is deleted only after its encrypted copy exists.`
       : html`<b>All stored configs are encrypted.</b>`}
-    ${report ? html`<div class="hint" style="margin-top:8px">Encrypted <b>${report.migrated}</b> of ${report.total} · purged <b>${report.purged}</b> plaintext${report.remaining ? ` · ${report.remaining} still plaintext` : ""}.
+    ${report ? html`<div class="hint" style="margin-top:8px">Encrypted <b>${report.migrated}</b> of ${report.total} · purged <b>${report.purged}</b> plaintext${report.orphansPurged ? ` (+${report.orphansPurged} orphan)` : ""}${report.remaining ? ` · ${report.remaining} still plaintext` : ""}.
       ${report.flagged.length ? html`<div style="margin-top:6px"><b>${report.flagged.length} peer${report.flagged.length === 1 ? "" : "s"}</b> couldn't be encrypted (unassigned, or no stored key) — <b>rekey</b> or assign ${report.flagged.length === 1 ? "it" : "them"} to include: ${flaggedNames.slice(0, 8).join(", ")}${flaggedNames.length > 8 ? ` +${flaggedNames.length - 8} more` : ""}.</div>` : html`<div style="margin-top:6px">Every assigned peer with a stored key is encrypted.</div>`}</div>` : null}
     <div class="chiprow" style="margin-top:8px">
       ${(n > 0 && !subSKCached()) ? pwField : null}
-      ${n > 0 ? html`<button class="btn btn-primary btn-mini" disabled=${busy || !vaultExists} onClick=${run}>${busy ? "Encrypting…" : (report ? "Encrypt remaining" : "Encrypt stored configs")}</button>` : null}
+      ${n > 0 ? html`<button class="btn btn-primary btn-mini" disabled=${busy || (!vaultExists && !subSKCached())} onClick=${run}>${busy ? "Encrypting…" : (report ? "Encrypt remaining" : "Encrypt stored configs")}</button>` : null}
     </div>
   </div></div>`;
 }
