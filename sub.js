@@ -34,6 +34,7 @@
       clientCmd: "Client command", generating: "Generating…", qrTooBig: "config too large to encode as QR",
       noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
       pasteInto: "Use in", tapCopy: "Tap to copy",
+      vkThen: "Then add this VK call link in the app:", vkNone: "Then add a VK call link in the app — create a VK call and copy its vk.ru/call/join/… link.",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
       someBad: "Some peers couldn’t be decrypted — this link may be out of date. Ask your administrator for a fresh one.",
@@ -59,6 +60,7 @@
       clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
       noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
       pasteInto: "Использовать в", tapCopy: "Нажмите, чтобы скопировать",
+      vkThen: "Затем добавьте эту ссылку на звонок VK в приложении:", vkNone: "Затем добавьте ссылку на звонок VK в приложении — создайте звонок VK и скопируйте ссылку vk.ru/call/join/…",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
       someBad: "Некоторые пиры не удалось расшифровать — возможно, ссылка устарела. Попросите у администратора новую.",
@@ -367,6 +369,19 @@
       if (!conf) { draw(); return { el: cell, ctrl: ctrl }; }
       var art = SWGTurn.artifact(conf, tp, vkLink);
       node.appendChild(el("span", "scell-paste", t("pasteInto") + " " + (art.app || art.fork)));
+      if (art.vk) {   // freeturn:// can't carry the VK link — show it here so the recipient can copy it into the app
+        var raw = (vkLink || "").trim();
+        var vkw = el("div", "scell-vk");
+        if (raw) {
+          vkw.appendChild(el("span", "scell-vklbl", t("vkThen")));
+          var vkb = el("button", "scell-vkbtn", raw); vkb.title = t("tapCopy");
+          vkb.onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(raw) : Promise.reject()).then(function () { var o = raw; vkb.textContent = t("copied"); setTimeout(function () { vkb.textContent = o; }, 1400); }, function () {}); };
+          vkw.appendChild(vkb);
+        } else {
+          vkw.appendChild(el("span", "scell-vklbl", t("vkNone")));
+        }
+        node.appendChild(vkw);
+      }
       var apply = function (text) {
         ctrl.payload = text; ctrl.ready = true; ctrl.ext = art.ext || "conf";
         ctrl.isLink = !!art.uri; ctrl.hasQR = !!art.qr; ctrl.cmd = art.cmd || null;

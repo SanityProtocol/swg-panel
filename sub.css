@@ -105,6 +105,11 @@ body {
 /* fork tag — beside the server name, sized to its text (never truncated) */
 .scell-tag { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: 13px; font-weight: 700; letter-spacing: .2px; line-height: 1.15; color: var(--brand); background: color-mix(in srgb, var(--brand) 15%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 34%, transparent); padding: 5px 12px; border-radius: 999px; white-space: nowrap; }
 .scell-paste { color: var(--muted); font-size: 13px; font-weight: 600; margin-top: 2px; }
+/* freeturn:// needs a VK call link the recipient adds in the app — shown here, tap to copy */
+.scell-vk { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 100%; margin-top: 2px; }
+.scell-vklbl { color: var(--muted); font-size: 12.5px; font-weight: 600; text-align: center; max-width: 92%; }
+.scell-vkbtn { max-width: 92%; appearance: none; cursor: pointer; font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: 12px; font-weight: 700; color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent); border-radius: 10px; padding: 7px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scell-vkbtn:active { transform: translateY(1px); }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }

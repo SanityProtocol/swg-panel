@@ -190,7 +190,8 @@
       // clients (turn-proxy-android + free-turn-proxy CLI) import a freeturn:// link — one scannable QR that
       // carries the proxy endpoint, the rtpopus obfuscation key, and the whole WG config.
       return { fork: fork, app: "FreeTurn", label: "samosvalishe · FreeTurn (freeturn:// link)", ext: "txt", uri: true, qr: true,
-        hint: "Scan this QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link into it / the free-turn-proxy CLI. You supply your own VK call link in the app.",
+        vk: true,   // freeturn:// can't carry the VK call link — the recipient must add it in the app (show it alongside)
+        hint: "Scan this QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link into it / the free-turn-proxy CLI. Then add a VK call link in the app.",
         text: freeturnLink(tp, baseConf) };
     }
     // sidecar forks (cacggghp / Moroka8 / unknown): WG dials the local client on :9000
