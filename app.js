@@ -4609,9 +4609,10 @@ const TURN_FORKS = [
 ];
 // forks whose CLIENT is WireGuard-only — they can't front an AmneziaWG interface, so awg interfaces are hidden
 // from their "Forwards to" picker. kiper292 = plain wireguard-go + a config parser that REJECTS awg params;
-// anton48 (iOS) has no AmneziaWG fields at all. Everyone else supports awg (WINGS-N app-integrated; the sidecar
-// forks relay UDP transparently so the standard AmneziaWG app handles it).
-const TURN_WG_ONLY = new Set(["kiper292", "anton48"]);
+// anton48 (iOS) has no AmneziaWG fields at all; samosvalishe = free-turn-proxy's FreeTurn app, an integrated
+// plain-WireGuard client with no AmneziaWG support (unlike the old sidecar, which relayed UDP to the standalone
+// AmneziaWG app). WINGS-N is app-integrated but DOES support awg; the sidecar forks relay UDP transparently.
+const TURN_WG_ONLY = new Set(["kiper292", "anton48", "samosvalishe"]);
 function forkSupportsAwg(fork) { return !TURN_WG_ONLY.has(fork); }
 // stable colour for a turn-proxy fork in the ACTIVE mode (peers connected via it get their badge tinted this);
 // a Panel-settings override (turn_fork_colors[id] = {dark,light}) wins over the TURN_FORKS default.

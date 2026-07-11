@@ -88,6 +88,9 @@
   // admin sees them in settings.
   var FORK_ORDER = ["cacggghp", "WINGS-N", "samosvalishe", "Moroka8", "kiper292", "anton48"];
   function forkRank(f) { var i = FORK_ORDER.indexOf(f); return i < 0 ? FORK_ORDER.length : i; }
+  // Forks whose client is WireGuard-only (no AmneziaWG) — mirrors the panel's TURN_WG_ONLY. They can't front an
+  // AmneziaWG interface, so they're not offered for an AWG peer. (samosvalishe = free-turn-proxy/FreeTurn app.)
+  var TURN_WG_ONLY = { kiper292: 1, anton48: 1, samosvalishe: 1 };
 
   // ── base64 (both standard and url-safe, padding optional) → bytes ──
   function b64ToBytes(s) {
@@ -182,7 +185,7 @@
   }
   function forkColor(fork) { var d = FORK_COLORS[fork] || { dark: "#8FA8C0", light: "#5E7085" }; return pickThemed(THEME.forkOv[fork], d.dark, d.light); }
   function ifaceColor(type) { var k = (type || "").toLowerCase() === "awg" ? "awg" : "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
-  function modeColor(m) { return m === "turn" ? ((isLight() ? THEME.light : THEME.color) || IFACE_COLORS.awg.dark) : ifaceColor(m); }
+  function modeColor(m) { return m === "turn" ? "#7C5CFF" : ifaceColor(m); }   // Turn = the panel's turn-proxy accent (violet)
   function applyFavicon(accent, light) {
     var centre = light ? "#FFFFFF" : "#0A0E15";
     var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
@@ -385,8 +388,10 @@
     var peer = row.peer, secret = row.secret, items = [];
     if (mode === "turn") {
       (peer.targets || []).forEach(function (tt) {
-        var seen = {}, tps = [];
-        (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return; seen[f] = 1; tps.push({ tp: tp, f: f }); });
+        var seen = {}, tps = [], isAwg = (tt.type === "awg");
+        (tt.turn || []).forEach(function (tp) { var f = SWGTurn.fork(tp.service); if (seen[f]) return;
+          if (isAwg && TURN_WG_ONLY[f]) return;   // a WireGuard-only fork can't front this AmneziaWG interface
+          seen[f] = 1; tps.push({ tp: tp, f: f }); });
         tps.sort(function (a, b) { return forkRank(a.f) - forkRank(b.f); });   // canonical fork order (as in the panel)
         tps.forEach(function (x) { items.push({ tgt: tt, tp: x.tp }); });
       });
