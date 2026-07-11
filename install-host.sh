@@ -1244,6 +1244,11 @@ write_netctl(){
   writef /etc/systemd/system/swg-netctl.service 644 <<EOF
 [Unit]
 Description=swg-panel privileged network/TLS helper (drains the panel's request queue)
+# The .path trigger starts this oneshot once per queued request; a single Access apply enqueues several
+# (issue-cert, set-listen, restart) in a row, so the default 5-starts-per-10s limit trips easily and would
+# fail the .path unit permanently (queue then drains only on the 10s timer → ~50s applies). This drainer is
+# MEANT to start frequently, so disable the rate limit.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

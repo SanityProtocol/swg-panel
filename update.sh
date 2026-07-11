@@ -261,6 +261,17 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     # (first-time provisioning of the binary + trigger units is done by install-host.sh).
     if [ -f /usr/local/bin/swg-netctl ] && [ -f "$SRC/swg-netctl" ]; then
       run cp "$SRC/swg-netctl" /usr/local/bin/swg-netctl; run chmod 755 /usr/local/bin/swg-netctl; ok "swg-netctl refreshed"
+      # Heal the trigger unit on older installs: without StartLimitIntervalSec=0 the .path watcher trips
+      # systemd's 5-starts-per-10s limit under a normal Access apply (issue-cert+set-listen+restart) and fails
+      # permanently, degrading applies to the 10s timer (~50s). Add the override + clear any failed state.
+      NCS=/etc/systemd/system/swg-netctl.service
+      if [ -f "$NCS" ] && ! grep -q "StartLimitIntervalSec=0" "$NCS"; then
+        run sed -i '/^\[Unit\]/a StartLimitIntervalSec=0' "$NCS"
+        run systemctl daemon-reload
+        run systemctl reset-failed swg-netctl.path swg-netctl.service 2>/dev/null || true
+        run systemctl restart swg-netctl.path 2>/dev/null || true
+        ok "swg-netctl.path rate-limit override applied"
+      fi
     fi
   else note "bare-metal swg-panel: unchanged (${pold})"; fi
 fi
