@@ -31,7 +31,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-# only needed if SWG_SUB_PORT < 1024:
+# only needed if SWG_SUB_PORT < 1024 — the installer adds it at install time, and swg-netctl's
+# 10-access.conf drop-in re-adds it whenever the panel switches swg-sub onto a privileged port:
 # AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]

@@ -176,10 +176,16 @@ def do_set_listen(service, ip, port):
     port = v_port(port)
     dropdir = os.path.join(UNIT_DIR, svc["unit"] + ".d")
     path = os.path.join(dropdir, "10-access.conf")
+    # Binding a port <1024 needs CAP_NET_BIND_SERVICE. The panel unit always carries it; swg-sub
+    # gets it here so switching it onto a privileged port (e.g. 443) from the UI just works, on any
+    # existing install, with no unit regeneration. AmbientCapabilities merges additively across
+    # drop-ins, and is compatible with the unit's NoNewPrivileges=true (the panel proves this).
+    cap = "AmbientCapabilities=CAP_NET_BIND_SERVICE\n" if port < 1024 else ""
     body = ("# managed by swg-netctl — from the panel's Access & TLS settings; do not edit by hand\n"
             "[Service]\n"
             "Environment=%s=%s\n"
-            "Environment=%s=%d\n" % (svc["env_host"], ip, svc["env_port"], port))
+            "Environment=%s=%d\n"
+            "%s" % (svc["env_host"], ip, svc["env_port"], port, cap))
     if DRYRUN:
         log("would write %s:\n%s" % (path, body))
     else:

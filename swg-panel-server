@@ -1262,14 +1262,6 @@ def validate_access(incoming, current):
         errors.append("Panel and subscription are on the same host and port but different paths — two separate "
                       "servers can't share host:port. Use a different subdomain or a different port.")
 
-    # swg-sub runs UNPRIVILEGED — it can't bind a port below 1024. Setting one (e.g. a 443↔8443 swap) makes the
-    # service crash-loop on bind. Reject it: its bind port stays high; front it with a reverse proxy / Cloudflare
-    # for a public 443 (the public URL can still say 443). The panel runs with the privilege to bind 443 itself.
-    if sub["port"] < 1024:
-        errors.append("Subscription: swg-sub runs unprivileged and can't bind port %d (below 1024). Use a port "
-                      "≥ 1024 for it; put it behind a reverse proxy or Cloudflare to serve it on 443 publicly."
-                      % sub["port"])
-
     return {"panel": panel, "sub": sub, "tls": tls}, errors, warnings
 
 
