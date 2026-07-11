@@ -206,6 +206,21 @@ def do_restart(service):
     rc, out = run(["systemctl", "restart", svc["unit"]])
     if rc:
         raise Reject("restart %s failed: %s" % (svc["unit"], out.strip()))
+    # A restart onto a port already in use (Errno 98) exits ExecStart immediately, and Restart=on-failure then
+    # bounces the unit forever — `systemctl restart` may still report success. So verify it actually STAYS up:
+    # settle past RestartSec (2s), then require an active unit. Lets the caller (panel apply) self-heal a bad bind.
+    if not DRYRUN:
+        active = False
+        for _ in range(6):                       # ~4.5s: covers one RestartSec bounce
+            time.sleep(0.75)
+            st, _out = run(["systemctl", "is-active", svc["unit"]])
+            if st == 0:
+                active = True
+                break
+        if not active:
+            _r, detail = run(["systemctl", "--no-pager", "-n", "5", "status", svc["unit"]])
+            raise Reject("%s did not come up after restart (likely the address is already in use): %s"
+                         % (svc["unit"], (detail or "").strip()[-300:]))
     return "restarted " + svc["unit"]
 
 

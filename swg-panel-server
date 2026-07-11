@@ -7889,6 +7889,10 @@ def _apply_panel_cert_only(deps, d_host, d_port, d_url, d_domain, old_domain):
 # bind, restart. Tracked in its OWN status so a panel apply and a sub apply can be in flight independently.
 SUB_CERT_PATH = os.environ.get("SWG_SUB_TLS_CERT_PATH", "/etc/swg-sub/tls/fullchain.pem")
 _SUBAPPLY = {"lock": threading.Lock(), "status": {"state": "idle", "message": "", "at": 0}}
+# The sub bind that last came up cleanly — where a failed apply falls back to, so swg-sub is never left
+# crash-looping on a port it can't bind. Initialised from config at boot (config == live then); advanced
+# only on a successful apply. None until main() seeds it.
+_SUB_LIVE_BIND = None
 
 
 def _subapply_status(state, message="", **extra):
@@ -7897,7 +7901,38 @@ def _subapply_status(state, message="", **extra):
     _SUBAPPLY["status"] = s
 
 
+def _restore_sub_bind(deps, host, port):
+    """Roll the SAVED sub bind (panel_settings.access.sub host/port) to `host:port` — used after a failed sub
+    apply self-heals, so the persisted config never sits ahead of (or collides because of) the live sub."""
+    with contextlib.suppress(Exception):
+        ps = deps.get("panel_settings") or {}
+        sub = (ps.get("access") or {}).get("sub") or {}
+        sub["host"] = host; sub["port"] = int(port)
+        ps.setdefault("access", {})["sub"] = sub
+        deps["panel_settings"] = ps
+        save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+
+
+def _sub_selfheal(deps, prev, why):
+    """A sub bind that won't come up (e.g. its port is held by the panel during a swap) must never be left
+    crash-looping. Roll set-listen + the saved config back to the last good bind and restart there, so the
+    subscription server stays UP on a working port and the config stays consistent (no panel/sub collision)."""
+    ph, pp = str(prev.get("host") or "0.0.0.0"), int(prev.get("port") or 8444)
+    healed = False
+    with contextlib.suppress(Exception):
+        _netctl_wait(deps, _netctl_enqueue(deps, "set-listen", ["sub", ph, pp]), 30)
+        ok, _m = _netctl_wait(deps, _netctl_enqueue(deps, "restart", ["sub"]), 60)
+        healed = bool(ok)
+    _restore_sub_bind(deps, ph, pp)     # keep the saved config in step with where the sub actually runs now
+    if healed:
+        _subapply_status("failed", "%s — kept the subscription server on %s:%d." % (why, ph, pp))
+    else:
+        _subapply_status("failed", "%s — and couldn't restore the previous address either." % why)
+
+
 def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
+    global _SUB_LIVE_BIND
+    prev = dict(_SUB_LIVE_BIND) if _SUB_LIVE_BIND else {"host": d_host, "port": d_port}   # fall-back on failure
     try:
         if _cert_needs_issue(SUB_CERT_PATH, d_domain, mode):
             _subapply_status("issuing", "issuing a certificate for %s" % d_domain)
@@ -7909,13 +7944,16 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
         _subapply_status("applying", "applying %s:%d" % (d_host, d_port))
         ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "set-listen", ["sub", d_host, d_port]), 30)
         if not ok:
-            return _subapply_status("failed", "couldn't set the address: " + (msg or "unavailable"))
+            return _sub_selfheal(deps, prev, "couldn't set the subscription address: " + (msg or "unavailable"))
+        # do_restart now VERIFIES swg-sub actually stays up (settles past RestartSec) — a bind clash (Errno 98,
+        # e.g. the panel holds this port during a swap) fails here instead of silently crash-looping.
         ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "restart", ["sub"]), 60)
         if not ok:
-            return _subapply_status("failed", "restart failed: " + (msg or "unavailable"))
+            return _sub_selfheal(deps, prev, "couldn't bind the subscription server on %s:%d" % (d_host, d_port))
+        _SUB_LIVE_BIND = {"host": d_host, "port": d_port}
         _subapply_status("saved", "subscription server now on %s:%d" % (d_host, d_port))
     except Exception as e:
-        _subapply_status("failed", "internal error: %s" % (e,))
+        _sub_selfheal(deps, prev, "internal error: %s" % (e,))
 
 
 def main():
@@ -7980,6 +8018,9 @@ def main():
                     "now": lambda: int(time.time())}
     Handler.deps["turn_ips"] = load_json(_turn_ips_path(Handler.deps), {}) or {}   # unique turn-proxy source-IP history (survives restart)
     write_sub_serve(Handler.deps)   # seed/refresh subs/serve.json so swg-sub has current enable/serve config from boot (even when subscriptions were never touched)
+    globals()["_SUB_LIVE_BIND"] = {   # boot baseline for the sub self-heal — config == live at startup
+        "host": str((((Handler.deps["panel_settings"].get("access") or {}).get("sub") or {}).get("host")) or "0.0.0.0"),
+        "port": int((((Handler.deps["panel_settings"].get("access") or {}).get("sub") or {}).get("port")) or 8444)}
     normalize_sub_perms(Handler.deps)   # make swg-sub's readable subset group-readable (fixes 0600 files from older builds)
     with contextlib.suppress(ValueError, OSError, AttributeError):
         signal.signal(signal.SIGHUP, _sighup_reload)   # install NOW so a SIGHUP during the self-heal below can't kill us

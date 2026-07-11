@@ -7063,10 +7063,37 @@ function AccessTLSCard({ onChange }) {
   const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
   const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
   const dirty            = () => panelBindChanged() || subBindChanged() || certChanged() || urlChanged();
+  // Contention: the two services would trade ports on one host, so applying both at once needs one to bind a
+  // port the other still holds — a single host can't do that atomically. Detect it and guide two saves instead
+  // of attempting a doomed order (which is what produced the "Address already in use" + both-on-443 mess).
+  const _overlap = (a, b) => { a = (a || "").trim() || "0.0.0.0"; b = (b || "").trim() || "0.0.0.0"; return a === b || a === "0.0.0.0" || b === "0.0.0.0"; };
+  const subWantsPanelLive = () => subsOn && subBindChanged() && _sPortN() === (+orig.pPort || 443) && _overlap(sHost, orig.pHost);   // sub's target is the panel's current port
+  const panelWantsSubLive = () => subsOn && panelBindChanged() && _pPortN() === (+orig.sPort || 8444) && _overlap(pHost, orig.sHost); // panel's target is the sub's current port
+
+  // Wait for an in-flight subscription apply to reach a terminal state — so the panel apply below never binds
+  // a port while the sub is still vacating it (the race that surfaced as "Address already in use").
+  const _awaitSub = async () => {
+    for (let i = 0; i < 60; i++) {                 // ~90s cap (a cert issuance can be slow); most settle in a few s
+      const r = await api.get("/api/access/status").catch(() => null);
+      const s = (r && r.sub) || {};
+      if (["saved", "failed", "reverted", "idle"].includes(s.state)) return s;
+      await new Promise(res => setTimeout(res, 1500));
+    }
+    return { state: "unknown", message: "The subscription update didn't finish in time." };
+  };
 
   const saveAndApply = async () => {
     if (blocked) return setMsg({ ok: false, t: "Fix the highlighted port first." });
     if (!dirty()) return;
+    // Trading ports between panel and sub can't be done in one shot on a single host — one must free its port
+    // before the other can take it. Guide the operator through two saves instead of attempting a doomed order.
+    if (subWantsPanelLive() || panelWantsSubLive()) {
+      if (subWantsPanelLive() && panelWantsSubLive())
+        return setMsg({ ok: false, t: "The panel and subscription are swapping ports — a single host can't swap two ports at once. First move one of them to a spare free port and Save, then set both to their final ports and Save again." });
+      const first = subWantsPanelLive() ? "the panel" : "the subscription server";
+      const second = subWantsPanelLive() ? "the subscription server" : "the panel";
+      return setMsg({ ok: false, t: `The panel and subscription are trading ports. Do it in two saves so one frees the port before the other takes it: first move ${first} and Save, then set ${second}'s port and Save again.` });
+    }
     const needSub = subsOn && (subBindChanged() || certChanged());
     const needPanel = panelBindChanged() || certChanged();
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
@@ -7082,7 +7109,12 @@ function AccessTLSCard({ onChange }) {
     // subscription server first (a background restart — it can never lock you out of the panel). Don't start
     // polling yet: the panel apply below arms its pending, and we want the very first poll tick to already see
     // it (so the confirm-redirect fires immediately, not after a wasted interval).
-    if (needSub) { setMsg({ ok: true, t: "Updating the subscription server…" }); await api.post("/api/access/apply-sub", {}); }
+    if (needSub) {
+      setMsg({ ok: true, t: "Updating the subscription server…" });
+      await api.post("/api/access/apply-sub", {});
+      const ss = await _awaitSub();               // let it settle before the panel apply — no bind race
+      if (ss.state === "failed") { setBusy(false); await resync(); return setMsg({ ok: false, t: ss.message || "The subscription server couldn't be updated." }); }
+    }
     // then the panel address/cert (dual-listen + confirm — you'll be redirected briefly to prove it's reachable)
     if (needPanel) {
       const rp = await api.post("/api/access/apply", {});
