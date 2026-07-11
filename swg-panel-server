@@ -1034,6 +1034,133 @@ def normalize_sub_perms(deps):
 def subs_enabled(deps):
     return bool(((deps.get("panel_settings") or {}).get("subscriptions") or {}).get("enabled"))
 
+
+# ── Access & TLS validation (shared by the settings save +, later, the live-apply path) ──────────────
+# Cloudflare's proxy only connects back to origin HTTPS on this fixed set of ports (everything else is
+# unreachable behind the orange cloud). cf15 certs are ONLY valid behind CF, so a non-CF port is a hard
+# error; a DNS-01 "cloudflare" LE cert also works direct, so there it's just a warning.
+CF_HTTPS_PORTS = {443, 8443, 2053, 2083, 2087, 2096}
+TLS_MODES = ("", "letsencrypt", "cloudflare", "cf15", "letsencrypt-ip", "selfsigned", "skip")
+CA_DOMAIN_MODES = ("letsencrypt", "cloudflare", "cf15")   # a public CA validates a domain, not an IP
+
+
+def _url_host(url):
+    """Bare host from a URL (no scheme/port/path). '' if unparseable."""
+    s = (str(url or "")).strip()
+    s = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", "", s)      # drop scheme
+    s = s.split("/")[0].split("?")[0]                       # drop path/query
+    if s.startswith("[") and "]" in s:                     # [v6]:port
+        return s[1:s.index("]")]
+    return s.rsplit(":", 1)[0] if s.count(":") == 1 else s  # host:port (v4/name) → host
+
+
+def _is_ip(host):
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _bindable_ips():
+    """The box's own bindable addresses (global scope — excludes loopback + link-local). You can only
+    bind to IPs the host actually holds; behind NAT the public IP may differ, so these are annotated with
+    the interface. The UI prepends the synthetic 0.0.0.0/127.0.0.1 rows itself."""
+    out, seen = [], set()
+    with contextlib.suppress(Exception):
+        r = subprocess.run(["ip", "-o", "addr", "show", "scope", "global"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            p = line.split()
+            if len(p) >= 4 and p[2] in ("inet", "inet6"):
+                ip = p[3].split("/")[0]
+                if ip not in seen:
+                    seen.add(ip)
+                    out.append({"ip": ip, "iface": p[1], "family": 4 if p[2] == "inet" else 6})
+    return out
+
+
+def _clean_endpoint(ep, default_port):
+    """Sanitize one {url,base,host,port} block; return the cleaned dict (no cross-field checks here)."""
+    ep = ep if isinstance(ep, dict) else {}
+    host = (str(ep.get("host") or "0.0.0.0")).strip()[:120] or "0.0.0.0"
+    if not _is_ip(host):
+        host = "0.0.0.0"                                    # never bind to a non-IP
+    try:
+        port = max(1, min(65535, int(ep.get("port") or default_port)))
+    except (TypeError, ValueError):
+        port = default_port
+    base = (str(ep.get("base") or "/")).strip()[:200] or "/"
+    if not base.startswith("/"):
+        base = "/" + base
+    return {"url": (str(ep.get("url") or "")).strip()[:300], "base": base, "host": host, "port": port}
+
+
+def validate_access(incoming, current):
+    """Validate + sanitize an incoming `access` block against `current` (for secret carry-over).
+    Returns (cleaned, errors, warnings). Non-empty errors ⇒ the caller must NOT persist."""
+    inc = incoming if isinstance(incoming, dict) else {}
+    cur = current if isinstance(current, dict) else {}
+    errors, warnings = [], []
+
+    panel = _clean_endpoint(inc.get("panel"), 443)
+    sub = _clean_endpoint(inc.get("sub"), 8444)
+
+    tin = inc.get("tls") if isinstance(inc.get("tls"), dict) else {}
+    tcur = cur.get("tls") if isinstance(cur.get("tls"), dict) else {}
+    mode = (str(tin.get("mode") or "")).strip()
+    if mode not in TLS_MODES:
+        mode = ""
+    email = (str(tin.get("email") or "")).strip()[:200]
+    # secrets: an empty incoming value KEEPS the stored one (the browser never receives them, so a blank
+    # field means "unchanged", not "clear"). A literal "-" clears it.
+    def _secret(key):
+        v = tin.get(key)
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return (tcur.get(key) or "")
+        v = str(v).strip()
+        return "" if v == "-" else v[:400]
+    tls = {"mode": mode, "email": email,
+           "cf_token": _secret("cf_token"), "cf_origin_token": _secret("cf_origin_token")}
+
+    # ── cross-field rules ──
+    for name, ep in (("Panel", panel), ("Subscription", sub)):
+        host = _url_host(ep["url"])
+        if ep["url"] and mode in CA_DOMAIN_MODES and _is_ip(host):
+            errors.append("%s: %s needs a domain URL, not an IP address." % (name, mode))
+        if mode == "cf15" and ep["port"] not in CF_HTTPS_PORTS:
+            errors.append("%s: port %d can't be reached behind Cloudflare — a cf15 origin cert is only valid there. Use one of: %s."
+                          % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))
+        elif mode == "cloudflare" and ep["port"] not in CF_HTTPS_PORTS:
+            warnings.append("%s: if this panel is behind Cloudflare, port %d won't be reachable (CF connects to %s)."
+                            % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))
+
+    # panel and sub can't occupy the same (bind, port); 0.0.0.0 collides with everything on that port.
+    def _collide(a, b):
+        if a["port"] != b["port"]:
+            return False
+        return a["host"] == b["host"] or "0.0.0.0" in (a["host"], b["host"]) or "::" in (a["host"], b["host"])
+    if _collide(panel, sub):
+        errors.append("Panel and subscription can't share the same address and port (%s:%d)." % (panel["host"], panel["port"]))
+
+    # same host + same port + different path is impossible with two independent processes (needs a shared front)
+    ph, sh = _url_host(panel["url"]), _url_host(sub["url"])
+    if ph and ph == sh and panel["port"] == sub["port"] and panel["base"] != sub["base"]:
+        errors.append("Panel and subscription are on the same host and port but different paths — two separate "
+                      "servers can't share host:port. Use a different subdomain or a different port.")
+
+    return {"panel": panel, "sub": sub, "tls": tls}, errors, warnings
+
+
+def _access_public_view(deps):
+    """Redacted `access` for the browser: the CF tokens never leave the panel (has_* booleans instead)."""
+    acc = (deps.get("panel_settings") or {}).get("access") or {}
+    tls = acc.get("tls") or {}
+    return {"panel": acc.get("panel") or {}, "sub": acc.get("sub") or {},
+            "tls": {"mode": tls.get("mode") or "", "email": tls.get("email") or "",
+                    "has_cf_token": bool(tls.get("cf_token")),
+                    "has_cf_origin_token": bool(tls.get("cf_origin_token"))}}
+
 def sub_token_lookup(deps, token):
     """Raw token → user_id via constant-time sha256 match; None if not found or that user is disabled."""
     if not token:
@@ -2536,6 +2663,15 @@ PANEL_SETTINGS_DEFAULTS = {
                       # which UI languages the public page offers + the default. One enabled ⇒ the
                       # subscription page hides its selector and just loads that language.
                       "languages": {"enabled": ["en"], "default": "en"}},
+    # ── Access & TLS: how the panel and swg-sub are reached, and the ONE cert config both derive from ──
+    # panel/sub each: public url (+ optional base path), the bind IP, and the port. tls is shared — the
+    # same acme.sh method + creds issue BOTH certs (never one cert for both: swg-sub must not hold the
+    # panel's key). Secrets (cf_token/cf_origin_token) live here (0600) and are redacted to the browser.
+    "access": {
+        "panel": {"url": "", "base": "/", "host": "0.0.0.0", "port": 443},
+        "sub":   {"url": "", "base": "/", "host": "0.0.0.0", "port": 8444},
+        "tls":   {"mode": "", "email": "", "cf_token": "", "cf_origin_token": ""},
+    },
 }
 
 
@@ -2545,6 +2681,10 @@ def load_panel_settings(path):
     out = {**PANEL_SETTINGS_DEFAULTS, **saved}
     for k in ("interface_defaults", "mirrors", "advanced", "reserved", "geo_update", "turn_update", "api", "subscriptions"):
         out[k] = {**PANEL_SETTINGS_DEFAULTS[k], **(saved.get(k) or {})}
+    # access has nested sub-dicts (panel/sub/tls) → merge each so a partial saved block keeps the defaults
+    sa = saved.get("access") if isinstance(saved.get("access"), dict) else {}
+    out["access"] = {sk: {**PANEL_SETTINGS_DEFAULTS["access"][sk], **(sa.get(sk) or {})}
+                     for sk in PANEL_SETTINGS_DEFAULTS["access"]}
     return out
 
 
@@ -3569,7 +3709,7 @@ def api(method, path, qs, body, deps):
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_configs, "versions": VERSIONS,
-            "panel_settings": {**panel_settings, "api": _api_public_view(deps)},   # Panel settings screen (api sub-dict redacted: no token hashes / webhook secrets to the browser)
+            "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps)},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
@@ -3759,6 +3899,16 @@ def api(method, path, qs, body, deps):
                                   "domains": doms, "cidrs": cidrs, "enabled": item.get("enabled", True) is not False,
                                   "disabled_nodes": dn})
             cur["custom_lists"] = out_lists
+        # Access & TLS. Validate (CF ports, domain, panel≠sub, same-host/port/path) BEFORE persisting —
+        # errors abort the whole save. Phase 3 persists only; the live bind/cert apply lands in phase 4.
+        _access_warnings = []
+        acc_in = incoming.get("access")
+        if isinstance(acc_in, dict):
+            _acc_clean, _acc_errs, _access_warnings = validate_access(acc_in, cur.get("access") or {})
+            if _acc_errs:
+                return 400, {"ok": False, "error": "; ".join(_acc_errs), "errors": _acc_errs,
+                             "warnings": _access_warnings, "code": "bad_request"}
+            cur["access"] = _acc_clean
         deps["panel_settings"] = cur
         with contextlib.suppress(Exception):
             save_critical(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")   # rotating backups (recoverable)
@@ -3771,7 +3921,11 @@ def api(method, path, qs, body, deps):
         if _ev:
             ev_append(roster_path, "panel", (str(_ev.get("first") or "").strip() or "settings"),
                       "Updated panel settings", str(_ev.get("sections") or "")[:200])
-        return 200, {"ok": True, "data": cur}
+        # redact the access CF tokens out of the echoed settings (never hand a secret back to the browser)
+        return 200, {"ok": True, "data": {**cur, "access": _access_public_view(deps)}, "warnings": _access_warnings}
+
+    if method == "GET" and path == "/api/access/ips":   # bindable local addresses for the Access & TLS IP dropdown
+        return 200, {"ok": True, "ips": _bindable_ips()}
 
     # ── external integration API: token + webhook management (session-authed, mutations) ──
     def _save_api(cur):
