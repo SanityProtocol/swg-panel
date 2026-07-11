@@ -1582,7 +1582,7 @@ async function assignPeerToUser(peer, userId) {
   } catch (e) { Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
   await mutate({
     key,
-    call: () => api.peerRekey({ peer_id: peer.id, user_id: userId, pubkey: keys.pub, psk, configs }),
+    call: () => api.peerRekey({ peer_id: peer.id, user_id: userId, pubkey: keys.pub, psk }),   // no plaintext to the server
     onOk: () => { Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++; revealAssignedPeer(userId, peer.id);
       subMaybePublish(userId, peer.id, keys.priv, psk); },
   });
@@ -1610,7 +1610,7 @@ async function rotatePeerKeys(peer) {
   } catch (e) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
   await mutate({
     key,
-    call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk, configs }),
+    call: () => api.peerRekey({ peer_id: peer.id, user_id: peer.user_id, pubkey: keys.pub, psk }),   // no plaintext to the server
     onOk: () => { delete Store.sessionConfigs[peer.pubkey]; Store.sessionConfigs[keys.pub] = configs; Store.configEpoch++;
       subMaybePublish(peer.user_id, peer.id, keys.priv, psk); },
   });
