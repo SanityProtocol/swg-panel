@@ -1126,6 +1126,28 @@ TLS_MODES = ("", "letsencrypt", "cloudflare", "cf15", "letsencrypt-ip", "selfsig
 CA_DOMAIN_MODES = ("letsencrypt", "cloudflare", "cf15")   # a public CA validates a domain, not an IP
 
 
+def _apply_redirect_url(url, port, nonce):
+    """The confirm redirect — it MUST land on the freshly-bound listener. Built from the public URL's scheme +
+    host but the NEW listen port, so a port change is actually reachable (the old code kept the URL's default
+    port → the browser hit the OLD listener → 'confirm must be made on the new address'). A domain-only change
+    keeps the port (== default → no ':port' added), so it's unchanged. None if the URL has no usable host."""
+    s = (str(url or "")).strip()
+    if not s:
+        return None
+    m = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*)://", s)
+    scheme = (m.group(1).lower() if m else "https")
+    host = _url_host(s)
+    if not host or host == "0.0.0.0":
+        return None
+    try:
+        pn = int(port)
+    except (TypeError, ValueError):
+        pn = 443
+    default = 443 if scheme == "https" else 80
+    netloc = host if pn == default else ("[%s]:%d" % (host, pn) if ":" in host else "%s:%d" % (host, pn))
+    return "%s://%s/?__apply=%s" % (scheme, netloc, nonce)
+
+
 def _url_host(url):
     """Bare host from a URL (no scheme/port/path). '' if unparseable."""
     s = (str(url or "")).strip()
@@ -4086,6 +4108,7 @@ def api(method, path, qs, body, deps):
         except OSError as e:
             with _APPLY["lock"]:
                 _APPLY["pending"] = None
+            _restore_panel_bind(deps, cur["host"], cur["port"])   # config was saved ahead → roll it back to live
             _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
             return 400, {"ok": False, "error": "couldn't bind %s:%d — %s" % (d_host, d_port, e), "code": "bind_failed"}
         with _APPLY["lock"]:
@@ -7725,6 +7748,19 @@ def _netctl_enqueue(deps, verb, args):
     return None
 
 
+def _restore_panel_bind(deps, host, port):
+    """Roll the SAVED panel bind (panel_settings.access.panel host/port) back to the live one — used when an
+    apply fails or reverts, so the config never sits ahead of the running listener (which would leave the UI
+    showing a value the panel never accepted)."""
+    with contextlib.suppress(Exception):
+        ps = deps.get("panel_settings") or {}
+        pnl = (ps.get("access") or {}).get("panel") or {}
+        pnl["host"] = host; pnl["port"] = int(port)
+        ps.setdefault("access", {})["panel"] = pnl
+        deps["panel_settings"] = ps
+        save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+
+
 def _apply_timeout(nonce, deps):
     """Fires APPLY_TIMEOUT after an apply: if the new address never confirmed, drop it and keep the old."""
     with _APPLY["lock"]:
@@ -7734,8 +7770,16 @@ def _apply_timeout(nonce, deps):
         if pend.get("kind") != "cert-only":
             LISTENERS.remove(pend["new_lid"])   # rebind: drop the un-confirmed listener (cert-only kept the same one)
         nd = pend.get("new_domain")
+        oh, op = pend.get("old_host"), pend.get("old_port")
         _APPLY["pending"] = None
     _apply_status("reverted", "the new address didn't confirm in time — reverted to the previous one")
+    # Roll the SAVED bind back to the live one, but only if it still holds the value we just tried to apply
+    # (no concurrent edit) — so the config never sits ahead of the running listener after a failed apply.
+    if pend.get("kind") != "cert-only" and oh is not None and op is not None:
+        ps = deps.get("panel_settings") or {}
+        pnl = (ps.get("access") or {}).get("panel") or {}
+        if (str(pnl.get("host")) == str(pend["host"])) and (int(pnl.get("port") or 0) == int(pend["port"])):
+            _restore_panel_bind(deps, oh, op)
     if nd:                               # a domain-change apply issued a cert over the live path → undo it
         _netctl_enqueue(deps, "restore-cert", ["panel"])          # put the previous cert back on disk (+ SIGHUP reload)
         _netctl_enqueue(deps, "drop-cert", ["panel", nd])         # stop acme renewing the reverted-away domain
@@ -7748,10 +7792,11 @@ def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_dom
     the listener — so a Cloudflare-fronted panel whose new cert CF rejects (526) self-heals on timeout."""
     nonce = secrets.token_hex(12)
     deadline = int(time.time()) + APPLY_TIMEOUT
-    sep = "&" if ("?" in url) else "?"
-    redirect = (url + sep + "__apply=" + nonce) if url else None
+    redirect = _apply_redirect_url(url, port, nonce)   # scheme+host from the URL, the NEW port → lands on the new listener
+    _old = LISTENERS.get(old_lid)                      # the live bind we'd fall back to on a revert
     _APPLY["pending"] = {"nonce": nonce, "new_lid": new_lid, "old_lid": old_lid,
                          "host": host, "port": port, "deadline": deadline,
+                         "old_host": (_old._swg["host"] if _old else None), "old_port": (_old._swg["port"] if _old else None),
                          "old_domain": old_domain, "new_domain": new_domain, "kind": kind}
     _apply_status("verifying", "waiting for %s:%d to confirm" % (host, port),
                   nonce=nonce, redirect=redirect, host=host, port=port, expires=deadline)

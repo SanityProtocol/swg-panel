@@ -10,7 +10,7 @@
    regions. */
 
 import { h, render, Fragment } from "preact";
-import { useState, useEffect, useRef, useMemo } from "preact/hooks";
+import { useState, useEffect, useRef, useMemo, useCallback } from "preact/hooks";
 import htm from "htm";
 import { reconcile } from "./reconcile.js";
 
@@ -6975,7 +6975,7 @@ const TLS_MODE_OPTS = [
 // The panel + swg-sub network address (bindable IP + port) and the ONE certificate config both derive from.
 // A change is applied LIVE: the panel dual-listens on the new address and only drops the old once the browser
 // confirms the new one works, so a bad value never locks the operator out. swg-sub just restarts.
-function AccessTLSCard() {
+function AccessTLSCard({ onChange }) {
   const acc = (Store.panelSettings || {}).access || {};
   const p0 = acc.panel || {}, s0 = acc.sub || {}, t0 = acc.tls || {};
   const subsOn = !!((Store.panelSettings || {}).subscriptions || {}).enabled;
@@ -6985,22 +6985,42 @@ function AccessTLSCard() {
   const [cfTok, setCfTok] = useState(""); const [cfOrig, setCfOrig] = useState("");
   const [hasCfTok, setHasCfTok] = useState(!!t0.has_cf_token); const [hasCfOrig, setHasCfOrig] = useState(!!t0.has_cf_origin_token);
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  const [st, setSt] = useState(null); const [polling, setPolling] = useState(false);
+  const [polling, setPolling] = useState(false);
   // Baseline of what's currently live — the form is compared to this to decide what changed (and thus what needs
   // a live apply). Refreshed after a successful save so the button disables until the next edit.
   const [orig, setOrig] = useState({ pUrl: p0.url || "", pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
     sUrl: s0.url || "", sHost: s0.host || "0.0.0.0", sPort: String(s0.port || 8444), mode: t0.mode || "", email: t0.email || "" });
   useEffect(() => { api.get("/api/access/ips").then(r => { if (r && r.ok) setIps(r.ips || []); }); }, []);
-  // poll the apply state machine while a change is in flight; auto-redirect to the new panel address to confirm it
+  // Pull the CURRENT saved config back into the form (+ baseline) — used after a revert, where the backend rolled
+  // the bind back to the live one, so the form never keeps showing a value the panel rejected.
+  const resync = async () => {
+    const r = await api.get("/api/state").catch(() => null);
+    const a = (((r || {}).data || {}).panel_settings || {}).access || {};
+    const pp = a.panel || {}, ss = a.sub || {}, tt = a.tls || {};
+    setPUrl(pp.url || ""); setPHost(pp.host || "0.0.0.0"); setPPort(String(pp.port || 443));
+    setSUrl(ss.url || ""); setSHost(ss.host || "0.0.0.0"); setSPort(String(ss.port || 8444));
+    setMode(tt.mode || ""); setEmail(tt.email || "");
+    setOrig({ pUrl: pp.url || "", pHost: pp.host || "0.0.0.0", pPort: String(pp.port || 443),
+      sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "" });
+  };
+  // poll the apply state machine while a change is in flight; auto-redirect to the new panel address to confirm it,
+  // and surface a single running status (shown in the settings footer, like every other section).
   useEffect(() => {
     if (!polling) return; let live = true, timer;
     const tick = async () => {
       const r = await api.get("/api/access/status"); if (!live) return;
       if (r && r.ok) {
-        setSt({ panel: r.panel, sub: r.sub });
-        const ps = (r.panel || {}).state, ss = (r.sub || {}).state;
-        if (ps === "verifying" && (r.panel || {}).redirect) { location.href = r.panel.redirect; return; }
-        if (["saved", "failed", "reverted", "idle"].includes(ps) && ["saved", "failed", "reverted", "idle"].includes(ss)) { setPolling(false); return; }
+        const p = r.panel || {}, s = r.sub || {};
+        if (p.state === "verifying" && p.redirect) { location.href = p.redirect; return; }
+        const parts = [];
+        if (p.state && p.state !== "idle") parts.push("Panel: " + (p.message || p.state));
+        if (subsOn && s.state && s.state !== "idle") parts.push("Subscriptions: " + (s.message || s.state));
+        const fail = ["failed", "reverted"].includes(p.state) || s.state === "failed";
+        if (parts.length) setMsg({ ok: !fail, t: parts.join(" · ") });
+        const done = ["saved", "failed", "reverted", "idle"].includes(p.state) && ["saved", "failed", "reverted", "idle"].includes(s.state);
+        if (done) { setPolling(false); if (!parts.length) setMsg({ ok: true, t: "Applied." });
+          if (fail) resync();    // the form was left showing the rejected value → pull the rolled-back config back in
+          return; }
       }
       timer = setTimeout(tick, 1400);
     };
@@ -7049,7 +7069,7 @@ function AccessTLSCard() {
     if (!dirty()) return;
     const needSub = subsOn && (subBindChanged() || certChanged());
     const needPanel = panelBindChanged() || certChanged();
-    setBusy(true); setSt(null); setMsg({ ok: true, t: "Saving your changes…" });
+    setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
     const r = await api.panelSettings({ access: {
       panel: { url: pUrl.trim(), host: pHost.trim() || "0.0.0.0", port: _pPortN() },
       sub: { url: sUrl.trim(), host: sHost.trim() || "0.0.0.0", port: _sPortN() },
@@ -7059,29 +7079,32 @@ function AccessTLSCard() {
     setHasCfTok(!!rtls.has_cf_token); setHasCfOrig(!!rtls.has_cf_origin_token); setCfTok(""); setCfOrig("");
     setOrig({ pUrl: pUrl.trim(), pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
       sUrl: sUrl.trim(), sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim() });
-    // subscription server first (a background restart — it can never lock you out of the panel)
-    if (needSub) { setMsg({ ok: true, t: "Updating the subscription server…" }); await api.post("/api/access/apply-sub", {}); setPolling(true); }
+    // subscription server first (a background restart — it can never lock you out of the panel). Don't start
+    // polling yet: the panel apply below arms its pending, and we want the very first poll tick to already see
+    // it (so the confirm-redirect fires immediately, not after a wasted interval).
+    if (needSub) { setMsg({ ok: true, t: "Updating the subscription server…" }); await api.post("/api/access/apply-sub", {}); }
     // then the panel address/cert (dual-listen + confirm — you'll be redirected briefly to prove it's reachable)
     if (needPanel) {
       const rp = await api.post("/api/access/apply", {});
-      if (rp && rp.ok === false) { setBusy(false); return setMsg({ ok: false, t: rp.error || "Couldn't apply the panel address." }); }
-      if (rp && !rp.applied) {    // a live bind/cert change is in progress → status poll will redirect to confirm
+      if (rp && rp.ok === false) { setBusy(false); await resync(); return setMsg({ ok: false, t: rp.error || "Couldn't apply the panel address." }); }
+      if (rp && !rp.applied) {    // a live bind/cert change is in progress → status poll redirects to confirm on the first tick
         setMsg({ ok: true, t: "Verifying the new panel address is reachable — you'll be redirected in a moment…" });
         setPolling(true); return;
       }
     }
+    if (needSub) setPolling(true);   // no panel redirect — just watch the sub restart finish
     setBusy(false);
     setMsg({ ok: true, t: needSub ? "Saved & applying — the subscription server is restarting." : (needPanel ? "Saved & applied." : "Saved.") });
   };
-  const stLine = (which, s) => s && s.state && s.state !== "idle" ? html`<div class=${"formmsg " + (s.state === "failed" ? "err" : s.state === "saved" ? "ok" : "")}>${which}: ${s.message || s.state}</div>` : null;
 
-  const stepNum = n => html`<span class="setstep">${n}</span>`;
-  const anyChange = dirty();
+  // Report state up to the settings footer (which owns the Save button + status line, like every other section).
+  // Runs after each render; the parent only re-renders when a DISPLAYED bit actually changes (see onAccess).
+  useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked, busy: busy || polling, msg, run: saveAndApply }); });
+
   return html`<div class="card acctls">
-    ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
-    <p class="hint" style="margin:0 0 16px">Set how the panel${subsOn ? " and subscription page are" : " is"} reached, top to bottom, then <b>Save & apply</b> — the panel works out what to change and does it safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
+    <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
 
-    <div class="seclabel" style="margin-top:0">${stepNum(1)} Certificate</div>
+    <div class="seclabel" style="margin-top:0">Certificate</div>
     <p class="hint" style="margin:0 0 12px">How TLS is terminated — this decides which ports are valid below. One choice issues both certificates (the panel's and swg-sub's, always separate keys).</p>
     <div class="field"><label>Type</label><${Dropdown} value=${mode} onChange=${setMode} options=${TLS_MODE_OPTS}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>Account email</label><input type="text" placeholder="admin@example.com" value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
@@ -7090,23 +7113,17 @@ function AccessTLSCard() {
     ${mode === "cf15" ? html`<div class="field"><label>Cloudflare Origin CA token</label><input type="password" placeholder=${hasCfOrig ? "•••••••• (set — leave blank to keep)" : "Zone:SSL and Certificates:Edit token"} value=${cfOrig} onInput=${e => setCfOrig(e.target.value)}/>
       <div class="hint">Requests a 15-year Cloudflare Origin certificate — valid <b>only</b> behind Cloudflare's proxy. Stored on the panel only. Enter "-" to clear.</div></div>` : null}
 
-    <div class="seclabel">${stepNum(2)} Panel address</div>
-    <p class="hint" style="margin:0 0 12px">Where the panel itself is reached.</p>
+    <div class="seclabel">Panel address</div>
+    <p class="hint" style="margin:0 0 12px">Where the panel itself is reached. If it's directly reachable, the URL's host and this port should match; behind a reverse proxy / Cloudflare, the URL is the public address.</p>
     <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
     <div class="fieldrow">${ipField(pHost, setPHost, true)}${portField(pPort, setPPort, pBad)}</div>
     ${pBad ? cfNote : null}
-    ${st ? stLine("Panel", st.panel) : null}
 
-    ${subsOn ? html`<div class="seclabel">${stepNum(3)} Subscription address</div>
+    ${subsOn ? html`<div class="seclabel">Subscription address</div>
       <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>
       <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
       <div class="fieldrow">${ipField(sHost, setSHost, false)}${portField(sPort, setSPort, sBad)}</div>
-      ${sBad ? cfNote : null}
-      ${st ? stLine("Subscriptions", st.sub) : null}` : null}
-
-    <div class="setsave"><button class="btn btn-primary" disabled=${busy || polling || blocked || !anyChange}
-      title=${blocked ? "Fix the highlighted port first" : (!anyChange ? "No changes to apply" : "")}
-      onClick=${saveAndApply}>${busy || polling ? "Applying…" : "Save & apply changes"}</button></div>
+      ${sBad ? cfNote : null}` : null}
   </div>`;
 }
 
@@ -7405,6 +7422,15 @@ function PanelSettingsScreen() {
   const setNV = (nid, patch) => setNodeEdits(e => ({ ...e, [nid]: { ...nFields((Store.nodes || []).find(n => n.id === nid) || {}), ...(e[nid] || {}), ...patch } }));
   const nv = (nid, f) => (nodeEdits[nid] || {})[f];
   const [saved, setSaved] = useState(0);   // timestamp; the green "All settings saved" flash shows while now < saved
+  // Access & TLS reports its {dirty,busy,msg,run} up here so the shared footer drives its Save + status like every
+  // other section. The ref always holds the latest; accessSig re-renders the footer only when a shown bit changes.
+  const accessRef = useRef({ dirty: false, busy: false, msg: null, run: () => {} });
+  const [, setAccessSig] = useState("");
+  const onAccess = useCallback(s => {
+    accessRef.current = s;
+    const sig = (s.dirty ? "1" : "0") + (s.busy ? "1" : "0") + "|" + (s.msg ? (s.msg.ok ? "o" : "e") + s.msg.t : "");
+    setAccessSig(prev => prev === sig ? prev : sig);
+  }, []);
   const save = async () => {
     setMsg({ ok: true, t: "Saving…" });
     if (SECTIONS.some(([s]) => glDirty(s))) {   // only rewrite panel_settings when a GLOBAL setting actually changed (nodes go via nodeUpdate below)
@@ -7798,7 +7824,7 @@ function PanelSettingsScreen() {
           <div class="georefresh"><span class="faint" style="font-size:11px">Re-fetch every routed list from its provider now (updates the panel; nodes pull the changes on their schedule)</span><button class="btn btn-mini" disabled=${geoUpdating} onClick=${updateAllLists}><span class=${geoUpdating ? "tf-arrow" : ""}><${Ic} i="refresh"/></span> ${geoUpdating ? "Updating…" : "Update all lists now"}</button></div>
         </div>` : null}
         ${section === "integrations" ? html`<${IntegrationsSettings}/>` : null}
-        ${section === "access" ? html`<${AccessTLSCard}/>` : null}
+        ${section === "access" ? html`<${AccessTLSCard} onChange=${onAccess}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Interface colours<span class="grow"></span>
             ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg } })}><${Ic} i="refresh"/> Reset</button>` : null}</div>
@@ -7906,9 +7932,14 @@ function PanelSettingsScreen() {
           <${NodeEgressForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>`
             : html`<p class="hint" style="margin:0">No nodes yet — enroll a node to configure its egress.</p>`}
         </div>` : null}
-        <div class="setfoot">${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
+        <div class="setfoot">
+          ${section === "access"
+            ? (accessRef.current.msg ? html`<span class=${"formmsg setfoot-msg " + (accessRef.current.msg.ok ? "ok" : "err")}>${accessRef.current.msg.t}</span>` : null)
+            : (Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null)}
+          <span class="grow"></span>
           <button class="btn btn-ghost" onClick=${leaveSettings}>Back</button>
-          ${section === "access" ? null   /* Access & TLS owns its own "Save & apply" (live bind/cert apply) — no footer Save here */
+          ${section === "access"
+            ? html`<button class="btn btn-primary" disabled=${accessRef.current.busy || !accessRef.current.dirty} title=${!accessRef.current.dirty ? "No changes to save" : ""} onClick=${() => accessRef.current.run()}>${accessRef.current.busy ? "Saving…" : "Save"}</button>`
             : html`<button class="btn btn-primary" disabled=${!!secErr() || !anyDirty} title=${secErr() || (!anyDirty ? "No changes to save" : "")} onClick=${confirmSave}>Save</button>`}</div>
       </div>
     </div>
