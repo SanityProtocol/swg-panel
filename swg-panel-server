@@ -3927,8 +3927,9 @@ def api(method, path, qs, body, deps):
     if method == "GET" and path == "/api/access/ips":   # bindable local addresses for the Access & TLS IP dropdown
         return 200, {"ok": True, "ips": _bindable_ips()}
 
-    if method == "GET" and path == "/api/access/status":   # the apply state machine (UI polls this during a change)
-        return 200, {"ok": True, "status": _APPLY["status"], "pending": bool(_APPLY["pending"])}
+    if method == "GET" and path == "/api/access/status":   # the apply state machines (UI polls during a change)
+        return 200, {"ok": True, "panel": _APPLY["status"], "sub": _SUBAPPLY["status"],
+                     "pending": bool(_APPLY["pending"])}
 
     if method == "POST" and path == "/api/access/apply":
         # Activate the panel's SAVED bind (access.panel) by dual-listening on the new address. If the URL's
@@ -3996,6 +3997,27 @@ def api(method, path, qs, body, deps):
             _APPLY["pending"] = None
             _apply_status("saved", "panel now on %s:%d" % (pend["host"], pend["port"]))
         return 200, {"ok": True, "saved": True}
+
+    if method == "POST" and path == "/api/access/apply-sub":
+        # Activate the SAVED swg-sub bind (access.sub): issue its cert if the domain changed, persist the
+        # bind, restart. No dual-listen/confirm — a swg-sub restart can't lock the admin out of the panel.
+        acc = (deps.get("panel_settings") or {}).get("access") or {}
+        s = acc.get("sub") or {}
+        d_host = (str(s.get("host") or "0.0.0.0")).strip() or "0.0.0.0"
+        try:
+            d_port = max(1, min(65535, int(s.get("port") or 8444)))
+        except (TypeError, ValueError):
+            d_port = 8444
+        d_url = (str(s.get("url") or "")).strip()
+        d_domain = _url_host(d_url)
+        mode = (acc.get("tls") or {}).get("mode") or ""
+        with _SUBAPPLY["lock"]:
+            if _SUBAPPLY["status"].get("state") in ("issuing", "applying"):
+                return 409, {"ok": False, "error": "a subscription change is already in progress", "code": "busy"}
+            _subapply_status("applying", "starting")
+        threading.Thread(target=_apply_sub_worker, name="access-apply-sub",
+                         args=(deps, d_host, d_port, d_url, d_domain, mode), daemon=True).start()
+        return 200, {"ok": True, "started": True}
 
     # ── external integration API: token + webhook management (session-authed, mutations) ──
     def _save_api(cur):
@@ -7492,6 +7514,41 @@ def _apply_panel_cert_then_bind(deps, d_host, d_port, d_url, d_domain, old_lid):
         with _APPLY["lock"]:
             _APPLY["pending"] = None
         _apply_status("failed", "internal error: %s" % (e,))
+
+
+# swg-sub's apply is separate + simpler: it's a distinct process, and restarting it can't lock the admin
+# out, so there's no dual-listen or confirm — just issue the cert (if the domain isn't covered), persist the
+# bind, restart. Tracked in its OWN status so a panel apply and a sub apply can be in flight independently.
+SUB_CERT_PATH = os.environ.get("SWG_SUB_TLS_CERT_PATH", "/etc/swg-sub/tls/fullchain.pem")
+_SUBAPPLY = {"lock": threading.Lock(), "status": {"state": "idle", "message": "", "at": 0}}
+
+
+def _subapply_status(state, message="", **extra):
+    s = {"state": state, "message": message, "at": int(time.time())}
+    s.update(extra)
+    _SUBAPPLY["status"] = s
+
+
+def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
+    try:
+        if d_domain and mode in ("cloudflare", "letsencrypt", "selfsigned", "cf15", "letsencrypt-ip") \
+                and not _cert_covers(SUB_CERT_PATH, d_domain):
+            _subapply_status("issuing", "issuing a certificate for %s" % d_domain)
+            ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["sub", d_domain]), 180)
+            if not ok:
+                return _subapply_status("failed", "certificate issuance failed: " + (msg or "unavailable"))
+        # persist the bind (drop-in), WAIT for it, THEN restart — the two requests must run in order and the
+        # queue is drained by sorted filename, which is random for two ids, so we serialize them here.
+        _subapply_status("applying", "applying %s:%d" % (d_host, d_port))
+        ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "set-listen", ["sub", d_host, d_port]), 30)
+        if not ok:
+            return _subapply_status("failed", "couldn't set the address: " + (msg or "unavailable"))
+        ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "restart", ["sub"]), 60)
+        if not ok:
+            return _subapply_status("failed", "restart failed: " + (msg or "unavailable"))
+        _subapply_status("saved", "subscription server now on %s:%d" % (d_host, d_port))
+    except Exception as e:
+        _subapply_status("failed", "internal error: %s" % (e,))
 
 
 def main():
