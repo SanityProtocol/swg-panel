@@ -278,6 +278,14 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = baremetal ] &&
   gv(){ sed -n "s/^$1=//p" "$pconf" 2>/dev/null | head -1; }
   PDOM="$(gv PANEL_DOMAIN)"; PPORT="$(gv PORT)"; PTLS="$(gv TLS_MODE)"; PEMAIL="$(gv ACME_EMAIL)"; PBASE="$(gv PANEL_BASE)"
   PCFTOKEN="$(gv CF_TOKEN)"; PCFORIGIN="$(gv CF_ORIGIN_TOKEN)"   # carry CF creds so cloudflare/cf15 renewal works in the container
+  PSERVE="$(gv SERVE_MODE)"; PSUBDOM="$(gv SUB_DOMAIN)"
+  # A bare-metal REVERSE-PROXY panel (nginx/caddy/skip serve mode) → docker plain-HTTP-behind-proxy: TLS=none +
+  # containers on loopback, so the operator's existing nginx/Caddy keeps reaching them on the same port. (Docker
+  # conflates serve+cert into one TLS var, so the serve mode maps here.)
+  _PBIND=0.0.0.0; _SBIND=0.0.0.0; _SXFF=0; _RVPROXY=no
+  case "$PSERVE" in nginx|caddy|skip) _RVPROXY=yes; PTLS=none; _PBIND=127.0.0.1; _SBIND=127.0.0.1; _SXFF=1;; esac
+  # env passed to install-docker so TLS=none + the loopback binds win over its defaults (a reverse-proxy convert)
+  _RVENV=""; [ "$_RVPROXY" = yes ] && _RVENV="TLS=none PANEL_BIND=127.0.0.1 SUB_BIND=127.0.0.1 SUB_TRUST_XFF=1 SUB_DOMAIN=$PSUBDOM"
   PUSER="$(sed -n 's/^\([^:]*\):.*/\1/p' "$ETC/auth" 2>/dev/null | head -1)"
   [ -n "${SWG_RV_URL:-}" ] && PDOM="${PDOM:-$SWG_RV_URL}"
   [ -n "$PDOM" ] || die "couldn't read the panel domain ($pconf missing and no recovery state)"
@@ -369,6 +377,10 @@ ACME_EMAIL=$PEMAIL
 CF_TOKEN=$PCFTOKEN
 CF_ORIGIN_TOKEN=$PCFORIGIN
 PANEL_PORT=$PPORT
+PANEL_BIND=$_PBIND
+SUB_BIND=$_SBIND
+SUB_TRUST_XFF=$_SXFF
+SUB_DOMAIN=$PSUBDOM
 PANEL_URL=$_nurl
 NODE_TOKEN=$_ntok
 NODE_ENDPOINT=$_nep
@@ -385,7 +397,7 @@ EOF
   if [ "$ROLE" = host ]; then
     info "Running install-docker.sh (host) — the panel setup; it switches over as the last step…"; echo
     lc_handoff
-    exec env ROLE=host SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 TLS_VERIFY=no bash "$SRC/install-docker.sh" host
+    exec env ROLE=host $_RVENV SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 TLS_VERIFY=no bash "$SRC/install-docker.sh" host
   fi
   # ── MASTER convert = the HOST converter + the NODE converter, run in sequence ───────────────────────────────
   # The master's host-part IS install-docker host and its node-part IS install-docker node — guaranteed identical
@@ -394,7 +406,7 @@ EOF
   # and migrates this box's interfaces + turn-proxies in its own node stage. convert.sh owns the lifecycle terminal
   # (SWG_LC_PARENT=1 ⇒ neither sub-step emits its own), writing 'converted-docker' with the final line below.
   echo; info "HOST → docker — converting the panel (the local node keeps serving until the node step below)…"; echo
-  env ROLE=host SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 SWG_LC_PARENT=1 TLS_VERIFY=no \
+  env ROLE=host $_RVENV SWG_CONVERT_DIR=convert-docker SWG_CONVERT_KILL_PANEL=1 SWG_LC_PARENT=1 TLS_VERIFY=no \
       bash "$SRC/install-docker.sh" host \
     || die "the panel (host) convert failed — your state is safe in $DOCKER_DIR/data; check 'docker compose logs'"
   LC_FILE="$DOCKER_DIR/data/lib/host_proc"   # docker panel now owns host_proc → convert.sh's EXIT terminal lands there
