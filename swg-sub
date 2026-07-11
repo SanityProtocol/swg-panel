@@ -305,6 +305,9 @@ def read_data(state, token):
         sec = (blobs.get(pid) or {}).get("sec")        # None until the admin browser provisions it
         tgts_in = p.get("targets") or []
         n_t = len(tgts_in)
+        # per-peer NON-secret overrides (custom DNS/MTU/AllowedIPs/keepalive) kept in the roster; absent
+        # keys render live from the interface defaults, so a fleet-wide default change reaches this peer.
+        ov = p.get("overrides") if isinstance(p.get("overrides"), dict) else {}
         tgts = []
         for i, t in enumerate(tgts_in):
             if not isinstance(t, dict):
@@ -323,8 +326,11 @@ def read_data(state, token):
                 "type": "awg" if awg else (t.get("type") or "wg"),
                 "ip": t.get("ip"),
                 "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
-                "dns": meta.get("dns") or [], "subnet": meta.get("subnet"),
-                "mtu": meta.get("mtu") or 1280,
+                "dns": (ov["dns"] if isinstance(ov.get("dns"), list) else (meta.get("dns") or [])),
+                "subnet": meta.get("subnet"),
+                "mtu": ov.get("mtu") or meta.get("mtu") or 1280,
+                "allowed": ov.get("allowed") or "0.0.0.0/0, ::/0",
+                "keepalive": (ov["keepalive"] if isinstance(ov.get("keepalive"), int) else 25),
                 "awg": awg,
                 "turn": turn,
                 "primary": (n_t > 1 and i == 0),       # the default deployment, tagged first

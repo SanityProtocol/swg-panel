@@ -730,6 +730,44 @@ def clean_target(t):
     }
 
 
+def clean_overrides(raw):
+    """Per-peer NON-secret render overrides kept in the roster: a custom DNS / MTU / AllowedIPs /
+    keepalive the operator chose for THIS peer, that differs from the interface default. Only the set
+    fields are stored — anything absent renders live from the interface defaults, so a fleet-wide
+    default change still reaches every peer that never customised. This never holds a secret (the
+    private key + PSK live encrypted in the blob); it just lets the panel + swg-sub re-render a
+    faithful config without a plaintext copy. Returns {} when nothing is customised."""
+    if not isinstance(raw, dict):
+        return {}
+    ov = {}
+    if "dns" in raw and isinstance(raw["dns"], list):     # [] is meaningful: an explicit "no DNS line"
+        ov["dns"] = [str(x).strip() for x in raw["dns"][:8] if isinstance(x, str) and str(x).strip() and no_ctrl(str(x))]
+    if raw.get("mtu") not in (None, "", 0):
+        with contextlib.suppress(Exception):
+            ov["mtu"] = max(576, min(9200, int(raw["mtu"])))
+    if isinstance(raw.get("allowed"), str) and raw["allowed"].strip() and no_ctrl(raw["allowed"]):
+        ov["allowed"] = raw["allowed"].strip()[:512]
+    if raw.get("keepalive") not in (None, ""):
+        with contextlib.suppress(Exception):
+            ov["keepalive"] = max(0, min(65535, int(raw["keepalive"])))
+    return ov
+
+
+def effective_client_params(peer, meta):
+    """Resolve a peer's client-config render params: the peer's stored overrides where set, else the
+    interface's live defaults. `meta` is the target interface's describe meta (dns/mtu/awg/endpoint/
+    public_key). Used by every render that starts from the encrypted {k,p} blob (panel Show-QR + the
+    subscription page) so a peer with no override tracks fleet-wide defaults automatically."""
+    ov = (peer.get("overrides") if isinstance(peer, dict) else None) or {}
+    meta = meta or {}
+    return {
+        "dns": ov["dns"] if "dns" in ov else (meta.get("dns") or []),
+        "mtu": ov.get("mtu") or meta.get("mtu") or 1280,
+        "allowed": ov.get("allowed") or "0.0.0.0/0, ::/0",
+        "keepalive": ov["keepalive"] if "keepalive" in ov else 25,
+    }
+
+
 def find_peer_by_pubkey(roster, pubkey):
     for p in roster.get("peers", {}).values():
         if isinstance(p, dict) and p.get("pubkey") == pubkey:
@@ -816,7 +854,10 @@ def user_set(roster, uid, fields, now):
 def peer_set(roster, pid, fields, now):
     p = roster["peers"].get(pid) or {}
     targets = fields.get("targets", p.get("targets", []))
-    roster["peers"][pid] = {
+    # overrides: re-clean only when the caller passes them explicitly; otherwise PRESERVE whatever's
+    # stored (so add-target / update-target / rekey never drop a peer's custom DNS/MTU/AllowedIPs).
+    ov = clean_overrides(fields["overrides"]) if "overrides" in fields else (p.get("overrides") or {})
+    rec = {
         "id": pid,
         "user_id": fields.get("user_id", p.get("user_id")),   # None => unassigned
         "title": (fields.get("title", p.get("title", "")) or "")[:64],   # operator label to tell devices apart
@@ -826,7 +867,10 @@ def peer_set(roster, pid, fields, now):
         "created_at": p.get("created_at", now),
         "modified_at": now,
     }
-    return roster["peers"][pid]
+    if ov:                                                    # keep the roster tidy: no override key on a default peer
+        rec["overrides"] = ov
+    roster["peers"][pid] = rec
+    return rec
 
 
 def unassign_peer(p, store_configs, config_dir, now):
@@ -1227,12 +1271,13 @@ def sub_read_data(deps, roster, describe, token):
         tgts = []
         for i, t in enumerate(p.get("targets") or []):
             meta = ((describe or {}).get(t.get("node")) or {}).get(t.get("iface")) or {}
+            eff = effective_client_params(p, meta)    # peer overrides over the interface's live defaults
             tgts.append({
                 "node": t.get("node"), "iface": t.get("iface"), "type": t.get("type") or "wg",
                 "ip": t.get("ip"),
                 "endpoint": meta.get("endpoint"), "server_pubkey": meta.get("public_key"),
-                "dns": meta.get("dns") or [], "subnet": meta.get("subnet"),
-                "mtu": meta.get("mtu") or 1280,
+                "dns": eff["dns"], "subnet": meta.get("subnet"),
+                "mtu": eff["mtu"], "allowed": eff["allowed"], "keepalive": eff["keepalive"],
                 "awg": meta.get("awg_params") or {},
                 "primary": (n_t > 1 and i == 0),      # the default deployment, tagged first
             })
@@ -4892,7 +4937,8 @@ def api(method, path, qs, body, deps):
         while pid in roster["peers"]:
             pid = gen_id()
         p = peer_set(roster, pid, {"user_id": uid or None, "title": strip_ctrl(body.get("title", "")),
-                                   "pubkey": pubkey, "psk": psk, "targets": targets}, now())
+                                   "pubkey": pubkey, "psk": psk, "targets": targets,
+                                   "overrides": body.get("overrides") or {}}, now())
         roster_save(roster_path, roster)
         ev_append(roster_path, "peer", pid, "Created peer", peer_label(roster, p),
                   f"{len(targets)} target{'' if len(targets) == 1 else 's'} · {targets[0]['node']}/{targets[0]['iface']}")
@@ -4975,6 +5021,8 @@ def api(method, path, qs, body, deps):
             if uid and uid not in roster["users"]:
                 return 400, {"ok": False, "error": "unknown user", "code": "bad_request"}
             changed["user_id"] = uid or None
+        if "overrides" in body:                 # per-peer non-secret DNS/MTU/AllowedIPs/keepalive (the roster copy)
+            changed["overrides"] = body.get("overrides") or {}
         if not changed:
             return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
         p2 = peer_set(roster, pid, changed, now())
@@ -4984,6 +5032,8 @@ def api(method, path, qs, body, deps):
         if "user_id" in changed:
             ev_append(roster_path, "peer", pid,
                       "Assigned peer" if changed["user_id"] else "Unassigned peer", peer_label(roster, p2))
+        elif "overrides" in changed and "title" not in changed:
+            ev_append(roster_path, "peer", pid, "Edited peer config", peer_label(roster, p2))
         return 200, {"ok": True, "data": p2}
 
     if method == "POST" and path == "/api/peers/update-target":

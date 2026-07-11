@@ -323,7 +323,7 @@
       privkey: secret.k, address: (tgt.ip || "").split("/")[0] + "/32",
       dns: tgt.dns || [], mtu: tgt.mtu || 1280, awg_params: tgt.awg || {},
       server_pubkey: tgt.server_pubkey || "", psk: secret.p || "", endpoint: tgt.endpoint || "",
-      allowed: "0.0.0.0/0, ::/0", keepalive: 25,
+      allowed: tgt.allowed || "0.0.0.0/0, ::/0", keepalive: (tgt.keepalive != null ? tgt.keepalive : 25),
     });
   }
 

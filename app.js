@@ -427,6 +427,25 @@ function parseFullConf(text) {
 }
 // Same config, Endpoint swapped to the turn-proxy's public listen address (import via turn-proxy).
 
+// Sparse per-peer NON-secret overrides for the roster: only the fields the operator set to something
+// OTHER than the interface's live default (so a peer left on defaults stores nothing and keeps tracking
+// fleet-wide changes). `opts` = {dns (string), mtu, allowed, keepalive}; `meta` = the (first) target's
+// interface meta. Mirrors the server's clean_overrides / effective_client_params so panel + sub + roster
+// agree. dns=[] is kept as an explicit "no DNS line" when the interface default is non-empty.
+function configOverrides(opts, meta) {
+  const ov = {}; meta = meta || {};
+  const dnsArr = String(opts.dns || "").split(",").map(s => s.trim()).filter(Boolean);
+  const defDns = (meta.dns || []).map(String);
+  if (JSON.stringify(dnsArr) !== JSON.stringify(defDns)) ov.dns = dnsArr;
+  const mtu = String(opts.mtu || "").trim();
+  if (mtu && mtu !== String(meta.mtu || 1280)) ov.mtu = +mtu;
+  const allowed = String(opts.allowed || "").trim();
+  if (allowed && guardAllowed(allowed) !== "0.0.0.0/0, ::/0") ov.allowed = allowed;
+  const ka = String(opts.keepalive || "").trim();
+  if (ka !== "" && ka !== "25") ov.keepalive = +ka;
+  return ov;
+}
+
 function downloadConf(text, base) {
   // octet-stream (not text/plain) so the browser keeps the .conf name instead of appending .txt
   const blob = new Blob([text], { type: "application/octet-stream" });
@@ -8114,6 +8133,8 @@ async function createOneMultiTargetPeer(userId, targets, opts, title) {
     }
     const body = { user_id: userId, pubkey: keys.pub, psk, targets: tlist };
     if (title) body.title = title;
+    const _ov = configOverrides(opts, Store.ifaceMeta(targets[0].node, targets[0].iface));
+    if (Object.keys(_ov).length) body.overrides = _ov;
     if (Store.storeConfigs) body.configs = configs;
     const r = await api.peerCreate(body);
     if (!r.ok) return { ok: false, fails: ["create: " + (r.error || r.code || "failed")] };
@@ -8201,6 +8222,8 @@ function CreatePeerSheet({ prefill }) {
         configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: ipClean + "/32", dns: dnsArr, mtu: cf.mtu.trim() || 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk: pskV, endpoint: m.endpoint, allowed: cf.allowed.trim() || "0.0.0.0/0, ::/0", keepalive: cf.keepalive.trim() });
       }
       body = { user_id: userId || null, title: title.trim(), pubkey: keys.pub, psk: pskV, targets: tgts };
+      const _ov = configOverrides(cf.opts(), Store.ifaceMeta(chosen[0].node, chosen[0].iface));
+      if (Object.keys(_ov).length) body.overrides = _ov;
       if (Store.storeConfigs) body.configs = configs;
     } catch (e) { setBusy(false); return setMsg({ k: "err", t: "Error: " + e.message }); }
     // Optimistic: stash the config, drop a "creating" peer onto the grid, close the modal NOW, and let
@@ -8427,6 +8450,15 @@ function EditPeerSheet({ peer, focus, done, flash }) {
     try {
       if (title.trim() !== (peer.title || "")) {
         const r = await api.peerUpdate({ peer_id: peer.id, title: title.trim() }); if (!r.ok) fails++;
+      }
+      // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
+      // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully.
+      if (editable) {
+        const _meta0 = Store.ifaceMeta(peer.targets[0].node, peer.targets[0].iface);
+        const ovNew = configOverrides({ dns, mtu, allowed, keepalive }, _meta0);
+        if (JSON.stringify(ovNew) !== JSON.stringify(peer.overrides || {})) {
+          const r = await api.peerUpdate({ peer_id: peer.id, overrides: ovNew }); if (!r.ok) fails++;
+        }
       }
       // staged assignment of a previously-unassigned peer — keep the key, just set the owner
       if (peer.unassigned && userId && userId !== (peer.user_id || "")) {
