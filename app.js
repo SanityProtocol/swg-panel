@@ -6986,6 +6986,10 @@ function AccessTLSCard() {
   const [hasCfTok, setHasCfTok] = useState(!!t0.has_cf_token); const [hasCfOrig, setHasCfOrig] = useState(!!t0.has_cf_origin_token);
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const [st, setSt] = useState(null); const [polling, setPolling] = useState(false);
+  // Baseline of what's currently live — the form is compared to this to decide what changed (and thus what needs
+  // a live apply). Refreshed after a successful save so the button disables until the next edit.
+  const [orig, setOrig] = useState({ pUrl: p0.url || "", pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
+    sUrl: s0.url || "", sHost: s0.host || "0.0.0.0", sPort: String(s0.port || 8444), mode: t0.mode || "", email: t0.email || "" });
   useEffect(() => { api.get("/api/access/ips").then(r => { if (r && r.ok) setIps(r.ips || []); }); }, []);
   // poll the apply state machine while a change is in flight; auto-redirect to the new panel address to confirm it
   useEffect(() => {
@@ -7029,30 +7033,56 @@ function AccessTLSCard() {
     If it IS behind Cloudflare, restrict this port to Cloudflare's IP ranges:
     <button class="btn btn-mini mt8" onClick=${() => copy(CF_IP_RANGES.join("\n"), "Cloudflare IP ranges")}><${Ic} i="copy"/> Copy Cloudflare IP ranges</button></span></div>`;
 
-  const save = async () => {
-    if (blocked) return setMsg({ ok: false, t: "Fix the highlighted port before saving." });
-    setBusy(true); setMsg({ ok: true, t: "Saving…" });
-    const body = { access: {
-      panel: { url: pUrl.trim(), host: pHost.trim() || "0.0.0.0", port: Math.max(1, Math.min(65535, parseInt(pPort) || 443)) },
-      sub: { url: sUrl.trim(), host: sHost.trim() || "0.0.0.0", port: Math.max(1, Math.min(65535, parseInt(sPort) || 8444)) },
-      tls: { mode, email: email.trim(), cf_token: cfTok, cf_origin_token: cfOrig } } };
-    const r = await api.panelSettings(body); setBusy(false);
-    if (!r || r.ok === false) return setMsg({ ok: false, t: (r && (r.error || (r.errors || []).join("; "))) || "Save failed." });
-    const rtls = ((r.data || {}).access || {}).tls || {};        // the redacted echo → refresh the "(set)" markers
-    setHasCfTok(!!rtls.has_cf_token); setHasCfOrig(!!rtls.has_cf_origin_token);
-    setCfTok(""); setCfOrig("");
-    const w = (r.warnings || []);
-    setMsg({ ok: true, t: w.length ? ("Saved — " + w.join(" ")) : "Saved. Apply to activate the new address." });
+  // ── ONE action. The operator never chooses "save" vs "apply" or an order: this saves the config, then runs
+  //    exactly the live-applies the change requires, safely. A panel address/cert change is applied with the
+  //    dual-listen + browser-confirm dance (a wrong value auto-reverts — it can never lock you out). ──
+  const _pPortN = () => Math.max(1, Math.min(65535, parseInt(pPort) || 443));
+  const _sPortN = () => Math.max(1, Math.min(65535, parseInt(sPort) || 8444));
+  const panelBindChanged = () => (pHost.trim() || "0.0.0.0") !== (orig.pHost || "0.0.0.0") || _pPortN() !== (+orig.pPort || 443);
+  const subBindChanged   = () => (sHost.trim() || "0.0.0.0") !== (orig.sHost || "0.0.0.0") || _sPortN() !== (+orig.sPort || 8444);
+  const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
+  const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
+  const dirty            = () => panelBindChanged() || subBindChanged() || certChanged() || urlChanged();
+
+  const saveAndApply = async () => {
+    if (blocked) return setMsg({ ok: false, t: "Fix the highlighted port first." });
+    if (!dirty()) return;
+    const needSub = subsOn && (subBindChanged() || certChanged());
+    const needPanel = panelBindChanged() || certChanged();
+    setBusy(true); setSt(null); setMsg({ ok: true, t: "Saving your changes…" });
+    const r = await api.panelSettings({ access: {
+      panel: { url: pUrl.trim(), host: pHost.trim() || "0.0.0.0", port: _pPortN() },
+      sub: { url: sUrl.trim(), host: sHost.trim() || "0.0.0.0", port: _sPortN() },
+      tls: { mode, email: email.trim(), cf_token: cfTok, cf_origin_token: cfOrig } } });
+    if (!r || r.ok === false) { setBusy(false); return setMsg({ ok: false, t: (r && (r.error || (r.errors || []).join("; "))) || "Save failed." }); }
+    const rtls = ((r.data || {}).access || {}).tls || {};        // redacted echo → refresh the "(set)" markers
+    setHasCfTok(!!rtls.has_cf_token); setHasCfOrig(!!rtls.has_cf_origin_token); setCfTok(""); setCfOrig("");
+    setOrig({ pUrl: pUrl.trim(), pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
+      sUrl: sUrl.trim(), sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim() });
+    // subscription server first (a background restart — it can never lock you out of the panel)
+    if (needSub) { setMsg({ ok: true, t: "Updating the subscription server…" }); await api.post("/api/access/apply-sub", {}); setPolling(true); }
+    // then the panel address/cert (dual-listen + confirm — you'll be redirected briefly to prove it's reachable)
+    if (needPanel) {
+      const rp = await api.post("/api/access/apply", {});
+      if (rp && rp.ok === false) { setBusy(false); return setMsg({ ok: false, t: rp.error || "Couldn't apply the panel address." }); }
+      if (rp && !rp.applied) {    // a live bind/cert change is in progress → status poll will redirect to confirm
+        setMsg({ ok: true, t: "Verifying the new panel address is reachable — you'll be redirected in a moment…" });
+        setPolling(true); return;
+      }
+    }
+    setBusy(false);
+    setMsg({ ok: true, t: needSub ? "Saved & applying — the subscription server is restarting." : (needPanel ? "Saved & applied." : "Saved.") });
   };
-  const applyPanel = async () => { setMsg(null); const r = await api.post("/api/access/apply", {}); if (r && r.applied) return setMsg({ ok: true, t: r.message || "Already active." }); if (!r || r.ok === false) return setMsg({ ok: false, t: (r && r.error) || "Apply failed." }); setPolling(true); };
-  const applySub = async () => { setMsg(null); const r = await api.post("/api/access/apply-sub", {}); if (!r || r.ok === false) return setMsg({ ok: false, t: (r && r.error) || "Apply failed." }); setPolling(true); };
   const stLine = (which, s) => s && s.state && s.state !== "idle" ? html`<div class=${"formmsg " + (s.state === "failed" ? "err" : s.state === "saved" ? "ok" : "")}>${which}: ${s.message || s.state}</div>` : null;
 
-  return html`<div class="card">
+  const stepNum = n => html`<span class="setstep">${n}</span>`;
+  const anyChange = dirty();
+  return html`<div class="card acctls">
     ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
+    <p class="hint" style="margin:0 0 16px">Set how the panel${subsOn ? " and subscription page are" : " is"} reached, top to bottom, then <b>Save & apply</b> — the panel works out what to change and does it safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
 
-    <div class="seclabel" style="margin-top:0">Certificate</div>
-    <p class="hint" style="margin:0 0 12px">Pick this first — it decides how TLS is terminated and which ports are valid below. One certificate config issues both certs (the panel's and swg-sub's — always separate keys); swg-sub inherits this method.</p>
+    <div class="seclabel" style="margin-top:0">${stepNum(1)} Certificate</div>
+    <p class="hint" style="margin:0 0 12px">How TLS is terminated — this decides which ports are valid below. One choice issues both certificates (the panel's and swg-sub's, always separate keys).</p>
     <div class="field"><label>Type</label><${Dropdown} value=${mode} onChange=${setMode} options=${TLS_MODE_OPTS}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>Account email</label><input type="text" placeholder="admin@example.com" value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
     ${mode === "cloudflare" ? html`<div class="field"><label>Cloudflare API token</label><input type="password" placeholder=${hasCfTok ? "•••••••• (set — leave blank to keep)" : "Zone:DNS:Edit token"} value=${cfTok} onInput=${e => setCfTok(e.target.value)}/>
@@ -7060,23 +7090,23 @@ function AccessTLSCard() {
     ${mode === "cf15" ? html`<div class="field"><label>Cloudflare Origin CA token</label><input type="password" placeholder=${hasCfOrig ? "•••••••• (set — leave blank to keep)" : "Zone:SSL and Certificates:Edit token"} value=${cfOrig} onInput=${e => setCfOrig(e.target.value)}/>
       <div class="hint">Requests a 15-year Cloudflare Origin certificate — valid <b>only</b> behind Cloudflare's proxy. Stored on the panel only. Enter "-" to clear.</div></div>` : null}
 
-    <div class="seclabel">Panel</div>
-    <p class="hint" style="margin:0 0 12px">How the panel is reached. Changing the address is applied live — the panel serves the new address alongside the old and only switches once your browser confirms the new one loads, so a wrong value can't lock you out.</p>
+    <div class="seclabel">${stepNum(2)} Panel address</div>
+    <p class="hint" style="margin:0 0 12px">Where the panel itself is reached.</p>
     <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
     <div class="fieldrow">${ipField(pHost, setPHost, true)}${portField(pPort, setPPort, pBad)}</div>
     ${pBad ? cfNote : null}
     ${st ? stLine("Panel", st.panel) : null}
-    <div class="mt8"><button class="btn btn-ghost" disabled=${polling} onClick=${applyPanel}><${Ic} i="refresh"/> Apply address change</button></div>
 
-    ${subsOn ? html`<div class="seclabel">Subscriptions</div>
-      <p class="hint" style="margin:0 0 12px">The swg-sub server's address. Applied by restarting swg-sub (it can't lock you out of the panel).</p>
+    ${subsOn ? html`<div class="seclabel">${stepNum(3)} Subscription address</div>
+      <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>
       <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
       <div class="fieldrow">${ipField(sHost, setSHost, false)}${portField(sPort, setSPort, sBad)}</div>
       ${sBad ? cfNote : null}
-      ${st ? stLine("Subscriptions", st.sub) : null}
-      <div class="mt8"><button class="btn btn-ghost" disabled=${polling} onClick=${applySub}><${Ic} i="refresh"/> Apply</button></div>` : null}
+      ${st ? stLine("Subscriptions", st.sub) : null}` : null}
 
-    <div class="setsave"><button class="btn btn-primary" disabled=${busy || blocked} onClick=${save}>${busy ? "Saving…" : "Save"}</button></div>
+    <div class="setsave"><button class="btn btn-primary" disabled=${busy || polling || blocked || !anyChange}
+      title=${blocked ? "Fix the highlighted port first" : (!anyChange ? "No changes to apply" : "")}
+      onClick=${saveAndApply}>${busy || polling ? "Applying…" : "Save & apply changes"}</button></div>
   </div>`;
 }
 
@@ -7878,7 +7908,8 @@ function PanelSettingsScreen() {
         </div>` : null}
         <div class="setfoot">${Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null}<span class="grow"></span>
           <button class="btn btn-ghost" onClick=${leaveSettings}>Back</button>
-          <button class="btn btn-primary" disabled=${!!secErr() || !anyDirty} title=${secErr() || (!anyDirty ? "No changes to save" : "")} onClick=${confirmSave}>Save</button></div>
+          ${section === "access" ? null   /* Access & TLS owns its own "Save & apply" (live bind/cert apply) — no footer Save here */
+            : html`<button class="btn btn-primary" disabled=${!!secErr() || !anyDirty} title=${secErr() || (!anyDirty ? "No changes to save" : "")} onClick=${confirmSave}>Save</button>`}</div>
       </div>
     </div>
   </div>`;
