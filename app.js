@@ -5915,11 +5915,6 @@ function UserRow({ user, live, onlineOnly, q }) {
   const st = userStats(user.id);
   const [db, ub] = dlul(st.rxb, st.txb);
   const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 });
-  const delUser = () => openConfirm({ title: "Delete user · " + user.name, confirmLabel: "Delete user", danger: true,
-    body: "Their peers are revoked and become unassigned. This can't be undone.",
-    onConfirm: () => mutate({ key: "user:" + user.id,
-      patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
-      call: () => api.userDelete({ id: user.id }) }) });
   return html`<div class=${"urow" + (expanded ? " open" : "")} id=${"urow-" + user.id}>
     <div class="urow-head" onClick=${toggle}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
@@ -5947,10 +5942,9 @@ function UserRow({ user, live, onlineOnly, q }) {
         <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
         <span class="u-total">${xferCell(db, ub)}</span>
         ${live ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
-          <button class="iconbtn" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
           <button class="iconbtn" title="Show QR / configs" onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
           <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
-          <button class="iconbtn danger" title="Delete user" onClick=${delUser}><${Ic} i="trash"/></button>
+          <button class="iconbtn iconbtn-add" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
         </span>`}
       </span>
     </div>
