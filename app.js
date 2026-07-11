@@ -7541,15 +7541,18 @@ function PanelSettingsScreen() {
               { value: "on", label: "On — keep configs (QRs re-viewable anytime)" },
               { value: "off", label: "Off — never store private keys" }]}/>
             <div class=${"hint" + (sc === "off" ? " err" : "")}>${sc === "off" ? "Live tunnels and creation-time QRs are unaffected, but you won't be able to re-view a peer's QR/config later — you'd rotate its key and re-distribute." : "On keeps client configs (incl. private keys) on the panel so QRs stay re-viewable."}</div></div>
+          ${sc === "off" && subsOn ? html`<div class="hint warn" style="margin-top:10px"><${Ic} i="warn"/> Subscriptions are on and need stored configs. Turn <button class="linkbtn" onClick=${() => setSection("subs")}>Subscriptions</button> off first, or keep storage on — saving this as-is will be rejected.</div>` : null}
         </div>` : null}
         ${section === "subs" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Subscriptions</div>
           <p class="hint" style="margin:0 0 12px">A shareable, themed, mobile page per user showing their QRs. The page's private keys ride in the URL <b>fragment</b> and are never sent to the panel — nothing readable is stored on the server. Treat each user's URL as a credential (whoever holds it holds that user's configs). A separate <b>swg-sub</b> service serves the page; configure it here and install it on the panel host.</p>
           <div class="field"><label>Enable subscriptions</label>
-            <${Dropdown} value=${subsOn ? "on" : "off"} onChange=${v => setSubsOn(v === "on")} options=${[
+            <${Dropdown} value=${subsOn ? "on" : "off"} disabled=${sc === "off"} onChange=${v => setSubsOn(v === "on")} options=${[
               { value: "off", label: "Off — the subscription page is blocked entirely" },
               { value: "on", label: "On — per-user subscription URLs are served" }]}/>
-            <div class="hint">Off returns 404 for every subscription URL, regardless of the rest.</div></div>
+            ${sc === "off"
+              ? html`<div class="hint warn">Subscriptions serve the stored client configs — turn on config storage in <button class="linkbtn" onClick=${() => setSection("configs")}>Client configs</button> first.</div>`
+              : html`<div class="hint">Off returns 404 for every subscription URL, regardless of the rest.</div>`}</div>
           <div class="seclabel">Address & certificate</div>
           <div class="subaddr">
             <div class="subaddr-row"><span class="subaddr-k">Public URL</span><span class="subaddr-v mono">${subBaseUrl() || html`<span class="faint">not set</span>`}</span></div>

@@ -3827,6 +3827,12 @@ def api(method, path, qs, body, deps):
                 "base_url": (sub.get("base_url") if "base_url" in sub else _cursub.get("base_url")) or "",
                 "serve": (sub.get("serve") if isinstance(sub.get("serve"), dict) else _cursub.get("serve")) or {},
                 "languages": {"enabled": _en, "default": _def}}
+        # Subscriptions serve the (encrypted) stored configs — with config storage OFF there are no blobs to
+        # serve, so the state is impossible. Reject it even if the UI is bypassed. (store_configs None = use the
+        # fleet default, which keeps configs; only an explicit False is "off".)
+        if (cur.get("subscriptions") or {}).get("enabled") and cur.get("store_configs") is False:
+            return 400, {"ok": False, "code": "needs_store_configs",
+                         "error": "Subscriptions need client configs stored on the panel — turn on config storage first."}
         adv = incoming.get("advanced")
         if isinstance(adv, dict):
             cur["advanced"] = {"node_stale_ms": max(5000, int(adv.get("node_stale_ms") or 30000)),
