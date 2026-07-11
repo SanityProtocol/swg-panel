@@ -6693,6 +6693,125 @@ function IntegrationsSettings() {
   </div>`;
 }
 
+// Cloudflare's proxy only connects back to origin HTTPS on this fixed port set (everything else is
+// unreachable behind the orange cloud). A bundled snapshot of CF's published IP ranges (v4 + v6) for the
+// copy-list — it changes rarely; the panel never fetches it live.
+const CF_HTTPS_PORTS = [443, 8443, 2053, 2083, 2087, 2096];
+const CF_IP_RANGES = [
+  "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18",
+  "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17",
+  "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+  "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+  "2a06:98c0::/29", "2c0f:f248::/32"];
+const TLS_MODE_OPTS = [
+  { value: "", label: "None — plain HTTP (behind a reverse proxy / Cloudflare)" },
+  { value: "letsencrypt", label: "Let's Encrypt (HTTP-01 — needs port 80 reachable)" },
+  { value: "cloudflare", label: "Let's Encrypt via Cloudflare DNS (no port 80; needs a token)" },
+  { value: "selfsigned", label: "Self-signed" }];
+
+// The panel + swg-sub network address (bindable IP + port) and the ONE certificate config both derive from.
+// A change is applied LIVE: the panel dual-listens on the new address and only drops the old once the browser
+// confirms the new one works, so a bad value never locks the operator out. swg-sub just restarts.
+function AccessTLSCard() {
+  const acc = (Store.panelSettings || {}).access || {};
+  const p0 = acc.panel || {}, s0 = acc.sub || {}, t0 = acc.tls || {};
+  const subsOn = !!((Store.panelSettings || {}).subscriptions || {}).enabled;
+  const [pUrl, setPUrl] = useState(p0.url || ""); const [pHost, setPHost] = useState(p0.host || "0.0.0.0"); const [pPort, setPPort] = useState(String(p0.port || 443));
+  const [sUrl, setSUrl] = useState(s0.url || ""); const [sHost, setSHost] = useState(s0.host || "0.0.0.0"); const [sPort, setSPort] = useState(String(s0.port || 8444));
+  const [mode, setMode] = useState(t0.mode || ""); const [email, setEmail] = useState(t0.email || "");
+  const [cfTok, setCfTok] = useState(""); const [cfOrig, setCfOrig] = useState("");
+  const hasCfTok = !!t0.has_cf_token, hasCfOrig = !!t0.has_cf_origin_token;
+  const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+  const [st, setSt] = useState(null); const [polling, setPolling] = useState(false);
+  useEffect(() => { api.get("/api/access/ips").then(r => { if (r && r.ok) setIps(r.ips || []); }); }, []);
+  // poll the apply state machine while a change is in flight; auto-redirect to the new panel address to confirm it
+  useEffect(() => {
+    if (!polling) return; let live = true, timer;
+    const tick = async () => {
+      const r = await api.get("/api/access/status"); if (!live) return;
+      if (r && r.ok) {
+        setSt({ panel: r.panel, sub: r.sub });
+        const ps = (r.panel || {}).state, ss = (r.sub || {}).state;
+        if (ps === "verifying" && (r.panel || {}).redirect) { location.href = r.panel.redirect; return; }
+        if (["saved", "failed", "reverted", "idle"].includes(ps) && ["saved", "failed", "reverted", "idle"].includes(ss)) { setPolling(false); return; }
+      }
+      timer = setTimeout(tick, 1400);
+    };
+    tick(); return () => { live = false; clearTimeout(timer); };
+  }, [polling]);
+
+  const presets = new Set(["0.0.0.0", "127.0.0.1", ...ips.map(x => x.ip)]);
+  const ipOpts = (host, withLocal) => [
+    ...(withLocal ? [{ value: "127.0.0.1", label: "127.0.0.1 — local only" }] : []),
+    ...ips.map(x => ({ value: x.ip, label: `${x.ip} — ${x.iface}` })),
+    { value: "0.0.0.0", label: "0.0.0.0 — any IP" },
+    { value: "__custom", label: "Custom IP…" }];
+  const cfMode = (mode === "cloudflare" || mode === "cf15");
+  const pBad = cfMode && pPort && !CF_HTTPS_PORTS.includes(+pPort);
+  const sBad = subsOn && cfMode && sPort && !CF_HTTPS_PORTS.includes(+sPort);
+  const hard = mode === "cf15";                                   // cf15 origin certs ONLY work behind CF → block
+  const blocked = hard && (pBad || sBad);
+
+  const ipField = (host, setHost, withLocal) => {
+    const val = presets.has(host) ? host : "__custom";
+    return html`<div class="field"><label>Listen IP</label>
+      <${Dropdown} value=${val} onChange=${v => setHost(v === "__custom" ? (presets.has(host) ? "" : host) : v)}
+        options=${ipOpts(host, withLocal)}/>
+      ${val === "__custom" ? html`<input class="mt8" type="text" placeholder="e.g. 203.0.113.5" value=${host} onInput=${e => setHost(e.target.value)}/>` : null}</div>`;
+  };
+  const portField = (port, setPort, bad) => html`<div class="field"><label>Port${bad ? html` <span class="ci" title="Cloudflare can't reach this port">ⓘ</span>` : null}</label>
+    <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
+  const cfNote = html`<div class=${"notice " + (hard ? "err" : "warn")}><${Ic} i="warn"/><span>
+    Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}
+    If it IS behind Cloudflare, restrict this port to Cloudflare's IP ranges:
+    <button class="btn btn-mini mt8" onClick=${() => copy(CF_IP_RANGES.join("\n"), "Cloudflare IP ranges")}><${Ic} i="copy"/> Copy Cloudflare IP ranges</button></span></div>`;
+
+  const save = async () => {
+    if (blocked) return setMsg({ ok: false, t: "Fix the highlighted port before saving." });
+    setBusy(true); setMsg({ ok: true, t: "Saving…" });
+    const body = { access: {
+      panel: { url: pUrl.trim(), host: pHost.trim() || "0.0.0.0", port: Math.max(1, Math.min(65535, parseInt(pPort) || 443)) },
+      sub: { url: sUrl.trim(), host: sHost.trim() || "0.0.0.0", port: Math.max(1, Math.min(65535, parseInt(sPort) || 8444)) },
+      tls: { mode, email: email.trim(), cf_token: cfTok, cf_origin_token: cfOrig } } };
+    const r = await api.panelSettings(body); setBusy(false);
+    if (!r || r.ok === false) return setMsg({ ok: false, t: (r && (r.error || (r.errors || []).join("; "))) || "Save failed." });
+    setCfTok(""); setCfOrig("");
+    const w = (r.warnings || []);
+    setMsg({ ok: true, t: w.length ? ("Saved — " + w.join(" ")) : "Saved. Apply to activate the new address." });
+  };
+  const applyPanel = async () => { setMsg(null); const r = await api.post("/api/access/apply", {}); if (r && r.applied) return setMsg({ ok: true, t: r.message || "Already active." }); if (!r || r.ok === false) return setMsg({ ok: false, t: (r && r.error) || "Apply failed." }); setPolling(true); };
+  const applySub = async () => { setMsg(null); const r = await api.post("/api/access/apply-sub", {}); if (!r || r.ok === false) return setMsg({ ok: false, t: (r && r.error) || "Apply failed." }); setPolling(true); };
+  const stLine = (which, s) => s && s.state && s.state !== "idle" ? html`<div class=${"formmsg " + (s.state === "failed" ? "err" : s.state === "saved" ? "ok" : "")}>${which}: ${s.message || s.state}</div>` : null;
+
+  return html`<div class="card">
+    <div class="seclabel" style="margin-top:0">Panel</div>
+    <p class="hint" style="margin:0 0 12px">How the panel is reached, and the certificate. Changing the address is applied live — the panel serves the new address alongside the old and only switches once your browser confirms the new one loads, so a wrong value can't lock you out.</p>
+    ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
+    <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
+    <div class="fieldrow">${ipField(pHost, setPHost, true)}${portField(pPort, setPPort, pBad)}</div>
+    ${pBad ? cfNote : null}
+    ${st ? stLine("Panel", st.panel) : null}
+    <div class="mt8"><button class="btn btn-ghost" disabled=${polling} onClick=${applyPanel}><${Ic} i="refresh"/> Apply address change</button></div>
+
+    ${subsOn ? html`<div class="seclabel">Subscriptions</div>
+      <p class="hint" style="margin:0 0 12px">The swg-sub server's address. Applied by restarting swg-sub (it can't lock you out of the panel).</p>
+      <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
+      <div class="fieldrow">${ipField(sHost, setSHost, false)}${portField(sPort, setSPort, sBad)}</div>
+      ${sBad ? cfNote : null}
+      ${st ? stLine("Subscriptions", st.sub) : null}
+      <div class="mt8"><button class="btn btn-ghost" disabled=${polling} onClick=${applySub}><${Ic} i="refresh"/> Apply</button></div>` : null}
+
+    <div class="seclabel">Certificate</div>
+    <p class="hint" style="margin:0 0 12px">One certificate config issues both certs (the panel's and swg-sub's — always separate keys). swg-sub inherits this method.</p>
+    <div class="field"><label>Type</label><${Dropdown} value=${mode} onChange=${setMode} options=${TLS_MODE_OPTS}/></div>
+    ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>Account email</label><input type="text" placeholder="admin@example.com" value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
+    ${mode === "cloudflare" ? html`<div class="field"><label>Cloudflare API token</label><input type="password" placeholder=${hasCfTok ? "•••••••• (set — leave blank to keep)" : "Zone:DNS:Edit token"} value=${cfTok} onInput=${e => setCfTok(e.target.value)}/>
+      <div class="hint">Used for DNS-01 validation. Stored on the panel only; never sent to the browser. Enter "-" to clear.</div></div>` : null}
+
+    <div class="setsave"><button class="btn btn-primary" disabled=${busy || blocked} onClick=${save}>${busy ? "Saving…" : "Save"}</button></div>
+  </div>`;
+}
+
 // Subscription encryption setup. The Subscription Key is generated + wrapped IN THE BROWSER; the server only
 // ever gets the wrapped form. It's shown once (like 2FA recovery codes) and is independent of the login password.
 function SubVaultCard() {
@@ -7065,7 +7184,7 @@ function PanelSettingsScreen() {
   const confirmDeleteList = l => openConfirm({ title: "Delete custom list", confirmLabel: "Delete", danger: true,
     body: html`Delete <b>${l.title || "Untitled list"}</b>? It's removed from <b>every node</b> it's enabled on, and its interface rules stop matching on the next sync. This can't be undone.`,
     onConfirm: () => persistLists(lists.filter(x => x._rid !== l._rid)) });
-    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"], ["integrations", "Integrations"]];
+    const SECTIONS = [["display", "Display"], ["security", "Authentication"], ["access", "Access & TLS"], ["configs", "Client configs"], ["subs", "Subscriptions"], ["mesh", "System mesh"], ["nodesegress", "Nodes egress"], ["defaults", "Interfaces"], ["turn", "Turn proxies"], ["routing", "Routing lists"], ["geo", "Geo data"], ["integrations", "Integrations"]];
   const sysCats = SMART_CATEGORIES.filter(([id]) => id !== "all" && id !== "custom");
   const entryCount = t => (t || "").split(/[\s,]+/).filter(Boolean).length;
   const entryPreview = t => {   // as many WHOLE entries as fit ~one line, then a "(N more)" tail — never cuts an entry
@@ -7342,6 +7461,7 @@ function PanelSettingsScreen() {
           <div class="georefresh"><span class="faint" style="font-size:11px">Re-fetch every routed list from its provider now (updates the panel; nodes pull the changes on their schedule)</span><button class="btn btn-mini" disabled=${geoUpdating} onClick=${updateAllLists}><span class=${geoUpdating ? "tf-arrow" : ""}><${Ic} i="refresh"/></span> ${geoUpdating ? "Updating…" : "Update all lists now"}</button></div>
         </div>` : null}
         ${section === "integrations" ? html`<${IntegrationsSettings}/>` : null}
+        ${section === "access" ? html`<${AccessTLSCard}/>` : null}
         ${section === "defaults" ? html`<div class="card">
           <div class="seclabel turnhead" style="margin-top:0">Interface colours<span class="grow"></span>
             ${Object.keys(ifaceColorOverrides()).length ? html`<button class="btn btn-mini" onClick=${() => setIfaceColors({ wg: { ...IFACE_COLOR_DEFAULTS.wg }, awg: { ...IFACE_COLOR_DEFAULTS.awg } })}><${Ic} i="refresh"/> Reset</button>` : null}</div>
@@ -8590,6 +8710,16 @@ function App() {
   const [hash, setHash] = useState(location.hash || "#/");
   const [modalStack, setModalStack] = useState([]);
   useEffect(() => { _setStack = setModalStack; }, []);
+  // Access & TLS confirm handshake: an address change redirects the browser to the NEW panel address with
+  // ?__apply=<nonce>. Landing here proves the new listener is reachable → confirm it (the panel then drops
+  // the old listener). Runs once on load; strips the param so a reload can't re-fire.
+  useEffect(() => {
+    const m = /[?&]__apply=([A-Za-z0-9]+)/.exec(location.search);
+    if (!m) return;
+    api.post("/api/access/confirm", { nonce: m[1] }).then(r => {
+      toast(r && r.ok ? "New panel address confirmed." : ("Couldn't confirm: " + ((r && r.error) || "unknown")), r && r.ok ? "ok" : "err", 4000);
+    }).finally(() => history.replaceState(null, "", location.pathname + location.hash));
+  }, []);
   useEffect(() => {
     const onHash = () => {
       const nh = location.hash || "#/";
