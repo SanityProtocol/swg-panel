@@ -38,6 +38,7 @@ import ipaddress
 import json
 import os
 import pwd
+import shutil
 import urllib.error
 import urllib.request
 import re
@@ -237,7 +238,7 @@ def _issue_selfsigned(svc, domain):
         raise Reject("openssl self-signed failed (rc %d): %s" % (rc, out.strip()[-300:]))
 
 
-def _issue_acme(svc, service, domain, mode, creds):
+def _issue_acme(svc, service, domain, mode, creds, reloadcmd=True):
     acme = find_acme()
     env = dict(os.environ)
     issue = [acme, "--issue", "-d", domain, "--server", "letsencrypt", "--keylength", "ec-256"]
@@ -256,9 +257,11 @@ def _issue_acme(svc, service, domain, mode, creds):
     # acme.sh: 0 = issued, 2 = RENEW_SKIP (a still-valid cert already exists). Else a failure.
     if rc not in (0, 2) and not DRYRUN:
         raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, domain, out.strip()[-400:]))
-    rc, out = run([acme, "--install-cert", "-d", domain, "--ecc",
-                   "--key-file", svc["key"], "--fullchain-file", svc["cert"],
-                   "--reloadcmd", reload_cmd_for(service)], env=env)
+    inst = [acme, "--install-cert", "-d", domain, "--ecc",
+            "--key-file", svc["key"], "--fullchain-file", svc["cert"]]
+    if reloadcmd:                       # renewals reload the running service; a live-apply must NOT (the old
+        inst += ["--reloadcmd", reload_cmd_for(service)]   # listener keeps the old cert until the change confirms)
+    rc, out = run(inst, env=env)
     if rc:
         raise Reject("acme --install-cert failed (rc %d): %s" % (rc, out.strip()[-400:]))
 
@@ -302,29 +305,69 @@ def _issue_cf15(svc, domain, creds):
         f.write(key)
 
 
-def do_issue_cert(service, domain):
+def do_issue_cert(service, domain, reload="reload"):
+    # reload="noreload" is used by the panel's live-apply: the new cert must NOT be reloaded into the
+    # EXISTING listener (which is still serving the old cert to Cloudflare/clients during the dual-listen
+    # window). Only the new listener loads it, at bind time. Renewals use "reload" (SIGHUP, zero-downtime).
     svc = SERVICES[v_service(service)]
     v_domain(domain)
+    if reload not in ("reload", "noreload"):
+        raise Reject("bad reload flag %r" % (reload,))
     creds = _load_access_tls()
     mode = creds["mode"] or "letsencrypt"
     if not DRYRUN:
         os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
-    reload_after = True
+    acme_mode = mode in ("cloudflare", "letsencrypt")
     if mode == "selfsigned":
         _issue_selfsigned(svc, domain)
     elif mode == "cf15":
         _issue_cf15(svc, domain, creds)
-    elif mode in ("cloudflare", "letsencrypt"):
-        _issue_acme(svc, service, domain, mode, creds)   # acme --install-cert already SIGHUPs via --reloadcmd
-        reload_after = False
+    elif acme_mode:
+        _issue_acme(svc, service, domain, mode, creds, reloadcmd=(reload == "reload"))
     else:
         # letsencrypt-ip issues for a public IP (not a domain) — a separate path, deferred.
         raise Reject("issue-cert not yet implemented for TLS mode %r" % (mode,))
     _fix_cert_perms(svc)
-    if reload_after:                                     # renewal → pick up the new cert (no-op on first issue over plain HTTP)
+    # selfsigned/cf15 write the file directly; SIGHUP the service to pick it up on a RENEWAL (no-op the first
+    # time over plain HTTP). acme's --reloadcmd already did this. Skipped entirely for a live-apply (noreload).
+    if reload == "reload" and not acme_mode:
         with contextlib.suppress(Exception):
             run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
     return "issued cert for %s (%s) via %s" % (domain, service, mode)
+
+
+# A domain-change apply issues the NEW cert over the live path (so the new listener can load it), but the
+# change isn't committed until the browser confirms. These let the panel back the live cert up first and
+# restore it on a revert, so a reverted/timed-out apply never leaves the wrong cert on disk.
+def do_backup_cert(service):
+    svc = SERVICES[v_service(service)]
+    n = 0
+    for f in (svc["cert"], svc["key"]):
+        if os.path.exists(f) and not DRYRUN:
+            shutil.copy2(f, f + ".applyback"); n += 1
+    return "backed up %s cert (%d file(s))" % (service, n)
+
+
+def do_restore_cert(service):
+    svc = SERVICES[v_service(service)]
+    restored = False
+    for f in (svc["cert"], svc["key"]):
+        b = f + ".applyback"
+        if os.path.exists(b) and not DRYRUN:
+            os.replace(b, f); restored = True
+    if restored:
+        _fix_cert_perms(svc)
+        with contextlib.suppress(Exception):
+            run(["systemctl", "kill", "-s", "HUP", svc["unit"]])   # reload the restored cert into the live listener
+    return "restored %s cert" % service if restored else "no %s cert backup to restore" % service
+
+
+def do_clear_backup(service):
+    svc = SERVICES[v_service(service)]
+    for f in (svc["cert"], svc["key"]):
+        with contextlib.suppress(OSError):
+            os.unlink(f + ".applyback")
+    return "cleared %s cert backup" % service
 
 
 def do_drop_cert(service, domain):
@@ -339,8 +382,11 @@ def do_drop_cert(service, domain):
 
 VERBS = {
     "set-listen": (do_set_listen, 3),
-    "issue-cert": (do_issue_cert, 2),
+    "issue-cert": (do_issue_cert, (2, 3)),      # optional 3rd arg: reload | noreload (live-apply uses noreload)
     "drop-cert": (do_drop_cert, 2),
+    "backup-cert": (do_backup_cert, 1),
+    "restore-cert": (do_restore_cert, 1),
+    "clear-backup": (do_clear_backup, 1),
     "restart": (do_restart, 1),
 }
 
@@ -349,8 +395,9 @@ def dispatch(verb, args):
     if verb not in VERBS:
         raise Reject("unknown verb %r" % (verb,))
     fn, argc = VERBS[verb]
-    if len(args) != argc:
-        raise Reject("%s takes %d arg(s), got %d" % (verb, argc, len(args)))
+    lo, hi = argc if isinstance(argc, tuple) else (argc, argc)   # some verbs take an optional trailing arg
+    if not (lo <= len(args) <= hi):
+        raise Reject("%s takes %s arg(s), got %d" % (verb, lo if lo == hi else "%d-%d" % (lo, hi), len(args)))
     for a in args:
         if not isinstance(a, (str, int)):
             raise Reject("%s: args must be strings/ints" % (verb,))
