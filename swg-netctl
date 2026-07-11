@@ -240,6 +240,17 @@ def do_issue_cert(service, domain):
     rc, out = run(inst, env=env)
     if rc:
         raise Reject("acme --install-cert failed (rc %d): %s" % (rc, out.strip()[-400:]))
+    # acme installs root-owned; the service (swgpanel/swgsub, both in group swg) must be able to READ the
+    # key. root:swg with a group-readable key, and root keeps write — a service compromise can't rewrite it.
+    if not DRYRUN:
+        try:
+            gid = grp.getgrnam(PANEL_GROUP).gr_gid
+            for f, mode in ((svc["cert"], 0o644), (svc["key"], 0o640)):
+                if os.path.exists(f):
+                    os.chown(f, 0, gid)
+                    os.chmod(f, mode)
+        except (KeyError, PermissionError, OSError) as e:
+            log("warn: could not set cert perms: %s" % (e,))
     return "issued+installed cert for %s (%s) via %s" % (domain, service, mode)
 
 

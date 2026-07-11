@@ -978,6 +978,9 @@ if [ -f "$SRC/swg-sub" ]; then
   for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SRC/$f" ] && cp "$SRC/$f" "$PREFIX$SUB_DIR/"; done
   [ -f "$SRC/vendor/qrcode.js" ] && cp "$SRC/vendor/qrcode.js" "$PREFIX$SUB_DIR/vendor/"
   [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$SUB_DIR/" || true
+  # swg-sub's OWN TLS dir — its cert lives here (never the panel's key). swg-netctl/acme write it as root;
+  # group swg (swgsub) reads it. Separate from — and NOT the — masked panel tls dir.
+  mkdir -p "$PREFIX/etc/swg-sub/tls"; run chown root:swg /etc/swg-sub/tls; run chmod 750 /etc/swg-sub/tls
   ok "installed swg-sub to $SUB_DIR (disabled until enabled in the panel)"
 fi
 mkdir -p "$PREFIX$STATE_DIR"; [ -f "$PREFIX$STATE_DIR/users.json" ] || { echo '{}' > "$PREFIX$STATE_DIR/users.json"; run chown "$PANEL_USER:swg" "$STATE_DIR/users.json"; run chmod 640 "$STATE_DIR/users.json"; ok "seeded empty users.json"; }

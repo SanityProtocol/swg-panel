@@ -50,6 +50,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 FLEET_PATH = os.environ.get("SWG_SUB_FLEET") or os.environ.get("SWG_PANEL_FLEET", "/etc/swg-panel/fleet.json")
 WEB_DIR    = os.environ.get("SWG_SUB_WEB", os.path.dirname(os.path.abspath(__file__)))
+# swg-sub's OWN cert (never the panel's — an internet-facing process must not hold the panel's TLS key).
+# swg-netctl issues+installs here; the file is group-swg readable so swgsub can load it. Absent → plain HTTP.
+SUB_TLS_DIR  = os.environ.get("SWG_SUB_TLS_DIR", "/etc/swg-sub/tls")
+DEFAULT_SUB_CERT = os.path.join(SUB_TLS_DIR, "fullchain.pem")
+DEFAULT_SUB_KEY  = os.path.join(SUB_TLS_DIR, "key.pem")
 
 # A token is one opaque path segment. Kept tight so it can never escape into the
 # filesystem (the blob path re-sanitises again anyway) or collide with our routes.
@@ -495,7 +500,10 @@ def _serve_config(state):
     elif serve.get("tls_mode") == "reverse-proxy":
         cert, key = "", ""                                      # operator terminates TLS upstream → plain HTTP here
     else:
-        cert, key = (serve.get("cert_path") or "").strip(), (serve.get("key_path") or "").strip()
+        # swg-sub terminates its own TLS: an explicit path from the panel, else its standard cert location
+        # (swg-netctl installs the acme cert there). Missing file → plain HTTP, so a proxy can still front it.
+        cert = (serve.get("cert_path") or "").strip() or DEFAULT_SUB_CERT
+        key = (serve.get("key_path") or "").strip() or DEFAULT_SUB_KEY
     if cert and key and os.path.exists(cert) and os.path.exists(key):
         return host, port, cert, key
     return host, port, None, None                              # no usable cert → plain HTTP (front with a proxy)
