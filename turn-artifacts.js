@@ -123,15 +123,16 @@
   }
 
   // Build the client-import artifact for a peer deployed BEHIND a turn-proxy, matching the DEPLOYED fork.
-  // Returns a descriptor: { fork, label, ext, hint, uri?, cmd?, text? OR buildAsync } — `text` is ready,
-  // `buildAsync` is a promise (wingsv:// needs zlib).
+  // Returns a descriptor: { fork, label, ext, qr, hint, uri?, cmd?, text? OR buildAsync } — `text` is ready,
+  // `buildAsync` is a promise (wingsv:// needs zlib). `qr` = the fork's client imports via a scannable QR:
+  // true for wg/awg .conf forks (kiper292, sidecar), false for app-scheme link forks (WINGS-N, anton48).
   function artifact(baseConf, tp, vkLink) {
     var fork = label(tp.service);
     var listen = tp.listen || "";
     var vk = (vkLink || "").trim() || "<PASTE VK CALL LINK>";
     var cf = parseFullConf(baseConf);
     if (fork === "WINGS-N") {
-      return { fork: fork, app: "WINGS V", label: "WINGS-N · WINGS V (wingsv:// link)", ext: "txt", uri: true,
+      return { fork: fork, app: "WINGS V", label: "WINGS-N · WINGS V (wingsv:// link)", ext: "txt", uri: true, qr: false,
         hint: "Import this wingsv:// link into the WINGS V app (paste it, or its Settings → import from link).",
         buildAsync: function () { return wingsvLink(baseConf, tp, vk); } };
     }
@@ -139,7 +140,7 @@
       var block = ["", "#@wgt:EnableTURN = true", "#@wgt:UseUDP = false", "#@wgt:IPPort = " + listen,
         "#@wgt:VKLink = " + vk, "#@wgt:Mode = vk_link", "#@wgt:PeerType = proxy_v2",
         "#@wgt:StreamNum = 4", "#@wgt:LocalPort = 9000", "#@wgt:StreamsPerCred = 4"].join("\n");
-      return { fork: fork, app: "WireGuard-TURN", label: "kiper292 · WireGuard-TURN (Android)", ext: "conf",
+      return { fork: fork, app: "WireGuard-TURN", label: "kiper292 · WireGuard-TURN (Android)", ext: "conf", qr: true,
         hint: "Import this .conf into the kiper292 WireGuard-TURN app — the TURN settings ride along as #@wgt: comments (Endpoint stays the real server).",
         text: baseConf.replace(/\s*$/, "") + "\n" + block + "\n" };
     }
@@ -151,7 +152,7 @@
         useUDP: true, useDTLS: true, useSrtp: !tp.wrap_key,
         useWrap: !!tp.wrap_key, wrapKeyHex: tp.wrap_key || "" };
       var uri = "vkturnproxy://import?data=" + btoa(JSON.stringify({ settings: s, type: "connection", version: 1 }));
-      return { fork: fork, app: "VK TURN Proxy", label: "anton48 · VK TURN Proxy (iOS)", ext: "txt", uri: true,
+      return { fork: fork, app: "VK TURN Proxy", label: "anton48 · VK TURN Proxy (iOS)", ext: "txt", uri: true, qr: false,
         hint: "Open this link on the iPhone (or the app's Settings → Import from connection link) to import into the anton48 app.",
         text: uri };
     }
@@ -160,7 +161,7 @@
     sidecar = /^[ \t]*MTU[ \t]*=/m.test(sidecar) ? sidecar.replace(/^([ \t]*MTU[ \t]*=).*$/m, "$1 1280")
       : sidecar.replace(/^([ \t]*Address[ \t]*=.*)$/m, "$1\nMTU = 1280");
     var flags = tp.wrap_key ? (" -wrap-key " + tp.wrap_key) : "";
-    return { fork: fork, app: fork, label: fork + " · sidecar client", ext: "conf",
+    return { fork: fork, app: fork, label: fork + " · sidecar client", ext: "conf", qr: true,
       hint: "This fork runs a separate client binary. Import this .conf into WireGuard, then run the fork's client alongside it:",
       cmd: "./client -listen 127.0.0.1:9000 -peer " + listen + " -vk-link " + vk + flags,
       text: sidecar };

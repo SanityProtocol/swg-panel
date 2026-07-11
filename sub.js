@@ -236,6 +236,23 @@
       btn.textContent = t("copied"); setTimeout(function () { btn.textContent = label; }, 1400);
     }, function () {});
   }
+  // A collapsible section (config text / QR / client command). Opening reveals content below the fold, so
+  // nudge the page down by roughly the revealed height (capped); closing scrolls back up by the same.
+  function cfgDetails(summaryText, contentEl) {
+    var det = el("details", "cfg");
+    det.appendChild(el("summary", null, summaryText));
+    det.appendChild(contentEl);
+    det.addEventListener("toggle", function () {
+      if (det.open) {
+        var amt = Math.min((contentEl.offsetHeight || 0) + 24, Math.round(window.innerHeight * 0.5));
+        det._amt = amt;
+        window.scrollBy({ top: amt, behavior: "smooth" });
+      } else {
+        window.scrollBy({ top: -(det._amt || 0), behavior: "smooth" });
+      }
+    });
+    return det;
+  }
 
   // A single deployment (node/iface) card: QR + actions + collapsible config text.
   function targetCard(userName, peer, tgt, conf, reason) {
@@ -273,10 +290,7 @@
     acts.appendChild(cp);
     card.appendChild(acts);
 
-    var det = el("details", "cfg");
-    det.appendChild(el("summary", null, t("showConfig")));
-    det.appendChild(el("pre", null, conf));
-    card.appendChild(det);
+    card.appendChild(cfgDetails(t("showConfig"), el("pre", null, conf)));
     return card;
   }
 
@@ -338,7 +352,7 @@
       while (card.lastChild && card.lastChild.classList && card.lastChild.classList.contains("cfg")) card.removeChild(card.lastChild);
       var copyLabel = art.uri ? t("copyLink") : t("copyConfig");
       var isDual = !!art.cmd;                          // sidecar: `text` is a wg/awg config imported into WireGuard
-      var qr = qrEl(text);                             // null when the text is too long to encode as a QR
+      var qr = art.qr ? qrEl(text) : null;             // only forks whose client imports via a scannable QR
       var cp = el("button", "btn ghost", copyLabel);
       var pre = el("pre", "turntext", text); pre.title = t("tapCopy");
       pre.onclick = function () { copyText(text, cp, copyLabel); };
@@ -348,12 +362,10 @@
       var dl = el("button", "btn", t("dl") + " ." + (art.ext || "conf"));
       dl.onclick = function () { download(text, fileName(userName, peer.title, tgt) + "-" + (art.fork || "turn"), art.ext || "conf"); };
       acts.appendChild(cp); acts.appendChild(dl);
-      if (qr && !isDual) {                             // the alternate view lives under a toggle
-        var dt = el("details", "cfg"); dt.appendChild(el("summary", null, t("showConfig"))); dt.appendChild(pre); card.appendChild(dt);
-      } else if (qr) {                                 // dual/sidecar: text is default, offer the wg/awg QR
-        var dq = el("details", "cfg"); dq.appendChild(el("summary", null, t("showQR"))); dq.appendChild(qr); card.appendChild(dq);
-      }
-      if (art.cmd) { var dc = el("details", "cfg"); dc.appendChild(el("summary", null, t("clientCmd"))); dc.appendChild(el("pre", null, art.cmd)); card.appendChild(dc); }
+      if (qr && !isDual) card.appendChild(cfgDetails(t("showConfig"), pre));   // QR default → text under a toggle
+      else if (qr) card.appendChild(cfgDetails(t("showQR"), qr));              // dual: wg/awg text default → QR under a toggle
+      // else: forks with no QR support (app-scheme links) stay text-only, no toggle
+      if (art.cmd) card.appendChild(cfgDetails(t("clientCmd"), el("pre", null, art.cmd)));
     }
     if (art.text != null) fill(art.text);
     else { box.appendChild(el("div", "hint", t("generating")));
