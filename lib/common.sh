@@ -336,3 +336,79 @@ dl_turn_bin(){ local owner="$1" arch="$2" out="$3" base url m; base="https://git
   for url in "$base" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$base"; done); do
     curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "$url" -o "$out" && return 0
   done; return 1; }
+
+# ── reverse-proxy config generation (shared by install-host "skip" mode + install-docker TLS=none) ──
+# The operator runs their own nginx/Caddy; we bind the panel + swg-sub to loopback and PRINT ready configs
+# (installing nothing). gen_proxy_conf writes ONE config to stdout; print_proxy_configs saves both + echoes.
+#   gen_proxy_conf nginx|caddy <panel_domain> <panel_target> <panel_base> <sub_domain> <sub_target>
+#   <panel_target>/<sub_target> = host:port the proxy forwards to (e.g. 127.0.0.1:8088). <sub_domain> "" → no sub block.
+gen_proxy_conf(){
+  local kind="$1" pd="$2" pt="$3" pbase="$4" sd="$5" st="$6" loc="/"
+  [ -n "$pbase" ] && loc="${pbase}/"
+  if [ "$kind" = nginx ]; then
+    cat <<EOF
+# swg-panel reverse proxy for nginx. Get certificates first, e.g.:
+#   certbot --nginx -d ${pd}${sd:+ -d $sd}
+server {                                     # redirect HTTP -> HTTPS
+    listen 80;
+    server_name ${pd}${sd:+ $sd};
+    location / { return 301 https://\$host\$request_uri; }
+}
+server {                                     # admin panel
+    listen 443 ssl http2;
+    server_name ${pd};
+    ssl_certificate     /etc/letsencrypt/live/${pd}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${pd}/privkey.pem;
+    client_max_body_size 4m;
+    location ${loc} {
+        proxy_pass http://${pt};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+    [ -n "$sd" ] && cat <<EOF
+server {                                     # subscription page (public, read-only)
+    listen 443 ssl http2;
+    server_name ${sd};
+    ssl_certificate     /etc/letsencrypt/live/${sd}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${sd}/privkey.pem;
+    client_max_body_size 2m;
+    location / {
+        proxy_pass http://${st};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-For \$remote_addr;   # swg-sub trusts this only with SWG_SUB_TRUST_XFF=1 (set in reverse-proxy installs)
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+  else   # caddy — auto-HTTPS
+    cat <<EOF
+# swg-panel reverse proxy for Caddy (auto-HTTPS). Point DNS at this host first.
+${pd} {
+$( [ -n "$pbase" ] && printf '    handle %s/* {\n        reverse_proxy %s\n    }' "$pbase" "$pt" || printf '    reverse_proxy %s' "$pt" )
+}
+EOF
+    [ -n "$sd" ] && cat <<EOF
+${sd} {
+    reverse_proxy ${st}
+}
+EOF
+  fi
+}
+
+# print_proxy_configs <out_dir> <panel_domain> <panel_target> <panel_base> <sub_domain> <sub_target>
+print_proxy_configs(){
+  local dir="$1" pd="$2" pt="$3" pbase="$4" sd="$5" st="$6"
+  mkdir -p "$PREFIX$dir"
+  gen_proxy_conf nginx "$pd" "$pt" "$pbase" "$sd" "$st" > "$PREFIX$dir/swg-nginx.conf"
+  gen_proxy_conf caddy "$pd" "$pt" "$pbase" "$sd" "$st" > "$PREFIX$dir/swg-Caddyfile"
+  chmod 644 "$PREFIX$dir/swg-nginx.conf" "$PREFIX$dir/swg-Caddyfile" 2>/dev/null || true
+  echo; ok "Reverse-proxy configs saved to ${dir}/ — nothing was installed or reloaded."
+  sub "Panel  → ${pt}${pbase}"
+  [ -n "$sd" ] && sub "Sub    → ${st}   (${sd})"
+  echo; echo "  $(b "── nginx ──  ${dir}/swg-nginx.conf")"; gen_proxy_conf nginx "$pd" "$pt" "$pbase" "$sd" "$st" | sed 's/^/    /'
+  echo; echo "  $(b "── Caddy ──  ${dir}/swg-Caddyfile")"; gen_proxy_conf caddy "$pd" "$pt" "$pbase" "$sd" "$st" | sed 's/^/    /'
+  echo
+}

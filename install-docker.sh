@@ -46,6 +46,11 @@ ACME_EMAIL="${ACME_EMAIL:-}"           # account email for letsencrypt/cloudflar
 CF_TOKEN="${CF_TOKEN:-}"               # cloudflare DNS-01: API token with Zone:DNS:Edit + Zone:Read
 CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-${CF_ORIGIN_KEY:-}}"  # cf15: API token with Zone:SSL and Certificates:Edit
 PANEL_PORT="${PANEL_PORT:-}"           # host-published port; blank = derive from URL, else 443 (Step 1)
+SUB_PORT="${SUB_PORT:-8444}"           # swg-sub host port (bound to loopback in reverse-proxy/TLS=none mode)
+SUB_DOMAIN="${SUB_DOMAIN:-}"           # subscription page hostname, for the printed reverse-proxy config (TLS=none)
+PANEL_BIND="${PANEL_BIND:-0.0.0.0}"    # host bind for the panel publish; 127.0.0.1 in reverse-proxy mode
+SUB_BIND="${SUB_BIND:-0.0.0.0}"        # host bind for the swg-sub publish; 127.0.0.1 in reverse-proxy mode
+SUB_TRUST_XFF="${SUB_TRUST_XFF:-0}"    # swg-sub trusts X-Forwarded-For (set to 1 behind a reverse proxy)
 # Node
 PANEL_URL="${PANEL_URL:-}"
 NODE_TOKEN="${NODE_TOKEN:-}"
@@ -611,6 +616,11 @@ ask_panel_tls(){     # TLS certificate (same look as bare-metal); issued INSIDE 
                    warn "the panel would be unreachable through the orange cloud. Use one of those ports (or Cloudflare Spectrum), or grey-cloud the record and accept an untrusted direct cert."
                  fi
                  ask_valid "Cloudflare API token (Zone → SSL and Certificates → Edit)" "$CF_ORIGIN_TOKEN" CF_ORIGIN_TOKEN v_cforigin "paste an API token — the legacy Origin CA Key is deprecated (sunset 2026-09-30)";;
+    none)        # reverse proxy: keep the containers on loopback so ONLY the operator's own nginx/Caddy reaches them
+                 PANEL_BIND=127.0.0.1; SUB_BIND=127.0.0.1; SUB_TRUST_XFF=1
+                 { [ "${PANEL_PORT_EXPLICIT:-no}" != yes ] && [ "${PANEL_PORT:-443}" = 443 ]; } && PANEL_PORT=8088   # don't grab host :443 — your proxy needs it
+                 sub "TLS=none → panel :$PANEL_PORT + swg-sub :$SUB_PORT bind 127.0.0.1; run your own reverse proxy (configs printed at the end)."
+                 [ -z "$SUB_DOMAIN" ] && ask "Subscription page hostname for the reverse-proxy config (blank to fill in later)" "" SUB_DOMAIN;;
   esac
   return 0
 }
@@ -1136,6 +1146,11 @@ ACME_EMAIL=$ACME_EMAIL
 CF_TOKEN=$CF_TOKEN
 CF_ORIGIN_TOKEN=$CF_ORIGIN_TOKEN
 PANEL_PORT=$PANEL_PORT
+PANEL_BIND=${PANEL_BIND:-0.0.0.0}
+SUB_PORT=${SUB_PORT:-8444}
+SUB_BIND=${SUB_BIND:-0.0.0.0}
+SUB_TRUST_XFF=${SUB_TRUST_XFF:-0}
+SUB_DOMAIN=${SUB_DOMAIN:-}
 SWG_UPDATE_TRIGGER=$_UPD_TRIG
 NODE_UPDATE_TRIGGER=$_NODE_UPD_TRIG
 SWG_HOST_HOSTNAME=$(hostname 2>/dev/null)   # host hostname → lets the panel recognise a master's co-located node (which reports the host hostname via host-networking)
@@ -1383,6 +1398,13 @@ EOF
 wire_host_updater
 
 # ───────────────────────── SUMMARY ─────────────────────────
+# TLS=none → the operator fronts the panel + swg-sub with their OWN reverse proxy: print ready nginx/Caddy
+# configs (both on :443, different subdomains → the two containers on loopback). Installs nothing.
+if [ "$TLS" = none ] && { [ "$PROFILE" = host ] || [ "$PROFILE" = master ]; }; then
+  print_proxy_configs "$INSTALL_DIR/reverse-proxy" "$PANEL_DOMAIN" "127.0.0.1:${PANEL_PORT}" "$PANEL_BASE" \
+    "${SUB_DOMAIN:-sub.example.com}" "127.0.0.1:${SUB_PORT}"
+fi
+
 # A master sub-step (SWG_LC_PARENT=1) prints just a one-liner — convert.sh emits ONE unified summary at the very
 # end of the master convert. An individual host/node convert (not a sub-step) prints its full summary here.
 if [ "${SWG_LC_PARENT:-}" = 1 ]; then echo; ok "$PROFILE → docker done — continuing the master convert…"

@@ -1651,76 +1651,9 @@ serve_caddy(){
   note_sub_proxy
 }
 
-# ---- manual reverse proxy ("skip"): print ready-to-paste nginx + caddy configs for BOTH panel and sub,
-# ---- bind both services to loopback, and DON'T touch any web server (the operator wires it up).
+# ---- manual reverse proxy ("skip"): bind panel + swg-sub to loopback and print ready nginx/caddy configs
+# ---- (gen_proxy_conf / print_proxy_configs live in lib/common.sh, shared with install-docker). Installs nothing.
 sub_shipped(){ [ -f "$PREFIX$SUB_DIR/swg-sub" ]; }
-
-gen_nginx_conf(){   # full nginx config (panel + sub) -> stdout
-  local loc; loc="$(proxy_loc)"
-  cat <<EOF
-# swg-panel reverse proxy for nginx. Get certificates first, e.g.:
-#   certbot --nginx -d ${PANEL_DOMAIN}$(sub_shipped && printf ' -d %s' "${SUB_DOMAIN:-sub.example.com}")
-server {                                     # redirect HTTP -> HTTPS
-    listen 80;
-    server_name ${PANEL_DOMAIN}$(sub_shipped && printf ' %s' "${SUB_DOMAIN:-sub.example.com}");
-    location / { return 301 https://\$host\$request_uri; }
-}
-server {                                     # admin panel
-    listen 443 ssl http2;
-    server_name ${PANEL_DOMAIN};
-    ssl_certificate     /etc/letsencrypt/live/${PANEL_DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${PANEL_DOMAIN}/privkey.pem;
-    client_max_body_size 4m;
-    location ${loc} {
-        proxy_pass http://127.0.0.1:${PORT};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-  sub_shipped && cat <<EOF
-server {                                     # subscription page (public, read-only)
-    listen 443 ssl http2;
-    server_name ${SUB_DOMAIN:-sub.example.com};
-    ssl_certificate     /etc/letsencrypt/live/${SUB_DOMAIN:-sub.example.com}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${SUB_DOMAIN:-sub.example.com}/privkey.pem;
-    client_max_body_size 2m;
-    location / {
-        proxy_pass http://127.0.0.1:${SUB_PORT};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$remote_addr;   # swg-sub trusts this only with SWG_SUB_TRUST_XFF=1 (set in reverse-proxy installs)
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-}
-
-gen_caddy_conf(){   # full Caddyfile (panel + sub) -> stdout; auto-HTTPS
-  cat <<EOF
-# swg-panel reverse proxy for Caddy (auto-HTTPS). Point DNS at this host first.
-${PANEL_DOMAIN} {
-$( [ -n "$PANEL_BASE" ] && printf '    handle %s/* {\n        reverse_proxy 127.0.0.1:%s\n    }' "$PANEL_BASE" "$PORT" || printf '    reverse_proxy 127.0.0.1:%s' "$PORT" )
-}
-EOF
-  sub_shipped && cat <<EOF
-${SUB_DOMAIN:-sub.example.com} {
-    reverse_proxy 127.0.0.1:${SUB_PORT}
-}
-EOF
-}
-
-print_proxy_configs(){
-  local dir="$ETC_DIR/reverse-proxy"
-  gen_nginx_conf | writef "$dir/swg-nginx.conf" 644 >/dev/null
-  gen_caddy_conf | writef "$dir/swg-Caddyfile" 644 >/dev/null
-  echo; ok "Reverse-proxy configs saved to ${dir}/ — nothing was installed or reloaded."
-  sub "Panel  → 127.0.0.1:${PORT}${PANEL_BASE}"
-  sub_shipped && sub "Sub    → 127.0.0.1:${SUB_PORT}   (${SUB_DOMAIN:-set the hostname in Settings → Access & TLS})"
-  echo; echo "  $(b "── nginx ──  ${dir}/swg-nginx.conf")"; gen_nginx_conf | sed 's/^/    /'
-  echo; echo "  $(b "── Caddy ──  ${dir}/swg-Caddyfile")"; gen_caddy_conf | sed 's/^/    /'
-  echo
-}
 
 note_sub_proxy(){   # auto modes manage the PANEL vhost only; point the operator at the sub block for later
   sub_shipped || return 0
@@ -1732,7 +1665,8 @@ serve_skip(){
   write_panel_unit
   run systemctl daemon-reload; run systemctl enable --quiet $_NOW swg-panel-server
   ok "Panel on 127.0.0.1:${PORT}${PANEL_BASE}$(sub_shipped && printf ', swg-sub on 127.0.0.1:%s' "${SUB_PORT}") — configure your web server to proxy to them."
-  print_proxy_configs
+  print_proxy_configs "$ETC_DIR/reverse-proxy" "$PANEL_DOMAIN" "127.0.0.1:${PORT}" "$PANEL_BASE" \
+    "$(sub_shipped && printf '%s' "${SUB_DOMAIN:-sub.example.com}")" "127.0.0.1:${SUB_PORT}"
 }
 
 info "Login + TLS ($SERVE_MODE)"

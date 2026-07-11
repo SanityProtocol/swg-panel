@@ -22,9 +22,10 @@ services:
     restart: unless-stopped
     profiles: ["host", "master", "host-node"]
     ports:
-      - "${PANEL_PORT:-443}:8443"         # host-published port → container's 8443
-      # host port 80 (Let's Encrypt HTTP-01) is added by docker-compose.override.yml, which the
-      # installer writes ONLY for TLS=letsencrypt(-ip) — so other TLS methods don't clash with nginx/apache on :80.
+      - "${PANEL_BIND:-0.0.0.0}:${PANEL_PORT:-443}:8443"   # host-published port → container's 8443
+      # PANEL_BIND=127.0.0.1 (set by install-docker for TLS=none) keeps the panel on loopback so ONLY your
+      # own reverse proxy reaches it. host port 80 (Let's Encrypt HTTP-01) is added by docker-compose.override.yml,
+      # which the installer writes ONLY for TLS=letsencrypt(-ip) — so other TLS methods don't clash with nginx/apache on :80.
     environment:
       PANEL_USER: "${PANEL_USER:-admin}"
       PANEL_PASSWORD: "${PANEL_PASSWORD:?set PANEL_PASSWORD in .env}"
@@ -62,12 +63,14 @@ services:
     depends_on: ["swg-panel"]
     entrypoint: ["/opt/swg-panel/swg-sub"]        # NOT the panel entrypoint — no acme/fleet-write, just serve
     ports:
-      - "${SUB_PORT:-8444}:8444"                  # host-published → container's 8444 (front with your reverse proxy)
+      - "${SUB_BIND:-0.0.0.0}:${SUB_PORT:-8444}:8444"      # host-published → container's 8444 (front with your reverse proxy)
+      # SUB_BIND=127.0.0.1 (set by install-docker for TLS=none) keeps swg-sub on loopback behind your proxy.
     environment:
       SWG_SUB_FLEET: /etc/swg-panel/fleet.json    # locate the same state files the panel wrote
       SWG_SUB_WEB: /opt/swg-panel                 # sub.html/sub.js/sub.css + vendor/qrcode.js live here in the image
       SWG_SUB_HOST: "0.0.0.0"
       SWG_SUB_PORT: "8444"
+      SWG_SUB_TRUST_XFF: "${SUB_TRUST_XFF:-0}"    # trust the proxy's X-Forwarded-For for rate-limiting (install-docker sets 1 for TLS=none)
       # Plain HTTP by default — terminate TLS at your reverse proxy / Cloudflare, or reuse the panel's
       # cert by setting serve.cert_path=/etc/swg-panel/tls/fullchain.pem (+ key_path) in the panel.
     volumes:
