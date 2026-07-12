@@ -3079,18 +3079,13 @@ def apply_panel_hints(panel, node_cfg, reply):
     already-unverified channel — strictly better); (2) re-point to a new panel URL, pin-gated. Returns the new
     sync URL to dial if it changed, else None. Never throws (a hiccup must not break the sync loop)."""
     try:
-        p_fp = (reply.get("panel_fp") or "").replace(":", "").lower().strip()
         p_url = (reply.get("panel_url") or "").strip().rstrip("/")
         cur_fp = (panel.get("fingerprint") or "").replace(":", "").lower().strip()
         verified = bool(panel.get("verify", False) or cur_fp)
-        # (1) opportunistic pin adoption — only when we hold NO trust anchor at all
-        if p_fp and not cur_fp and not panel.get("verify", False):
-            panel["fingerprint"] = p_fp
-            node_cfg.setdefault("panel", {})["fingerprint"] = p_fp
-            _persist_config(node_cfg)
-            cur_fp = p_fp; verified = True
-            print(f"security: adopted panel cert pin {p_fp[:16]}… (was unverified)", flush=True)
-        # (2) auto-repoint
+        # NOTE: no server-driven pin adoption. The panel reports its ORIGIN cert fp, but a node behind a
+        # TLS-terminating proxy (Cloudflare) sees the PROXY's cert — adopting the panel-reported fp would
+        # pin the wrong cert and fail closed. Pinning belongs at install (Phase 1), where the installer
+        # captures the cert the NODE actually sees. Here we only re-point, gated by the EXISTING trust anchor.
         if p_url:
             cur = (panel.get("url") or "").rstrip("/")
             if _norm_url(p_url) != _norm_url(cur):
@@ -3110,6 +3105,49 @@ def apply_panel_hints(panel, node_cfg, reply):
                           f"— staying on {cur}", flush=True)
     except Exception as e:
         print("apply_panel_hints:", e, flush=True)
+    return None
+
+
+_LOCAL_HEAL = {"at": 0.0}
+def _heal_local_panel(panel, node_cfg):
+    """A CO-LOCATED node (loopback panel URL, e.g. a bare-metal master's local node) can't learn a new panel port
+    via sync — its link is refused, so it never receives the panel_url hint. When a LOOPBACK sync fails, rediscover
+    the panel locally: read its bind port from the standard settings file, else probe common ports, and re-point.
+    No MITM risk on loopback. Docker masters use a stable internal link (swg-panel:8443) that never breaks, so this
+    only ever fires bare-metal. Returns the new sync URL if it moved, else None."""
+    try:
+        cur = (panel.get("url") or "").rstrip("/")
+        u = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur)
+        host = (u.hostname or "").lower()
+        if not (host == "localhost" or host.startswith("127.") or host == "::1"):
+            return None                                  # not a loopback link → the sync-response repoint handles it
+        now = time.time()
+        if now - _LOCAL_HEAL["at"] < 30:                 # cooldown — don't rescan every failed 5s sync
+            return None
+        _LOCAL_HEAL["at"] = now
+        scheme = u.scheme or "https"
+        cur_port = u.port or (443 if scheme == "https" else 80)
+        token = panel.get("token") or ""
+        candidates = [443, 8443, 2053, 2083, 2087, 2096, 80, 8080, 8000, 9443]
+        for sp in ("/var/lib/swg-panel/panel-settings.json", "/etc/swg-panel/panel-settings.json"):
+            try:
+                pp = int((((json.load(open(sp)) or {}).get("access") or {}).get("panel") or {}).get("port") or 0)
+                if pp and pp not in candidates:
+                    candidates.insert(0, pp)             # the exact configured port → covers a non-standard one
+                break
+            except Exception:
+                pass
+        for port in candidates:
+            if port == cur_port:
+                continue
+            probe = "%s://%s:%d" % (scheme, host, port)
+            if _verify_panel(probe, token, panel):
+                panel["url"] = probe
+                _persist_panel_url(node_cfg, probe)
+                print(f"panel not reachable at {cur} — rediscovered it locally at {probe}, re-pointed", flush=True)
+                return probe.rstrip("/") + "/api/node/sync"
+    except Exception as e:
+        print("_heal_local_panel:", e, flush=True)
     return None
 
 
@@ -4163,8 +4201,14 @@ def main():
                 interval = reply.get("interval", interval)
             elif status == 0:
                 print("sync error:", reply.get("error"), flush=True)
+                _nu = _heal_local_panel(panel, node_cfg)   # co-located node lost the panel (port moved) → rediscover locally
+                if _nu:
+                    url = _nu
             else:
                 print(f"sync HTTP {status}: {reply.get('error')}", flush=True)
+                _nu = _heal_local_panel(panel, node_cfg)
+                if _nu:
+                    url = _nu
         except Exception as e:
             print("loop error:", e, flush=True)
         with _TURN_JOBS_LOCK:                       # while an async reinstall/update is in flight, sync fast so the

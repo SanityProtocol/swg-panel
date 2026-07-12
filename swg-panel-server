@@ -1197,25 +1197,6 @@ def _panel_public_url(deps):
         return raw
 
 
-_CERT_FP_CACHE = {"mtime": None, "fp": ""}
-def _panel_cert_fp():
-    """sha256 hex of the panel's LEAF TLS cert DER — matches what a node derives from getpeercert(True). '' on
-    plain HTTP. Sent in the sync response so a currently-UNVERIFIED node can opportunistically adopt it as a pin
-    (TOFU upgrade over its already-unverified channel — a strict improvement); pinned/CA nodes ignore it."""
-    if not TLS_CERT:
-        return ""
-    try:
-        mt = os.path.getmtime(TLS_CERT)
-        if _CERT_FP_CACHE["mtime"] != mt:
-            pem = open(TLS_CERT).read()
-            m = re.search(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem, re.S)
-            der = ssl.PEM_cert_to_DER_cert(m.group(0)) if m else b""
-            _CERT_FP_CACHE.update(mtime=mt, fp=(hashlib.sha256(der).hexdigest() if der else ""))
-        return _CERT_FP_CACHE["fp"]
-    except Exception:
-        return ""
-
-
 def _is_ip(host):
     try:
         ipaddress.ip_address(host)
@@ -7408,9 +7389,10 @@ class Handler(BaseHTTPRequestHandler):
             if _ent:
                 _list_manifest[_c] = _ent
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
-                                # canonical panel address + cert fp → lets an online node re-point itself (pin-gated)
-                                # when the operator changes the panel host/port. Additive: older nodes ignore these.
-                                "panel_url": _panel_public_url(Handler.deps), "panel_fp": _panel_cert_fp(),
+                                # canonical panel dial address → lets an online node re-point itself when the
+                                # operator changes the panel host/port (the node verifies the new address with its
+                                # OWN trust anchor before switching). Additive: older nodes ignore it.
+                                "panel_url": _panel_public_url(Handler.deps),
                                 "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
                                 "delete": list((node.get("delete") or {}).keys()),
                                 "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
