@@ -2049,7 +2049,8 @@ a.tg:hover{filter:brightness(1.25)}
 .sublink-row .suburl{flex:1;min-width:0}
 .sublink-row .btn{flex:none}
 .vkfield-row{display:flex;gap:8px;align-items:center}
-.vkfield-row input{flex:1;min-width:0}
+/* match the sub-link box exactly (padding / radius / height / mono font), just editable + light blue */
+.vkfield-row input{flex:1;min-width:0;padding:5px 11px;border-radius:8px;font-family:var(--mono);font-size:12px;line-height:18px}
 .vkfield-row .btn{flex:none}
 /* fixed-width trailing button group → the VK input and the sub-link box line up to the SAME width */
 .fieldbtns{flex:none;display:flex;gap:8px;justify-content:flex-end;width:148px}

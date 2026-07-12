@@ -6037,23 +6037,27 @@ function normVkLink(s) { s = (s || "").trim(); return s && !/^https?:\/\//i.test
 // turn-proxy. Empty → amber border + a hint (the panel falls back to the test link; the subscription page won't).
 // Saves on blur / Enter; re-renders turn configs with the new link.
 function VkLinkField({ user }) {
+  // track the SAVED value locally: the modal holds a stale `user` snapshot (openUserConfigs isn't re-invoked
+  // after a poll), so comparing against user.vk_link would leave the button "dirty" forever after a save.
+  const [saved, setSaved] = useState(user.vk_link || "");
   const [val, setVal] = useState(user.vk_link || "");
   const [busy, setBusy] = useState(false);
   const [subd, setSubd] = useState(false);
-  useEffect(() => setVal(user.vk_link || ""), [user.id, user.vk_link]);
+  useEffect(() => { setVal(user.vk_link || ""); setSaved(user.vk_link || ""); }, [user.id, user.vk_link]);
   useEffect(() => { let ok = true; if (subFeatureOn()) subUsersMap().then(m => { if (ok) setSubd(!!(m[user.id] && m[user.id].enabled)); }).catch(() => {}); return () => { ok = false; }; }, [user.id]);
   const v = normVkLink(val);                    // accept the link with or without https:// — add it when missing
   const invalid = !!v && !_VK_CALL_RE.test(v);
   const empty = !v;
   const set = !empty && !invalid;               // a valid link is present → blue highlight
-  const dirty = v !== (user.vk_link || "");
+  const dirty = v !== saved;
   const save = async () => {
     if (!dirty || invalid) return;
     setBusy(true);
     const r = await api.userUpdate({ id: user.id, vk_link: v });
     setBusy(false);
     if (!r || !r.ok) { toast((r && r.error) || "Couldn't save the VK link", "err"); return; }
-    await Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the new link
+    setSaved(v); setVal(v);                      // reflect the saved (normalised) value → dirty=false → button disables
+    Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the new link
   };
   return html`<div class=${"field vkfield" + (invalid ? " warn" : set ? " set" : " warn")} style="margin-bottom:14px">
     <label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
@@ -8585,6 +8589,7 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
   // `back` (turn configs → back to QR) closed everything on Esc while ✕/backdrop/Back (recreated each render)
   // correctly went back. Route Esc through the live tryClose instead.
   const tryCloseRef = useRef(tryClose); tryCloseRef.current = tryClose;
+  const noGuardRef = useRef(noGuard); noGuardRef.current = noGuard;   // read live (the Sheet instance is reused across openModal)
 
   useEffect(() => {
     const root = ref.current; if (!root) return;
@@ -8599,7 +8604,9 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
       if (_sheetStack[_sheetStack.length - 1] !== tok) return;   // a child modal is on top — defer to it
       if ((e.key === "Enter" || e.key === "Escape") && e.target && e.target.dataset && e.target.dataset.enter === "self") return;   // input handles its own Enter/Esc (e.g. inline rename) — don't submit/close the sheet
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); tryCloseRef.current(); return; }
-      if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
+      if (e.key === "Enter" && !noGuardRef.current && e.target.tagName !== "TEXTAREA" && !e.shiftKey) {
+        // view modals (QR / turn) have no single submit action — Enter must not fire a random primary button
+        // (e.g. "Enable subscription"); their own fields (the VK box) handle Enter themselves
         const primary = root.querySelector(".sheet-foot .btn-primary:not([disabled])") || root.querySelector(".btn-primary:not([disabled])");
         if (primary) { e.preventDefault(); primary.click(); }
         return;
