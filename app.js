@@ -8509,6 +8509,7 @@ function AddPeersSheet({ userId, userName }) {
     if (fails.length) toast("Some operations failed: " + fails.join("; "), "err", 6000);
     closeModal();
     if (firstPid) revealAssignedPeer(userId, firstPid); else stayExpanded();
+    subReconcileUser(userId);   // assigning an EXISTING peer here only writes user_id — publish its (and any new peer's) blob, prompting to unlock if locked
   };
 
   const newCount = items.filter(it => it.kind === "new").length;
