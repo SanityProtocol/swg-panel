@@ -728,11 +728,13 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .deploy-body{padding:15px;display:flex;gap:15px;position:relative}
 .deploy .qr{background:#fff;border-radius:var(--r-sm);padding:8px;line-height:0;flex:none;cursor:zoom-in}
 .deploy .qr .qrimg{display:block;width:min(300px,72vw);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
-.qr-overlay{position:fixed;inset:0;z-index:9999;background:var(--qr-scrim);display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:24px}
-.qr-overlay-inner{display:flex;flex-direction:column;align-items:center;gap:16px}
-.qr-overlay-card{background:#fff;padding:18px;border-radius:12px;line-height:0}
-.qr-overlay-card .qrimg{display:block;width:min(92vw,92vh,920px);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
-.qr-overlay-cap{color:var(--ink);font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap}
+.qr-overlay{position:fixed;inset:0;z-index:9999;background:var(--qr-scrim);display:flex;cursor:zoom-out;padding:24px;overflow:auto}
+/* margin:auto (not align/justify-center) keeps the block reachable when it overflows a short window */
+.qr-overlay-inner{display:flex;flex-direction:column;align-items:center;gap:16px;margin:auto;max-width:100%}
+.qr-overlay-card{background:#fff;padding:18px;border-radius:12px;line-height:0;max-width:100%}
+/* bound by BOTH axes and reserve ~160px for the card padding + caption, so the caption never gets pushed off */
+.qr-overlay-card .qrimg{display:block;width:auto;height:auto;max-width:min(86vw,820px);max-height:min(calc(100vh - 160px),820px);image-rendering:pixelated;image-rendering:crisp-edges}
+.qr-overlay-cap{color:var(--ink);font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;text-align:center}
 .qr-overlay-cap .qrc-srv{font-family:var(--mono)}
 .deploy .qr-fail,.deploy .qr-none{width:240px;height:240px;max-width:60vw;display:flex;align-items:center;justify-content:center;text-align:center;
   font-size:11px;color:var(--faint);background:var(--surface-2);border-radius:var(--r-sm);padding:10px;line-height:1.4}
