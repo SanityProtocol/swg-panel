@@ -5828,6 +5828,118 @@ function QRRow({ cards }) {
   </div>`;
 }
 
+// ── QR-modal building blocks (shared by the peer + user views) ──────────────────────────────────
+// A user's subscription record from the cached status map: undefined=loading · null=none/feature-off · object.
+function useSubRec(userId) {
+  const [rec, setRec] = useState(undefined);
+  useEffect(() => { let ok = true;
+    if (!subFeatureOn() || !userId) { setRec(null); return; }
+    subUsersMap().then(m => { if (ok) setRec(m[userId] || null); }).catch(() => { if (ok) setRec(null); });
+    return () => { ok = false; }; }, [userId, Store.configEpoch]);
+  return rec;
+}
+// "Part of an active subscription" — a right-aligned line under the modal title. Only when the user has a
+// subscription record at all; nothing for unsubscribed users or with the feature off.
+function SubStatusTag({ userId }) {
+  const rec = useSubRec(userId);
+  if (!subFeatureOn() || !rec) return null;
+  const s = rec.enabled ? "active" : "disabled";
+  return html`<div class=${"substatus " + s}><span class="substatus-dot"></span>Part of ${rec.enabled ? "an" : "a"} <b>${s}</b> subscription</div>`;
+}
+// The single unlock gate. One panel, one password — unlocking reveals BOTH the stored QRs and the subscription
+// link (one encryption key gates both). Renders nothing once unlocked, or when no vault is set up.
+function VaultUnlockPanel() {
+  const [exists, setExists] = useState(null);
+  const [ready, setReady] = useState(!!subSKCached());
+  const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
+  const [keep, setKeep] = useState(subPersistOn());
+  useEffect(() => { if (subSKCached()) { setReady(true); return; }
+    let ok = true; api.subVault().then(r => { if (ok) setExists(!!(r && r.ok && r.data && r.data.exists)); }).catch(() => { if (ok) setExists(false); });
+    return () => { ok = false; }; }, []);
+  if (ready || subSKCached() || !exists) return null;
+  const unlock = async () => {
+    if (!pw || busy) return; setBusy(true);
+    try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }
+    catch (e) { toast((e && e.message) || "That password didn’t unlock the key vault.", "err"); }
+    setBusy(false);
+  };
+  return html`<div class="unlockpanel">
+    <div class="unlockpanel-msg"><${Ic} i="lock"/><span>Unlock the key vault to see configs, QR codes and the subscription link.</span></div>
+    <div class="unlockpanel-row">
+      <input class="subpw" type="password" autofocus autocomplete="off" placeholder="Panel password" value=${pw}
+        onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
+      <button class="btn btn-primary" disabled=${busy || !pw} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock"}</button>
+    </div>
+    <label class="vp-keep-row"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/> <span>Trust this device and keep it unlocked</span></label>
+  </div>`;
+}
+// The subscription link + controls (user modal). Shown only once the vault is unlocked — the link's secret is
+// derived from the key. Enable / Rotate / Disable, each behind a confirm; the link + copy sits above them.
+function SubLinkActions({ user }) {
+  useStore();
+  const rec = useSubRec(user.id);
+  const [url, setUrl] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const base = subBaseUrl();
+  useEffect(() => { let ok = true;
+    (async () => { if (rec && rec.enabled && subSKCached()) { try { const u = await subUrlFor(rec); if (ok) setUrl(u); } catch (_) { if (ok) setUrl(null); } } else if (ok) setUrl(null); })();
+    return () => { ok = false; }; }, [rec && rec.enabled, Store.configEpoch]);
+  if (!subFeatureOn() || !subSKCached() || rec === undefined) return null;   // locked → the unlock panel owns it
+  const after = async () => { subUsersForget(); Store.configEpoch++; bus.emit(); };
+  const settingsLink = html`<a href="#/panel/settings" onClick=${() => closeAllModals()}>Settings → Subscriptions</a>`;
+  const confirm = opts => pushModal(html`<${ConfirmSheet} ...${opts}/>`);   // stacks over the user modal; pops back on cancel/confirm
+  const act = fn => async () => { setBusy(true); try { await fn(); } catch (e) { toast((e && e.message) || "Failed", "err"); } setBusy(false); await after(); };
+  const enable = () => confirm({ title: "Enable subscription", confirmLabel: "Enable",
+    body: "Create a shareable link to this user's QR codes. New peers appear on it automatically; the unlock secret rides in the link and never reaches the server.",
+    onConfirm: act(async () => { await subEnableUser(user.id); const r2 = (await subUsersMap(true))[user.id]; if (r2 && r2.enabled && r2.unlock_by_sk) { const { unlockKey } = await subRecover(r2); await subBackfillUser(user.id, unlockKey); } }) });
+  const rotate = () => confirm({ title: "Rotate subscription link", confirmLabel: "Rotate", warn: true,
+    body: "Issue a fresh link and invalidate the current one. A config already scanned keeps working until you rekey or remove the peer.",
+    onConfirm: act(() => subRotateUser(user.id)) });
+  const disable = () => confirm({ title: "Disable subscription", confirmLabel: "Disable", danger: true,
+    body: "Stop serving this user's link. A config already scanned keeps working until you rekey or remove the peer.",
+    onConfirm: act(() => api.subUserDisable({ user_id: user.id })) });
+  const enabled = !!(rec && rec.enabled);
+  return html`<div class="sublink">
+    ${enabled ? (url ? html`<${SubUrlBar} url=${url}/>` : !base
+        ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the link.</div>`
+        : html`<div class="hint">Building link…</div>`)
+      : html`<div class="hint">No subscription link yet — enable one to give this user a shareable page of their QRs.</div>`}
+    <div class="sublink-acts">
+      ${enabled ? html`<${Fragment}>
+          <button class="btn btn-ghost btn-mini" disabled=${busy} onClick=${rotate}>Rotate</button>
+          <button class="btn btn-ghost btn-mini danger" disabled=${busy} onClick=${disable}>Disable</button><//>`
+        : html`<button class="btn btn-primary btn-mini" disabled=${busy} onClick=${enable}>Enable</button>`}
+    </div>
+  </div>`;
+}
+// One peer as a carousel slide: a single deployment shows its QR; a multi-deployment peer shows two cards as a
+// non-interactive preview that opens the peer's own QR modal on click (a child of the user view).
+function PeerSlide({ peer, onOpen }) {
+  const targets = peer.targets || [];
+  const label = html`<span class="pslide-name">${peer.title || "Peer"}</span>${targets.length > 1 ? html`<span class="pslide-count">${targets.length} deployments</span>` : null}`;
+  if (targets.length <= 1) {
+    return html`<div class="pslide"><div class="pslide-hd">${label}</div><${TargetCard} peer=${peer} t=${targets[0]} bare=${true}/></div>`;
+  }
+  return html`<div class="pslide pslide-multi" onClick=${onOpen} title=${"Open all " + targets.length + " deployments"}>
+    <div class="pslide-hd">${label}<span class="pslide-open">Open <${Ic} i="chevron-right"/></span></div>
+    <div class="pslide-cards">${targets.slice(0, 2).map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${i === 0}/>`)}</div>
+  </div>`;
+}
+// One horizontal carousel across a user's PEERS (primary/only config each; multi-deployment peers open a child).
+function PeerCarousel({ peers, onOpen }) {
+  const ref = useRef(null);
+  const [i, setI] = useState(0);
+  const nearest = () => { const el = ref.current; if (!el) return 0; let b = 0, bd = Infinity; [...el.children].forEach((c, k) => { const d = Math.abs(c.offsetLeft - el.scrollLeft); if (d < bd) { bd = d; b = k; } }); return b; };
+  const go = d => { const el = ref.current; if (!el) return; const n = Math.max(0, Math.min(el.children.length - 1, i + d)); const c = el.children[n]; if (c) el.scrollTo({ left: c.offsetLeft - el.offsetLeft, behavior: "smooth" }); setI(n); };
+  return html`<div class="pcar">
+    <div class="pcar-track" ref=${ref} onScroll=${() => setI(nearest())}>${peers.map(p => html`<${PeerSlide} key=${p.id} peer=${p} onOpen=${() => onOpen(p)}/>`)}</div>
+    ${peers.length > 1 ? html`<div class="qrnav">
+      <button class="qrnavbtn" disabled=${i <= 0} onClick=${() => go(-1)} aria-label="Previous peer">‹</button>
+      <span class="qrnavcount">${i + 1} / ${peers.length}</span>
+      <button class="qrnavbtn" disabled=${i >= peers.length - 1} onClick=${() => go(1)} aria-label="Next peer">›</button>
+    </div>` : null}
+  </div>`;
+}
 // The VK link baked into a peer's turn configs IN THE PANEL: the owning user's own link, falling back to the
 // panel-wide test link (Settings → Turn proxies) for the admin's own testing + for unassigned peers. The
 // subscription page never falls back — it uses only the per-user link (see swg-sub).
@@ -5865,7 +5977,7 @@ function VkLinkField({ user }) {
     <input value=${val} placeholder="https://vk.ru/call/join/…" disabled=${busy}
       onInput=${e => setVal(e.target.value)} onBlur=${save} onKeyDown=${e => { if (e.key === "Enter") e.target.blur(); }}/>
     ${invalid ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
-      : empty ? html`<div class="hint vk-warn">No VK link for this user yet — the panel is using your <b>test</b> link to build these turn configs. Enter their own before you distribute.${subd ? html` Their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}
+      : empty ? html`<div class="hint vk-warn">No VK link for this user yet — the panel is using your <b>test</b> link to build these turn configs. Enter their own before you distribute.${subd ? html` Right now their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}
   </div>`;
 }
 function openPeerConfigs(peer, back) {
@@ -5874,9 +5986,13 @@ function openPeerConfigs(peer, back) {
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
   const vkUser = peer.user_id ? Store.recon.users.find(u => u.id === peer.user_id) : null;
-  openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width} onClose=${back || closeModal}>
-    <${VaultUnlockBar}/>
-    <${SubPeerUrl} peer=${peer}/>
+  const nc = (peer.targets || []).length;               // configs = deployments
+  const parts = []; if (vkUser) parts.push(vkUser.name); if (peer.title) parts.push(peer.title);
+  const nm = parts.length ? parts.join(" · ") : "Unassigned peer";
+  const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span><span class="qrhd-count">${nc} config${nc === 1 ? "" : "s"}</span></span>`;
+  openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal}>
+    ${vkUser ? html`<${SubStatusTag} userId=${vkUser.id}/>` : null}
+    <${VaultUnlockPanel}/>
     ${vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}/>
   <//>`);
@@ -6060,14 +6176,16 @@ function openUserConfigs(user, back) {
   const wcols = Math.max(maxT, 2);                        // hold 2 QRs wide even for a single deployment (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   const anyTurn = peers.some(p => targetsBehindTurn(p.targets));
-  openModal(html`<${Sheet} title=${user.name} width=${width} onClose=${back || closeModal}>
-    <${VaultUnlockBar}/>
-    <${SubUserPanel} user=${user}/>
+  const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
+  const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}<span class="qrhd-count">${peers.length} peer${peers.length === 1 ? "" : "s"} (${nCfg} config${nCfg === 1 ? "" : "s"})</span></span>`;
+  const backHere = () => openUserConfigs(user);          // a multi-deployment peer opens its own modal → returns here
+  openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal}>
+    <${SubStatusTag} userId=${user.id}/>
+    <${VaultUnlockPanel}/>
+    <${SubLinkActions} user=${user}/>
     ${anyTurn ? html`<${VkLinkField} user=${user}/>` : null}
-    ${peers.length ? html`<div class="usercfg">${peers.map(p => html`<div class="usercfg-peer" key=${p.id}>
-      <div class="usercfg-plabel">${p.title || "Peer"}${(p.targets || []).length ? html`<span class="usercfg-pcount">${p.targets.length} deployment${p.targets.length === 1 ? "" : "s"}</span>` : null}</div>
-      <${QRRow} key=${"row" + p.id} cards=${(p.targets || []).map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${p} t=${t} bare=${true} primary=${p.targets.length > 1 && i === 0}/>`)}/>
-    </div>`)}</div>` : html`<div class="empty" style="padding:24px">This user has no peers yet.</div>`}
+    ${peers.length ? html`<${PeerCarousel} peers=${peers} onOpen=${p => openPeerConfigs(p, backHere)}/>`
+      : html`<div class="empty" style="padding:24px">This user has no peers yet.</div>`}
   <//>`);
 }
 // Turn-proxy client configs for one deployment — one section per turn-proxy on the interface, generated
