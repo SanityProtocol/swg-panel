@@ -6007,10 +6007,10 @@ function openPeerConfigs(peer, back) {
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
   const vkUser = peer.user_id ? Store.recon.users.find(u => u.id === peer.user_id) : null;
-  const nc = (peer.targets || []).length;               // configs = deployments
-  const parts = []; if (vkUser) parts.push(vkUser.name); if (peer.title) parts.push(peer.title);
-  const nm = parts.length ? parts.join(" · ") : "Unassigned peer";
-  const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span>${nc > 1 ? html`<span class="qrhd-count">${nc} configs</span>` : null}</span>`;
+  // an unassigned peer always leads with "Unassigned peer" (its title, if any, follows)
+  const parts = []; parts.push(vkUser ? vkUser.name : "Unassigned peer"); if (peer.title) parts.push(peer.title);
+  const nm = parts.join(" · ");
+  const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span></span>`;
   const headExtra = vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true} header=${true}/>` : null;
   openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} onClose=${back || closeModal} onBack=${back}>
     <${VaultUnlockPanel}/>
@@ -6198,9 +6198,10 @@ function openUserConfigs(user, back) {
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   const anyTurn = peers.some(p => targetsBehindTurn(p.targets));
   const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
-  const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}<span class="qrhd-count">${peers.length} peer${peers.length === 1 ? "" : "s"}${nCfg > 1 ? ` (${nCfg} configs)` : ""}</span></span>`;
+  const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}</span>`;
+  const headExtra = html`<span class="hcount">${peers.length} peer${peers.length === 1 ? "" : "s"}${nCfg > 1 ? ` (${nCfg} configs)` : ""}</span>`;
   const backHere = () => openUserConfigs(user);          // a multi-deployment peer opens its own modal → returns here
-  openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal}>
+  openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} onClose=${back || closeModal}>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${anyTurn ? html`<${VkLinkField} user=${user}/>` : null}

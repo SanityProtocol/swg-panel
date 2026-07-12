@@ -2030,7 +2030,9 @@ a.tg:hover{filter:brightness(1.25)}
 .hsub{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--online);white-space:nowrap}
 .hsub .substatus-dot{background:var(--online)}
 .hsub b{font-weight:700}
-.sheet-head .hsub + .x,.sheet-head .hsub + .sheet-back{margin-left:12px}
+/* right-aligned peer/config count in the user-modal title row */
+.hcount{margin-left:auto;font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;color:var(--faint);text-transform:uppercase;white-space:nowrap}
+.sheet-head .hsub + .x,.sheet-head .hsub + .sheet-back,.sheet-head .hcount + .x,.sheet-head .hcount + .sheet-back{margin-left:12px}
 .substatus-dot{width:7px;height:7px;border-radius:50%;flex:none}
 .substatus.active{color:var(--online)} .substatus.active .substatus-dot{background:var(--online)}
 .substatus.disabled{color:var(--faint)} .substatus.disabled .substatus-dot{background:var(--faint)}
