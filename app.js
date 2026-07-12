@@ -406,16 +406,25 @@ async function subRecover(escRec) {
 // carries no explicit port, we append the sub's listen port so a directly-reached sub — or one behind
 // Cloudflare on an alt HTTPS port like 8443 — links to the right place. 443/80 are scheme defaults → left
 // implicit; a reverse proxy that remaps the port overrides this by putting an explicit port in the URL.
+// Public URLs (panel / sub) are often typed without a scheme — store them WITH https:// so every link builds
+// correctly (and the port logic in subBaseUrl can parse them).
+function normPublicUrl(s) { s = (s || "").trim().replace(/\/+$/, ""); return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
 function subBaseUrl() {
   const ps = Store.panelSettings || {};
   const sub = (ps.access || {}).sub || {};
-  let base = String(sub.url || (ps.subscriptions || {}).base_url || "").replace(/\/+$/, "");
-  if (!base) return "";
+  let raw = String(sub.url || (ps.subscriptions || {}).base_url || "").trim().replace(/\/+$/, "");
+  if (!raw) return "";
+  // Re-derive host:port LIVE from the settings every time (only the token is stored), so a port/host change
+  // flows into every link. The public URL is often typed WITHOUT a scheme ("sub.example.net") — default it,
+  // otherwise new URL() throws and the configured listen port silently never gets appended.
+  if (!/^https?:\/\//i.test(raw)) raw = "https://" + raw;
   try {
-    const u = new URL(base), lp = parseInt(sub.port, 10);
-    if (!u.port && lp && lp !== 443 && lp !== 80) { u.port = String(lp); base = u.toString().replace(/\/+$/, ""); }
-  } catch (_) {}
-  return base;
+    const u = new URL(raw);
+    const lp = parseInt(sub.port, 10);
+    // append the configured listen port unless the URL already carries one, or it's the scheme default
+    if (!u.port && lp && !((u.protocol === "https:" && lp === 443) || (u.protocol === "http:" && lp === 80))) u.port = String(lp);
+    return (u.origin + u.pathname).replace(/\/+$/, "");
+  } catch (_) { return raw.replace(/\/+$/, ""); }
 }
 const SUB_LANG_LIST = [["en", "English"], ["ru", "Русский"]];   // languages the swgSub page ships (must match swg-panel-server SUB_LANGS)
 async function subUrlFor(escRec) {
@@ -7574,15 +7583,17 @@ function AccessTLSCard({ onChange }) {
     const needSub = subsOn && (subBindChanged() || certChanged());
     const needPanel = panelBindChanged() || certChanged();
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
+    const npUrl = normPublicUrl(pUrl), nsUrl = normPublicUrl(sUrl);   // add https:// when the operator omitted it
+    setPUrl(npUrl); setSUrl(nsUrl);                                    // reflect it back in the fields
     const r = await api.panelSettings({ access: {
-      panel: { url: pUrl.trim(), host: pHost.trim() || "0.0.0.0", port: _pPortN() },
-      sub: { url: sUrl.trim(), host: sHost.trim() || "0.0.0.0", port: _sPortN() },
+      panel: { url: npUrl, host: pHost.trim() || "0.0.0.0", port: _pPortN() },
+      sub: { url: nsUrl, host: sHost.trim() || "0.0.0.0", port: _sPortN() },
       tls: { mode, email: email.trim(), cf_token: cfTok, cf_origin_token: cfOrig } } });
     if (!r || r.ok === false) { setBusy(false); return setMsg({ ok: false, t: (r && (r.error || (r.errors || []).join("; "))) || "Save failed." }); }
     const rtls = ((r.data || {}).access || {}).tls || {};        // redacted echo → refresh the "(set)" markers
     setHasCfTok(!!rtls.has_cf_token); setHasCfOrig(!!rtls.has_cf_origin_token); setCfTok(""); setCfOrig("");
-    setOrig({ pUrl: pUrl.trim(), pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
-      sUrl: sUrl.trim(), sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim() });
+    setOrig({ pUrl: npUrl, pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
+      sUrl: nsUrl, sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim() });
     // subscription server first (a background restart — it can never lock you out of the panel). Don't start
     // polling yet: the panel apply below arms its pending, and we want the very first poll tick to already see
     // it (so the confirm-redirect fires immediately, not after a wasted interval).
