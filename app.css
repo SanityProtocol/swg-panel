@@ -2050,6 +2050,14 @@ a.tg:hover{filter:brightness(1.25)}
 .vaultprompt{display:flex;flex-direction:column;gap:12px}
 .vaultprompt .vp-reason{margin:0;color:var(--ink-2);line-height:1.55}
 .vaultprompt .vp-skip{margin-top:2px}
+.vp-keep{display:flex;align-items:flex-start;gap:8px;margin-top:9px;cursor:pointer;font-size:13px;line-height:1.4}
+.vp-keep input{margin-top:2px;flex:none;cursor:pointer}
+.vp-keep .faint{font-size:12px}
+/* standout reassurance beside "re-distribute the configs" warnings — subscriptions auto-update */
+.sub-auto{display:flex;align-items:flex-start;gap:8px;margin-top:10px;padding:8px 11px;border-radius:8px;
+  background:rgba(63,216,154,.10);border:1px solid rgba(63,216,154,.34);color:var(--ink);font-size:12.5px;line-height:1.45}
+.sub-auto svg{flex:none;margin-top:1px;width:15px;height:15px;color:#2fb883}
+.sub-auto b{color:var(--ink)}
 /* the URL + copy row — one hover target; clicking anywhere copies */
 .suburl{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--bg);cursor:pointer;transition:border-color .12s,background .12s}
 .suburl:hover{border-color:var(--brand,#1FC8D6);background:color-mix(in srgb,var(--brand,#1FC8D6) 7%,var(--bg))}

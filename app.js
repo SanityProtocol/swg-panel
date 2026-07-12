@@ -268,25 +268,40 @@ async function sha256hex(s) {
 const _importAes = (bytes, uses) => crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, uses);
 
 let _subSK = null;                       // the unwrapped encryption key (CryptoKey), cached for this session
-const _SK_CACHE = "swg_ck";              // sessionStorage key for the convenience cache (see subUnlock)
+const _SK_CACHE = "swg_ck";              // key-cache: sessionStorage always (tab-scoped); ALSO localStorage when the
+const _SK_PERSIST = "swg_ck_keep";       // operator opts into "keep this device unlocked" (survives a browser restart).
 function subSKCached() { return _subSK; }
-function subForget() { _subSK = null; try { sessionStorage.removeItem(_SK_CACHE); } catch (_) {} }   // drop on logout / password change
+// Is device-persist opted in on THIS device? When on, the raw key also lives in localStorage so a cookie-only
+// login (browser restart, no password typed) can restore it — the same convenience the auth cookie already gives,
+// still 100% client-side (the server never receives the key; localStorage, unlike a cookie, is never transmitted).
+function subPersistOn() { try { return localStorage.getItem(_SK_PERSIST) === "1"; } catch (_) { return false; } }
+function subSetPersist(on) {
+  try {
+    if (on) { localStorage.setItem(_SK_PERSIST, "1"); const b = sessionStorage.getItem(_SK_CACHE); if (b) localStorage.setItem(_SK_CACHE, b); }
+    else { localStorage.removeItem(_SK_PERSIST); localStorage.removeItem(_SK_CACHE); }
+  } catch (_) {}
+}
+function subForget() { _subSK = null; try { sessionStorage.removeItem(_SK_CACHE); localStorage.removeItem(_SK_CACHE); } catch (_) {} }   // drop the key from memory + both stores (logout / password change / lock)
 // Operator-initiated lock (header padlock): drop the cached key so subscription-affecting actions prompt for it
-// again — for re-locking on a shared machine, and to exercise the unlock prompt. Clears the heal skip-set so a
-// later unlock re-checks every user, and bumps configEpoch so open QR views fall back to the unlock bar.
+// again — for re-locking on a shared machine, and to exercise the unlock prompt. Also turns OFF device-persist (an
+// explicit lock means "stop keeping this device unlocked"), clears the heal skip-set so a later unlock re-checks
+// every user, and bumps configEpoch so open QR views fall back to the unlock bar.
 function lockVault() {
   subForget();
+  try { localStorage.removeItem(_SK_PERSIST); } catch (_) {}
   try { for (const k in _healTried) delete _healTried[k]; } catch (_) {}
   Store.configEpoch++; bus.emit();
-  try { toast("Encryption key locked.", "ok"); } catch (_) {}
+  try { toast("Encryption key locked on this device.", "ok"); } catch (_) {}
 }
 // Restore the session convenience cache after a reload (login reloads the page). Raw key bytes live in
 // sessionStorage — tab-scoped, cleared on logout, never sent to the server; the deliberate convenience-cache
 // tradeoff so a normal login auto-unlocks config encryption without re-typing the password.
 async function subBootRestore() {
   if (_subSK) return;
-  let s = null; try { s = sessionStorage.getItem(_SK_CACHE); } catch (_) {}
+  // localStorage first (device-persist survives a browser restart / cookie-only login), then sessionStorage (tab).
+  let s = null; try { s = localStorage.getItem(_SK_CACHE) || sessionStorage.getItem(_SK_CACHE); } catch (_) {}
   if (!s) return;
+  try { sessionStorage.setItem(_SK_CACHE, s); } catch (_) {}   // mirror into the tab cache so the rest of the code path is unchanged
   try {
     const key = await _importAes(_b64ToBytes(s), ["encrypt", "decrypt"]);
     const v = await api.subVault();
@@ -309,7 +324,7 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
     skBytes = await subDec(wk, v.data.sk_by_pw);        // GCM auth fails here on a wrong password
   } catch (_) { throw new Error("That password didn't unlock the encryption key."); }
   _subSK = await _importAes(skBytes, ["encrypt", "decrypt"]);
-  try { sessionStorage.setItem(_SK_CACHE, b64(skBytes)); } catch (_) {}   // convenience cache (tab-scoped) — survives the post-login reload
+  try { sessionStorage.setItem(_SK_CACHE, b64(skBytes)); if (subPersistOn()) localStorage.setItem(_SK_CACHE, b64(skBytes)); } catch (_) {}   // tab cache; also localStorage when device-persist is opted in
   // self-heal: give an older vault (pre-sk_verify) an SK self-verifier so a cached SK can be validated on boot.
   if (!v.data.sk_verify) {
     try { await api.subVaultSet({ salt: v.data.salt, sk_by_pw: v.data.sk_by_pw, sk_check: v.data.sk_check,
@@ -4504,6 +4519,7 @@ function EditIfaceSheet({ node, iface }) {
       const what = portChanged && epChanged ? "endpoint and listen port" : portChanged ? "listen port" : "endpoint";
       pushModal(html`<${ConfirmSheet} title=${"Change " + what + "?"} confirmLabel="Apply change" warn=${true}
         body=${"This reconfigures the interface on the node. Existing peers will NOT be able to connect using their old configs — you'll need to re-issue and re-distribute the QR codes. The interface's keys and peers are kept."}
+        note=${html`<${SubAutoNote}/>`}
         onConfirm=${() => { doSave(); }}/>`);
       return;
     }
@@ -4515,7 +4531,7 @@ function EditIfaceSheet({ node, iface }) {
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode)} title=${egressError(eg, emode) || ""} onClick=${save}>Save</button></>`}>
-    <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div></div>
+    <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div><${SubAutoNote}/></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${meta.drift && meta.drift.public_key ? html`<div class="notice warn">
       <${Ic} i="warn"/><span><b>Server key changed on the node.</b> This interface's server keypair was rotated directly on the server, so <b>every client's existing config / QR for this interface no longer connects</b>. The node kept a backup of the original key.
@@ -4669,6 +4685,7 @@ function TurnManageSheet({ node, tp }) {
     <div class="iface-intro" style="margin-top:8px">
       <div>Changing any field rewrites the unit's ExecStart on the node and restarts it.</div>
       <div>The parameters below are placed verbatim after <span class="mono">-connect</span> — wrap key, wrap mode, any flags the fork supports.</div>
+      <${SubAutoNote}/>
     </div>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${turnFork(svc)} autocomplete="off"/></div>
     <div class="row2">
@@ -5823,12 +5840,13 @@ function openUserEdit(user) {
 // continues without the encrypted step. Resolves the ensureVaultUnlocked() promise with true/false.
 function VaultPromptSheet({ opts, onDone }) {
   const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
+  const [keep, setKeep] = useState(subPersistOn());   // "keep this device unlocked" — device-persist opt-in
   const [exists, setExists] = useState(null);   // null = checking; whether an encryption vault is set up at all
   useEffect(() => { let ok = true; api.subVault().then(r => { if (ok) setExists(!!(r && r.ok && r.data && r.data.exists)); }).catch(() => { if (ok) setExists(false); }); return () => { ok = false; }; }, []);
   const done = v => { closeModal(); onDone(v); };
   const unlock = async () => {
     if (!pw || busy) return; setBusy(true);
-    try { await subUnlock(pw); Store.configEpoch++; bus.emit(); setBusy(false); done(true); }
+    try { await subUnlock(pw); subSetPersist(keep); Store.configEpoch++; bus.emit(); setBusy(false); done(true); }
     catch (e) { setBusy(false); toast((e && e.message) || "That password didn’t unlock the encryption key.", "err"); }
   };
   return html`<${Sheet} title=${opts.title || "Enter your password to continue"} width=${480} onClose=${() => done(false)}
@@ -5841,7 +5859,9 @@ function VaultPromptSheet({ opts, onDone }) {
         ? html`<div class="notice err"><${Ic} i="warn"/><span>No encryption key is set up yet — set one up in <a href="#/panel/settings" onClick=${() => done(false)}>Settings → Client configs → Encryption</a>, then try again.</span></div>`
         : html`<div class="field"><label>Panel password</label>
             <input class="subpw" type="password" autofocus value=${pw} autocomplete="off" placeholder="Panel password"
-              onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/></div>`}
+              onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
+            <label class="vp-keep"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/>
+              <span>Keep this device unlocked <span class="faint">— stay unlocked across restarts on this device (the key is stored only here, never sent to the server)</span></span></label></div>`}
       <div class="notice warn vp-skip"><${Ic} i="info"/><span><b>If you skip:</b> ${opts.consequence || "the action completes, but anything that needed the key won’t be saved."}</span></div>
     </div>`;
 }
@@ -5849,13 +5869,14 @@ function VaultUnlockBar() {
   const [exists, setExists] = useState(false);
   const [ready, setReady] = useState(!!subSKCached());
   const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
+  const [keep, setKeep] = useState(subPersistOn());
   useEffect(() => { if (subSKCached()) { setReady(true); return; }
     let ok = true; api.subVault().then(r => { if (ok) setExists(!!(r && r.ok && r.data && r.data.exists)); }).catch(() => {});
     return () => { ok = false; }; }, []);
   if (ready || subSKCached() || !exists) return null;
   const unlock = async () => {
     if (!pw) return; setBusy(true);
-    try { await subUnlock(pw); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }
+    try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }
     catch (e) { toast((e && e.message) || "Unlock failed", "err"); }
     setBusy(false);
   };
@@ -5864,6 +5885,8 @@ function VaultUnlockBar() {
     <input class="subpw" type="password" style="max-width:200px" value=${pw} autocomplete="off" placeholder="Panel password"
       onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
     <button class="btn btn-primary btn-mini" disabled=${busy || !pw} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock"}</button>
+    <label class="vp-keep" style="flex-basis:100%"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/>
+      <span>Keep this device unlocked <span class="faint">— survives a browser restart; the key stays on this device, never sent to the server</span></span></label>
   </div>`;
 }
 function SubUrlBar({ url }) {
@@ -8335,7 +8358,14 @@ function LogBody({ text, raw }) {
   return html`<div class=${"logview" + (raw ? " raw" : "")}>${t.split("\n").map(l => html`<div class="logline">${l === "" ? " " : l}</div>`)}</div>`;
 }
 function openConfirm(opts) { openModal(html`<${ConfirmSheet} ...${opts}/>`); }
-function ConfirmSheet({ title, body, log, confirmLabel, danger, warn, onConfirm, back, requireType }) {
+// Standout reassurance for "you'll need to re-distribute the configs" warnings: interface / turn-proxy
+// IP/port/endpoint changes are NOT baked into the encrypted blob (only the private key + PSK are), so every
+// subscription page re-renders the corrected config on its own. Renders nothing when subscriptions are off.
+function SubAutoNote() {
+  if (!subFeatureOn()) return null;
+  return html`<div class="sub-auto"><${Ic} i="check"/><span><b>Subscribed users need nothing</b> — their subscription page serves the corrected config automatically; only manually-shared QR codes / configs need re-distributing.</span></div>`;
+}
+function ConfirmSheet({ title, body, note, log, confirmLabel, danger, warn, onConfirm, back, requireType }) {
   back = back || closeModal;
   const [busy, setBusy] = useState(false);
   const [raw, setRaw] = useState(false);
@@ -8356,6 +8386,7 @@ function ConfirmSheet({ title, body, log, confirmLabel, danger, warn, onConfirm,
       ? html`<${LogBody} text=${log} raw=${raw}/>`
       : html`<${Fragment}>
           <div class=${"notice" + (tone ? " warn" : "")}><${Ic} i=${tone ? "warn" : "info"}/><span>${body}</span></div>
+          ${note || null}
           ${requireType ? html`<label class="confirm-type"><span>Type <b>${requireType}</b> to confirm</span>
             <input class="ctype-input" type="text" autofocus spellcheck="false" autocomplete="off" placeholder=${requireType} value=${typed}
               onInput=${e => setTyped(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") go(); }}/></label>` : null}
@@ -8851,6 +8882,7 @@ function AddTargetSheet({ peer, back }) {
         : removed.length ? ("Remove from " + removed.length + " interface" + (removed.length > 1 ? "s" : "") + "?")
         : ("Change " + ipChanged.length + " address" + (ipChanged.length > 1 ? "es" : "") + "?");
       pushModal(html`<${ConfirmSheet} title=${title} confirmLabel="Save changes" danger=${true} body=${parts.join(" ") + " This can't be undone."}
+        note=${ipChanged.length ? html`<${SubAutoNote}/>` : null}
         onConfirm=${async () => { if (await doSave()) { closeModal(); back(); } }}/>`);
     } else doSave().then(ok => { if (ok) back(); });
   };
