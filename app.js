@@ -1449,6 +1449,14 @@ function closeModal() { _applyStack(_stack.slice(0, -1)); _blurActive(); }   // 
 function closeAllModals() { _applyStack([]); _blurActive(); }
 let _sheetStack = [];   // mounted Sheet tokens (LIFO) — only the topmost handles Esc/Enter/Tab
 
+// Row activation: a single click runs `fn` after a short delay; a double click cancels that and runs `dbl`
+// instead (open the QR modal). Clicks on interactive children (buttons/links/inputs/the assign combo) pass
+// through untouched. One shared timer is enough — a person clicks one row at a time.
+let _rowClickT = null;
+const _rowInteractive = e => !!(e.target.closest && e.target.closest("button, a, input, select, textarea, label, .assigncell, .rowacts, .selwrap"));
+function rowSingle(e, fn) { if (_rowInteractive(e)) return; clearTimeout(_rowClickT); _rowClickT = setTimeout(() => { _rowClickT = null; fn(); }, 200); }
+function rowDouble(e, fn) { if (_rowInteractive(e)) return; clearTimeout(_rowClickT); _rowClickT = null; fn(); }
+
 // ───────────────────────── shared bits ─────────────────────────
 const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
 const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied" };
@@ -5278,10 +5286,30 @@ const PEER_SORT = {
   total: ({ t }) => t.observed ? (t.observed.rx_bytes || 0) + (t.observed.tx_bytes || 0) : 0,
 };
 const PEER_DEFDIR = { status: -1, rate: -1, total: -1, online: 1, title: 1, user: 1, server: 1, address: 1, endpoint: 1 };   // first-click direction per column
-function sortPeerRows(rows, sort, dir) {
+// ── order freeze ─────────────────────────────────────────────────────────────────────────────────
+// Keep rows where they are WHILE you look at them: editing a record (rename, status flip) must not make its
+// row jump or leave the page. The sorted order is snapshotted per (list, sort, dir); a known row holds its
+// slot even if its sort key changes. The order is recomputed only when you change the sort (a new key) or
+// reload the page (this module var resets). New/removed rows fold into the snapshot so they stay put too.
+const _orderFreeze = {};   // freezeKey -> [ids] in frozen order
+function stableOrder(freezeKey, items, idOf, cmp) {
+  const frozen = _orderFreeze[freezeKey];
+  if (!frozen) { const s = items.slice().sort(cmp); _orderFreeze[freezeKey] = s.map(idOf); return s; }
+  const pos = new Map(frozen.map((id, i) => [id, i]));
+  const s = items.slice().sort((a, b) => {
+    const ai = pos.has(idOf(a)) ? pos.get(idOf(a)) : Infinity;   // known rows keep their frozen slot
+    const bi = pos.has(idOf(b)) ? pos.get(idOf(b)) : Infinity;   // new rows sort live, after the known ones
+    return ai !== bi ? ai - bi : cmp(a, b);
+  });
+  if (items.length !== frozen.length || items.some(it => !pos.has(idOf(it)))) _orderFreeze[freezeKey] = s.map(idOf);
+  return s;
+}
+function sortPeerRows(rows, sort, dir, freeze) {
   const key = PEER_SORT[sort] || PEER_SORT.status;
-  return rows.slice().sort((a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1)
-    || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || "")));
+  const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1)
+    || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || ""));
+  return freeze ? stableOrder(freeze + "|" + sort + "|" + dir, rows, r => r.p.id + "|" + tkey(r.t.node, r.t.iface), cmp)
+    : rows.slice().sort(cmp);
 }
 function peerSortBy(view, col) { if (view.sort === col) view.dir = -view.dir; else { view.sort = col; view.dir = PEER_DEFDIR[col] || 1; } }
 // Pager scroll: turning to the NEXT page brings the grid's TOP just under the sticky header; PREV brings its BOTTOM
@@ -5316,7 +5344,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const u = p.user_id ? Store.user(p.user_id) : null;
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
-        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} data-peer=${p.id} class=${"clk" + (fresh ? " pcreate" : "")} onClick=${() => openPeerView(p.id, t.node, t.iface)}>
+        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} data-peer=${p.id} class=${"clk" + (fresh ? " pcreate" : "")} title="Double-click for QR / configs" onClick=${e => rowSingle(e, () => openPeerView(p.id, t.node, t.iface))} onDblClick=${e => rowDouble(e, () => openPeerConfigs(p))}>
           <td data-label="Status" class="c-status">${(() => {
             const ifaceB = loc ? gridIfaceTag(t) : null;
             if (!live) return html`${gridStatusBadge(t, p)}${ifaceB}`;
@@ -5386,9 +5414,11 @@ function PeersScreen() {
     if (!ifaceMatch(t.iface, iface)) continue;
     rows.push({ p, t });
   }
+  // freeze the order over this view's full row set (per node/iface), THEN apply search/status filters — so
+  // filtering or editing never reshuffles the frozen rows
+  rows = sortPeerRows(rows, peersView.sort, peersView.dir, "peers|" + node + "|" + iface);
   if (q) rows = rows.filter(({ p, t }) => searchMatch((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface, q));
   if (peersView.status) rows = rows.filter(({ p }) => peersView.status === "unassigned" ? p.unassigned : p.status === peersView.status);   // status filter (set directly, or via a grouped Needs-attention click)
-  rows = sortPeerRows(rows, peersView.sort, peersView.dir);
   // which of each peer's deployments are actually visible as rows here — so a row can flag the rest
   // (filtered out by server/interface or search) with a "+N" the operator can hover/tap.
   const shownByPeer = {};
@@ -5560,7 +5590,7 @@ function ConnectionsScreen() {
 
   if (mode === "users") {
     // filter the user LIST by node/iface (has a peer there) + search + Online; the expanded grid still shows ALL peers
-    const users = sortUsers(Store.recon.users.filter(u => userMatchesQ(u, q) && userOnNodeIface(u, connView.node, connView.iface) && (!connView.online || u.onlineCount > 0)), connView.usort, connView.udir);
+    const users = sortUsers(Store.recon.users, connView.usort, connView.udir, "live").filter(u => userMatchesQ(u, q) && userOnNodeIface(u, connView.node, connView.iface) && (!connView.online || u.onlineCount > 0));
     return html`<div class="screen">
       ${toolbar}
       <div class="section-title"><h2 class="live-users">Users</h2><span class="count">${users.length}</span></div>
@@ -5665,9 +5695,10 @@ const USER_SORT = {
   nodes: u => { const nm = {}; let ifs = 0; for (const p of Store.peersOfUser(u.id)) for (const t of p.targets) { const s = nm[t.node] = nm[t.node] || new Set(); if (!s.has(t.iface)) { s.add(t.iface); ifs++; } } return Object.keys(nm).length * 10000 + ifs; },
 };
 const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, total: -1, name: 1, nodes: -1 };
-function sortUsers(users, sort, dir) {
+function sortUsers(users, sort, dir, freeze) {
   const key = USER_SORT[sort] || USER_SORT.status;
-  return users.slice().sort((a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1) || String(a.name).localeCompare(String(b.name)));
+  const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1) || String(a.name).localeCompare(String(b.name));
+  return freeze ? stableOrder(freeze + "|" + sort + "|" + dir, users, u => u.id, cmp) : users.slice().sort(cmp);
 }
 function sortColToggle(view, sk, dk, col, defdir) { if (view[sk] === col) view[dk] = -view[dk]; else { view[sk] = col; view[dk] = defdir[col] || 1; } }
 // The sortable header line above a users list — same grid columns as .urow-head so the titles (which the rows no
@@ -6003,8 +6034,9 @@ function VkLinkField({ user }) {
   const v = val.trim();
   const invalid = !!v && !_VK_CALL_RE.test(v);
   const empty = !v;
+  const dirty = v !== (user.vk_link || "");
   const save = async () => {
-    if (v === (user.vk_link || "") || invalid) return;
+    if (!dirty || invalid) return;
     setBusy(true);
     const r = await api.userUpdate({ id: user.id, vk_link: v });
     setBusy(false);
@@ -6013,8 +6045,11 @@ function VkLinkField({ user }) {
   };
   return html`<div class=${"field vkfield" + (empty || invalid ? " warn" : "")} style="margin-bottom:14px">
     <label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
-    <input value=${val} placeholder="https://vk.ru/call/join/…" disabled=${busy}
-      onInput=${e => setVal(e.target.value)} onBlur=${save} onKeyDown=${e => { if (e.key === "Enter") e.target.blur(); }}/>
+    <div class="vkfield-row">
+      <input value=${val} placeholder="https://vk.ru/call/join/…" disabled=${busy}
+        onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); save(); } }}/>
+      <button class="btn btn-primary btn-mini" disabled=${busy || !dirty || invalid} onClick=${save}>${busy ? "Saving…" : "Save"}</button>
+    </div>
     ${invalid ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
       : empty ? html`<div class="hint vk-warn">No VK link for this user yet — the panel is using your <b>test</b> link to build these turn configs. Enter their own before you distribute.${subd ? html` Right now their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}
   </div>`;
@@ -6027,8 +6062,11 @@ function openPeerConfigs(peer, child) {
   const wcols = Math.max(cols, 2);                       // hold 2 QRs wide even for a single deployment (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   const vkUser = peer.user_id ? Store.recon.users.find(u => u.id === peer.user_id) : null;
-  // an unassigned peer always leads with "Unassigned peer" (its title, if any, follows)
-  const parts = []; parts.push(vkUser ? vkUser.name : "Unassigned peer"); if (peer.title) parts.push(peer.title);
+  // an unassigned peer always leads with "Unassigned peer", then its title — or, with no title, its internal IP
+  const ipShort = (((peer.targets || [])[0] || {}).ip || "").split("/")[0];
+  const parts = []; parts.push(vkUser ? vkUser.name : "Unassigned peer");
+  if (peer.title) parts.push(peer.title);
+  else if (!vkUser && ipShort) parts.push(ipShort);
   const nm = parts.join(" · ");
   const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span></span>`;
   const headExtra = vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true} header=${true}/>` : null;
@@ -6323,7 +6361,7 @@ function UserRow({ user, live, onlineOnly, q }) {
   const [db, ub] = dlul(st.rxb, st.txb);
   const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 });
   return html`<div class=${"urow" + (expanded ? " open" : "")} id=${"urow-" + user.id}>
-    <div class="urow-head" onClick=${toggle}>
+    <div class="urow-head" title="Double-click for QR / configs" onClick=${e => rowSingle(e, toggle)} onDblClick=${e => rowDouble(e, () => openUserConfigs(user))}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       ${userStatTag(user, live)}
       <span class="u-name"><span class="un">${user.name}</span>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
@@ -6372,7 +6410,8 @@ function UsersScreen() {
   const ifaceOpts = usersView.node ? Store.userIfacesOf(usersView.node) : allIfaces;
   if (!ifaceIsAll(usersView.iface) && !ifaceOpts.includes(usersView.iface)) usersView.iface = "";
   // node/iface filter the user LIST (has a peer there); each expanded row still shows ALL of that user's peers
-  const users = sortUsers(allUsers.filter(u => userMatchesQ(u, q) && userOnNodeIface(u, usersView.node, usersView.iface)), usersView.sort, usersView.dir);
+  // freeze the order over the FULL list, then filter — so searching/clearing never reshuffles the frozen rows
+  const users = sortUsers(allUsers, usersView.sort, usersView.dir, "users").filter(u => userMatchesQ(u, q) && userOnNodeIface(u, usersView.node, usersView.iface));
   // The toolbar search filters the USER list only. The unassigned grid is deliberately NOT filtered by it:
   // the whole point of searching for a user here is to then assign an unassigned peer to them, and filtering
   // both by the same term hid every peer whose title didn't happen to match the user's name. The grid has its

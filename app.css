@@ -2047,6 +2047,9 @@ a.tg:hover{filter:brightness(1.25)}
 .sublink.sublink-row{flex-direction:row;align-items:center;gap:8px}
 .sublink-row .suburl{flex:1;min-width:0}
 .sublink-row .btn{flex:none}
+.vkfield-row{display:flex;gap:8px;align-items:center}
+.vkfield-row input{flex:1;min-width:0}
+.vkfield-row .btn{flex:none}
 /* user-modal peer card: the whole card opens the peer modal (except the QR + action buttons).
    `.hot` is set by JS only while the pointer is over a clickable region, so hovering the QR or a button
    never lights the card up. */
