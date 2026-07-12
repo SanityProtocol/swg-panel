@@ -5810,20 +5810,29 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
 // A peer's configs as a modal: one QR/download card per target (reuses TargetCard).
 // One peer's QR cards on a SINGLE line — up to 3 per view, paged with ‹ › when the peer has more
 // (never wraps to a second row). The card cards are passed in already built.
-const QR_PAGE = 3;
+// A horizontal carousel of fixed-width cards. Steps ONE card at a time; the counter + ‹/› enabled-state derive
+// from live scroll metrics (not a mid-scroll index guess), so it never jumps back or gets stuck before the last.
+const QR_ITEM = 256, QR_GAP = 14;
 function QRRow({ cards }) {
   const ref = useRef(null);
-  const [pg, setPg] = useState(0);
-  const pages = Math.ceil(cards.length / QR_PAGE);
-  const many = cards.length > QR_PAGE;
-  const go = d => { const el = ref.current; if (el) el.scrollBy({ left: d * el.clientWidth, behavior: "smooth" }); };
-  const onScroll = () => { const el = ref.current; if (el) setPg(Math.round(el.scrollLeft / (el.clientWidth || 1))); };
-  return html`<div class=${"qrrowwrap" + (many ? " paged" : "")}>
-    <div class="qrrow" ref=${ref} onScroll=${many ? onScroll : undefined}>${cards}</div>
-    ${many ? html`<div class="qrnav">
-      <button class="qrnavbtn" disabled=${pg <= 0} onClick=${() => go(-1)} aria-label="Previous servers">‹</button>
-      <span class="qrnavcount">${pg + 1} / ${pages}</span>
-      <button class="qrnavbtn" disabled=${pg >= pages - 1} onClick=${() => go(1)} aria-label="More servers">›</button>
+  const [m, setM] = useState({ l: 0, cw: 0, sw: 0 });
+  useEffect(() => { const el = ref.current; if (!el) return;
+    const measure = () => setM({ l: el.scrollLeft, cw: el.clientWidth, sw: el.scrollWidth });
+    measure(); el.addEventListener("scroll", measure, { passive: true });
+    let ro; try { ro = new ResizeObserver(measure); ro.observe(el); } catch (_) {}
+    return () => { el.removeEventListener("scroll", measure); if (ro) ro.disconnect(); }; }, [cards.length]);
+  const step = QR_ITEM + QR_GAP;
+  const paged = m.sw > m.cw + 4;
+  const atStart = m.l <= 2;
+  const atEnd = m.sw > 0 && m.l + m.cw >= m.sw - 2;
+  const lead = Math.min(cards.length, Math.max(1, Math.round(m.l / step) + 1));
+  const go = d => { const el = ref.current; if (el) el.scrollBy({ left: d * step, behavior: "smooth" }); };
+  return html`<div class=${"qrrowwrap" + (paged ? " paged" : "")}>
+    <div class="qrrow" ref=${ref}>${cards}</div>
+    ${paged ? html`<div class="qrnav">
+      <button class="qrnavbtn" disabled=${atStart} onClick=${() => go(-1)} aria-label="Previous">‹</button>
+      <span class="qrnavcount">${lead} / ${cards.length}</span>
+      <button class="qrnavbtn" disabled=${atEnd} onClick=${() => go(1)} aria-label="Next">›</button>
     </div>` : null}
   </div>`;
 }
@@ -5899,46 +5908,37 @@ function SubLinkActions({ user }) {
     body: "Stop serving this user's link. A config already scanned keeps working until you rekey or remove the peer.",
     onConfirm: act(() => api.subUserDisable({ user_id: user.id })) });
   const enabled = !!(rec && rec.enabled);
+  if (!enabled) return html`<div class="sublink sublink-off">
+    <span class="sublink-off-msg">No subscription link yet — enable one to give this user a shareable page of their QRs</span>
+    <button class="btn btn-primary btn-mini" disabled=${busy} onClick=${enable}>Enable subscription</button>
+  </div>`;
   return html`<div class="sublink">
-    ${enabled ? (url ? html`<${SubUrlBar} url=${url}/>` : !base
-        ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the link.</div>`
-        : html`<div class="hint">Building link…</div>`)
-      : html`<div class="hint">No subscription link yet — enable one to give this user a shareable page of their QRs.</div>`}
+    ${url ? html`<${SubUrlBar} url=${url}/>` : !base
+      ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the link.</div>`
+      : html`<div class="hint">Building link…</div>`}
     <div class="sublink-acts">
-      ${enabled ? html`<${Fragment}>
-          <button class="btn btn-ghost btn-mini" disabled=${busy} onClick=${rotate}>Rotate</button>
-          <button class="btn btn-ghost btn-mini danger" disabled=${busy} onClick=${disable}>Disable</button><//>`
-        : html`<button class="btn btn-primary btn-mini" disabled=${busy} onClick=${enable}>Enable</button>`}
+      <button class="btn btn-ghost btn-mini" disabled=${busy} onClick=${rotate}>Rotate</button>
+      <button class="btn btn-ghost btn-mini danger" disabled=${busy} onClick=${disable}>Disable</button>
     </div>
   </div>`;
 }
-// One peer as a carousel slide: a single deployment shows its QR; a multi-deployment peer shows two cards as a
-// non-interactive preview that opens the peer's own QR modal on click (a child of the user view).
-function PeerSlide({ peer, onOpen }) {
+// One user-modal card: a peer's PRIMARY/only QR under a two-line clickable header that opens the peer's own
+// modal. Line 1: title (or "Peer .{last IP octet}") · server name + protocol badge. Line 2: interface badge
+// (+N when there are more deployments) · status. Reuses TargetCard's QR body + actions via its `head` override.
+function UserPeerCard({ peer, onOpen }) {
   const targets = peer.targets || [];
-  const label = html`<span class="pslide-name">${peer.title || "Peer"}</span>${targets.length > 1 ? html`<span class="pslide-count">${targets.length} deployments</span>` : null}`;
-  if (targets.length <= 1) {
-    return html`<div class="pslide"><div class="pslide-hd">${label}</div><${TargetCard} peer=${peer} t=${targets[0]} bare=${true}/></div>`;
-  }
-  return html`<div class="pslide pslide-multi" onClick=${onOpen} title=${"Open all " + targets.length + " deployments"}>
-    <div class="pslide-hd">${label}<span class="pslide-open">Open <${Ic} i="chevron-right"/></span></div>
-    <div class="pslide-cards">${targets.slice(0, 2).map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${i === 0}/>`)}</div>
+  const t = targets[0] || {};
+  const col = Store.nodeColor(t.node);
+  const dnode = Store.nodeName(t.node);
+  const ltype = targetType(t);
+  const oct = String(t.ip || "").split("/")[0].split(".").pop() || "";
+  const nm = peer.title || (oct ? "Peer ." + oct : "Peer");
+  const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
+  const head = html`<div class="upc-head" onClick=${() => onOpen(peer)} title="Open this peer's configs">
+    <div class="upc-l1"><span class="upc-nm">${nm}</span><span class="grow"></span><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${ltype}/></div>
+    <div class="upc-l2"><span class="upc-if"><${Tag} kind=${ltype} label=${t.iface}/>${targets.length > 1 ? html`<span class="upc-more" title=${targets.length + " deployments"}>+${targets.length - 1}</span>` : null}</span><span class="grow"></span><${Badge} s=${lt.status}/></div>
   </div>`;
-}
-// One horizontal carousel across a user's PEERS (primary/only config each; multi-deployment peers open a child).
-function PeerCarousel({ peers, onOpen }) {
-  const ref = useRef(null);
-  const [i, setI] = useState(0);
-  const nearest = () => { const el = ref.current; if (!el) return 0; let b = 0, bd = Infinity; [...el.children].forEach((c, k) => { const d = Math.abs(c.offsetLeft - el.scrollLeft); if (d < bd) { bd = d; b = k; } }); return b; };
-  const go = d => { const el = ref.current; if (!el) return; const n = Math.max(0, Math.min(el.children.length - 1, i + d)); const c = el.children[n]; if (c) el.scrollTo({ left: c.offsetLeft - el.offsetLeft, behavior: "smooth" }); setI(n); };
-  return html`<div class="pcar">
-    <div class="pcar-track" ref=${ref} onScroll=${() => setI(nearest())}>${peers.map(p => html`<${PeerSlide} key=${p.id} peer=${p} onOpen=${() => onOpen(p)}/>`)}</div>
-    ${peers.length > 1 ? html`<div class="qrnav">
-      <button class="qrnavbtn" disabled=${i <= 0} onClick=${() => go(-1)} aria-label="Previous peer">‹</button>
-      <span class="qrnavcount">${i + 1} / ${peers.length}</span>
-      <button class="qrnavbtn" disabled=${i >= peers.length - 1} onClick=${() => go(1)} aria-label="Next peer">›</button>
-    </div>` : null}
-  </div>`;
+  return html`<${TargetCard} peer=${peer} t=${t} bare=${true} head=${head}/>`;
 }
 // The VK link baked into a peer's turn configs IN THE PANEL: the owning user's own link, falling back to the
 // panel-wide test link (Settings → Turn proxies) for the admin's own testing + for unassigned peers. The
@@ -5990,11 +5990,11 @@ function openPeerConfigs(peer, back) {
   const parts = []; if (vkUser) parts.push(vkUser.name); if (peer.title) parts.push(peer.title);
   const nm = parts.length ? parts.join(" · ") : "Unassigned peer";
   const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span><span class="qrhd-count">${nc} config${nc === 1 ? "" : "s"}</span></span>`;
-  openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal}>
+  openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal} onBack=${back}>
     ${vkUser ? html`<${SubStatusTag} userId=${vkUser.id}/>` : null}
     <${VaultUnlockPanel}/>
     ${vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
-    <${QRRow} cards=${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}/>
+    <${QRRow} cards=${peer.targets.map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && i === 0}/>`)}/>
   <//>`);
 }
 function openUserEdit(user) {
@@ -6184,7 +6184,7 @@ function openUserConfigs(user, back) {
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${anyTurn ? html`<${VkLinkField} user=${user}/>` : null}
-    ${peers.length ? html`<${PeerCarousel} peers=${peers} onOpen=${p => openPeerConfigs(p, backHere)}/>`
+    ${peers.length ? html`<${QRRow} cards=${peers.map(p => html`<${UserPeerCard} key=${p.id} peer=${p} onOpen=${() => openPeerConfigs(p, backHere)}/>`)}/>`
       : html`<div class="empty" style="padding:24px">This user has no peers yet.</div>`}
   <//>`);
 }
@@ -6438,7 +6438,7 @@ function UserEditCard({ user, done }) {
 
 // one credential: its targets, each a QR card; owner controls + edit + add-target
 
-function TargetCard({ peer, t, bare, primary }) {
+function TargetCard({ peer, t, bare, primary, head }) {
   useStore();   // re-render on each poll so the status badge stays live (t is a snapshot from open)
   const [conf, setConf] = useState(null);
   const [loaded, setLoaded] = useState(false);
@@ -6457,8 +6457,9 @@ function TargetCard({ peer, t, bare, primary }) {
     + `<span class="qrc-srv" style="color:${esc(col)}">${esc(dnode)}</span><span class="tg tg-${ltype}">${esc(t.iface)}</span>`;
 
   return html`<div class="deploy">
-    <div class="deploy-head"><div class="nmwrap">${primary ? html`<span class="deploy-primary">Primary</span>` : null}<a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>
+    ${head || html`<div class="deploy-head"><div class="nmwrap"><a class="nm nmlink" style=${"color:" + col} onClick=${() => { closeModal(); go("#/node/" + encodeURIComponent(t.node)); }}>${dnode}</a></div><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span><${Badge} s=${lt.status}/></div>`}
     <div class="deploy-body">
+      ${primary ? html`<span class="qr-primary">Primary</span>` : null}
       ${conf ? html`<${QR} conf=${conf} label=${label}/>`
         : html`<div class="qr-none">${!loaded ? "loading…"
             : Store.storeConfigs ? "No stored config — re-issue this peer to enable its QR & download."
@@ -8469,7 +8470,7 @@ function SearchBox({ placeholder, value, onInput }) {
 function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
   return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || "Cancel"}</button><button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button><//>`;
 }
-function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef }) {
+function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, onBack }) {
   onClose = onClose || closeModal;
   const ref = useRef(null);
   const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
@@ -8525,7 +8526,9 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
 
   return html`<div class="overlay show" onClick=${e => { if (e.target.classList.contains("overlay")) tryClose(); }}>
     <div class="sheet" role="dialog" aria-modal="true" ref=${ref} style=${width ? "width:" + width + "px;max-width:calc(100vw - 32px)" : ""}>
-      <div class="sheet-head"><h3>${title}</h3>${headExtra || null}<button class="x" onClick=${tryClose}>×</button></div>
+      <div class="sheet-head"><h3>${title}</h3>${headExtra || null}${onBack
+        ? html`<button class="sheet-back" onClick=${tryClose}><${Ic} i="back"/> Go back</button>`
+        : html`<button class="x" onClick=${tryClose}>×</button>`}</div>
       <div class="sheet-body">${children}</div>
       ${(foot || discard) ? html`<div class="sheet-foot">${discard
         ? html`<${Fragment}><span class="discard-msg"><${Ic} i="warn"/> Discard unsaved changes?</span><span class="grow"></span>

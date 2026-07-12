@@ -2031,19 +2031,25 @@ a.tg:hover{filter:brightness(1.25)}
 .unlockpanel .vp-keep-row{font-size:12.5px;color:var(--muted)}
 .sublink{margin:0 0 16px;display:flex;flex-direction:column;gap:9px}
 .sublink-acts{display:flex;justify-content:flex-end;gap:8px}
-.pcar{display:flex;flex-direction:column;gap:12px}
-.pcar-track{display:flex;gap:18px;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;padding-bottom:2px}
-.pcar-track::-webkit-scrollbar{display:none}
-.pslide{flex:none;scroll-snap-align:center;display:flex;flex-direction:column;gap:8px}
-.pslide .deploy{width:256px}
-.pslide-hd{display:flex;align-items:baseline;gap:8px;font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink)}
-.pslide-count{font-size:10px;font-weight:400;color:var(--faint);letter-spacing:.03em}
-.pslide-cards{display:flex;gap:14px}
-.pslide-multi{cursor:pointer;border-radius:14px;transition:background .12s}
-.pslide-multi:hover{background:color-mix(in srgb,var(--brand) 7%,transparent)}
-.pslide-multi .deploy{pointer-events:none}   /* whole slide opens the child modal; the inner cards are a preview */
-.pslide-open{margin-left:auto;display:inline-flex;align-items:center;gap:2px;font-size:11px;font-weight:600;color:var(--brand);letter-spacing:.02em}
-.pslide-open .ic{width:13px;height:13px}
+/* user-modal peer card: two-line clickable header (opens the peer modal) over the primary QR */
+.upc-head{cursor:pointer;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:5px;transition:background .12s}
+.upc-head:hover{background:color-mix(in srgb,var(--brand) 9%,transparent)}
+.upc-l1,.upc-l2{display:flex;align-items:center;gap:7px}
+.upc-nm{font-family:var(--mono);font-weight:700;font-size:13px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upc-srv{font-family:var(--mono);font-size:12px;font-weight:600}
+.upc-if{display:inline-flex;align-items:center;gap:5px}
+.upc-more{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--faint);border:1px solid var(--line-solid);border-radius:6px;padding:1px 5px}
+/* Primary badge now sits above the QR (peer modal), so it never shifts the header alignment */
+.deploy-body:has(.qr-primary){flex-direction:column;align-items:center}
+.qr-primary{align-self:flex-start;font-family:var(--mono);font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 40%,transparent);border-radius:6px;padding:2px 7px;margin-bottom:8px}
+/* "← Go back" in place of × (child modal opened from the user view) */
+.sheet-back{appearance:none;display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--line-solid);border-radius:8px;color:var(--ink);font:inherit;font-size:12.5px;font-weight:600;padding:5px 11px;cursor:pointer}
+.sheet-back:hover{background:var(--raise);border-color:var(--brand)}
+.sheet-back .ic{width:14px;height:14px}
+/* disabled-subscription: message + Enable button on one line */
+.sublink-off{flex-direction:row;align-items:center;justify-content:space-between;gap:14px}
+.sublink-off-msg{font-size:12px;color:var(--muted,#8a97ad);line-height:1.4}
+.sublink-off .btn{flex:none}
 .qrnavcount{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:44px;text-align:center}
 .nmwrap{display:flex;flex-direction:column;gap:1px;min-width:0}
 .deploy-primary{font-family:var(--mono);font-size:8.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--online);line-height:1}
