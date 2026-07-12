@@ -35,7 +35,7 @@
       noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
       pasteInto: "Use in", tapCopy: "Tap to copy",
       vkThen: "Then add this VK call link in the app:", vkNone: "Then add a VK call link in the app — create a VK call and copy its vk.ru/call/join/… link.",
-      vkMissing: "No VK call link yet — create a VK call and add its vk.ru/call/join/… link in {app}, or this config won't relay.",
+      vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
       someBad: "Some peers couldn’t be decrypted — this link may be out of date. Ask your administrator for a fresh one.",
@@ -62,7 +62,7 @@
       noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
       pasteInto: "Использовать в", tapCopy: "Нажмите, чтобы скопировать",
       vkThen: "Затем добавьте эту ссылку на звонок VK в приложении:", vkNone: "Затем добавьте ссылку на звонок VK в приложении — создайте звонок VK и скопируйте ссылку vk.ru/call/join/…",
-      vkMissing: "Ссылка на звонок VK не задана — создайте звонок VK и добавьте ссылку vk.ru/call/join/… в {app}, иначе этот конфиг не будет работать.",
+      vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Создайте звонок VK и добавьте ссылку vk.ru/call/join/… в {app}",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
       someBad: "Некоторые пиры не удалось расшифровать — возможно, ссылка устарела. Попросите у администратора новую.",
@@ -372,7 +372,10 @@
       var art = SWGTurn.artifact(conf, tp, vkLink);
       node.appendChild(el("span", "scell-paste", t("pasteInto") + " " + (art.app || art.fork)));
       if (art.vkMissing) {   // no per-user VK link — every fork needs one; warn (the config carries no link / a placeholder)
-        node.appendChild(el("div", "scell-vkwarn", t("vkMissing").replace("{app}", art.app || art.fork)));
+        var vkw2 = el("div", "scell-vkwarn");
+        vkw2.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));
+        vkw2.appendChild(el("div", "scell-vkwarn-d", t("vkMissing").replace("{app}", art.app || art.fork)));
+        node.appendChild(vkw2);
       } else if (art.vk) {   // link present + freeturn:// (can't carry it) → show it here so the recipient can copy it into the app
         var raw = (vkLink || "").trim();
         var vkw = el("div", "scell-vk");

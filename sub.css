@@ -110,7 +110,9 @@ body {
 .scell-vklbl { color: var(--muted); font-size: 12.5px; font-weight: 600; text-align: center; max-width: 92%; }
 .scell-vkbtn { max-width: 92%; appearance: none; cursor: pointer; font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: 12px; font-weight: 700; color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent); border-radius: 10px; padding: 7px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .scell-vkbtn:active { transform: translateY(1px); }
-.scell-vkwarn { max-width: 92%; margin: 2px auto 0; text-align: center; font-size: 12.5px; font-weight: 600; line-height: 1.45; color: #e0a85f; background: rgba(224,168,95,.12); border: 1px solid rgba(224,168,95,.34); border-radius: 10px; padding: 7px 11px; }
+.scell-vkwarn { max-width: 92%; margin: 2px auto 0; text-align: center; line-height: 1.45; color: #e0a85f; background: rgba(224,168,95,.12); border: 1px solid rgba(224,168,95,.34); border-radius: 10px; padding: 8px 12px; }
+.scell-vkwarn-t { font-size: 13px; font-weight: 700; }
+.scell-vkwarn-d { margin-top: 4px; font-size: 12px; font-weight: 500; }
 
 /* the stage — QR or config, centred and capped so it never looks oversized on a tablet */
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }
