@@ -409,6 +409,10 @@ async function subRecover(escRec) {
 // Public URLs (panel / sub) are often typed without a scheme — store them WITH https:// so every link builds
 // correctly (and the port logic in subBaseUrl can parse them).
 function normPublicUrl(s) { s = (s || "").trim().replace(/\/+$/, ""); return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
+// Is an apply-redirect address actually reachable from THIS browser? Probed BEFORE we navigate the whole page
+// to a new panel address, so a domain that isn't wired up (DNS / Cloudflare / firewall) doesn't strand the
+// operator on a dead page with no feedback. no-cors: a genuine network failure throws; any served response
+// (even an error page) resolves — enough to tell "the address exists" from "it doesn't answer at all".
 function subBaseUrl() {
   const ps = Store.panelSettings || {};
   const sub = (ps.access || {}).sub || {};
@@ -7483,6 +7487,8 @@ function AccessTLSCard({ onChange }) {
   const [hasCfTok, setHasCfTok] = useState(!!t0.has_cf_token); const [hasCfOrig, setHasCfOrig] = useState(!!t0.has_cf_origin_token);
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [confirmUrl, setConfirmUrl] = useState("");   // set while an address change is verifying → the operator confirms it by opening the new address in a new tab (we can't auto-navigate safely: an unreachable new address would strand them, and a cross-origin reachability probe is blocked by our own CSP)
+  const rollbackRef = useRef(null);            // the panel address that was live BEFORE an apply → restore the SAVED url on revert (the server rolls back the bind/cert, but the saved url is still the new one → it'd advertise a dead address to nodes)
   // Baseline of what's currently live — the form is compared to this to decide what changed (and thus what needs
   // a live apply). Refreshed after a successful save so the button disables until the next edit.
   const [orig, setOrig] = useState({ pUrl: p0.url || "", pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
@@ -7502,23 +7508,40 @@ function AccessTLSCard({ onChange }) {
     setOrig({ pUrl: pp.url || "", pHost: pp.host || "0.0.0.0", pPort: String(pp.port || 443),
       sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "" });
   };
-  // poll the apply state machine while a change is in flight; auto-redirect to the new panel address to confirm it,
-  // and surface a single running status (shown in the settings footer, like every other section).
+  // poll the apply state machine while a change is in flight. When it's ready to confirm, we DON'T auto-navigate:
+  // an unreachable new address would strand the operator, and a cross-origin reachability probe is blocked by our
+  // own CSP — so we surface a "Confirm on the new address" link (opened in a new tab, a top-level navigation CSP
+  // doesn't block). The new tab's SPA POSTs the confirm; this tab keeps polling and reports saved / reverted.
   useEffect(() => {
     if (!polling) return; let live = true, timer;
     const tick = async () => {
       const r = await api.get("/api/access/status"); if (!live) return;
       if (r && r.ok) {
         const p = r.panel || {}, s = r.sub || {};
-        if (p.state === "verifying" && p.redirect) { location.href = p.redirect; return; }
-        const parts = [];
-        if (p.state && p.state !== "idle") parts.push("Panel: " + (p.message || p.state));
-        if (subsOn && s.state && s.state !== "idle") parts.push("Subscriptions: " + (s.message || s.state));
+        if (p.state === "verifying" && p.redirect) {
+          setConfirmUrl(p.redirect);   // show the confirm affordance (rendered in the card); the operator opens it to prove the new address is reachable
+          let h = p.redirect; try { h = new URL(p.redirect).host; } catch (_) {}
+          setMsg({ ok: true, t: "Almost there — open the new address (" + h + ") to confirm it's reachable. The change applies the moment it loads." });
+        } else {
+          setConfirmUrl("");
+          const parts = [];
+          if (p.state === "reverted")   // the new address never confirmed (unreachable / not opened) → say what to check
+            parts.push("The new address wasn't confirmed — kept the current one. Check its DNS / Cloudflare / firewall / port, then try again.");
+          else if (p.state && p.state !== "idle") parts.push("Panel: " + (p.message || p.state));
+          if (subsOn && s.state && s.state !== "idle") parts.push("Subscriptions: " + (s.message || s.state));
+          const fail = ["failed", "reverted"].includes(p.state) || s.state === "failed";
+          if (parts.length) setMsg({ ok: !fail, t: parts.join(" · ") });
+        }
         const fail = ["failed", "reverted"].includes(p.state) || s.state === "failed";
-        if (parts.length) setMsg({ ok: !fail, t: parts.join(" · ") });
         const done = ["saved", "failed", "reverted", "idle"].includes(p.state) && ["saved", "failed", "reverted", "idle"].includes(s.state);
-        if (done) { setPolling(false); if (!parts.length) setMsg({ ok: true, t: "Applied." });
-          if (fail) resync();    // the form was left showing the rejected value → pull the rolled-back config back in
+        if (done) { setPolling(false); setBusy(false); setConfirmUrl("");   // clear busy too — a non-navigating finish (revert) reloads nothing, so the Save button would otherwise stay stuck on "Saving…"
+          if (fail) {
+            // The server reverted the live bind/cert, but the SAVED url is still the new (unreachable) one — it'd be
+            // advertised to nodes as the panel's address. Roll it back to what was live before, THEN resync the form.
+            const rb = rollbackRef.current; rollbackRef.current = null;
+            if (rb) { try { await api.panelSettings({ access: { panel: { url: rb.url, host: rb.host, port: rb.port } } }); } catch (_) {} }
+            resync();    // the form was left showing the rejected value → pull the rolled-back config back in
+          } else rollbackRef.current = null;
           return; }
       }
       timer = setTimeout(tick, 1400);
@@ -7605,6 +7628,10 @@ function AccessTLSCard({ onChange }) {
     if (!r || r.ok === false) { setBusy(false); return setMsg({ ok: false, t: (r && (r.error || (r.errors || []).join("; "))) || "Save failed." }); }
     const rtls = ((r.data || {}).access || {}).tls || {};        // redacted echo → refresh the "(set)" markers
     setHasCfTok(!!rtls.has_cf_token); setHasCfOrig(!!rtls.has_cf_origin_token); setCfTok(""); setCfOrig("");
+    // remember the address that was live before this apply — if the new one doesn't confirm, we re-save this so the
+    // panel's canonical url (advertised to nodes) rolls back with the bind/cert the server already reverts.
+    if (needPanel) rollbackRef.current = { url: orig.pUrl, host: orig.pHost || "0.0.0.0", port: +orig.pPort || 443 };
+    setConfirmUrl("");
     setOrig({ pUrl: npUrl, pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
       sUrl: nsUrl, sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim() });
     // subscription server first (a background restart — it can never lock you out of the panel). Don't start
@@ -7616,12 +7643,12 @@ function AccessTLSCard({ onChange }) {
       const ss = await _awaitSub();               // let it settle before the panel apply — no bind race
       if (ss.state === "failed") { setBusy(false); await resync(); return setMsg({ ok: false, t: ss.message || "The subscription server couldn't be updated." }); }
     }
-    // then the panel address/cert (dual-listen + confirm — you'll be redirected briefly to prove it's reachable)
+    // then the panel address/cert (dual-listen + confirm — the operator confirms by opening the new address)
     if (needPanel) {
       const rp = await api.post("/api/access/apply", {});
       if (rp && rp.ok === false) { setBusy(false); await resync(); return setMsg({ ok: false, t: rp.error || "Couldn't apply the panel address." }); }
-      if (rp && !rp.applied) {    // a live bind/cert change is in progress → status poll redirects to confirm on the first tick
-        setMsg({ ok: true, t: "Verifying the new panel address is reachable — you'll be redirected in a moment…" });
+      if (rp && !rp.applied) {    // a live bind/cert change is in progress → the status poll surfaces a Confirm link on the first tick
+        setMsg({ ok: true, t: "Preparing the new panel address…" });
         setPolling(true); return;
       }
     }
@@ -7634,8 +7661,13 @@ function AccessTLSCard({ onChange }) {
   // Runs after each render; the parent only re-renders when a DISPLAYED bit actually changes (see onAccess).
   useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked, busy: busy || polling, msg, run: saveAndApply }); });
 
+  let _confHost = confirmUrl; try { _confHost = new URL(confirmUrl).host; } catch (_) {}
   return html`<div class="card acctls">
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
+    ${confirmUrl ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
+      <b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab — the change applies the instant it loads there. If that tab <b>can't</b> load, just close it: this panel stays on the current address and reverts automatically. Nothing is committed until the new address answers.
+      <div style="margin-top:10px"><a class="btn btn-primary" href=${confirmUrl} target="_blank" rel="noopener">Open the new address to confirm ↗</a></div>
+    </div></div>` : null}
 
     <div class="seclabel" style="margin-top:0">Certificate</div>
     <p class="hint" style="margin:0 0 12px">How TLS is terminated — this decides which ports are valid below. One choice issues both certificates (the panel's and swg-sub's, always separate keys).</p>
