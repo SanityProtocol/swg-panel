@@ -1168,6 +1168,46 @@ def _url_host(url):
     return s.rsplit(":", 1)[0] if s.count(":") == 1 else s  # host:port (v4/name) → host
 
 
+def _panel_public_url(deps):
+    """The canonical PUBLIC URL a node should dial = access.panel.url, the operator's public address (which the
+    UI defines as the dial address; behind a proxy/Cloudflare it's the public host, NOT the origin listen port).
+    Normalise the scheme only — never append access.panel.port (that's the origin bind, which a proxied node
+    doesn't use). '' if unset. Sent in the sync response so an online node re-points itself when this changes,
+    after verifying the new address presents the same pinned/CA identity (a MITM can't redirect a pinned node)."""
+    p = ((deps.get("panel_settings") or {}).get("access") or {}).get("panel") or {}
+    raw = (p.get("url") or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if not re.match(r"^https?://", raw, re.I):
+        raw = "https://" + raw
+    try:
+        u = urllib.parse.urlparse(raw)
+        if not u.hostname or u.hostname == "0.0.0.0":
+            return ""
+        return raw
+    except Exception:
+        return ""
+
+
+_CERT_FP_CACHE = {"mtime": None, "fp": ""}
+def _panel_cert_fp():
+    """sha256 hex of the panel's LEAF TLS cert DER — matches what a node derives from getpeercert(True). '' on
+    plain HTTP. Sent in the sync response so a currently-UNVERIFIED node can opportunistically adopt it as a pin
+    (TOFU upgrade over its already-unverified channel — a strict improvement); pinned/CA nodes ignore it."""
+    if not TLS_CERT:
+        return ""
+    try:
+        mt = os.path.getmtime(TLS_CERT)
+        if _CERT_FP_CACHE["mtime"] != mt:
+            pem = open(TLS_CERT).read()
+            m = re.search(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem, re.S)
+            der = ssl.PEM_cert_to_DER_cert(m.group(0)) if m else b""
+            _CERT_FP_CACHE.update(mtime=mt, fp=(hashlib.sha256(der).hexdigest() if der else ""))
+        return _CERT_FP_CACHE["fp"]
+    except Exception:
+        return ""
+
+
 def _is_ip(host):
     try:
         ipaddress.ip_address(host)
@@ -4176,7 +4216,9 @@ def api(method, path, qs, body, deps):
                 new_srv = LISTENERS.get(pend["new_lid"])
                 if new_srv is not None:
                     new_srv._swg["primary"] = True            # the new listener is now the panel
-                LISTENERS.remove(pend["old_lid"])
+                # keep the OLD listener alive for a grace window so ONLINE nodes sync once on the old address and
+                # auto-repoint to the new one before it's dropped (instead of orphaning every node immediately)
+                _drop_listener_later(pend["old_lid"], NODE_MIGRATE_GRACE)
             nd, od = pend.get("new_domain"), pend.get("old_domain")
             _APPLY["pending"] = None
             _apply_status("saved", "panel now on %s:%d" % (pend["host"], pend["port"]))
@@ -7358,6 +7400,9 @@ class Handler(BaseHTTPRequestHandler):
             if _ent:
                 _list_manifest[_c] = _ent
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
+                                # canonical panel address + cert fp → lets an online node re-point itself (pin-gated)
+                                # when the operator changes the panel host/port. Additive: older nodes ignore these.
+                                "panel_url": _panel_public_url(Handler.deps), "panel_fp": _panel_cert_fp(),
                                 "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
                                 "delete": list((node.get("delete") or {}).keys()),
                                 "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
@@ -7637,6 +7682,8 @@ def passwd_cmd(argv):
 # works (a redirect that lands and POSTs /api/access/confirm ON the new listener). No confirm in time →
 # the new listener is dropped and the old never stopped. All in-process, so rollback needs no restart.
 APPLY_TIMEOUT = 30                       # seconds the operator's browser has to confirm the new address
+NODE_MIGRATE_GRACE = 180                 # seconds to KEEP the old listener after confirm, so online nodes sync
+                                         # once on the old address and learn the new one (pin-gated auto-repoint)
 
 class _TLSServer(ThreadingHTTPServer):
     # TLS is wrapped PER CONNECTION in the worker thread (not on the listening socket): wrapping the
@@ -7870,6 +7917,17 @@ def _restore_panel_bind(deps, host, port):
         ps.setdefault("access", {})["panel"] = pnl
         deps["panel_settings"] = ps
         save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+
+
+def _drop_listener_later(lid, grace):
+    """Keep the OLD listener alive for `grace` seconds after the admin confirms an address change, so ONLINE nodes
+    sync once on the old address and learn the new one (pin-gated auto-repoint) before it goes away. Offline nodes
+    are re-pointed manually (the UI warns + gives the command)."""
+    def _drop():
+        with contextlib.suppress(Exception):
+            LISTENERS.remove(lid)
+        print("access: dropped the old listener after the %ds node-migration grace" % grace, flush=True)
+    t = threading.Timer(max(1, grace), _drop); t.daemon = True; t.start()
 
 
 def _apply_timeout(nonce, deps):

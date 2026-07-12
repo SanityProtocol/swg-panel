@@ -3016,6 +3016,103 @@ def _persist_config(node_cfg):
     os.replace(tmp, CONFIG_PATH)
 
 
+# ── panel address auto-repoint (pin-gated) + opportunistic cert-pin adoption ──────────────────────────────
+# The panel serves its canonical URL + cert fingerprint in every sync. On a change of the panel host/port an
+# ONLINE node re-points itself — but ONLY after proving the new address presents the SAME identity we already
+# trust (pinned cert / CA), so a MITM (or a stolen token feeding a bogus URL) can never redirect a node.
+
+def _host_is_internal(host):
+    """A compose/loopback/private address whose link to the panel is INDEPENDENT of the public address — the
+    master's local node (docker: 'swg-panel', bare-metal: localhost) must never auto-repoint on a public change."""
+    h = (host or "").strip().lower().strip("[]")
+    if not h:
+        return True
+    if h == "localhost" or h.startswith("127.") or h == "::1":
+        return True
+    if "." not in h and ":" not in h:                      # single-label hostname (e.g. compose service 'swg-panel')
+        return True
+    if h.startswith(("10.", "192.168.", "169.254.")):
+        return True
+    if h.startswith("172."):
+        try:
+            return 16 <= int(h.split(".")[1]) <= 31
+        except Exception:
+            return False
+    if h.startswith(("fc", "fd", "fe80")):                 # v6 ULA / link-local
+        return True
+    return False
+
+def _norm_url(u):
+    """scheme://host[:port] with default ports dropped — so we don't churn on cosmetic differences."""
+    try:
+        p = urllib.parse.urlparse(u if "://" in (u or "") else "https://" + (u or ""))
+        host = p.hostname or ""
+        default = 443 if p.scheme == "https" else 80
+        port = p.port or default
+        netloc = host if port == default else (("[%s]:%d" % (host, port)) if ":" in host else "%s:%d" % (host, port))
+        return "%s://%s" % (p.scheme, netloc)
+    except Exception:
+        return (u or "").rstrip("/")
+
+def _verify_panel(base_url, token, panel):
+    """True iff the panel at base_url answers /api/node/whoami with our token UNDER OUR CURRENT TLS POSTURE
+    (existing pin / CA verify). This is the gate that stops a MITM from redirecting us."""
+    try:
+        st, _d, _h = _panel_get(base_url.rstrip("/") + "/api/node/whoami", token, panel, timeout=8)
+        return st == 200
+    except Exception:
+        return False
+
+def _persist_panel_url(node_cfg, new_url):
+    """Persist a re-point. config.json is authoritative for bare-metal + the running process; the STATE_DIR copy
+    survives a docker container recreate (node-entrypoint reads it ahead of the .env PANEL_URL)."""
+    node_cfg.setdefault("panel", {})["url"] = new_url
+    _persist_config(node_cfg)
+    with contextlib.suppress(Exception):
+        tmp = os.path.join(STATE_DIR, "panel-url.tmp")
+        with open(tmp, "w") as f:
+            f.write(new_url + "\n")
+        os.replace(tmp, os.path.join(STATE_DIR, "panel-url"))
+
+def apply_panel_hints(panel, node_cfg, reply):
+    """On a VALID sync: (1) opportunistically adopt a cert pin if we're currently UNVERIFIED (TOFU upgrade over an
+    already-unverified channel — strictly better); (2) re-point to a new panel URL, pin-gated. Returns the new
+    sync URL to dial if it changed, else None. Never throws (a hiccup must not break the sync loop)."""
+    try:
+        p_fp = (reply.get("panel_fp") or "").replace(":", "").lower().strip()
+        p_url = (reply.get("panel_url") or "").strip().rstrip("/")
+        cur_fp = (panel.get("fingerprint") or "").replace(":", "").lower().strip()
+        verified = bool(panel.get("verify", False) or cur_fp)
+        # (1) opportunistic pin adoption — only when we hold NO trust anchor at all
+        if p_fp and not cur_fp and not panel.get("verify", False):
+            panel["fingerprint"] = p_fp
+            node_cfg.setdefault("panel", {})["fingerprint"] = p_fp
+            _persist_config(node_cfg)
+            cur_fp = p_fp; verified = True
+            print(f"security: adopted panel cert pin {p_fp[:16]}… (was unverified)", flush=True)
+        # (2) auto-repoint
+        if p_url:
+            cur = (panel.get("url") or "").rstrip("/")
+            if _norm_url(p_url) != _norm_url(cur):
+                cur_host = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur).hostname
+                if _host_is_internal(cur_host):
+                    pass   # internal/compose link — independent of the public address; never repoint
+                elif not verified:
+                    print(f"panel moved to {p_url}, but this node is unverified — re-point it manually "
+                          f"(set panel.url in {CONFIG_PATH} + restart)", flush=True)
+                elif _verify_panel(p_url, panel.get("token") or "", panel):
+                    panel["url"] = p_url
+                    _persist_panel_url(node_cfg, p_url)
+                    print(f"panel address changed → re-pointed to {p_url} (verified same identity)", flush=True)
+                    return p_url.rstrip("/") + "/api/node/sync"
+                else:
+                    print(f"panel says it moved to {p_url}, but that address doesn't present our trusted cert yet "
+                          f"— staying on {cur}", flush=True)
+    except Exception as e:
+        print("apply_panel_hints:", e, flush=True)
+    return None
+
+
 def create_ifaces(node_cfg, create, agent, sudo):
     """Create panel-requested BRAND-NEW interfaces via swg-agent (genkey + conf + auto-NAT + bring-up),
     then start managing them (config.json). Only on a valid sync. Bring-up runs live — verify on one
@@ -3976,6 +4073,9 @@ def main():
                         else:
                             os.unlink(PANEL_IP_FILE)
             if status == 200 and isinstance(reply.get("desired"), dict):
+                _newurl = apply_panel_hints(panel, node_cfg, reply)   # pin-gated auto-repoint on a panel host/port change
+                if _newurl:
+                    url = _newurl                                     # dial the new address from the next sync on
                 _upd0 = reply.get("update")
                 if _upd0 and not update_started:   # already fired THIS exact request (a recreate restarted us)? then DON'T re-fire — else the update loops forever (recreate → restart → re-trigger → recreate …)
                     _at = str((_upd0 or {}).get("at") or "")

@@ -7651,6 +7651,9 @@ function AccessTLSCard({ onChange }) {
     <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
     <div class="fieldrow">${ipField(pHost, setPHost, true)}${portField(pPort, setPPort, pBad)}</div>
     ${pBad ? cfNote : null}
+    ${panelBindChanged() ? html`<div class="notice" style="margin:2px 0 12px"><${Ic} i="info"/><div style="min-width:0">
+      <b>Nodes re-point themselves.</b> On save, online nodes learn the new address on their next sync and switch to it — the old address stays reachable for ~3 minutes so they can. A node that is <b>offline</b> during the change (or one installed without verifying/pinning the panel cert) must be re-pointed by hand: set <span class="mono">panel.url</span> in <span class="mono">/etc/swg-agent/config.json</span> (bare-metal) or <span class="mono">PANEL_URL</span> in <span class="mono">.env</span> (docker) to the new address, then restart <span class="mono">swg-noded</span> / recreate the container.
+    </div></div>` : null}
 
     ${subsOn ? html`<div class="seclabel">Subscription address</div>
       <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>

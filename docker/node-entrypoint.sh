@@ -19,6 +19,15 @@ rand32(){ od -An -N4 -tu4 /dev/urandom | tr -d ' '; }   # one unsigned 32-bit in
 : "${NODE_ENDPOINT:?NODE_ENDPOINT required (public IP/host clients dial)}"
 AWG_DIR=/etc/amnezia/amneziawg
 mkdir -p "$AWG_DIR" /var/lib/swg-noded /etc/swg-agent
+# A self-learned re-point (operator changed the panel host/port; swg-noded verified the new address presents the
+# same trusted cert and switched) is persisted to the state volume — honour it ahead of the .env PANEL_URL so it
+# survives a container recreate (which regenerates config.json from the env).
+if [ -f /var/lib/swg-noded/panel-url ]; then
+  _pu="$(head -n1 /var/lib/swg-noded/panel-url 2>/dev/null | tr -d '[:space:]')"
+  if [ -n "$_pu" ] && [ "$_pu" != "$PANEL_URL" ]; then
+    log "using self-learned panel URL $_pu (was ${PANEL_URL})"; PANEL_URL="$_pu"
+  fi
+fi
 # First boot seeds the NODE_IFACES bootstrap; after that, ./data/node-confs is the SINGLE source of
 # truth — a bootstrap interface deleted from the panel must NOT be regenerated on the next reboot.
 BOOT_MARKER=/var/lib/swg-noded/.bootstrapped   # persisted with ./data/node
