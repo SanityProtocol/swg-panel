@@ -2005,12 +2005,16 @@ a.tg:hover{filter:brightness(1.25)}
    Used by BOTH the peer QR modal and each peer row of the user QR modal. */
 .qrrowwrap{display:flex;flex-direction:column;gap:10px}
 .qrrow{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;padding-bottom:2px}
-.qrrow:has(> .deploy:only-child){justify-content:center}
+.qrrow:has(> .deploy:only-child),.qrrow:has(> .upc-wrap:only-child){justify-content:center}
 .qrrow::-webkit-scrollbar{display:none}
-.qrrow > .deploy{width:256px;flex:none;scroll-snap-align:start}
-.qrrow > .deploy .qr{flex:1;min-width:0}
-.qrrow > .deploy .qr .qrimg{width:100%}
-.qrrow > .deploy .acts{justify-content:center}
+/* every carousel item is a uniform 256px column, whether a bare .deploy (peer modal) or a .upc-wrap (user modal) —
+   uniform width is what keeps the scroll step and the "N of M" range honest */
+.qrrow > .deploy,.qrrow > .upc-wrap{width:256px;flex:none;scroll-snap-align:start}
+.qrrow > .upc-wrap > .deploy{width:100%}
+.qrrow .deploy .qr,.qrrow .deploy .qr-none,.qrrow .deploy .qr-fail{flex:1;min-width:0}
+.qrrow .deploy .qr-none,.qrrow .deploy .qr-fail{width:auto;height:auto;aspect-ratio:1/1}
+.qrrow .deploy .qr .qrimg{width:100%}
+.qrrow .deploy .acts{justify-content:center}
 .qrnav{display:flex;align-items:center;justify-content:center;gap:16px}
 .qrnavbtn{appearance:none;width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:18px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0}
 .qrnavbtn:disabled{opacity:.35;cursor:default}
@@ -2022,6 +2026,11 @@ a.tg:hover{filter:brightness(1.25)}
 .qrhd-count{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;color:var(--faint);text-transform:uppercase}
 .substatus{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin:-2px 0 12px;font-size:12px;color:var(--muted,#8a97ad)}
 .substatus b{font-weight:700}
+/* compact "In subscription" badge in the sheet title row, right-aligned just before the ×/Go-back control */
+.hsub{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--online);white-space:nowrap}
+.hsub .substatus-dot{background:var(--online)}
+.hsub b{font-weight:700}
+.sheet-head .hsub + .x,.sheet-head .hsub + .sheet-back{margin-left:12px}
 .substatus-dot{width:7px;height:7px;border-radius:50%;flex:none}
 .substatus.active{color:var(--online)} .substatus.active .substatus-dot{background:var(--online)}
 .substatus.disabled{color:var(--faint)} .substatus.disabled .substatus-dot{background:var(--faint)}
@@ -2036,10 +2045,12 @@ a.tg:hover{filter:brightness(1.25)}
 .sublink.sublink-row{flex-direction:row;align-items:center;gap:8px}
 .sublink-row .suburl{flex:1;min-width:0}
 .sublink-row .btn{flex:none}
-/* user-modal peer card: the whole card opens the peer modal (except the QR + action buttons) */
+/* user-modal peer card: the whole card opens the peer modal (except the QR + action buttons).
+   `.hot` is set by JS only while the pointer is over a clickable region, so hovering the QR or a button
+   never lights the card up. */
 .upc-wrap{cursor:pointer;border-radius:var(--r);transition:box-shadow .12s}
-.upc-wrap:hover .deploy{border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
-.upc-wrap:hover .upc-head{background:color-mix(in srgb,var(--brand) 9%,transparent)}
+.upc-wrap.hot .deploy{border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
+.upc-wrap.hot .upc-head{background:color-mix(in srgb,var(--brand) 9%,transparent)}
 .upc-head{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:5px;transition:background .12s}
 .upc-l1,.upc-l2{display:flex;align-items:center;gap:7px}
 .upc-nm{font-family:var(--mono);font-weight:700;font-size:13px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2047,7 +2058,7 @@ a.tg:hover{filter:brightness(1.25)}
 .upc-deps{font-family:var(--mono);font-size:10.5px;font-weight:600;color:var(--faint);letter-spacing:.02em}
 /* Primary badge overlays the gap above the QR (peer modal): centered and tucked just above the QR, so it
    never pushes the QR down — the QR stays aligned with the sibling cards */
-.qr-primary{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:1;font-family:var(--mono);font-size:7.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 40%,transparent);border-radius:5px;padding:1px 5px;line-height:1.3;background:var(--surface)}
+.qr-primary{position:absolute;top:11px;left:50%;transform:translateX(-50%);z-index:1;font-family:var(--mono);font-size:9px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 40%,transparent);border-radius:5px;padding:1px 6px;line-height:1.3;background:var(--surface)}
 /* "← Go back" in place of × (child modal opened from the user view) */
 .sheet-back{appearance:none;margin-left:auto;display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--line-solid);border-radius:8px;color:var(--ink);font:inherit;font-size:12.5px;font-weight:600;padding:5px 11px;cursor:pointer}
 .sheet-back:hover{background:var(--raise);border-color:var(--brand)}

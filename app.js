@@ -5815,23 +5815,34 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
 const QR_ITEM = 256, QR_GAP = 14;
 function QRRow({ cards }) {
   const ref = useRef(null);
-  const [m, setM] = useState({ l: 0, cw: 0, sw: 0 });
+  const [m, setM] = useState({ l: 0, cw: 0, sw: 0, step: QR_ITEM + QR_GAP });
   useEffect(() => { const el = ref.current; if (!el) return;
-    const measure = () => setM({ l: el.scrollLeft, cw: el.clientWidth, sw: el.scrollWidth });
+    const measure = () => {
+      const first = el.firstElementChild;                                   // real card width (varies by card type)
+      const cardW = first ? first.getBoundingClientRect().width : QR_ITEM;
+      const cs = getComputedStyle(el);
+      const gap = parseFloat(cs.columnGap || cs.gap) || QR_GAP;
+      setM({ l: el.scrollLeft, cw: el.clientWidth, sw: el.scrollWidth, step: cardW + gap });
+    };
     measure(); el.addEventListener("scroll", measure, { passive: true });
     let ro; try { ro = new ResizeObserver(measure); ro.observe(el); } catch (_) {}
     return () => { el.removeEventListener("scroll", measure); if (ro) ro.disconnect(); }; }, [cards.length]);
-  const step = QR_ITEM + QR_GAP;
+  const n = cards.length;
+  const step = m.step || (QR_ITEM + QR_GAP);
   const paged = m.sw > m.cw + 4;
   const atStart = m.l <= 2;
   const atEnd = m.sw > 0 && m.l + m.cw >= m.sw - 2;
-  const lead = Math.min(cards.length, Math.max(1, Math.round(m.l / step) + 1));
+  const per = Math.max(1, Math.round(m.cw / step));                         // cards visible per view
+  let first = Math.max(0, Math.min(Math.round(m.l / step), n - per));       // 0-based index of the first visible card
+  if (atEnd) first = Math.max(0, n - per);
+  const last = Math.min(n - 1, first + per - 1);
+  const range = first === last ? `${first + 1} of ${n}` : `${first + 1}–${last + 1} of ${n}`;
   const go = d => { const el = ref.current; if (el) el.scrollBy({ left: d * step, behavior: "smooth" }); };
   return html`<div class=${"qrrowwrap" + (paged ? " paged" : "")}>
     <div class="qrrow" ref=${ref}>${cards}</div>
     ${paged ? html`<div class="qrnav">
       <button class="qrnavbtn" disabled=${atStart} onClick=${() => go(-1)} aria-label="Previous">‹</button>
-      <span class="qrnavcount">${lead} / ${cards.length}</span>
+      <span class="qrnavcount">${range}</span>
       <button class="qrnavbtn" disabled=${atEnd} onClick=${() => go(1)} aria-label="Next">›</button>
     </div>` : null}
   </div>`;
@@ -5849,10 +5860,12 @@ function useSubRec(userId) {
 }
 // "Part of an active subscription" — a right-aligned line under the modal title. Only when the user has a
 // subscription record at all; nothing for unsubscribed users or with the feature off.
-function SubStatusTag({ userId, activeOnly }) {
+function SubStatusTag({ userId, activeOnly, header }) {
   const rec = useSubRec(userId);
   if (!subFeatureOn() || !rec) return null;
   if (activeOnly && !rec.enabled) return null;   // peer modal: only surface it for a live subscription
+  // compact header badge (peer modal): a green dot + "In subscription", right-aligned in the title row
+  if (header) return rec.enabled ? html`<span class="hsub"><span class="substatus-dot"></span><b>In subscription</b></span>` : null;
   const s = rec.enabled ? "active" : "disabled";
   return html`<div class=${"substatus " + s}><span class="substatus-dot"></span>Part of ${rec.enabled ? "an" : "a"} <b>${s}</b> subscription</div>`;
 }
@@ -5935,11 +5948,16 @@ function UserPeerCard({ peer, onOpen }) {
   const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
   const head = html`<div class="upc-head">
     <div class="upc-l1"><span class="upc-nm">${nm}</span><span class="grow"></span><${Badge} s=${lt.status}/></div>
-    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/>${targets.length > 1 ? html`<span class="upc-deps">${targets.length} deployments</span>` : null}</div>
+    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps">${targets.length} deployments</span>` : null}</div>
   </div>`;
-  // the whole card opens the peer's modal — except the QR image (enlarges) and the action buttons (their own jobs)
-  const onClick = e => { if (e.target.closest(".qr, .acts, button, a")) return; onOpen(peer); };
-  return html`<div class="upc-wrap" onClick=${onClick} title="Open this peer's configs">
+  // the whole card opens the peer's modal — except the QR image (enlarges) and the action buttons (their own jobs).
+  // `.hot` is toggled by the pointer position so the card highlights ONLY over its clickable regions, never over
+  // the QR or a button (which keep their own affordance).
+  const own = el => el && el.closest(".qr, button, a");
+  const onClick = e => { if (own(e.target)) return; onOpen(peer); };
+  const onMove = e => e.currentTarget.classList.toggle("hot", !own(e.target));
+  const onLeave = e => e.currentTarget.classList.remove("hot");
+  return html`<div class="upc-wrap" onClick=${onClick} onMouseMove=${onMove} onMouseLeave=${onLeave} title="Open this peer's configs">
     <${TargetCard} peer=${peer} t=${t} bare=${true} head=${head}/>
   </div>`;
 }
@@ -5992,9 +6010,9 @@ function openPeerConfigs(peer, back) {
   const nc = (peer.targets || []).length;               // configs = deployments
   const parts = []; if (vkUser) parts.push(vkUser.name); if (peer.title) parts.push(peer.title);
   const nm = parts.length ? parts.join(" · ") : "Unassigned peer";
-  const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span><span class="qrhd-count">${nc} config${nc === 1 ? "" : "s"}</span></span>`;
-  openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal} onBack=${back}>
-    ${vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true}/>` : null}
+  const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span>${nc > 1 ? html`<span class="qrhd-count">${nc} configs</span>` : null}</span>`;
+  const headExtra = vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true} header=${true}/>` : null;
+  openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} onClose=${back || closeModal} onBack=${back}>
     <${VaultUnlockPanel}/>
     ${vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${peer.targets.map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && i === 0}/>`)}/>
@@ -6180,7 +6198,7 @@ function openUserConfigs(user, back) {
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   const anyTurn = peers.some(p => targetsBehindTurn(p.targets));
   const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
-  const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}<span class="qrhd-count">${peers.length} peer${peers.length === 1 ? "" : "s"} (${nCfg} config${nCfg === 1 ? "" : "s"})</span></span>`;
+  const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}<span class="qrhd-count">${peers.length} peer${peers.length === 1 ? "" : "s"}${nCfg > 1 ? ` (${nCfg} configs)` : ""}</span></span>`;
   const backHere = () => openUserConfigs(user);          // a multi-deployment peer opens its own modal → returns here
   openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal}>
     <${VaultUnlockPanel}/>
