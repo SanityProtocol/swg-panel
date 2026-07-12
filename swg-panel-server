@@ -1294,8 +1294,17 @@ def sub_token_lookup(deps, token):
             return uid
     return None
 
+# Reserved bucket for UNASSIGNED peers: they hold no user, so their encrypted config can't live under a real
+# uid. The orphan bucket is escrowed under its own SK-wrapped unlock-key (like a user with no subscription) and
+# holds the blobs of every peer with no user_id. On assignment the blob is re-keyed into the user's bucket and
+# the orphan copy is GC'd. "_orphan" can't collide with a real user id (those are hex).
+SUB_ORPHAN = "_orphan"
+
 def sub_live_peers(roster, uid):
-    """Peers CURRENTLY assigned to uid — the roster is authoritative, so this is the read-time gate."""
+    """Peers CURRENTLY in uid's bucket — the roster is authoritative, so this is the read-time gate. The orphan
+    bucket holds every UNASSIGNED peer; a real uid holds the peers assigned to it."""
+    if uid == SUB_ORPHAN:
+        return {pid: p for pid, p in ((roster.get("peers") or {}).items()) if not p.get("user_id")}
     return {pid: p for pid, p in ((roster.get("peers") or {}).items()) if p.get("user_id") == uid}
 
 def sub_gc_user(deps, uid, roster):
@@ -1309,6 +1318,30 @@ def sub_gc_user(deps, uid, roster):
         else:
             drop_sub_blobs(deps, uid)
     return pruned
+
+def sub_gc_orphan(deps, roster):
+    """Prune the orphan bucket GENTLY: a blob stays while its peer EXISTS and is either still unassigned OR not
+    yet re-keyed into its user's bucket. Dropping only once migration is confirmed (or the peer is gone) avoids
+    a race where a read-time GC deletes the ciphertext before the admin browser can re-key it on assignment."""
+    peers = roster.get("peers") or {}
+    blobs = load_sub_blobs(deps, SUB_ORPHAN)
+    keep = {}
+    for pid, v in blobs.items():
+        p = peers.get(pid)
+        if not p:
+            continue                                              # peer deleted → drop
+        uid = p.get("user_id")
+        if not uid:
+            keep[pid] = v; continue                               # still unassigned → keep
+        if pid in load_sub_blobs(deps, uid):
+            continue                                              # already migrated into the user's bucket → drop
+        keep[pid] = v                                             # assigned but migration pending → keep
+    if keep != blobs:
+        if keep:
+            save_sub_blobs(deps, SUB_ORPHAN, keep)
+        else:
+            drop_sub_blobs(deps, SUB_ORPHAN)
+    return keep
 
 def sub_read_data(deps, roster, describe, token):
     """The public page's data for a token: the user's CURRENT peers, each target's NON-SECRET params +
@@ -4404,7 +4437,7 @@ def api(method, path, qs, body, deps):
         for uid in (set(users) | set(escrow)):
             rec = users.get(uid) or {}
             esc = escrow.get(uid) or {}
-            blobs = sub_gc_user(deps, uid, roster)
+            blobs = sub_gc_orphan(deps, roster) if uid == SUB_ORPHAN else sub_gc_user(deps, uid, roster)
             live = sub_live_peers(roster, uid)
             out[uid] = {"enabled": bool(rec.get("enabled")), "created": esc.get("created"),
                         "rotated": esc.get("rotated"), "peers": len(live), "provisioned": len(blobs),
@@ -4416,7 +4449,7 @@ def api(method, path, qs, body, deps):
     if method == "POST" and path == "/api/sub/escrow":               # ensure a user holds an encryption unlock-key (for encrypted config storage), no subscription
         uid = body.get("user_id") or ""
         roster = roster_load(roster_path)
-        if uid not in (roster.get("users") or {}):
+        if uid != SUB_ORPHAN and uid not in (roster.get("users") or {}):   # the orphan bucket has no roster user
             return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
         unl = body.get("unlock_by_sk")
         if not isinstance(unl, str) or not unl:
@@ -4484,10 +4517,16 @@ def api(method, path, qs, body, deps):
         pid = (qs.get("peer_id") or [""])[0]
         roster = roster_load(roster_path)
         p = (roster.get("peers") or {}).get(pid)
-        if not p or not p.get("user_id"):
+        if not p:
             return 404, {"ok": False, "error": "no encrypted config for this peer", "code": "not_found"}
-        uid = p["user_id"]
+        uid = p.get("user_id") or SUB_ORPHAN                          # unassigned peers live in the orphan bucket
         sec = (load_sub_blobs(deps, uid).get(pid) or {}).get("sec")   # ciphertext only — the panel can't read it
+        if not sec and p.get("user_id"):
+            # a just-assigned peer whose config still sits in the orphan bucket — hand the admin browser the
+            # orphan ciphertext (+ its bucket id) so it can re-key it into the user's bucket
+            osec = (load_sub_blobs(deps, SUB_ORPHAN).get(pid) or {}).get("sec")
+            if osec:
+                return 200, {"ok": True, "data": {"sec": osec, "user_id": SUB_ORPHAN}}
         if not sec:
             return 404, {"ok": False, "error": "no encrypted config for this peer", "code": "not_found"}
         return 200, {"ok": True, "data": {"sec": sec, "user_id": uid}}
@@ -4498,9 +4537,13 @@ def api(method, path, qs, body, deps):
             return 400, {"ok": False, "error": "sec (ciphertext) is required", "code": "bad_request"}
         roster = roster_load(roster_path)
         p = (roster.get("peers") or {}).get(pid)
-        if not p or p.get("user_id") != uid:
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        # an assigned peer stores under its user; an unassigned peer stores under the orphan bucket
+        want = p.get("user_id") or SUB_ORPHAN
+        if uid != want:
             return 409, {"ok": False, "error": "peer is not assigned to this user", "code": "not_assigned"}
-        if uid not in load_sub_escrow(deps):     # the blob is encrypted under this user's escrow unlock-key
+        if uid not in load_sub_escrow(deps):     # the blob is encrypted under this bucket's escrow unlock-key
             return 404, {"ok": False, "error": "no encryption key for this user — set up config encryption first", "code": "not_found"}
         blobs = sub_gc_user(deps, uid, roster)
         blobs[pid] = {"sec": sec, "at": now()}

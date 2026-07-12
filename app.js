@@ -462,12 +462,17 @@ async function ensureUserUnlockKey(uid) {
 // subscription blob when the user is subscribed). Best-effort and silent: skips in "off" mode or while the
 // vault is locked (then the peer publishes on a later rekey, or via the migration/encrypt-all pass). NEVER
 // breaks peer creation.
+// Reserved bucket for UNASSIGNED peers (mirrors SUB_ORPHAN on the server): their config is encrypted under a
+// dedicated SK-escrowed key so it survives a reload just like an assigned peer's, and is re-keyed into the
+// user's bucket on assignment.
+const SUB_ORPHAN = "_orphan";
 async function subMaybePublish(userId, peerId, privkey, psk) {
   try {
-    if (Store.storeMode !== "encrypted" || !userId || !peerId || !subSKCached()) return;
-    const unlockKey = await ensureUserUnlockKey(userId);
+    if (Store.storeMode !== "encrypted" || !peerId || !subSKCached()) return;
+    const uid = userId || SUB_ORPHAN;                      // unassigned → the orphan bucket
+    const unlockKey = await ensureUserUnlockKey(uid);
     if (!unlockKey) return;
-    await subEncryptPeer(userId, peerId, privkey, psk, unlockKey);
+    await subEncryptPeer(uid, peerId, privkey, psk, unlockKey);
   } catch (_) { /* an encryption hiccup must never break the peer flow */ }
 }
 // Peers whose publish was SKIPPED while the vault was locked — peer_id → {userId, privkey, psk}. The private key
@@ -501,7 +506,7 @@ function ensureVaultUnlocked(opts) {
 // subMaybePublish, but if the vault is locked it PROMPTS the operator (instead of silently skipping) so they can
 // unlock + publish or knowingly skip. Use for user-triggered actions (create / rekey / reassign a peer).
 async function subPublishOrPrompt(userId, peerId, privkey, psk) {
-  if (Store.storeMode !== "encrypted" || !userId || !peerId) return;
+  if (Store.storeMode !== "encrypted" || !peerId) return;   // userId may be null → published to the orphan bucket
   if (!subSKCached()) {
     const ok = await ensureVaultUnlocked({
       title: "Unlock to publish this config",
@@ -540,7 +545,7 @@ const _blobEnsured = new Set();
 // "open the peer once to publish it" path for a peer created while the vault was locked (its config lives in
 // this session or the plaintext store, but no blob was written). Idempotent + best-effort; never throws.
 async function ensurePeerBlob(peer, conf) {
-  if (Store.storeMode !== "encrypted" || !subSKCached() || !peer || !peer.id || !peer.user_id || !conf) return;
+  if (Store.storeMode !== "encrypted" || !subSKCached() || !peer || !peer.id || !conf) return;   // user_id optional (orphan bucket)
   if (_blobEnsured.has(peer.id)) return;
   _blobEnsured.add(peer.id);
   try {
@@ -570,8 +575,20 @@ async function subBackfillUser(uid, unlockKey) {
     }
     const parsed = conf ? parseFullConf(conf) : null;
     if (!parsed || !parsed.privkey) {
-      // no readable config — but if it's ALREADY encrypted (blob exists), it's covered, not a failure (idempotent resume)
-      try { const g = await api.subBlobGet(p.id); if (g && g.ok && g.data && g.data.sec) { published++; continue; } } catch (_) {}
+      // no readable plaintext config — but an encrypted blob may already cover it (idempotent resume), or it may
+      // still sit in the ORPHAN bucket from when this peer was unassigned → re-key that into the user's bucket.
+      try {
+        const g = await api.subBlobGet(p.id);
+        if (g && g.ok && g.data && g.data.sec) {
+          if (g.data.user_id === uid) { published++; continue; }          // already in this user's bucket
+          const srcRec = (await subUsersMap())[g.data.user_id];           // the bucket it's in now (e.g. orphan)
+          if (srcRec && srcRec.unlock_by_sk) {
+            const srcKey = await subRecoverUnlock(srcRec);
+            const secret = JSON.parse(new TextDecoder().decode(await subDec(srcKey, g.data.sec)));
+            if (secret && secret.k) { await subEncryptPeer(uid, p.id, secret.k, secret.p, unlockKey); published++; continue; }
+          }
+        }
+      } catch (_) {}
       missing++; missingPeers.push(p.id); continue;                 // no key available → can't encrypt / flag for rekey
     }
     try {
@@ -1204,17 +1221,18 @@ function effectiveClientParams(peer, meta) {
 // the peer's overrides + the interface's current params. Returns null (caller falls back to plaintext /
 // session) when the peer is unassigned, the vault is locked, or no blob exists yet. Never sends a key.
 async function blobConfig(peer, node, iface) {
-  if (!peer || !peer.user_id || !subSKCached()) return null;
+  if (!peer || !subSKCached()) return null;                // user_id optional — unassigned peers use the orphan bucket
   const t = (peer.targets || []).find(x => x.node === node && x.iface === iface);
   const meta = Store.ifaceMeta(node, iface);
   if (!t || !meta) return null;
   let sec, unlockKey;
   try {
-    const rec = (await subUsersMap())[peer.user_id];
-    if (!rec || !rec.unlock_by_sk) return null;
     const r = await api.subBlobGet(peer.id);
     if (!r || !r.ok || !r.data || !r.data.sec) return null;
     sec = r.data.sec;
+    const buid = r.data.user_id || peer.user_id || SUB_ORPHAN;   // decrypt with the key of the bucket the blob is IN
+    const rec = (await subUsersMap())[buid];
+    if (!rec || !rec.unlock_by_sk) return null;
     unlockKey = await subRecoverUnlock(rec);   // unlock-key only (works whether or not the user is subscribed)
   } catch (_) { return null; }
   try {
