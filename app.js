@@ -330,6 +330,7 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
     try { await api.subVaultSet({ salt: v.data.salt, sk_by_pw: v.data.sk_by_pw, sk_check: v.data.sk_check,
       sk_verify: await subEnc(_subSK, new TextEncoder().encode(SUB_CHECK)) }); } catch (_) {}
   }
+  try { subFlushPending(); } catch (_) {}   // save anything the operator skipped earlier this session (incl. overwriting a stale rotate blob)
   try { subAutoHeal(); } catch (_) {}   // key just became available → silently publish anything left unpublished while locked
   return _subSK;
 }
@@ -469,6 +470,20 @@ async function subMaybePublish(userId, peerId, privkey, psk) {
     await subEncryptPeer(userId, peerId, privkey, psk, unlockKey);
   } catch (_) { /* an encryption hiccup must never break the peer flow */ }
 }
+// Peers whose publish was SKIPPED while the vault was locked — peer_id → {userId, privkey, psk}. The private key
+// lives ONLY in this tab (never on the server), so this is the one chance to still save it: unlocking the vault
+// later in the SAME session flushes these into the vault, OVERWRITING any stale blob (the rotate case: the peer
+// already has a blob with its OLD key, which a count-based heal can't spot). Cleared on reload, like every
+// in-session key copy — after that the config is unrecoverable and the peer must be rekeyed.
+const _pendingPublish = new Map();
+async function subFlushPending() {
+  if (Store.storeMode !== "encrypted" || !subSKCached() || !_pendingPublish.size) return;
+  let n = 0;
+  for (const [peerId, p] of [..._pendingPublish]) {
+    try { await subMaybePublish(p.userId, peerId, p.privkey, p.psk); _pendingPublish.delete(peerId); n++; } catch (_) {}
+  }
+  if (n) bus.emit();
+}
 // Ensure the encryption vault is unlocked before an action that needs it. Resolves true when the key is
 // available (already unlocked, or the operator just unlocked it) or not needed (store mode isn't encrypted);
 // false when the operator chose to skip. Shows a modal (VaultPromptSheet) explaining the action + the cost of
@@ -491,11 +506,12 @@ async function subPublishOrPrompt(userId, peerId, privkey, psk) {
     const ok = await ensureVaultUnlocked({
       title: "Unlock to publish this config",
       reason: "This peer's config is stored encrypted — only you can read it, with your encryption key. Unlock the key to publish this peer now, so its QR appears on the user's subscription page and stays re-viewable in the panel later.",
-      consequence: "the peer is created and works right away, but its config isn't stored — its QR won't appear on the subscription page and you won't be able to re-view it later. You'd have to rekey the peer to re-issue and publish it.",
+      consequence: "the peer is created and works right away, but its config isn't published — its QR won't appear on the subscription page. You can still save it by unlocking the key in this browser tab before you reload; after a reload the key is gone from the browser (it was never on the server) and you'd have to rekey the peer to re-issue it.",
     });
-    if (!ok) return;   // operator chose to skip — the peer already exists, just not published
+    if (!ok) { _pendingPublish.set(peerId, { userId, privkey, psk }); return; }   // skipped → remember, so a later in-session unlock still saves it (incl. overwriting a stale rotate blob)
   }
   await subMaybePublish(userId, peerId, privkey, psk);
+  _pendingPublish.delete(peerId);   // published → no longer pending
 }
 // A subscription-affecting action that DOESN'T hand us a fresh private key (e.g. assigning an EXISTING peer to a
 // user, which keeps its key) can still leave that user with an unpublished peer → an empty "Not ready yet" QR on
@@ -511,7 +527,7 @@ async function subReconcileUser(userId) {
     const ok = await ensureVaultUnlocked({
       title: "Unlock to update this subscription",
       reason: "This user is subscribed, and this change left a peer whose config isn't published yet. Unlock your encryption key to publish it now, so the peer's QR appears on their subscription page.",
-      consequence: "the peer works right away, but it shows “Not ready yet” (an empty QR) on the user's subscription page until you unlock and publish — or rotate that peer's keys.",
+      consequence: "the peer works right away, but it shows “Not ready yet” (an empty QR) on the user's subscription page. Unlock the key in this browser tab before you reload and it publishes automatically; after a reload you'd have to rekey the peer to re-issue it.",
     });
     if (!ok || !subSKCached()) return;                           // operator skipped
   }
