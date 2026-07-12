@@ -1456,6 +1456,7 @@ let _rowClickT = null;
 const _rowInteractive = e => !!(e.target.closest && e.target.closest("button, a, input, select, textarea, label, .assigncell, .rowacts, .selwrap"));
 function rowSingle(e, fn) { if (_rowInteractive(e)) return; clearTimeout(_rowClickT); _rowClickT = setTimeout(() => { _rowClickT = null; fn(); }, 200); }
 function rowDouble(e, fn) { if (_rowInteractive(e)) return; clearTimeout(_rowClickT); _rowClickT = null; fn(); }
+const rowNoSelect = e => { if (e.detail > 1) e.preventDefault(); };   // stop the 2nd click of a double-click from selecting the row text
 
 // ───────────────────────── shared bits ─────────────────────────
 const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
@@ -5344,7 +5345,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const u = p.user_id ? Store.user(p.user_id) : null;
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
-        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} data-peer=${p.id} class=${"clk" + (fresh ? " pcreate" : "")} title="Double-click for QR / configs" onClick=${e => rowSingle(e, () => openPeerView(p.id, t.node, t.iface))} onDblClick=${e => rowDouble(e, () => openPeerConfigs(p))}>
+        return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} data-peer=${p.id} class=${"clk" + (fresh ? " pcreate" : "")} title="Double-click for QR / configs" onMouseDown=${rowNoSelect} onClick=${e => rowSingle(e, () => openPeerView(p.id, t.node, t.iface))} onDblClick=${e => rowDouble(e, () => openPeerConfigs(p))}>
           <td data-label="Status" class="c-status">${(() => {
             const ifaceB = loc ? gridIfaceTag(t) : null;
             if (!live) return html`${gridStatusBadge(t, p)}${ifaceB}`;
@@ -5975,12 +5976,17 @@ function SubLinkActions({ user }) {
     <span class="sublink-off-msg">No subscription link yet — enable one to share this user's QRs.</span>
     <button class="btn btn-primary btn-mini" disabled=${busy} onClick=${enable}>Enable subscription</button>
   </div>`;
-  return html`<div class="sublink sublink-row">
-    ${url ? html`<${SubUrlBar} url=${url}/>` : !base
-      ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the link.</div>`
-      : html`<div class="hint">Building link…</div>`}
-    <button class="btn btn-ghost btn-mini" disabled=${busy} onClick=${rotate}>Rotate</button>
-    <button class="btn btn-ghost btn-mini danger" disabled=${busy} onClick=${disable}>Disable</button>
+  return html`<div class="field sublink-field">
+    <label>Subscription link <span class="faint" style="text-transform:none;letter-spacing:0">— this user's shareable QR page</span></label>
+    <div class="sublink sublink-row">
+      ${url ? html`<${SubUrlBar} url=${url}/>` : !base
+        ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the link.</div>`
+        : html`<div class="hint">Building link…</div>`}
+      <span class="fieldbtns">
+        <button class="btn btn-ghost btn-mini" disabled=${busy} onClick=${rotate}>Rotate</button>
+        <button class="btn btn-ghost btn-mini danger" disabled=${busy} onClick=${disable}>Disable</button>
+      </span>
+    </div>
   </div>`;
 }
 // One user-modal card: a peer's PRIMARY/only QR under a two-line clickable header that opens the peer's own
@@ -5999,9 +6005,12 @@ function UserPeerCard({ peer, onOpen }) {
     <div class="upc-l1"><span class="upc-nm">${nm}</span><span class="grow"></span><${Badge} s=${lt.status}/></div>
     <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/><span class="grow"></span>${targets.length > 1 ? html`<span class="upc-deps">${targets.length} deployments</span>` : null}</div>
   </div>`;
-  // the whole card opens the peer's modal — except the QR image (enlarges) and the action buttons (their own jobs).
-  // `.hot` is toggled by the pointer position so the card highlights ONLY over its clickable regions, never over
-  // the QR or a button (which keep their own affordance).
+  // Only a MULTI-config peer opens its own modal (a single-config peer has nothing extra to show — it's already
+  // fully presented here). When it does: the whole card opens it EXCEPT the QR image (enlarges) and the action
+  // buttons (their own jobs). `.hot` is toggled by the pointer so the card highlights only over clickable regions.
+  if (!onOpen) return html`<div class="upc-wrap upc-static">
+    <${TargetCard} peer=${peer} t=${t} bare=${true} head=${head}/>
+  </div>`;
   const own = el => el && el.closest(".qr, button, a");
   const onClick = e => { if (own(e.target)) return; onOpen(peer); };
   const onMove = e => e.currentTarget.classList.toggle("hot", !own(e.target));
@@ -6022,6 +6031,8 @@ function targetsBehindTurn(targets) {
   return turnEnabled() && (targets || []).some(t => turnProxiesFor(t.node, t.iface).length > 0);
 }
 const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
+// let the operator paste a VK link with or without the scheme — add https:// when it's missing
+function normVkLink(s) { s = (s || "").trim(); return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
 // Per-user VK call link, editable inline from the QR modals. Shown only when the user has a peer behind a
 // turn-proxy. Empty → amber border + a hint (the panel falls back to the test link; the subscription page won't).
 // Saves on blur / Enter; re-renders turn configs with the new link.
@@ -6031,9 +6042,10 @@ function VkLinkField({ user }) {
   const [subd, setSubd] = useState(false);
   useEffect(() => setVal(user.vk_link || ""), [user.id, user.vk_link]);
   useEffect(() => { let ok = true; if (subFeatureOn()) subUsersMap().then(m => { if (ok) setSubd(!!(m[user.id] && m[user.id].enabled)); }).catch(() => {}); return () => { ok = false; }; }, [user.id]);
-  const v = val.trim();
+  const v = normVkLink(val);                    // accept the link with or without https:// — add it when missing
   const invalid = !!v && !_VK_CALL_RE.test(v);
   const empty = !v;
+  const set = !empty && !invalid;               // a valid link is present → blue highlight
   const dirty = v !== (user.vk_link || "");
   const save = async () => {
     if (!dirty || invalid) return;
@@ -6043,12 +6055,12 @@ function VkLinkField({ user }) {
     if (!r || !r.ok) { toast((r && r.error) || "Couldn't save the VK link", "err"); return; }
     await Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the new link
   };
-  return html`<div class=${"field vkfield" + (empty || invalid ? " warn" : "")} style="margin-bottom:14px">
+  return html`<div class=${"field vkfield" + (invalid ? " warn" : set ? " set" : " warn")} style="margin-bottom:14px">
     <label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
     <div class="vkfield-row">
-      <input value=${val} placeholder="https://vk.ru/call/join/…" disabled=${busy}
+      <input value=${val} placeholder="vk.ru/call/join/…" disabled=${busy}
         onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); save(); } }}/>
-      <button class="btn btn-primary btn-mini" disabled=${busy || !dirty || invalid} onClick=${save}>${busy ? "Saving…" : "Save"}</button>
+      <span class="fieldbtns"><button class="btn btn-primary btn-mini" disabled=${busy || !dirty || invalid} onClick=${save}>${busy ? "Saving…" : "Save"}</button></span>
     </div>
     ${invalid ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
       : empty ? html`<div class="hint vk-warn">No VK link for this user yet — the panel is using your <b>test</b> link to build these turn configs. Enter their own before you distribute.${subd ? html` Right now their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}
@@ -6057,7 +6069,10 @@ function VkLinkField({ user }) {
 // `child` = opened from another modal (user modal, peer view, edit peer). Then it's PUSHED onto the modal
 // stack so the parent stays mounted behind it (no reload, scroll preserved) and ✕/Esc/backdrop/"Back" just
 // pop back to it. Root (from a table) replaces the top as before.
-function openPeerConfigs(peer, child) {
+function openPeerConfigs(peer, opts) {
+  opts = opts || {};
+  const child = !!opts.child;      // pushed onto the stack (opened from another modal) → "Back" pops to the parent
+  const hideVk = !!opts.hideVk;    // the parent (user modal) already shows the VK link — don't repeat it here
   const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per view; the modal sizes to fit (more → page with ‹ ›)
   const wcols = Math.max(cols, 2);                       // hold 2 QRs wide even for a single deployment (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
@@ -6070,9 +6085,9 @@ function openPeerConfigs(peer, child) {
   const nm = parts.join(" · ");
   const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span></span>`;
   const headExtra = vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true} header=${true}/>` : null;
-  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} onClose=${closeModal} onBack=${child ? closeModal : null}>
+  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}>
     <${VaultUnlockPanel}/>
-    ${vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
+    ${!hideVk && vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${peer.targets.map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && i === 0}/>`)}/>
   <//>`);
 }
@@ -6260,11 +6275,11 @@ function openUserConfigs(user, back) {
   const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
   const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}</span>`;
   const headExtra = html`<span class="hcount">${peers.length} peer${peers.length === 1 ? "" : "s"}${nCfg > 1 ? ` (${nCfg} configs)` : ""}</span>`;
-  openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} onClose=${back || closeModal}>
+  openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${back || closeModal}>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${anyTurn ? html`<${VkLinkField} user=${user}/>` : null}
-    ${peers.length ? html`<${QRRow} cards=${peers.map(p => html`<${UserPeerCard} key=${p.id} peer=${p} onOpen=${() => openPeerConfigs(p, true)}/>`)}/>`
+    ${peers.length ? html`<${QRRow} cards=${peers.map(p => html`<${UserPeerCard} key=${p.id} peer=${p} onOpen=${(p.targets || []).length > 1 ? () => openPeerConfigs(p, { child: true, hideVk: true }) : null}/>`)}/>`
       : html`<div class="empty" style="padding:24px">This user has no peers yet.</div>`}
   <//>`);
 }
@@ -6273,7 +6288,7 @@ function openUserConfigs(user, back) {
 // Turn always opens FROM another modal (a peer or user QR view), so it's PUSHED — ✕/Esc/backdrop/"Back" pop
 // straight back to whatever it was launched from, with that view intact.
 function openTurnConfigs(peer, t, conf) {
-  pushModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} onClose=${closeModal} onBack=${closeModal}>
+  pushModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} noGuard=${true} onClose=${closeModal} onBack=${closeModal}>
     <${TurnConfigSheet} peer=${peer} t=${t} conf=${conf}/>
   <//>`);
 }
@@ -6361,7 +6376,7 @@ function UserRow({ user, live, onlineOnly, q }) {
   const [db, ub] = dlul(st.rxb, st.txb);
   const view = userPeerViews[user.id] || (userPeerViews[user.id] = { node: "", iface: "", q: "", page: 1, pageSize: 20, sort: "status", dir: -1 });
   return html`<div class=${"urow" + (expanded ? " open" : "")} id=${"urow-" + user.id}>
-    <div class="urow-head" title="Double-click for QR / configs" onClick=${e => rowSingle(e, toggle)} onDblClick=${e => rowDouble(e, () => openUserConfigs(user))}>
+    <div class="urow-head" title="Double-click for QR / configs" onMouseDown=${rowNoSelect} onClick=${e => rowSingle(e, toggle)} onDblClick=${e => rowDouble(e, () => openUserConfigs(user))}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       ${userStatTag(user, live)}
       <span class="u-name"><span class="un">${user.name}</span>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
@@ -6488,11 +6503,11 @@ function UserEditCard({ user, done }) {
   const [note, setNote] = useState(user.note || "");
   const [vk, setVk] = useState(user.vk_link || "");
   const showVk = Store.peersOfUser(user.id).some(p => targetsBehindTurn(p.targets));   // only when they have a peer behind a turn-proxy
-  const vkBad = vk.trim() && !_VK_CALL_RE.test(vk.trim());
+  const vkBad = vk.trim() && !_VK_CALL_RE.test(normVkLink(vk));
   const save = async () => {
     if (!name.trim()) { toast("Name can't be empty.", "err"); return; }
-    if (vkBad) { toast("Not a valid VK call link — expected https://vk.ru/call/join/…", "err"); return; }
-    const vkv = vk.trim();
+    if (vkBad) { toast("Not a valid VK call link — expected vk.ru/call/join/…", "err"); return; }
+    const vkv = normVkLink(vk);
     done();   // close the editor immediately; the row updates optimistically
     mutate({
       key: "user:" + user.id,
@@ -8551,7 +8566,7 @@ function SearchBox({ placeholder, value, onInput }) {
 function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
   return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || "Cancel"}</button><button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button><//>`;
 }
-function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, onBack }) {
+function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, onBack, noGuard }) {
   onClose = onClose || closeModal;
   const ref = useRef(null);
   const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
@@ -8560,8 +8575,9 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
   const setDiscarding = v => { discardRef.current = v; setDiscardState(v); };
   const fields = () => Array.from(ref.current ? ref.current.querySelectorAll("input,textarea,select") : []);
   // closing a dirty sheet swaps the footer into an inline "discard?" confirm instead of a native dialog. `dirtyRef`
-  // lets a caller flag changes the input/change listener can't see (e.g. click-toggled grids).
-  const tryClose = () => { if ((dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current) { setDiscarding(true); return; } onClose(); };
+  // lets a caller flag changes the input/change listener can't see (e.g. click-toggled grids). `noGuard` opts out
+  // entirely — view modals (QR / turn configs) save every field inline, so there's nothing to discard.
+  const tryClose = () => { if (!noGuard && (dirty.current || (dirtyRef && dirtyRef.current)) && !discardRef.current) { setDiscarding(true); return; } onClose(); };
   if (closeRef) closeRef.current = tryClose;   // expose the guarded close so a footer Cancel routes through it too
   // The keydown listener below is registered ONCE (useEffect []), but openModal REPLACES one <Sheet> with
   // another at the same position, so Preact reuses this instance and only updates props — the effect never
@@ -9190,7 +9206,7 @@ function PeerViewSheet({ pid, node, iface }) {
   return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")} width=${640}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, true)}><${Ic} i="qr"/> QR</button>
+      <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/> QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p, () => openPeerView(p.id, node, iface))}><${Ic} i="copy"/> Targets</button>
       <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null, () => openPeerView(p.id, node, iface))}><${Ic} i="pencil"/> Edit</button>
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
@@ -9330,7 +9346,7 @@ function EditPeerSheet({ peer, focus, done, flash }) {
   };
 
   return html`<${Sheet} title=${"Edit peer"} onClose=${done}
-    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, true)}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
+    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
