@@ -6078,7 +6078,7 @@ function VkLinkField({ user }) {
     <div class="vkfield-row">
       <div class="vkbox">
         <${Ic} i="link"/>
-        <input class="vkbox-input" value=${val} placeholder="vk.ru/call/join/…" disabled=${busy}
+        <input class="vkbox-input" data-noautofocus value=${val} placeholder="vk.ru/call/join/…" disabled=${busy}
           onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); save(); } }}/>
       </div>
       ${justSaved ? html`<span class="vk-saved"><${Ic} i="check"/> Saved</span>` : null}
@@ -8616,7 +8616,10 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
     const onEdit = () => { dirty.current = true; };
     root.addEventListener("input", onEdit, true);
     root.addEventListener("change", onEdit, true);
-    const first = root.querySelector("[autofocus]") || root.querySelector("input,textarea,select,button.btn-primary");
+    // fields can opt out of autofocus with [data-noautofocus] (e.g. the VK box); and a view modal (noGuard)
+    // never grabs focus onto a button as a fallback
+    let first = root.querySelector("[autofocus]") || root.querySelector("input:not([data-noautofocus]),textarea,select,button.btn-primary");
+    if (first && noGuardRef.current && first.tagName === "BUTTON") first = null;
     if (first) setTimeout(() => { try { first.focus(); } catch (_) {} }, 0);
     const tok = {}; _sheetStack.push(tok);   // only the TOP stacked Sheet reacts to Esc/Enter/Tab
     const onKey = e => {
