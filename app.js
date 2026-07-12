@@ -5624,7 +5624,7 @@ function ConnectionsScreen() {
   }
   if (q) rows = rows.filter(({ p, t }) => { const u = p.user_id ? Store.user(p.user_id) : null; const o = t.observed || {};
     return searchMatch((p.title || "") + " " + (p.name || "") + " " + (u ? u.name : "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface + " " + (o.endpoint || ""), q); });
-  rows = sortPeerRows(rows, connView.sort, connView.dir);
+  rows = sortPeerRows(rows, connView.sort, connView.dir, "livepeers");
   const shownByPeer = {};
   for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
   const onlineCount = rows.filter(r => r.t.online).length;
@@ -5788,7 +5788,7 @@ function revealAssignedPeer(userId, peerId) {
 // A self-contained peers panel (toolbar + shared PeerGrid + pager) over a GIVEN peer set. Reused for the
 // unassigned grid and each user's expanded grid, so they look/behave exactly like the Peers screen. The
 // server / interface dropdown options are derived from the set itself (only servers/ifaces that have rows).
-function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse, live, onlineOnly }) {
+function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, collapse, live, onlineOnly, freezeKey }) {
   const [, force] = useState(0);
   const bump = () => force(x => x + 1);
   const nodeSet = new Set(), ifByNode = {};
@@ -5834,7 +5834,8 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
     for (const { p, t } of rows) (shownByPeer[p.id] = shownByPeer[p.id] || new Set()).add(tkey(t.node, t.iface));
   }
   if (!view.sort) { view.sort = "status"; view.dir = -1; }
-  rows = sortPeerRows(rows, view.sort, view.dir);
+  // freeze the order so an edit/rotate (a status change) doesn't make the row jump out of view
+  rows = sortPeerRows(rows, view.sort, view.dir, freezeKey ? freezeKey + "|" + node + "|" + iface : null);
 
   const pageSize = view.pageSize || 20;
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
@@ -6052,8 +6053,11 @@ function VkLinkField({ user }) {
   const [val, setVal] = useState(user.vk_link || "");
   const [busy, setBusy] = useState(false);
   const [subd, setSubd] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);   // green "Saved" flag for ~5s after a save
+  const savedTimer = useRef(null);
   useEffect(() => { setVal(user.vk_link || ""); setSaved(user.vk_link || ""); }, [user.id, user.vk_link]);
   useEffect(() => { let ok = true; if (subFeatureOn()) subUsersMap().then(m => { if (ok) setSubd(!!(m[user.id] && m[user.id].enabled)); }).catch(() => {}); return () => { ok = false; }; }, [user.id]);
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
   const v = normVkLink(val);                    // accept the link with or without https:// — add it when missing
   const invalid = !!v && !_VK_CALL_RE.test(v);
   const empty = !v;
@@ -6066,13 +6070,18 @@ function VkLinkField({ user }) {
     setBusy(false);
     if (!r || !r.ok) { toast((r && r.error) || "Couldn't save the VK link", "err"); return; }
     setSaved(v); setVal(v);                      // reflect the saved (normalised) value → dirty=false → button disables
+    setJustSaved(true); if (savedTimer.current) clearTimeout(savedTimer.current); savedTimer.current = setTimeout(() => setJustSaved(false), 5000);
     Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the new link
   };
   return html`<div class=${"field vkfield" + (invalid ? " warn" : set ? " set" : " warn")} style="margin-bottom:14px">
     <label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
     <div class="vkfield-row">
-      <input value=${val} placeholder="vk.ru/call/join/…" disabled=${busy}
-        onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); save(); } }}/>
+      <div class="vkbox">
+        <${Ic} i="link"/>
+        <input class="vkbox-input" value=${val} placeholder="vk.ru/call/join/…" disabled=${busy}
+          onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); save(); } }}/>
+      </div>
+      ${justSaved ? html`<span class="vk-saved"><${Ic} i="check"/> Saved</span>` : null}
       <span class="fieldbtns"><button class="btn btn-primary btn-mini" disabled=${busy || !dirty || invalid} onClick=${save}>${busy ? "Saving…" : "Save"}</button></span>
     </div>
     ${invalid ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
@@ -6422,7 +6431,7 @@ function UserRow({ user, live, onlineOnly, q }) {
       </span>
     </div>
     ${expanded ? html`<div class="urow-body">
-      ${shownPeers.length ? html`<${EmbeddedPeers} peers=${shownPeers} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true} live=${live} onlineOnly=${onlineOnly}/>`
+      ${shownPeers.length ? html`<${EmbeddedPeers} peers=${shownPeers} view=${view} hideUser=${true} hideToolbar=${true} collapse=${true} live=${live} onlineOnly=${onlineOnly} freezeKey=${"uembed|" + user.id}/>`
         : html`<div class="ug-empty">${user.peerCount ? "No peers match." : html`<${Fragment}>No peers yet — <button class="linkbtn" onClick=${() => openAddPeers(user.id, user.name)}>add one</button>.<//>`}</div>`}
     </div>` : null}
     <${RowError} k=${"user:" + user.id}/>
@@ -6486,7 +6495,7 @@ function UsersScreen() {
 
     ${unassigned.length ? html`<${Fragment}>
       <div class="section-title"><h2 style="color:var(--faint)">Unassigned peers</h2><span class="count">${unassigned.length}</span></div>
-      <${EmbeddedPeers} peers=${unassigned} view=${unassignedView} collapse=${true}/>
+      <${EmbeddedPeers} peers=${unassigned} view=${unassignedView} collapse=${true} freezeKey=${"unassigned-embed"}/>
     <//>` : null}
   </div>`;
 }

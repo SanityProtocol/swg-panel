@@ -186,7 +186,7 @@ function reconcile(roster, stats, now, cfg) {
       if (status === "empty" || (RANK[pr.status] || 0) > (RANK[status] || 0)) status = pr.status;
     });
     return {
-      id: uid, name: u.name || "", tag: u.tag || "", note: u.note || "",
+      id: uid, name: u.name || "", tag: u.tag || "", note: u.note || "", vk_link: u.vk_link || "",
       created_at: u.created_at || null, modified_at: u.modified_at || null,
       peerIds: mine.map(pr => pr.id),
       peerCount: mine.length, onlineCount: mine.filter(pr => pr.online).length,
