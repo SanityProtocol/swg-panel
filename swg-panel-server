@@ -1168,13 +1168,24 @@ def _url_host(url):
     return s.rsplit(":", 1)[0] if s.count(":") == 1 else s  # host:port (v4/name) → host
 
 
+# The public URL nodes are told to dial: the last CONFIRMED one. Frozen while a bind/cert change is verifying, so a
+# node that happens to sync mid-change never re-points to an address that then reverts (which would strand it on a
+# dropped listener). Updated at boot, on apply-confirm, and on a pure public-URL edit (no bind/cert change → there is
+# no browser confirm for it). None until main() seeds it → _panel_public_url falls back to computing from settings.
+_CONFIRMED_URL = None
+
+
 def _panel_public_url(deps):
-    """The canonical PUBLIC URL a node should dial. access.panel.url is the public host; append the configured
-    port when the URL carries none and it isn't the scheme default (mirrors the subscription URL logic) — a panel
-    reached at :8443 (incl. behind Cloudflare on the 8443 edge port) MUST advertise :8443, else nodes dial 443 and
-    get nothing. Sent in the sync response so an online node re-points itself when this changes, after verifying
-    the new address presents the same pinned/CA identity (a MITM can't redirect a pinned node); the node's
-    verify-before-switch also guards the rare case where the appended port is wrong for a given proxy setup."""
+    """The URL a node should dial — the last CONFIRMED public address (see _CONFIRMED_URL). Sent in the sync
+    response so an online node re-points itself when it changes, after verifying the new address presents the same
+    pinned/CA identity (a MITM can't redirect a pinned node)."""
+    return _CONFIRMED_URL if _CONFIRMED_URL is not None else _compute_public_url(deps)
+
+
+def _compute_public_url(deps):
+    """Normalise access.panel.url into the dial address: append the configured port when the URL carries none and it
+    isn't the scheme default (mirrors the subscription URL logic) — a panel reached at :8443 (incl. behind Cloudflare
+    on the 8443 edge port) MUST advertise :8443, else nodes dial 443 and get nothing."""
     p = ((deps.get("panel_settings") or {}).get("access") or {}).get("panel") or {}
     raw = (p.get("url") or "").strip().rstrip("/")
     if not raw:
@@ -1195,6 +1206,29 @@ def _panel_public_url(deps):
         return "%s://%s" % (u.scheme, netloc)
     except Exception:
         return raw
+
+
+def _confirm_panel_url(deps):
+    """Adopt the current settings' public URL as the CONFIRMED dial address nodes are told (see _CONFIRMED_URL).
+    Called when a change is genuinely committed: at boot, on apply-confirm, and on a pure public-URL edit."""
+    globals()["_CONFIRMED_URL"] = _compute_public_url(deps)
+
+
+def _panel_url_edit_is_pure(old_access, new_access):
+    """True when a settings save changed the public URL but nothing that triggers a live apply+confirm (same bind,
+    same cert posture) — so there's no browser confirm to wait for and the new URL is immediately the confirmed one.
+    A bind (host/port) or cert (mode, or domain under a cert-issuing mode) change returns False: an apply follows and
+    _CONFIRMED_URL must stay frozen until that confirms, so nodes don't re-point to an address that may revert."""
+    op = (old_access.get("panel") or {}); npnl = (new_access.get("panel") or {})
+    if str(op.get("host") or "") != str(npnl.get("host") or "") or int(op.get("port") or 0) != int(npnl.get("port") or 0):
+        return False
+    ot = (old_access.get("tls") or {}); nt = (new_access.get("tls") or {})
+    if (ot.get("mode") or "") != (nt.get("mode") or ""):
+        return False
+    if (nt.get("mode") or "") in ("letsencrypt", "cloudflare", "cf15", "letsencrypt-ip"):
+        if _url_host(op.get("url") or "") != _url_host(npnl.get("url") or ""):
+            return False   # new domain under a cert-issuing mode → reissue → apply/confirm follows
+    return True
 
 
 def _is_ip(host):
@@ -4103,13 +4137,21 @@ def api(method, path, qs, body, deps):
         # errors abort the whole save. Phase 3 persists only; the live bind/cert apply lands in phase 4.
         _access_warnings = []
         acc_in = incoming.get("access")
+        _url_edit_pure = False
         if isinstance(acc_in, dict):
-            _acc_clean, _acc_errs, _access_warnings = validate_access(acc_in, cur.get("access") or {})
+            _old_access = cur.get("access") or {}
+            _acc_clean, _acc_errs, _access_warnings = validate_access(acc_in, _old_access)
             if _acc_errs:
                 return 400, {"ok": False, "error": "; ".join(_acc_errs), "errors": _acc_errs,
                              "warnings": _access_warnings, "code": "bad_request"}
+            # A public-URL edit with NO bind/cert change has no browser confirm → the new URL is the confirmed dial
+            # address immediately. A bind/cert change instead goes through apply+confirm, which updates it then, so
+            # _CONFIRMED_URL stays frozen here (nodes never re-point to an address a pending change might revert).
+            _url_edit_pure = _APPLY["pending"] is None and _panel_url_edit_is_pure(_old_access, _acc_clean)
             cur["access"] = _acc_clean
         deps["panel_settings"] = cur
+        if _url_edit_pure:
+            _confirm_panel_url(deps)
         with contextlib.suppress(Exception):
             save_critical(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")   # rotating backups (recoverable)
         write_sub_serve(deps)   # keep subs/serve.json (what swg-sub reads) in step with the enable/serve settings
@@ -4154,6 +4196,7 @@ def api(method, path, qs, body, deps):
         need_cert = bool(cur.get("cert")) and _cert_needs_issue(cur.get("cert"), d_domain, mode)
         same_bind = (d_host, d_port) == (cur["host"], cur["port"])
         if same_bind and not need_cert:
+            _confirm_panel_url(deps)   # bind + cert already current → the (possibly new) URL is live now, no confirm needed
             _apply_status("saved", "already serving on %s:%d" % (d_host, d_port))
             return 200, {"ok": True, "applied": True, "message": "already on this address"}
         with _APPLY["lock"]:
@@ -4211,6 +4254,7 @@ def api(method, path, qs, body, deps):
             nd, od = pend.get("new_domain"), pend.get("old_domain")
             _APPLY["pending"] = None
             _apply_status("saved", "panel now on %s:%d" % (pend["host"], pend["port"]))
+        _confirm_panel_url(deps)   # the change is committed → NOW nodes may be told the new dial URL (frozen until here)
         if nd:                                                # committed a new cert → drop the backup + stop renewing the old domain
             _netctl_enqueue(deps, "clear-backup", ["panel"])
             if od and od != nd:
@@ -8152,6 +8196,7 @@ def main():
     globals()["_SUB_LIVE_BIND"] = {   # boot baseline for the sub self-heal — config == live at startup
         "host": str((((Handler.deps["panel_settings"].get("access") or {}).get("sub") or {}).get("host")) or "0.0.0.0"),
         "port": int((((Handler.deps["panel_settings"].get("access") or {}).get("sub") or {}).get("port")) or 8444)}
+    _confirm_panel_url(Handler.deps)   # boot baseline for the node dial URL — config == live (confirmed) at startup
     normalize_sub_perms(Handler.deps)   # make swg-sub's readable subset group-readable (fixes 0600 files from older builds)
     with contextlib.suppress(ValueError, OSError, AttributeError):
         signal.signal(signal.SIGHUP, _sighup_reload)   # install NOW so a SIGHUP during the self-heal below can't kill us
