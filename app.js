@@ -306,6 +306,7 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
     try { await api.subVaultSet({ salt: v.data.salt, sk_by_pw: v.data.sk_by_pw, sk_check: v.data.sk_check,
       sk_verify: await subEnc(_subSK, new TextEncoder().encode(SUB_CHECK)) }); } catch (_) {}
   }
+  try { subAutoHeal(); } catch (_) {}   // key just became available → silently publish anything left unpublished while locked
   return _subSK;
 }
 // Re-wrap the vault under a NEW panel password so the convenience cache keeps auto-unlocking after a password
@@ -448,12 +449,15 @@ async function subMaybePublish(userId, peerId, privkey, psk) {
 // available (already unlocked, or the operator just unlocked it) or not needed (store mode isn't encrypted);
 // false when the operator chose to skip. Shows a modal (VaultPromptSheet) explaining the action + the cost of
 // skipping. Never throws.
+let _vaultPromptPending = null;   // the in-flight unlock promise while the modal is open — coalesces concurrent asks
 function ensureVaultUnlocked(opts) {
-  return new Promise(function (resolve) {
-    if (Store.storeMode !== "encrypted") return resolve(true);   // nothing is stored encrypted → no key needed
-    if (subSKCached()) return resolve(true);                      // already unlocked this session
-    pushModal(html`<${VaultPromptSheet} opts=${opts || {}} onDone=${resolve}/>`);
+  if (Store.storeMode !== "encrypted") return Promise.resolve(true);   // nothing is stored encrypted → no key needed
+  if (subSKCached()) return Promise.resolve(true);                     // already unlocked this session
+  if (_vaultPromptPending) return _vaultPromptPending;                 // a modal is already up → share it (one prompt for a burst of actions)
+  _vaultPromptPending = new Promise(function (resolve) {
+    pushModal(html`<${VaultPromptSheet} opts=${opts || {}} onDone=${v => { _vaultPromptPending = null; resolve(v); }}/>`);
   });
+  return _vaultPromptPending;
 }
 // subMaybePublish, but if the vault is locked it PROMPTS the operator (instead of silently skipping) so they can
 // unlock + publish or knowingly skip. Use for user-triggered actions (create / rekey / reassign a peer).
@@ -517,6 +521,41 @@ async function subBackfillUser(uid, unlockKey) {
     } catch (_) { missing++; missingPeers.push(p.id); }
   }
   return { published, missing, total: peers.length, missingPeers };
+}
+
+// Silent safety net: publish every subscription-enabled user whose LIVE peers outnumber their provisioned
+// blobs — i.e. peers created/assigned while the vault was locked (possibly in another admin session), which
+// would otherwise show "Not ready yet" on the subscription page. Runs only with the key already available
+// (no prompt — the per-action subPublishOrPrompt owns the "ask for the password" flow); best-effort, never
+// throws. Guarded against re-entrancy so overlapping polls/unlocks don't double-run. Idempotent.
+let _autoHealRunning = false;
+const _healTried = {};   // uid → the exact blob deficit we last attempted with the key available. Peers whose key
+                         // can't be recovered (no session/plaintext config, no blob — they need a rekey) can't be
+                         // published, so re-probing them every heal is wasted work + console 404 noise at fleet
+                         // scale. Attempt a given gap once; retry only when the deficit changes (a peer added, or
+                         // one got published elsewhere). Cleared for a user the moment they're fully covered.
+async function subAutoHeal() {
+  if (Store.storeMode !== "encrypted" || !subSKCached() || _autoHealRunning) return;
+  _autoHealRunning = true;
+  try {
+    let st; try { st = await api.subUsers(); } catch (_) { return; }
+    const users = (st && st.data && st.data.users) || {};
+    let healed = 0;
+    for (const uid of Object.keys(users)) {
+      const u = users[uid] || {};
+      if (!u.enabled) { delete _healTried[uid]; continue; }        // only a live subscription renders "Not ready yet"
+      const deficit = (u.peers || 0) - (u.provisioned || 0);
+      if (deficit <= 0) { delete _healTried[uid]; continue; }       // every live peer already has a blob → nothing to do
+      if (_healTried[uid] === deficit) continue;                    // this exact gap was already attempted → don't re-probe
+      _healTried[uid] = deficit;
+      try {
+        const k = await ensureUserUnlockKey(uid);
+        if (k) { const r = await subBackfillUser(uid, k); healed += (r.published || 0); if (r.published) delete _healTried[uid]; }
+        else delete _healTried[uid];                                // couldn't get the key → let a later pass retry
+      } catch (_) { delete _healTried[uid]; }
+    }
+    if (healed) bus.emit();   // refresh any open sub / QR views now that blobs exist
+  } finally { _autoHealRunning = false; }
 }
 
 // Migrating a plaintext config → blob keeps ONLY {k,p}; its non-secret DNS/MTU/AllowedIPs/keepalive would be
@@ -855,6 +894,15 @@ const Store = {
     if (s && s.ok) { this.hostProc = d.host_proc || null; this.hostProcErr = d.host_proc_err || null; }   // only on a clean poll → the tag HOLDS through the panel's own re-install downtime
     if (ev && Array.isArray(ev.data)) this.events = ev.data;
     this.apply();
+    // Silent auto-heal net: catch peers that ended up unpublished (created/assigned while locked, or in another
+    // session) and publish them once the key is available. Gated on a cheap signature — the peer/user counts plus
+    // lock state — so the extra /api/sub/users round-trip fires on a roster change or an unlock, not every idle poll.
+    try {
+      const hk = (subSKCached() && this.storeMode === "encrypted")
+        ? (Object.keys(this.roster.peers || {}).length + ":" + Object.keys(this.roster.users || {}).length)
+        : "off";
+      if (hk !== this._healKey) { this._healKey = hk; if (hk !== "off") subAutoHeal(); }
+    } catch (_) {}
   },
   // Re-derive everything the UI reads from a PRISTINE copy of server data + the optimistic
   // overlay. Confirmed ops (done) are dropped first — fresh server data already reflects them
