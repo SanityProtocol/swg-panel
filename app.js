@@ -6053,8 +6053,9 @@ function VkLinkField({ user }) {
   const [val, setVal] = useState(user.vk_link || "");
   const [busy, setBusy] = useState(false);
   const [subd, setSubd] = useState(false);
-  const [justSaved, setJustSaved] = useState(false);   // green "Saved" flag for ~5s after a save
+  const [saveStatus, setSaveStatus] = useState(null);   // "saved" | "failed" — shown ~5s next to the button
   const savedTimer = useRef(null);
+  const flashStatus = s => { setSaveStatus(s); if (savedTimer.current) clearTimeout(savedTimer.current); savedTimer.current = setTimeout(() => setSaveStatus(null), 5000); };
   useEffect(() => { setVal(user.vk_link || ""); setSaved(user.vk_link || ""); }, [user.id, user.vk_link]);
   useEffect(() => { let ok = true; if (subFeatureOn()) subUsersMap().then(m => { if (ok) setSubd(!!(m[user.id] && m[user.id].enabled)); }).catch(() => {}); return () => { ok = false; }; }, [user.id]);
   useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
@@ -6068,9 +6069,9 @@ function VkLinkField({ user }) {
     setBusy(true);
     const r = await api.userUpdate({ id: user.id, vk_link: v });
     setBusy(false);
-    if (!r || !r.ok) { toast((r && r.error) || "Couldn't save the VK link", "err"); return; }
+    if (!r || !r.ok) { flashStatus("failed"); toast((r && r.error) || "Couldn't save the VK link", "err"); return; }
     setSaved(v); setVal(v);                      // reflect the saved (normalised) value → dirty=false → button disables
-    setJustSaved(true); if (savedTimer.current) clearTimeout(savedTimer.current); savedTimer.current = setTimeout(() => setJustSaved(false), 5000);
+    flashStatus("saved");
     Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the new link
   };
   return html`<div class=${"field vkfield" + (invalid ? " warn" : set ? " set" : " warn")} style="margin-bottom:14px">
@@ -6081,8 +6082,11 @@ function VkLinkField({ user }) {
         <input class="vkbox-input" data-noautofocus value=${val} placeholder="vk.ru/call/join/…" disabled=${busy}
           onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); save(); } }}/>
       </div>
-      ${justSaved ? html`<span class="vk-saved"><${Ic} i="check"/> Saved</span>` : null}
-      <span class="fieldbtns"><button class="btn btn-primary btn-mini" disabled=${busy || !dirty || invalid} onClick=${save}>${busy ? "Saving…" : "Save"}</button></span>
+      <span class="fieldbtns">
+        ${saveStatus === "saved" ? html`<span class="vk-status ok"><${Ic} i="check"/> Saved</span>`
+          : saveStatus === "failed" ? html`<span class="vk-status err"><${Ic} i="warn"/> Failed</span>` : null}
+        <button class="btn btn-primary btn-mini" disabled=${busy || !dirty || invalid} onClick=${save}>${busy ? "Saving…" : "Save"}</button>
+      </span>
     </div>
     ${invalid ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
       : empty ? html`<div class="hint vk-warn">No VK link for this user yet — the panel is using your <b>test</b> link to build these turn configs. Enter their own before you distribute.${subd ? html` Right now their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}

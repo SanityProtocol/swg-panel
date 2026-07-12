@@ -2055,8 +2055,11 @@ a.tg:hover{filter:brightness(1.25)}
 .vkbox{flex:1;min-width:0;box-sizing:border-box;min-height:30px;display:flex;align-items:center;gap:9px;padding:5px 11px;border:1px solid var(--line);border-radius:8px;transition:border-color .12s,background .12s}
 .vkbox > .ic{flex:none}
 .vkbox-input{flex:1;min-width:0;border:0;background:transparent;padding:0;font-family:var(--mono);font-size:12px;line-height:16px;color:var(--ink);outline:none;box-shadow:none}
-.vk-saved{flex:none;display:inline-flex;align-items:center;gap:4px;color:var(--online);font-size:12px;font-weight:600;white-space:nowrap}
-.vk-saved .ic{width:14px;height:14px}
+/* save status sits at the LEFT of the button group, before the Save button (margin-right:auto pushes it left) */
+.vk-status{margin-right:auto;display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;white-space:nowrap}
+.vk-status.ok{color:var(--online)}
+.vk-status.err{color:var(--dangling)}
+.vk-status .ic{width:14px;height:14px}
 .vkfield-row .btn{flex:none}
 /* fixed-width trailing button group → the VK input and the sub-link box line up to the SAME width, and every
    button (Save / Rotate / Disable) is the same size so Save sits right under Disable */
