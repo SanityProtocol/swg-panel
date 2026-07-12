@@ -6019,18 +6019,20 @@ function VkLinkField({ user }) {
       : empty ? html`<div class="hint vk-warn">No VK link for this user yet — the panel is using your <b>test</b> link to build these turn configs. Enter their own before you distribute.${subd ? html` Right now their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}
   </div>`;
 }
-function openPeerConfigs(peer, back) {
+// `child` = opened from another modal (user modal, peer view, edit peer). Then it's PUSHED onto the modal
+// stack so the parent stays mounted behind it (no reload, scroll preserved) and ✕/Esc/backdrop/"Back" just
+// pop back to it. Root (from a table) replaces the top as before.
+function openPeerConfigs(peer, child) {
   const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per view; the modal sizes to fit (more → page with ‹ ›)
   const wcols = Math.max(cols, 2);                       // hold 2 QRs wide even for a single deployment (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
-  // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
   const vkUser = peer.user_id ? Store.recon.users.find(u => u.id === peer.user_id) : null;
   // an unassigned peer always leads with "Unassigned peer" (its title, if any, follows)
   const parts = []; parts.push(vkUser ? vkUser.name : "Unassigned peer"); if (peer.title) parts.push(peer.title);
   const nm = parts.join(" · ");
   const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span></span>`;
   const headExtra = vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true} header=${true}/>` : null;
-  openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} onClose=${back || closeModal} onBack=${back}>
+  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} onClose=${closeModal} onBack=${child ? closeModal : null}>
     <${VaultUnlockPanel}/>
     ${vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${peer.targets.map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && i === 0}/>`)}/>
@@ -6211,31 +6213,33 @@ function SubUserPanel({ user }) {
 
 function openUserConfigs(user, back) {
   const peers = Store.peersOfUser(user.id);
-  const maxT = Math.min(3, peers.reduce((m, p) => Math.max(m, (p.targets || []).length || 1), 1));   // widest peer row, capped at 3 QRs
-  const wcols = Math.max(maxT, 2);                        // hold 2 QRs wide even for a single deployment (roomier layout)
+  // the user modal shows ONE card per peer, so size by the peer COUNT (up to 3 across), not the widest peer's
+  // deployment count — otherwise a user's modal width flip-flopped on whether any one peer had 3+ configs
+  const cols = Math.min(peers.length || 1, 3);
+  const wcols = Math.max(cols, 2);                        // hold 2 cards wide even for a single peer (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   const anyTurn = peers.some(p => targetsBehindTurn(p.targets));
   const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
   const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}</span>`;
   const headExtra = html`<span class="hcount">${peers.length} peer${peers.length === 1 ? "" : "s"}${nCfg > 1 ? ` (${nCfg} configs)` : ""}</span>`;
-  const backHere = () => openUserConfigs(user);          // a multi-deployment peer opens its own modal → returns here
   openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} onClose=${back || closeModal}>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${anyTurn ? html`<${VkLinkField} user=${user}/>` : null}
-    ${peers.length ? html`<${QRRow} cards=${peers.map(p => html`<${UserPeerCard} key=${p.id} peer=${p} onOpen=${() => openPeerConfigs(p, backHere)}/>`)}/>`
+    ${peers.length ? html`<${QRRow} cards=${peers.map(p => html`<${UserPeerCard} key=${p.id} peer=${p} onOpen=${() => openPeerConfigs(p, true)}/>`)}/>`
       : html`<div class="empty" style="padding:24px">This user has no peers yet.</div>`}
   <//>`);
 }
 // Turn-proxy client configs for one deployment — one section per turn-proxy on the interface, generated
 // on the fly for the DEPLOYED fork. `conf` is the base WG config (needs the private key, so session/stored).
+// Turn always opens FROM another modal (a peer or user QR view), so it's PUSHED — ✕/Esc/backdrop/"Back" pop
+// straight back to whatever it was launched from, with that view intact.
 function openTurnConfigs(peer, t, conf) {
-  const back = () => openPeerConfigs(peer);   // Turn opens FROM the QR/configs sheet → ✕/Esc/Back all return there
-  openModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} onClose=${back}>
-    <${TurnConfigSheet} peer=${peer} t=${t} conf=${conf} back=${back}/>
+  pushModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} onClose=${closeModal} onBack=${closeModal}>
+    <${TurnConfigSheet} peer=${peer} t=${t} conf=${conf}/>
   <//>`);
 }
-function TurnConfigSheet({ peer, t, conf, back }) {
+function TurnConfigSheet({ peer, t, conf }) {
   const [selFork, setSelFork] = useState(0);
   const [inst, setInst] = useState({});   // fork → chosen instance index (for redundant same-fork proxies)
   // One badge PER FORK; the peer's own fork (observed viaTurn) sorts first and is selected by default. When a
@@ -6260,12 +6264,12 @@ function TurnConfigSheet({ peer, t, conf, back }) {
         ${list.map((p, k) => html`<option value=${k}>${(p.listen || ("proxy " + (k + 1))) + (p.title ? " (" + p.title + ")" : "")}</option>`)}
       </select></div>` : null}
     ${!vk ? html`<div class="notice warn"><${Ic} i="warn"/><span>No VK call link set — configs carry a placeholder. Set it in <a href="#/panel/settings" onClick=${() => closeAllModals()}>Panel settings → Turn proxies</a>.</span></div>` : null}
-    <${TurnCfgItem} key=${cur.service} conf=${conf} tp=${cur} vk=${vk} base=${base} back=${back}/>
+    <${TurnCfgItem} key=${cur.service} conf=${conf} tp=${cur} vk=${vk} base=${base}/>
   </div>`;
 }
 // One turn-proxy's client artifact. Sync forks fill `text`; wingsv:// fills `buildAsync` (needs zlib), so
 // we resolve it in an effect and show "generating…" until ready. Textarea wraps + auto-grows (no scroll).
-function TurnCfgItem({ conf, tp, vk, base, back }) {
+function TurnCfgItem({ conf, tp, vk, base }) {
   const a = turnArtifact(conf, tp, vk);
   const [text, setText] = useState(a.text != null ? a.text : null);
   const [err, setErr] = useState(null);
@@ -6286,7 +6290,6 @@ function TurnCfgItem({ conf, tp, vk, base, back }) {
     ${err ? html`<div class="hint err">${err}</div>`
       : html`<textarea class="turncfg-ta" readonly spellcheck="false" ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
     <div class="turncfg-foot">
-      ${back ? html`<button class="btn btn-mini" onClick=${back}><${Ic} i="back"/> Back to QR</button>` : null}
       <span class="grow"></span>
       <button class="btn btn-mini" disabled=${!ready} onClick=${() => copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
       <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""))}><${Ic} i="download"/> Download .conf</button>
@@ -8566,7 +8569,7 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
   return html`<div class="overlay show" onClick=${e => { if (e.target.classList.contains("overlay")) tryClose(); }}>
     <div class="sheet" role="dialog" aria-modal="true" ref=${ref} style=${width ? "width:" + width + "px;max-width:calc(100vw - 32px)" : ""}>
       <div class="sheet-head"><h3>${title}</h3>${headExtra || null}${onBack
-        ? html`<button class="sheet-back" onClick=${tryClose}><${Ic} i="back"/> Go back</button>`
+        ? html`<button class="sheet-back" onClick=${tryClose}><${Ic} i="back"/> Back</button>`
         : html`<button class="x" onClick=${tryClose}>×</button>`}</div>
       <div class="sheet-body">${children}</div>
       ${(foot || discard) ? html`<div class="sheet-foot">${discard
@@ -9148,7 +9151,7 @@ function PeerViewSheet({ pid, node, iface }) {
   return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")} width=${640}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
-      <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, () => openPeerView(p.id, node, iface))}><${Ic} i="qr"/> QR</button>
+      <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, true)}><${Ic} i="qr"/> QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p, () => openPeerView(p.id, node, iface))}><${Ic} i="copy"/> Targets</button>
       <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null, () => openPeerView(p.id, node, iface))}><${Ic} i="pencil"/> Edit</button>
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
@@ -9288,7 +9291,7 @@ function EditPeerSheet({ peer, focus, done, flash }) {
   };
 
   return html`<${Sheet} title=${"Edit peer"} onClose=${done}
-    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, () => openEditPeer(peer, focus, done))}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
+    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, true)}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
