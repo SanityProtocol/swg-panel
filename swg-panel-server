@@ -7739,16 +7739,39 @@ def _cert_selfsigned(cert_path):
         return False
 
 
+def _cert_is_cf_origin(cert_path):
+    """True if the cert at cert_path was issued by the Cloudflare Origin CA (what a `cf15` mode produces),
+    as opposed to a public CA like Let's Encrypt. Used so a switch BETWEEN real-CA modes (LE <-> cf15) still
+    reissues — the old cert covers the domain and isn't self-signed, but its ISSUER no longer matches the mode."""
+    if not cert_path or not os.path.exists(cert_path):
+        return False
+    try:
+        info = ssl._ssl._test_decode_cert(cert_path)
+        iss = dict(x[0] for x in info.get("issuer", ()))
+        return "cloudflare" in (str(iss.get("organizationName", "")) + " " + str(iss.get("commonName", ""))).lower()
+    except Exception:
+        return False
+
+
 def _cert_needs_issue(cert_path, domain, mode):
     """Should we (re)issue a cert before serving `domain` under `mode`? Yes when the current cert doesn't
     cover the domain, OR the mode expects a real CA cert (LE / Cloudflare Origin CA) but what's on disk is a
     self-signed placeholder — which covers the name yet Cloudflare Full-strict / browsers reject (526). A
-    'selfsigned' mode is content with a self-signed cert, so coverage alone settles it there."""
+    'selfsigned' mode is content with a self-signed cert, so coverage alone settles it there. ALSO yes when the
+    mode switched between two real CAs (LE <-> Cloudflare Origin): both cover the domain and aren't self-signed,
+    so only the issuer distinguishes them — without this, a letsencrypt→cf15 switch silently keeps the old LE cert."""
     if not domain or mode not in ("cloudflare", "letsencrypt", "selfsigned", "cf15", "letsencrypt-ip"):
         return False
     if not _cert_covers(cert_path, domain):
         return True
-    return mode in REAL_CA_MODES and _cert_selfsigned(cert_path)
+    if mode in REAL_CA_MODES and _cert_selfsigned(cert_path):
+        return True
+    is_cf = _cert_is_cf_origin(cert_path)               # the served cert's issuer must match the chosen CA mode
+    if mode == "cf15" and not is_cf:
+        return True                                     # want a Cloudflare Origin cert, still on Let's Encrypt (or other)
+    if mode in ("letsencrypt", "cloudflare", "letsencrypt-ip") and is_cf:
+        return True                                     # switched back to a public CA, still on a Cloudflare Origin cert
+    return False
 
 
 def _netctl_wait(deps, rid, timeout=180):
