@@ -2049,11 +2049,14 @@ a.tg:hover{filter:brightness(1.25)}
 .sublink-row .suburl{flex:1;min-width:0}
 .sublink-row .btn{flex:none}
 .vkfield-row{display:flex;gap:8px;align-items:center}
-/* match the sub-link box exactly (padding / radius / height / mono font), just editable + light blue */
-.vkfield-row input{flex:1;min-width:0;padding:5px 11px;border-radius:8px;font-family:var(--mono);font-size:12px;line-height:18px}
+/* match the sub-link box exactly (padding / radius / height / mono font), just editable + orange-empty/blue-set.
+   suburl content height = its 16px icon, so line-height:16px + 5px padding + 1px border = the same box height */
+.vkfield-row input{flex:1;min-width:0;box-sizing:border-box;padding:5px 11px;border-radius:8px;font-family:var(--mono);font-size:12px;line-height:16px}
 .vkfield-row .btn{flex:none}
-/* fixed-width trailing button group → the VK input and the sub-link box line up to the SAME width */
-.fieldbtns{flex:none;display:flex;gap:8px;justify-content:flex-end;width:148px}
+/* fixed-width trailing button group → the VK input and the sub-link box line up to the SAME width, and every
+   button (Save / Rotate / Disable) is the same size so Save sits right under Disable */
+.fieldbtns{flex:none;display:flex;gap:8px;justify-content:flex-end;width:156px}
+.fieldbtns .btn{min-width:72px;justify-content:center}
 .sublink-field{margin-bottom:14px}
 .sublink-field .sublink{margin:0}
 /* user-modal peer card: the whole card opens the peer modal (except the QR + action buttons).
