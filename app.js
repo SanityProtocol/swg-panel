@@ -271,6 +271,15 @@ let _subSK = null;                       // the unwrapped encryption key (Crypto
 const _SK_CACHE = "swg_ck";              // sessionStorage key for the convenience cache (see subUnlock)
 function subSKCached() { return _subSK; }
 function subForget() { _subSK = null; try { sessionStorage.removeItem(_SK_CACHE); } catch (_) {} }   // drop on logout / password change
+// Operator-initiated lock (header padlock): drop the cached key so subscription-affecting actions prompt for it
+// again — for re-locking on a shared machine, and to exercise the unlock prompt. Clears the heal skip-set so a
+// later unlock re-checks every user, and bumps configEpoch so open QR views fall back to the unlock bar.
+function lockVault() {
+  subForget();
+  try { for (const k in _healTried) delete _healTried[k]; } catch (_) {}
+  Store.configEpoch++; bus.emit();
+  try { toast("Encryption key locked.", "ok"); } catch (_) {}
+}
 // Restore the session convenience cache after a reload (login reloads the page). Raw key bytes live in
 // sessionStorage — tab-scoped, cleared on logout, never sent to the server; the deliberate convenience-cache
 // tradeoff so a normal login auto-unlocks config encryption without re-typing the password.
@@ -472,6 +481,26 @@ async function subPublishOrPrompt(userId, peerId, privkey, psk) {
     if (!ok) return;   // operator chose to skip — the peer already exists, just not published
   }
   await subMaybePublish(userId, peerId, privkey, psk);
+}
+// A subscription-affecting action that DOESN'T hand us a fresh private key (e.g. assigning an EXISTING peer to a
+// user, which keeps its key) can still leave that user with an unpublished peer → an empty "Not ready yet" QR on
+// their subscription page. Publish the user's recoverable-but-unpublished peers, PROMPTING for the key first if
+// the vault is locked (Skip leaves them unpublished, as the modal warns). Only acts for a subscribed user with a
+// real gap, so it never prompts pointlessly. Best-effort; never throws.
+async function subReconcileUser(userId) {
+  if (Store.storeMode !== "encrypted" || !userId) return;
+  let rec; try { rec = (await subUsersMap(true))[userId]; } catch (_) { return; }
+  if (!rec || !rec.enabled) return;                              // not subscribed → no client QR to keep populated
+  if ((rec.peers || 0) <= (rec.provisioned || 0)) return;        // already fully published → nothing to do
+  if (!subSKCached()) {
+    const ok = await ensureVaultUnlocked({
+      title: "Unlock to update this subscription",
+      reason: "This user is subscribed, and this change left a peer whose config isn't published yet. Unlock your encryption key to publish it now, so the peer's QR appears on their subscription page.",
+      consequence: "the peer works right away, but it shows “Not ready yet” (an empty QR) on the user's subscription page until you unlock and publish — or rotate that peer's keys.",
+    });
+    if (!ok || !subSKCached()) return;                           // operator skipped
+  }
+  try { const k = await ensureUserUnlockKey(userId); if (k) { await subBackfillUser(userId, k); bus.emit(); } } catch (_) {}
 }
 // Peers whose encrypted blob we've already ensured this session (so viewing a multi-deployment peer's QRs
 // doesn't re-encrypt the same blob repeatedly).
@@ -1856,7 +1885,7 @@ function assignPeer(peer, userId) {
   return mutate({ key: "peer:" + peer.id,
     patch: s => { const p = s.roster.peers[peer.id]; if (p) p.user_id = userId; },
     call: () => api.peerUpdate({ peer_id: peer.id, user_id: userId }),
-    onOk: () => revealAssignedPeer(userId, peer.id) });
+    onOk: () => { revealAssignedPeer(userId, peer.id); subReconcileUser(userId); } });   // keeps its key, so publish via backfill (prompts to unlock if locked)
 }
 
 // Reassign an ALREADY-assigned peer to a different user — this DOES rotate keys (the previous
@@ -5805,7 +5834,7 @@ function VaultPromptSheet({ opts, onDone }) {
   return html`<${Sheet} title=${opts.title || "Enter your password to continue"} width=${480} onClose=${() => done(false)}
     foot=${html`<${Fragment}><span class="grow"></span>
       <button class="btn btn-ghost" disabled=${busy} onClick=${() => done(false)}>Skip</button>
-      <button class="btn btn-primary" disabled=${busy || !pw || exists === false} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock & continue"}</button></>`}>
+      <button class="btn btn-primary" disabled=${busy || !pw || exists === false} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock vault"}</button></>`}>
     <div class="vaultprompt">
       <p class="vp-reason">${opts.reason || "This action needs your encryption key, which isn’t unlocked in this session."}</p>
       ${exists === false
@@ -9342,6 +9371,8 @@ function App() {
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = () => doLogout();   // header logout icon → straight to the confirm
     const tb = $("#theme-btn"); if (tb && !tb._wired) { tb._wired = true; tb.onclick = cycleThemeMode; paintThemeBtn(tb); }   // light/dark/auto switch
+    const vl = $("#vaultlock-btn");   // padlock: shown only when the encryption key is set up AND currently unlocked → click to re-lock
+    if (vl) { vl.hidden = !(Store.storeMode === "encrypted" && subSKCached()); if (!vl._wired) { vl._wired = true; vl.onclick = lockVault; } }
   });
 
   return html`<${Fragment}>

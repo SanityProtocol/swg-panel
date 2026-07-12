@@ -2218,6 +2218,7 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .onlpop .onpop-viewall{display:block;font-size:11.5px;color:var(--brand);text-decoration:none;padding:7px 8px 4px;margin-top:3px;border-top:1px solid var(--line)}
 .onlpop .onpop-viewall:hover{text-decoration:underline}
 .assigncell{display:flex;align-items:center;gap:6px}
+.assigncell .usercombo{min-width:120px;max-width:150px}   /* the in-table "Assign to…" picker: keep it compact, don't stretch the column */
 /* searchable user picker */
 .usercombo{position:relative;min-width:150px}
 .uc-input{width:100%;background:var(--surface-2);border:1px solid var(--line-solid);border-radius:7px;color:var(--ink);font:inherit;font-size:12.5px;padding:5px 9px}
