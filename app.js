@@ -479,7 +479,11 @@ function ensureVaultUnlocked(opts) {
   if (subSKCached()) return Promise.resolve(true);                     // already unlocked this session
   if (_vaultPromptPending) return _vaultPromptPending;                 // a modal is already up → share it (one prompt for a burst of actions)
   _vaultPromptPending = new Promise(function (resolve) {
-    pushModal(html`<${VaultPromptSheet} opts=${opts || {}} onDone=${v => { _vaultPromptPending = null; resolve(v); }}/>`);
+    // Defer the push to a fresh macrotask: this runs from an async callback right after a mutation (rekey /
+    // assign) whose state change is still re-rendering the peer list AND its Portal-based tooltips. Pushing the
+    // modal into that in-flight render re-enters Preact and crashes ("insertBefore … not of type Node"). Waiting
+    // a tick lets the list render commit first, so the modal mounts into a settled tree.
+    setTimeout(() => pushModal(html`<${VaultPromptSheet} opts=${opts || {}} onDone=${v => { _vaultPromptPending = null; resolve(v); }}/>`), 0);
   });
   return _vaultPromptPending;
 }

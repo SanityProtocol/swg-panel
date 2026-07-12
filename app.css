@@ -1975,6 +1975,7 @@ a.tg:hover{filter:brightness(1.25)}
 }
 .iconbtn{cursor:pointer;width:30px;height:30px;border-radius:7px;border:1px solid transparent;background:transparent;color:var(--dim);
   display:inline-flex;align-items:center;justify-content:center;transition:all .14s}
+.iconbtn[hidden]{display:none}   /* the display:inline-flex above otherwise defeats the hidden attribute (e.g. the vault-lock padlock) */
 .iconbtn .ic{display:flex;align-items:center;justify-content:center}   /* kill the inline baseline gap so the glyph centres vertically (was sitting high) */
 .iconbtn:hover{color:var(--ink);background:var(--raise);border-color:var(--line-solid)}
 .iconbtn.danger:hover{color:var(--dangling);border-color:var(--dangling)}
