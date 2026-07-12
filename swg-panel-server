@@ -1169,11 +1169,12 @@ def _url_host(url):
 
 
 def _panel_public_url(deps):
-    """The canonical PUBLIC URL a node should dial = access.panel.url, the operator's public address (which the
-    UI defines as the dial address; behind a proxy/Cloudflare it's the public host, NOT the origin listen port).
-    Normalise the scheme only — never append access.panel.port (that's the origin bind, which a proxied node
-    doesn't use). '' if unset. Sent in the sync response so an online node re-points itself when this changes,
-    after verifying the new address presents the same pinned/CA identity (a MITM can't redirect a pinned node)."""
+    """The canonical PUBLIC URL a node should dial. access.panel.url is the public host; append the configured
+    port when the URL carries none and it isn't the scheme default (mirrors the subscription URL logic) — a panel
+    reached at :8443 (incl. behind Cloudflare on the 8443 edge port) MUST advertise :8443, else nodes dial 443 and
+    get nothing. Sent in the sync response so an online node re-points itself when this changes, after verifying
+    the new address presents the same pinned/CA identity (a MITM can't redirect a pinned node); the node's
+    verify-before-switch also guards the rare case where the appended port is wrong for a given proxy setup."""
     p = ((deps.get("panel_settings") or {}).get("access") or {}).get("panel") or {}
     raw = (p.get("url") or "").strip().rstrip("/")
     if not raw:
@@ -1184,9 +1185,16 @@ def _panel_public_url(deps):
         u = urllib.parse.urlparse(raw)
         if not u.hostname or u.hostname == "0.0.0.0":
             return ""
-        return raw
+        default = 443 if u.scheme == "https" else 80
+        try:
+            lp = int(p.get("port") or 0)
+        except (TypeError, ValueError):
+            lp = 0
+        port = u.port or lp or default
+        netloc = u.hostname if port == default else (("[%s]:%d" % (u.hostname, port)) if ":" in u.hostname else "%s:%d" % (u.hostname, port))
+        return "%s://%s" % (u.scheme, netloc)
     except Exception:
-        return ""
+        return raw
 
 
 _CERT_FP_CACHE = {"mtime": None, "fp": ""}
