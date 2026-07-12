@@ -5849,9 +5849,10 @@ function useSubRec(userId) {
 }
 // "Part of an active subscription" — a right-aligned line under the modal title. Only when the user has a
 // subscription record at all; nothing for unsubscribed users or with the feature off.
-function SubStatusTag({ userId }) {
+function SubStatusTag({ userId, activeOnly }) {
   const rec = useSubRec(userId);
   if (!subFeatureOn() || !rec) return null;
+  if (activeOnly && !rec.enabled) return null;   // peer modal: only surface it for a live subscription
   const s = rec.enabled ? "active" : "disabled";
   return html`<div class=${"substatus " + s}><span class="substatus-dot"></span>Part of ${rec.enabled ? "an" : "a"} <b>${s}</b> subscription</div>`;
 }
@@ -5991,7 +5992,7 @@ function openPeerConfigs(peer, back) {
   const nm = parts.length ? parts.join(" · ") : "Unassigned peer";
   const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span><span class="qrhd-count">${nc} config${nc === 1 ? "" : "s"}</span></span>`;
   openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal} onBack=${back}>
-    ${vkUser ? html`<${SubStatusTag} userId=${vkUser.id}/>` : null}
+    ${vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true}/>` : null}
     <${VaultUnlockPanel}/>
     ${vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${peer.targets.map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && i === 0}/>`)}/>

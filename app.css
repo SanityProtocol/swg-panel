@@ -725,7 +725,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .deploy-head .nm{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink)}
 .deploy-head .nmlink{cursor:pointer} .deploy-head .nmlink:hover{text-decoration:underline}
 .deploy-head .grow{flex:1}
-.deploy-body{padding:15px;display:flex;gap:15px}
+.deploy-body{padding:15px;display:flex;gap:15px;position:relative}
 .deploy .qr{background:#fff;border-radius:var(--r-sm);padding:8px;line-height:0;flex:none;cursor:zoom-in}
 .deploy .qr .qrimg{display:block;width:min(300px,72vw);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
 .qr-overlay{position:fixed;inset:0;z-index:9999;background:var(--qr-scrim);display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:24px}
@@ -2040,10 +2040,11 @@ a.tg:hover{filter:brightness(1.25)}
 .upc-if{display:inline-flex;align-items:center;gap:5px}
 .upc-more{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--faint);border:1px solid var(--line-solid);border-radius:6px;padding:1px 5px}
 /* Primary badge now sits above the QR (peer modal), so it never shifts the header alignment */
-.deploy-body:has(.qr-primary){flex-direction:column;align-items:center}
-.qr-primary{align-self:flex-start;font-family:var(--mono);font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 40%,transparent);border-radius:6px;padding:2px 7px;margin-bottom:8px}
+/* Primary badge overlays the gap above the QR (top padding) — it never pushes the QR down, so the QR stays
+   aligned with the sibling cards */
+.qr-primary{position:absolute;top:2px;left:11px;z-index:1;font-family:var(--mono);font-size:8px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 40%,transparent);border-radius:5px;padding:1px 5px;line-height:1.35;background:var(--surface)}
 /* "← Go back" in place of × (child modal opened from the user view) */
-.sheet-back{appearance:none;display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--line-solid);border-radius:8px;color:var(--ink);font:inherit;font-size:12.5px;font-weight:600;padding:5px 11px;cursor:pointer}
+.sheet-back{appearance:none;margin-left:auto;display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--line-solid);border-radius:8px;color:var(--ink);font:inherit;font-size:12.5px;font-weight:600;padding:5px 11px;cursor:pointer}
 .sheet-back:hover{background:var(--raise);border-color:var(--brand)}
 .sheet-back .ic{width:14px;height:14px}
 /* disabled-subscription: message + Enable button on one line */
