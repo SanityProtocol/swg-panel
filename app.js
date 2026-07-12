@@ -5910,17 +5910,15 @@ function SubLinkActions({ user }) {
     onConfirm: act(() => api.subUserDisable({ user_id: user.id })) });
   const enabled = !!(rec && rec.enabled);
   if (!enabled) return html`<div class="sublink sublink-off">
-    <span class="sublink-off-msg">No subscription link yet — enable one to give this user a shareable page of their QRs</span>
+    <span class="sublink-off-msg">No subscription link yet — enable one to share this user's QRs.</span>
     <button class="btn btn-primary btn-mini" disabled=${busy} onClick=${enable}>Enable subscription</button>
   </div>`;
-  return html`<div class="sublink">
+  return html`<div class="sublink sublink-row">
     ${url ? html`<${SubUrlBar} url=${url}/>` : !base
       ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the link.</div>`
       : html`<div class="hint">Building link…</div>`}
-    <div class="sublink-acts">
-      <button class="btn btn-ghost btn-mini" disabled=${busy} onClick=${rotate}>Rotate</button>
-      <button class="btn btn-ghost btn-mini danger" disabled=${busy} onClick=${disable}>Disable</button>
-    </div>
+    <button class="btn btn-ghost btn-mini" disabled=${busy} onClick=${rotate}>Rotate</button>
+    <button class="btn btn-ghost btn-mini danger" disabled=${busy} onClick=${disable}>Disable</button>
   </div>`;
 }
 // One user-modal card: a peer's PRIMARY/only QR under a two-line clickable header that opens the peer's own
@@ -5935,11 +5933,15 @@ function UserPeerCard({ peer, onOpen }) {
   const oct = String(t.ip || "").split("/")[0].split(".").pop() || "";
   const nm = peer.title || (oct ? "Peer ." + oct : "Peer");
   const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
-  const head = html`<div class="upc-head" onClick=${() => onOpen(peer)} title="Open this peer's configs">
-    <div class="upc-l1"><span class="upc-nm">${nm}</span><span class="grow"></span><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${ltype}/></div>
-    <div class="upc-l2"><span class="upc-if"><${Tag} kind=${ltype} label=${t.iface}/>${targets.length > 1 ? html`<span class="upc-more" title=${targets.length + " deployments"}>+${targets.length - 1}</span>` : null}</span><span class="grow"></span><${Badge} s=${lt.status}/></div>
+  const head = html`<div class="upc-head">
+    <div class="upc-l1"><span class="upc-nm">${nm}</span><span class="grow"></span><${Badge} s=${lt.status}/></div>
+    <div class="upc-l2"><span class="upc-srv" style=${"color:" + col}>${dnode}</span><${Tag} kind=${ltype} label=${t.iface}/>${targets.length > 1 ? html`<span class="upc-deps">${targets.length} deployments</span>` : null}</div>
   </div>`;
-  return html`<${TargetCard} peer=${peer} t=${t} bare=${true} head=${head}/>`;
+  // the whole card opens the peer's modal — except the QR image (enlarges) and the action buttons (their own jobs)
+  const onClick = e => { if (e.target.closest(".qr, .acts, button, a")) return; onOpen(peer); };
+  return html`<div class="upc-wrap" onClick=${onClick} title="Open this peer's configs">
+    <${TargetCard} peer=${peer} t=${t} bare=${true} head=${head}/>
+  </div>`;
 }
 // The VK link baked into a peer's turn configs IN THE PANEL: the owning user's own link, falling back to the
 // panel-wide test link (Settings → Turn proxies) for the admin's own testing + for unassigned peers. The
@@ -6181,7 +6183,6 @@ function openUserConfigs(user, back) {
   const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}<span class="qrhd-count">${peers.length} peer${peers.length === 1 ? "" : "s"} (${nCfg} config${nCfg === 1 ? "" : "s"})</span></span>`;
   const backHere = () => openUserConfigs(user);          // a multi-deployment peer opens its own modal → returns here
   openModal(html`<${Sheet} title=${title} width=${width} onClose=${back || closeModal}>
-    <${SubStatusTag} userId=${user.id}/>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${anyTurn ? html`<${VkLinkField} user=${user}/>` : null}

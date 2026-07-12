@@ -2030,19 +2030,22 @@ a.tg:hover{filter:brightness(1.25)}
 .unlockpanel-row .subpw{flex:1}
 .unlockpanel .vp-keep-row{font-size:12.5px;color:var(--muted)}
 .sublink{margin:0 0 16px;display:flex;flex-direction:column;gap:9px}
-.sublink-acts{display:flex;justify-content:flex-end;gap:8px}
-/* user-modal peer card: two-line clickable header (opens the peer modal) over the primary QR */
-.upc-head{cursor:pointer;padding:10px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:5px;transition:background .12s}
-.upc-head:hover{background:color-mix(in srgb,var(--brand) 9%,transparent)}
+/* enabled sub-link: green textbox + Rotate/Disable on the same line */
+.sublink.sublink-row{flex-direction:row;align-items:center;gap:8px}
+.sublink-row .suburl{flex:1;min-width:0}
+.sublink-row .btn{flex:none}
+/* user-modal peer card: the whole card opens the peer modal (except the QR + action buttons) */
+.upc-wrap{cursor:pointer;border-radius:var(--r);transition:box-shadow .12s}
+.upc-wrap:hover .deploy{border-color:color-mix(in srgb,var(--brand) 55%,var(--line-solid))}
+.upc-wrap:hover .upc-head{background:color-mix(in srgb,var(--brand) 9%,transparent)}
+.upc-head{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:5px;transition:background .12s}
 .upc-l1,.upc-l2{display:flex;align-items:center;gap:7px}
 .upc-nm{font-family:var(--mono);font-weight:700;font-size:13px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .upc-srv{font-family:var(--mono);font-size:12px;font-weight:600}
-.upc-if{display:inline-flex;align-items:center;gap:5px}
-.upc-more{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--faint);border:1px solid var(--line-solid);border-radius:6px;padding:1px 5px}
-/* Primary badge now sits above the QR (peer modal), so it never shifts the header alignment */
-/* Primary badge overlays the gap above the QR (top padding) — it never pushes the QR down, so the QR stays
-   aligned with the sibling cards */
-.qr-primary{position:absolute;top:2px;left:11px;z-index:1;font-family:var(--mono);font-size:8px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 40%,transparent);border-radius:5px;padding:1px 5px;line-height:1.35;background:var(--surface)}
+.upc-deps{font-family:var(--mono);font-size:10.5px;font-weight:600;color:var(--faint);letter-spacing:.02em}
+/* Primary badge overlays the gap above the QR (peer modal): centered and tucked just above the QR, so it
+   never pushes the QR down — the QR stays aligned with the sibling cards */
+.qr-primary{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:1;font-family:var(--mono);font-size:7.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 40%,transparent);border-radius:5px;padding:1px 5px;line-height:1.3;background:var(--surface)}
 /* "← Go back" in place of × (child modal opened from the user view) */
 .sheet-back{appearance:none;margin-left:auto;display:inline-flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--line-solid);border-radius:8px;color:var(--ink);font:inherit;font-size:12.5px;font-weight:600;padding:5px 11px;cursor:pointer}
 .sheet-back:hover{background:var(--raise);border-color:var(--brand)}
@@ -2104,12 +2107,12 @@ a.tg:hover{filter:brightness(1.25)}
 .sub-auto svg{flex:none;margin-top:1px;width:15px;height:15px;color:#2fb883}
 .sub-auto b{color:var(--ink)}
 /* the URL + copy row — one hover target; clicking anywhere copies */
-.suburl{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--bg);cursor:pointer;transition:border-color .12s,background .12s}
-.suburl:hover{border-color:var(--brand,#1FC8D6);background:color-mix(in srgb,var(--brand,#1FC8D6) 7%,var(--bg))}
-.suburl > .ic{color:var(--brand,#1FC8D6);flex:none}
+.suburl{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid color-mix(in srgb,var(--online) 45%,var(--line-solid));border-radius:10px;background:color-mix(in srgb,var(--online) 9%,var(--bg));cursor:pointer;transition:border-color .12s,background .12s}
+.suburl:hover{border-color:var(--online);background:color-mix(in srgb,var(--online) 14%,var(--bg))}
+.suburl > .ic{color:var(--online);flex:none}
 .suburl-txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:12px;color:var(--ink)}
 .suburl-copy{flex:none;display:inline-flex;color:var(--muted,#8a97ad)}
-.suburl:hover .suburl-copy{color:var(--brand,#1FC8D6)}
+.suburl:hover .suburl-copy{color:var(--online)}
 .suburl-copy.ok{color:var(--online)}
 .suburl-hint{font-style:italic}
 .cfgsheet .deploy{width:256px;flex:none}
