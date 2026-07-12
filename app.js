@@ -9413,7 +9413,7 @@ function App() {
 
   return html`<${Fragment}>
     ${h(route.fn, params)}
-    ${modalStack}
+    ${(modalStack && modalStack.length) ? html`<${Portal}>${modalStack}<//>` : null}
   <//>`;
 }
 
