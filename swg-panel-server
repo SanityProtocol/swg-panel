@@ -815,6 +815,7 @@ def valid_hostport(s):
 _OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")   # GitHub owner/repo slug
 _TURN_SVC_RE = re.compile(r"^vk-turn-proxy-[A-Za-z0-9._-]+-\d{1,5}$")                 # node writes this as a path/unit component
 _WANIF_RE = re.compile(r"^[A-Za-z0-9._-]{1,15}$")                                     # Linux NIC name (IFNAMSIZ 16); blocks ; ` $ | & etc.
+_VK_CALL_RE = re.compile(r"^https://(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)/call/join/[\w-]+/?(?:\?\S*)?$", re.I)   # a VK call-room link
 
 
 def bad_targets(targets):
@@ -876,6 +877,7 @@ def user_set(roster, uid, fields, now):
         "name": fields.get("name", u.get("name", "")),
         "tag": fields.get("tag", u.get("tag", "")),
         "note": fields.get("note", u.get("note", "")),
+        "vk_link": fields.get("vk_link", u.get("vk_link", "")),   # per-user VK call link for their turn-proxy configs
         "created_at": u.get("created_at", now),
         "modified_at": now,
     }
@@ -5040,12 +5042,17 @@ def api(method, path, qs, body, deps):
         if uid not in roster["users"]:
             return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
         fields = {}
-        for k in ("name", "tag", "note"):
+        for k in ("name", "tag", "note", "vk_link"):
             if k in body:
                 v = body[k]
                 fields[k] = v.strip() if (isinstance(v, str) and k != "note") else v
         if "name" in fields and not fields["name"]:
             return 400, {"ok": False, "error": "name cannot be empty", "code": "bad_request"}
+        if "vk_link" in fields:                              # per-user VK call link baked into their turn-proxy configs
+            vk = str(fields.get("vk_link") or "").strip()[:512]
+            if vk and not _VK_CALL_RE.match(vk):
+                return 400, {"ok": False, "error": "Not a valid VK call link — expected https://vk.ru/call/join/…", "code": "bad_request"}
+            fields["vk_link"] = vk
         renamed = "name" in fields
         u = user_set(roster, uid, fields, now())
         roster_save(roster_path, roster)

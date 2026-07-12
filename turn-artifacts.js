@@ -86,7 +86,7 @@
     var pep = epBytes(tp.listen);
     var turn = [];
     if (pep) turn = turn.concat(pbLen(1, pep));                     // endpoint = public proxy (internet ip:listen)
-    turn = turn.concat(pbStr(2, vk));                              // link
+    if (vk) turn = turn.concat(pbStr(2, vk));                      // link — omit when empty (a link fork; the recipient adds their VK link in the app)
     turn = turn.concat(pbLen(6, epBytes(LOCAL)));                  // local_endpoint = local turn listen (127.0.0.1:9000)
     turn = turn.concat(pbVar(4, 1));                              // use_udp = true
     turn = turn.concat(pbVar(18, isAwg ? 2 : 1));                 // tunnel_mode = AMNEZIAWG : WIREGUARD
@@ -113,7 +113,7 @@
   }
   function wingsvLink(baseConf, tp, vk) {
     if (typeof CompressionStream === "undefined") return Promise.reject(new Error("this browser can't build a wingsv:// link (no CompressionStream) — copy the fields into the WINGS V app manually"));
-    var proto = wingsvConfigBytes(parseFullConf(baseConf), tp, (vk || "").trim() || "<PASTE VK CALL LINK>", baseConf);
+    var proto = wingsvConfigBytes(parseFullConf(baseConf), tp, (vk || "").trim(), baseConf);   // empty → the proto omits the link (recipient adds it in-app)
     var cs = new CompressionStream("deflate"); var w = cs.writable.getWriter(); w.write(proto); w.close();
     return new Response(cs.readable).arrayBuffer().then(function (buf) {
       var comp = new Uint8Array(buf);
@@ -158,18 +158,20 @@
   function artifact(baseConf, tp, vkLink) {
     var fork = label(tp.service);
     var listen = tp.listen || "";
-    var vk = (vkLink || "").trim() || "<PASTE VK CALL LINK>";
+    var vkRaw = (vkLink || "").trim();                    // the user's VK call link — empty when unset
+    var vkText = vkRaw || "<PASTE VK CALL LINK>";          // placeholder ONLY in plain-text configs (a visible fill-in line the user edits)
+    var vkMissing = !vkRaw;                                // every fork reports this so the UI can flag "create a VK link"
     var cf = parseFullConf(baseConf);
     if (fork === "WINGS-N") {
-      return { fork: fork, app: "WINGS V", label: "WINGS-N · WINGS V (wingsv:// link)", ext: "txt", uri: true, qr: false,
+      return { fork: fork, app: "WINGS V", label: "WINGS-N · WINGS V (wingsv:// link)", ext: "txt", uri: true, qr: false, vkMissing: vkMissing,
         hint: "Import this wingsv:// link into the WINGS V app (paste it, or its Settings → import from link).",
-        buildAsync: function () { return wingsvLink(baseConf, tp, vk); } };
+        buildAsync: function () { return wingsvLink(baseConf, tp, vkRaw); } };   // link fork → empty VK is omitted, not a placeholder
     }
     if (fork === "kiper292") {
       var block = ["", "#@wgt:EnableTURN = true", "#@wgt:UseUDP = false", "#@wgt:IPPort = " + listen,
-        "#@wgt:VKLink = " + vk, "#@wgt:Mode = vk_link", "#@wgt:PeerType = proxy_v2",
+        "#@wgt:VKLink = " + vkText, "#@wgt:Mode = vk_link", "#@wgt:PeerType = proxy_v2",
         "#@wgt:StreamNum = 4", "#@wgt:LocalPort = 9000", "#@wgt:StreamsPerCred = 4"].join("\n");
-      return { fork: fork, app: "WireGuard-TURN", label: "kiper292 · WireGuard-TURN (Android)", ext: "conf", qr: true,
+      return { fork: fork, app: "WireGuard-TURN", label: "kiper292 · WireGuard-TURN (Android)", ext: "conf", qr: true, vkMissing: vkMissing,
         hint: "Import this .conf into the kiper292 WireGuard-TURN app — the TURN settings ride along as #@wgt: comments (Endpoint stays the real server).",
         text: baseConf.replace(/\s*$/, "") + "\n" + block + "\n" };
     }
@@ -177,11 +179,11 @@
       var s = { privateKey: cf.privkey, peerPublicKey: cf.server_pubkey, presharedKey: cf.psk,
         tunnelAddress: cf.address, allowedIPs: "0.0.0.0/0",
         dnsServers: (cf.dns && cf.dns.length ? cf.dns.join(",") : "1.1.1.1"),
-        peerAddress: listen, vkLink: vk, numConnections: 12,
+        peerAddress: listen, vkLink: vkRaw, numConnections: 12,   // link fork → empty VK stays empty, never a placeholder string
         useUDP: true, useDTLS: true, useSrtp: !tp.wrap_key,
         useWrap: !!tp.wrap_key, wrapKeyHex: tp.wrap_key || "" };
       var uri = "vkturnproxy://import?data=" + btoa(JSON.stringify({ settings: s, type: "connection", version: 1 }));
-      return { fork: fork, app: "VK TURN Proxy", label: "anton48 · VK TURN Proxy (iOS)", ext: "txt", uri: true, qr: false,
+      return { fork: fork, app: "VK TURN Proxy", label: "anton48 · VK TURN Proxy (iOS)", ext: "txt", uri: true, qr: false, vkMissing: vkMissing,
         hint: "Open this link on the iPhone (or the app's Settings → Import from connection link) to import into the anton48 app.",
         text: uri };
     }
@@ -189,7 +191,7 @@
       // samosvalishe now = free-turn-proxy server (the old standalone vk-turn-proxy server is archived). Its
       // clients (turn-proxy-android + free-turn-proxy CLI) import a freeturn:// link — one scannable QR that
       // carries the proxy endpoint, the rtpopus obfuscation key, and the whole WG config.
-      return { fork: fork, app: "FreeTurn", label: "samosvalishe · FreeTurn (freeturn:// link)", ext: "txt", uri: true, qr: true,
+      return { fork: fork, app: "FreeTurn", label: "samosvalishe · FreeTurn (freeturn:// link)", ext: "txt", uri: true, qr: true, vkMissing: vkMissing,
         vk: true,   // freeturn:// can't carry the VK call link — the recipient must add it in the app (show it alongside)
         hint: "Scan this QR with the FreeTurn app (samosvalishe/turn-proxy-android), or paste the freeturn:// link into it / the free-turn-proxy CLI. Then add a VK call link in the app.",
         text: freeturnLink(tp, baseConf) };
@@ -199,9 +201,9 @@
     sidecar = /^[ \t]*MTU[ \t]*=/m.test(sidecar) ? sidecar.replace(/^([ \t]*MTU[ \t]*=).*$/m, "$1 1280")
       : sidecar.replace(/^([ \t]*Address[ \t]*=.*)$/m, "$1\nMTU = 1280");
     var flags = tp.wrap_key ? (" -wrap-key " + tp.wrap_key) : "";
-    return { fork: fork, app: fork, label: fork + " · sidecar client", ext: "conf", qr: true,
+    return { fork: fork, app: fork, label: fork + " · sidecar client", ext: "conf", qr: true, vkMissing: vkMissing,
       hint: "This fork runs a separate client binary. Import this .conf into WireGuard, then run the fork's client alongside it:",
-      cmd: "./client -listen 127.0.0.1:9000 -peer " + listen + " -vk-link " + vk + flags,
+      cmd: "./client -listen 127.0.0.1:9000 -peer " + listen + " -vk-link " + vkText + flags,
       text: sidecar };
   }
 

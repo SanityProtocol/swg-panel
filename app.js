@@ -5828,14 +5828,56 @@ function QRRow({ cards }) {
   </div>`;
 }
 
+// The VK link baked into a peer's turn configs IN THE PANEL: the owning user's own link, falling back to the
+// panel-wide test link (Settings → Turn proxies) for the admin's own testing + for unassigned peers. The
+// subscription page never falls back — it uses only the per-user link (see swg-sub).
+function userVkLink(user) {
+  return (((user && user.vk_link) || "").trim()) || (((Store.panelSettings || {}).vk_link || "").trim());
+}
+// Is any of these deployments behind a turn-proxy? (turn feature on AND a proxy forwards to the interface.) Gates
+// the per-user VK field + the sub's VK warning — no turn-proxy on a user's interfaces ⇒ they never use a VK link.
+function targetsBehindTurn(targets) {
+  return turnEnabled() && (targets || []).some(t => turnProxiesFor(t.node, t.iface).length > 0);
+}
+const _VK_CALL_RE = /^https:\/\/(?:[\w.-]+\.)?vk(?:ontakte)?\.(?:com|ru)\/call\/join\/[\w-]+/i;
+// Per-user VK call link, editable inline from the QR modals. Shown only when the user has a peer behind a
+// turn-proxy. Empty → amber border + a hint (the panel falls back to the test link; the subscription page won't).
+// Saves on blur / Enter; re-renders turn configs with the new link.
+function VkLinkField({ user }) {
+  const [val, setVal] = useState(user.vk_link || "");
+  const [busy, setBusy] = useState(false);
+  const [subd, setSubd] = useState(false);
+  useEffect(() => setVal(user.vk_link || ""), [user.id, user.vk_link]);
+  useEffect(() => { let ok = true; if (subFeatureOn()) subUsersMap().then(m => { if (ok) setSubd(!!(m[user.id] && m[user.id].enabled)); }).catch(() => {}); return () => { ok = false; }; }, [user.id]);
+  const v = val.trim();
+  const invalid = !!v && !_VK_CALL_RE.test(v);
+  const empty = !v;
+  const save = async () => {
+    if (v === (user.vk_link || "") || invalid) return;
+    setBusy(true);
+    const r = await api.userUpdate({ id: user.id, vk_link: v });
+    setBusy(false);
+    if (!r || !r.ok) { toast((r && r.error) || "Couldn't save the VK link", "err"); return; }
+    await Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the new link
+  };
+  return html`<div class=${"field vkfield" + (empty || invalid ? " warn" : "")} style="margin-bottom:14px">
+    <label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
+    <input value=${val} placeholder="https://vk.ru/call/join/…" disabled=${busy}
+      onInput=${e => setVal(e.target.value)} onBlur=${save} onKeyDown=${e => { if (e.key === "Enter") e.target.blur(); }}/>
+    ${invalid ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
+      : empty ? html`<div class="hint vk-warn">No VK link for this user yet — the panel is using your <b>test</b> link to build these turn configs. Enter their own before you distribute.${subd ? html` Their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}
+  </div>`;
+}
 function openPeerConfigs(peer, back) {
   const cols = Math.min(peer.targets.length || 1, 3);   // up to 3 QRs per view; the modal sizes to fit (more → page with ‹ ›)
   const wcols = Math.max(cols, 2);                       // hold 2 QRs wide even for a single deployment (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   // close (✕ / Esc / overlay) returns to wherever it was opened from (e.g. the peer view)
+  const vkUser = peer.user_id ? Store.recon.users.find(u => u.id === peer.user_id) : null;
   openModal(html`<${Sheet} title=${peer.title || peer.name || "Unassigned"} width=${width} onClose=${back || closeModal}>
     <${VaultUnlockBar}/>
     <${SubPeerUrl} peer=${peer}/>
+    ${vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${peer.targets.map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true}/>`)}/>
   <//>`);
 }
@@ -6017,9 +6059,11 @@ function openUserConfigs(user, back) {
   const maxT = Math.min(3, peers.reduce((m, p) => Math.max(m, (p.targets || []).length || 1), 1));   // widest peer row, capped at 3 QRs
   const wcols = Math.max(maxT, 2);                        // hold 2 QRs wide even for a single deployment (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
+  const anyTurn = peers.some(p => targetsBehindTurn(p.targets));
   openModal(html`<${Sheet} title=${user.name} width=${width} onClose=${back || closeModal}>
     <${VaultUnlockBar}/>
     <${SubUserPanel} user=${user}/>
+    ${anyTurn ? html`<${VkLinkField} user=${user}/>` : null}
     ${peers.length ? html`<div class="usercfg">${peers.map(p => html`<div class="usercfg-peer" key=${p.id}>
       <div class="usercfg-plabel">${p.title || "Peer"}${(p.targets || []).length ? html`<span class="usercfg-pcount">${p.targets.length} deployment${p.targets.length === 1 ? "" : "s"}</span>` : null}</div>
       <${QRRow} key=${"row" + p.id} cards=${(p.targets || []).map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${p} t=${t} bare=${true} primary=${p.targets.length > 1 && i === 0}/>`)}/>
@@ -6044,7 +6088,8 @@ function TurnConfigSheet({ peer, t, conf, back }) {
   const sorted = lt.viaTurn ? [...all].sort((a, b) => (b.service === lt.viaTurn ? 1 : 0) - (a.service === lt.viaTurn ? 1 : 0)) : all;
   const order = [], byFork = {};
   sorted.forEach(p => { const f = turnFork(p.service); if (!byFork[f]) { byFork[f] = []; order.push(f); } byFork[f].push(p); });
-  const vk = ((Store.panelSettings || {}).vk_link || "").trim();
+  const vkUser = peer.user_id ? Store.recon.users.find(u => u.id === peer.user_id) : null;
+  const vk = userVkLink(vkUser);   // this user's own link, falling back to the panel test link (subs never fall back)
   const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
   if (!order.length) return html`<div class="hint">No turn-proxy forwards to this interface.</div>`;
   const fi = Math.min(selFork, order.length - 1); const fork = order[fi];
@@ -6242,13 +6287,18 @@ function UserEditCard({ user, done }) {
   const [name, setName] = useState(user.name || "");
   const [tag, setTag] = useState(user.tag || "");
   const [note, setNote] = useState(user.note || "");
+  const [vk, setVk] = useState(user.vk_link || "");
+  const showVk = Store.peersOfUser(user.id).some(p => targetsBehindTurn(p.targets));   // only when they have a peer behind a turn-proxy
+  const vkBad = vk.trim() && !_VK_CALL_RE.test(vk.trim());
   const save = async () => {
     if (!name.trim()) { toast("Name can't be empty.", "err"); return; }
+    if (vkBad) { toast("Not a valid VK call link — expected https://vk.ru/call/join/…", "err"); return; }
+    const vkv = vk.trim();
     done();   // close the editor immediately; the row updates optimistically
     mutate({
       key: "user:" + user.id,
-      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; } },
-      call: () => api.userUpdate({ id: user.id, name: name.trim(), tag: tag.trim(), note }),
+      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; if (showVk) u.vk_link = vkv; } },
+      call: () => api.userUpdate(Object.assign({ id: user.id, name: name.trim(), tag: tag.trim(), note }, showVk ? { vk_link: vkv } : {})),
     });
   };
   const del = () => openConfirm({ title: "Delete user · " + user.name, confirmLabel: "Delete user", danger: true, back: done,
@@ -6260,6 +6310,10 @@ function UserEditCard({ user, done }) {
     <div class="field"><label>Name</label><input value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
     <div class="field"><label>Tag</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder="Friend, Family, Work…" maxlength="32"/></div>
     <div class="field"><label>Note</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder="Uses iPhone and router" maxlength="200"/></div>
+    ${showVk ? html`<div class=${"field vkfield" + (vkBad ? " warn" : "")}><label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
+      <input value=${vk} onInput=${e => setVk(e.target.value)} placeholder="https://vk.ru/call/join/…" maxlength="512"/>
+      ${vkBad ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
+        : html`<div class="hint">Baked into this user's turn-proxy configs. Blank → the panel uses your test link and their subscription page shows no VK link until you set one.</div>`}</div>` : null}
     <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> Delete user</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></div>
   </div>`;
 }
@@ -8007,8 +8061,8 @@ function PanelSettingsScreen() {
           </div>
           <div class="georefresh"><span class="faint" style="font-size:11px">Check every deployed proxy's fork for a newer release now, and update the ones that are behind</span><button class="btn btn-mini" disabled=${Object.values(turnCheck).some(v => v && v.status === "checking")} onClick=${checkTurnUpdates}><span class=${Object.values(turnCheck).some(v => v && v.status === "checking") ? "tf-arrow" : ""}><${Ic} i="refresh"/></span> Check for updates</button></div>
           <//>` : null}
-          <div class="seclabel" style="margin-top:18px">VK call link</div>
-          <p class="hint" style="margin:0 0 8px">Baked into the client configs a peer's <b>Turn</b> button generates — it's the call the turn-proxy relays through. Leave blank to emit a <span class="mono">${"<PASTE VK CALL LINK>"}</span> placeholder.</p>
+          <div class="seclabel" style="margin-top:18px">Fallback VK call link</div>
+          <p class="hint" style="margin:0 0 8px">Used for <b>unassigned</b> peers, and as the link the panel bakes in when you generate a config here to <b>test a connection yourself</b> before handing it out. Leave blank to emit a <span class="mono">${"<PASTE VK CALL LINK>"}</span> placeholder. Assigned users should get their <b>own</b> VK link — set it in their profile or QR view before you distribute. <b>Subscription pages ignore this link</b> and use only the per-user one.</p>
           <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/…"/>
           ${turnEnabledS ? html`<${TurnCollectedIps}/>` : null}
         </div>` : null}

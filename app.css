@@ -786,6 +786,11 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px color-mix(in srgb,var(--dangling) 12%,transparent)}
 .hint.err{color:var(--dangling)}
 .advbad{color:var(--dangling);font-size:11px;font-weight:600;margin-left:6px}
+/* per-user VK link field: amber border + hint when empty/invalid (turn configs need a link) */
+.vkfield.warn input{border-color:#e0a85f;box-shadow:0 0 0 3px rgba(224,168,95,.15)}
+.hint.vk-warn{color:#b5741a;line-height:1.5}
+:root[data-theme="dark"] .hint.vk-warn{color:#e0a85f}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .hint.vk-warn{color:#e0a85f}}
 .inline{display:flex;gap:8px}.inline input{flex:1}
 @media(max-width:480px){}
 .advtoggle{background:none;border:0;color:var(--dim);font-size:12px;cursor:pointer;padding:2px 0;display:flex;align-items:center;gap:6px}
