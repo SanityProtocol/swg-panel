@@ -2109,12 +2109,12 @@ a.tg:hover{filter:brightness(1.25)}
 .sub-auto svg{flex:none;margin-top:1px;width:15px;height:15px;color:#2fb883}
 .sub-auto b{color:var(--ink)}
 /* the URL + copy row — one hover target; clicking anywhere copies */
-.suburl{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid color-mix(in srgb,var(--online) 45%,var(--line-solid));border-radius:10px;background:color-mix(in srgb,var(--online) 9%,var(--bg));cursor:pointer;transition:border-color .12s,background .12s}
-.suburl:hover{border-color:var(--online);background:color-mix(in srgb,var(--online) 14%,var(--bg))}
-.suburl > .ic{color:var(--online);flex:none}
+.suburl{display:flex;align-items:center;gap:9px;padding:5px 11px;border:1px solid #22c55e;border-radius:8px;background:color-mix(in srgb,#22c55e 16%,var(--bg));cursor:pointer;transition:border-color .12s,background .12s}
+.suburl:hover{border-color:#22c55e;background:color-mix(in srgb,#22c55e 26%,var(--bg))}
+.suburl > .ic{color:#22c55e;flex:none}
 .suburl-txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:12px;color:var(--ink)}
 .suburl-copy{flex:none;display:inline-flex;color:var(--muted,#8a97ad)}
-.suburl:hover .suburl-copy{color:var(--online)}
+.suburl:hover .suburl-copy{color:#22c55e}
 .suburl-copy.ok{color:var(--online)}
 .suburl-hint{font-style:italic}
 .cfgsheet .deploy{width:256px;flex:none}
