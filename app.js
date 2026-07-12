@@ -5857,11 +5857,11 @@ function VaultPromptSheet({ opts, onDone }) {
       <p class="vp-reason">${opts.reason || "This action needs your encryption key, which isn’t unlocked in this session."}</p>
       ${exists === false
         ? html`<div class="notice err"><${Ic} i="warn"/><span>No encryption key is set up yet — set one up in <a href="#/panel/settings" onClick=${() => done(false)}>Settings → Client configs → Encryption</a>, then try again.</span></div>`
-        : html`<div class="field"><label>Panel password</label>
+        : html`<${Fragment}><div class="field"><label>Panel password</label>
             <input class="subpw" type="password" autofocus value=${pw} autocomplete="off" placeholder="Panel password"
-              onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
-            <label class="vp-keep-row"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/> <span>Keep this device unlocked</span></label>
-            <div class="hint">Stay unlocked across restarts on this device — the key is stored only here, never sent to the server.</div></div>`}
+              onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/></div>
+            <div class="vp-keep"><label class="vp-keep-row"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/> <span>Keep this device unlocked</span></label>
+              <div class="hint">Stay unlocked across restarts on this device — the key is stored only here, never sent to the server.</div></div><//>`}
       <div class="notice warn vp-skip"><${Ic} i="info"/><span><b>If you skip:</b> ${opts.consequence || "the action completes, but anything that needed the key won’t be saved."}</span></div>
     </div>
   <//>`;
