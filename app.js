@@ -9735,8 +9735,8 @@ function App() {
     $$("#tabs a").forEach(a => a.classList.toggle("active", a.dataset.tab === route.tab));
     const acct = $("#acct-btn"); if (acct) acct.onclick = () => doLogout();   // header logout icon → straight to the confirm
     const tb = $("#theme-btn"); if (tb && !tb._wired) { tb._wired = true; tb.onclick = cycleThemeMode; paintThemeBtn(tb); }   // light/dark/auto switch
-    const vl = $("#vaultlock-btn");   // padlock: shown only when the encryption key is set up AND currently unlocked → click to re-lock
-    if (vl) { vl.hidden = !(Store.storeMode === "encrypted" && subSKCached()); if (!vl._wired) { vl._wired = true; vl.onclick = lockVault; } }
+    const vl = $("#vaultlock-btn");   // padlock: removed from the header by request — kept (wired to lockVault) but always hidden
+    if (vl) { vl.hidden = true; if (!vl._wired) { vl._wired = true; vl.onclick = lockVault; } }
   });
 
   return html`<${Fragment}>
