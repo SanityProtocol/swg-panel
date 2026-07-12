@@ -2051,7 +2051,7 @@ a.tg:hover{filter:brightness(1.25)}
 .vkfield-row{display:flex;gap:8px;align-items:center}
 /* match the sub-link box exactly (padding / radius / height / mono font), just editable + orange-empty/blue-set.
    suburl content height = its 16px icon, so line-height:16px + 5px padding + 1px border = the same box height */
-.vkfield-row input{flex:1;min-width:0;box-sizing:border-box;padding:5px 11px;border-radius:8px;font-family:var(--mono);font-size:12px;line-height:16px}
+.vkfield-row input{flex:1;min-width:0;box-sizing:border-box;padding:5px 11px;border-radius:8px;font-family:var(--mono);font-size:12px;line-height:18px}
 .vkfield-row .btn{flex:none}
 /* fixed-width trailing button group → the VK input and the sub-link box line up to the SAME width, and every
    button (Save / Rotate / Disable) is the same size so Save sits right under Disable */
@@ -2126,7 +2126,7 @@ a.tg:hover{filter:brightness(1.25)}
 .vaultprompt .vp-reason{margin:0;color:var(--ink-2);line-height:1.55}
 .vaultprompt .vp-skip{margin-top:2px}
 .vp-keep-row{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px}
-.vp-keep-row input{flex:none;width:16px;height:16px;padding:0;margin:0;cursor:pointer;accent-color:var(--brand)}   /* base input{width:100%;padding} otherwise blows the checkbox up to full width */
+.vp-keep-row input{flex:none;width:16px;height:16px;padding:0;margin:0 0 0 -2px;cursor:pointer;accent-color:var(--brand)}   /* base input{width:100%;padding} otherwise blows the checkbox up to full width; -2px aligns the glyph with the text above */
 .vp-keep-row + .hint{margin-top:5px;font-size:11.5px;color:var(--faint);line-height:1.45}   /* form-style explanation under the checkbox (also covers the unlock bar, outside .field) */
 .vaultprompt .vp-keep,.notice .vp-keep{margin-top:2px}
 /* standout reassurance beside "re-distribute the configs" warnings — subscriptions auto-update */
