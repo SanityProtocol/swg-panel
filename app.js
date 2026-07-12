@@ -5860,8 +5860,8 @@ function VaultPromptSheet({ opts, onDone }) {
         : html`<div class="field"><label>Panel password</label>
             <input class="subpw" type="password" autofocus value=${pw} autocomplete="off" placeholder="Panel password"
               onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
-            <label class="vp-keep"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/>
-              <span>Keep this device unlocked <span class="faint">— stay unlocked across restarts on this device (the key is stored only here, never sent to the server)</span></span></label></div>`}
+            <label class="vp-keep-row"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/> <span>Keep this device unlocked</span></label>
+            <div class="hint">Stay unlocked across restarts on this device — the key is stored only here, never sent to the server.</div></div>`}
       <div class="notice warn vp-skip"><${Ic} i="info"/><span><b>If you skip:</b> ${opts.consequence || "the action completes, but anything that needed the key won’t be saved."}</span></div>
     </div>
   <//>`;
@@ -5886,8 +5886,10 @@ function VaultUnlockBar() {
     <input class="subpw" type="password" style="max-width:200px" value=${pw} autocomplete="off" placeholder="Panel password"
       onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
     <button class="btn btn-primary btn-mini" disabled=${busy || !pw} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock"}</button>
-    <label class="vp-keep" style="flex-basis:100%"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/>
-      <span>Keep this device unlocked <span class="faint">— survives a browser restart; the key stays on this device, never sent to the server</span></span></label>
+    <div style="flex-basis:100%">
+      <label class="vp-keep-row"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/> <span>Keep this device unlocked</span></label>
+      <div class="hint">Survives a browser restart; the key stays on this device, never sent to the server.</div>
+    </div>
   </div>`;
 }
 function SubUrlBar({ url }) {
@@ -8592,13 +8594,12 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   useEffect(() => { onChange(Object.values(sel)); }, [sel]);
 
   if (!targets.length) return html`<div class="hint">No interfaces available — is a node online?</div>`;
-  // order by the INITIAL checked state (already-deployed targets), then node, then interface — so the
-  // pre-checked rows sit on top and the list does NOT reshuffle as you toggle.
-  const initialKeys = new Set((initial || []).map(t => tkey(t.node, t.iface)));
+  // order by the CURRENT checked state (checked targets on top), then node, then interface — so a ticked row
+  // jumps up to join the selected group and every selection stays gathered at the top with its IP visible.
   const _sv = Object.values(sel);
   const lockType = _sv.length ? iTypeOf(_sv[0].node, _sv[0].iface) : null;   // a peer is one protocol — hide the other kind once one is ticked
   const ordered = [...targets].filter(t => !lockType || iTypeOf(t.node, t.iface) === lockType).sort((a, b) =>
-    (initialKeys.has(tkey(a.node, a.iface)) ? 0 : 1) - (initialKeys.has(tkey(b.node, b.iface)) ? 0 : 1)
+    (sel[tkey(a.node, a.iface)] ? 0 : 1) - (sel[tkey(b.node, b.iface)] ? 0 : 1)
     || (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
     || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class="targetpick">${ordered.map(t => {
