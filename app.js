@@ -8648,7 +8648,11 @@ function LogBody({ text, raw }) {
   const t = (raw ? logRaw(text) : logRendered(text)).replace(/\n+$/, "");
   return html`<div class=${"logview" + (raw ? " raw" : "")}>${t.split("\n").map(l => html`<div class="logline">${l === "" ? " " : l}</div>`)}</div>`;
 }
-function openConfirm(opts) { openModal(html`<${ConfirmSheet} ...${opts}/>`); }
+// Opened from within a modal → stack it as a child (parent stays mounted; ✕/Esc/Cancel pop back). Opened
+// standalone (from a table/card) → open as the root. This is the one rule: a modal opened from a modal is
+// a child. `openChildOrRoot` captures it for every opener that can be reached both ways.
+function openChildOrRoot(node) { (_stack.length ? pushModal : openModal)(node); }
+function openConfirm(opts) { openChildOrRoot(html`<${ConfirmSheet} ...${opts}/>`); }
 // Standout reassurance for "you'll need to re-distribute the configs" warnings: interface / turn-proxy
 // IP/port/endpoint changes are NOT baked into the encrypted blob (only the private key + PSK are), so every
 // subscription page re-renders the corrected config on its own. Renders nothing when subscriptions are off.
@@ -9091,8 +9095,11 @@ function CreatePeerSheet({ prefill }) {
 // Copy peer interface→interface (same key + PSK, new target). Needs the client's
 // private key (session config, or stored) to build the new client config / QR.
 // `back` = where Cancel / Deploy / Esc returns to (e.g. reopen the peer view); default just closes.
-function openAddTarget(peer, back) { openModal(html`<${AddTargetSheet} peer=${peer} back=${back || closeModal}/>`); }
-function AddTargetSheet({ peer, back }) {
+function openAddTarget(peer, back) {
+  const child = _stack.length > 0;   // opened from another modal (peer view / edit) → child; Cancel pops back to it
+  (child ? pushModal : openModal)(html`<${AddTargetSheet} peer=${peer} back=${back || closeModal} child=${child}/>`);
+}
+function AddTargetSheet({ peer, back, child }) {
   back = back || closeModal;
   const [chosen, setChosen] = useState([]);
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
@@ -9178,7 +9185,7 @@ function AddTargetSheet({ peer, back }) {
     } else doSave().then(ok => { if (ok) back(); });
   };
 
-  return html`<${Sheet} title=${"Peer targets"} onClose=${back}
+  return html`<${Sheet} title=${"Peer targets"} onClose=${back} onBack=${child ? back : null}
     foot=${footRow({ onCancel: back, actionCls: "btn " + (chosen.length === 0 ? "btn-danger" : "btn-primary"), disabled: busy || !confLoaded || nochange, onAction: save, action: chosen.length === 0 ? "Delete peer" : ((removed.length || ipChanged.length) ? "Save changes" : "Deploy") })}>
     ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : html`<${Fragment}>
@@ -9207,10 +9214,10 @@ function PeerViewSheet({ pid, node, iface }) {
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/> QR</button>
-      <button class="btn btn-ghost" onClick=${() => openAddTarget(p, () => openPeerView(p.id, node, iface))}><${Ic} i="copy"/> Targets</button>
-      <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null, () => openPeerView(p.id, node, iface))}><${Ic} i="pencil"/> Edit</button>
-      ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p, () => openPeerView(p.id, node, iface))}>Delete</button>`
-        : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p, () => openPeerView(p.id, node, iface))}>Unassign</button>`}<//>`}>
+      <button class="btn btn-ghost" onClick=${() => openAddTarget(p)}><${Ic} i="copy"/> Targets</button>
+      <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null)}><${Ic} i="pencil"/> Edit</button>
+      ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p)}>Delete</button>`
+        : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p)}>Unassign</button>`}<//>`}>
     <div class="pv-head">
       <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href="#/users" onClick=${e => { e.preventDefault(); closeModal(); revealUser(u.id); }}>${u.name}</a>`
           : html`<${UserCombo} onPick=${uid => assignPeer(p, uid)} placeholder="Assign to a user…"/>`}</div></div>
@@ -9241,8 +9248,11 @@ function PeerViewSheet({ pid, node, iface }) {
 // (DNS/MTU/keepalive/AllowedIPs, applied to every target with a known config). Also offers copy
 // → another interface and key rotation (keeps the PSK). `focus` = the {node,iface} to edit IP for.
 // `done` = where Cancel / Save returns to (reopen the peer view when edit came from it, else close).
-function openEditPeer(peer, focus, done, flash) { openModal(html`<${EditPeerSheet} peer=${peer} focus=${focus} done=${done || closeModal} flash=${flash}/>`); }
-function EditPeerSheet({ peer, focus, done, flash }) {
+function openEditPeer(peer, focus, done, flash) {
+  const child = _stack.length > 0;   // opened from another modal (peer view) → child; closing pops back to it
+  (child ? pushModal : openModal)(html`<${EditPeerSheet} peer=${peer} focus=${focus} done=${done || closeModal} flash=${flash} child=${child}/>`);
+}
+function EditPeerSheet({ peer, focus, done, flash, child }) {
   done = done || closeModal;
   const [title, setTitle] = useState(peer.title || "");
   const [ips, setIps] = useState(() => Object.fromEntries(peer.targets.map(t => [tkey(t.node, t.iface), (t.ip || "").split("/")[0]])));
@@ -9323,8 +9333,7 @@ function EditPeerSheet({ peer, focus, done, flash }) {
     if (oldUid && newUid !== oldUid) {
       await Store.poll();
       const fresh = (Store.recon.peers.find(x => x.id === peer.id)) || peer;
-      const back = () => openEditPeer(fresh, focus, done);
-      return newUid ? confirmReassign(fresh, newUid, back) : confirmUnassign(fresh, back);
+      return newUid ? confirmReassign(fresh, newUid) : confirmUnassign(fresh);   // stacks over this sheet; Cancel pops back
     }
     toast(fails ? "Saved (some changes couldn't be persisted)." : "Peer updated.", fails ? "info" : "ok");
     done(); await Store.poll();
@@ -9332,11 +9341,9 @@ function EditPeerSheet({ peer, focus, done, flash }) {
 
   const rotate = () => {
     openConfirm({ title: "Rotate keys", confirmLabel: "Rotate keys", warn: true,
-      back: () => openEditPeer(peer, focus, done),   // cancel/esc returns to the edit modal
       body: "A fresh keypair and preshared key are generated. The current config stops working — you'll need to send out the fresh QR / config to re-import. Useful if a config may have leaked.",
       onConfirm: () => {
-        // the user did the action they came for → return to the previous screen; report the result via a toast.
-        done();
+        // confirm pops back to the edit sheet (its parent); the rotate runs and reports via a toast.
         rotatePeerKeys(peer).then(async () => {
           await Store.poll();
           const re = Store.rowErrors["peer:" + peer.id];
@@ -9345,8 +9352,8 @@ function EditPeerSheet({ peer, focus, done, flash }) {
       } });
   };
 
-  return html`<${Sheet} title=${"Edit peer"} onClose=${done}
-    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer, done)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
+  return html`<${Sheet} title=${"Edit peer"} onClose=${done} onBack=${child ? done : null}
+    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
