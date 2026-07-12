@@ -776,21 +776,47 @@ case "$PANEL_URL" in https://*) ;; http://*) warn "panel URL is http:// — the 
 # if the operator re-pointed the node at a different panel, the lc terminal should reach the NEW one
 [ "$EXISTING" = yes ] && [ -n "${LC_TOKEN:-}" ] && [ -n "$PANEL_URL" ] && LC_URL="$PANEL_URL"
 
+# print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing on failure. Matches the node's
+# `fingerprint` format: hashlib.sha256(DER).hexdigest(), lowercase, no colons.
+_panel_fp(){ python3 - "$1" <<'PY' 2>/dev/null || true
+import ssl,socket,hashlib,sys,urllib.parse
+r=sys.argv[1]; u=urllib.parse.urlparse(r if '://' in r else 'https://'+r)
+host=u.hostname; port=u.port or 443
+ctx=ssl._create_unverified_context()
+with socket.create_connection((host,port),timeout=6) as s:
+    with ctx.wrap_socket(s,server_hostname=host) as ss:
+        der=ss.getpeercert(True)
+if der: print(hashlib.sha256(der).hexdigest())
+PY
+}
+
 if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   # Verify the panel's TLS certificate by DEFAULT (secure). To avoid a fresh install failing its first sync
   # against a self-signed panel, auto-detect the cert: probe once with strict TLS; only if that fails while
-  # skipping verification works is the panel self-signed → default to no. The operator can still override.
+  # skipping verification works is the panel self-signed. The operator can still override.
   _tls_def=y
   if [ -n "$PANEL_URL" ] && ! $DRYRUN; then
     curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; _rc=$?
     # Only a genuine cert-verification failure (curl 60/51) — where skipping verify then works — means the
-    # panel is self-signed. A transient error (timeout/refused/other) keeps the SECURE default (verify), so
-    # a network hiccup never silently downgrades a real-CA panel to no-verify.
+    # panel is self-signed. A transient error (timeout/refused/other) keeps the SECURE default (CA verify), so
+    # a network hiccup never silently downgrades a real-CA panel.
     if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
       _tls_def=n
     fi
   fi
-  ask_yn "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def" TLS_VERIFY
+  # SELF-SIGNED panel → PIN its certificate (trust-on-first-use) so the sync is MITM-protected by default,
+  # instead of running unverified. Real-CA panels keep CA verification (pinning them would break on renewal).
+  if [ "$_tls_def" = n ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
+    _fp="$(_panel_fp "$PANEL_URL")"
+    if [ -n "$_fp" ]; then
+      TLS_FINGERPRINT="$_fp"; TLS_VERIFY=no
+      info "Panel cert is self-signed — pinning it (sha256 ${_fp:0:16}…) so a man-in-the-middle can't impersonate the panel."
+    fi
+  fi
+  # real-CA (or the fingerprint fetch failed) → ask, defaulting to the secure choice
+  if [ -z "$TLS_FINGERPRINT" ]; then
+    ask_yn "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def" TLS_VERIFY
+  fi
 fi
 
 NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"   # local label (systemd unit + final message)
@@ -923,7 +949,8 @@ if [ "${SWG_CONVERT:-}" = 1 ]; then
 fi
 echo; ok "Node '$(bb "$NODE_NAME")' install complete."
 print_summary "$([ "$EXISTING" = yes ] && echo RE-INSTALL || echo INSTALL)"
-[ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       not verifying the panel cert (self-signed) — set TLS_FINGERPRINT to pin it"
+[ -n "$TLS_FINGERPRINT" ] && echo "  TLS       panel cert pinned (sha256 ${TLS_FINGERPRINT:0:16}…) — MITM-protected"
+[ "$VERIFY_JSON" = false ] && [ -z "$TLS_FINGERPRINT" ] && echo "  TLS       ${C_BROWN}not verifying the panel cert${RESET} — set TLS_FINGERPRINT to pin it (MITM protection)"
 if $DRYRUN; then echo; ok "DRY RUN done — inspect ./dryrun"; fi   # NB: an `if` (not `$DRYRUN && {…}`) so a non-dry-run doesn't make the script's LAST command exit non-zero (convert.sh read that as "install-node.sh reported an error")
 echo     # one blank line after the summary block (consistency)
 exit 0   # reaching here = success (every fatal error die'd with exit 1 earlier; a single interface that couldn't come up is a non-fatal warning)

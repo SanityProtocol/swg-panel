@@ -131,6 +131,7 @@ services:
       NODE_MTU: "${NODE_MTU:-1280}"        # interface MTU; 1280 leaves headroom for turn-proxy obfuscation
       NODE_PLAIN_WG: "${NODE_PLAIN_WG:-}"  # yes = plain WireGuard; blank/no = AmneziaWG v2
       TLS_VERIFY: "${TLS_VERIFY:-yes}"    # verify the panel's cert by default; set no only for a self-signed panel
+      TLS_FINGERPRINT: "${TLS_FINGERPRINT:-}"   # pin the panel cert sha256 (auto-set for self-signed panels) → MITM-protected
       DNS: "${DNS:-1.1.1.1}"
       SWG_UPDATE_TRIGGER: "${NODE_UPDATE_TRIGGER:-}"   # set by install-docker (node/master) when it wires the host one-click updater; swg-noded touches this on an Update request and the host swg-update.path runs `compose pull && up`. blank = manual update only
       # turn-proxies run as SIBLING CONTAINERS (swg-turn-*, via the mounted docker.sock) — NOT host

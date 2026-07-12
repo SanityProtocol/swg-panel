@@ -67,6 +67,7 @@ NODE_PLAIN_WG="${NODE_PLAIN_WG:-}"     # yes = plain WireGuard; blank/no = Amnez
 NODE_NET="${NODE_NET:-}"               # host (default) | bridge — docker networking for the node (-net)
 TURN_MANAGE="${TURN_MANAGE:-}"         # panel (default) | manual — manage turn-proxies from the panel (mounts docker.sock) (-turn-manage)
 TLS_VERIFY="${TLS_VERIFY:-}"           # yes/no; blank = ask (node profile) / default no
+TLS_FINGERPRINT="${TLS_FINGERPRINT:-}" # optional: pin panel cert sha256 (auto-set for self-signed panels)
 DNS="${DNS:-1.1.1.1}"
 
 DRYRUN=false
@@ -78,6 +79,18 @@ c(){ printf '\033[%sm' "$1"; }
 # redefined identically when common.sh loads. See common.sh for the model.
 _SWG_NL=""; _pnl(){ echo; _SWG_NL=1; }; _nlguard(){ _SWG_NL=""; }
 info(){ _nlguard; echo "${C_BLUE}▸${RESET} ${BOLD}$*${RESET}"; }   # ▸ light-blue, bold (universal action flag)
+# print the sha256 hex of the panel's TLS cert (unverified fetch), or nothing — matches the node's `fingerprint`
+_docker_panel_fp(){ python3 - "$1" <<'PY' 2>/dev/null || true
+import ssl,socket,hashlib,sys,urllib.parse
+r=sys.argv[1]; u=urllib.parse.urlparse(r if '://' in r else 'https://'+r)
+host=u.hostname; port=u.port or 443
+ctx=ssl._create_unverified_context()
+with socket.create_connection((host,port),timeout=6) as s:
+    with ctx.wrap_socket(s,server_hostname=host) as ss:
+        der=ss.getpeercert(True)
+if der: print(hashlib.sha256(der).hexdigest())
+PY
+}
 sub(){  _nlguard; echo "${C_BL}::${RESET} $*"; }                    # :: blue sub-item / progress detail
 ok(){   _nlguard; echo "${C_GREEN}✓${RESET} $*"; }
 warn(){ _nlguard; echo "${C_BROWN}!${RESET} $*" >&2; }
@@ -658,7 +671,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
   ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
   ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
   case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
-  if [ -z "$TLS_VERIFY" ]; then
+  if [ -z "$TLS_VERIFY" ] && [ -z "${TLS_FINGERPRINT:-}" ]; then
     # Verify by DEFAULT (secure); auto-detect a self-signed panel so a fresh node never fails its first sync.
     local _tls_def=y _rc
     if [ -n "$PANEL_URL" ]; then
@@ -669,7 +682,16 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
         _tls_def=n
       fi
     fi
-    TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def")"
+    # SELF-SIGNED → PIN the panel cert (TOFU) so the sync is MITM-protected by default, instead of unverified.
+    # Real-CA panels keep CA verification (a pin would break on cert renewal).
+    if [ "$_tls_def" = n ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
+      local _fp; _fp="$(_docker_panel_fp "$PANEL_URL")"
+      if [ -n "$_fp" ]; then
+        TLS_FINGERPRINT="$_fp"; TLS_VERIFY=no
+        info "Panel cert is self-signed — pinning it (sha256 ${_fp:0:16}…) so a man-in-the-middle can't impersonate the panel."
+      fi
+    fi
+    [ -z "${TLS_FINGERPRINT:-}" ] && TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (auto-detected default: $([ "$_tls_def" = y ] && echo yes || echo 'no — self-signed'))" "$_tls_def")"
   fi
   return 0
 }
@@ -1170,6 +1192,7 @@ NODE_NET=$NODE_NET
 TURN_MANAGE=$TURN_MANAGE
 SWG_HOST_NODE_DIR=$INSTALL_DIR/data/node
 TLS_VERIFY=$TLS_VERIFY
+TLS_FINGERPRINT=$TLS_FINGERPRINT
 DNS=$DNS
 EOF
 chmod 600 "$PREFIX$INSTALL_DIR/.env" 2>/dev/null || true
