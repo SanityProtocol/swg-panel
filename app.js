@@ -479,11 +479,7 @@ function ensureVaultUnlocked(opts) {
   if (subSKCached()) return Promise.resolve(true);                     // already unlocked this session
   if (_vaultPromptPending) return _vaultPromptPending;                 // a modal is already up → share it (one prompt for a burst of actions)
   _vaultPromptPending = new Promise(function (resolve) {
-    // Defer the push to a fresh macrotask: this runs from an async callback right after a mutation (rekey /
-    // assign) whose state change is still re-rendering the peer list AND its Portal-based tooltips. Pushing the
-    // modal into that in-flight render re-enters Preact and crashes ("insertBefore … not of type Node"). Waiting
-    // a tick lets the list render commit first, so the modal mounts into a settled tree.
-    setTimeout(() => pushModal(html`<${VaultPromptSheet} opts=${opts || {}} onDone=${v => { _vaultPromptPending = null; resolve(v); }}/>`), 0);
+    pushModal(html`<${VaultPromptSheet} opts=${opts || {}} onDone=${v => { _vaultPromptPending = null; resolve(v); }}/>`);
   });
   return _vaultPromptPending;
 }
@@ -5867,7 +5863,8 @@ function VaultPromptSheet({ opts, onDone }) {
             <label class="vp-keep"><input type="checkbox" checked=${keep} onChange=${e => setKeep(e.target.checked)}/>
               <span>Keep this device unlocked <span class="faint">— stay unlocked across restarts on this device (the key is stored only here, never sent to the server)</span></span></label></div>`}
       <div class="notice warn vp-skip"><${Ic} i="info"/><span><b>If you skip:</b> ${opts.consequence || "the action completes, but anything that needed the key won’t be saved."}</span></div>
-    </div>`;
+    </div>
+  <//>`;
 }
 function VaultUnlockBar() {
   const [exists, setExists] = useState(false);
@@ -9413,7 +9410,7 @@ function App() {
 
   return html`<${Fragment}>
     ${h(route.fn, params)}
-    ${(modalStack && modalStack.length) ? html`<${Portal}>${modalStack}<//>` : null}
+    ${modalStack}
   <//>`;
 }
 
