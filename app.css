@@ -2360,6 +2360,7 @@ table.peergrid{border-collapse:separate;border-spacing:0}
 .addr-migrate-ribbon .btn-mini{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.55);color:#fff;
   text-decoration:none;padding:3px 10px;border-radius:7px;font-weight:700;white-space:nowrap}
 .addr-migrate-ribbon .btn-mini:hover{background:rgba(255,255,255,.28)}
+.addr-migrate-ribbon .addr-ribbon-cancel{position:absolute;right:16px;top:50%;transform:translateY(-50%);margin:0}   /* pinned far-right, OUT of flow so the message + "go to new address" stay centered */
 
 /* "You're on a previous panel address" — persistent, informational (amber, not the migrate ribbon's alarm-red),
    shown on any tab loaded at a non-current panel address so an old address reads as expected, not a fault. The

@@ -7560,11 +7560,12 @@ function AccessTLSCard({ onChange }) {
             if (dp && (p.state === "reverted" || p.state === "failed")) openModal(html`<${ConfirmSheet} title="Address change not confirmed" warn=${true} confirmLabel="OK"
               body=${(p.message && p.state === "failed") ? p.message : "The new address wasn’t confirmed, so the panel kept the current one. Check its DNS / Cloudflare / firewall / port, then try again."}/>`);
           } else {
+            const rbPrev = rollbackRef.current;   // the address we changed AWAY from (this tab's own) → the ribbon's Cancel reverts to it
             rollbackRef.current = null;
             const gs = +(p.grace_secs || 0), nu = p.new_url || "";
             if (dp && p.state === "saved") {
               if (gs > 0) {   // a REBIND: this tab is on the OLD address, which stops serving after the migration grace
-                setMigrate({ until: Math.floor(Date.now() / 1000) + gs, newUrl: nu });   // anchor the deadline to THIS browser's clock (server sent live remaining secs) → the countdown is correct regardless of clock skew
+                setMigrate({ until: Math.floor(Date.now() / 1000) + gs, newUrl: nu, prev: rbPrev });   // anchor the deadline to THIS browser's clock (server sent live remaining secs) → the countdown is correct regardless of clock skew; prev = revert target for Cancel
                 openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Got it"
                   body=${html`The panel is now reached at <b>${nu || "the new address"}</b>. This tab is on the <b>previous</b> address — it keeps working while nodes move over, then stops responding. Switch to the new address when you’re ready.`}/>`);
               } else {        // url-only / cert-only: same bind → this address keeps working, just verified the new URL
@@ -7695,6 +7696,27 @@ function AccessTLSCard({ onChange }) {
   // Runs after each render; the parent only re-renders when a DISPLAYED bit actually changes (see onAccess).
   useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked, busy: busy || polling, msg, run: saveAndApply }); });
 
+  // Cancel the in-flight move and stay on THIS (still-serving) address — the automatic version of manually
+  // typing the old address back into the form. prev = the address we changed away from (this tab's own); the
+  // server re-adopts the live grace listener (immediate, no confirm). Only offered while it's still serving.
+  const cancelMove = () => {
+    const prev = migrate && migrate.prev; if (!prev) return;
+    const dest = migrate.newUrl || "the new address";
+    openModal(html`<${ConfirmSheet} title="Cancel the move?" confirmLabel="Cancel the move" cancelLabel="Continue moving"
+      body=${html`The panel will stay on <b>this</b> address and stop moving to <b>${dest}</b>. It's still serving here during the migration grace, so this takes effect immediately — nodes stay put and the countdown ends.`}
+      onConfirm=${async () => {
+        setMigrate(null);   // stop the countdown at once
+        try {
+          await api.panelSettings({ access: { panel: { url: prev.url, host: prev.host, port: prev.port } } });
+          const r = await api.post("/api/access/apply", {});
+          if (r && r.ok === false) { toast(r.error || "Couldn't cancel the move.", "err"); await resync(); return; }
+          if (r && !r.applied) { setPolling(true); return; }   // grace already ended → fall back to the normal confirm flow
+          await resync();
+          setMsg({ ok: true, t: "Move cancelled — the panel stays on this address." });   // replace the stale "panel now on …" line
+          toast("Move cancelled — the panel stays on this address.", "ok");
+        } catch (_) { toast("Couldn't cancel the move.", "err"); }
+      }}/>`);
+  };
   let _confHost = confirmUrl; try { _confHost = new URL(confirmUrl).host; } catch (_) {}
   const _migLeft = migrate ? Math.max(0, migrate.until - nowSec) : 0;
   return html`<div class="card acctls">
@@ -7703,6 +7725,7 @@ function AccessTLSCard({ onChange }) {
         ? html`<span><b>This address stops responding in ${_migLeft}s.</b> The panel has moved to <a href=${migrate.newUrl}>${migrate.newUrl}</a> — switch over now.</span>`
         : html`<span><b>This address is no longer served.</b> The panel is now at <a href=${migrate.newUrl}>${migrate.newUrl}</a>.</span>`}
       <a class="btn btn-mini" href=${migrate.newUrl}>Go to the new address ↗</a>
+      ${migrate.prev && _migLeft > 0 ? html`<button class="btn btn-mini addr-ribbon-cancel" onClick=${cancelMove}>Cancel the move</button>` : null}
     </div>` : null}
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
     ${confirmUrl ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
@@ -8770,7 +8793,7 @@ function SubAutoNote() {
   if (!subFeatureOn()) return null;
   return html`<div class="sub-auto"><${Ic} i="check"/><span><b>Subscribed users need nothing</b> — their subscription page serves the corrected config automatically; only manually-shared QR codes / configs need re-distributing.</span></div>`;
 }
-function ConfirmSheet({ title, body, note, log, confirmLabel, danger, warn, onConfirm, back, requireType }) {
+function ConfirmSheet({ title, body, note, log, confirmLabel, cancelLabel, danger, warn, onConfirm, back, requireType }) {
   back = back || closeModal;
   const [busy, setBusy] = useState(false);
   const [raw, setRaw] = useState(false);
@@ -8785,7 +8808,7 @@ function ConfirmSheet({ title, body, note, log, confirmLabel, danger, warn, onCo
     foot=${html`<${Fragment}>
       ${canToggle ? html`<button class="btn btn-ghost logtoggle" onClick=${() => setRaw(r => !r)}>${raw ? "Display rendered" : "Display raw"}</button>` : null}
       <span class="grow"></span>
-      <button class=${"btn " + (onConfirm ? "btn-ghost" : "btn-primary")} onClick=${back}>${onConfirm ? "Cancel" : (confirmLabel || "Close")}</button>
+      <button class=${"btn " + (onConfirm ? "btn-ghost" : "btn-primary")} onClick=${back}>${onConfirm ? (cancelLabel || "Cancel") : (confirmLabel || "Close")}</button>
       ${onConfirm ? html`<button class=${"btn " + (danger ? "btn-danger" : "btn-primary")} disabled=${busy || !typeOk} onClick=${go}>${confirmLabel || "Confirm"}</button>` : null}</>`}>
     ${isLog
       ? html`<${LogBody} text=${log} raw=${raw}/>`
