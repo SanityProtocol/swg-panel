@@ -7534,7 +7534,7 @@ function AccessTLSCard({ onChange }) {
         if (dp && p.state === "verifying" && p.redirect) {
           setConfirmUrl(p.redirect);   // show the confirm affordance (rendered in the card); the operator opens it to prove the new address is reachable
           let h = p.redirect; try { h = new URL(p.redirect).host; } catch (_) {}
-          setMsg({ ok: true, t: "Almost there — open the new address (" + h + ") to confirm it's reachable. The change applies the moment it loads." });
+          setMsg({ ok: true, t: "Confirming the new address (" + h + ") — open it in a new tab so it can reach this panel. It reverts on its own if it can't be reached." });
         } else {
           setConfirmUrl("");
           const parts = [];
@@ -7703,7 +7703,7 @@ function AccessTLSCard({ onChange }) {
     </div>` : null}
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
     ${confirmUrl ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
-      <b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab — the change applies the instant it loads there. If that tab <b>can't</b> load, just close it: this panel stays on the current address and reverts automatically. Nothing is committed until the new address answers.
+      <b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab to confirm it — the change is applied <b>only once</b> it loads there. If that tab <b>can't</b> load, just close it: this panel stays on the current address and reverts automatically. Nothing is committed until the new address answers.
       <div style="margin-top:10px"><a class="btn btn-primary" href=${confirmUrl} target="_blank" rel="noopener">Open the new address to confirm ↗</a></div>
     </div></div>` : null}
 
