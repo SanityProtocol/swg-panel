@@ -7707,10 +7707,10 @@ function AccessTLSCard({ onChange }) {
       onConfirm=${async () => {
         setMigrate(null);   // stop the countdown at once
         try {
-          await api.panelSettings({ access: { panel: { url: prev.url, host: prev.host, port: prev.port } } });
-          const r = await api.post("/api/access/apply", {});
-          if (r && r.ok === false) { toast(r.error || "Couldn't cancel the move.", "err"); await resync(); return; }
-          if (r && !r.applied) { setPolling(true); return; }   // grace already ended → fall back to the normal confirm flow
+          // One dedicated call that reverses the just-confirmed change INSTANTLY (re-adopt the old listener for a
+          // port change, or restore the old domain on the live dual-SAN cert for a domain change) — no confirm.
+          const r = await api.post("/api/access/cancel", { url: prev.url, host: prev.host, port: prev.port });
+          if (!r || r.ok === false) { toast((r && r.error) || "Couldn't cancel the move.", "err"); await resync(); return; }
           await resync();
           setMsg({ ok: true, t: "Move cancelled — the panel stays on this address." });   // replace the stale "panel now on …" line
           toast("Move cancelled — the panel stays on this address.", "ok");

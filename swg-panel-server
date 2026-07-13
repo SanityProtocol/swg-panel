@@ -4327,6 +4327,54 @@ def api(method, path, qs, body, deps):
                 _netctl_enqueue(deps, "drop-cert", ["panel", od])
         return 200, {"ok": True, "saved": True}
 
+    if method == "POST" and path == "/api/access/cancel":
+        # Reverse a JUST-CONFIRMED address change during its migration grace — instant for the operator (the
+        # countdown stops, we're back on the previous address) while the address we're LEAVING still graces out
+        # so nodes migrate back. The ribbon's Cancel button calls this with the previous address. Two shapes:
+        #  • PORT change: the previous bind is a separate listener still in its grace → re-adopt it, grace the
+        #    current primary.
+        #  • DOMAIN change: same bind, and the previous domain is still valid on the live dual-SAN cert → restore
+        #    it as canonical, call off the retire-new-only reissue, schedule the reverse (retire the domain we're
+        #    leaving after the grace). No confirm needed — the previous domain is already serving.
+        p_url = (str(body.get("url") or "")).strip()
+        p_host = (str(body.get("host") or "0.0.0.0")).strip() or "0.0.0.0"
+        try:
+            p_port = max(1, min(65535, int(body.get("port") or 0)))
+        except (TypeError, ValueError):
+            p_port = 0
+        lid, srv = LISTENERS.primary()
+        if srv is None or not p_url or not p_port:
+            return 400, {"ok": False, "error": "nothing to cancel", "code": "bad_request"}
+        cur = srv._swg
+        with _APPLY["lock"]:
+            if _APPLY["pending"] is not None:
+                return 409, {"ok": False, "error": "a change is already in progress", "code": "busy"}
+        # CASE 1 — port re-adopt: the previous bind is a live listener (still in grace) other than the primary
+        re_lid, re_srv = LISTENERS.find(p_host, p_port)
+        if re_srv is not None and re_lid != lid:
+            _cancel_drop(re_lid)
+            LISTENERS.set_primary(re_lid)
+            _netctl_enqueue(deps, "set-listen", ["panel", p_host, p_port])
+            _drop_listener_later(lid, NODE_MIGRATE_GRACE)                 # the bind we're leaving graces out
+            _save_panel_access(deps, p_url, p_host, p_port)
+            _confirm_panel_url(deps)
+            _apply_status("saved", "move cancelled — back on %s:%d" % (p_host, p_port),
+                          new_url=_compute_public_url(deps), grace_until=int(time.time()) + NODE_MIGRATE_GRACE)
+            return 200, {"ok": True, "applied": True, "message": "move cancelled"}
+        # CASE 2 — domain reverse: same bind, previous domain still covered by the live (dual-SAN) cert
+        p_domain = _url_host(p_url)
+        cur_domain = _url_host(_panel_public_url(deps))
+        if (p_host, p_port) == (cur["host"], cur["port"]) and p_domain and p_domain != cur_domain and _cert_covers(cur.get("cert"), p_domain):
+            _save_panel_access(deps, p_url, p_host, p_port)
+            _confirm_panel_url(deps)                                      # canonical → the previous domain, immediately
+            _cancel_cert_reissue()                                        # don't retire the domain we're reverting to
+            if cur_domain and cur_domain != p_domain:
+                _reissue_cert_newonly_later(deps, p_domain, cur_domain, NODE_MIGRATE_GRACE)   # retire the domain we're LEAVING, after the grace
+            _apply_status("saved", "move cancelled — back on %s" % p_domain,
+                          new_url=_compute_public_url(deps), grace_until=int(time.time()) + NODE_MIGRATE_GRACE)
+            return 200, {"ok": True, "applied": True, "message": "move cancelled"}
+        return 400, {"ok": False, "error": "the previous address is no longer serving — can't cancel instantly", "code": "not_cancelable"}
+
     if method == "POST" and path == "/api/access/apply-sub":
         # Activate the SAVED swg-sub bind (access.sub): issue its cert if the domain changed, persist the
         # bind, restart. No dual-listen/confirm — a swg-sub restart can't lock the admin out of the panel.
@@ -8100,6 +8148,18 @@ def _restore_panel_bind(deps, host, port):
         save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
 
 
+def _save_panel_access(deps, url, host, port):
+    """Persist the SAVED panel url + bind (panel_settings.access.panel) — used by the migration CANCEL to put
+    the config back on the address the operator reverted to, so it matches the live listener/cert."""
+    with contextlib.suppress(Exception):
+        ps = deps.get("panel_settings") or {}
+        pnl = (ps.get("access") or {}).get("panel") or {}
+        pnl["url"] = str(url or "").strip(); pnl["host"] = str(host or "0.0.0.0"); pnl["port"] = int(port)
+        ps.setdefault("access", {})["panel"] = pnl
+        deps["panel_settings"] = ps
+        save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+
+
 _DROP_TIMERS = {}                      # lid -> threading.Timer for its scheduled grace-drop (so a re-adopt can cancel it)
 _DROP_TIMERS_LOCK = threading.Lock()
 
@@ -8296,18 +8356,33 @@ def _apply_panel_cert_only(deps, d_host, d_port, d_url, d_domain, old_domain):
         _fail("internal error: %s" % (e,))
 
 
+_CERT_REISSUE = {"timer": None}   # the pending reissue-new-only timer, so a domain-change CANCEL can call it off
+
+def _cancel_cert_reissue():
+    """Call off a scheduled reissue-new-only (see _reissue_cert_newonly_later). Used when the operator cancels a
+    domain change during its grace — we must NOT retire the domain they're reverting back to."""
+    t = _CERT_REISSUE.get("timer")
+    if t is not None:
+        t.cancel(); _CERT_REISSUE["timer"] = None
+        return True
+    return False
+
 def _reissue_cert_newonly_later(deps, new_domain, old_domain, grace):
     """After a cert-only domain change confirms, the live cert still covers BOTH domains (so remote nodes on the
     old domain migrate during the grace). When the grace ends, reissue for the NEW domain only — the old domain
-    then stops validating — and stop renewing the old one + drop the backup. Mirrors the rebind's listener drop."""
+    then stops validating — and stop renewing the old one + drop the backup. Mirrors the rebind's listener drop.
+    The timer is tracked so a CANCEL during the grace can call it off (and schedule the reverse instead)."""
     def _go():
+        _CERT_REISSUE["timer"] = None
         with contextlib.suppress(Exception):
             _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["panel", new_domain]), 180)   # reload=on → cert becomes new-only
         _netctl_enqueue(deps, "clear-backup", ["panel"])
         if old_domain and old_domain != new_domain:
             _netctl_enqueue(deps, "drop-cert", ["panel", old_domain])
         print("access: cert-only migration grace ended — reissued %s-only cert (dropped %s)" % (new_domain, old_domain), flush=True)
-    t = threading.Timer(max(1, grace), _go); t.daemon = True; t.start()
+    _cancel_cert_reissue()                                        # replace any prior reissue still scheduled
+    t = threading.Timer(max(1, grace), _go); t.daemon = True
+    _CERT_REISSUE["timer"] = t; t.start()
 
 
 # swg-sub's apply is separate + simpler: it's a distinct process, and restarting it can't lock the admin
