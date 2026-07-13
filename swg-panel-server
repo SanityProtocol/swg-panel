@@ -38,6 +38,7 @@ import subprocess
 import threading
 import socket
 import urllib.request
+import urllib.error
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -7746,6 +7747,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._login()
         if path == "/api/logout":
             return self._logout()
+        if path == "/api/access/confirm":
+            # Authorized by the one-time NONCE, not a session: the nonce came from an authenticated /api/access/apply
+            # and proves the operator initiated this exact change. So they can confirm on the NEW address even if they
+            # aren't logged in THERE (a domain change to a domain their session cookie doesn't cover) — which is what
+            # otherwise made the confirm time out while they logged in. The handler still checks the nonce + that the
+            # request arrived on the new listener; it can only commit the change the operator already set up.
+            length = self._body_len()
+            if length is None:
+                return
+            try:
+                bodyobj = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                if not isinstance(bodyobj, dict):
+                    raise ValueError
+            except (json.JSONDecodeError, ValueError):
+                return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
+            with _api_lock:
+                code, obj = api("POST", path, {}, bodyobj, self.deps)
+            return self._send(code, obj)
         if not self._require_auth():
             return
         if path is None or not path.startswith("/api/"):
@@ -7788,7 +7807,8 @@ def passwd_cmd(argv):
 # new address, keeps the OLD one serving, and drops the old only after the browser CONFIRMS the new one
 # works (a redirect that lands and POSTs /api/access/confirm ON the new listener). No confirm in time →
 # the new listener is dropped and the old never stopped. All in-process, so rollback needs no restart.
-APPLY_TIMEOUT = max(10, int(os.environ.get("SWG_PANEL_APPLY_TIMEOUT", "30") or 30))   # seconds the operator's browser has to confirm the new address (raise it for slow/manual confirms)
+APPLY_TIMEOUT = max(10, int(os.environ.get("SWG_PANEL_APPLY_TIMEOUT", "90") or 90))   # seconds the operator has to confirm the new address once it's reachable — generous so logging in on the new address (a domain their session doesn't cover) can't run out the clock
+GATE_TIMEOUT = max(6, int(os.environ.get("SWG_PANEL_GATE_TIMEOUT", "30") or 30))      # seconds to poll the new front door (server-side, via CF) for reachability BEFORE offering Confirm — so an immediate click can't hit ERR_CONNECTION_CLOSED while CF is still warming the new origin
 NODE_MIGRATE_GRACE = 180                 # seconds to KEEP the old listener after confirm, so online nodes sync
                                          # once on the old address and learn the new one (pin-gated auto-repoint)
 
@@ -8037,8 +8057,9 @@ def _drop_listener_later(lid, grace):
     t = threading.Timer(max(1, grace), _drop); t.daemon = True; t.start()
 
 
-def _apply_timeout(nonce, deps):
-    """Fires APPLY_TIMEOUT after an apply: if the new address never confirmed, drop it and keep the old."""
+def _apply_timeout(nonce, deps, reason="the new address didn't confirm in time — reverted to the previous one"):
+    """Fires after an apply if the new address never confirmed: drop it and keep the old. `reason` lets the
+    reachability gate report 'never became reachable' distinctly from 'reachable but never confirmed'."""
     with _APPLY["lock"]:
         pend = _APPLY["pending"]
         if not pend or pend.get("nonce") != nonce:
@@ -8048,7 +8069,7 @@ def _apply_timeout(nonce, deps):
         nd = pend.get("new_domain")
         oh, op = pend.get("old_host"), pend.get("old_port")
         _APPLY["pending"] = None
-    _apply_status("reverted", "the new address didn't confirm in time — reverted to the previous one")
+    _apply_status("reverted", reason)
     # Roll the SAVED bind back to the live one, but only if it still holds the value we just tried to apply
     # (no concurrent edit) — so the config never sits ahead of the running listener after a failed apply.
     if pend.get("kind") not in ("cert-only", "url-only") and oh is not None and op is not None:
@@ -8061,22 +8082,86 @@ def _apply_timeout(nonce, deps):
         _netctl_enqueue(deps, "drop-cert", ["panel", nd])         # stop acme renewing the reverted-away domain
 
 
+def _probe_public_url(url, port, timeout=5):
+    """Reachability probe of the NEW front door, run from the panel box — which reaches Cloudflare reliably,
+    unlike the CSP-boxed browser (a cross-origin fetch is blocked, which is why the browser can't self-check).
+    Hits <scheme>://<host>:<port><base>/healthz. Returns True only if the front door actually answers HTTP:
+    a 401/403 still counts (the panel replied), but a CF origin-unreachable / cert-reject (52x) or a dropped
+    connection reads as not-yet-reachable — exactly the ERR_CONNECTION_CLOSED the operator hit when Confirm
+    appeared before CF had warmed the new origin."""
+    try:
+        u = urlparse(url); host = u.hostname or ""; scheme = u.scheme or "https"
+    except Exception:
+        return False
+    if not host:
+        return False
+    target = "%s://%s:%d%s/healthz" % (scheme, host, int(port), PANEL_BASE or "")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE   # proving the door answers, not auditing its cert; CF still surfaces an origin cert reject as a 526 STATUS, and a direct self-signed panel must probe like the operator clicking through
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),                  # ignore any http(s)_proxy in the env — dial the front door directly
+        urllib.request.HTTPSHandler(context=ctx))
+    req = urllib.request.Request(target, headers={"User-Agent": "swg-panel-reach", "Cache-Control": "no-cache"})
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return 200 <= (getattr(r, "status", None) or 0) < 500
+    except urllib.error.HTTPError as e:
+        return 200 <= (e.code or 0) < 500                 # 401/403 = the panel answered = reachable; 52x = CF can't reach origin = not yet
+    except Exception:
+        return False
+
+
+def _gate_reachable(nonce, deps, url, redirect, host, port):
+    """Hold the Confirm button back until the new front door actually answers (probed server-side, via CF).
+    This is the "initial check from the old panel": the operator only sees Confirm once an immediate click is
+    safe — no more ERR_CONNECTION_CLOSED from clicking before CF warmed the new origin. Fail-OPEN: if we can't
+    self-probe the front door within GATE_TIMEOUT (e.g. a bind the box can't reach via the public URL), reveal
+    Confirm anyway and fall back to the manual open-the-new-address proof, so the gate never blocks a valid change."""
+    end = time.time() + GATE_TIMEOUT
+    reached = False
+    while time.time() < end:
+        with _APPLY["lock"]:
+            pend = _APPLY["pending"]
+            if not pend or pend.get("nonce") != nonce or pend.get("gate") != "checking":
+                return               # superseded / confirmed / reverted while we waited
+        if _probe_public_url(url, port):
+            reached = True
+            break
+        time.sleep(2)
+    with _APPLY["lock"]:
+        pend = _APPLY["pending"]
+        if not pend or pend.get("nonce") != nonce or pend.get("gate") != "checking":
+            return
+        pend["gate"] = "ready"
+        pend["deadline"] = int(time.time()) + APPLY_TIMEOUT
+        _dl = pend["deadline"]
+    _msg = (("reachable — open %s:%d in a new tab to confirm" % (host, port)) if reached
+            else ("couldn't verify %s:%d from here — open it in a new tab to confirm" % (host, port)))
+    _apply_status("verifying", _msg, nonce=nonce, redirect=redirect, host=host, port=port, expires=_dl)
+    threading.Timer(APPLY_TIMEOUT + 1, _apply_timeout, args=(nonce, deps)).start()
+
+
 def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_domain="", kind="rebind"):
-    """Register the freshly-bound listener as the pending change, publish nonce+redirect for the UI, and
-    arm the revert timer. Caller holds _APPLY['lock']. old/new_domain drive the cert commit/revert.
-    kind="cert-only" is a same-bind domain change (no new listener): confirm/timeout swap the cert, not
-    the listener — so a Cloudflare-fronted panel whose new cert CF rejects (526) self-heals on timeout."""
+    """Register the freshly-bound listener as the pending change, then run the reachability gate (which reveals
+    the confirm redirect + arms the revert timer once the new front door answers). Caller holds _APPLY['lock'].
+    old/new_domain drive the cert commit/revert. kind="cert-only" is a same-bind domain change (no new listener):
+    confirm/timeout swap the cert, not the listener — so a CF-fronted panel whose new cert CF rejects (526)
+    self-heals on timeout."""
     nonce = secrets.token_hex(12)
-    deadline = int(time.time()) + APPLY_TIMEOUT
+    deadline = int(time.time()) + GATE_TIMEOUT + APPLY_TIMEOUT   # outer bound: reachability check + confirm window
     redirect = _apply_redirect_url(url, port, nonce)   # scheme+host from the URL, the NEW port → lands on the new listener
     _old = LISTENERS.get(old_lid)                      # the live bind we'd fall back to on a revert
     _APPLY["pending"] = {"nonce": nonce, "new_lid": new_lid, "old_lid": old_lid,
                          "host": host, "port": port, "deadline": deadline,
                          "old_host": (_old._swg["host"] if _old else None), "old_port": (_old._swg["port"] if _old else None),
-                         "old_domain": old_domain, "new_domain": new_domain, "kind": kind}
-    _apply_status("verifying", "waiting for %s:%d to confirm" % (host, port),
-                  nonce=nonce, redirect=redirect, host=host, port=port, expires=deadline)
-    threading.Timer(APPLY_TIMEOUT + 1, _apply_timeout, args=(nonce, deps)).start()
+                         "old_domain": old_domain, "new_domain": new_domain, "kind": kind, "gate": "checking"}
+    # Don't offer Confirm yet (no redirect exposed): the gate probes the new front door first and only then
+    # flips to "verifying" with the redirect. The revert timer is armed by the gate, when the confirm window opens.
+    _apply_status("checking", "checking %s:%d is reachable before you confirm" % (host, port),
+                  nonce=nonce, host=host, port=port, expires=deadline)
+    threading.Thread(target=_gate_reachable, name="access-gate",
+                     args=(nonce, deps, url, redirect, host, port), daemon=True).start()
     return nonce, redirect, deadline
 
 

@@ -7540,6 +7540,8 @@ function AccessTLSCard({ onChange }) {
           const parts = [];
           if (dp && p.state === "reverted")   // the new address never confirmed (unreachable / not opened) → say what to check
             parts.push("The new address wasn't confirmed — kept the current one. Check its DNS / Cloudflare / firewall / port, then try again.");
+          else if (dp && (p.state === "checking" || p.state === "issuing"))   // pre-confirm progress: reachability probe / cert issuance — not an error, not done
+            parts.push(p.message || "Preparing the new address…");
           else if (dp && p.state && p.state !== "idle") parts.push("Panel: " + (p.message || p.state));
           if (ds && subsOn && s.state && s.state !== "idle") parts.push("Subscriptions: " + (s.message || s.state));
           const fail = (dp && ["failed", "reverted"].includes(p.state)) || (ds && s.state === "failed");
