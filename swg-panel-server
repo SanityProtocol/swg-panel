@@ -7762,6 +7762,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
             with _api_lock:
                 code, obj = api("POST", path, {}, bodyobj, self.deps)
+            # Carry the operator's login onto the new address. The confirm succeeded via the nonce, which only
+            # existed because they armed this change from an AUTHENTICATED session (its MFA already satisfied) —
+            # so mint a fresh session here rather than dumping them at a login on a domain their cookie doesn't
+            # cover. Only when the request arrived WITHOUT a valid session (a same-host port change already
+            # carries the cookie) and auth is configured.
+            creds = self.deps.get("auth")
+            if 200 <= code < 300 and isinstance(obj, dict) and obj.get("saved") and creds and self._authed_user() is None:
+                tok = make_session(creds[0], self.deps.get("session_secret"))
+                return self._send_with_cookie(code, obj, self._session_cookie(tok, SESSION_TTL))
             return self._send(code, obj)
         if not self._require_auth():
             return

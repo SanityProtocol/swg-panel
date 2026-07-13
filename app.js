@@ -9726,22 +9726,27 @@ function App() {
   const [hash, setHash] = useState(location.hash || "#/");
   const [modalStack, setModalStack] = useState([]);
   useEffect(() => { _setStack = setModalStack; }, []);
-  // Access & TLS confirm handshake: an address change redirects the browser to the NEW panel address with
-  // ?__apply=<nonce>. Landing here proves the new listener is reachable → confirm it (the panel then drops
-  // the old listener). Runs once on load; strips the param so a reload can't re-fire.
+  // Access & TLS confirm handshake: the confirm itself fires at BOOT (maybeConfirmApply), before anything
+  // auth-gated, because a domain change lands on a host our cookie doesn't cover — App wouldn't even mount.
+  // Here we only report the OUTCOME once App is up: success (we reloaded, carrying our login onto this address)
+  // or failure (confirm didn't match a pending change).
   useEffect(() => {
-    const m = /[?&]__apply=([A-Za-z0-9]+)/.exec(location.search);
-    if (!m) return;
-    history.replaceState(null, "", location.pathname);   // strip ?__apply so a reload can't re-fire
-    pendingSettingsSection = "access";                    // this tab opened only to confirm → land on the Access & TLS section
-    if (location.hash !== "#/panel/settings") location.hash = "#/panel/settings"; else _setSettingsSection("access");
-    api.post("/api/access/confirm", { nonce: m[1] }).then(r => {
-      if (r && r.ok) openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Open panel settings"
+    let ok = false, fail = null;
+    try {
+      ok = sessionStorage.getItem("__apply_ok") === "1"; if (ok) sessionStorage.removeItem("__apply_ok");
+      fail = sessionStorage.getItem("__apply_fail"); if (fail) sessionStorage.removeItem("__apply_fail");
+    } catch (_) {}
+    if (!ok && !fail) return;
+    pendingSettingsSection = "access";
+    if (location.hash !== "#/panel/settings") location.hash = "#/panel/settings";
+    // defer past any hashchange (its handler resets the modal stack) so the outcome modal survives
+    setTimeout(() => {
+      if (ok) openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Open panel settings"
         back=${() => { _setSettingsSection("access"); closeModal(); }}
-        body=${html`This is now the address the panel is reached at. You can close the other tab — it's on the previous address.`}/>`);
+        body=${html`This is now the address the panel is reached at, and you're signed in here. You can close the other tab — it's on the previous address.`}/>`);
       else openModal(html`<${ConfirmSheet} title="Couldn’t confirm the new address" warn=${true} confirmLabel="OK"
-        body=${((r && r.error) || "The confirmation didn’t match a pending change.") + " The panel kept its current address."}/>`);
-    });
+        body=${((fail && fail !== "1" && fail) || "The confirmation didn’t match a pending change.") + " The panel kept its current address."}/>`);
+    }, 0);
   }, []);
   useEffect(() => {
     const onHash = () => {
@@ -9977,10 +9982,31 @@ function doLogout() {
 // ───────────────────────── boot ─────────────────────────
 const viewEl = $("#view");
 viewEl.innerHTML = `<div class="loading"><span class="spin"></span>connecting…</div>`;
+// Access & TLS confirm: if we landed here with ?__apply=<nonce>, confirm it BEFORE anything auth-gated. The
+// confirm is authorized by the nonce (not a session) and carries our login onto this address, so it MUST run
+// even when we're not logged in here — a domain change lands on a host our cookie doesn't cover, which would
+// otherwise 401 Store.init() → login screen → App (and its confirm handler) never mounts. On success we reload
+// to pick up the fresh session cookie; the "confirmed" note shows after, in App (the `__apply_ok` branch).
+async function maybeConfirmApply() {
+  const m = /[?&]__apply=([A-Za-z0-9]+)/.exec(location.search);
+  if (!m) return false;
+  // strip ?__apply so a reload can't re-fire, and land on Access & TLS — presetting the hash HERE (before the
+  // reload) means App's outcome effect doesn't have to change it, so the hashchange handler can't wipe the modal.
+  history.replaceState(null, "", location.pathname + "#/panel/settings");
+  let r = null;
+  try { r = await api.post("/api/access/confirm", { nonce: m[1] }); } catch (_) { r = null; }   // never throws us to login: confirm is pre-auth
+  if (r && r.ok) { try { sessionStorage.setItem("__apply_ok", "1"); } catch (_) {} location.reload(); return true; }
+  try { sessionStorage.setItem("__apply_fail", (r && r.error) || "1"); } catch (_) {}   // shown by App once it mounts (if we're authed here)
+  return false;
+}
 (async () => {
   await subBootRestore();   // restore the config-encryption convenience cache from sessionStorage (post-login reload)
+  if (await maybeConfirmApply()) return;   // confirmed → reloading; stop this boot pass
   try { await Store.init(); }
   catch (e) { if (!_loginShown) viewEl.innerHTML = `<div class="empty"><b>Can't reach the panel</b>${esc(e.message)}</div>`; return; }
   if (!location.hash) location.hash = "#/";
+  // landed here right after a confirm (we reloaded to pick up the carried session) → open the settings screen
+  // straight on Access & TLS, BEFORE it mounts and defaults to Display. (The outcome modal is shown by App.)
+  try { if (sessionStorage.getItem("__apply_ok")) pendingSettingsSection = "access"; } catch (_) {}
   render(h(App), viewEl);
 })();
