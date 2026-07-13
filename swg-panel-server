@@ -3960,6 +3960,7 @@ def api(method, path, qs, body, deps):
             "versions": VERSIONS,
             "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps)},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
+            "access_cooldown": (lambda cd: {"secs": cd[0], "reason": cd[1]})(_access_cooldown()),   # while a change is verifying/gracing → Access&TLS disables Save + shows the one-at-a-time cooldown
 
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
@@ -4193,8 +4194,10 @@ def api(method, path, qs, body, deps):
         if _gu:                                            # expose the LIVE remaining grace (recomputed each poll) so the
             _pstat = dict(_pstat)                          # UI's countdown is anchored to its own clock — immune to any
             _pstat["grace_secs"] = max(0, int(_gu) - int(time.time()))   # skew between the server's and the browser's clocks
+        _cd = _access_cooldown()
         return 200, {"ok": True, "panel": _pstat, "sub": _SUBAPPLY["status"],
-                     "pending": bool(_APPLY["pending"])}
+                     "pending": bool(_APPLY["pending"]),
+                     "cooldown": {"secs": _cd[0], "reason": _cd[1]}}
 
     if method == "POST" and path == "/api/access/apply":
         # Activate the panel's SAVED bind (access.panel) by dual-listening on the new address. If the URL's
@@ -4222,6 +4225,15 @@ def api(method, path, qs, body, deps):
             _cxl = _cancel_migration(deps, d_url, d_host, d_port)
             if _cxl is not None:
                 return _cxl
+        # ONE-AT-A-TIME cooldown: reject a NEW address change while a previous one is verifying or still gracing
+        # out (Cancel — a re-adopt of the address we're leaving — was handled above and is always allowed). This
+        # is the hard guard that stops rapid overlapping changes from desyncing the saved URL / cert / listeners.
+        _cd_secs, _cd_reason = _access_cooldown()
+        if _cd_secs > 0:
+            return 409, {"ok": False, "code": "cooldown", "cooldown_secs": _cd_secs, "reason": _cd_reason,
+                         "error": ("a change is still waiting to be confirmed — confirm it on the new address, cancel it, or wait for it to revert"
+                                   if _cd_reason == "verifying" else
+                                   "the previous change is still settling (%ds) — you can only cancel until it finishes" % _cd_secs)}
         mode = (acc.get("tls") or {}).get("mode") or ""
         # a cert is needed only when we currently HAVE TLS and either the domain changed (current cert doesn't
         # cover it) or a real-CA mode is still serving a self-signed placeholder — for a mode that issues certs.
@@ -4333,8 +4345,12 @@ def api(method, path, qs, body, deps):
         except (TypeError, ValueError):
             p_port = 0
         with _APPLY["lock"]:
-            if _APPLY["pending"] is not None:
-                return 409, {"ok": False, "error": "a change is already in progress", "code": "busy"}
+            _pend = _APPLY["pending"]
+        if _pend is not None:
+            # still VERIFYING (not yet confirmed) → abort it: drop the un-confirmed listener / restore the cert and
+            # roll the saved url back to the confirmed address (all in _apply_timeout). Same as Cancel, one step earlier.
+            _apply_timeout(_pend.get("nonce"), deps, "change cancelled — reverted to the previous address")
+            return 200, {"ok": True, "applied": True, "message": "change cancelled"}
         r = _cancel_migration(deps, p_url, p_host, p_port)
         if r is not None:
             return r
@@ -7956,6 +7972,22 @@ LISTENERS = _Listeners()
 _REQ = threading.local()                 # per-request: which listener this request arrived on (set in do_GET/POST)
 _APPLY = {"lock": threading.Lock(), "pending": None,
           "status": {"state": "idle", "message": "", "at": 0}}
+# Address changes run STRICTLY one-at-a-time. While a change is verifying OR its node-migration grace is still
+# running, a NEW change is rejected (the operator can only Cancel) — this is what prevents rapid overlapping
+# changes from desyncing the saved URL / cert / listeners. `until` is the unix ts the migration grace ends.
+_MIGRATION_LOCK = {"until": 0}
+
+def _access_cooldown():
+    """(secs_remaining, reason) while an address change blocks a new one, else (0, ''). Locked when a change is
+    verifying (unconfirmed pending) OR a just-confirmed/cancelled migration is still gracing out."""
+    with _APPLY["lock"]:
+        pend = _APPLY["pending"]
+    if pend is not None:
+        return (max(1, int(pend.get("deadline", 0)) - int(time.time())) or 1), "verifying"
+    left = int(_MIGRATION_LOCK.get("until", 0)) - int(time.time())
+    if left > 0:
+        return left, "migrating"
+    return 0, ""
 
 
 def _sighup_reload(_sig, _frm):
@@ -7972,6 +8004,9 @@ def _apply_status(state, message="", **extra):
     s = {"state": state, "message": message, "at": int(time.time())}
     s.update(extra)                          # verifying carries nonce/redirect/host/port/expires for the UI
     _APPLY["status"] = s
+    _gu = int(extra.get("grace_until") or 0)   # a committed change with a live grace → arm the one-at-a-time cooldown
+    if _gu > 0:
+        _MIGRATION_LOCK["until"] = max(int(_MIGRATION_LOCK.get("until", 0)), _gu)
 
 
 def _cert_covers(cert_path, domain):
@@ -8212,13 +8247,14 @@ def _apply_timeout(nonce, deps, reason="the new address didn't confirm in time �
         oh, op = pend.get("old_host"), pend.get("old_port")
         _APPLY["pending"] = None
     _apply_status("reverted", reason)
-    # Roll the SAVED bind back to the live one, but only if it still holds the value we just tried to apply
-    # (no concurrent edit) — so the config never sits ahead of the running listener after a failed apply.
-    if pend.get("kind") not in ("cert-only", "url-only") and oh is not None and op is not None:
-        ps = deps.get("panel_settings") or {}
-        pnl = (ps.get("access") or {}).get("panel") or {}
-        if (str(pnl.get("host")) == str(pend["host"])) and (int(pnl.get("port") or 0) == int(pend["port"])):
-            _restore_panel_bind(deps, oh, op)
+    # Roll the SAVED url + bind back to the CONFIRMED (live) address — server-authoritative, not reliant on the
+    # browser's rollback (which fails if that tab is on a now-dead address). This is what stops a reverted change
+    # from leaving the saved canonical ahead of the live listener/cert (the mismatch that 526s the panel).
+    with contextlib.suppress(Exception):
+        _lid, _srv = LISTENERS.primary()
+        if _srv is not None:
+            _cw = _srv._swg
+            _save_panel_access(deps, _CONFIRMED_URL or _compute_public_url(deps), _cw["host"], _cw["port"])
     if nd:                               # a domain-change apply issued a cert over the live path → undo it
         _netctl_enqueue(deps, "restore-cert", ["panel"])          # put the previous cert back on disk (+ SIGHUP reload)
         _netctl_enqueue(deps, "drop-cert", ["panel", nd])         # stop acme renewing the reverted-away domain
@@ -8574,6 +8610,27 @@ def main():
         _lb = load_json(os.path.join(Handler.deps["stats_dir"], f"live-{_nid}.json"), None)
         if isinstance(_lb, list) and _lb:
             Handler.deps["live_samples"][_nid] = [tuple(s) for s in _lb if isinstance(s, (list, tuple)) and len(s) >= 6][-LIVE_MAX:]
+    # Boot self-heal: NEVER come up unreachable. A rapid domain-change churn can leave the saved canonical URL
+    # ahead of the live cert (saved domain not on the cert → CF 526 → operator + nodes locked out). If so, fall
+    # the saved URL's domain back to the cert's primary domain (keep scheme + port) and persist it, so the panel
+    # always boots on an address whose cert actually validates. Domain-only: the bind/port come from the systemd
+    # drop-in, which is updated together with the saved port on confirm.
+    if TLS_CERT and os.path.exists(TLS_CERT):
+        with contextlib.suppress(Exception):
+            _ps = Handler.deps.get("panel_settings") or {}
+            _pnl = (_ps.get("access") or {}).get("panel") or {}
+            _saved_url = (str(_pnl.get("url") or "")).strip()
+            _saved_dom = _url_host(_saved_url)
+            _cert_dom = _cert_primary_domain(TLS_CERT)
+            if _saved_dom and _cert_dom and _saved_dom != _cert_dom and not _cert_covers(TLS_CERT, _saved_dom):
+                _u = urlparse(_saved_url if re.match(r"^https?://", _saved_url, re.I) else "https://" + _saved_url)
+                _fixed = "%s://%s%s" % (_u.scheme or "https", _cert_dom, (":%d" % _u.port) if _u.port else "")
+                _pnl["url"] = _fixed
+                _ps.setdefault("access", {})["panel"] = _pnl
+                Handler.deps["panel_settings"] = _ps
+                save_critical(Handler.deps.get("panel_settings_path") or "", json.dumps(_ps, indent=2) + "\n")
+                print("access: boot self-heal — saved canonical '%s' not covered by the cert; reconciled to '%s'" % (_saved_dom, _cert_dom), flush=True)
+    _confirm_panel_url(Handler.deps)   # seed _CONFIRMED_URL = the (self-healed) current address, so a revert can always roll the saved url back to a known-good value
     # The primary listener goes into the live registry (so Access & TLS can add a second one on a new
     # address and drop this one only after the browser confirms). _TLSServer with ssl_ctx=None is plain HTTP.
     scheme = "https" if (TLS_CERT and TLS_KEY) else "http"

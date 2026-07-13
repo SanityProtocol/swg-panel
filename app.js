@@ -978,6 +978,7 @@ const Store = {
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
+    this.accessCooldown = d.access_cooldown || { secs: 0, reason: "" };   // one-at-a-time: while a change verifies/graces, Access&TLS disables Save + shows the cooldown
     applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
     applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
     this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
@@ -7592,6 +7593,11 @@ function AccessTLSCard({ onChange }) {
   const sBad = subsOn && cfMode && sPort && !CF_HTTPS_PORTS.includes(+sPort);
   const hard = mode === "cf15";                                   // cf15 origin certs ONLY work behind CF → block
   const blocked = hard && (pBad || sBad);
+  // ONE-AT-A-TIME cooldown: while a previous address change is verifying or gracing out, Save is locked — the
+  // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
+  const cooldown = Store.accessCooldown || { secs: 0, reason: "" };
+  const cooldownActive = (cooldown.secs || 0) > 0;                          // Save is locked on EVERY tab during a change
+  const showCooldownNotice = cooldownActive && !migrate && !confirmUrl;    // but only surface the notice where THIS tab isn't already driving the change (it'd have the ribbon/confirm affordance instead)
 
   const ipField = (host, setHost, withLocal) => {
     const val = presets.has(host) ? host : "__custom";
@@ -7694,7 +7700,7 @@ function AccessTLSCard({ onChange }) {
 
   // Report state up to the settings footer (which owns the Save button + status line, like every other section).
   // Runs after each render; the parent only re-renders when a DISPLAYED bit actually changes (see onAccess).
-  useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked, busy: busy || polling, msg, run: saveAndApply }); });
+  useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked && !cooldownActive, busy: busy || polling, msg, run: saveAndApply }); });
 
   // Cancel the in-flight move and stay on THIS (still-serving) address — the automatic version of manually
   // typing the old address back into the form. prev = the address we changed away from (this tab's own); the
@@ -7717,6 +7723,16 @@ function AccessTLSCard({ onChange }) {
         } catch (_) { toast("Couldn't cancel the move.", "err"); }
       }}/>`);
   };
+  // Abort a change that's still VERIFYING (not yet confirmed) — the server drops the un-confirmed listener /
+  // restores the cert and rolls the saved url back. The only other option during verifying is to confirm it.
+  const cancelChange = async () => {
+    try {
+      const r = await api.post("/api/access/cancel", {});
+      if (!r || r.ok === false) toast((r && r.error) || "Couldn't cancel the change.", "err");
+      else toast("Change cancelled — kept the current address.", "ok");
+    } catch (_) { toast("Couldn't cancel the change.", "err"); }
+    // the polling loop sees the reverted state and clears the confirm affordance + resyncs the form
+  };
   let _confHost = confirmUrl; try { _confHost = new URL(confirmUrl).host; } catch (_) {}
   const _migLeft = migrate ? Math.max(0, migrate.until - nowSec) : 0;
   return html`<div class="card acctls">
@@ -7730,7 +7746,10 @@ function AccessTLSCard({ onChange }) {
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
     ${confirmUrl ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
       <b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab to confirm it — the change is applied <b>only once</b> it loads there. If that tab <b>can't</b> load, just close it: this panel stays on the current address and reverts automatically. Nothing is committed until the new address answers.
-      <div style="margin-top:10px"><a class="btn btn-primary" href=${confirmUrl} target="_blank" rel="noopener">Open the new address to confirm ↗</a></div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-primary" href=${confirmUrl} target="_blank" rel="noopener">Open the new address to confirm ↗</a><button class="btn btn-ghost" onClick=${cancelChange}>Cancel this change</button></div>
+    </div></div>` : null}
+    ${showCooldownNotice ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
+      <b>Operation cooldown.</b> ${cooldown.reason === "verifying" ? "An address change is still waiting to be confirmed." : html`The previous change is still settling (<b>${cooldown.secs}s</b> left).`} Address changes run <b>one at a time</b> — Save is locked until it finishes. If a change is in flight, you can still cancel it from the tab that started it.
     </div></div>` : null}
 
     <div class="seclabel" style="margin-top:0">Certificate</div>
