@@ -4281,9 +4281,7 @@ def api(method, path, qs, body, deps):
             _grace_until = 0
             if _rebind:                                          # rebind: promote the new listener, drop the old
                 _netctl_enqueue(deps, "set-listen", ["panel", pend["host"], pend["port"]])   # persist across restarts (root helper)
-                new_srv = LISTENERS.get(pend["new_lid"])
-                if new_srv is not None:
-                    new_srv._swg["primary"] = True            # the new listener is now the panel
+                LISTENERS.set_primary(pend["new_lid"])        # sole primary NOW → primary() returns the new bind immediately (the old one keeps serving out the grace, but is no longer canonical)
                 # keep the OLD listener alive for a grace window so ONLINE nodes sync once on the old address and
                 # auto-repoint to the new one before it's dropped (instead of orphaning every node immediately)
                 _drop_listener_later(pend["old_lid"], NODE_MIGRATE_GRACE)
@@ -7864,6 +7862,17 @@ class _Listeners:
                 if getattr(srv, "_swg", {}).get("primary"):
                     return lid, srv
         return None, None
+    def set_primary(self, lid):
+        """Make `lid` the SOLE primary (the canonical panel bind) — atomically clear the flag on every other
+        listener. Called on confirm so primary() returns the NEW bind immediately, even while the OLD listener
+        is kept alive (still serving) through the node-migration grace. Without this both stay flagged and
+        primary() keeps returning the old bind for the whole grace, so a second change during it miscomputes
+        same_bind and collides ('address already in use')."""
+        with self._lock:
+            for _id, srv in self._by_id.items():
+                m = getattr(srv, "_swg", None)
+                if m is not None:
+                    m["primary"] = (_id == lid)
     def reload_tls(self):                              # SIGHUP → every TLS listener re-reads its cert
         # Build a FRESH SSLContext per listener and swap it in, rather than load_cert_chain()-ing over the
         # live one. An SSLContext keeps ONE cert PER KEY TYPE, so loading (say) an RSA cert over an existing
