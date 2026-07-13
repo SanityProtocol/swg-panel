@@ -4251,11 +4251,19 @@ def api(method, path, qs, body, deps):
                 _drop_listener_later(pend["old_lid"], NODE_MIGRATE_GRACE)
                 _grace_until = int(time.time()) + NODE_MIGRATE_GRACE
             nd, od = pend.get("new_domain"), pend.get("old_domain")
+            # A pure DOMAIN change (same bind) served a dual-SAN cert (new+old) during verifying. Keep it through
+            # the node-migration grace so remote nodes on the OLD domain migrate, THEN reissue new-only — that's
+            # when the old domain stops. So it, too, gets a grace_until (→ the countdown ribbon on the old address).
+            _cert_only_domain = (_kind == "cert-only" and nd and od and od != nd)
+            if _cert_only_domain:
+                _grace_until = int(time.time()) + NODE_MIGRATE_GRACE
             _APPLY["pending"] = None
             _msg = ("panel now on %s:%d" % (pend["host"], pend["port"])) if _rebind else "panel address confirmed"
             _apply_status("saved", _msg, new_url=_compute_public_url(deps), grace_until=_grace_until)
         _confirm_panel_url(deps)   # the change is committed → NOW nodes may be told the new dial URL (frozen until here)
-        if nd:                                                # committed a new cert → drop the backup + stop renewing the old domain
+        if _cert_only_domain:                                 # keep the dual-SAN cert through the grace, then reissue new-only (drops the old domain)
+            _reissue_cert_newonly_later(deps, nd, od, NODE_MIGRATE_GRACE)
+        elif nd:                                              # cert-then-bind (old domain lives on the old LISTENER during grace) / first cert → finalize now
             _netctl_enqueue(deps, "clear-backup", ["panel"])
             if od and od != nd:
                 _netctl_enqueue(deps, "drop-cert", ["panel", od])
@@ -8048,7 +8056,13 @@ def _apply_panel_cert_only(deps, d_host, d_port, d_url, d_domain, old_domain):
     try:
         _apply_status("issuing", "issuing a certificate for %s" % d_domain)
         _netctl_wait(deps, _netctl_enqueue(deps, "backup-cert", ["panel"]), 30)   # snapshot the live cert first
-        ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["panel", d_domain]), 180)  # reload=on: serve it live
+        # Issue a cert covering BOTH the new AND the old domain (multi-SAN), served live. The same bind can hold
+        # only one cert, so — unlike a port change's dual-listen — the OLD domain would otherwise 526 the instant
+        # the new cert loads, cutting off any REMOTE node still dialing it before it can learn the new address.
+        # A dual-SAN cert keeps the old domain valid through the node-migration grace; on confirm we reissue
+        # new-only (see the confirm handler), which is when the old domain finally stops.
+        _certdoms = d_domain if (not old_domain or old_domain == d_domain) else (d_domain + "," + old_domain)
+        ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["panel", _certdoms]), 180)  # reload=on: serve it live
         if not ok:
             return _fail("certificate issuance failed: " + (msg or "unavailable"))
         lid, _ = LISTENERS.primary()
@@ -8057,6 +8071,20 @@ def _apply_panel_cert_only(deps, d_host, d_port, d_url, d_domain, old_domain):
                          old_domain=old_domain, new_domain=d_domain, kind="cert-only")
     except Exception as e:
         _fail("internal error: %s" % (e,))
+
+
+def _reissue_cert_newonly_later(deps, new_domain, old_domain, grace):
+    """After a cert-only domain change confirms, the live cert still covers BOTH domains (so remote nodes on the
+    old domain migrate during the grace). When the grace ends, reissue for the NEW domain only — the old domain
+    then stops validating — and stop renewing the old one + drop the backup. Mirrors the rebind's listener drop."""
+    def _go():
+        with contextlib.suppress(Exception):
+            _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["panel", new_domain]), 180)   # reload=on → cert becomes new-only
+        _netctl_enqueue(deps, "clear-backup", ["panel"])
+        if old_domain and old_domain != new_domain:
+            _netctl_enqueue(deps, "drop-cert", ["panel", old_domain])
+        print("access: cert-only migration grace ended — reissued %s-only cert (dropped %s)" % (new_domain, old_domain), flush=True)
+    t = threading.Timer(max(1, grace), _go); t.daemon = True; t.start()
 
 
 # swg-sub's apply is separate + simpler: it's a distinct process, and restarting it can't lock the admin

@@ -259,20 +259,23 @@ def _fix_cert_perms(svc):
                 os.chown(f, 0, gid); os.chmod(f, m)
 
 
-def _issue_selfsigned(svc, domain):
+def _issue_selfsigned(svc, domains):
+    san = ",".join("DNS:" + d for d in domains)
     if DRYRUN:
-        log("would openssl-selfsign CN=%s -> %s / %s" % (domain, svc["cert"], svc["key"])); return
+        log("would openssl-selfsign CN=%s SAN=%s -> %s / %s" % (domains[0], san, svc["cert"], svc["key"])); return
     rc, out = run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
-                   "-subj", "/CN=" + domain, "-addext", "subjectAltName=DNS:" + domain,
+                   "-subj", "/CN=" + domains[0], "-addext", "subjectAltName=" + san,
                    "-keyout", svc["key"], "-out", svc["cert"]])
     if rc:
         raise Reject("openssl self-signed failed (rc %d): %s" % (rc, out.strip()[-300:]))
 
 
-def _issue_acme(svc, service, domain, mode, creds, reloadcmd=True):
+def _issue_acme(svc, service, domains, mode, creds, reloadcmd=True):
     acme = find_acme()
     env = dict(os.environ)
-    issue = [acme, "--issue", "-d", domain, "--server", "letsencrypt", "--keylength", "ec-256"]
+    issue = [acme, "--issue", "--server", "letsencrypt", "--keylength", "ec-256"]
+    for d in domains:                   # one -d per SAN; the FIRST is the primary acme.sh installs/renews by
+        issue += ["-d", d]
     if mode == "cloudflare":
         if not creds["cf_token"]:
             raise Reject("cloudflare mode but no CF token (set it in Access & TLS or install.conf)")
@@ -287,8 +290,8 @@ def _issue_acme(svc, service, domain, mode, creds, reloadcmd=True):
     rc, out = run(issue, env=env)
     # acme.sh: 0 = issued, 2 = RENEW_SKIP (a still-valid cert already exists). Else a failure.
     if rc not in (0, 2) and not DRYRUN:
-        raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, domain, out.strip()[-400:]))
-    inst = [acme, "--install-cert", "-d", domain, "--ecc",
+        raise Reject("acme --issue failed (rc %d) for %s: %s" % (rc, ",".join(domains), out.strip()[-400:]))
+    inst = [acme, "--install-cert", "-d", domains[0], "--ecc",   # install/renew keyed by the primary -d
             "--key-file", svc["key"], "--fullchain-file", svc["cert"]]
     if reloadcmd:                       # renewals reload the running service; a live-apply must NOT (the old
         inst += ["--reloadcmd", reload_cmd_for(service)]   # listener keeps the old cert until the change confirms)
@@ -297,29 +300,31 @@ def _issue_acme(svc, service, domain, mode, creds, reloadcmd=True):
         raise Reject("acme --install-cert failed (rc %d): %s" % (rc, out.strip()[-400:]))
 
 
-def _issue_cf15(svc, domain, creds):
+def _issue_cf15(svc, domains, creds):
     """Cloudflare Origin CA cert (15 years) via the CF API — a private EC key + CSR generated locally, the
-    cert signed by CF. ONLY valid behind Cloudflare's proxy. Uses the Origin CA token (Zone:SSL:Edit)."""
+    cert signed by CF. ONLY valid behind Cloudflare's proxy. Uses the Origin CA token (Zone:SSL:Edit).
+    Multiple `domains` → a multi-SAN cert (the first is the CSR CN); used to serve the OLD + NEW domain both
+    through the node-migration grace on a domain change, so remote nodes on the old domain aren't cut off."""
     tok = creds["cf_origin_token"]
     if not tok:
         raise Reject("cf15 needs a Cloudflare Origin CA token (set it in Access & TLS or install.conf CF_ORIGIN_TOKEN)")
     if DRYRUN:
-        log("would request a 15-year Cloudflare Origin cert (CN=%s) -> %s" % (domain, svc["cert"]))
+        log("would request a 15-year Cloudflare Origin cert (CN=%s, SAN=%s) -> %s" % (domains[0], ",".join(domains), svc["cert"]))
         return
     # generate the key + CSR with output CAPTURED (never routed through run(), which logs — the key is secret)
     key = subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout"],
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
     if not key:
         raise Reject("openssl EC key generation failed")
-    csr = subprocess.run(["openssl", "req", "-new", "-key", "/dev/stdin", "-subj", "/CN=" + domain],
+    csr = subprocess.run(["openssl", "req", "-new", "-key", "/dev/stdin", "-subj", "/CN=" + domains[0]],
                          input=key, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode()
     if not csr.strip():
         raise Reject("openssl CSR generation failed")
-    body = json.dumps({"hostnames": [domain], "requested_validity": 5475,
+    body = json.dumps({"hostnames": list(domains), "requested_validity": 5475,
                        "request_type": "origin-ecc", "csr": csr}).encode()
     req = urllib.request.Request("https://api.cloudflare.com/client/v4/certificates", data=body, method="POST",
                                  headers={"Content-Type": "application/json", "Authorization": "Bearer " + tok})
-    log("requesting a Cloudflare Origin cert for %s" % domain)
+    log("requesting a Cloudflare Origin cert for %s" % ",".join(domains))
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.load(r)
@@ -329,7 +334,7 @@ def _issue_cf15(svc, domain, creds):
         raise Reject("Cloudflare API request failed: %s" % (e,))
     if not d.get("success"):
         msgs = "; ".join(str(x.get("message")) for x in (d.get("errors") or [])) or "unknown error"
-        raise Reject("Cloudflare rejected the Origin cert request (check the token + that %s is on this account): %s" % (domain, msgs))
+        raise Reject("Cloudflare rejected the Origin cert request (check the token + that %s is on this account): %s" % (",".join(domains), msgs))
     with open(svc["cert"], "w") as f:
         f.write(d["result"]["certificate"].rstrip("\n") + "\n")
     with open(svc["key"], "wb") as f:
@@ -341,7 +346,17 @@ def do_issue_cert(service, domain, reload="reload"):
     # EXISTING listener (which is still serving the old cert to Cloudflare/clients during the dual-listen
     # window). Only the new listener loads it, at bind time. Renewals use "reload" (SIGHUP, zero-downtime).
     svc = SERVICES[v_service(service)]
-    v_domain(domain)
+    # `domain` may be a comma-separated list — a multi-SAN cert (first = primary/CN). The panel uses this on a
+    # domain change to serve the OLD + NEW domain together through the node-migration grace, then reissues new-only.
+    domains = [d for d in (domain or "").split(",") if d]
+    if not domains:
+        raise Reject("issue-cert: no domain given")
+    seen = set(); uniq = []
+    for d in domains:
+        v_domain(d)
+        if d not in seen:
+            seen.add(d); uniq.append(d)
+    domains = uniq
     if reload not in ("reload", "noreload"):
         raise Reject("bad reload flag %r" % (reload,))
     creds = _load_access_tls()
@@ -350,11 +365,11 @@ def do_issue_cert(service, domain, reload="reload"):
         os.makedirs(os.path.dirname(svc["cert"]), exist_ok=True)
     acme_mode = mode in ("cloudflare", "letsencrypt")
     if mode == "selfsigned":
-        _issue_selfsigned(svc, domain)
+        _issue_selfsigned(svc, domains)
     elif mode == "cf15":
-        _issue_cf15(svc, domain, creds)
+        _issue_cf15(svc, domains, creds)
     elif acme_mode:
-        _issue_acme(svc, service, domain, mode, creds, reloadcmd=(reload == "reload"))
+        _issue_acme(svc, service, domains, mode, creds, reloadcmd=(reload == "reload"))
     else:
         # letsencrypt-ip issues for a public IP (not a domain) — a separate path, deferred.
         raise Reject("issue-cert not yet implemented for TLS mode %r" % (mode,))
@@ -364,7 +379,7 @@ def do_issue_cert(service, domain, reload="reload"):
     if reload == "reload" and not acme_mode:
         with contextlib.suppress(Exception):
             run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
-    return "issued cert for %s (%s) via %s" % (domain, service, mode)
+    return "issued cert for %s (%s) via %s" % (",".join(domains), service, mode)
 
 
 # A domain-change apply issues the NEW cert over the live path (so the new listener can load it), but the
