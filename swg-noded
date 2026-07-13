@@ -21,6 +21,7 @@ Config (/etc/swg-agent/config.json), see config.example.json:
 import contextlib
 import fcntl
 import hashlib
+import hmac
 import ipaddress
 import http.client
 import json
@@ -472,6 +473,18 @@ def run_agent(agent, sudo, payload):
         return {"ok": False, "op": payload.get("op"), "error": "agent non-JSON", "code": "internal"}
 
 
+def _sig_headers(token, body):
+    """Per-request signature headers (Phase 4): X-SWG-TS + X-SWG-MAC = hmac_sha256(sha256(token), ts + '.' +
+    sha256(body)). The panel stores sha256(token) as token_sha, so it verifies without ever holding the raw token.
+    Additive: an old panel ignores these headers; a new one uses them for replay resistance. Harmless if token=''."""
+    if not token:
+        return {}
+    ts = str(int(time.time()))
+    key = hashlib.sha256(token.encode()).hexdigest()
+    mac = hmac.new(key.encode(), (ts + "." + hashlib.sha256(body or b"").hexdigest()).encode(), hashlib.sha256).hexdigest()
+    return {"X-SWG-TS": ts, "X-SWG-MAC": mac}
+
+
 def post_json(url, token, obj, panel, timeout=20, source_ip=""):
     """POST JSON to the panel. TLS posture comes from `panel`:
          fingerprint set -> pin sha256 (verified during the handshake, before any
@@ -482,7 +495,7 @@ def post_json(url, token, obj, panel, timeout=20, source_ip=""):
     role); callers fall back to unbound on failure so a bad IP can't cut the node off from the panel.
     Returns (status, dict). status 0 means the request never completed."""
     body = json.dumps(obj).encode()
-    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + token}
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + token, **_sig_headers(token, body)}
     u = urllib.parse.urlparse(url)
     host = u.hostname
     port = u.port or (443 if u.scheme == "https" else 80)
@@ -1435,7 +1448,7 @@ def _panel_get(url, token, panel, timeout=60):
                 der = conn.sock.getpeercert(True)
                 if not der or hashlib.sha256(der).hexdigest() != fp:
                     return 0, b"", ""                          # pin mismatch — fail closed
-        conn.request("GET", path, headers={"Authorization": "Bearer " + token})
+        conn.request("GET", path, headers={"Authorization": "Bearer " + token, **_sig_headers(token, b"")})
         resp = conn.getresponse(); data = resp.read()
         if resp.status >= 400:
             return resp.status, b"", ""

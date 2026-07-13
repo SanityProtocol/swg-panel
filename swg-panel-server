@@ -1554,6 +1554,43 @@ def normalize_stats_files(nodes_path, stats_dir):
         print("normalized node stats_file -> stats-<id>.json", flush=True)
 
 
+# ── Phase 4: optional per-request signature (replay resistance + body integrity on top of TLS/pinning) ──
+# A node MAY sign each request: X-SWG-TS = unix seconds, X-SWG-MAC = hmac_sha256(node.token_sha, ts + "." +
+# sha256(body)). The panel already stores token_sha (= sha256 of the bearer token), and the node computes the
+# same, so it's a shared key without the panel ever holding the raw token. A present signature is verified (fresh
+# timestamp + matching MAC + not replayed); an absent one falls back to bearer-only unless REQUIRE_NODE_SIG. This
+# is additive/back-compat: old nodes don't sign (still work), old panels ignore the headers.
+NODE_SIG_WINDOW = max(30, int(os.environ.get("SWG_PANEL_SIG_WINDOW", "300") or 300))   # ± seconds a timestamp may be off
+REQUIRE_NODE_SIG = os.environ.get("SWG_PANEL_REQUIRE_SIG", "").strip().lower() in ("1", "true", "yes", "on")
+_NODE_SIG_SEEN = {}                    # mac -> expiry epoch; a mac seen twice inside the window is a replay
+_NODE_SIG_LOCK = threading.Lock()
+
+
+def _verify_node_sig(token_sha, ts, mac, body):
+    """Return (ok, reason). Verifies the timestamp is fresh, the HMAC matches, and the mac hasn't been replayed."""
+    if not token_sha:
+        return False, "unverifiable"                 # legacy node without a token_sha index — can't key the HMAC
+    try:
+        t = int(ts)
+    except (TypeError, ValueError):
+        return False, "bad-timestamp"
+    now = int(time.time())
+    if abs(now - t) > NODE_SIG_WINDOW:
+        return False, "stale"
+    bsha = hashlib.sha256(body or b"").hexdigest()
+    expect = hmac.new(token_sha.encode(), (str(ts) + "." + bsha).encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expect, (mac or "").strip().lower()):
+        return False, "mismatch"
+    with _NODE_SIG_LOCK:                              # replay: a mac is unique per (node, ts, body); reject a repeat
+        if _NODE_SIG_SEEN.get(mac, 0) > now:
+            return False, "replay"
+        if len(_NODE_SIG_SEEN) > 20000:              # bound the cache; drop everything already expired
+            for k in [k for k, e in _NODE_SIG_SEEN.items() if e <= now]:
+                _NODE_SIG_SEEN.pop(k, None)
+        _NODE_SIG_SEEN[mac] = now + NODE_SIG_WINDOW + 5
+    return True, ""
+
+
 def find_node_by_token(nodes, token):
     # Fast path: a per-node sha256(token) index (`token_sha`) gives O(N) constant-time compares — no pbkdf2.
     # The node token is 144-bit os.urandom, so a plain sha256 is a secure verifier (same as the API tokens).
@@ -6948,13 +6985,16 @@ class Handler(BaseHTTPRequestHandler):
         with contextlib.suppress(BrokenPipeError):
             self.wfile.write(data)
 
-    def _node_sync(self):
-        nodes = nodes_load(Handler.deps["nodes_path"])
+    def _node_token(self):
+        """Bearer node-token auth (the cheap check, before the body is read): returns (nid, node, nodes), or
+        (None, None, None) after sending 401. `node` is `nodes[nid]` so callers can mutate + save it. Also does the
+        one-time legacy→token_sha index upgrade. Signature (if any) is checked by _node_sig_ok once the body is read."""
         hdr = self.headers.get("Authorization", "")
         token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
+        nodes = nodes_load(Handler.deps["nodes_path"])
         nid, node = find_node_by_token(nodes, token)
         if not nid:
-            return self._send(401, {"error": "invalid node token"})
+            self._send(401, {"error": "invalid node token"}); return None, None, None
         if token and not node.get("token_sha"):        # one-time upgrade of a legacy node → fast-lookup index (H3)
             with contextlib.suppress(Exception):
                 with _api_lock:
@@ -6962,11 +7002,39 @@ class Handler(BaseHTTPRequestHandler):
                     if nid in nn and not nn[nid].get("token_sha"):
                         nn[nid]["token_sha"] = hashlib.sha256(token.encode()).hexdigest()
                         nodes_save(Handler.deps["nodes_path"], nn)
+                        node["token_sha"] = nn[nid]["token_sha"]
+        return nid, node, nodes
+
+    def _node_sig_ok(self, node, body, require=None):
+        """Verify the optional per-request signature over `body`. Returns True if the request may proceed, or
+        sends 401 and returns False. A present X-SWG-MAC is ALWAYS verified; an absent one is allowed unless the
+        signature is required. `require` defaults to REQUIRE_NODE_SIG (the daemon loop endpoints); installer-driven
+        endpoints (goodbye/rename — bash can't HMAC) pass require=False so enforcement never locks them out."""
+        if require is None:
+            require = REQUIRE_NODE_SIG
+        mac = self.headers.get("X-SWG-MAC", "")
+        ts = self.headers.get("X-SWG-TS", "")
+        if not mac and not ts:
+            if require:
+                self._send(401, {"error": "request signature required", "code": "signature_required"}); return False
+            return True
+        ok, why = _verify_node_sig(node.get("token_sha"), ts, mac, body)
+        if not ok:
+            self._send(401, {"error": "bad request signature (%s)" % why, "code": "bad_signature"}); return False
+        return True
+
+    def _node_sync(self):
+        nid, node, nodes = self._node_token()
+        if not nid:
+            return
         length = self._body_len(MAX_SYNC_BODY)
         if length is None:
             return
+        raw = self.rfile.read(length) or b"{}"
+        if not self._node_sig_ok(node, raw):
+            return
         try:
-            body = json.loads(self.rfile.read(length) or "{}")
+            body = json.loads(raw or "{}")
         except Exception:
             return self._send(400, {"error": "bad body"})
         snap = body.get("snapshot") or {}
@@ -7494,12 +7562,11 @@ class Handler(BaseHTTPRequestHandler):
         # node or its peers: peers whose only deployment is here would silently vanish — a destructive surprise.
         # In that case we keep everything; the node just goes stale/offline, and a re-install with the same token
         # re-syncs its peers. The operator can still Nodes → remove afterwards to purge it for good.
-        nodes = nodes_load(Handler.deps["nodes_path"])
-        hdr = self.headers.get("Authorization", "")
-        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
-        nid, _ = find_node_by_token(nodes, token)
+        nid, _gnode, _ = self._node_token()
         if not nid:
-            return self._send(401, {"error": "invalid node token"})
+            return
+        if not self._node_sig_ok(_gnode, b"", require=False):   # installer-driven (bash) → never require
+            return
         with _api_lock:
             nodes = nodes_load(Handler.deps["nodes_path"])   # re-read under the lock
             if nid not in nodes:
@@ -7523,17 +7590,17 @@ class Handler(BaseHTTPRequestHandler):
         # An installer/converter (its bearer token) flags that the node is about to go down for a
         # re-install or a method conversion, so the UI shows that instead of plain "offline". Cleared
         # when the node's next snapshot lands (it's back) — see _node_sync.
-        nodes = nodes_load(Handler.deps["nodes_path"])
-        hdr = self.headers.get("Authorization", "")
-        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
-        nid, _ = find_node_by_token(nodes, token)
+        nid, node, _ = self._node_token()
         if not nid:
-            return self._send(401, {"error": "invalid node token"})
+            return
         length = self._body_len()
         if length is None:
             return
+        raw = self.rfile.read(length) if length else b""
+        if not self._node_sig_ok(node, raw):
+            return
         try:
-            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            body = json.loads(raw or b"{}") if raw else {}
         except Exception:
             body = {}
         state = (body.get("state") or "").strip()
@@ -7560,12 +7627,11 @@ class Handler(BaseHTTPRequestHandler):
     def _node_whoami(self):
         # Identify a node by its bearer token — for the installer's leftover-token salvage, so it can show
         # the operator the node's name / method / last-online instead of an opaque token. Read-only.
-        nodes = nodes_load(Handler.deps["nodes_path"])
-        hdr = self.headers.get("Authorization", "")
-        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
-        nid, node = find_node_by_token(nodes, token)
+        nid, node, _ = self._node_token()
         if not nid:
-            return self._send(404, {"ok": False, "error": "unknown node token"})
+            return
+        if not self._node_sig_ok(node, b"", require=False):   # installer salvage also hits this (unsigned) → never require
+            return
         snap = (Handler.deps.get("node_snaps") or {}).get(nid) or {}
         return self._send(200, {"ok": True, "data": {
             "name": node.get("name", nid),
@@ -7576,12 +7642,11 @@ class Handler(BaseHTTPRequestHandler):
     def _node_list(self, u):
         # Serve a resolved provider list (raw text: one CIDR/domain per line) for a routed category+tier.
         # Node-token auth; the node pulls this only for cats named in its own list_manifest, on version change.
-        nodes = nodes_load(Handler.deps["nodes_path"])
-        hdr = self.headers.get("Authorization", "")
-        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
-        nid, _node = find_node_by_token(nodes, token)
+        nid, _node, _ = self._node_token()
         if not nid:
-            return self._send(401, {"error": "invalid node token"})
+            return
+        if not self._node_sig_ok(_node, b""):
+            return
         q = parse_qs(u.query)
         cat = (q.get("cat") or [""])[0].strip()
         tier = (q.get("tier") or [""])[0].strip()
@@ -7609,17 +7674,17 @@ class Handler(BaseHTTPRequestHandler):
     def _node_rename(self):
         # A node renames ITSELF (node-token auth) — so a re-install/convert can push a box-name change the
         # operator entered in the installer. name is a free display field (id-keyed store); no refs to migrate.
-        nodes = nodes_load(Handler.deps["nodes_path"])
-        hdr = self.headers.get("Authorization", "")
-        token = hdr[7:].strip() if hdr.startswith("Bearer ") else ""
-        nid, _ = find_node_by_token(nodes, token)
+        nid, _rnode, _ = self._node_token()
         if not nid:
-            return self._send(401, {"error": "invalid node token"})
+            return
         length = self._body_len()
         if length is None:
             return
+        raw = self.rfile.read(length) if length else b""
+        if not self._node_sig_ok(_rnode, raw, require=False):   # installer-driven (bash) → never require
+            return
         try:
-            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            body = json.loads(raw or b"{}") if raw else {}
         except Exception:
             body = {}
         name = strip_ctrl((body.get("name") or "").strip())[:40]   # node names itself (node-token) — drop control chars
