@@ -8145,12 +8145,19 @@ def _restore_panel_bind(deps, host, port):
 
 
 def _save_panel_access(deps, url, host, port):
-    """Persist the SAVED panel url + bind (panel_settings.access.panel) — used by the migration CANCEL to put
-    the config back on the address the operator reverted to, so it matches the live listener/cert."""
+    """Persist the SAVED panel url + bind (panel_settings.access.panel) — used by the migration CANCEL / revert to
+    put the config back on the address it reverted to, so it matches the live listener/cert. The url field is kept
+    BARE (scheme://host) — the port lives in its own field, so a full 'host:port' (e.g. _CONFIRMED_URL) is never
+    written into the url field (that would duplicate the port and show https://host:8443 with port 8443 beside it)."""
     with contextlib.suppress(Exception):
+        _bare = str(url or "").strip()
+        with contextlib.suppress(Exception):
+            _u = urlparse(_bare if re.match(r"^https?://", _bare, re.I) else "https://" + _bare)
+            if _u.hostname:
+                _bare = "%s://%s" % (_u.scheme or "https", _u.hostname)
         ps = deps.get("panel_settings") or {}
         pnl = (ps.get("access") or {}).get("panel") or {}
-        pnl["url"] = str(url or "").strip(); pnl["host"] = str(host or "0.0.0.0"); pnl["port"] = int(port)
+        pnl["url"] = _bare; pnl["host"] = str(host or "0.0.0.0"); pnl["port"] = int(port)
         ps.setdefault("access", {})["panel"] = pnl
         deps["panel_settings"] = ps
         save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
@@ -8616,8 +8623,7 @@ def main():
             _cert_dom = _cert_primary_domain(TLS_CERT)
             if _saved_dom and _cert_dom and _saved_dom != _cert_dom and not _cert_covers(TLS_CERT, _saved_dom):
                 _u = urlparse(_saved_url if re.match(r"^https?://", _saved_url, re.I) else "https://" + _saved_url)
-                _fixed = "%s://%s%s" % (_u.scheme or "https", _cert_dom, (":%d" % _u.port) if _u.port else "")
-                _pnl["url"] = _fixed
+                _pnl["url"] = "%s://%s" % (_u.scheme or "https", _cert_dom)   # bare — the port stays in its own field
                 _ps.setdefault("access", {})["panel"] = _pnl
                 Handler.deps["panel_settings"] = _ps
                 save_critical(Handler.deps.get("panel_settings_path") or "", json.dumps(_ps, indent=2) + "\n")
