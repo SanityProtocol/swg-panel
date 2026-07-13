@@ -3959,6 +3959,8 @@ def api(method, path, qs, body, deps):
             "configs_plaintext": count_plaintext_configs(config_dir),   # LEGACY plaintext files still on disk → drives the migration prompt
             "versions": VERSIONS,
             "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps)},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
+            "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
+
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)

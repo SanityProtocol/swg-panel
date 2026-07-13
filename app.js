@@ -977,6 +977,7 @@ const Store = {
     this.storeConfigs = this.storeMode !== "off";
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
+    this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
     applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
     applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
     this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
@@ -9721,6 +9722,45 @@ function matchRoute(hash) {
   return { route: ROUTES[0], params: {} };
 }
 
+// ─── "previous panel address" ribbon ──────────────────────────────────────────
+// A browser tab can sit on an OLD panel address (a host/port from before an Access & TLS change). During the
+// migration grace it still serves; after, it 52x / refuses. Either way it isn't an error — just an old address
+// drifting away. We compare where THIS tab is loaded against the panel's CONFIRMED canonical address (from
+// /api/state, `panel_public_url` — advances only on confirm, so it never flashes mid-change) and, when they
+// differ, show a persistent, calm (amber, not alarm-red) ribbon naming the current address so it's never
+// mistaken for a fault. The initiating tab's richer red countdown ribbon, when present, takes precedence.
+function _effPort(scheme, port) { return String(port || (scheme === "https" ? "443" : "80")); }
+function _parseAddr(rawUrl) {
+  const raw = (rawUrl || "").trim(); if (!raw) return null;
+  let u; try { u = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw); } catch (_) { return null; }
+  const host = u.hostname, scheme = (u.protocol || "https:").replace(":", "");
+  if (!host || host === "0.0.0.0") return null;
+  return { host, scheme, port: _effPort(scheme, u.port) };
+}
+function oldAddrCurrent() {   // → the current canonical addr {host,scheme,port,label} if THIS tab is on a different one, else null
+  const c = _parseAddr(Store.panelPublicUrl); if (!c) return null;
+  const scheme = location.protocol.replace(":", "");
+  if (location.hostname === c.host && _effPort(scheme, location.port) === c.port) return null;   // on the current address
+  const showPort = !((c.scheme === "https" && c.port === "443") || (c.scheme === "http" && c.port === "80"));
+  return { ...c, label: c.scheme + "://" + c.host + (showPort ? ":" + c.port : "") };
+}
+function OldAddrRibbon() {
+  useStore();
+  const migrateUp = typeof document !== "undefined" && !!document.querySelector(".addr-migrate-ribbon");
+  const c = migrateUp ? null : oldAddrCurrent();
+  const ref = useRef(null);
+  useEffect(() => {
+    document.body.classList.toggle("has-oldaddr", !!c);
+    if (c && ref.current) document.body.style.setProperty("--oldaddr-h", ref.current.offsetHeight + "px");
+    return () => document.body.classList.remove("has-oldaddr");
+  });
+  if (!c) return null;
+  return html`<div class="addr-old-ribbon" ref=${ref} role="status">
+    <span><b>You're on a previous panel address.</b> The panel is now reached at <a href=${c.label}>${c.label}</a> — this address will stop working. Switch over when you're ready.</span>
+    <a class="btn btn-mini" href=${c.label}>Go to the current address ↗</a>
+  </div>`;
+}
+
 function App() {
   useStore();                                   // re-render on every poll
   const [hash, setHash] = useState(location.hash || "#/");
@@ -9827,6 +9867,7 @@ function App() {
   });
 
   return html`<${Fragment}>
+    ${h(OldAddrRibbon)}
     ${h(route.fn, params)}
     ${modalStack}
   <//>`;
