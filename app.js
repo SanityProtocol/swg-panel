@@ -7498,6 +7498,8 @@ function AccessTLSCard({ onChange }) {
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => { if (!migrate) return; const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000); return () => clearInterval(t); }, [migrate]);
   const rollbackRef = useRef(null);            // the panel address that was live BEFORE an apply → restore the SAVED url on revert (the server rolls back the bind/cert, but the saved url is still the new one → it'd advertise a dead address to nodes)
+  const didPanelRef = useRef(false);           // whether THIS save applied a panel change / a sub change — the shared /api/access/status keeps the LAST result of each, so a sub-only save must ignore a stale panel "saved" (and vice-versa)
+  const didSubRef = useRef(false);
   // Baseline of what's currently live — the form is compared to this to decide what changed (and thus what needs
   // a live apply). Refreshed after a successful save so the button disables until the next edit.
   const [orig, setOrig] = useState({ pUrl: normPublicUrl(p0.url || ""), pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
@@ -7527,22 +7529,23 @@ function AccessTLSCard({ onChange }) {
       const r = await api.get("/api/access/status"); if (!live) return;
       if (r && r.ok) {
         const p = r.panel || {}, s = r.sub || {};
-        if (p.state === "verifying" && p.redirect) {
+        const dp = didPanelRef.current, ds = didSubRef.current;   // react ONLY to a service this save actually changed — the shared status keeps each one's LAST result, so it's stale for the other
+        if (dp && p.state === "verifying" && p.redirect) {
           setConfirmUrl(p.redirect);   // show the confirm affordance (rendered in the card); the operator opens it to prove the new address is reachable
           let h = p.redirect; try { h = new URL(p.redirect).host; } catch (_) {}
           setMsg({ ok: true, t: "Almost there — open the new address (" + h + ") to confirm it's reachable. The change applies the moment it loads." });
         } else {
           setConfirmUrl("");
           const parts = [];
-          if (p.state === "reverted")   // the new address never confirmed (unreachable / not opened) → say what to check
+          if (dp && p.state === "reverted")   // the new address never confirmed (unreachable / not opened) → say what to check
             parts.push("The new address wasn't confirmed — kept the current one. Check its DNS / Cloudflare / firewall / port, then try again.");
-          else if (p.state && p.state !== "idle") parts.push("Panel: " + (p.message || p.state));
-          if (subsOn && s.state && s.state !== "idle") parts.push("Subscriptions: " + (s.message || s.state));
-          const fail = ["failed", "reverted"].includes(p.state) || s.state === "failed";
+          else if (dp && p.state && p.state !== "idle") parts.push("Panel: " + (p.message || p.state));
+          if (ds && subsOn && s.state && s.state !== "idle") parts.push("Subscriptions: " + (s.message || s.state));
+          const fail = (dp && ["failed", "reverted"].includes(p.state)) || (ds && s.state === "failed");
           if (parts.length) setMsg({ ok: !fail, t: parts.join(" · ") });
         }
-        const fail = ["failed", "reverted"].includes(p.state) || s.state === "failed";
-        const done = ["saved", "failed", "reverted", "idle"].includes(p.state) && ["saved", "failed", "reverted", "idle"].includes(s.state);
+        const fail = (dp && ["failed", "reverted"].includes(p.state)) || (ds && s.state === "failed");
+        const done = (!dp || ["saved", "failed", "reverted", "idle"].includes(p.state)) && (!ds || ["saved", "failed", "reverted", "idle"].includes(s.state));
         if (done) { setPolling(false); setBusy(false); setConfirmUrl("");   // clear busy too — a non-navigating finish (revert) reloads nothing, so the Save button would otherwise stay stuck on "Saving…"
           if (fail) {
             // The server reverted the live bind/cert, but the SAVED url is still the new (unreachable) one — it'd be
@@ -7550,12 +7553,12 @@ function AccessTLSCard({ onChange }) {
             const rb = rollbackRef.current; rollbackRef.current = null;
             if (rb) { try { await api.panelSettings({ access: { panel: { url: rb.url, host: rb.host, port: rb.port } } }); } catch (_) {} }
             resync();    // the form was left showing the rejected value → pull the rolled-back config back in
-            if (p.state === "reverted" || p.state === "failed") openModal(html`<${ConfirmSheet} title="Address change not confirmed" warn=${true} confirmLabel="OK"
+            if (dp && (p.state === "reverted" || p.state === "failed")) openModal(html`<${ConfirmSheet} title="Address change not confirmed" warn=${true} confirmLabel="OK"
               body=${(p.message && p.state === "failed") ? p.message : "The new address wasn’t confirmed, so the panel kept the current one. Check its DNS / Cloudflare / firewall / port, then try again."}/>`);
           } else {
             rollbackRef.current = null;
             const gs = +(p.grace_secs || 0), nu = p.new_url || "";
-            if (p.state === "saved") {
+            if (dp && p.state === "saved") {
               if (gs > 0) {   // a REBIND: this tab is on the OLD address, which stops serving after the migration grace
                 setMigrate({ until: Math.floor(Date.now() / 1000) + gs, newUrl: nu });   // anchor the deadline to THIS browser's clock (server sent live remaining secs) → the countdown is correct regardless of clock skew
                 openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Got it"
@@ -7644,6 +7647,7 @@ function AccessTLSCard({ onChange }) {
     }
     const needSub = subsOn && (subBindChanged() || certChanged());
     const needPanel = panelBindChanged() || certChanged() || panelUrlChanged();
+    didPanelRef.current = needPanel; didSubRef.current = needSub;   // so the status poll reacts only to what THIS save changes (the shared status is stale for the other)
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
     const npUrl = normPublicUrl(pUrl), nsUrl = normPublicUrl(sUrl);   // add https:// when the operator omitted it
     setPUrl(npUrl); setSUrl(nsUrl);                                    // reflect it back in the fields
