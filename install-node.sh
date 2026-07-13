@@ -771,7 +771,7 @@ else ask_valid "Panel URL (https://host[/subpath])" "$EXIST_URL" PANEL_URL v_htt
 if [ -n "$NODE_TOKEN" ]; then :                                                # provided via -key
 elif [ "$EXISTING" = yes ] && [ -n "$EXIST_TOKEN" ]; then NODE_TOKEN="$EXIST_TOKEN"
 elif $DRYRUN; then ask "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN
-else ask_valid "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
+else ask_secret "Node enrollment key (from the Nodes screen)" "$EXIST_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"; fi
 case "$PANEL_URL" in https://*) ;; http://*) warn "panel URL is http:// — the key would travel in clear. Continue only if you know why.";; *) PANEL_URL="https://$PANEL_URL";; esac   # no scheme → default https://
 # if the operator re-pointed the node at a different panel, the lc terminal should reach the NEW one
 [ "$EXISTING" = yes ] && [ -n "${LC_TOKEN:-}" ] && [ -n "$PANEL_URL" ] && LC_URL="$PANEL_URL"
@@ -825,7 +825,7 @@ NODE_NAME="${NODE_NAME:-$(hostname -s 2>/dev/null || hostname)}"   # local label
 PUSH_NAME=""
 if { [ "$EXISTING" = yes ] || [ "${SWG_CONVERT:-}" = 1 ]; } && [ -n "$NODE_TOKEN" ] && [ -n "$PANEL_URL" ] && ! $DRYRUN; then
   _ins=""; [ "${TLS_VERIFY:-no}" = yes ] || _ins="-k"
-  _cur="$(curl -fsS $_ins --max-time 8 -H "Authorization: Bearer $NODE_TOKEN" "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+  _cur="$(auth_curl "$NODE_TOKEN" -fsS $_ins --max-time 8 "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
   step "Node name for THIS box"
   ask_valid "Node name for THIS box" "${_cur:-$NODE_NAME}" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"
   [ -n "$_cur" ] && [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""    # unchanged → nothing to push
@@ -833,7 +833,7 @@ fi
 
 # push a box-name change (if the operator entered a new one above)
 if { [ "$EXISTING" = yes ] || [ "${SWG_CONVERT:-}" = 1 ]; } && ! $DRYRUN && [ -n "$PUSH_NAME" ]; then
-  curl -fsS ${_ins:-} --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+  auth_curl "$NODE_TOKEN" -fsS ${_ins:-} --max-time 8 -X POST -H "Content-Type: application/json" \
     --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
 

@@ -25,6 +25,36 @@ command -v bb >/dev/null 2>&1 || bb(){ printf '%s%s%s%s' "${BOLD:-}" "${C_BLUE:-
 # doesn't define it, so _sum_detect printed "have: command not found" and returned no methods → an empty summary.
 command -v have >/dev/null 2>&1 || have(){ command -v "$1" >/dev/null 2>&1; }
 
+# Run curl with a node bearer token kept OFF the argv — so it can't leak through `ps` / /proc/<pid>/cmdline
+# (world-readable by default) to another local user or a co-resident process during an install. The token is fed
+# to curl through a --config file on stdin (the `header` config option is exactly `-H`); URL, method, --data, -k
+# and everything non-secret stay on the argv as usual. Usage:  auth_curl <token> <curl-args...>
+# NB: the wrapped curl must NOT itself read stdin (no `-d @-` / `--config -`) — stdin carries the auth header here.
+auth_curl(){ local _tok="$1"; shift
+  curl "$@" --config /dev/stdin <<CURLCFG
+header = "Authorization: Bearer ${_tok}"
+CURLCFG
+}
+
+# Prompt for a SECRET (the node enrollment key) with terminal echo OFF, so it never lands in scrollback / a
+# screen recording / a shared session — and an EXISTING value (re-install default) is offered as "[keep current]"
+# rather than printed. Same contract + non-interactive short-circuit as the installers' ask_valid: a value already
+# in the var (from -key / env) is validated and returned with NO prompt. col()/C_BLUE/die/_pnl come from the
+# sourcing script (resolved at call time). Usage: ask_secret <prompt> <default> <var> <validator_fn> <hint>
+ask_secret(){ local p="$1" d="$2" var="$3" fn="$4" hint="$5" v rc
+  if [ -n "${!var:-}" ]; then "$fn" "${!var}" && return
+    warn "ignoring invalid $var (${hint})"; fi
+  [ -n "${_SWG_NL:-}" ] || echo; _SWG_NL=""
+  while :; do
+    printf '  %s%s: ' "$p" "${d:+ [$(col "${C_BLUE:-}" 'keep current')]}" >/dev/tty 2>/dev/null || printf '  %s: ' "$p"
+    if read -rs v </dev/tty; then rc=0; else rc=1; v=""; fi
+    printf '\n' >/dev/tty 2>/dev/null || echo               # read -s swallows the newline the operator pressed
+    v="${v:-$d}"
+    if "$fn" "$v"; then printf -v "$var" '%s' "$v"; _pnl; return; fi
+    [ "$rc" -ne 0 ] && die "no value for ‘$p’ and no interactive input to re-prompt"
+    warn "$hint"
+  done; }
+
 # the bordered, bold title every summary opens with — keeps one style across install / re-install / convert /
 # update for node / host / master. Pass the operation phrase, e.g. "CONVERSION COMPLETE", "INSTALL COMPLETE".
 # Leading blank above, blank below — callers add their final trailing blank with summary_end.
@@ -227,7 +257,7 @@ lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
   # "converting" sometimes never showed and a stale "converted" wouldn't flip to "converting". A few quick retries
   # make converting/converted reliably land. Still best-effort overall (never trips set -e).
   for _i in 1 2 3 4; do
-    curl -fsS $ins --max-time 6 -X POST -H "Authorization: Bearer $LC_TOKEN" -H "Content-Type: application/json" \
+    auth_curl "$LC_TOKEN" -fsS $ins --max-time 6 -X POST -H "Content-Type: application/json" \
       --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 && return 0
     sleep 1
   done

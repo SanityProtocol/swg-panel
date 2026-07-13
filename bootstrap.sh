@@ -36,6 +36,14 @@ die(){  echo "${C_RED}✗ $*${RESET}" >&2; exit 1; }            # universal flag
 _SWG_NL=""; _pnl(){ printf '\n' >/dev/tty 2>/dev/null || echo; _SWG_NL=1; }; _nlguard(){ _SWG_NL=""; }
 warn(){ _nlguard; echo "${C_BROWN}!${RESET} $*" >&2; }
 info(){ _nlguard; echo "${C_BL}::${RESET} $*"; }
+# curl with a node bearer token kept OFF the argv (out of `ps` / /proc/<pid>/cmdline) — passed via a --config file
+# on stdin instead of an -H flag. (bootstrap doesn't source lib/common.sh, so this lives here too.) The wrapped
+# curl must not itself read stdin. Usage: auth_curl <token> <curl-args...>
+auth_curl(){ local _tok="$1"; shift
+  curl "$@" --config /dev/stdin <<CURLCFG
+header = "Authorization: Bearer ${_tok}"
+CURLCFG
+}
 # ask_choice <prompt> <default> <var> "<opt…>" — accepts a full option OR its first-letter shortcut;
 # shows the default's letter as [x]; friendly re-prompt on bad input.
 ask_choice(){ local p="$1" d="$2" var="$3" opts="$4" v o rc sc pr i
@@ -299,7 +307,7 @@ _salv_block(){ local idx="$1" tok="$2" url="$3" src="$4" method dir ifaces turns
   fi
   name=""; last=""
   if [ -n "$url" ] && command -v curl >/dev/null 2>&1; then
-    wj="$(curl -fsS -k --max-time 6 -H "Authorization: Bearer $tok" "${url%/}/api/node/whoami" 2>/dev/null || true)"
+    wj="$(auth_curl "$tok" -fsS -k --max-time 6 "${url%/}/api/node/whoami" 2>/dev/null || true)"
     name="$(printf '%s' "$wj" | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p')"
     ls="$(printf '%s' "$wj" | sed -n 's/.*"last_seen": *\([0-9][0-9]*\).*/\1/p')"; [ -n "$ls" ] && last="$(_fmt_epoch "$ls")"
   fi

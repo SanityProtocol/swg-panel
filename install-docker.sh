@@ -651,7 +651,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
     # a convert should STILL let you set this box's name in the panel (mirrors bare-metal install-host/master) —
     # fetch its current name + offer to change it; the rename is pushed via /api/node/rename below if changed.
     local _ins=""; [ "$TLS_VERIFY" = yes ] || _ins="-k"; local _cur
-    _cur="$(curl -fsS $_ins --max-time 8 -H "Authorization: Bearer ${NODE_TOKEN:-}" "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+    _cur="$(auth_curl "${NODE_TOKEN:-}" -fsS $_ins --max-time 8 "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
     step "Node name for THIS box"
     ask_valid "Node name for THIS box" "${_cur:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo node)}" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"
     [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""
@@ -664,12 +664,12 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
     TLS_VERIFY="$(ask_yn_tty "Verify the panel's TLS certificate? (answer no if the panel uses a self-signed cert)" "$([ "$_extls" = yes ] && echo y || echo n)")"
     # offer to change the box name shown in the panel (default = its current name); push via /api/node/rename
     local _ins=""; [ "$TLS_VERIFY" = yes ] || _ins="-k"; local _cur
-    _cur="$(curl -fsS $_ins --max-time 8 -H "Authorization: Bearer ${NODE_TOKEN:-}" "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+    _cur="$(auth_curl "${NODE_TOKEN:-}" -fsS $_ins --max-time 8 "${PANEL_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
     if [ -n "$_cur" ]; then step "Box name on the panel"; ask_valid "Node name (shown in the panel)" "$_cur" PUSH_NAME v_name "1–40 chars: letters, digits, - or _"; [ "$PUSH_NAME" = "$_cur" ] && PUSH_NAME=""; fi
     return 0
   fi
   ask_valid "Panel URL (https://host[/subpath])" "$PANEL_URL" PANEL_URL v_httpsurl "enter the panel's https:// URL (pass -host to skip this)"
-  ask_valid "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
+  ask_secret "Node enrollment key (from the Nodes screen)" "$NODE_TOKEN" NODE_TOKEN v_token "paste the key from Nodes → Add node (pass -key to skip this)"
   case "$PANEL_URL" in https://*) ;; *) warn "panel URL is not https:// — the key would travel in clear. Continue only if you know why.";; esac
   if [ -z "$TLS_VERIFY" ] && [ -z "${TLS_FINGERPRINT:-}" ]; then
     # Verify by DEFAULT (secure); auto-detect a self-signed panel so a fresh node never fails its first sync.
@@ -1034,7 +1034,7 @@ TLS_VERIFY="${TLS_VERIFY:-no}"   # concrete value for .env (host profile leaves 
 # push a box-name change once ask_node_conn has it (the signal + traps were armed at startup, above)
 if [ -n "$PUSH_NAME" ] && [ -n "${NODE_TOKEN:-}" ] && [ -n "${PANEL_URL:-}" ] && ! $DRYRUN; then
   _rin=""; [ "${TLS_VERIFY:-no}" = yes ] || _rin="-k"
-  curl -fsS $_rin --max-time 8 -X POST -H "Authorization: Bearer $NODE_TOKEN" -H "Content-Type: application/json" \
+  auth_curl "$NODE_TOKEN" -fsS $_rin --max-time 8 -X POST -H "Content-Type: application/json" \
     --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PUSH_NAME")" "${PANEL_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
 

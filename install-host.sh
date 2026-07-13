@@ -934,8 +934,8 @@ echo; info "Plan: method=$METHOD role=$ROLE serve=$SERVE_MODE tls=$TLS_MODE base
 # push the rename, if it changed — the OLD panel is still running at this point and the restart loads it.
 if [ "$EXISTING_HOST" = yes ] && ! $DRYRUN && [ "$HOST_HAS_WG" = yes ] && [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ]; then
   _lk=""; [ "${LC_VERIFY:-no}" = yes ] || _lk="-k"
-  _cur="$(curl -fsS $_lk --max-time 8 -H "Authorization: Bearer $LC_TOKEN" "${LC_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
-  [ -n "$HOST_NODE_NAME" ] && [ "$HOST_NODE_NAME" != "$_cur" ] && curl -fsS $_lk --max-time 8 -X POST -H "Authorization: Bearer $LC_TOKEN" -H "Content-Type: application/json" --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$HOST_NODE_NAME")" "${LC_URL%/}/api/node/rename" >/dev/null 2>&1 || true
+  _cur="$(auth_curl "$LC_TOKEN" -fsS $_lk --max-time 8 "${LC_URL%/}/api/node/whoami" 2>/dev/null | python3 -c 'import json,sys;print((json.load(sys.stdin).get("data") or {}).get("name") or "")' 2>/dev/null || true)"
+  [ -n "$HOST_NODE_NAME" ] && [ "$HOST_NODE_NAME" != "$_cur" ] && auth_curl "$LC_TOKEN" -fsS $_lk --max-time 8 -X POST -H "Content-Type: application/json" --data "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$HOST_NODE_NAME")" "${LC_URL%/}/api/node/rename" >/dev/null 2>&1 || true
 fi
 
 # ───────────────────────── users / dirs ─────────────────────────
