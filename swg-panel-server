@@ -4216,18 +4216,10 @@ def api(method, path, qs, body, deps):
         if srv is None:
             return 500, {"ok": False, "error": "no primary listener", "code": "internal"}
         cur = srv._swg
-        # If the operator typed the address a just-confirmed change is migrating AWAY from (still serving in its
-        # grace), treat it as a Cancel — re-adopt it instantly, exactly like the ribbon button. Its port/domain
-        # is 'in use', but it's OURS, so re-adopt instead of binding a second socket (EADDRINUSE) / re-issuing.
-        with _APPLY["lock"]:
-            _pending_now = _APPLY["pending"] is not None
-        if not _pending_now:
-            _cxl = _cancel_migration(deps, d_url, d_host, d_port)
-            if _cxl is not None:
-                return _cxl
-        # ONE-AT-A-TIME cooldown: reject a NEW address change while a previous one is verifying or still gracing
-        # out (Cancel — a re-adopt of the address we're leaving — was handled above and is always allowed). This
-        # is the hard guard that stops rapid overlapping changes from desyncing the saved URL / cert / listeners.
+        # ONE-AT-A-TIME cooldown: an apply only ever STARTS a change, and only from idle. While a previous change
+        # is verifying or still gracing out, reject it — the sole thing allowed during a change is Cancel, which is
+        # its own endpoint (/api/access/cancel). This hard guard is what stops rapid overlapping changes from
+        # desyncing the saved URL / cert / listeners, so no change can reach a bind/cert path mid-migration.
         _cd_secs, _cd_reason = _access_cooldown()
         if _cd_secs > 0:
             return 409, {"ok": False, "code": "cooldown", "cooldown_secs": _cd_secs, "reason": _cd_reason,
