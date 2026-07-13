@@ -4148,7 +4148,12 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "ips": _bindable_ips()}
 
     if method == "GET" and path == "/api/access/status":   # the apply state machines (UI polls during a change)
-        return 200, {"ok": True, "panel": _APPLY["status"], "sub": _SUBAPPLY["status"],
+        _pstat = _APPLY["status"]
+        _gu = _pstat.get("grace_until")
+        if _gu:                                            # expose the LIVE remaining grace (recomputed each poll) so the
+            _pstat = dict(_pstat)                          # UI's countdown is anchored to its own clock — immune to any
+            _pstat["grace_secs"] = max(0, int(_gu) - int(time.time()))   # skew between the server's and the browser's clocks
+        return 200, {"ok": True, "panel": _pstat, "sub": _SUBAPPLY["status"],
                      "pending": bool(_APPLY["pending"])}
 
     if method == "POST" and path == "/api/access/apply":

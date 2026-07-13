@@ -7554,10 +7554,10 @@ function AccessTLSCard({ onChange }) {
               body=${(p.message && p.state === "failed") ? p.message : "The new address wasn’t confirmed, so the panel kept the current one. Check its DNS / Cloudflare / firewall / port, then try again."}/>`);
           } else {
             rollbackRef.current = null;
-            const gu = +(p.grace_until || 0), nu = p.new_url || "";
+            const gs = +(p.grace_secs || 0), nu = p.new_url || "";
             if (p.state === "saved") {
-              if (gu > 0) {   // a REBIND: this tab is on the OLD address, which stops serving after the migration grace
-                setMigrate({ until: gu, newUrl: nu });
+              if (gs > 0) {   // a REBIND: this tab is on the OLD address, which stops serving after the migration grace
+                setMigrate({ until: Math.floor(Date.now() / 1000) + gs, newUrl: nu });   // anchor the deadline to THIS browser's clock (server sent live remaining secs) → the countdown is correct regardless of clock skew
                 openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Got it"
                   body=${html`The panel is now reached at <b>${nu || "the new address"}</b>. This tab is on the <b>previous</b> address — it keeps working while nodes move over, then stops responding. Switch to the new address when you’re ready.`}/>`);
               } else {        // url-only / cert-only: same bind → this address keeps working, just verified the new URL
