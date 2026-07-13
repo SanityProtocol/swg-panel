@@ -4253,7 +4253,27 @@ def api(method, path, qs, body, deps):
                              args=(deps, d_host, d_port, d_url, d_domain, lid, old_domain), daemon=True).start()
             _apply_status("issuing", "issuing a certificate for %s" % d_domain)
             return 200, {"ok": True, "applied": False, "async": True, "message": "issuing a certificate"}
-        # sync path: IP/port change, reuse the current cert
+        # sync path: IP/port change, reuse the current cert.
+        # RE-ADOPT: if we already serve this exact address, it's the previous bind still up in its migration
+        # grace (the operator changed AWAY from it and is now changing BACK within the ~3-min window). Don't bind
+        # a second socket to it — that EADDRINUSEs ("address in use"). Cancel its scheduled drop, make it primary
+        # again, and move the address we're LEAVING into the grace instead. It's already serving = proven
+        # reachable, so no browser confirm is needed: the change is immediate and the countdown just moves.
+        re_lid, re_srv = LISTENERS.find(d_host, d_port)
+        if re_srv is not None:
+            _cancel_drop(re_lid)
+            LISTENERS.set_primary(re_lid)
+            _netctl_enqueue(deps, "set-listen", ["panel", d_host, d_port])   # persist the boot bind across restarts
+            _grace = 0
+            if lid is not None and lid != re_lid:
+                _drop_listener_later(lid, NODE_MIGRATE_GRACE)                 # the bind we're leaving now graces out
+                _grace = int(time.time()) + NODE_MIGRATE_GRACE
+            with _APPLY["lock"]:
+                _APPLY["pending"] = None                                      # immediate — nothing to confirm
+            _confirm_panel_url(deps)                                          # nodes may be told the re-adopted url now
+            _apply_status("saved", "back on %s:%d" % (d_host, d_port),
+                          new_url=_compute_public_url(deps), grace_until=_grace)
+            return 200, {"ok": True, "applied": True, "message": "back on %s:%d — kept the live listener" % (d_host, d_port)}
         try:
             new_lid = LISTENERS.add(d_host, d_port, cur.get("cert"), cur.get("key"))
         except OSError as e:
@@ -7884,6 +7904,20 @@ class _Listeners:
                 m = getattr(srv, "_swg", None)
                 if m is not None:
                     m["primary"] = (_id == lid)
+    def find(self, host, port):
+        """The lid+server currently bound to (host, port), or (None, None). Lets an apply RE-ADOPT a listener we
+        already hold (e.g. the previous bind still serving out its migration grace, when the operator changes
+        BACK to it) instead of binding a second socket to the same address — which would EADDRINUSE."""
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            return None, None
+        with self._lock:
+            for lid, srv in self._by_id.items():
+                m = getattr(srv, "_swg", {})
+                if m.get("host") == host and int(m.get("port") or 0) == port:
+                    return lid, srv
+        return None, None
     def reload_tls(self):                              # SIGHUP → every TLS listener re-reads its cert
         # Build a FRESH SSLContext per listener and swap it in, rather than load_cert_chain()-ing over the
         # live one. An SSLContext keeps ONE cert PER KEY TYPE, so loading (say) an RSA cert over an existing
@@ -8066,15 +8100,34 @@ def _restore_panel_bind(deps, host, port):
         save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
 
 
+_DROP_TIMERS = {}                      # lid -> threading.Timer for its scheduled grace-drop (so a re-adopt can cancel it)
+_DROP_TIMERS_LOCK = threading.Lock()
+
+def _cancel_drop(lid):
+    """Cancel a listener's scheduled grace-drop (see _drop_listener_later). True if one was pending. Used when the
+    operator changes BACK to an address still serving out its grace — we keep it instead of dropping it."""
+    with _DROP_TIMERS_LOCK:
+        t = _DROP_TIMERS.pop(lid, None)
+    if t is not None:
+        t.cancel()
+        return True
+    return False
+
 def _drop_listener_later(lid, grace):
     """Keep the OLD listener alive for `grace` seconds after the admin confirms an address change, so ONLINE nodes
     sync once on the old address and learn the new one (pin-gated auto-repoint) before it goes away. Offline nodes
-    are re-pointed manually (the UI warns + gives the command)."""
+    are re-pointed manually (the UI warns + gives the command). The timer is tracked so a re-adopt can cancel it."""
     def _drop():
         with contextlib.suppress(Exception):
             LISTENERS.remove(lid)
+        with _DROP_TIMERS_LOCK:
+            _DROP_TIMERS.pop(lid, None)
         print("access: dropped the old listener after the %ds node-migration grace" % grace, flush=True)
-    t = threading.Timer(max(1, grace), _drop); t.daemon = True; t.start()
+    _cancel_drop(lid)                  # replace any existing drop already scheduled for this listener
+    t = threading.Timer(max(1, grace), _drop); t.daemon = True
+    with _DROP_TIMERS_LOCK:
+        _DROP_TIMERS[lid] = t
+    t.start()
 
 
 def _apply_timeout(nonce, deps, reason="the new address didn't confirm in time — reverted to the previous one"):
