@@ -7597,7 +7597,7 @@ function AccessTLSCard({ onChange }) {
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
   const cooldown = Store.accessCooldown || { secs: 0, reason: "" };
   const cooldownActive = (cooldown.secs || 0) > 0;                          // Save is locked on EVERY tab during a change
-  const showCooldownNotice = cooldownActive && !migrate && !confirmUrl;    // but only surface the notice where THIS tab isn't already driving the change (it'd have the ribbon/confirm affordance instead)
+  const showCooldownNotice = cooldownActive && !migrate && !confirmUrl && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
 
   const ipField = (host, setHost, withLocal) => {
     const val = presets.has(host) ? host : "__custom";
