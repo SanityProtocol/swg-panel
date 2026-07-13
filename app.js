@@ -2132,6 +2132,7 @@ function ifTypeLabel(node, iface) {
 }
 // Deep-link target for a Settings activity row (the first changed section id, applied on the settings screen).
 let pendingSettingsSection = null;
+let _setSettingsSection = () => {};   // PanelSettingsScreen registers its setSection here so an already-mounted screen can be switched (e.g. the confirm modal's "Open panel settings" → Access & TLS)
 let pendingTurnIpsOpen = false;   // set by the "Turn IPs" header → Settings opens + expands + scrolls to the Collected IPs grid
 // Jump to a Settings sub-section, closing any open modal first (a no-op when nothing is open). Used by the
 // gear shortcuts next to Add rule / Create interface / Setup proxy.
@@ -7989,7 +7990,7 @@ function PanelSettingsScreen() {
     return null;
   };
   const [section, setSection] = useState(pendingSettingsSection || "display");   // active left-rail section (a Settings activity click can deep-link here)
-  useEffect(() => { pendingSettingsSection = null; }, []);   // one-shot: don't pin the section on later visits
+  useEffect(() => { pendingSettingsSection = null; _setSettingsSection = setSection; return () => { _setSettingsSection = () => {}; }; }, []);   // one-shot section pin + expose setSection so a modal can switch the rail (confirm modal → Access & TLS)
   const rsv = ps.reserved || {};
   const [rsvSubnet, setRsvSubnet] = useState(rsv.mesh_subnet || "10.255.0.0/16");
   const [rsvPort, setRsvPort] = useState(String(rsv.mesh_port_base || 9999));
@@ -9730,9 +9731,11 @@ function App() {
     const m = /[?&]__apply=([A-Za-z0-9]+)/.exec(location.search);
     if (!m) return;
     history.replaceState(null, "", location.pathname);   // strip ?__apply so a reload can't re-fire
-    if (location.hash !== "#/panel/settings") location.hash = "#/panel/settings";   // this tab opened only to confirm → land on Access & TLS
+    pendingSettingsSection = "access";                    // this tab opened only to confirm → land on the Access & TLS section
+    if (location.hash !== "#/panel/settings") location.hash = "#/panel/settings"; else _setSettingsSection("access");
     api.post("/api/access/confirm", { nonce: m[1] }).then(r => {
       if (r && r.ok) openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Open panel settings"
+        back=${() => { _setSettingsSection("access"); closeModal(); }}
         body=${html`This is now the address the panel is reached at. You can close the other tab — it's on the previous address.`}/>`);
       else openModal(html`<${ConfirmSheet} title="Couldn’t confirm the new address" warn=${true} confirmLabel="OK"
         body=${((r && r.error) || "The confirmation didn’t match a pending change.") + " The panel kept its current address."}/>`);
