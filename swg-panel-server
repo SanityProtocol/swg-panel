@@ -1214,23 +1214,6 @@ def _confirm_panel_url(deps):
     globals()["_CONFIRMED_URL"] = _compute_public_url(deps)
 
 
-def _panel_url_edit_is_pure(old_access, new_access):
-    """True when a settings save changed the public URL but nothing that triggers a live apply+confirm (same bind,
-    same cert posture) — so there's no browser confirm to wait for and the new URL is immediately the confirmed one.
-    A bind (host/port) or cert (mode, or domain under a cert-issuing mode) change returns False: an apply follows and
-    _CONFIRMED_URL must stay frozen until that confirms, so nodes don't re-point to an address that may revert."""
-    op = (old_access.get("panel") or {}); npnl = (new_access.get("panel") or {})
-    if str(op.get("host") or "") != str(npnl.get("host") or "") or int(op.get("port") or 0) != int(npnl.get("port") or 0):
-        return False
-    ot = (old_access.get("tls") or {}); nt = (new_access.get("tls") or {})
-    if (ot.get("mode") or "") != (nt.get("mode") or ""):
-        return False
-    if (nt.get("mode") or "") in ("letsencrypt", "cloudflare", "cf15", "letsencrypt-ip"):
-        if _url_host(op.get("url") or "") != _url_host(npnl.get("url") or ""):
-            return False   # new domain under a cert-issuing mode → reissue → apply/confirm follows
-    return True
-
-
 def _is_ip(host):
     try:
         ipaddress.ip_address(host)
@@ -4137,21 +4120,16 @@ def api(method, path, qs, body, deps):
         # errors abort the whole save. Phase 3 persists only; the live bind/cert apply lands in phase 4.
         _access_warnings = []
         acc_in = incoming.get("access")
-        _url_edit_pure = False
         if isinstance(acc_in, dict):
-            _old_access = cur.get("access") or {}
-            _acc_clean, _acc_errs, _access_warnings = validate_access(acc_in, _old_access)
+            _acc_clean, _acc_errs, _access_warnings = validate_access(acc_in, cur.get("access") or {})
             if _acc_errs:
                 return 400, {"ok": False, "error": "; ".join(_acc_errs), "errors": _acc_errs,
                              "warnings": _access_warnings, "code": "bad_request"}
-            # A public-URL edit with NO bind/cert change has no browser confirm → the new URL is the confirmed dial
-            # address immediately. A bind/cert change instead goes through apply+confirm, which updates it then, so
-            # _CONFIRMED_URL stays frozen here (nodes never re-point to an address a pending change might revert).
-            _url_edit_pure = _APPLY["pending"] is None and _panel_url_edit_is_pure(_old_access, _acc_clean)
             cur["access"] = _acc_clean
         deps["panel_settings"] = cur
-        if _url_edit_pure:
-            _confirm_panel_url(deps)
+        # NB: a public-URL change is NOT adopted as the node dial URL here — the browser always follows a URL save
+        # with /api/access/apply, which verifies (confirm) the new URL reaches this panel before adopting it. So
+        # _CONFIRMED_URL stays frozen until that confirm; nodes are never told an address a pending change may revert.
         with contextlib.suppress(Exception):
             save_critical(deps.get("panel_settings_path") or "", json.dumps(cur, indent=2) + "\n")   # rotating backups (recoverable)
         write_sub_serve(deps)   # keep subs/serve.json (what swg-sub reads) in step with the enable/serve settings
@@ -4196,9 +4174,21 @@ def api(method, path, qs, body, deps):
         need_cert = bool(cur.get("cert")) and _cert_needs_issue(cur.get("cert"), d_domain, mode)
         same_bind = (d_host, d_port) == (cur["host"], cur["port"])
         if same_bind and not need_cert:
-            _confirm_panel_url(deps)   # bind + cert already current → the (possibly new) URL is live now, no confirm needed
-            _apply_status("saved", "already serving on %s:%d" % (d_host, d_port))
-            return 200, {"ok": True, "applied": True, "message": "already on this address"}
+            new_pub = _compute_public_url(deps)     # the normalised public URL the save now holds
+            if not new_pub or new_pub == _CONFIRMED_URL:
+                _confirm_panel_url(deps)            # nothing anyone dials actually changed → adopt, no confirm needed
+                _apply_status("saved", "already serving on %s:%d" % (d_host, d_port))
+                return 200, {"ok": True, "applied": True, "message": "already on this address"}
+            # The public URL (the address everyone dials) changed, but the bind + cert didn't. VERIFY the new URL
+            # actually reaches THIS panel before adopting it and telling nodes to dial it — confirm on the same
+            # listener, reached via the new URL. On timeout the URL is left unadopted (_CONFIRMED_URL stays frozen),
+            # so a wrong public URL can neither strand the operator nor misdirect nodes.
+            with _APPLY["lock"]:
+                if _APPLY["pending"] is not None:
+                    return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
+                nonce, redirect, deadline = _arm_pending(deps, lid, lid, cur["host"], cur["port"], d_url, kind="url-only")
+            return 200, {"ok": True, "applied": False, "nonce": nonce, "host": cur["host"], "port": cur["port"],
+                         "expires": deadline, "redirect": redirect}
         with _APPLY["lock"]:
             if _APPLY["pending"] is not None:
                 return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
@@ -4243,7 +4233,10 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, "error": "no matching pending change", "code": "bad_request"}
             if here != pend["new_lid"]:
                 return 400, {"ok": False, "error": "confirm must be made on the new address", "code": "wrong_listener"}
-            if pend.get("kind") != "cert-only":              # rebind: promote the new listener, drop the old
+            _kind = pend.get("kind")
+            _rebind = _kind not in ("cert-only", "url-only")    # only a rebind swaps listeners + drops the old one
+            _grace_until = 0
+            if _rebind:                                          # rebind: promote the new listener, drop the old
                 _netctl_enqueue(deps, "set-listen", ["panel", pend["host"], pend["port"]])   # persist across restarts (root helper)
                 new_srv = LISTENERS.get(pend["new_lid"])
                 if new_srv is not None:
@@ -4251,9 +4244,11 @@ def api(method, path, qs, body, deps):
                 # keep the OLD listener alive for a grace window so ONLINE nodes sync once on the old address and
                 # auto-repoint to the new one before it's dropped (instead of orphaning every node immediately)
                 _drop_listener_later(pend["old_lid"], NODE_MIGRATE_GRACE)
+                _grace_until = int(time.time()) + NODE_MIGRATE_GRACE
             nd, od = pend.get("new_domain"), pend.get("old_domain")
             _APPLY["pending"] = None
-            _apply_status("saved", "panel now on %s:%d" % (pend["host"], pend["port"]))
+            _msg = ("panel now on %s:%d" % (pend["host"], pend["port"])) if _rebind else "panel address confirmed"
+            _apply_status("saved", _msg, new_url=_compute_public_url(deps), grace_until=_grace_until)
         _confirm_panel_url(deps)   # the change is committed → NOW nodes may be told the new dial URL (frozen until here)
         if nd:                                                # committed a new cert → drop the backup + stop renewing the old domain
             _netctl_enqueue(deps, "clear-backup", ["panel"])
@@ -7970,15 +7965,15 @@ def _apply_timeout(nonce, deps):
         pend = _APPLY["pending"]
         if not pend or pend.get("nonce") != nonce:
             return                       # already confirmed, or a newer apply superseded this one
-        if pend.get("kind") != "cert-only":
-            LISTENERS.remove(pend["new_lid"])   # rebind: drop the un-confirmed listener (cert-only kept the same one)
+        if pend.get("kind") not in ("cert-only", "url-only"):
+            LISTENERS.remove(pend["new_lid"])   # rebind: drop the un-confirmed listener (cert-only/url-only kept the same one — removing it would kill the panel)
         nd = pend.get("new_domain")
         oh, op = pend.get("old_host"), pend.get("old_port")
         _APPLY["pending"] = None
     _apply_status("reverted", "the new address didn't confirm in time — reverted to the previous one")
     # Roll the SAVED bind back to the live one, but only if it still holds the value we just tried to apply
     # (no concurrent edit) — so the config never sits ahead of the running listener after a failed apply.
-    if pend.get("kind") != "cert-only" and oh is not None and op is not None:
+    if pend.get("kind") not in ("cert-only", "url-only") and oh is not None and op is not None:
         ps = deps.get("panel_settings") or {}
         pnl = (ps.get("access") or {}).get("panel") or {}
         if (str(pnl.get("host")) == str(pend["host"])) and (int(pnl.get("port") or 0) == int(pend["port"])):

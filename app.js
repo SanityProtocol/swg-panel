@@ -408,7 +408,13 @@ async function subRecover(escRec) {
 // implicit; a reverse proxy that remaps the port overrides this by putting an explicit port in the URL.
 // Public URLs (panel / sub) are often typed without a scheme — store them WITH https:// so every link builds
 // correctly (and the port logic in subBaseUrl can parse them).
-function normPublicUrl(s) { s = (s || "").trim().replace(/\/+$/, ""); return s && !/^https?:\/\//i.test(s) ? "https://" + s : s; }
+function normPublicUrl(s) {
+  s = (s || "").trim().replace(/\/+$/, "");
+  if (!s) return s;
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  // drop the scheme-default port so the field shows "host", not "host:443" — the listen port is its own field
+  return s.replace(/^(https:\/\/[^/:]+):443\b/i, "$1").replace(/^(http:\/\/[^/:]+):80\b/i, "$1");
+}
 // Is an apply-redirect address actually reachable from THIS browser? Probed BEFORE we navigate the whole page
 // to a new panel address, so a domain that isn't wired up (DNS / Cloudflare / firewall) doesn't strand the
 // operator on a dead page with no feedback. no-cors: a genuine network failure throws; any served response
@@ -7480,7 +7486,7 @@ function AccessTLSCard({ onChange }) {
   const acc = (Store.panelSettings || {}).access || {};
   const p0 = acc.panel || {}, s0 = acc.sub || {}, t0 = acc.tls || {};
   const subsOn = !!((Store.panelSettings || {}).subscriptions || {}).enabled;
-  const [pUrl, setPUrl] = useState(p0.url || ""); const [pHost, setPHost] = useState(p0.host || "0.0.0.0"); const [pPort, setPPort] = useState(String(p0.port || 443));
+  const [pUrl, setPUrl] = useState(normPublicUrl(p0.url || "")); const [pHost, setPHost] = useState(p0.host || "0.0.0.0"); const [pPort, setPPort] = useState(String(p0.port || 443));
   const [sUrl, setSUrl] = useState(s0.url || ""); const [sHost, setSHost] = useState(s0.host || "0.0.0.0"); const [sPort, setSPort] = useState(String(s0.port || 8444));
   const [mode, setMode] = useState(t0.mode || ""); const [email, setEmail] = useState(t0.email || "");
   const [cfTok, setCfTok] = useState(""); const [cfOrig, setCfOrig] = useState("");
@@ -7488,10 +7494,13 @@ function AccessTLSCard({ onChange }) {
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
   const [confirmUrl, setConfirmUrl] = useState("");   // set while an address change is verifying → the operator confirms it by opening the new address in a new tab (we can't auto-navigate safely: an unreachable new address would strand them, and a cross-origin reachability probe is blocked by our own CSP)
+  const [migrate, setMigrate] = useState(null);       // {until, newUrl} after a REBIND confirms elsewhere: THIS tab is on the old address, which stops serving when the node-migration grace ends → show a live countdown ribbon
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => { if (!migrate) return; const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000); return () => clearInterval(t); }, [migrate]);
   const rollbackRef = useRef(null);            // the panel address that was live BEFORE an apply → restore the SAVED url on revert (the server rolls back the bind/cert, but the saved url is still the new one → it'd advertise a dead address to nodes)
   // Baseline of what's currently live — the form is compared to this to decide what changed (and thus what needs
   // a live apply). Refreshed after a successful save so the button disables until the next edit.
-  const [orig, setOrig] = useState({ pUrl: p0.url || "", pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
+  const [orig, setOrig] = useState({ pUrl: normPublicUrl(p0.url || ""), pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
     sUrl: s0.url || "", sHost: s0.host || "0.0.0.0", sPort: String(s0.port || 8444), mode: t0.mode || "", email: t0.email || "" });
   useEffect(() => { api.get("/api/access/ips").then(r => { if (r && r.ok) setIps(r.ips || []); }); }, []);
   // Pull the CURRENT saved config back into the form (+ baseline) — used after a revert, where the backend rolled
@@ -7502,10 +7511,10 @@ function AccessTLSCard({ onChange }) {
     if (ps) { Store.panelSettings = ps; bus.emit(); }   // refresh the GLOBAL store too, so a remount/reload can't rehydrate the rejected value the apply rolled back
     const a = (ps || {}).access || {};
     const pp = a.panel || {}, ss = a.sub || {}, tt = a.tls || {};
-    setPUrl(pp.url || ""); setPHost(pp.host || "0.0.0.0"); setPPort(String(pp.port || 443));
+    setPUrl(normPublicUrl(pp.url || "")); setPHost(pp.host || "0.0.0.0"); setPPort(String(pp.port || 443));
     setSUrl(ss.url || ""); setSHost(ss.host || "0.0.0.0"); setSPort(String(ss.port || 8444));
     setMode(tt.mode || ""); setEmail(tt.email || "");
-    setOrig({ pUrl: pp.url || "", pHost: pp.host || "0.0.0.0", pPort: String(pp.port || 443),
+    setOrig({ pUrl: normPublicUrl(pp.url || ""), pHost: pp.host || "0.0.0.0", pPort: String(pp.port || 443),
       sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "" });
   };
   // poll the apply state machine while a change is in flight. When it's ready to confirm, we DON'T auto-navigate:
@@ -7541,7 +7550,22 @@ function AccessTLSCard({ onChange }) {
             const rb = rollbackRef.current; rollbackRef.current = null;
             if (rb) { try { await api.panelSettings({ access: { panel: { url: rb.url, host: rb.host, port: rb.port } } }); } catch (_) {} }
             resync();    // the form was left showing the rejected value → pull the rolled-back config back in
-          } else rollbackRef.current = null;
+            if (p.state === "reverted" || p.state === "failed") openModal(html`<${ConfirmSheet} title="Address change not confirmed" warn=${true} confirmLabel="OK"
+              body=${(p.message && p.state === "failed") ? p.message : "The new address wasn’t confirmed, so the panel kept the current one. Check its DNS / Cloudflare / firewall / port, then try again."}/>`);
+          } else {
+            rollbackRef.current = null;
+            const gu = +(p.grace_until || 0), nu = p.new_url || "";
+            if (p.state === "saved") {
+              if (gu > 0) {   // a REBIND: this tab is on the OLD address, which stops serving after the migration grace
+                setMigrate({ until: gu, newUrl: nu });
+                openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Got it"
+                  body=${html`The panel is now reached at <b>${nu || "the new address"}</b>. This tab is on the <b>previous</b> address — it keeps working while nodes move over, then stops responding. Switch to the new address when you’re ready.`}/>`);
+              } else {        // url-only / cert-only: same bind → this address keeps working, just verified the new URL
+                openModal(html`<${ConfirmSheet} title="Panel address confirmed" confirmLabel="Done"
+                  body=${html`Verified — the panel is now reached at <b>${nu || "the new address"}</b>.`}/>`);
+              }
+            }
+          }
           return; }
       }
       timer = setTimeout(tick, 1400);
@@ -7581,6 +7605,7 @@ function AccessTLSCard({ onChange }) {
   const _pPortN = () => Math.max(1, Math.min(65535, parseInt(pPort) || 443));
   const _sPortN = () => Math.max(1, Math.min(65535, parseInt(sPort) || 8444));
   const panelBindChanged = () => (pHost.trim() || "0.0.0.0") !== (orig.pHost || "0.0.0.0") || _pPortN() !== (+orig.pPort || 443);
+  const panelUrlChanged  = () => normPublicUrl(pUrl) !== normPublicUrl(orig.pUrl);   // the public address everyone dials — a change is verified (confirm) before it takes over
   const subBindChanged   = () => (sHost.trim() || "0.0.0.0") !== (orig.sHost || "0.0.0.0") || _sPortN() !== (+orig.sPort || 8444);
   const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
   const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
@@ -7607,6 +7632,7 @@ function AccessTLSCard({ onChange }) {
   const saveAndApply = async () => {
     if (blocked) return setMsg({ ok: false, t: "Fix the highlighted port first." });
     if (!dirty()) return;
+    setMigrate(null);   // a new change starts → clear any lingering "old address goes down" ribbon from a prior one
     // Trading ports between panel and sub can't be done in one shot on a single host — one must free its port
     // before the other can take it. Guide the operator through two saves instead of attempting a doomed order.
     if (subWantsPanelLive() || panelWantsSubLive()) {
@@ -7617,7 +7643,7 @@ function AccessTLSCard({ onChange }) {
       return setMsg({ ok: false, t: `The panel and subscription are trading ports. Do it in two saves so one frees the port before the other takes it: first move ${first} and Save, then set ${second}'s port and Save again.` });
     }
     const needSub = subsOn && (subBindChanged() || certChanged());
-    const needPanel = panelBindChanged() || certChanged();
+    const needPanel = panelBindChanged() || certChanged() || panelUrlChanged();
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
     const npUrl = normPublicUrl(pUrl), nsUrl = normPublicUrl(sUrl);   // add https:// when the operator omitted it
     setPUrl(npUrl); setSUrl(nsUrl);                                    // reflect it back in the fields
@@ -7662,7 +7688,14 @@ function AccessTLSCard({ onChange }) {
   useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked, busy: busy || polling, msg, run: saveAndApply }); });
 
   let _confHost = confirmUrl; try { _confHost = new URL(confirmUrl).host; } catch (_) {}
+  const _migLeft = migrate ? Math.max(0, migrate.until - nowSec) : 0;
   return html`<div class="card acctls">
+    ${migrate ? html`<div class="addr-migrate-ribbon" role="alert">
+      ${_migLeft > 0
+        ? html`<span><b>This address stops responding in ${_migLeft}s.</b> The panel has moved to <a href=${migrate.newUrl}>${migrate.newUrl}</a> — switch over now.</span>`
+        : html`<span><b>This address is no longer served.</b> The panel is now at <a href=${migrate.newUrl}>${migrate.newUrl}</a>.</span>`}
+      <a class="btn btn-mini" href=${migrate.newUrl}>Go to the new address ↗</a>
+    </div>` : null}
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
     ${confirmUrl ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
       <b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab — the change applies the instant it loads there. If that tab <b>can't</b> load, just close it: this panel stays on the current address and reverts automatically. Nothing is committed until the new address answers.
@@ -9692,9 +9725,14 @@ function App() {
   useEffect(() => {
     const m = /[?&]__apply=([A-Za-z0-9]+)/.exec(location.search);
     if (!m) return;
+    history.replaceState(null, "", location.pathname);   // strip ?__apply so a reload can't re-fire
+    if (location.hash !== "#/panel/settings") location.hash = "#/panel/settings";   // this tab opened only to confirm → land on Access & TLS
     api.post("/api/access/confirm", { nonce: m[1] }).then(r => {
-      toast(r && r.ok ? "New panel address confirmed." : ("Couldn't confirm: " + ((r && r.error) || "unknown")), r && r.ok ? "ok" : "err", 4000);
-    }).finally(() => history.replaceState(null, "", location.pathname + location.hash));
+      if (r && r.ok) openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Open panel settings"
+        body=${html`This is now the address the panel is reached at. You can close the other tab — it's on the previous address.`}/>`);
+      else openModal(html`<${ConfirmSheet} title="Couldn’t confirm the new address" warn=${true} confirmLabel="OK"
+        body=${((r && r.error) || "The confirmation didn’t match a pending change.") + " The panel kept its current address."}/>`);
+    });
   }, []);
   useEffect(() => {
     const onHash = () => {
