@@ -7832,6 +7832,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
             with _api_lock:
                 code, obj = api("POST", path, {}, bodyobj, self.deps)
+            if 200 <= code < 300:
+                _invalidate_state_cache()   # a confirm advances the canonical URL → the next /api/state must be fresh, else the just-confirmed tab reads the OLD panel_public_url for up to the cache TTL and flashes the "previous address" ribbon
             # Carry the operator's login onto the new address. The confirm succeeded via the nonce, which only
             # existed because they armed this change from an AUTHENTICATED session (its MFA already satisfied) —
             # so mint a fresh session here rather than dumping them at a login on a domain their cookie doesn't
@@ -7885,7 +7887,9 @@ def passwd_cmd(argv):
 # works (a redirect that lands and POSTs /api/access/confirm ON the new listener). No confirm in time →
 # the new listener is dropped and the old never stopped. All in-process, so rollback needs no restart.
 APPLY_TIMEOUT = max(10, int(os.environ.get("SWG_PANEL_APPLY_TIMEOUT", "90") or 90))   # seconds the operator has to confirm the new address once it's reachable — generous so logging in on the new address (a domain their session doesn't cover) can't run out the clock
-GATE_TIMEOUT = max(6, int(os.environ.get("SWG_PANEL_GATE_TIMEOUT", "30") or 30))      # seconds to poll the new front door (server-side, via CF) for reachability BEFORE offering Confirm — so an immediate click can't hit ERR_CONNECTION_CLOSED while CF is still warming the new origin
+GATE_TIMEOUT = max(6, int(os.environ.get("SWG_PANEL_GATE_TIMEOUT", "40") or 40))      # seconds to poll the new front door (server-side, via CF) for reachability BEFORE offering Confirm — so an immediate click can't hit ERR_CONNECTION_CLOSED while CF is still warming the new origin
+GATE_STREAK = max(1, int(os.environ.get("SWG_PANEL_GATE_STREAK", "4") or 4))          # CONSECUTIVE OK probes required before Confirm is offered — a brand-new origin port is cold in CF, and one success (from THIS box's edge) doesn't mean the operator's edge is warm; a streak of fresh-connection probes also warms CF's origin health globally
+GATE_INTERVAL = min(3.0, max(1.0, float(os.environ.get("SWG_PANEL_GATE_INTERVAL", "1.5") or 1.5)))
 NODE_MIGRATE_GRACE = 180                 # seconds to KEEP the old listener after confirm, so online nodes sync
                                          # once on the old address and learn the new one (pin-gated auto-repoint)
 
@@ -8247,21 +8251,27 @@ def _probe_public_url(url, port, timeout=5):
 
 def _gate_reachable(nonce, deps, url, redirect, host, port):
     """Hold the Confirm button back until the new front door actually answers (probed server-side, via CF).
-    This is the "initial check from the old panel": the operator only sees Confirm once an immediate click is
-    safe — no more ERR_CONNECTION_CLOSED from clicking before CF warmed the new origin. Fail-OPEN: if we can't
-    self-probe the front door within GATE_TIMEOUT (e.g. a bind the box can't reach via the public URL), reveal
+    This is the "initial check from the old panel": the operator only sees Confirm once it's safe. A brand-new
+    origin port is COLD in Cloudflare, and one successful probe (from THIS box's CF edge) doesn't mean the
+    operator's edge is warm — so require GATE_STREAK CONSECUTIVE successes, each a fresh connection, which both
+    proves the address answers CONSISTENTLY and warms CF's origin health globally so the operator's first hit is
+    far less likely to ERR_CONNECTION_CLOSED. Fail-OPEN: if we can't build the streak within GATE_TIMEOUT, reveal
     Confirm anyway and fall back to the manual open-the-new-address proof, so the gate never blocks a valid change."""
     end = time.time() + GATE_TIMEOUT
-    reached = False
+    hits = 0
     while time.time() < end:
         with _APPLY["lock"]:
             pend = _APPLY["pending"]
             if not pend or pend.get("nonce") != nonce or pend.get("gate") != "checking":
                 return               # superseded / confirmed / reverted while we waited
         if _probe_public_url(url, port):
-            reached = True
-            break
-        time.sleep(2)
+            hits += 1
+            if hits >= GATE_STREAK:
+                break
+        else:
+            hits = 0                 # want CONSECUTIVE reachability — any miss resets the streak
+        time.sleep(GATE_INTERVAL)
+    reached = hits >= GATE_STREAK
     with _APPLY["lock"]:
         pend = _APPLY["pending"]
         if not pend or pend.get("nonce") != nonce or pend.get("gate") != "checking":

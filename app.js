@@ -7542,7 +7542,7 @@ function AccessTLSCard({ onChange }) {
           if (dp && p.state === "reverted")   // the new address never confirmed (unreachable / not opened) → say what to check
             parts.push("The new address wasn't confirmed — kept the current one. Check its DNS / Cloudflare / firewall / port, then try again.");
           else if (dp && (p.state === "checking" || p.state === "issuing"))   // pre-confirm progress: reachability probe / cert issuance — not an error, not done
-            parts.push(p.message || "Preparing the new address…");
+            parts.push(p.state === "issuing" ? (p.message || "Issuing the certificate…") : "Waiting for the new address to start responding…");
           else if (dp && p.state && p.state !== "idle") parts.push("Panel: " + (p.message || p.state));
           if (ds && subsOn && s.state && s.state !== "idle") parts.push("Subscriptions: " + (s.message || s.state));
           const fail = (dp && ["failed", "reverted"].includes(p.state)) || (ds && s.state === "failed");
@@ -9804,7 +9804,7 @@ function App() {
     if (location.hash !== "#/panel/settings") location.hash = "#/panel/settings";
     // defer past any hashchange (its handler resets the modal stack) so the outcome modal survives
     setTimeout(() => {
-      if (ok) openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Open panel settings"
+      if (ok) openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Got it"
         back=${() => { _setSettingsSection("access"); closeModal(); }}
         body=${html`This is now the address the panel is reached at, and you're signed in here. You can close the other tab — it's on the previous address.`}/>`);
       else openModal(html`<${ConfirmSheet} title="Couldn’t confirm the new address" warn=${true} confirmLabel="OK"
