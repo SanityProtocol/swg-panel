@@ -7723,7 +7723,7 @@ def passwd_cmd(argv):
 # new address, keeps the OLD one serving, and drops the old only after the browser CONFIRMS the new one
 # works (a redirect that lands and POSTs /api/access/confirm ON the new listener). No confirm in time →
 # the new listener is dropped and the old never stopped. All in-process, so rollback needs no restart.
-APPLY_TIMEOUT = 30                       # seconds the operator's browser has to confirm the new address
+APPLY_TIMEOUT = max(10, int(os.environ.get("SWG_PANEL_APPLY_TIMEOUT", "30") or 30))   # seconds the operator's browser has to confirm the new address (raise it for slow/manual confirms)
 NODE_MIGRATE_GRACE = 180                 # seconds to KEEP the old listener after confirm, so online nodes sync
                                          # once on the old address and learn the new one (pin-gated auto-repoint)
 
