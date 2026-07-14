@@ -569,7 +569,11 @@
       var appInfo = (forkId === "cacggghp") ? { badge: t("turnApp"), kind: "none" }
                   : (art && art.app) ? { badge: art.app, kind: "app", app: art.app }
                   : { badge: t("forkApp").replace("{fork}", forkId), kind: "fork", fork: forkId };
-      var tag = el("span", "scell-tag", appInfo.badge);
+      // badge = just the fork when it has no branded app name (cacggghp, or a generic fork that echoes its own id
+      // like Moroka8); "fork · App" when there's a real app name (WINGS V, FreeTurn, WireGuard-TURN, VK TURN Proxy)
+      var hasAppName = forkId !== "cacggghp" && art && art.app && art.app !== forkId;
+      var badgeText = hasAppName ? (forkId + " · " + art.app) : forkId;
+      var tag = el("span", "scell-tag", badgeText);
       tag.style.color = fc;
       srvRow.appendChild(tag);
       // role + interface next to the badge: multi → "Primary/Backup WG"; single → "WG". Primary/single = iface colour, backup = grey.
