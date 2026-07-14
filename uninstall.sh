@@ -246,7 +246,8 @@ docker_cleanup_if_last(){   # shared bits (network/images/data dir) — only onc
   run systemctl daemon-reload 2>/dev/null || true
   if command -v docker >/dev/null 2>&1; then
     local DC=""; if docker compose version >/dev/null 2>&1; then DC="docker compose"; elif command -v docker-compose >/dev/null 2>&1; then DC="docker-compose"; fi
-    [ -n "$DC" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] && run sh -c "cd '$DOCKER_DIR' && $DC down --remove-orphans >/dev/null 2>&1 || true"   # drop the network
+    # activate every profile so `down` stops profile-gated services too (swg-sub); plain `down` skips them and --remove-orphans won't (it's in the compose file, not an orphan)
+    [ -n "$DC" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ] && run sh -c "cd '$DOCKER_DIR' && COMPOSE_PROFILES=host,master,node,host-node $DC down --remove-orphans >/dev/null 2>&1 || true"   # drop the network + any straggler
     local RMI="${REMOVE_DOCKER_IMAGES:-}"; echo; ask_yn "  Remove the pulled swg-panel / swg-node images too?" n RMI
     [ "$RMI" = yes ] && run sh -c 'docker rmi ghcr.io/sanityprotocol/swg-panel:latest ghcr.io/sanityprotocol/swg-node:latest swg-panel-docker-swg-panel swg-panel-docker-swg-node >/dev/null 2>&1 || true'
   fi
@@ -257,7 +258,7 @@ rm_docker_panel(){ info "Removing Docker panel container (swg-panel)"
   if docker_running swg-node; then    # node stays → only the panel's OWN data is in play (decide now)
     ask_yn "  Delete the panel data (login, roster (users+peers), nodes, certs)? The node's interface configs are kept." n DELP
   else ask_full_data_fate; fi         # panel is the last container → the whole data dir
-  run sh -c 'docker rm -f swg-panel >/dev/null 2>&1 || true'
+  run sh -c 'docker rm -f swg-panel swg-sub >/dev/null 2>&1 || true'   # swg-sub is the panel's companion surface (a profile-gated service `down` won't stop) — remove it alongside
   if docker_running swg-node; then
     [ "$DELP" = yes ] && { _rm_panel_data; info "  Removed the panel data; node interface configs untouched."; } \
                       || info "  Kept the panel data; node interface configs untouched."
