@@ -314,6 +314,11 @@ lc_teardown_baremetal(){
 teardown_bare_panel(){
   systemctl disable --now swg-panel-server >/dev/null 2>&1 || true
   systemctl disable --now swg-update.path  >/dev/null 2>&1 || true
+  # swg-sub + swg-netctl are PANEL components — stop them too, or the bare swg-sub keeps port 8444 (the docker
+  # swg-sub then can't bind it) and swg-netctl.path lingers. (The node datapath is handled separately.)
+  systemctl disable --now swg-sub swg-netctl.path swg-netctl.service swg-netctl.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/swg-sub.service /etc/systemd/system/swg-netctl.service /etc/systemd/system/swg-netctl.path /etc/systemd/system/swg-netctl.timer /usr/local/bin/swg-netctl
+  rm -rf /opt/swg-sub
   rm -f /etc/systemd/system/swg-panel-server.service /etc/systemd/system/swg-update.service /etc/systemd/system/swg-update.path /usr/local/bin/swg-update
   rm -rf /etc/systemd/system/swg-panel-server.service.d
   rm -f /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf /etc/nginx/conf.d/swg-panel.conf

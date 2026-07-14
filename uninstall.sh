@@ -50,9 +50,12 @@ rm_panel(){
   if [ -e $SD/swg-panel-server.service ]; then run systemctl disable --now swg-panel-server; fi
   # swg-sub (the subscription surface) is a companion of the panel — remove it alongside
   if [ -e $SD/swg-sub.service ]; then run systemctl disable --now swg-sub; fi
+  # swg-netctl (the panel's privileged network/TLS helper: .service + .path + .timer) — a companion of the panel
+  for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service; do [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true; done
   # one-click self-update bits the panel installed (mk_update_unit): units, wrapper, and the env drop-in
   for _su in swg-update.timer swg-update.path; do [ -e "$SD/$_su" ] && run systemctl disable --now "$_su" 2>/dev/null || true; done
   rmrf $SD/swg-panel-server.service $SD/swg-panel-server.service.d $SD/swg-sub.service $SD/swg-sub.service.d \
+       $SD/swg-netctl.service $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl \
        $SD/swg-update.service $SD/swg-update.path $SD/swg-update.timer /usr/local/bin/swg-update /usr/local/bin/swg-update-check /var/lib/swg-update.stamp
   run systemctl daemon-reload
   rmrf /etc/nginx/sites-enabled/swg-panel.conf /etc/nginx/sites-available/swg-panel.conf \
@@ -338,6 +341,12 @@ rm_wg_pkg(){
   else warn "Non-apt system — remove the wireguard packages with your package manager."; fi
   ok "WireGuard package removed"
 }
+rm_netctl(){   # a leftover swg-netctl (e.g. after a docker convert) with no bare panel around to sweep it up
+  info "Removing swg-netctl (leftover helper)"
+  for _nc in swg-netctl.path swg-netctl.timer swg-netctl.service; do [ -e "$SD/$_nc" ] && run systemctl disable --now "$_nc" 2>/dev/null || true; done
+  rmrf $SD/swg-netctl.service $SD/swg-netctl.path $SD/swg-netctl.timer /usr/local/bin/swg-netctl
+  run systemctl daemon-reload; ok "swg-netctl removed"
+}
 
 rm_turn(){ local unit="$1" name fork
   name="$(basename "$unit" .service)"; fork="${name#vk-turn-proxy-}"
@@ -412,6 +421,9 @@ turn_listen(){ local lis con; IFS="$(printf '\t')" read -r lis con < <(turn_exec
   add "Bare-metal swg-panel" "control panel (/opt/swg-panel)" rm_panel
 [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f $SD/swg-noded.service ] && \
   add "Bare-metal node (swg-node)" "$(bm_node_detail)" rm_node
+# swg-netctl units lingering WITHOUT a bare panel (rm_panel would otherwise sweep them) → offer on their own
+{ [ ! -d /opt/swg-panel ] && [ ! -f $SD/swg-panel-server.service ]; } && ls $SD/swg-netctl.* >/dev/null 2>&1 && \
+  add "swg-netctl (leftover helper)" "privileged network/TLS helper units" rm_netctl
 
 # Docker: the panel and node are separate containers — offer each independently. If the
 # deployment dir exists but neither container does, offer a files-only cleanup.
@@ -435,10 +447,15 @@ awg_ifaces(){ ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || ls $SD/awg*.se
 wg_ifaces(){  ls /etc/wireguard/*.conf >/dev/null 2>&1 || ls $SD/wg-quick@*.service >/dev/null 2>&1; }
 awg_pkg(){ command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +amneziawg(-tools| |$)'; }
 wg_pkg(){  command -v dpkg >/dev/null 2>&1 && pkg_ii '^ii +wireguard '; }
+# The host WG/AWG PACKAGES are swg's to purge only when a BARE-METAL swg node installed them. A docker node runs
+# its datapath in-container (userspace amneziawg-go), so on a docker-only box these host packages belong to
+# something else (e.g. wg-easy, or another VPN) — purging them would break it. Peers (interface .conf files) are
+# still offered separately since those files ARE swg's own.
+_bare_swg=false; { [ -d /opt/swg-noded ] || [ -d /opt/swg-agent ] || [ -f "$SD/swg-noded.service" ] || [ -d /opt/swg-panel ] || [ -f "$SD/swg-panel-server.service" ]; } && _bare_swg=true
 awg_ifaces && { _d="$(iface_list /etc/amnezia/amneziawg)"; add "AmneziaWG interface peers" "$_d" rm_awg_peers "" "$_d" Remove; }
-awg_pkg    &&   add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg
+awg_pkg    && $_bare_swg && add "AmneziaWG package (kernel module + tools)" "amneziawg · amneziawg-tools · amneziawg-dkms" rm_awg_pkg
 wg_ifaces  && { _d="$(iface_list /etc/wireguard)";        add "WireGuard interface peers" "$_d" rm_wg_peers "" "$_d" Remove; }
-wg_pkg     &&   add "WireGuard package (kernel module + tools)" "wireguard · wireguard-tools" rm_wg_pkg
+wg_pkg     && $_bare_swg && add "WireGuard package (kernel module + tools)" "wireguard · wireguard-tools" rm_wg_pkg
 true   # don't let the last &&-test leave a non-zero status
 
 for unit in $(ls $SD/vk-turn-proxy-*.service 2>/dev/null || true); do

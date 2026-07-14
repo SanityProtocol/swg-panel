@@ -1316,6 +1316,17 @@ if [ "${SWG_CONVERT_DIR:-}" = convert-docker ] && ! $DRYRUN; then
   # convert moves just the panel → docker; the co-located bare node must stay UP + keep serving its peers.
   [ "$PROFILE" != host ] && lc_teardown_baremetal ${MIGRATED_TURNS:-${SWG_CONVERT_TURNS:-}}
 fi
+# swg-sub masks the panel's secret state with /dev/null (files) + tmpfs (dirs). A bind/tmpfs mount can only CREATE
+# its mountpoint if the target already exists on the (read-only) ./data volumes — otherwise the container dies with
+# "read-only file system". vault.json/escrow.json don't exist until a subscription vault is set up, panel-settings
+# not until the panel first boots, and the tls/ + configs/ dirs may not exist yet on a fresh install or a convert
+# that carried no vault. Pre-create them so swg-sub starts. (The node profile doesn't run swg-sub.)
+if [ "$PROFILE" != node ] && ! $DRYRUN; then
+  mkdir -p "$INSTALL_DIR/data/lib/subs" "$INSTALL_DIR/data/lib/configs" "$INSTALL_DIR/data/etc/tls" 2>/dev/null || true
+  for _mf in panel-settings.json subs/vault.json subs/escrow.json; do
+    [ -e "$INSTALL_DIR/data/lib/$_mf" ] || : > "$INSTALL_DIR/data/lib/$_mf" 2>/dev/null || true
+  done
+fi
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else
   for _c in $(case "$PROFILE" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
