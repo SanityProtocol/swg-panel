@@ -1087,6 +1087,18 @@ def save_sub_escrow(deps, d):
     atomic_write(_sub_escrow_path(deps), json.dumps(d, indent=2) + "\n", mode=0o600)   # owner-only — swg-sub must never read the escrow
 
 def _sub_serve_path(deps): return os.path.join(_sub_dir(deps), "serve.json")
+def _sub_node_colors(deps):
+    """{node_id: {dark,light}} for every enrolled node — mirrored into serve.json so the subscription page can
+    paint each server name in the operator's chosen node colour without reading the node store itself."""
+    out = {}
+    with contextlib.suppress(Exception):
+        for nid, n in (nodes_load(deps["nodes_path"]) or {}).items():
+            c = (n or {}).get("color")
+            if isinstance(c, dict) and (c.get("dark") or c.get("light")):
+                out[nid] = {"dark": c.get("dark") or "", "light": c.get("light") or ""}
+    return out
+
+
 def write_sub_serve(deps):
     """Mirror JUST {enabled, serve} to subs/serve.json (group-readable) so swg-sub reads its own config
     from a tiny dedicated file and never has to open panel-settings.json — which also carries webhook
@@ -1118,6 +1130,8 @@ def write_sub_serve(deps):
            # per-fork + per-protocol colour overrides so the sub's fork tags + WG/AWG tabs match the admin's picks
            "turn_fork_colors": (ps.get("turn_fork_colors") or {}),
            "iface_colors": (ps.get("iface_colors") or {}),
+           # per-node colours (keyed by node id) so the sub renders each server name in its panel colour
+           "node_colors": _sub_node_colors(deps),
            # offered UI languages + the default (the page hides its selector when only one is enabled)
            "languages": subs.get("languages") if isinstance(subs.get("languages"), dict) else {"enabled": ["en"], "default": "en"}}
     with contextlib.suppress(Exception):
@@ -5765,6 +5779,9 @@ def api(method, path, qs, body, deps):
                 me.setdefault("ifaces", {}).setdefault(lr.get("iface"), {})["listen_port"] = np   # push via reconcile_ifaces
             ev_append(roster_path, "node", nid, "Re-ported mesh links (live)", me.get("name", nid))
         nodes_save(deps["nodes_path"], nodes)
+        if "color" in body:                       # server colour drives the subscription page's server name → refresh serve.json
+            with contextlib.suppress(Exception):
+                write_sub_serve(deps)
         ev_append(roster_path, "node", nid, "Updated node", nodes[nid].get("name", nid))
         return 200, {"ok": True, "data": {"id": nid, "name": nodes[nid].get("name")}}
 

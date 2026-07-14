@@ -29,14 +29,16 @@
       loading: "Loading…", noConfigs: "No configs yet",
       noConfigsSub: "There are no active peers on this subscription. New peers will appear here automatically.",
       peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config", copyLink: "Copy link",
-      copied: "Copied", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
+      copied: "Copied", copiedClip: "Copied to clipboard", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
       toQR: "QR", toConfig: "Config", toLink: "Link", copyShort: "Copy", dlShort: "Download", enlarge: "Tap to enlarge", share: "Share",
       prevConfig: "Previous config", nextConfig: "Next config",
       clientCmd: "Client command", generating: "Generating…", qrTooBig: "config too large to encode as QR",
       noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
       pasteInto: "Use in", tapCopy: "Tap to copy",
       vkThen: "Then add this VK call link in the app:", vkNone: "Then add a VK call link in the app — create a VK call and copy its vk.ru/call/join/… link.",
-      vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}",
+      vkAddApp: "Add this VK call link to {app}", vkAddFork: "Add this VK call link to {fork} app", vkAddGeneric: "Add this VK call link to the turn proxy app",
+      backup: "Backup",
+      vkMissingT: "No VK call link provided in the subscription", vkMissing: "Create a VK call and add its vk.ru/call/join/… link in {app}", theApp: "the app",
       notReady: "Not ready yet — open this peer once in the panel to publish it.",
       outOfDate: "This link is out of date — ask your administrator for a fresh one.",
       someBad: "Some peers couldn’t be decrypted — this link may be out of date. Ask your administrator for a fresh one.",
@@ -51,21 +53,23 @@
       errResp: "The server returned an unexpected response.",
       unsupported: "Unsupported browser",
       unsupportedSub: "This page needs a modern browser with Web Crypto (and a secure https:// connection) to decrypt your configs.",
-      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn",
+      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", turnApp: "Turn proxy app", forkApp: "{fork} app",
       langName: "EN", themeToLight: "Switch to light", themeToDark: "Switch to dark", langLabel: "Language",
     },
     ru: {
       loading: "Загрузка…", noConfigs: "Пока нет конфигураций",
       noConfigsSub: "На этой подписке нет активных пиров. Новые появятся здесь автоматически.",
       peer: "Пир", primary: "Основной", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать", copyLink: "Скопировать ссылку",
-      copied: "Скопировано", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
+      copied: "Скопировано", copiedClip: "Скопировано в буфер обмена", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
       toQR: "QR", toConfig: "Конфиг", toLink: "Ссылка", copyShort: "Копир.", dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
       prevConfig: "Предыдущий конфиг", nextConfig: "Следующий конфиг",
       clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
       noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
       pasteInto: "Использовать в", tapCopy: "Нажмите, чтобы скопировать",
       vkThen: "Затем добавьте эту ссылку на звонок VK в приложении:", vkNone: "Затем добавьте ссылку на звонок VK в приложении — создайте звонок VK и скопируйте ссылку vk.ru/call/join/…",
-      vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Создайте звонок VK и добавьте ссылку vk.ru/call/join/… в {app}",
+      vkAddApp: "Добавьте эту ссылку на звонок VK в {app}", vkAddFork: "Добавьте эту ссылку на звонок VK в приложении", vkAddGeneric: "Добавьте эту ссылку на звонок VK в приложении",
+      backup: "Запасной",
+      vkMissingT: "Ссылка на звонок VK не указана в подписке", vkMissing: "Создайте звонок VK и добавьте ссылку vk.ru/call/join/… в {app}", theApp: "приложении",
       notReady: "Ещё не готово — откройте этот пир один раз в панели, чтобы опубликовать.",
       outOfDate: "Эта ссылка устарела — попросите у администратора новую.",
       someBad: "Некоторые пиры не удалось расшифровать — возможно, ссылка устарела. Попросите у администратора новую.",
@@ -80,7 +84,7 @@
       errResp: "Сервер вернул неожиданный ответ.",
       unsupported: "Браузер не поддерживается",
       unsupportedSub: "Для расшифровки конфигов нужен современный браузер с Web Crypto и защищённое соединение https://.",
-      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn",
+      wg: "WireGuard", awg: "AmneziaWG", turn: "Turn", turnApp: "Приложение для turn proxy", forkApp: "Приложение {fork}",
       langName: "RU", themeToLight: "Светлая тема", themeToDark: "Тёмная тема", langLabel: "Язык",
     },
   };
@@ -189,6 +193,13 @@
   function iconBtn(cls, name, label) {
     var b = el("button", cls); b.type = "button"; b.title = label; b.setAttribute("aria-label", label); b.appendChild(iconEl(name)); return b;
   }
+  // brief "Copied to clipboard" bubble centred over a text box (its wrapper must be position:relative)
+  function flashCopied(container) {
+    if (!container) return;
+    var old = container.querySelector(".copied-bubble"); if (old) old.remove();
+    var b = el("div", "copied-bubble", t("copiedClip")); container.appendChild(b);
+    setTimeout(function () { if (b.parentNode) b.parentNode.removeChild(b); }, 1300);
+  }
   function setIcon(btn, name, label) {
     var old = btn.querySelector("svg"); if (old) old.remove();
     btn.insertBefore(iconEl(name), btn.firstChild);
@@ -201,7 +212,7 @@
   var PROTO_SVG = {
     wg: '<svg viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="wg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient></defs><path d="m 101.94526,94.697 c 30.017,-18.364 68.366,-7.1401 82.735,20.476 2.7233,5.2338 3.0694,13.291 1.3447,18.782 -5.9546,18.956 -20.014,29.587 -39.312,34.103 5.6892,-4.8707 10.218,-10.394 11.659,-18.025 a 26.402,26.402 0 0 0 -4.5425,-20.956 26.76,26.76 0 0 0 -30.811,-9.3892 c -11.881,4.5111 -18.389,15.354 -17.216,28.683 1.0898,12.381 10.484,20.405 28.061,23.453 -2.627,1.3904 -4.6503,2.4144 -6.6299,3.5172 a 63.918,63.918 0 0 0 -20.544,17.868 c -1.7839,2.4084 -3.0104,2.6024 -5.727,0.94116 -35.338,-21.61 -37.609,-75.844 0.98226,-99.453 z m -26.449,133.53 c -5.6769,1.441 -11.178,3.5742 -16.981,5.4775 2.8385,-19.151 25.265,-36.788 44.23,-34.776 a 48.881,48.881 0 0 0 -9.242,25.893 c -6.302,1.1606 -12.241,1.9414 -18.007,3.405 z m 120.79,-186.98 c 5.6099,0.20612 11.23,0.12091 16.844,0.25378 a 29.052,29.052 0 0 1 4.1674,0.58069 40.607,40.607 0 0 1 -4.2357,5.4332 c -2.007,1.8701 -4.2745,3.6986 -7.1661,0.856 -0.6955,-0.68372 -2.3386,-0.52679 -3.5487,-0.54272 -5.5823,-0.07336 -11.172,-0.25177 -16.746,-0.04132 a 104.04,104.04 0 0 0 -14.425,1.473 c -0.89368,0.16046 -2.2299,3.1315 -1.8191,4.227 0.9693,2.5853 2.3833,5.4363 4.4779,7.0898 7.7403,6.11 15.972,11.596 23.748,17.664 7.556,5.8966 14.589,12.358 18.875,21.253 5.5843,11.59 5.747,23.743 3.3388,35.95 -4.0203,20.378 -14.333,37.261 -31.032,49.524 -6.7288,4.941 -15.06,7.7451 -22.767,11.295 -6.778,3.1225 -13.755,5.8115 -20.549,8.9008 -12.249,5.5695 -19.133,18.865 -17.108,32.688 1.8585,12.685 12.987,23.271 25.735,25.456 15.292,2.6216 31.071,-7.3163 34.812,-22.86 4.2067,-17.478 -5.2898,-33.083 -23.065,-37.813 -0.78271,-0.20831 -1.5684,-0.40552 -3.2012,-0.8269 4.7549,-2.1245 8.8614,-3.6381 12.653,-5.7244 q 9.9213,-5.4594 19.481,-11.562 c 1.8742,-1.199 2.8868,-1.1996 4.4852,0.18225 12.225,10.57 19.518,23.718 21.563,39.839 3.3845,26.684 -9.2471,51.198 -33.072,63.762 -36.86,19.439 -81.965,-2.6864 -90.106,-43.552 -6.9738,-35.003 17.73,-66.754 47.462,-72.884 12.787,-2.6364 24.48,-7.9596 33.57,-17.807 5.8652,-6.3541 8.7084,-11.806 9.6772,-14.266 a 39.565,39.565 0 0 0 2.7211,-14.469 33.867,33.867 0 0 0 -2.9654,-12.398 c -3.104,-7.075 -14.995,-18.33 -17.939,-20.704 l -28,-21.921 c -0.98761,-0.81256 -2.0994,-0.75366 -4.5079,-0.59045 -2.8611,0.19391 -10.175,0.59888 -13.331,-0.22815 2.553,-1.9321 9.5132,-4.7451 12.502,-7.007 -9.0734,-6.1297 -19.43,-3.9158 -28.941,-5.7461 2.1992,-4.0959 13.081,-10.39 19.27,-11.091 a 91.533,91.533 0 0 0 -1.6876,-10.281 c -0.37781,-1.3917 -1.9312,-2.7408 -3.2864,-3.5355 -3.286,-1.9267 -6.7694,-3.5167 -10.549,-5.4327 a 21.936,21.936 0 0 1 11.332,-3.5055 42.316,42.316 0 0 1 11.348,1.1056 c 6.7422,1.5405 12.124,0.53491 17.488,-4.048 -4.222,-1.7002 -8.4435,-3.2535 -12.538,-5.0907 a 123.04,123.04 0 0 1 -11.779,-6.1583 c 10.622,1.4755 20.896,5.4585 31.757,4.0034 q 0.1387,-0.74048 0.27728,-1.4809 c -8.1194,-1.8899 -16.239,-3.7798 -25.229,-5.8724 15.04,-1.3769 29.042,-1.604 42.301,4.8541 3.731,1.8173 7.6348,3.3215 11.211,5.3972 1.7443,1.0124 2.9186,3.0078 4.3496,4.5594 1.1366,1.2325 2.0495,2.8837 3.446,3.6264 5.3,2.8184 11.134,2.9291 17.078,2.7879 0.0444,-0.67694 0.0861,-1.3114 0.1308,-1.9933 5.9821,1.8693 12.715,8.7679 12.704,13.806 -9.6911,0 -19.374,-0.037 -29.056,0.05389 -1.0348,0.0097 -2.0626,0.76563 -3.0936,1.1754 0.97986,0.57067 1.9428,1.5994 2.9423,1.6362 z" fill="url(#wg)" fill-rule="evenodd"/><path d="m 183.78526,26.906 a 1.4806,1.4806 0 0 0 -0.18927,2.3686 2.2326,2.2326 0 0 0 3.0724,0.8219 c 0.9328,-0.47052 1.8478,-0.97137 2.975,-1.5665 -0.9079,-0.775 -1.6362,-1.4148 -2.3857,-2.0324 -1.318,-1.086 -2.411,-0.40386 -3.4724,0.40833 z" fill="#2B7CD3" opacity=".55"/></svg>',
     awg: '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="ag" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient></defs><path d="M20.28 0.84 20.64 0.84 20.64 2.76 20.52 2.88 20.52 3.72 20.4 3.84 20.28 4.44 20.76 5.28 20.88 5.76 21.48 6.36 21.84 6.36 22.32 6.6 22.2 9.96 22.56 10.92 22.56 12.48 22.44 12.6 22.44 12.96 22.2 13.32 22.2 13.56 21.96 13.92 21.84 15.0 21.6 15.36 21.48 15.84 21.0 16.44 20.76 17.04 20.04 17.76 18.84 18.6 16.8 20.64 16.68 21.0 16.44 21.24 16.32 21.72 15.96 22.2 15.84 22.8 15.48 23.16 15.12 23.16 14.88 22.92 14.64 22.44 14.52 21.48 14.28 21.12 14.28 20.88 14.04 20.64 12.96 20.64 12.84 20.76 10.32 20.64 10.08 20.76 9.6 21.36 9.24 23.04 9.12 23.16 8.76 23.16 8.52 22.92 7.2 20.04 6.48 19.44 5.52 19.08 5.04 18.6 4.92 18.6 3.48 17.16 2.88 16.32 2.28 15.12 2.28 14.88 1.92 14.28 1.92 13.92 1.56 12.96 1.56 11.28 1.68 11.16 1.68 10.2 1.8 10.08 1.8 9.0 1.92 8.88 2.28 7.56 2.76 6.6 3.6 5.52 3.6 4.68 3.72 4.56 3.72 4.2 3.6 4.08 3.6 1.8 3.72 1.68 3.72 1.32 4.2 1.32 4.44 1.68 4.8 2.4 4.8 2.64 5.04 3.12 5.04 3.48 5.28 3.84 6.0 3.0 6.48 3.0 7.08 2.52 8.76 1.68 9.0 1.68 9.48 1.44 10.56 1.44 10.68 1.32 12.96 1.32 13.08 1.44 13.8 1.44 13.92 1.56 14.88 1.68 15.6 2.04 15.96 2.04 16.44 2.28 17.04 1.92 17.76 1.92 18.0 2.28 18.0 2.52 18.24 3.0 18.48 3.24 18.84 3.24 19.44 2.4 20.16 0.96ZM10.92 3.6 13.44 3.6 13.56 3.72 13.92 3.72 14.04 3.84 14.64 3.96 15.72 4.56 16.44 4.68 17.04 5.16 17.4 5.28 17.76 5.64 17.76 5.88 17.64 6.0 17.64 6.84 17.52 6.96 17.52 7.68 17.4 7.8 17.4 9.0 17.28 9.12 17.28 9.72 17.16 9.84 17.16 10.56 17.04 10.68 17.04 11.16 16.8 11.64 16.8 12.0 16.56 12.48 16.56 13.08 16.44 13.2 16.32 14.16 16.2 14.28 16.08 15.6 15.96 15.72 15.84 16.44 15.48 17.28 15.24 17.4 15.0 16.44 14.76 16.08 14.76 15.6 14.4 15.0 14.4 14.76 13.92 13.8 13.92 13.08 13.44 11.76 13.32 10.32 12.96 9.48 12.96 9.12 12.84 9.0 12.6 8.04 12.36 7.8 12.0 7.8 11.88 7.92 11.76 8.4 11.52 8.76 11.52 9.0 11.28 9.48 11.16 10.44 11.04 10.56 11.04 11.04 10.92 11.16 10.92 11.64 10.68 12.24 10.56 13.2 10.08 14.16 10.08 14.4 9.96 14.52 9.48 16.2 9.24 16.56 9.0 17.52 8.76 17.64 8.52 17.28 8.52 17.04 8.28 16.56 8.28 16.08 7.92 15.12 7.92 14.76 7.68 14.28 7.56 13.44 7.32 12.96 7.32 12.48 7.08 11.88 7.08 11.4 6.72 10.44 6.72 9.96 6.48 9.36 6.48 8.76 6.36 8.64 6.36 8.16 6.24 8.04 6.24 7.44 6.12 7.32 6.12 6.84 5.88 6.24 5.88 5.76 6.48 5.16 7.8 4.44 8.04 4.44 9.24 3.96 9.72 3.96 10.32 3.72 10.8 3.72ZM19.32 8.28 19.8 9.0 19.92 10.08 20.04 10.2 19.92 12.48 19.68 12.96 19.56 13.68 19.08 14.52 19.08 14.76 18.6 15.72 17.52 16.92 17.88 16.2 18.0 14.76 18.12 14.64 18.12 14.28 18.36 13.8 18.36 13.32 18.48 13.2 18.48 12.84 18.72 12.24 18.72 11.52 18.84 11.4 18.84 10.92 18.96 10.8 18.96 10.32 19.08 10.2 19.08 9.48 19.2 9.36 19.32 8.4ZM3.96 8.4 4.08 8.4 4.44 9.12 4.92 10.8 5.28 11.4 5.52 12.6 5.64 12.72 5.64 13.2 5.76 13.32 5.76 13.92 6.0 14.52 6.0 16.44 5.64 16.68 5.16 16.44 4.32 15.48 3.24 13.32 3.12 12.6 3.0 12.48 3.0 12.0 3.12 11.88 3.12 10.32 3.24 10.2 3.24 9.84 3.6 9.24 3.6 9.0 3.96 8.52ZM12.12 13.08 12.24 13.2 12.24 13.56 12.6 14.52 12.96 16.44 13.08 16.56 13.44 17.88 12.84 18.6 12.24 18.84 10.8 18.72 10.56 18.48 10.8 18.0 10.8 17.64 10.92 17.52 11.04 16.92 11.16 16.8 11.16 16.44 11.28 16.32 11.28 15.96 11.52 15.36 11.52 14.88 11.64 14.76 11.76 13.92 12.12 13.2Z" fill="url(#ag)" fill-rule="evenodd"/></svg>',
-    turn: '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient><linearGradient id="gtt" gradientUnits="userSpaceOnUse" x1="10.3" y1="3.7" x2="13.7" y2="6.4"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient></defs><path d="M10.3 3.7 H13.7" fill="none" stroke="url(#gtt)" stroke-width="1.1" stroke-linecap="round"/><path d="M12 3.7 V6.4" fill="none" stroke="url(#gtt)" stroke-width="1.1" stroke-linecap="round"/><path d="M6.2 8.4a5.4 5.4 0 0 0 0 7.2" fill="none" stroke="#8B6FF2" stroke-width="1.8" stroke-linecap="round"/><path d="M17.8 8.4a5.4 5.4 0 0 1 0 7.2" fill="none" stroke="url(#g1)" stroke-width="1.8" stroke-linecap="round"/><path d="M3.8 6a8.8 8.8 0 0 0 0 12" fill="none" stroke="#8B6FF2" stroke-width="1.8" stroke-linecap="round" opacity=".9"/><path d="M20.2 6a8.8 8.8 0 0 1 0 12" fill="none" stroke="url(#g1)" stroke-width="1.8" stroke-linecap="round" opacity=".9"/><rect x="8.5" y="9" width="7" height="6" rx="2" fill="#2B7CD3"/></svg>'
+    turn: '<svg viewBox="1.5 1.6 21 20.8" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g1" gradientUnits="userSpaceOnUse" x1="2" y1="4" x2="22" y2="20"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient></defs><path d="M16.7 5.2 A8.7 8.7 0 1 0 16.7 18.8" fill="none" stroke="url(#g1)" stroke-width="1.6" stroke-linecap="round"/><path d="M14.44 18.98 L12.94 21.57" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M12.32 19.66 L15.06 20.88" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M7.87 19.12 L4.91 19.64" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M5.98 17.94 L6.8 20.82" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M3.53 14.17 L1.24 12.25" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M3.22 11.97 L1.55 14.45" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M4.53 7.68 L4.53 4.68" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M6.03 6.02 L3.04 6.34" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M10.15 4.27 L12.45 2.34" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M12.38 4.35 L10.22 2.26" fill="none" stroke="url(#g1)" stroke-width="0.95" stroke-linecap="round"/><path d="M11 9.7 V12.4" fill="none" stroke="url(#g1)" stroke-width="1.35" stroke-linecap="round"/><path d="M11 12.4 L8.1 14.4" fill="none" stroke="url(#g1)" stroke-width="1.35" stroke-linecap="round"/><path d="M11 12.4 L13.9 14.4" fill="none" stroke="url(#g1)" stroke-width="1.35" stroke-linecap="round"/><circle cx="11" cy="7.7" r="2.0" fill="none" stroke="url(#g1)" stroke-width="1.35"/><circle cx="7.5" cy="15.4" r="1.5" fill="none" stroke="url(#g1)" stroke-width="1.35"/><circle cx="14.5" cy="15.4" r="1.5" fill="none" stroke="url(#g1)" stroke-width="1.35"/><path d="M17.5 9.9 H20.4" fill="none" stroke="url(#g1)" stroke-width="1.25" stroke-linecap="round"/><path d="M17.5 11.7 H21.4" fill="none" stroke="url(#g1)" stroke-width="1.25" stroke-linecap="round"/><path d="M17.5 13.5 H20.4" fill="none" stroke="url(#g1)" stroke-width="1.25" stroke-linecap="round"/></svg>'
   };
   var _protoN = 0;
   function protoIcon(mode) {
@@ -219,13 +230,23 @@
   // EVERY block's font in lockstep until the whole box fits VERTICALLY (all lines show); over-wide lines scroll
   // horizontally (thin bar) — never vertically.
   function fitText(box) {
-    var pres = (box.classList && box.classList.contains("cfgtext")) ? [box]
-             : (box.querySelectorAll ? [].slice.call(box.querySelectorAll(".cfgtext")) : []);
+    if (box.querySelector && box.querySelector(".qrbox")) return;   // QR view: the QR is fixed and the command keeps its normal font
+    var pres = (box.classList && box.classList.contains("cfgtext") && !box.classList.contains("cmdtext")) ? [box]
+             : (box.querySelectorAll ? [].slice.call(box.querySelectorAll(".cfgtext:not(.cmdtext)")) : []);   // the command keeps its own font
     if (!pres.length) return;
-    var CEIL = 20, FLOOR = 5, f = CEIL, j;
+    // Landscape/desktop is a simple scrolling document — every config box uses ONE uniform CSS font size (no
+    // per-config fit-shrinking, which made wrapping links render larger than the width-limited AWG config).
+    if (window.matchMedia && window.matchMedia("(orientation: landscape)").matches) {
+      for (var q = 0; q < pres.length; q++) pres[q].style.fontSize = "";
+      return;
+    }
+    var CEIL = 21, FLOOR = 3, f = CEIL, j;   // ceiling; floor low so a huge AWG config still fits alongside the command
     for (j = 0; j < pres.length; j++) pres[j].style.fontSize = CEIL + "px";
     for (var i = 0; i < 80 && f > FLOOR; i++) {
-      if (box.scrollHeight <= box.clientHeight + 1) break;
+      var fits = box.scrollHeight <= box.clientHeight + 1;                 // whole box fits vertically…
+      for (j = 0; fits && j < pres.length; j++)                           // …and every NON-wrapping block fits its width
+        if (!pres[j].classList.contains("wrap") && !pres[j].classList.contains("cmdtext") && pres[j].scrollWidth > pres[j].clientWidth + 1) fits = false;
+      if (fits) break;
       f -= 0.5; for (j = 0; j < pres.length; j++) pres[j].style.fontSize = f + "px";
     }
   }
@@ -238,7 +259,7 @@
     "samosvalishe": { dark: "#E0A85F", light: "#C07A1E" }, "Moroka8": { dark: "#E07A9A", light: "#C24468" },
     "kiper292": { dark: "#6FD9A8", light: "#12A46B" }, "anton48": { dark: "#D9CF5F", light: "#8E8420" } };
   var IFACE_COLORS = { wg: { dark: "#3FD89A", light: "#0E9E63" }, awg: { dark: "#1FC8D6", light: "#0E9BB0" } };
-  var THEME = { color: "", light: "", forkOv: {}, ifaceOv: {} };   // set from the served subscription data
+  var THEME = { color: "", light: "", forkOv: {}, ifaceOv: {}, nodeOv: {} };   // set from the served subscription data
   function isLight() {
     var d = document.documentElement.getAttribute("data-theme");   // manual override wins; else the OS preference
     if (d === "light") return true; if (d === "dark") return false;
@@ -258,6 +279,7 @@
   }
   function forkColor(fork) { var d = FORK_COLORS[fork] || { dark: "#8FA8C0", light: "#5E7085" }; return pickThemed(THEME.forkOv[fork], d.dark, d.light); }
   function ifaceColor(type) { var k = (type || "").toLowerCase() === "awg" ? "awg" : "wg"; return pickThemed(THEME.ifaceOv[k], IFACE_COLORS[k].dark, IFACE_COLORS[k].light); }
+  function nodeColor(nodeId, fallback) { var c = THEME.nodeOv[nodeId]; return (c && (c.dark || c.light)) ? pickThemed(c, fallback, fallback) : fallback; }   // server name in its panel colour
   function modeColor(m) { return m === "turn" ? "#7C5CFF" : ifaceColor(m); }   // Turn = the panel's turn-proxy accent (violet)
   function applyFavicon(accent, light) {
     var centre = light ? "#FFFFFF" : "#0A0E15";
@@ -292,12 +314,27 @@
     document.documentElement.lang = LANG;
     return enabled;
   }
-  function setLang(l) { LANG = l; _lsSet("swgsub-lang", l); document.documentElement.lang = l; paintCtl(); if (_lastData && _lastKey) render(_lastData, _lastKey); }
+  // Capture where the reader is right now (which page + deployment + QR/config view) so a rebuild can restore it.
+  function capturePos() {
+    var pager = document.querySelector("#peers .pager");
+    if (!pager) return null;
+    var pages = pager.children; if (!pages.length) return null;
+    var top = pager.getBoundingClientRect().top + 6, pi = pages.length - 1;
+    for (var i = 0; i < pages.length; i++) { if (pages[i].getBoundingClientRect().bottom > top) { pi = i; break; } }
+    var pg = pages[pi], sub = (pg && pg._pos) ? pg._pos() : { cell: 0, view: null };
+    return { page: pi, cell: sub.cell, view: sub.view };
+  }
+  function reRender() {   // rebuild for a lang/theme change, but land the reader back where they were
+    if (!_lastData || !_lastKey) return;
+    var pos = capturePos();
+    render(_lastData, _lastKey, pos);
+  }
+  function setLang(l) { LANG = l; _lsSet("swgsub-lang", l); document.documentElement.lang = l; paintCtl(); reRender(); }
   function setTheme(mode) {   // "light" | "dark" | "" (auto)
     _lsSet("swgsub-theme", mode);
     if (mode) document.documentElement.setAttribute("data-theme", mode); else document.documentElement.removeAttribute("data-theme");
     applyBrand(); paintCtl();
-    if (_lastData && _lastKey) render(_lastData, _lastKey);   // re-tint the fork tags + mode tabs for the new mode
+    reRender();   // re-tint the fork tags + mode tabs for the new mode, keeping the reader in place
   }
   var _iconSun = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round'><circle cx='12' cy='12' r='4.2'/><path d='M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4'/></svg>";
   var _iconMoon = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8z'/></svg>";
@@ -305,13 +342,37 @@
     var enabled = LANGS.filter(function (l) { return SUPPORTED.indexOf(l) >= 0; }); if (!enabled.length) enabled = ["en"];
     var lb = document.getElementById("lang-btn");
     if (lb) {
-      if (enabled.length > 1) { lb.hidden = false; lb.textContent = (STR[LANG] || STR.en).langName; lb.title = t("langLabel"); }
+      if (enabled.length > 1) { lb.hidden = false;
+        var nextLang = enabled[(enabled.indexOf(LANG) + 1) % enabled.length];   // the button shows what you'd SWITCH TO
+        lb.textContent = (STR[nextLang] || STR.en).langName; lb.title = t("langLabel"); }
       else lb.hidden = true;                       // one language → no selector, just the default
     }
     var tb = document.getElementById("theme-btn");
     if (tb) { var light = isLight(); tb.innerHTML = light ? _iconMoon : _iconSun; tb.title = light ? t("themeToDark") : t("themeToLight"); }
   }
+  var _noFocusRing = false;
+  function suppressButtonFocus() {   // mouse-clicking a button must not leave it focused (a later key press would flash its focus ring)
+    if (_noFocusRing) return; _noFocusRing = true;
+    document.addEventListener("mousedown", function (e) {
+      var b = e.target && e.target.closest && e.target.closest("button");
+      if (b) e.preventDefault();   // don't focus on click; keyboard Tab focus still works
+    }, false);
+  }
+  var _stickWired = false;
+  function wireStickyHeader() {   // landscape/desktop only: past the fold, collapse the header into a sticky top bar + a side rail
+    if (_stickWired) return; _stickWired = true;
+    var update = function () {
+      var landscape = window.matchMedia && window.matchMedia("(orientation: landscape)").matches;
+      var y = window.scrollY || document.documentElement.scrollTop || 0;
+      document.body.classList.toggle("scrolled", !!landscape && y > 70);
+    };
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update, { passive: true });
+    update();
+  }
   function wireControls() {
+    suppressButtonFocus();
+    wireStickyHeader();
     var lb = document.getElementById("lang-btn"), tb = document.getElementById("theme-btn");
     if (lb && !lb._wired) { lb._wired = 1; lb.onclick = function () {
       var en = LANGS.filter(function (l) { return SUPPORTED.indexOf(l) >= 0; }); if (!en.length) en = ["en"];
@@ -402,19 +463,30 @@
   //    toggled IN PLACE. Returns { el, ctrl }. ctrl drives the peer's fixed bottom bar (toggle/copy/download)
   //    so the currently-swiped cell's actions live in one steady spot. A turn artifact may resolve async
   //    (wingsv:// needs zlib) — the cell shows "Generating…" then fills. ──
-  function makeCell(userName, peer, it, mode, secret, vkLink, reason) {
+  function makeCell(userName, peer, it, mode, secret, vkLink, reason, multi) {
     var tgt = it.tgt, cell = el("div", "scell");
     var node = el("div", "scell-node");
-    if (mode !== "turn" && tgt.primary && (peer.targets || []).length > 1) node.appendChild(el("span", "scell-primary", t("primary")));
-    var srvRow = el("div", "scell-srv");   // server name + (turn fork tag) on one line
-    srvRow.appendChild(el("span", "scell-server", tgt.node_name || tgt.node || tgt.iface || "server"));
+    var srvRow = el("div", "scell-srv");   // holds the protocol/app badge + the Primary/Backup role — the server name rides the peer-title line
     node.appendChild(srvRow);
+    if (mode !== "turn") {   // WG/AWG cells get a protocol badge (like the turn app badge) + Primary/Backup when there's >1 deployment
+      var ic0 = ifaceColor(tgt.type);
+      var ib = el("span", "scell-tag", tgt.type === "awg" ? t("awg") : t("wg"));
+      ib.style.color = ic0;
+      srvRow.appendChild(ib);
+      if (multi) {
+        var isBk0 = !tgt.primary;
+        var role0 = el("span", "scell-role" + (isBk0 ? " scell-backup" : ""), tgt.primary ? t("primary") : t("backup"));
+        if (!isBk0) role0.style.color = ic0;
+        srvRow.appendChild(role0);
+      }
+    }
     var stage = el("div", "scell-stage");
     cell.appendChild(node); cell.appendChild(stage);
 
     var conf = secret && secret.k ? confFor(secret, tgt) : null;
     var ctrl = { ready: false, payload: "", ext: "conf", isLink: false, hasQR: false, cmd: null, view: "qr",
-                 base: fileName(userName, peer.title, tgt), redraw: null, notify: null };
+                 base: fileName(userName, peer.title, tgt), redraw: null, notify: null,
+                 srvName: (tgt.node_name || tgt.node || tgt.iface || "server"), srvColor: nodeColor(tgt.node, ifaceColor(tgt.type)) };
 
     ctrl.copyInto = function (btn, restore) {
       (navigator.clipboard ? navigator.clipboard.writeText(ctrl.payload) : Promise.reject()).then(function () {
@@ -422,22 +494,41 @@
       }, function () { if (btn) { btn.textContent = t("copyFailed"); setTimeout(function () { btn.textContent = restore; }, 1400); } });
     };
 
-    // the sidecar client-command block — shown UNDER the config OR under the QR (the QR only replaces the WG/AWG config)
-    function cmdBlock() {
+    // the sidecar client-command block — shown UNDER the config OR under the QR (the QR only replaces the WG/AWG
+    // config). Under the QR it carries no "CLIENT COMMAND" label and keeps the normal config font (not shrunk).
+    // a small copy affordance overlaid on a text box; getText() supplies the payload when tapped; `bubbleIn` (a
+    // position:relative wrapper) gets a centred "Copied to clipboard" bubble on success.
+    function copyBtn(cls, getText, bubbleIn) {
+      var b = iconBtn(cls, "copy", t("copyConfig"));
+      b.onclick = function (e) { if (e) e.stopPropagation();
+        (navigator.clipboard ? navigator.clipboard.writeText(getText()) : Promise.reject())
+          .then(function () { setIcon(b, "check", t("copied")); setTimeout(function () { setIcon(b, "copy", t("copyConfig")); }, 1400); flashCopied(bubbleIn); }, function () {}); };
+      return b;
+    }
+    function cmdBlock(withLabel) {
       if (!ctrl.cmd) return null;
-      var c = el("div", "cmdblk"); c.appendChild(el("div", "cmdlbl", t("clientCmd")));
-      var cp = el("pre", "cfgtext cmdtext", ctrl.cmd); cp.title = t("tapCopy");
-      cp.onclick = function () { if (navigator.clipboard) navigator.clipboard.writeText(ctrl.cmd); };
-      c.appendChild(cp); return c;
+      var c = el("div", "cmdblk");
+      if (withLabel) c.appendChild(el("div", "cmdlbl", t("clientCmd")));
+      var box = el("div", "cmdrow");   // the one-line command + a copy affordance pinned to its right edge
+      var cp = el("pre", "cfgtext cmdtext", ctrl.cmd); cp.title = t("tapCopy");   // fixed readable font via CSS; clips if long
+      var copy = copyBtn("cmdcopy", function () { return ctrl.cmd; }, box);
+      cp.onclick = function () { copy.onclick(); };
+      box.appendChild(cp); box.appendChild(copy);
+      c.appendChild(box); return c;
     }
     // Re-fit the block(s) only when the stage WIDTH changes (viewport / rotation). Our layout pass nudges the stage's
     // top padding — a HEIGHT-only change — and re-fitting on that would fight the placement (fit ↔ shift oscillation).
     function attachFit(wrap) {
+      var doFit = function () {
+        fitText(wrap);
+        var mp = wrap.querySelector(".cfgtext");   // remember the config's fitted size so the QR view's command matches
+        if (mp && !wrap.querySelector(".qrbox") && mp.style.fontSize) ctrl.cfgFont = mp.style.fontSize;
+        if (ctrl.notify) ctrl.notify();
+      };
       if (window.ResizeObserver) { var _lw = -1;
-        ctrl._ro = new ResizeObserver(function () { var w = Math.round(stage.getBoundingClientRect().width);
-          if (w === _lw) return; _lw = w; fitText(wrap); if (ctrl.notify) ctrl.notify(); });
+        ctrl._ro = new ResizeObserver(function () { var w = Math.round(stage.getBoundingClientRect().width); if (w === _lw) return; _lw = w; doFit(); });
         ctrl._ro.observe(stage); }
-      else setTimeout(function () { fitText(wrap); if (ctrl.notify) ctrl.notify(); }, 0);
+      else setTimeout(doFit, 0);
     }
     function draw() {
       if (ctrl._ro) { ctrl._ro.disconnect(); ctrl._ro = null; }
@@ -449,7 +540,7 @@
         catch (_) { ctrl.qrUrl = null; ctrl.hasQR = false; ctrl.view = "text"; return draw(); }
         box.title = t("enlarge");   // tap the QR to open it fullscreen for scanning
         box.onclick = function () { zoomQR(ctrl.payload, [peer.title, tgt.node_name || tgt.node].filter(Boolean).join(" · ")); };
-        var cmdQ = cmdBlock();
+        var cmdQ = cmdBlock(true);               // QR view: keep the "Client command" label, same as the config view
         if (!cmdQ) { stage.appendChild(box); }   // plain single QR
         else {                                   // dual config: QR replaces the WG/AWG config, the command stays under it
           var wrapq = el("div", "textwrap"); wrapq.appendChild(box); wrapq.appendChild(cmdQ);
@@ -457,10 +548,13 @@
         }
       } else {
         var wrap = el("div", "textwrap");
+        var cfgwrap = el("div", "cfgwrap");   // relative box so the copy affordance sits in the bottom-right corner
         var pre = el("pre", "cfgtext" + (ctrl.isLink ? " wrap" : ""), ctrl.payload); pre.title = t("tapCopy");
-        pre.onclick = function () { ctrl.copyInto(null, ""); };
-        wrap.appendChild(pre);
-        var cmdT = cmdBlock(); if (cmdT) wrap.appendChild(cmdT);
+        pre.onclick = function () { ctrl.copyInto(null, ""); flashCopied(cfgwrap); };
+        cfgwrap.appendChild(pre);
+        cfgwrap.appendChild(copyBtn("cfgcopy", function () { return ctrl.payload; }, cfgwrap));
+        wrap.appendChild(cfgwrap);
+        var cmdT = cmdBlock(true); if (cmdT) wrap.appendChild(cmdT);   // config view: labelled, fit with the config
         stage.appendChild(wrap); attachFit(wrap);
       }
       if (ctrl.notify) ctrl.notify();
@@ -468,35 +562,46 @@
     ctrl.redraw = draw;
 
     if (mode === "turn") {
-      var tp = it.tp, tag = el("span", "scell-tag", SWGTurn.fork(tp.service));   // fork tag beside the server name
-      var fc = forkColor(SWGTurn.fork(tp.service));                             // the panel's colour for this fork
+      var tp = it.tp, forkId = SWGTurn.fork(tp.service);
+      var fc = forkColor(forkId);                                               // the panel's colour for this fork
+      var art = conf ? SWGTurn.artifact(conf, tp, vkLink) : null;
+      // app badge: cacggghp = no app → "Turn proxy app"; a branded name → that name; otherwise "{fork} app"
+      var appInfo = (forkId === "cacggghp") ? { badge: t("turnApp"), kind: "none" }
+                  : (art && art.app) ? { badge: art.app, kind: "app", app: art.app }
+                  : { badge: t("forkApp").replace("{fork}", forkId), kind: "fork", fork: forkId };
+      var tag = el("span", "scell-tag", appInfo.badge);
       tag.style.color = fc;
-      tag.style.borderColor = "color-mix(in srgb, " + fc + " 42%, transparent)";
-      tag.style.background = "color-mix(in srgb, " + fc + " 15%, transparent)";
       srvRow.appendChild(tag);
+      // role + interface next to the badge: multi → "Primary/Backup WG"; single → "WG". Primary/single = iface colour, backup = grey.
+      var ifaceUp = (tgt.type === "awg") ? "AWG" : "WG";
+      var isBackup = multi && !tgt.primary;
+      var role = el("span", "scell-role" + (isBackup ? " scell-backup" : ""), (multi ? (tgt.primary ? t("primary") : t("backup")) + " " : "") + ifaceUp);
+      if (!isBackup) role.style.color = ifaceColor(tgt.type);
+      srvRow.appendChild(role);
       if (!conf) { draw(); return { el: cell, ctrl: ctrl }; }
-      var art = SWGTurn.artifact(conf, tp, vkLink);
-      node.appendChild(el("span", "scell-paste", t("pasteInto") + " " + (art.app || art.fork)));
-      // The VK-link notice (needed by freeturn/samosvalishe forks) is shown in a bar UNDER the icon row, not in the
-      // cell — syncBar surfaces the current deployment's notice via ctrl.vkEl.
-      if (art.vkMissing) {   // no per-user VK link — every fork needs one; warn (the config carries no link / a placeholder)
-        var vkw2 = el("div", "scell-vkwarn");
+      // VK-link notice (freeturn/samosvalishe forks): lives in the cell, positioned by syncVHints BETWEEN the
+      // up-arrow and the box (the up-arrow moves up to make room). Same slot for the "no VK link" warning.
+      if (art.vkMissing) {
+        var vkw2 = el("div", "scell-vk scell-vkwarn");
         vkw2.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));
-        vkw2.appendChild(el("div", "scell-vkwarn-d", t("vkMissing").replace("{app}", art.app || art.fork)));
-        ctrl.vkEl = vkw2;
-      } else if (art.vk) {   // link present + freeturn:// (can't carry it) → show it so the recipient can copy it into the app
+        vkw2.appendChild(el("div", "scell-vkwarn-d", t("vkMissing").replace("{app}", t("theApp"))));
+        cell.appendChild(vkw2);
+      } else if (art.vk) {
         var raw = (vkLink || "").trim();
         var vkw = el("div", "scell-vk");
-        vkw.appendChild(el("span", "scell-vklbl", t("vkThen")));
+        var vkLbl = (appInfo.kind === "none") ? t("vkAddGeneric")
+                  : (appInfo.kind === "app") ? t("vkAddApp").replace("{app}", appInfo.app)
+                  : t("vkAddFork").replace("{fork}", appInfo.fork);
+        vkw.appendChild(el("span", "scell-vklbl", vkLbl));
         var vkb = el("button", "scell-vkbtn", raw); vkb.title = t("tapCopy");
         vkb.onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(raw) : Promise.reject()).then(function () { var o = raw; vkb.textContent = t("copied"); setTimeout(function () { vkb.textContent = o; }, 1400); }, function () {}); };
         vkw.appendChild(vkb);
-        ctrl.vkEl = vkw;
+        cell.appendChild(vkw);
       }
       var apply = function (text) {
         ctrl.payload = text; ctrl.ready = true; ctrl.ext = art.ext || "conf";
         ctrl.isLink = !!art.uri; ctrl.hasQR = !!art.qr; ctrl.cmd = art.cmd || null;
-        ctrl.view = (art.qr && !art.cmd) ? "qr" : "text";   // scannable link/conf → QR; sidecar dual → wg text first
+        ctrl.view = art.qr ? "qr" : "text";   // anything scannable (incl. dual config + command) opens on the QR
         draw();
       };
       if (art.text != null) apply(art.text);
@@ -515,7 +620,6 @@
   //    vertical pager stacks these grouped by protocol, so up/down walks peer→peer and left/right walks a
   //    peer's deployments. Returns null if this peer has no deployment in `mode`. ──
   var _relayoutRail = null;   // render() points this at its alignRail so a page's layout pass can re-centre the icon rail
-  var _setVk = null;          // render() points this at its VK-bar setter; syncBar feeds it the current deployment's notice
   function peerProtoPage(mode, row, vkLink, userName) {
     var peer = row.peer, secret = row.secret, items = [];
     if (mode === "turn") {
@@ -536,22 +640,24 @@
     var page = el("section", "ppage");
     page.setAttribute("data-mode", mode);
     var head = el("div", "ppage-head");
-    head.appendChild(el("span", "ppage-title", peer.title || t("peer")));
+    var titleEl = el("span", "ppage-title", (peer.title || t("peer")) + " ");
+    var srvEl = el("span", "ppage-srv");   // "· edge-1" in the server colour — updated per deployment by syncBar
+    titleEl.appendChild(srvEl); head.appendChild(titleEl);
     // deployment nav row (only when >1 deployment): the dots flanked by left/right hint arrows — the LEFT/RIGHT
     // SWIPE walks the deployments; the arrows are graphical hints (non-interactive), each fading at its end.
     var dotEls = [], sL, sR;
     if (items.length > 1) {
       var navrow = el("div", "navrow");
-      sL = hint("navarrow navarrow-l", "l");
       var dots = el("div", "ppage-dots"); for (var i = 0; i < items.length; i++) { var d = el("span", "pdot"); dotEls.push(d); dots.appendChild(d); }
-      sR = hint("navarrow navarrow-r", "r");
-      navrow.appendChild(sL); navrow.appendChild(dots); navrow.appendChild(sR);
+      navrow.appendChild(dots);   // the dots stay by the peer name; the L/R arrows move to the screen edges
       head.appendChild(navrow);
+      sL = hint("navarrow navarrow-l", "l"); sR = hint("navarrow navarrow-r", "r");
+      page.appendChild(sL); page.appendChild(sR);   // screen-edge arrows, vertically centred on the box by syncVHints
     }
     page.appendChild(head);
 
     var srow = el("div", "srow");
-    var ctrls = items.map(function (it) { var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason); srow.appendChild(cc.el); return cc.ctrl; });
+    var ctrls = items.map(function (it) { var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason, items.length > 1); srow.appendChild(cc.el); return cc.ctrl; });
     page.appendChild(srow);
 
     // up/down swipe HINT (vertical, between peers) — flanks the QR top/bottom; render hides the ends.
@@ -571,7 +677,7 @@
     function flashIcon(btn, base, label) { setIcon(btn, "check", t("copied")); setTimeout(function () { setIcon(btn, base, label); }, 1400); }
     // Keep the up/down hints an IDENTICAL gap from the visible content box, whatever its size — so a taller
     // config (e.g. AWG with the full S1–I5 ranges) pushes them out exactly as the QR does. Measured live.
-    var VH_GAP = 16;
+    var VH_GAP = 16, VH_GAP_CFG = 8;   // arrow↔box gap — normal for a QR, tighter for a config (arrows hug it)
     // One layout pass for the vertical stack around the content box (QR / config / turn link):
     //   [ name block ] — G — [ up arrow ] — VH_GAP — [ content ] — VH_GAP — [ down arrow ] — G — [ buttons ]
     // The content stays centred; the up/down arrows keep a fixed gap off its edges (so a big config pushes them
@@ -582,69 +688,103 @@
       var stage = cellEl && cellEl.querySelector(".scell-stage");
       var content = stage && stage.querySelector(".qrbox, .textwrap, .cfg-fail");   // .textwrap wraps 1–2 config blocks
       if (!content) return;
+      // a QR (or QR+command) keeps the normal arrow gap; a plain config gets a tighter one (arrows hug it)
+      var isQR = content.classList.contains("qrbox") || (content.querySelector && !!content.querySelector(".qrbox"));
+      var vg = isQR ? VH_GAP : VH_GAP_CFG;
       var pr = page.getBoundingClientRect();
       var uH = vUp.offsetHeight || 27, dH = vDown.offsetHeight || 27;
 
-      // Desktop / landscape scrolls as a normal document — restore in-flow layout, only park the arrows.
+      // Desktop / landscape scrolls as a normal document — restore FULL in-flow layout (CSS handles the rest); the
+      // up/down chevrons are hidden (CSS), and the L/R deployment buttons are centred on the content column.
       if (window.matchMedia && window.matchMedia("(orientation: landscape)").matches) {
-        stage.style.alignItems = ""; stage.style.paddingTop = ""; head.style.top = "";
-        vUp.style.left = ""; vDown.style.left = "";
-        Array.prototype.forEach.call(srow.children, function (c) { var n = c.querySelector(".scell-node"); if (n) n.style.top = ""; });
-        var crl = content.getBoundingClientRect();
-        vUp.style.top = Math.round(crl.top - pr.top - VH_GAP - uH) + "px";
-        vDown.style.top = Math.round(crl.bottom - pr.top + VH_GAP) + "px";
+        head.style.top = ""; head.style.gap = ""; head.style.paddingTop = "";
+        vUp.style.left = ""; vDown.style.left = ""; vUp.style.top = ""; vDown.style.top = "";
+        Array.prototype.forEach.call(srow.children, function (c) {   // clear ALL portrait inline positioning on every cell
+          var st = c.querySelector(".scell-stage"); if (st) { st.style.alignItems = ""; st.style.paddingTop = ""; }
+          var n = c.querySelector(".scell-node"); if (n) n.style.top = "";
+          var k = c.querySelector(".scell-vk"); if (k) k.style.top = "";
+          var w = c.querySelector(".textwrap"); if (w) w.style.gap = "";
+        });
+        if (sL && sR) {   // centre the nav buttons on the CURRENT cell's content (QR / config, incl. the client command)
+          var sc = stage.getBoundingClientRect();
+          var midY = Math.round(sc.top - pr.top + sc.height / 2);
+          sL.style.top = midY + "px"; sR.style.top = midY + "px"; sL.style.left = ""; sR.style.left = "";
+        }
         return;
       }
 
-      // Portrait: place the content box ourselves so the stack balances. Anchor everything off the box's HEIGHT
-      // (position-independent), then derive the box top that makes the name-block top land at NAME_TOP with
-      // gap(name→up-arrow) == gap(down-arrow→buttons).
+      // Portrait: distribute EVERY content line evenly between the two screen edges. Each visible line — up-arrow,
+      // peer+server title, deployment dots, app tag, VK notice, the config/QR box, the client command — gets the SAME
+      // gap G above and below (incl. the outer margins to the edges). Two pairs stay intentionally tight: the VK
+      // notice's own two lines, and the command's label+box. G is solved from the room left after the fixed-height
+      // lines; the config box is the one element that resizes (font-fit) so the whole column fits.
       var node = cellEl.querySelector(".scell-node");
-      var headH = head.offsetHeight || 0, nodeH = node ? node.offsetHeight : 0;
-      var GAP_HN = 6, NAME_TOP = 8, IDEAL_G = 48;
-      var nameBlockH = headH + GAP_HN + nodeH;
-      var cH = content.offsetHeight;
-      var barTop = bar.getBoundingClientRect().top - pr.top;
-      var stageTop = stage.getBoundingClientRect().top - pr.top;
+      var vk = cellEl.querySelector(".scell-vk");
+      var hasVk = vk && getComputedStyle(vk).display !== "none";
+      // the box and its parts (config vs. sidecar command)
+      var isTextwrap = content.classList.contains("textwrap");
+      var configEl = content.classList.contains("qrbox") ? content
+                   : ((content.querySelector && (content.querySelector(".qrbox") || content.querySelector(".cfgtext:not(.cmdtext)"))) || content);
+      var isQRbox = !!(configEl.classList && configEl.classList.contains("qrbox"));
+      var cmdEl = content.querySelector ? content.querySelector(".cmdblk") : null;
+      // the head holds [ title , (dots) ] — measure them apart so title↔dots also gets G
+      var titleEl2 = head.querySelector(".ppage-title"), navrow2 = head.querySelector(".navrow");
+      var titleH = titleEl2 ? titleEl2.offsetHeight : head.offsetHeight;
+      var hasDots = !!navrow2, dotsH = hasDots ? navrow2.offsetHeight : 0;
+      var tagH = node ? node.offsetHeight : 0, hasTag = tagH > 2;
+      var vkH = hasVk ? vk.offsetHeight : 0;
+      var cmdH = cmdEl ? cmdEl.offsetHeight : 0, hasCmd = cmdH > 0;
       var uShown = vUp.style.display !== "none", dShown = vDown.style.display !== "none";
-      var uSpace = uShown ? (uH + VH_GAP) : VH_GAP, dSpace = dShown ? (dH + VH_GAP) : VH_GAP;
-      // G = the equal gap (name↔up-arrow and down-arrow↔buttons). Use a comfortable fixed gap so the name sits
-      // down off the top; only shrink it if the box is too tall to otherwise keep the name on-screen.
-      var fitG = (barTop - NAME_TOP - nameBlockH - uSpace - cH - dSpace) / 2;
-      var G = Math.max(8, Math.round(Math.min(IDEAL_G, fitG)));
-      var minTop = NAME_TOP + nameBlockH + G + uSpace;                           // room the name block needs above the box
-      var contentTop = barTop - G - dSpace - cH;                                 // bottom-anchored ideal (equal gaps)
-      if (contentTop < minTop) contentTop = minTop;                             // tall box: pin below the name — the padding
-                                                                                 // shrinks the stage, so fitText refits it to fit below
-      // place the box AT contentTop: measure its natural (margin-0) top first, then pad the difference — robust
-      // against the box's async config re-fit, unlike a stageTop-derived margin.
-      // Nudge the stage's top padding toward the target by the CURRENT error — converges over the few layout
-      // passes (fit / scroll / rAF) without depending on a fragile zero-padding baseline.
+      var barTop = bar.getBoundingClientRect().top - pr.top;
+      var GAP_MIN = 8;
+
+      var nEl = 2 /* title + config */ + (uShown ? 1 : 0) + (dShown ? 1 : 0) + (hasDots ? 1 : 0) + (hasTag ? 1 : 0) + (hasVk ? 1 : 0) + (hasCmd ? 1 : 0);
+      var nGaps = nEl + 1;
+      var fixedH = (uShown ? uH : 0) + titleH + (hasDots ? dotsH : 0) + (hasTag ? tagH : 0) + (hasVk ? vkH : 0) + (hasCmd ? cmdH : 0) + (dShown ? dH : 0);
+
+      // fit the CONFIG alone (not the command) to what's left after GAP_MIN on every gap
       stage.style.alignItems = "flex-start";
-      var curTop = content.getBoundingClientRect().top - pr.top;
-      var curPad = parseFloat(stage.style.paddingTop) || 0;
-      stage.style.paddingTop = Math.max(0, Math.round(curPad + contentTop - curTop)) + "px";
-      // Cap a config box to the room left below its top, and re-fit its font to that cap ONCE (contentTop is stable,
-      // so this converges — no oscillation). Keeps a big AWG config clear of the down-arrow + buttons.
-      if (content.classList.contains("textwrap")) {
-        content.style.maxHeight = Math.max(60, barTop - dSpace - contentTop - 2) + "px";
-        fitText(content);
+      if (isTextwrap) content.style.maxHeight = "";                              // the wrap is natural height; only the config is capped
+      var configCap = Math.max(48, barTop - fixedH - GAP_MIN * nGaps);
+      if (!isQRbox && configEl.classList && configEl.classList.contains("cfgtext")) {
+        configEl.style.maxHeight = configCap + "px";
+        fitText(configEl);
+        if (configEl.style.fontSize && ctrls[curIdx]) ctrls[curIdx].cfgFont = configEl.style.fontSize;   // QR view's command matches
       }
-      // Measure where the box ACTUALLY landed and hug the arrows to it; then mirror the REAL gap below the
-      // down-arrow as the gap above the name — so the balance holds regardless of any residual drift.
-      var cr2 = content.getBoundingClientRect();
-      var aTop = Math.round(cr2.top - pr.top), aBot = Math.round(cr2.bottom - pr.top);
-      var aCx = Math.round((cr2.left + cr2.right) / 2 - pr.left);                 // centre the arrows over the box (config is left-aligned)
-      vUp.style.top = (aTop - VH_GAP - uH) + "px"; vUp.style.left = aCx + "px";
-      vDown.style.top = (aBot + VH_GAP) + "px"; vDown.style.left = aCx + "px";
-      var downEdge = aBot + VH_GAP + (dShown ? dH : 0);
-      var Gb = Math.max(8, Math.round(barTop - downEdge));                        // true gap: down-arrow → buttons
-      var upEdge = uShown ? (aTop - VH_GAP - uH) : (aTop - VH_GAP);
-      var headTop = Math.max(4, Math.round(upEdge - Gb - nodeH - GAP_HN - headH));
-      head.style.top = headTop + "px";
-      var cellTop = cellEl.getBoundingClientRect().top - pr.top;
-      var nodeTop = Math.round(headTop + headH + GAP_HN - cellTop);
-      Array.prototype.forEach.call(srow.children, function (c) { var n = c.querySelector(".scell-node"); if (n) n.style.top = nodeTop + "px"; });
+      var configH = Math.min(configEl.offsetHeight, configCap);
+      var G = Math.max(GAP_MIN, Math.floor((barTop - fixedH - configH) / nGaps));   // the one gap that makes ALL lines equal
+
+      // walk the stack top→bottom, giving every line the same gap G
+      var cellTop = cellEl.getBoundingClientRect().top - pr.top;                  // VK + tag are absolute WITHIN the cell
+      var y = G, upTop = null, headTop, tagTopP = null, vkTopP = null, configTop, boxBottom, downTop = null;
+      if (uShown) { upTop = y; y += uH + G; }
+      headTop = y; y += titleH; if (hasDots) y += G + dotsH;
+      if (hasTag) { y += G; tagTopP = y; y += tagH; }
+      if (hasVk) { y += G; vkTopP = y; y += vkH; }
+      y += G; configTop = y; y += configH;
+      if (hasCmd) y += G + cmdH;
+      boxBottom = y;
+      if (dShown) { y += G; downTop = y; }
+
+      head.style.paddingTop = "0px"; head.style.gap = G + "px"; head.style.top = Math.round(headTop) + "px";
+      if (isTextwrap) content.style.gap = G + "px";                              // config↔command gap = G
+      if (hasTag) { var nt = Math.round(tagTopP - cellTop); Array.prototype.forEach.call(srow.children, function (c) { var n = c.querySelector(".scell-node"); if (n) n.style.top = nt + "px"; }); }
+      if (hasVk) vk.style.top = Math.round(vkTopP - cellTop) + "px";
+      if (uShown) vUp.style.top = Math.round(upTop) + "px";
+      if (dShown) vDown.style.top = Math.round(downTop) + "px";
+      // nudge the stage's top padding so the config's TOP lands at configTop (converges over the few layout passes)
+      var curTop = configEl.getBoundingClientRect().top - pr.top;
+      var curPad = parseFloat(stage.style.paddingTop) || 0;
+      stage.style.paddingTop = Math.max(0, Math.round(curPad + configTop - curTop)) + "px";
+      // centre the up/down arrows over the config box; the L/R deployment arrows sit at the vertical mid of the stack
+      var cr2 = configEl.getBoundingClientRect();
+      var aCx = Math.round((cr2.left + cr2.right) / 2 - pr.left);
+      vUp.style.left = aCx + "px"; vDown.style.left = aCx + "px";
+      if (sL && sR) {
+        var topRef = uShown ? (upTop + uH) : 0, botRef = dShown ? downTop : boxBottom;
+        var midY = Math.round((topRef + botRef) / 2 + (botRef - topRef) * 0.1);   // a touch below centre
+        sL.style.top = midY + "px"; sR.style.top = midY + "px";
+      }
     }
     function scheduleVH() {
       var run = function () { syncVHints(); if (_relayoutRail) _relayoutRail(); };   // rail re-centres right after the box is placed
@@ -652,6 +792,7 @@
     }
     function syncBar() {
       var c = cur();
+      if (c.srvName) { srvEl.textContent = "· " + c.srvName; srvEl.style.color = c.srvColor || ""; }   // "iPhone · edge-1"
       // buttons keep FIXED positions — a hidden one reserves its slot (visibility:hidden)
       var showToggle = c.ready && c.hasQR;
       toggle.style.visibility = showToggle ? "" : "hidden";
@@ -660,7 +801,6 @@
       copyB.style.visibility = v; dlB.style.visibility = v; shareB.style.visibility = v;
       for (var i = 0; i < dotEls.length; i++) dotEls[i].className = "pdot" + (i === curIdx ? " on" : "");
       if (sL) { sL.style.opacity = (curIdx <= 0) ? "0" : ""; sR.style.opacity = (curIdx >= items.length - 1) ? "0" : ""; }
-      page._curVk = c.vkEl || null;         // this page's current VK notice; alignRail pushes the VISIBLE page's to the bar
       scheduleVH();
     }
     ctrls.forEach(function (cc) { cc.notify = function () { if (ctrls[curIdx] === cc) syncBar(); }; });
@@ -684,18 +824,36 @@
     var raf = 0;
     srow.addEventListener("scroll", function () { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; var i = current(); if (i !== curIdx) { curIdx = i; syncBar(); } else syncVHints(); }); }, { passive: true });
     dotEls.forEach(function (d, i) { d.onclick = function () { srow.scrollTo({ left: srow.children[i].offsetLeft - srow.offsetLeft, behavior: "smooth" }); }; });
+    if (sL && sR) {   // the edge arrows are clickable nav buttons (used in the landscape/desktop layout; harmless in portrait)
+      var goCell = function (dir) { var i = current(), j = Math.max(0, Math.min(i + dir, srow.children.length - 1));
+        if (j !== i) srow.scrollTo({ left: srow.children[j].offsetLeft - srow.offsetLeft, behavior: "smooth" }); };
+      sL.onclick = function () { goCell(-1); }; sR.onclick = function () { goCell(1); };
+    }
     try { new ResizeObserver(scheduleVH).observe(srow); } catch (_) {}   // viewport / rotation → re-measure the hint gap
     setTimeout(syncBar, 0);
+    // Position snapshot/restore so a language or theme switch (which rebuilds every page) can drop the user back
+    // onto the SAME deployment + QR/config view they were reading — not the first config.
+    page._pos = function () { return { cell: curIdx, view: ctrls[curIdx] ? ctrls[curIdx].view : null }; };
+    page._seek = function (cell, view) {
+      cell = Math.max(0, Math.min(cell | 0, srow.children.length - 1));
+      curIdx = cell;
+      var c = ctrls[cell];
+      if (c && view && c.hasQR && c.view !== view) { c.view = view; if (c.redraw) c.redraw(); }
+      var target = srow.children[cell];
+      if (target) srow.scrollLeft = target.offsetLeft - srow.offsetLeft;
+      syncBar();
+    };
     return page;
   }
 
-  function render(data, cryptoKey) {
+  function render(data, cryptoKey, keepPos) {
     _lastData = data; _lastKey = cryptoKey;
     LANGS = (data.langs && data.langs.enabled && data.langs.enabled.length) ? data.langs.enabled : ["en"];
     LANG_DEFAULT = (data.langs && data.langs.default) || "en";
     resolveLang(); wireControls(); paintCtl();     // the admin controls which languages are offered + the default
     THEME.color = data.theme_color || ""; THEME.light = data.theme_color_light || "";
     THEME.forkOv = data.turn_fork_colors || {}; THEME.ifaceOv = data.iface_colors || {};   // panel colour overrides
+    THEME.nodeOv = data.node_colors || {};   // per-node server colours
     applyBrand();                                    // logo + favicon follow the panel's theme colour
     var who = document.getElementById("who");
     who.textContent = data.user && data.user.name ? data.user.name : "";
@@ -740,11 +898,19 @@
       // The mode buttons don't switch views — each JUMPS to the first page of its group; the group whose page is
       // in view is highlighted and its button disabled (you're already there).
       var bar = el("div", "modebar"), pager = el("div", "pager"), btns = {}, firstOf = {};
+      var pinMode = null, pinTimer = 0;
+      function highlight(cur) { groups.forEach(function (m) { var on = (m === cur); btns[m].className = "modetab" + (on ? " on" : ""); btns[m].disabled = on; }); }
       groups.forEach(function (mode) {
         var b = el("button", "modetab"); b.type = "button"; b.title = t(mode); b.setAttribute("aria-label", t(mode));
         b.appendChild(protoIcon(mode));
         var mc = modeColor(mode); b.style.setProperty("--mc", mc); b.style.setProperty("--mc-ink", hexLum(mc) > 0.6 ? "#06222a" : "#EAFBFF");
-        b.onclick = function () { var f = firstOf[mode]; if (f) f.scrollIntoView({ behavior: "smooth", block: "start" }); };
+        b.onclick = function () {
+          pinMode = mode; highlight(mode);                                       // highlight NOW, don't wait for the scroll
+          var f = firstOf[mode]; if (f) f.scrollIntoView({ behavior: "smooth", block: "start" });
+          // Hold the pin until the smooth-scroll actually LANDS on this group (syncGroup releases it) — a fixed timer
+          // would drop the pin mid-flight and briefly light up whichever group the scroll is passing through.
+          clearTimeout(pinTimer); pinTimer = setTimeout(function () { pinMode = null; syncGroup(); }, 1500);   // safety fallback only
+        };
         btns[mode] = b; bar.appendChild(b);
       });
       groups.forEach(function (mode) {
@@ -755,9 +921,6 @@
       });
       if (!pager.children.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
       if (groups.length > 1) wrap.appendChild(bar);
-      // VK-link bar, directly under the icon row — filled by syncBar with the visible deployment's notice (freeturn forks)
-      var vkbar = el("div", "vkbar"); vkbar.hidden = true; wrap.appendChild(vkbar);
-      _setVk = function (elm) { vkbar.innerHTML = ""; if (elm) { vkbar.appendChild(elm); vkbar.hidden = false; } else vkbar.hidden = true; };
       wrap.appendChild(pager);
 
       var pages = Array.prototype.slice.call(pager.children);
@@ -774,22 +937,24 @@
       // Sit the fixed left rail so its vertical centre lines up with the QR/config box of the page in view — not
       // the viewport centre (the header pushes the QR below it). All pages share a layout, so the current one's
       // box is representative; re-run on scroll/resize since a QR↔config toggle can change the box height.
-      function alignRail() {   // icon row is static now; this hook just pushes the VISIBLE page's VK notice to the bar
-        if (!_setVk) return;
-        var vpg = pages[curIndex()] || pages[0];
-        _setVk(vpg && vpg._curVk || null);
-      }
+      function alignRail() { /* icon row is static now — nothing to reposition */ }
       _relayoutRail = alignRail;   // let a page's layout pass (QR↔config toggle, fit, swipe) re-centre the rail
       function syncGroup() {
-        var ref = (bar.offsetParent !== null ? bar.getBoundingClientRect().bottom : pager.getBoundingClientRect().top) + 2;
-        var curMode = pages[0] ? pages[0].getAttribute("data-mode") : groups[0];
-        for (var i = 0; i < pages.length; i++) { var r = pages[i].getBoundingClientRect(); if (r.top <= ref && r.bottom > ref) { curMode = pages[i].getAttribute("data-mode"); break; } }
-        groups.forEach(function (m) { var on = (m === curMode); btns[m].className = "modetab" + (on ? " on" : ""); btns[m].disabled = on; });
-        alignRail();
+        // highlight the group of the page actually in view (the top-most visible one — same logic as paging)
+        var pg = pages[curIndex()];
+        var mode = pg ? pg.getAttribute("data-mode") : (pages[0] ? pages[0].getAttribute("data-mode") : groups[0]);
+        if (pinMode) {
+          if (mode === pinMode) { pinMode = null; clearTimeout(pinTimer); }   // scroll arrived → release the pin
+          else { highlight(pinMode); return; }                                // still travelling → keep the target lit
+        }
+        highlight(mode);
       }
       var raf = 0, navLock = false;
       function curIndex() {
-        var top = pager.getBoundingClientRect().top + 6;
+        // portrait: the PAGER is the scroll container, so measure against its top. landscape/desktop: the WINDOW
+        // scrolls, so measure against a fixed point just below the sticky header (in viewport coords).
+        var pagerScrolls = getComputedStyle(pager).overflowY !== "visible";
+        var top = pagerScrolls ? (pager.getBoundingClientRect().top + 6) : 80;
         for (var i = 0; i < pages.length; i++) { if (pages[i].getBoundingClientRect().bottom > top) return i; }
         return pages.length - 1;
       }
@@ -801,11 +966,33 @@
         var i = curIndex(), j = Math.max(0, Math.min(i + dir, pages.length - 1));
         if (j !== i) pages[j].scrollIntoView({ behavior: "smooth", block: "start" });
       }
+      // Step exactly ONE deployment left/right in the CURRENT page's carousel (mirrors stepConfig for the
+      // horizontal axis) — so a fast flick advances one server/fork, not three.
+      function stepCell(dir) {
+        if (navLock) return;
+        var pg = pages[curIndex()]; if (!pg) return;
+        var srow = pg.querySelector(".srow"); if (!srow) return;
+        var cells = srow.children; if (cells.length < 2) return;
+        var sl = srow.scrollLeft, cur = 0, bd = Infinity;
+        for (var i = 0; i < cells.length; i++) { var d = Math.abs((cells[i].offsetLeft - srow.offsetLeft) - sl); if (d < bd) { bd = d; cur = i; } }
+        var j = Math.max(0, Math.min(cur + dir, cells.length - 1));
+        if (j === cur) return;
+        navLock = true; setTimeout(function () { navLock = false; }, 460);
+        srow.scrollTo({ left: cells[j].offsetLeft - srow.offsetLeft, behavior: "smooth" });
+      }
 
       function onScroll() { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; syncGroup(); }); }
       pager.addEventListener("scroll", onScroll, { passive: true });
       window.addEventListener("scroll", onScroll, { passive: true });
       window.addEventListener("resize", onScroll, { passive: true });
+      // Restore the reader's place (deployment + QR/config view + which page) after a lang/theme rebuild — BEFORE
+      // the first syncGroup so nothing flashes the top config first.
+      if (keepPos && pages.length) {
+        var kp = Math.max(0, Math.min(keepPos.page | 0, pages.length - 1));
+        var kpg = pages[kp];
+        if (kpg && kpg._seek) kpg._seek(keepPos.cell, keepPos.view);
+        kpg.scrollIntoView({ block: "start" });   // instant (no smooth) — land, don't animate from the top
+      }
       syncGroup();
       requestAnimationFrame(syncGroup);   // re-sync once laid out
       setTimeout(alignRail, 120);         // catch the QR's async first paint
@@ -827,17 +1014,29 @@
           if (!tOwn) return;
           var dx = e.touches[0].clientX - tX, dy = e.touches[0].clientY - tY;
           if (tAxis === null && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) tAxis = (Math.abs(dx) > Math.abs(dy)) ? "h" : "v";
-          if (tAxis === "v") e.preventDefault();   // take over vertical; horizontal falls through to the carousel
+          if (tAxis) e.preventDefault();   // take over BOTH axes — step exactly one config/deployment on release
         }, { passive: false });
         pager.addEventListener("touchend", function (e) {
-          if (!tOwn || tAxis !== "v") return;
-          var dy = e.changedTouches[0].clientY - tY, dt = Date.now() - tT, vel = Math.abs(dy) / Math.max(1, dt);
-          if (Math.abs(dy) > 85 || (Math.abs(dy) > 45 && vel > 0.7)) stepConfig(dy < 0 ? 1 : -1);   // FIRM swipe (long OR fast flick) only
+          if (!tOwn || !tAxis) return;
+          var dt = Date.now() - tT;
+          if (tAxis === "v") {
+            var dy = e.changedTouches[0].clientY - tY, vel = Math.abs(dy) / Math.max(1, dt);
+            if (Math.abs(dy) > 85 || (Math.abs(dy) > 45 && vel > 0.7)) stepConfig(dy < 0 ? 1 : -1);   // FIRM swipe only
+          } else {
+            var dx = e.changedTouches[0].clientX - tX, velx = Math.abs(dx) / Math.max(1, dt);
+            if (Math.abs(dx) > 75 || (Math.abs(dx) > 40 && velx > 0.7)) stepCell(dx < 0 ? 1 : -1);   // FIRM swipe → ONE deployment
+          }
         }, { passive: false });
-        var wAcc = 0, wT = 0;
+        var wAcc = 0, wT = 0, hAcc = 0, hT = 0;
         pager.addEventListener("wheel", function (e) {
-          if (scrollableUnder(e.target) || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;   // horizontal wheel → carousel
+          if (scrollableUnder(e.target)) return;
           e.preventDefault();
+          if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {   // horizontal wheel → step ONE deployment (no fling-skip)
+            var nx = Date.now(); if (nx - hT > 180) hAcc = 0; hT = nx;
+            hAcc += e.deltaX;
+            if (Math.abs(hAcc) > 120) { stepCell(hAcc > 0 ? 1 : -1); hAcc = 0; }
+            return;
+          }
           var now = Date.now(); if (now - wT > 180) wAcc = 0; wT = now;
           wAcc += e.deltaY;
           if (Math.abs(wAcc) > 120) { stepConfig(wAcc > 0 ? 1 : -1); wAcc = 0; }
