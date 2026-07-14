@@ -30,7 +30,8 @@
       noConfigsSub: "There are no active peers on this subscription. New peers will appear here automatically.",
       peer: "Peer", primary: "Primary", download: "Download .conf", dl: "Download", copyConfig: "Copy config", copyLink: "Copy link",
       copied: "Copied", copyFailed: "Copy failed", showConfig: "Show config text", showLink: "Show link", showQR: "Show QR",
-      toQR: "QR", toConfig: "Config", toLink: "Link", copyShort: "Copy", dlShort: "Download",
+      toQR: "QR", toConfig: "Config", toLink: "Link", copyShort: "Copy", dlShort: "Download", enlarge: "Tap to enlarge", share: "Share",
+      prevConfig: "Previous config", nextConfig: "Next config",
       clientCmd: "Client command", generating: "Generating…", qrTooBig: "config too large to encode as QR",
       noTurn: "No turn-proxy forwards to this server.", cantGen: "couldn’t generate this link",
       pasteInto: "Use in", tapCopy: "Tap to copy",
@@ -44,6 +45,7 @@
       incomplete: "Incomplete link",
       incompleteSub: "This link is missing the part after “#”. Copy the whole URL — the section after the # is what unlocks your configs and it never leaves your device.",
       notFound: "Link not found", notFoundSub: "This subscription doesn’t exist, was revoked, or subscriptions are turned off.",
+      subDisabled: "Subscription disabled", subDisabledSub: "This subscription has been turned off. Please contact your administrator.",
       err: "Something went wrong", errServer: "Couldn’t load this subscription (server error). Please try again later.",
       errNet: "Couldn’t load this subscription. Check your connection and try again.",
       errResp: "The server returned an unexpected response.",
@@ -57,7 +59,8 @@
       noConfigsSub: "На этой подписке нет активных пиров. Новые появятся здесь автоматически.",
       peer: "Пир", primary: "Основной", download: "Скачать .conf", dl: "Скачать", copyConfig: "Скопировать", copyLink: "Скопировать ссылку",
       copied: "Скопировано", copyFailed: "Не удалось", showConfig: "Показать текст конфига", showLink: "Показать ссылку", showQR: "Показать QR",
-      toQR: "QR", toConfig: "Конфиг", toLink: "Ссылка", copyShort: "Копир.", dlShort: "Скачать",
+      toQR: "QR", toConfig: "Конфиг", toLink: "Ссылка", copyShort: "Копир.", dlShort: "Скачать", enlarge: "Нажмите, чтобы увеличить", share: "Поделиться",
+      prevConfig: "Предыдущий конфиг", nextConfig: "Следующий конфиг",
       clientCmd: "Команда клиента", generating: "Генерация…", qrTooBig: "конфиг слишком большой для QR",
       noTurn: "Нет turn-прокси для этого сервера.", cantGen: "не удалось сгенерировать ссылку",
       pasteInto: "Использовать в", tapCopy: "Нажмите, чтобы скопировать",
@@ -71,6 +74,7 @@
       incomplete: "Неполная ссылка",
       incompleteSub: "В ссылке отсутствует часть после «#». Скопируйте URL целиком — часть после # разблокирует ваши конфиги и никогда не покидает ваше устройство.",
       notFound: "Ссылка не найдена", notFoundSub: "Эта подписка не существует, была отозвана или подписки отключены.",
+      subDisabled: "Подписка отключена", subDisabledSub: "Эта подписка отключена. Обратитесь к администратору.",
       err: "Что-то пошло не так", errServer: "Не удалось загрузить подписку (ошибка сервера). Попробуйте позже.",
       errNet: "Не удалось загрузить подписку. Проверьте соединение и попробуйте снова.",
       errResp: "Сервер вернул неожиданный ответ.",
@@ -149,15 +153,80 @@
     if (txt != null) e.textContent = txt;
     return e;
   }
+  // A chevron arrow as an inline SVG (built via the DOM so the strict CSP is happy). dir: l/r/u/d.
+  function chevronEl(dir) {
+    var NS = "http://www.w3.org/2000/svg";
+    var D = { l: "M15 18l-6-6 6-6", r: "M9 18l6-6-6-6", u: "M18 15l-6-6-6 6", d: "M6 9l6 6 6-6" };
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "2.4");
+    svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round");
+    var p = document.createElementNS(NS, "path"); p.setAttribute("d", D[dir]); svg.appendChild(p);
+    return svg;
+  }
+  function arrowBtn(cls, dir, label) {
+    var b = el("button", cls); b.type = "button"; b.setAttribute("aria-label", label); b.appendChild(chevronEl(dir)); return b;
+  }
+  // Action-bar icons, DOM-built for the strict CSP. Each is a list of [svgTag, attrs].
+  var ICONS = {
+    qr: [["rect", { x: 3, y: 3, width: 7, height: 7, rx: 1.5 }], ["rect", { x: 14, y: 3, width: 7, height: 7, rx: 1.5 }],
+         ["rect", { x: 3, y: 14, width: 7, height: 7, rx: 1.5 }], ["path", { d: "M14 14h3v3M21 14v3M17 21h4M14 21h.01M21 21v.01M17 17h.01" }]],
+    doc: [["path", { d: "M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" }], ["path", { d: "M14 2v6h6" }], ["path", { d: "M8 13h8M8 17h5" }]],
+    copy: [["rect", { x: 9, y: 9, width: 11, height: 11, rx: 2 }], ["path", { d: "M5 15V5a2 2 0 0 1 2-2h10" }]],
+    download: [["path", { d: "M12 3v11" }], ["path", { d: "M7 10l5 5 5-5" }], ["path", { d: "M4 15v2a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-2" }]],
+    share: [["circle", { cx: 18, cy: 5, r: 3 }], ["circle", { cx: 6, cy: 12, r: 3 }], ["circle", { cx: 18, cy: 19, r: 3 }], ["path", { d: "M8.6 13.5l6.8 4M15.4 6.5l-6.8 4" }]],
+    check: [["path", { d: "M20 6 9 17l-5-5" }]]
+  };
+  function iconEl(name) {
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round");
+    (ICONS[name] || []).forEach(function (spec) { var e = document.createElementNS(NS, spec[0]); for (var k in spec[1]) e.setAttribute(k, spec[1][k]); svg.appendChild(e); });
+    return svg;
+  }
+  function iconBtn(cls, name, label) {
+    var b = el("button", cls); b.type = "button"; b.title = label; b.setAttribute("aria-label", label); b.appendChild(iconEl(name)); return b;
+  }
+  function setIcon(btn, name, label) {
+    var old = btn.querySelector("svg"); if (old) old.remove();
+    btn.insertBefore(iconEl(name), btn.firstChild);
+    if (label != null) { btn.title = label; btn.setAttribute("aria-label", label); }
+  }
+
+  // The brand protocol marks (WireGuard / AmneziaWG / Turn), one cyan→blue family. Kept as full SVG so the
+  // gradient fills survive; parsed via DOMParser (no script — CSP-safe) and every gradient id is uniquified
+  // per instance so several copies on one page never share a <defs> id.
+  var PROTO_SVG = {
+    wg: '<svg viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="wg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient></defs><path d="m 101.94526,94.697 c 30.017,-18.364 68.366,-7.1401 82.735,20.476 2.7233,5.2338 3.0694,13.291 1.3447,18.782 -5.9546,18.956 -20.014,29.587 -39.312,34.103 5.6892,-4.8707 10.218,-10.394 11.659,-18.025 a 26.402,26.402 0 0 0 -4.5425,-20.956 26.76,26.76 0 0 0 -30.811,-9.3892 c -11.881,4.5111 -18.389,15.354 -17.216,28.683 1.0898,12.381 10.484,20.405 28.061,23.453 -2.627,1.3904 -4.6503,2.4144 -6.6299,3.5172 a 63.918,63.918 0 0 0 -20.544,17.868 c -1.7839,2.4084 -3.0104,2.6024 -5.727,0.94116 -35.338,-21.61 -37.609,-75.844 0.98226,-99.453 z m -26.449,133.53 c -5.6769,1.441 -11.178,3.5742 -16.981,5.4775 2.8385,-19.151 25.265,-36.788 44.23,-34.776 a 48.881,48.881 0 0 0 -9.242,25.893 c -6.302,1.1606 -12.241,1.9414 -18.007,3.405 z m 120.79,-186.98 c 5.6099,0.20612 11.23,0.12091 16.844,0.25378 a 29.052,29.052 0 0 1 4.1674,0.58069 40.607,40.607 0 0 1 -4.2357,5.4332 c -2.007,1.8701 -4.2745,3.6986 -7.1661,0.856 -0.6955,-0.68372 -2.3386,-0.52679 -3.5487,-0.54272 -5.5823,-0.07336 -11.172,-0.25177 -16.746,-0.04132 a 104.04,104.04 0 0 0 -14.425,1.473 c -0.89368,0.16046 -2.2299,3.1315 -1.8191,4.227 0.9693,2.5853 2.3833,5.4363 4.4779,7.0898 7.7403,6.11 15.972,11.596 23.748,17.664 7.556,5.8966 14.589,12.358 18.875,21.253 5.5843,11.59 5.747,23.743 3.3388,35.95 -4.0203,20.378 -14.333,37.261 -31.032,49.524 -6.7288,4.941 -15.06,7.7451 -22.767,11.295 -6.778,3.1225 -13.755,5.8115 -20.549,8.9008 -12.249,5.5695 -19.133,18.865 -17.108,32.688 1.8585,12.685 12.987,23.271 25.735,25.456 15.292,2.6216 31.071,-7.3163 34.812,-22.86 4.2067,-17.478 -5.2898,-33.083 -23.065,-37.813 -0.78271,-0.20831 -1.5684,-0.40552 -3.2012,-0.8269 4.7549,-2.1245 8.8614,-3.6381 12.653,-5.7244 q 9.9213,-5.4594 19.481,-11.562 c 1.8742,-1.199 2.8868,-1.1996 4.4852,0.18225 12.225,10.57 19.518,23.718 21.563,39.839 3.3845,26.684 -9.2471,51.198 -33.072,63.762 -36.86,19.439 -81.965,-2.6864 -90.106,-43.552 -6.9738,-35.003 17.73,-66.754 47.462,-72.884 12.787,-2.6364 24.48,-7.9596 33.57,-17.807 5.8652,-6.3541 8.7084,-11.806 9.6772,-14.266 a 39.565,39.565 0 0 0 2.7211,-14.469 33.867,33.867 0 0 0 -2.9654,-12.398 c -3.104,-7.075 -14.995,-18.33 -17.939,-20.704 l -28,-21.921 c -0.98761,-0.81256 -2.0994,-0.75366 -4.5079,-0.59045 -2.8611,0.19391 -10.175,0.59888 -13.331,-0.22815 2.553,-1.9321 9.5132,-4.7451 12.502,-7.007 -9.0734,-6.1297 -19.43,-3.9158 -28.941,-5.7461 2.1992,-4.0959 13.081,-10.39 19.27,-11.091 a 91.533,91.533 0 0 0 -1.6876,-10.281 c -0.37781,-1.3917 -1.9312,-2.7408 -3.2864,-3.5355 -3.286,-1.9267 -6.7694,-3.5167 -10.549,-5.4327 a 21.936,21.936 0 0 1 11.332,-3.5055 42.316,42.316 0 0 1 11.348,1.1056 c 6.7422,1.5405 12.124,0.53491 17.488,-4.048 -4.222,-1.7002 -8.4435,-3.2535 -12.538,-5.0907 a 123.04,123.04 0 0 1 -11.779,-6.1583 c 10.622,1.4755 20.896,5.4585 31.757,4.0034 q 0.1387,-0.74048 0.27728,-1.4809 c -8.1194,-1.8899 -16.239,-3.7798 -25.229,-5.8724 15.04,-1.3769 29.042,-1.604 42.301,4.8541 3.731,1.8173 7.6348,3.3215 11.211,5.3972 1.7443,1.0124 2.9186,3.0078 4.3496,4.5594 1.1366,1.2325 2.0495,2.8837 3.446,3.6264 5.3,2.8184 11.134,2.9291 17.078,2.7879 0.0444,-0.67694 0.0861,-1.3114 0.1308,-1.9933 5.9821,1.8693 12.715,8.7679 12.704,13.806 -9.6911,0 -19.374,-0.037 -29.056,0.05389 -1.0348,0.0097 -2.0626,0.76563 -3.0936,1.1754 0.97986,0.57067 1.9428,1.5994 2.9423,1.6362 z" fill="url(#wg)" fill-rule="evenodd"/><path d="m 183.78526,26.906 a 1.4806,1.4806 0 0 0 -0.18927,2.3686 2.2326,2.2326 0 0 0 3.0724,0.8219 c 0.9328,-0.47052 1.8478,-0.97137 2.975,-1.5665 -0.9079,-0.775 -1.6362,-1.4148 -2.3857,-2.0324 -1.318,-1.086 -2.411,-0.40386 -3.4724,0.40833 z" fill="#2B7CD3" opacity=".55"/></svg>',
+    awg: '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="ag" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient></defs><path d="M20.28 0.84 20.64 0.84 20.64 2.76 20.52 2.88 20.52 3.72 20.4 3.84 20.28 4.44 20.76 5.28 20.88 5.76 21.48 6.36 21.84 6.36 22.32 6.6 22.2 9.96 22.56 10.92 22.56 12.48 22.44 12.6 22.44 12.96 22.2 13.32 22.2 13.56 21.96 13.92 21.84 15.0 21.6 15.36 21.48 15.84 21.0 16.44 20.76 17.04 20.04 17.76 18.84 18.6 16.8 20.64 16.68 21.0 16.44 21.24 16.32 21.72 15.96 22.2 15.84 22.8 15.48 23.16 15.12 23.16 14.88 22.92 14.64 22.44 14.52 21.48 14.28 21.12 14.28 20.88 14.04 20.64 12.96 20.64 12.84 20.76 10.32 20.64 10.08 20.76 9.6 21.36 9.24 23.04 9.12 23.16 8.76 23.16 8.52 22.92 7.2 20.04 6.48 19.44 5.52 19.08 5.04 18.6 4.92 18.6 3.48 17.16 2.88 16.32 2.28 15.12 2.28 14.88 1.92 14.28 1.92 13.92 1.56 12.96 1.56 11.28 1.68 11.16 1.68 10.2 1.8 10.08 1.8 9.0 1.92 8.88 2.28 7.56 2.76 6.6 3.6 5.52 3.6 4.68 3.72 4.56 3.72 4.2 3.6 4.08 3.6 1.8 3.72 1.68 3.72 1.32 4.2 1.32 4.44 1.68 4.8 2.4 4.8 2.64 5.04 3.12 5.04 3.48 5.28 3.84 6.0 3.0 6.48 3.0 7.08 2.52 8.76 1.68 9.0 1.68 9.48 1.44 10.56 1.44 10.68 1.32 12.96 1.32 13.08 1.44 13.8 1.44 13.92 1.56 14.88 1.68 15.6 2.04 15.96 2.04 16.44 2.28 17.04 1.92 17.76 1.92 18.0 2.28 18.0 2.52 18.24 3.0 18.48 3.24 18.84 3.24 19.44 2.4 20.16 0.96ZM10.92 3.6 13.44 3.6 13.56 3.72 13.92 3.72 14.04 3.84 14.64 3.96 15.72 4.56 16.44 4.68 17.04 5.16 17.4 5.28 17.76 5.64 17.76 5.88 17.64 6.0 17.64 6.84 17.52 6.96 17.52 7.68 17.4 7.8 17.4 9.0 17.28 9.12 17.28 9.72 17.16 9.84 17.16 10.56 17.04 10.68 17.04 11.16 16.8 11.64 16.8 12.0 16.56 12.48 16.56 13.08 16.44 13.2 16.32 14.16 16.2 14.28 16.08 15.6 15.96 15.72 15.84 16.44 15.48 17.28 15.24 17.4 15.0 16.44 14.76 16.08 14.76 15.6 14.4 15.0 14.4 14.76 13.92 13.8 13.92 13.08 13.44 11.76 13.32 10.32 12.96 9.48 12.96 9.12 12.84 9.0 12.6 8.04 12.36 7.8 12.0 7.8 11.88 7.92 11.76 8.4 11.52 8.76 11.52 9.0 11.28 9.48 11.16 10.44 11.04 10.56 11.04 11.04 10.92 11.16 10.92 11.64 10.68 12.24 10.56 13.2 10.08 14.16 10.08 14.4 9.96 14.52 9.48 16.2 9.24 16.56 9.0 17.52 8.76 17.64 8.52 17.28 8.52 17.04 8.28 16.56 8.28 16.08 7.92 15.12 7.92 14.76 7.68 14.28 7.56 13.44 7.32 12.96 7.32 12.48 7.08 11.88 7.08 11.4 6.72 10.44 6.72 9.96 6.48 9.36 6.48 8.76 6.36 8.64 6.36 8.16 6.24 8.04 6.24 7.44 6.12 7.32 6.12 6.84 5.88 6.24 5.88 5.76 6.48 5.16 7.8 4.44 8.04 4.44 9.24 3.96 9.72 3.96 10.32 3.72 10.8 3.72ZM19.32 8.28 19.8 9.0 19.92 10.08 20.04 10.2 19.92 12.48 19.68 12.96 19.56 13.68 19.08 14.52 19.08 14.76 18.6 15.72 17.52 16.92 17.88 16.2 18.0 14.76 18.12 14.64 18.12 14.28 18.36 13.8 18.36 13.32 18.48 13.2 18.48 12.84 18.72 12.24 18.72 11.52 18.84 11.4 18.84 10.92 18.96 10.8 18.96 10.32 19.08 10.2 19.08 9.48 19.2 9.36 19.32 8.4ZM3.96 8.4 4.08 8.4 4.44 9.12 4.92 10.8 5.28 11.4 5.52 12.6 5.64 12.72 5.64 13.2 5.76 13.32 5.76 13.92 6.0 14.52 6.0 16.44 5.64 16.68 5.16 16.44 4.32 15.48 3.24 13.32 3.12 12.6 3.0 12.48 3.0 12.0 3.12 11.88 3.12 10.32 3.24 10.2 3.24 9.84 3.6 9.24 3.6 9.0 3.96 8.52ZM12.12 13.08 12.24 13.2 12.24 13.56 12.6 14.52 12.96 16.44 13.08 16.56 13.44 17.88 12.84 18.6 12.24 18.84 10.8 18.72 10.56 18.48 10.8 18.0 10.8 17.64 10.92 17.52 11.04 16.92 11.16 16.8 11.16 16.44 11.28 16.32 11.28 15.96 11.52 15.36 11.52 14.88 11.64 14.76 11.76 13.92 12.12 13.2Z" fill="url(#ag)" fill-rule="evenodd"/></svg>',
+    turn: '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient><linearGradient id="gtt" gradientUnits="userSpaceOnUse" x1="10.3" y1="3.7" x2="13.7" y2="6.4"><stop offset="0" stop-color="#1FC8D6"/><stop offset="1" stop-color="#2B7CD3"/></linearGradient></defs><path d="M10.3 3.7 H13.7" fill="none" stroke="url(#gtt)" stroke-width="1.1" stroke-linecap="round"/><path d="M12 3.7 V6.4" fill="none" stroke="url(#gtt)" stroke-width="1.1" stroke-linecap="round"/><path d="M6.2 8.4a5.4 5.4 0 0 0 0 7.2" fill="none" stroke="#8B6FF2" stroke-width="1.8" stroke-linecap="round"/><path d="M17.8 8.4a5.4 5.4 0 0 1 0 7.2" fill="none" stroke="url(#g1)" stroke-width="1.8" stroke-linecap="round"/><path d="M3.8 6a8.8 8.8 0 0 0 0 12" fill="none" stroke="#8B6FF2" stroke-width="1.8" stroke-linecap="round" opacity=".9"/><path d="M20.2 6a8.8 8.8 0 0 1 0 12" fill="none" stroke="url(#g1)" stroke-width="1.8" stroke-linecap="round" opacity=".9"/><rect x="8.5" y="9" width="7" height="6" rx="2" fill="#2B7CD3"/></svg>'
+  };
+  var _protoN = 0;
+  function protoIcon(mode) {
+    var raw = PROTO_SVG[mode];
+    if (!raw) return document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    var s = "_p" + (++_protoN);
+    raw = raw.replace(/id="([^"]+)"/g, 'id="$1' + s + '"').replace(/url\(#([^)]+)\)/g, 'url(#$1' + s + ')');
+    var doc = new DOMParser().parseFromString(raw, "image/svg+xml");
+    return document.importNode(doc.documentElement, true);
+  }
 
   // Shrink a config/link <pre> so it fits its box in BOTH axes without scrolling — down to a legible floor
   // (past which overflow:auto lets it scroll). A ceiling keeps it from looking oversized on big/tablet screens.
-  function fitText(pre) {
-    var CEIL = 20, FLOOR = 7;
-    pre.style.fontSize = CEIL + "px";                // grow to the ceiling; a short config fills its box…
-    for (var i = 0, f = CEIL; i < 60 && f > FLOOR; i++) {
-      if (pre.scrollHeight <= pre.clientHeight + 1 && pre.scrollWidth <= pre.clientWidth + 1) break;   // …shrink until it fits both axes (keys stay one line), then scroll
-      f -= 0.5; pre.style.fontSize = f + "px";
+  // box = a single .cfgtext OR a .textwrap wrapping one/two config blocks (config + sidecar client-command). Shrink
+  // EVERY block's font in lockstep until the whole box fits VERTICALLY (all lines show); over-wide lines scroll
+  // horizontally (thin bar) — never vertically.
+  function fitText(box) {
+    var pres = (box.classList && box.classList.contains("cfgtext")) ? [box]
+             : (box.querySelectorAll ? [].slice.call(box.querySelectorAll(".cfgtext")) : []);
+    if (!pres.length) return;
+    var CEIL = 20, FLOOR = 5, f = CEIL, j;
+    for (j = 0; j < pres.length; j++) pres[j].style.fontSize = CEIL + "px";
+    for (var i = 0; i < 80 && f > FLOOR; i++) {
+      if (box.scrollHeight <= box.clientHeight + 1) break;
+      f -= 0.5; for (j = 0; j < pres.length; j++) pres[j].style.fontSize = f + "px";
     }
   }
 
@@ -310,6 +379,25 @@
     });
   }
 
+  // ── Fullscreen QR viewer (tap the QR to enlarge for scanning; tap anywhere / Esc to close). Mirrors the
+  //    admin panel's qrZoom. DOM-built (no innerHTML) so the strict CSP is happy. ──
+  var qrZoomEl = null;
+  function zoomQR(payload, label) {
+    if (qrZoomEl) { try { qrZoomEl.remove(); } catch (_) {} qrZoomEl = null; }
+    var ov = el("div", "qz-overlay"), inner = el("div", "qz-inner"), card = el("div", "qz-card");
+    try { var img = el("img", "qrimg"); img.alt = "config QR"; img.src = qrDataURL(payload, 920); card.appendChild(img); }
+    catch (e) { card.appendChild(el("div", "qz-fail", t("qrTooBig"))); }
+    inner.appendChild(card);
+    if (label) inner.appendChild(el("div", "qz-cap", label));
+    ov.appendChild(inner);
+    function onKey(e) { if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); close(); } }
+    function close() { try { ov.remove(); } catch (_) {} if (qrZoomEl === ov) qrZoomEl = null; document.removeEventListener("keydown", onKey, true); }
+    ov.onclick = close;
+    document.addEventListener("keydown", onKey, true);
+    qrZoomEl = ov;
+    document.body.appendChild(ov);
+  }
+
   // ── ONE server deployment as a full-viewport cell: a big centred QR (default) or the config/link text,
   //    toggled IN PLACE. Returns { el, ctrl }. ctrl drives the peer's fixed bottom bar (toggle/copy/download)
   //    so the currently-swiped cell's actions live in one steady spot. A turn artifact may resolve async
@@ -334,6 +422,23 @@
       }, function () { if (btn) { btn.textContent = t("copyFailed"); setTimeout(function () { btn.textContent = restore; }, 1400); } });
     };
 
+    // the sidecar client-command block — shown UNDER the config OR under the QR (the QR only replaces the WG/AWG config)
+    function cmdBlock() {
+      if (!ctrl.cmd) return null;
+      var c = el("div", "cmdblk"); c.appendChild(el("div", "cmdlbl", t("clientCmd")));
+      var cp = el("pre", "cfgtext cmdtext", ctrl.cmd); cp.title = t("tapCopy");
+      cp.onclick = function () { if (navigator.clipboard) navigator.clipboard.writeText(ctrl.cmd); };
+      c.appendChild(cp); return c;
+    }
+    // Re-fit the block(s) only when the stage WIDTH changes (viewport / rotation). Our layout pass nudges the stage's
+    // top padding — a HEIGHT-only change — and re-fitting on that would fight the placement (fit ↔ shift oscillation).
+    function attachFit(wrap) {
+      if (window.ResizeObserver) { var _lw = -1;
+        ctrl._ro = new ResizeObserver(function () { var w = Math.round(stage.getBoundingClientRect().width);
+          if (w === _lw) return; _lw = w; fitText(wrap); if (ctrl.notify) ctrl.notify(); });
+        ctrl._ro.observe(stage); }
+      else setTimeout(function () { fitText(wrap); if (ctrl.notify) ctrl.notify(); }, 0);
+    }
     function draw() {
       if (ctrl._ro) { ctrl._ro.disconnect(); ctrl._ro = null; }
       stage.innerHTML = "";
@@ -342,20 +447,21 @@
         var box = el("div", "qrbox");
         try { ctrl.qrUrl = qrDataURL(ctrl.payload, 760); var img = el("img", "qrimg"); img.alt = "config QR"; img.src = ctrl.qrUrl; box.appendChild(img); }
         catch (_) { ctrl.qrUrl = null; ctrl.hasQR = false; ctrl.view = "text"; return draw(); }
-        stage.appendChild(box);
+        box.title = t("enlarge");   // tap the QR to open it fullscreen for scanning
+        box.onclick = function () { zoomQR(ctrl.payload, [peer.title, tgt.node_name || tgt.node].filter(Boolean).join(" · ")); };
+        var cmdQ = cmdBlock();
+        if (!cmdQ) { stage.appendChild(box); }   // plain single QR
+        else {                                   // dual config: QR replaces the WG/AWG config, the command stays under it
+          var wrapq = el("div", "textwrap"); wrapq.appendChild(box); wrapq.appendChild(cmdQ);
+          stage.appendChild(wrapq); attachFit(wrapq);
+        }
       } else {
         var wrap = el("div", "textwrap");
         var pre = el("pre", "cfgtext" + (ctrl.isLink ? " wrap" : ""), ctrl.payload); pre.title = t("tapCopy");
         pre.onclick = function () { ctrl.copyInto(null, ""); };
         wrap.appendChild(pre);
-        if (ctrl.cmd) { var c = el("div", "cmdblk"); c.appendChild(el("div", "cmdlbl", t("clientCmd")));
-          var cp = el("pre", "cfgtext cmdtext", ctrl.cmd); cp.title = t("tapCopy");
-          cp.onclick = function () { if (navigator.clipboard) navigator.clipboard.writeText(ctrl.cmd); };
-          c.appendChild(cp); wrap.appendChild(c); }
-        stage.appendChild(wrap);
-        // auto-fit the config to the stage (re-fits on rotation / cell resize)
-        if (window.ResizeObserver) { ctrl._ro = new ResizeObserver(function () { fitText(pre); }); ctrl._ro.observe(stage); }
-        else setTimeout(function () { fitText(pre); }, 0);
+        var cmdT = cmdBlock(); if (cmdT) wrap.appendChild(cmdT);
+        stage.appendChild(wrap); attachFit(wrap);
       }
       if (ctrl.notify) ctrl.notify();
     }
@@ -371,19 +477,21 @@
       if (!conf) { draw(); return { el: cell, ctrl: ctrl }; }
       var art = SWGTurn.artifact(conf, tp, vkLink);
       node.appendChild(el("span", "scell-paste", t("pasteInto") + " " + (art.app || art.fork)));
+      // The VK-link notice (needed by freeturn/samosvalishe forks) is shown in a bar UNDER the icon row, not in the
+      // cell — syncBar surfaces the current deployment's notice via ctrl.vkEl.
       if (art.vkMissing) {   // no per-user VK link — every fork needs one; warn (the config carries no link / a placeholder)
         var vkw2 = el("div", "scell-vkwarn");
         vkw2.appendChild(el("div", "scell-vkwarn-t", t("vkMissingT")));
         vkw2.appendChild(el("div", "scell-vkwarn-d", t("vkMissing").replace("{app}", art.app || art.fork)));
-        node.appendChild(vkw2);
-      } else if (art.vk) {   // link present + freeturn:// (can't carry it) → show it here so the recipient can copy it into the app
+        ctrl.vkEl = vkw2;
+      } else if (art.vk) {   // link present + freeturn:// (can't carry it) → show it so the recipient can copy it into the app
         var raw = (vkLink || "").trim();
         var vkw = el("div", "scell-vk");
         vkw.appendChild(el("span", "scell-vklbl", t("vkThen")));
         var vkb = el("button", "scell-vkbtn", raw); vkb.title = t("tapCopy");
         vkb.onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(raw) : Promise.reject()).then(function () { var o = raw; vkb.textContent = t("copied"); setTimeout(function () { vkb.textContent = o; }, 1400); }, function () {}); };
         vkw.appendChild(vkb);
-        node.appendChild(vkw);
+        ctrl.vkEl = vkw;
       }
       var apply = function (text) {
         ctrl.payload = text; ctrl.ready = true; ctrl.ext = art.ext || "conf";
@@ -400,9 +508,15 @@
     return { el: cell, ctrl: ctrl };
   }
 
-  // ── ONE peer as a full-viewport page: head (title + server dots) · a horizontal swipe row of server
-  //    cells · a fixed bottom bar (toggle / copy / download) that always acts on the visible cell. ──
-  function peerPage(row, mode, vkLink, userName) {
+  var hint = function (cls, dir) { var s = el("span", cls); s.setAttribute("aria-hidden", "true"); s.appendChild(chevronEl(dir)); return s; };
+
+  // ── ONE (peer, protocol) as a full-viewport page: title · a horizontal swipe row of the peer's deployment
+  //    cells (servers for WG/AWG, forks for TURN) · the fixed icon action bar (acts on the visible cell). The
+  //    vertical pager stacks these grouped by protocol, so up/down walks peer→peer and left/right walks a
+  //    peer's deployments. Returns null if this peer has no deployment in `mode`. ──
+  var _relayoutRail = null;   // render() points this at its alignRail so a page's layout pass can re-centre the icon rail
+  var _setVk = null;          // render() points this at its VK-bar setter; syncBar feeds it the current deployment's notice
+  function peerProtoPage(mode, row, vkLink, userName) {
     var peer = row.peer, secret = row.secret, items = [];
     if (mode === "turn") {
       (peer.targets || []).forEach(function (tt) {
@@ -420,43 +534,157 @@
     var reason = row.bad ? t("outOfDate") : (!peer.sec ? t("notReady") : null);
 
     var page = el("section", "ppage");
+    page.setAttribute("data-mode", mode);
     var head = el("div", "ppage-head");
     head.appendChild(el("span", "ppage-title", peer.title || t("peer")));
-    var dotEls = [];
-    if (items.length > 1) { var dots = el("div", "ppage-dots"); for (var i = 0; i < items.length; i++) { var d = el("span", "pdot"); dotEls.push(d); dots.appendChild(d); } head.appendChild(dots); }
+    // deployment nav row (only when >1 deployment): the dots flanked by left/right hint arrows — the LEFT/RIGHT
+    // SWIPE walks the deployments; the arrows are graphical hints (non-interactive), each fading at its end.
+    var dotEls = [], sL, sR;
+    if (items.length > 1) {
+      var navrow = el("div", "navrow");
+      sL = hint("navarrow navarrow-l", "l");
+      var dots = el("div", "ppage-dots"); for (var i = 0; i < items.length; i++) { var d = el("span", "pdot"); dotEls.push(d); dots.appendChild(d); }
+      sR = hint("navarrow navarrow-r", "r");
+      navrow.appendChild(sL); navrow.appendChild(dots); navrow.appendChild(sR);
+      head.appendChild(navrow);
+    }
     page.appendChild(head);
 
     var srow = el("div", "srow");
-    var ctrls = items.map(function (it) { var c = makeCell(userName, peer, it, mode, secret, vkLink, reason); srow.appendChild(c.el); return c.ctrl; });
+    var ctrls = items.map(function (it) { var cc = makeCell(userName, peer, it, mode, secret, vkLink, reason); srow.appendChild(cc.el); return cc.ctrl; });
     page.appendChild(srow);
 
+    // up/down swipe HINT (vertical, between peers) — flanks the QR top/bottom; render hides the ends.
+    var vUp = hint("vhint vhint-u", "u"), vDown = hint("vhint vhint-d", "d");
+    page.appendChild(vUp); page.appendChild(vDown);
+
     var bar = el("div", "pbar");
-    var toggle = el("button", "pbtn ghost", ""); toggle.type = "button";
-    var copyB = el("button", "pbtn ghost", ""); copyB.type = "button";
-    var dlB = el("button", "pbtn primary", ""); dlB.type = "button";
-    bar.appendChild(toggle); bar.appendChild(copyB); bar.appendChild(dlB);
+    var toggle = iconBtn("pbtn ico", "doc", t("showConfig"));
+    var copyB = iconBtn("pbtn ico", "copy", t("copyConfig"));
+    var dlB = iconBtn("pbtn ico", "download", t("download"));
+    var shareB = iconBtn("pbtn ico", "share", t("share"));
+    bar.appendChild(toggle); bar.appendChild(copyB); bar.appendChild(dlB); bar.appendChild(shareB);
     page.appendChild(bar);
 
     var curIdx = 0;
     function cur() { return ctrls[curIdx]; }
+    function flashIcon(btn, base, label) { setIcon(btn, "check", t("copied")); setTimeout(function () { setIcon(btn, base, label); }, 1400); }
+    // Keep the up/down hints an IDENTICAL gap from the visible content box, whatever its size — so a taller
+    // config (e.g. AWG with the full S1–I5 ranges) pushes them out exactly as the QR does. Measured live.
+    var VH_GAP = 16;
+    // One layout pass for the vertical stack around the content box (QR / config / turn link):
+    //   [ name block ] — G — [ up arrow ] — VH_GAP — [ content ] — VH_GAP — [ down arrow ] — G — [ buttons ]
+    // The content stays centred; the up/down arrows keep a fixed gap off its edges (so a big config pushes them
+    // out); and the name block (peer title + server name) is placed so the gap above the up-arrow EQUALS the gap
+    // below the down-arrow — everything reflows as the box grows/shrinks. Skipped in the landscape/desktop flow.
+    function syncVHints() {
+      var cellEl = srow.children[curIdx] || srow.children[0];
+      var stage = cellEl && cellEl.querySelector(".scell-stage");
+      var content = stage && stage.querySelector(".qrbox, .textwrap, .cfg-fail");   // .textwrap wraps 1–2 config blocks
+      if (!content) return;
+      var pr = page.getBoundingClientRect();
+      var uH = vUp.offsetHeight || 27, dH = vDown.offsetHeight || 27;
+
+      // Desktop / landscape scrolls as a normal document — restore in-flow layout, only park the arrows.
+      if (window.matchMedia && window.matchMedia("(orientation: landscape)").matches) {
+        stage.style.alignItems = ""; stage.style.paddingTop = ""; head.style.top = "";
+        vUp.style.left = ""; vDown.style.left = "";
+        Array.prototype.forEach.call(srow.children, function (c) { var n = c.querySelector(".scell-node"); if (n) n.style.top = ""; });
+        var crl = content.getBoundingClientRect();
+        vUp.style.top = Math.round(crl.top - pr.top - VH_GAP - uH) + "px";
+        vDown.style.top = Math.round(crl.bottom - pr.top + VH_GAP) + "px";
+        return;
+      }
+
+      // Portrait: place the content box ourselves so the stack balances. Anchor everything off the box's HEIGHT
+      // (position-independent), then derive the box top that makes the name-block top land at NAME_TOP with
+      // gap(name→up-arrow) == gap(down-arrow→buttons).
+      var node = cellEl.querySelector(".scell-node");
+      var headH = head.offsetHeight || 0, nodeH = node ? node.offsetHeight : 0;
+      var GAP_HN = 6, NAME_TOP = 8, IDEAL_G = 48;
+      var nameBlockH = headH + GAP_HN + nodeH;
+      var cH = content.offsetHeight;
+      var barTop = bar.getBoundingClientRect().top - pr.top;
+      var stageTop = stage.getBoundingClientRect().top - pr.top;
+      var uShown = vUp.style.display !== "none", dShown = vDown.style.display !== "none";
+      var uSpace = uShown ? (uH + VH_GAP) : VH_GAP, dSpace = dShown ? (dH + VH_GAP) : VH_GAP;
+      // G = the equal gap (name↔up-arrow and down-arrow↔buttons). Use a comfortable fixed gap so the name sits
+      // down off the top; only shrink it if the box is too tall to otherwise keep the name on-screen.
+      var fitG = (barTop - NAME_TOP - nameBlockH - uSpace - cH - dSpace) / 2;
+      var G = Math.max(8, Math.round(Math.min(IDEAL_G, fitG)));
+      var minTop = NAME_TOP + nameBlockH + G + uSpace;                           // room the name block needs above the box
+      var contentTop = barTop - G - dSpace - cH;                                 // bottom-anchored ideal (equal gaps)
+      if (contentTop < minTop) contentTop = minTop;                             // tall box: pin below the name — the padding
+                                                                                 // shrinks the stage, so fitText refits it to fit below
+      // place the box AT contentTop: measure its natural (margin-0) top first, then pad the difference — robust
+      // against the box's async config re-fit, unlike a stageTop-derived margin.
+      // Nudge the stage's top padding toward the target by the CURRENT error — converges over the few layout
+      // passes (fit / scroll / rAF) without depending on a fragile zero-padding baseline.
+      stage.style.alignItems = "flex-start";
+      var curTop = content.getBoundingClientRect().top - pr.top;
+      var curPad = parseFloat(stage.style.paddingTop) || 0;
+      stage.style.paddingTop = Math.max(0, Math.round(curPad + contentTop - curTop)) + "px";
+      // Cap a config box to the room left below its top, and re-fit its font to that cap ONCE (contentTop is stable,
+      // so this converges — no oscillation). Keeps a big AWG config clear of the down-arrow + buttons.
+      if (content.classList.contains("textwrap")) {
+        content.style.maxHeight = Math.max(60, barTop - dSpace - contentTop - 2) + "px";
+        fitText(content);
+      }
+      // Measure where the box ACTUALLY landed and hug the arrows to it; then mirror the REAL gap below the
+      // down-arrow as the gap above the name — so the balance holds regardless of any residual drift.
+      var cr2 = content.getBoundingClientRect();
+      var aTop = Math.round(cr2.top - pr.top), aBot = Math.round(cr2.bottom - pr.top);
+      var aCx = Math.round((cr2.left + cr2.right) / 2 - pr.left);                 // centre the arrows over the box (config is left-aligned)
+      vUp.style.top = (aTop - VH_GAP - uH) + "px"; vUp.style.left = aCx + "px";
+      vDown.style.top = (aBot + VH_GAP) + "px"; vDown.style.left = aCx + "px";
+      var downEdge = aBot + VH_GAP + (dShown ? dH : 0);
+      var Gb = Math.max(8, Math.round(barTop - downEdge));                        // true gap: down-arrow → buttons
+      var upEdge = uShown ? (aTop - VH_GAP - uH) : (aTop - VH_GAP);
+      var headTop = Math.max(4, Math.round(upEdge - Gb - nodeH - GAP_HN - headH));
+      head.style.top = headTop + "px";
+      var cellTop = cellEl.getBoundingClientRect().top - pr.top;
+      var nodeTop = Math.round(headTop + headH + GAP_HN - cellTop);
+      Array.prototype.forEach.call(srow.children, function (c) { var n = c.querySelector(".scell-node"); if (n) n.style.top = nodeTop + "px"; });
+    }
+    function scheduleVH() {
+      var run = function () { syncVHints(); if (_relayoutRail) _relayoutRail(); };   // rail re-centres right after the box is placed
+      requestAnimationFrame(run); setTimeout(run, 90); setTimeout(run, 220);          // rAF + catch the async config re-fit
+    }
     function syncBar() {
       var c = cur();
-      if (c && c.ready && c.hasQR) { toggle.hidden = false; toggle.textContent = (c.view === "qr") ? (c.isLink ? t("toLink") : t("toConfig")) : t("toQR"); }
-      else toggle.hidden = true;
-      var can = !!(c && c.ready && c.payload);
-      copyB.hidden = dlB.hidden = !can;
-      if (can) { copyB.textContent = t("copyShort"); dlB.textContent = t("dlShort"); }
+      // buttons keep FIXED positions — a hidden one reserves its slot (visibility:hidden)
+      var showToggle = c.ready && c.hasQR;
+      toggle.style.visibility = showToggle ? "" : "hidden";
+      if (showToggle) { var q = (c.view === "qr"); setIcon(toggle, q ? "doc" : "qr", q ? (c.isLink ? t("showLink") : t("showConfig")) : t("showQR")); }
+      var v = (c.ready && c.payload) ? "" : "hidden";
+      copyB.style.visibility = v; dlB.style.visibility = v; shareB.style.visibility = v;
       for (var i = 0; i < dotEls.length; i++) dotEls[i].className = "pdot" + (i === curIdx ? " on" : "");
+      if (sL) { sL.style.opacity = (curIdx <= 0) ? "0" : ""; sR.style.opacity = (curIdx >= items.length - 1) ? "0" : ""; }
+      page._curVk = c.vkEl || null;         // this page's current VK notice; alignRail pushes the VISIBLE page's to the bar
+      scheduleVH();
     }
-    ctrls.forEach(function (c) { c.notify = function () { if (ctrls[curIdx] === c) syncBar(); }; });
-    toggle.onclick = function () { var c = cur(); if (!c || !c.hasQR) return; c.view = (c.view === "qr") ? "text" : "qr"; c.redraw(); syncBar(); };
-    copyB.onclick = function () { var c = cur(); if (!c) return; if (c.view === "qr" && c.qrUrl) copyImage(c.qrUrl, copyB, t("copyShort")); else c.copyInto(copyB, t("copyShort")); };
-    dlB.onclick = function () { var c = cur(); if (!c) return; var nm = c.base + (mode === "turn" ? "-turn" : ""); if (c.view === "qr" && c.qrUrl) downloadImage(c.qrUrl, nm); else download(c.payload, nm, c.ext || "conf"); };
+    ctrls.forEach(function (cc) { cc.notify = function () { if (ctrls[curIdx] === cc) syncBar(); }; });
+    toggle.onclick = function () { var c = cur(); if (!c.hasQR) return; c.view = (c.view === "qr") ? "text" : "qr"; c.redraw(); syncBar(); };
+    copyB.onclick = function () { var c = cur();
+      if (c.view === "qr" && c.qrUrl) { copyImage(c.qrUrl, null); flashIcon(copyB, "copy", t("copyConfig")); }
+      else (navigator.clipboard ? navigator.clipboard.writeText(c.payload) : Promise.reject()).then(function () { flashIcon(copyB, "copy", t("copyConfig")); }, function () {});
+    };
+    dlB.onclick = function () { var c = cur(); var nm = c.base + (mode === "turn" ? "-turn" : ""); if (c.view === "qr" && c.qrUrl) downloadImage(c.qrUrl, nm); else download(c.payload, nm, c.ext || "conf"); };
+    shareB.onclick = function () { var c = cur(); var nm = c.base + (mode === "turn" ? "-turn" : "") + "." + (c.ext || "conf");
+      if (navigator.share) {
+        try { var f = new File([c.payload], nm, { type: "text/plain" });
+          if (navigator.canShare && navigator.canShare({ files: [f] })) { navigator.share({ files: [f], title: nm }).catch(function () {}); return; }
+        } catch (_) {}
+        navigator.share({ title: nm, text: c.payload }).catch(function () {}); return;
+      }
+      (navigator.clipboard ? navigator.clipboard.writeText(c.payload) : Promise.reject()).then(function () { flashIcon(shareB, "share", t("share")); }, function () {});
+    };
 
     function current() { var sl = srow.scrollLeft, best = 0, bd = Infinity; for (var i = 0; i < srow.children.length; i++) { var dd = Math.abs((srow.children[i].offsetLeft - srow.offsetLeft) - sl); if (dd < bd) { bd = dd; best = i; } } return best; }
     var raf = 0;
-    srow.addEventListener("scroll", function () { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; var i = current(); if (i !== curIdx) { curIdx = i; syncBar(); } }); }, { passive: true });
+    srow.addEventListener("scroll", function () { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; var i = current(); if (i !== curIdx) { curIdx = i; syncBar(); } else syncVHints(); }); }, { passive: true });
     dotEls.forEach(function (d, i) { d.onclick = function () { srow.scrollTo({ left: srow.children[i].offsetLeft - srow.offsetLeft, behavior: "smooth" }); }; });
+    try { new ResizeObserver(scheduleVH).observe(srow); } catch (_) {}   // viewport / rotation → re-measure the hint gap
     setTimeout(syncBar, 0);
     return page;
   }
@@ -471,6 +699,13 @@
     applyBrand();                                    // logo + favicon follow the panel's theme colour
     var who = document.getElementById("who");
     who.textContent = data.user && data.user.name ? data.user.name : "";
+    // BLOCKED user: logo (header brand) + username (header "who") stay; the body is a single centered
+    // "Subscription disabled" message — no peers, tabs, or QRs. Reversible from the panel (unblock).
+    if (data.disabled) {
+      document.getElementById("peers").hidden = true;
+      showState(t("subDisabled"), t("subDisabledSub"));
+      return Promise.resolve();
+    }
     var wrap = document.getElementById("peers");
     wrap.innerHTML = "";
     var peers = data.peers || [];
@@ -491,33 +726,124 @@
 
     return Promise.all(jobs).then(function (rows) {
       var anyBad = rows.some(function (r) { return r.bad; });
-      // Which top-level tabs apply: WG/AWG if the user has ≥1 deployment of that protocol; TURN only when the
-      // feature is on AND ≥1 deployment has a proxy forwarding to it (same gate as the admin view).
+      // Which protocol groups apply: WG/AWG if ≥1 deployment of that type; TURN only when the feature is on AND
+      // ≥1 deployment has a proxy forwarding to it (same gate as the admin view).
       var has = { wg: false, awg: false, turn: false };
       rows.forEach(function (r) { (r.peer.targets || []).forEach(function (t) {
         has[t.type === "awg" ? "awg" : "wg"] = true;
         if (data.turn_enabled && (t.turn || []).length) has.turn = true;
       }); });
-      var tabs = ["wg", "awg", "turn"].filter(function (m) { return has[m]; });
-      if (!tabs.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
-      var mode = tabs[0];   // WG first when present, else the first available
+      var groups = ["wg", "awg", "turn"].filter(function (m) { return has[m]; });
+      if (!groups.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
 
-      var bar = el("div", "modebar"), pager = el("div", "pager"), btns = {};
-      tabs.forEach(function (m) {
-        var b = el("button", "modetab" + (m === mode ? " on" : ""), t(m));
-        var mc = modeColor(m); b.style.setProperty("--mc", mc); b.style.setProperty("--mc-ink", hexLum(mc) > 0.6 ? "#06222a" : "#EAFBFF");   // WG/AWG/turn colour when active
-        b.onclick = function () { if (mode === m) return; mode = m; tabs.forEach(function (x) { btns[x].className = "modetab" + (x === mode ? " on" : ""); }); paint(); };
-        btns[m] = b; bar.appendChild(b);
+      // ONE flat vertical pager through EVERY config, grouped by protocol: all WG, then all AWG, then all Turn.
+      // The mode buttons don't switch views — each JUMPS to the first page of its group; the group whose page is
+      // in view is highlighted and its button disabled (you're already there).
+      var bar = el("div", "modebar"), pager = el("div", "pager"), btns = {}, firstOf = {};
+      groups.forEach(function (mode) {
+        var b = el("button", "modetab"); b.type = "button"; b.title = t(mode); b.setAttribute("aria-label", t(mode));
+        b.appendChild(protoIcon(mode));
+        var mc = modeColor(mode); b.style.setProperty("--mc", mc); b.style.setProperty("--mc-ink", hexLum(mc) > 0.6 ? "#06222a" : "#EAFBFF");
+        b.onclick = function () { var f = firstOf[mode]; if (f) f.scrollIntoView({ behavior: "smooth", block: "start" }); };
+        btns[mode] = b; bar.appendChild(b);
       });
-      if (tabs.length > 1) wrap.appendChild(bar);
+      groups.forEach(function (mode) {
+        rows.forEach(function (row) {
+          var pg = peerProtoPage(mode, row, vkLink, userName);
+          if (pg) { if (!firstOf[mode]) firstOf[mode] = pg; pager.appendChild(pg); }
+        });
+      });
+      if (!pager.children.length) { showState(t("noConfigs"), t("noConfigsSub")); return; }
+      if (groups.length > 1) wrap.appendChild(bar);
+      // VK-link bar, directly under the icon row — filled by syncBar with the visible deployment's notice (freeturn forks)
+      var vkbar = el("div", "vkbar"); vkbar.hidden = true; wrap.appendChild(vkbar);
+      _setVk = function (elm) { vkbar.innerHTML = ""; if (elm) { vkbar.appendChild(elm); vkbar.hidden = false; } else vkbar.hidden = true; };
       wrap.appendChild(pager);
 
-      function paint() {
-        pager.scrollTop = 0; pager.innerHTML = "";
-        rows.forEach(function (row) { var pg = peerPage(row, mode, vkLink, userName); if (pg) pager.appendChild(pg); });
-        if (!pager.children.length) pager.appendChild(el("div", "ppage cfg-fail", t("noConfigs")));
+      var pages = Array.prototype.slice.call(pager.children);
+      // up/down hint per page: hint both directions, except no "up" on the first page and no "down" on the last
+      // (a lone page hints neither). left/right hints are handled inside the page (per deployment).
+      pages.forEach(function (pg, i) {
+        var u = pg.querySelector(".vhint-u"), d = pg.querySelector(".vhint-d");
+        if (u) u.style.display = (pages.length > 1 && i > 0) ? "" : "none";
+        if (d) d.style.display = (pages.length > 1 && i < pages.length - 1) ? "" : "none";
+      });
+
+      // Highlight + disable the button for the protocol group whose page is at the top. Viewport-relative rects
+      // so it works whether the PAGER scrolls (phone) or the WINDOW does (desktop).
+      // Sit the fixed left rail so its vertical centre lines up with the QR/config box of the page in view — not
+      // the viewport centre (the header pushes the QR below it). All pages share a layout, so the current one's
+      // box is representative; re-run on scroll/resize since a QR↔config toggle can change the box height.
+      function alignRail() {   // icon row is static now; this hook just pushes the VISIBLE page's VK notice to the bar
+        if (!_setVk) return;
+        var vpg = pages[curIndex()] || pages[0];
+        _setVk(vpg && vpg._curVk || null);
       }
-      paint();
+      _relayoutRail = alignRail;   // let a page's layout pass (QR↔config toggle, fit, swipe) re-centre the rail
+      function syncGroup() {
+        var ref = (bar.offsetParent !== null ? bar.getBoundingClientRect().bottom : pager.getBoundingClientRect().top) + 2;
+        var curMode = pages[0] ? pages[0].getAttribute("data-mode") : groups[0];
+        for (var i = 0; i < pages.length; i++) { var r = pages[i].getBoundingClientRect(); if (r.top <= ref && r.bottom > ref) { curMode = pages[i].getAttribute("data-mode"); break; } }
+        groups.forEach(function (m) { var on = (m === curMode); btns[m].className = "modetab" + (on ? " on" : ""); btns[m].disabled = on; });
+        alignRail();
+      }
+      var raf = 0, navLock = false;
+      function curIndex() {
+        var top = pager.getBoundingClientRect().top + 6;
+        for (var i = 0; i < pages.length; i++) { if (pages[i].getBoundingClientRect().bottom > top) return i; }
+        return pages.length - 1;
+      }
+      // Step exactly ONE peer up/down (shared by the vertical swipe + wheel). A lock during the animation stops a
+      // fling from chaining.
+      function stepConfig(dir) {
+        if (navLock) return;
+        navLock = true; setTimeout(function () { navLock = false; }, 460);
+        var i = curIndex(), j = Math.max(0, Math.min(i + dir, pages.length - 1));
+        if (j !== i) pages[j].scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      function onScroll() { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; syncGroup(); }); }
+      pager.addEventListener("scroll", onScroll, { passive: true });
+      window.addEventListener("scroll", onScroll, { passive: true });
+      window.addEventListener("resize", onScroll, { passive: true });
+      syncGroup();
+      requestAnimationFrame(syncGroup);   // re-sync once laid out
+      setTimeout(alignRail, 120);         // catch the QR's async first paint
+
+      // ── Deliberate VERTICAL paging (phone): a fling can skip several peers, so take over vertical touch/wheel
+      //    and step EXACTLY ONE peer per FIRM gesture. HORIZONTAL gestures are left to the deployment carousel
+      //    (native scroll-snap), so left/right still swipes a peer's servers/forks. ──
+      var isPager = getComputedStyle(pager).overflowY !== "visible";   // phone: the pager scrolls (desktop scrolls the window → leave native)
+      if (isPager) {
+        var scrollableUnder = function (node) {   // a config-text box that itself needs scrolling — let it, don't page
+          for (var n = node; n && n !== pager; n = n.parentNode) {
+            if (n.classList && n.classList.contains("cfgtext") && n.scrollHeight > n.clientHeight + 2) return true;
+          }
+          return false;
+        };
+        var tX = 0, tY = 0, tT = 0, tAxis = null, tOwn = false;
+        pager.addEventListener("touchstart", function (e) { tOwn = !scrollableUnder(e.target); tAxis = null; tX = e.touches[0].clientX; tY = e.touches[0].clientY; tT = Date.now(); }, { passive: true });
+        pager.addEventListener("touchmove", function (e) {
+          if (!tOwn) return;
+          var dx = e.touches[0].clientX - tX, dy = e.touches[0].clientY - tY;
+          if (tAxis === null && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) tAxis = (Math.abs(dx) > Math.abs(dy)) ? "h" : "v";
+          if (tAxis === "v") e.preventDefault();   // take over vertical; horizontal falls through to the carousel
+        }, { passive: false });
+        pager.addEventListener("touchend", function (e) {
+          if (!tOwn || tAxis !== "v") return;
+          var dy = e.changedTouches[0].clientY - tY, dt = Date.now() - tT, vel = Math.abs(dy) / Math.max(1, dt);
+          if (Math.abs(dy) > 85 || (Math.abs(dy) > 45 && vel > 0.7)) stepConfig(dy < 0 ? 1 : -1);   // FIRM swipe (long OR fast flick) only
+        }, { passive: false });
+        var wAcc = 0, wT = 0;
+        pager.addEventListener("wheel", function (e) {
+          if (scrollableUnder(e.target) || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;   // horizontal wheel → carousel
+          e.preventDefault();
+          var now = Date.now(); if (now - wT > 180) wAcc = 0; wT = now;
+          wAcc += e.deltaY;
+          if (Math.abs(wAcc) > 120) { stepConfig(wAcc > 0 ? 1 : -1); wAcc = 0; }
+        }, { passive: false });
+      }
+
       document.getElementById("state").hidden = true;
       wrap.hidden = false;
       if (anyBad) wrap.appendChild(el("p", "foot-warn", t("someBad")));
