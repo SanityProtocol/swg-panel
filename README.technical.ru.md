@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <b>Техническое (RU)</b></p>
 
-<p align="center"><code>1.3.2-beta</code></p>
+<p align="center"><code>1.3.3-beta</code></p>
 
 ---
 
