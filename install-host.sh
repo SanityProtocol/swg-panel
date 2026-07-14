@@ -1014,7 +1014,27 @@ if [ "$HOST_HAS_WG" = yes ]; then
     case "$_agent_purl" in *127.0.0.1*|*localhost*) _keep_agent=yes;; esac
   fi
   if [ "$_keep_agent" = yes ]; then
-    ok "keeping existing /etc/swg-agent/config.json (local node already enrolled to this panel)"
+    # Keep the enrolled config (panel URL + token stay put — no re-enroll), but MERGE IN any interface
+    # created/selected this run, so a re-run that adds one actually manages it (it would otherwise be
+    # created + brought up on disk yet absent from config.json → live-but-unmanaged by swg-noded).
+    _newifs=""; _sep=""
+    for n in ${SELECTED[@]+"${SELECTED[@]}"}; do n="${n// /}"; [ -z "$n" ] && continue
+      _onb=""; iface_onboarded "$n" && _onb=', "onboarded": true'
+      _newifs+="$_sep\"$n\": {\"cmd\": [\"${IF_CMD[$n]}\"], \"conf\": \"${IF_CONF[$n]}\", \"endpoint_host\": \"${IF_ENDPOINT[$n]:-}\"${_onb}}"; _sep=","; done
+    _merged=""
+    if [ -n "$_newifs" ] && ! $DRYRUN; then
+      _merged="$(python3 - "{$_newifs}" "$PREFIX/etc/swg-agent/config.json" <<'PY'
+import json,sys
+newifs=json.loads(sys.argv[1]); p=sys.argv[2]
+d=json.load(open(p)); ifs=d.setdefault("interfaces",{})
+added=[k for k in newifs if k not in ifs]     # only ADD new ones — never clobber an interface the panel/user already tuned
+for k in added: ifs[k]=newifs[k]
+if added: json.dump(d,open(p,"w"),indent=2)
+print(",".join(added))
+PY
+)" || _merged=""
+    fi
+    ok "keeping existing /etc/swg-agent/config.json (local node already enrolled)${_merged:+ + added interface(s): $(col "$C_GREEN" "$_merged")}"
   else
     [ -f "$PREFIX/etc/swg-agent/config.json" ] && info "re-pointing the local node to this panel (was syncing to ${_agent_purl:-another panel})"
     # auto-enroll: mint a token for the local node; its hash goes into nodes.json below
