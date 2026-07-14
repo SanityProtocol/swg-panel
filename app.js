@@ -8261,6 +8261,7 @@ function PanelSettingsScreen() {
     if (glDirty("geo")) out.push("Geo data");
     if (glDirty("defaults")) out.push("Interfaces — colours / defaults");
     if (glDirty("configs")) out.push("Client configs → " + (sc === "off" ? "off" : "encrypted"));
+    if (glDirty("subs")) out.push("Subscriptions — enable / languages");
     if (glDirty("display")) out.push("Display — theme / status timing");
     if (glDirty("mesh")) out.push("System mesh defaults");
     for (const n of (Store.nodes || [])) {
