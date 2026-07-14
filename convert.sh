@@ -39,7 +39,7 @@ turn_unit_lc(){ local u="$1" svc inst envf exe lis="" con=""
   if [ -z "$lis" ]; then exe="$(sed -n 's/^ExecStart=//p' "$u" | head -1)"
     lis="$(printf '%s' "$exe" | sed -n 's/.*-listen[ =]\{1,\}\([^ ]*\).*/\1/p')"; con="$(printf '%s' "$exe" | sed -n 's/.*-connect[ =]\{1,\}\([^ ]*\).*/\1/p')"; fi
   printf '%s\t%s\n' "$lis" "$con"; }
-detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1; }
+detect_wan(){ ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n1 || true; }   # || true: no default route → pipeline nonzero; caller falls back to eth0
 # import a (docker) conf as a BARE-METAL conf: drop any PostUp/PostDown, then add host NAT (the bare
 # datapath has no container to masquerade for it). Keys + Address + Amnezia params carry over.
 import_bare_conf(){ # <src> <dest>
@@ -275,7 +275,7 @@ lc_emit_hostnode(){ lc_emit_file "$1" "${2:-}"; lc_emit_post "$1" "${2:-}"; }
 if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = baremetal ] && [ "$TO" = docker ]; then
   ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; pconf="$ETC/install.conf"; PROFILE="$ROLE"
   bare_panel_present || [ -n "${SWG_RV_URL:-}" ] || die "no bare-metal panel found (swg-panel-server missing)"
-  gv(){ sed -n "s/^$1=//p" "$pconf" 2>/dev/null | head -1; }
+  gv(){ sed -n "s/^$1=//p" "$pconf" 2>/dev/null | head -1 || true; }   # || true: a missing install.conf must fall through to recovery state, not abort under pipefail+set -e
   PDOM="$(gv PANEL_DOMAIN)"; PPORT="$(gv PORT)"; PTLS="$(gv TLS_MODE)"; PEMAIL="$(gv ACME_EMAIL)"; PBASE="$(gv PANEL_BASE)"
   PCFTOKEN="$(gv CF_TOKEN)"; PCFORIGIN="$(gv CF_ORIGIN_TOKEN)"   # carry CF creds so cloudflare/cf15 renewal works in the container
   PSERVE="$(gv SERVE_MODE)"; PSUBDOM="$(gv SUB_DOMAIN)"
@@ -286,7 +286,7 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = baremetal ] &&
   case "$PSERVE" in nginx|caddy|skip) _RVPROXY=yes; PTLS=none; _PBIND=127.0.0.1; _SBIND=127.0.0.1; _SXFF=1;; esac
   # env passed to install-docker so TLS=none + the loopback binds win over its defaults (a reverse-proxy convert)
   _RVENV=""; [ "$_RVPROXY" = yes ] && _RVENV="TLS=none PANEL_BIND=127.0.0.1 SUB_BIND=127.0.0.1 SUB_TRUST_XFF=1 SUB_DOMAIN=$PSUBDOM"
-  PUSER="$(sed -n 's/^\([^:]*\):.*/\1/p' "$ETC/auth" 2>/dev/null | head -1)"
+  PUSER="$(sed -n 's/^\([^:]*\):.*/\1/p' "$ETC/auth" 2>/dev/null | head -1 || true)"   # || true: missing auth file must not abort under pipefail+set -e
   [ -n "${SWG_RV_URL:-}" ] && PDOM="${PDOM:-$SWG_RV_URL}"
   [ -n "$PDOM" ] || die "couldn't read the panel domain ($pconf missing and no recovery state)"
   case "$PTLS" in letsencrypt|letsencrypt-ip|cloudflare|cf15|selfsigned|none) :;; *) PTLS=selfsigned;; esac
@@ -340,7 +340,7 @@ PY
   [ -d "$STATE" ] && cp -a "$STATE/." "$DOCKER_DIR/data/lib/"   2>/dev/null || true   # roster, nodes.json, configs
   [ -d "$ETC" ]   && cp -a "$ETC/."   "$DOCKER_DIR/data/etc/"   2>/dev/null || true   # fleet.json, auth, tls/
   [ -d "$STATS" ] && cp -a "$STATS/." "$DOCKER_DIR/data/stats/" 2>/dev/null || true   # status snapshots + health-*.rrd graph history
-  _rrd_src=$(find "$STATS" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' '); _rrd_dst=$(find "$DOCKER_DIR/data/stats" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' ')
+  _rrd_src=$(find "$STATS" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' ' || true); _rrd_dst=$(find "$DOCKER_DIR/data/stats" -maxdepth 1 -name 'health-*.rrd' 2>/dev/null | wc -l | tr -d ' ' || true)   # || true: $STATS may be absent (find exits nonzero); wc still prints 0
   [ "${_rrd_src:-0}" -gt 0 ] && [ "${_rrd_dst:-0}" != "${_rrd_src:-0}" ] && warn "health graphs: staged ${_rrd_dst:-0}/${_rrd_src} rrd file(s) — some history may not have transferred"
   # carry the acme.sh renewal state (bare keeps it in /root/.acme.sh; the container reads data/etc/acme) and
   # point its stored reload command at the container (kill -HUP 1) instead of the systemd unit, so renewals reload.
@@ -433,7 +433,7 @@ fi
 if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   ETC=/etc/swg-panel; STATE=/var/lib/swg-panel; STATS=/var/www/wgstats; envf="$DOCKER_DIR/.env"
   [ -f "$envf" ] || [ -n "${SWG_RV_URL:-}" ] || die "no docker panel settings found at $envf"
-  getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//'; }
+  getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//' || true; }   # || true: a missing .env must fall through to recovery state, not abort under pipefail+set -e
   PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"
   PBASE="$(getv PANEL_BASE)"; PUSER="$(getv PANEL_USER)"; PCFT="$(getv CF_TOKEN)"; PCFO="$(getv CF_ORIGIN_TOKEN)"
   NTOK="$(getv NODE_TOKEN)"; NEP="$(getv NODE_ENDPOINT)"   # master: the local node's preserved identity
@@ -595,7 +595,7 @@ fi
 if [ "$FROM" = docker ] && [ "$TO" = baremetal ]; then
   envf="$DOCKER_DIR/.env"; confd="$DOCKER_DIR/data/node-confs"
   [ -f "$envf" ] || [ -n "${SWG_RV_TOKEN:-}" ] || die "no docker node settings found at $envf"   # resuming? the saved identity covers a half-torn-down .env
-  getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//'; }
+  getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//' || true; }   # || true: a missing .env must fall through to recovery state, not abort under pipefail+set -e
   NTOK="$(getv NODE_TOKEN)"; PURL="$(getv PANEL_URL)"; NEP="$(getv NODE_ENDPOINT)"
   NIFS="$(getv NODE_IFACES)"; NIF="$(getv NODE_IFACE)"; NPLAIN="$(getv NODE_PLAIN_WG)"; NVERIFY="$(getv TLS_VERIFY)"
   [ -n "${SWG_RV_TOKEN:-}" ] && { NTOK="$SWG_RV_TOKEN"; PURL="$SWG_RV_URL"; NEP="$SWG_RV_EP"; NVERIFY="${SWG_RV_VERIFY:-no}"; }   # resume: saved identity wins

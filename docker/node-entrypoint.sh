@@ -115,13 +115,15 @@ elif ls "$AWG_DIR"/*.conf >/dev/null 2>&1; then
   # in AWG_DIR (e.g. kept across an uninstall/reinstall). THOSE are the interface set — handled by the
   # re-manage loop below. Do NOT also invent the default awg0: it would collide on :51820 and show DOWN.
   log "using persisted interface conf(s) — not generating a default bootstrap interface"
-else
-  # single-interface fallback (back-compat) — only when the node has no interfaces at all
-  name="${NODE_IFACE:-awg0}"
+elif [ -n "${NODE_IFACE:-}" ]; then
+  # single bootstrap interface — ONLY when explicitly named (NODE_IFACE). Blank => zero interfaces (panel-managed).
+  name="$NODE_IFACE"
   plain=no; [ "${NODE_PLAIN_WG:-no}" = yes ] && plain=yes
   if [ -f "$AWG_DIR/$name.conf" ]; then log "interface $name already present ($AWG_DIR/$name.conf)"; mark_seeded "$name"; add_iface "$name" "$NODE_ENDPOINT"
   elif ! iface_seeded "$name"; then gen_conf "$name" "${NODE_LISTEN_PORT:-51820}" "${NODE_ADDRESS:-10.8.0.1/24}" "$plain"; mark_seeded "$name"; add_iface "$name" "$NODE_ENDPOINT"
   else log "interface $name was removed from the panel — not regenerating"; fi
+else
+  log "no bootstrap interface configured — this node is managed from the panel (add one: Interfaces → Load new interface)"
 fi
 
 # also re-manage any interfaces created from the panel and persisted in the conf dir (survives a

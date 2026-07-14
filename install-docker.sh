@@ -58,7 +58,7 @@ NODE_NAME="${NODE_NAME:-}"             # local node's name in the panel (master)
 PUSH_NAME=""                           # node-profile re-install: a changed box name to push via /api/node/rename
 NODE_COLOR="${NODE_COLOR:-#34d399}"   # local node's swatch in the panel (master); bare-metal's first palette colour
 NODE_ENDPOINT="${NODE_ENDPOINT:-${ENDPOINT_IP:-}}"
-NODE_IFACE="${NODE_IFACE:-awg0}"
+NODE_IFACE="${NODE_IFACE:-}"           # bootstrap interface name; blank = no bootstrap interface (manage from the panel)
 NODE_IFACES="${NODE_IFACES:-}"         # several interfaces: "name:port:addr[:proto],…"
 NODE_LISTEN_PORT="${NODE_LISTEN_PORT:-51820}"
 NODE_ADDRESS="${NODE_ADDRESS:-10.8.0.1/24}"
@@ -314,12 +314,15 @@ install_turn_proxy(){   # <fork> — params, then install (the fork is chosen in
       pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
       printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$_pt")"
     done <<< "$rows"
-  else
+  elif [ -n "$NODE_IFACE" ]; then                        # a bootstrap interface is configured but not on disk yet (fresh install)
     _pr=awg; [ "${NODE_PLAIN_WG:-}" = yes ] && _pr=wg
     label="[$NODE_IFACE] on $_pr"; clabel="$(col "$C_GREEN" "[$NODE_IFACE]") on $(b "$_pr")"
     pad=$((15 - ${#label})); [ "$pad" -lt 1 ] && pad=1
     printf '    %s%*s%s\n' "$clabel" "$pad" "" "$(col "$C_BLUE" "127.0.0.1:$defport")"
-    defname="${NODE_IFACE:-127.0.0.1:$defport}"
+    defname="$NODE_IFACE"
+  else                                                   # zero interfaces (panel-managed) — no default; make the operator type a real target
+    echo "    (none yet — enter a custom $(b ip:port) to forward to, or add an interface from the panel first)"
+    defname=""
   fi
   ask_valid "WireGuard/AmneziaWG address it forwards to - interface name or custom ip:port" "$defname" connect v_fwd "an interface name (e.g. awg0) or ip:port"
   connect="$(fwd_resolve "$connect")"
@@ -675,7 +678,7 @@ ask_node_conn(){     # NODE SETUP — panel connection (endpoint moved into the 
     # Verify by DEFAULT (secure); auto-detect a self-signed panel so a fresh node never fails its first sync.
     local _tls_def=y _rc
     if [ -n "$PANEL_URL" ]; then
-      curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; _rc=$?
+      _rc=0; curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null || _rc=$?   # capture rc WITHOUT letting set -e abort — a self-signed/unreachable panel (the case this block exists for) makes curl exit non-zero
       # only a genuine cert-verification failure (60/51) with -k then working means self-signed; a transient
       # error keeps the secure default (verify) rather than silently downgrading a real-CA panel.
       if { [ "$_rc" = 60 ] || [ "$_rc" = 51 ]; } && curl -sSk --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; then
@@ -935,11 +938,11 @@ manage_node_ifaces(){
     [ -n "$kern" ] && { printf "  Existing %s interfaces:" "$(col "$C_RED" kernel)"; for n in $kern; do printf ' %s' "$(col "$C_RED" "$n")"; done; printf " %s\n" "$(col "$C_RED" '— picking one MOVES it off the kernel into this node')"; }
     [ -n "$bm" ] && { printf "  Interfaces used by the bare-metal node on this server:"; for n in $bm; do printf ' %s' "$(col "$C_RED" "$n")"; done; echo; }
     echo
-    if [ -z "$dock$kern$mine$bm" ]; then            # truly nothing on this box → offer to create the first one
-      warn "No wg / awg interfaces found."; echo
-      doit="$(ask_yn_tty "Create one now? (installs WireGuard / AmneziaWG only if missing)" y)"
+    if [ -z "$dock$kern$mine$bm" ]; then            # truly nothing on this box → skip by default (panel-managed) or create one
+      info "No wg / awg interfaces yet — this node can be managed entirely from the panel (Interfaces → Load new interface)."; echo
+      doit="$(ask_yn_tty "Create a bootstrap interface now instead? (default: skip — add them from the panel later)" n)"
       if [ "$doit" = yes ]; then echo; add_node_iface; echo; continue; fi
-      warn "no interfaces yet — you can add one later from the panel (Interfaces → Load new interface)"; break
+      info "No bootstrap interface — this node will be managed from the panel."; break
     elif [ -n "$dock" ]; then                       # docker orphans present → onboard all / some / none
       echo "  Press $(b Enter) to onboard $(col "$C_BLUE" 'all available orphans above') and continue"
       echo "  Enter interface $(b names) (space-separated) to onboard or migrate specific ones"

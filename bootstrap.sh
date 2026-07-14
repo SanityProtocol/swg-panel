@@ -300,7 +300,7 @@ _salv_block(){ local idx="$1" tok="$2" url="$3" src="$4" method dir ifaces turns
     "the swg-node container") method="Docker"; dir="/opt/swg-panel-docker";;
     *) method="Docker"; dir="$(dirname "$src" 2>/dev/null)";; esac
   if [ "$method" = Docker ]; then
-    ifaces="$(ls "$dir/data/node-confs"/*.conf 2>/dev/null | while read -r c; do basename "$c" .conf; done | tr '\n' ' ')"
+    ifaces="$(ls "$dir/data/node-confs"/*.conf 2>/dev/null | while read -r c; do basename "$c" .conf; done | tr '\n' ' ' || true)"   # empty node-confs → ls exits non-zero; don't let pipefail+set-e abort recovery listing
     turns="$(python3 -c 'import json,sys;print(len((json.load(open(sys.argv[1])).get("turn_proxies") or [])))' "$dir/data/node/turn-proxy.json" 2>/dev/null || echo '?')"
   else
     ifaces="$(python3 -c 'import json;print(" ".join((json.load(open("/etc/swg-agent/config.json")).get("interfaces") or {}).keys()))' 2>/dev/null || true)"; turns="?"
@@ -381,12 +381,12 @@ EOF2
     _rdir="$(dirname "${salv_src:-/dev/null}" 2>/dev/null)"
     if [ "$METHOD" = docker ] && [ -d "$_rdir/data/node-confs" ]; then
       _lc=/opt/swg-panel-docker/data/node-confs
-      _npr="$(grep -ch '^\[Peer\]' "$_rdir/data/node-confs/"*.conf 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+      _npr="$(grep -ch '^\[Peer\]' "$_rdir/data/node-confs/"*.conf 2>/dev/null | awk '{s+=$1} END{print s+0}' || true)"   # peerless/empty confs → grep exits non-zero; awk still prints 0, just neutralise pipefail+set-e
       if ls "$_lc"/*.conf >/dev/null 2>&1; then
         # the box ALREADY has interface configs with peers AND the chosen recovery snapshot has its own — these are
         # two INDEPENDENT peer sets (the snapshot's are not a subset of the live ones); let the operator pick which
         # set this node keeps (default: leave the box's own peers untouched).
-        _npl="$(grep -ch '^\[Peer\]' "$_lc/"*.conf 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+        _npl="$(grep -ch '^\[Peer\]' "$_lc/"*.conf 2>/dev/null | awk '{s+=$1} END{print s+0}' || true)"   # peerless confs → grep exits non-zero; awk still prints 0, just neutralise pipefail+set-e
         echo
         info "This box already has $(b "$_npl peer(s)") from a previous install. The recovery snapshot you picked has $(b "$_npr peer(s)")."
         _ovw=no; ask_yn "  Replace this box's $_npl peer(s) with the $_npr from the snapshot?" n _ovw

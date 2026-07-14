@@ -123,9 +123,10 @@ services:
       SWG_TURN_IMAGE: "${SWG_TURN_IMAGE:-ghcr.io/sanityprotocol/swg-node:latest}"  # image swg-noded runs each turn-proxy container from
       SWG_HOST_NODE_DIR: "${SWG_HOST_NODE_DIR:-}"   # absolute HOST path of ./data/node — for bind-mounting the turn binary into its container
       SWG_TURN_MIRROR: "${SWG_TURN_MIRROR:-}"   # OPT-IN: space-separated GitHub proxy prefix(es) to fall back to if the direct release download fails (you must trust them to serve the right binary)
-      # Single interface (default), or several via NODE_IFACES (see .env.example):
-      NODE_IFACE: "${NODE_IFACE:-awg0}"
-      NODE_IFACES: "${NODE_IFACES:-}"     # "name:port:addr[:proto[:endpoint]],…"  (blank = use NODE_IFACE)
+      # Interfaces are OPTIONAL — by default the node comes up with none and is managed from the panel
+      # (Interfaces → Load new interface). Set NODE_IFACE for a single bootstrap interface, or NODE_IFACES for several:
+      NODE_IFACE: "${NODE_IFACE:-}"       # bootstrap interface name; blank = none (add interfaces from the panel)
+      NODE_IFACES: "${NODE_IFACES:-}"     # "name:port:addr[:proto[:endpoint]],…"  (blank = use NODE_IFACE, or none)
       NODE_LISTEN_PORT: "${NODE_LISTEN_PORT:-51820}"
       NODE_ADDRESS: "${NODE_ADDRESS:-10.8.0.1/24}"
       NODE_MTU: "${NODE_MTU:-1280}"        # interface MTU; 1280 leaves headroom for turn-proxy obfuscation

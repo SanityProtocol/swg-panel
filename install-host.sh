@@ -270,11 +270,8 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     # only nothing-to-do if there are NEITHER /etc confs NOR leftover docker node-confs (a removed
     # docker node whose peers were kept) — the latter are offered for import in the loop below.
     if [ "${#IF_CMD[@]}" -eq 0 ] && [ -z "$(docker_node_ifaces)" ]; then
-      warn "No wg / awg interfaces found in /etc/wireguard or /etc/amnezia."
-      local doit; ask_yn "Create one now? (installs WireGuard / AmneziaWG only if missing)" y doit
-      [ "$doit" = yes ] && spec_iface
-      detect_wg
-      [ "${#IF_CMD[@]}" -eq 0 ] && [ "${#SPEC_ORDER[@]}" -eq 0 ] && die "No interface. Create one, then re-run (or set MANAGE_IFACES)."
+      info "No wg / awg interfaces yet — press Enter below to manage this node entirely from the panel, or create one now."
+      # zero interfaces is fine: the daemon still reports in, and the panel can push interfaces later (wg/awg tools are pre-installed below)
     elif [ "${#IF_CMD[@]}" -eq 0 ]; then
       info "Found leftover docker node-confs to import: $(col "$C_GREEN" "$(echo $(docker_node_ifaces))")"
     fi
@@ -296,16 +293,16 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
         echo "  Enter interface $(b names) (space-separated) to manage or migrate specific ones"
         [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
         printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
-      else                                                        # no orphans → finish or add more
-        echo "  Press $(b Enter) to finish with this node's interfaces"
+      else                                                        # no orphans → finish/skip or add more
+        if [ -n "$mine" ]; then echo "  Press $(b Enter) to finish with this node's interfaces"
+        else echo "  Press $(b Enter) to skip — manage this node from the panel (Interfaces → Load new interface)"; fi
         [ -n "$dk" ] && echo "  Enter interface $(b names) to migrate one from the docker node"
-        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
+        printf "  Enter %s to create an interface: " "$(col "$C_BLUE" '[n]ew')"
       fi
       if ! read -r pick 2>/dev/null </dev/tty; then echo; warn "no interactive input — keeping this node's interfaces"; sel=($mine $avail); break; fi
       pick="$(echo $pick)"
-      if [ -z "$pick" ]; then                                     # Enter → keep mine + onboard all orphans
+      if [ -z "$pick" ]; then                                     # Enter → keep mine + onboard all orphans (zero is fine: panel-managed node)
         sel=($mine $avail)
-        [ ${#sel[@]} -gt 0 ] || { warn "nothing to manage — type 'new' to create an interface"; continue; }
         break
       fi
       if [ "$pick" = done ]; then                                 # keep only this node's interfaces (leave orphans)
@@ -340,8 +337,8 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     [ -n "${IF_ENDPOINT[$n]:-}" ] && continue   # interfaces just created already have an endpoint
     _ep="$(detect_public_ip)"; IF_ENDPOINT[$n]="$_ep"   # auto endpoint clients dial (change it later in the panel)
     echo "    Used $(bb "$_ep") endpoint IP for $(col "$C_GREEN" "$n")"; done
-  [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
-  ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
+  if [ "${#SELECTED[@]}" -gt 0 ]; then ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
+  else info "No local interfaces yet — this node is managed from the panel (Interfaces → Load new interface)."; fi
 }
 
 # ───────────────────────── turn-proxy (vk-turn-proxy) ─────────────────────────

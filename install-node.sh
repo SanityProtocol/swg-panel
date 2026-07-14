@@ -226,7 +226,7 @@ iface_next_index(){ local hi=-1 n s; for n in "${!IF_CMD[@]}" ${SPEC_ORDER[@]+"$
 # warn if any two managed interfaces share a tunnel subnet — only ONE can be up at a time (the rest fail to
 # start), so the node will report some interfaces down until the operator edits one to a free subnet.
 warn_dup_subnets(){ local n a key; declare -A _seen=()
-  for n in "${!IF_CONF[@]}"; do a="$(conf_get "${IF_CONF[$n]}" Address)"; [ -n "$a" ] || continue; key="$(_net24 "$a")"
+  for n in "${!IF_CONF[@]}"; do a="$(conf_get "${IF_CONF[$n]}" Address || true)"; [ -n "$a" ] || continue; key="$(_net24 "$a")"
     if [ -n "${_seen[$key]:-}" ]; then warn "interfaces $(col "$C_GREEN" "$n") and $(col "$C_GREEN" "${_seen[$key]}") share subnet $(b "$key") — only one can be up at a time; edit one to a free subnet, then restart it."
     else _seen[$key]="$n"; fi
   done; }
@@ -382,11 +382,8 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
     # only nothing-to-do if there are NEITHER /etc confs NOR leftover docker node-confs (a removed
     # docker node whose peers were kept) — the latter are offered for import in the loop below.
     if [ "${#IF_CMD[@]}" -eq 0 ] && [ -z "$(docker_node_ifaces)" ]; then
-      warn "No wg / awg interfaces found in /etc/wireguard or /etc/amnezia."
-      local doit; ask_yn "Create one now? (installs WireGuard / AmneziaWG only if missing)" y doit
-      [ "$doit" = yes ] && spec_iface
-      detect_wg
-      [ "${#IF_CMD[@]}" -eq 0 ] && [ "${#SPEC_ORDER[@]}" -eq 0 ] && { $DRYRUN || die "create an interface, then re-run"; IF_CMD[awg0]=awg; IF_CONF[awg0]=/etc/amnezia/amneziawg/awg0.conf; }
+      info "No wg / awg interfaces yet — press Enter below to manage this node entirely from the panel, or create one now."
+      # zero interfaces is fine: the daemon still reports in, and the panel can push interfaces later (wg/awg tools are pre-installed below)
     elif [ "${#IF_CMD[@]}" -eq 0 ]; then
       info "Found leftover docker node-confs to import: $(col "$C_GREEN" "$(echo $(docker_node_ifaces))")"
     fi
@@ -410,16 +407,16 @@ choose_ifaces(){ # let the user pick which detected interfaces to manage; 'new' 
         echo "  Enter interface $(b names) (space-separated) to manage or migrate specific ones"
         [ -n "$mine" ] && echo "  Enter $(col "$C_BLUE" done) to keep only this node's interfaces (leave the orphans)"
         printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
-      else                                                        # no orphans → finish or add more
-        echo "  Press $(b Enter) to finish with this node's interfaces"
+      else                                                        # no orphans → finish/skip or add more
+        if [ -n "$mine" ]; then echo "  Press $(b Enter) to finish with this node's interfaces"
+        else echo "  Press $(b Enter) to skip — manage this node from the panel (Interfaces → Load new interface)"; fi
         [ -n "$dk" ] && echo "  Enter interface $(b names) to migrate one from the docker node"
-        printf "  Enter %s to create another interface: " "$(col "$C_BLUE" '[n]ew')"
+        printf "  Enter %s to create an interface: " "$(col "$C_BLUE" '[n]ew')"
       fi
       if ! read -r pick 2>/dev/null </dev/tty; then echo; warn "no interactive input — keeping this node's interfaces"; sel=($mine $avail); break; fi
       pick="$(echo $pick)"
-      if [ -z "$pick" ]; then                                     # Enter → keep mine + onboard all orphans
+      if [ -z "$pick" ]; then                                     # Enter → keep mine + onboard all orphans (zero is fine: panel-managed node)
         sel=($mine $avail)
-        [ ${#sel[@]} -gt 0 ] || { warn "nothing to manage — type 'new' to create an interface"; continue; }
         break
       fi
       if [ "$pick" = done ]; then                                 # keep only this node's interfaces (leave orphans)
@@ -478,8 +475,8 @@ apply_node_switch(){
     if [ "$_c" = awg ]; then bringup awg-quick "$n" && { run systemctl enable --quiet "awg-quick@$n" || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"
     else                     bringup wg-quick  "$n" && { run systemctl enable --quiet "wg-quick@$n"  || true; } || warn "couldn't bring up adopted '$n' — check $(b "${IF_CONF[$n]:-}")"; fi
   done
-  [ "${#SELECTED[@]}" -gt 0 ] || die "no interfaces selected"
-  ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
+  if [ "${#SELECTED[@]}" -gt 0 ]; then ok "Managing: $(b "$(col "$C_GREEN" "${SELECTED[*]}")")"
+  else info "No local interfaces yet — this node is managed from the panel (Interfaces → Load new interface)."; fi
 }
 
 # ───────────────────────── turn-proxy (vk-turn-proxy) ─────────────────────────
@@ -796,7 +793,7 @@ if [ -z "$TLS_VERIFY" ] && [ -z "$TLS_FINGERPRINT" ]; then
   # skipping verification works is the panel self-signed. The operator can still override.
   _tls_def=y
   if [ -n "$PANEL_URL" ] && ! $DRYRUN; then
-    curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null; _rc=$?
+    _rc=0; curl -sS --max-time 6 -o /dev/null "${PANEL_URL%/}/healthz" 2>/dev/null || _rc=$?   # capture rc WITHOUT letting set -e abort — a self-signed/unreachable panel (the case this block exists for) makes curl exit non-zero
     # Only a genuine cert-verification failure (curl 60/51) — where skipping verify then works — means the
     # panel is self-signed. A transient error (timeout/refused/other) keeps the SECURE default (CA verify), so
     # a network hiccup never silently downgrades a real-CA panel.

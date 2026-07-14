@@ -131,7 +131,7 @@ HAVE_BNODE=no; { [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ];
 HAVE_DOCK=no; DOCK_PROF=""
 if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
   HAVE_DOCK=yes
-  DOCK_PROF="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1)"
+  DOCK_PROF="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 || true)"   # || true: .env may be absent (compose present) → don't abort before the fallback below
   if [ -z "$DOCK_PROF" ] && have docker; then
     _n="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
     case "$_n" in *swg-panel*) case "$_n" in *swg-node*) DOCK_PROF=master;; *) DOCK_PROF=host;; esac;; *swg-node*) DOCK_PROF=node;; esac
@@ -294,7 +294,7 @@ fi
 if ! $NODE_ONLY && [ -d "$DOCKER_DIR" ] && [ -f "$DOCKER_DIR/docker-compose.yml" ]; then
   found=1; doc_seen=yes
   # which profile is running? prefer the marker install-docker.sh wrote into .env, else sniff containers
-  prof="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1)"
+  prof="$(sed -n 's/^# .*profile: *//p' "$DOCKER_DIR/.env" 2>/dev/null | head -1 || true)"   # || true: .env may be absent (compose present) → don't abort before the fallback below
   if [ -z "$prof" ] && have docker; then
     names="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
     case "$names" in *swg-panel*) case "$names" in *swg-node*) prof=master;; *) prof=host;; esac;; *swg-node*) prof=node;; esac
