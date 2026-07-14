@@ -24,11 +24,13 @@
 // Stale nodes never count as "missing" (they're unknown, not absent), so a peer
 // stays "online" while a replica is briefly unreachable.
 
-const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000 };
+const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000, unblockMs: 300000 };   // unblockMs: how long "restoring" shows after an unblock before falling back to the real status
 
 // status priority for rolling several targets/peers into one (most-alive wins). faulty (handshake up, no data)
 // sits just under online; blocked (reaching but no handshake) is a fault above the plain-missing states.
-const RANK = { online: 8, faulty: 7, ready: 6, blocked: 5, partial: 4, pending: 3, creating: 3, rotating: 3, dangling: 2, unknown: 1 };
+// disabled/blocking rank BELOW every live state so a single per-peer block never dominates a user that still
+// has healthy peers; restoring ranks with the other transitional states.
+const RANK = { online: 8, faulty: 7, ready: 6, blocked: 5, partial: 4, restoring: 3, pending: 3, creating: 3, rotating: 3, dangling: 2, blocking: 1, disabled: 0, unknown: 1 };
 
 function ipOf(hostport) {
   if (!hostport) return "";
@@ -148,6 +150,21 @@ function reconcile(roster, stats, now, cfg) {
     // a key rotation in flight: the new key isn't on the wire yet — show "rotating", not dangling
     if (cfg.rotating && cfg.rotating.has(pid) && (status === "dangling" || status === "creating" || status === "unknown")) status = "rotating";
 
+    // BLOCKED access (stored override, wins over any derived state). A peer OR any peer of a disabled user is
+    // dropped from the node's desired set: "blocking" while the node still reports it (converging), "disabled"
+    // once it's gone from every live target. With no live target to confirm against, stay "blocking".
+    // UNBLOCK: `unblock_at` shows "restoring" until the peer is back on every live target (then the real status
+    // shows through); a stale marker (past the window) is ignored so a later-offline peer reads dangling, not stuck.
+    const blocked = !!(p.disabled || (user && user.disabled));
+    const ublkAt = Math.max(p.unblock_at || 0, (user && user.unblock_at) || 0);   // per-peer OR whole-user unblock
+    const restoring = !blocked && ublkAt && (now - ublkAt * 1000) < cfg.unblockMs && !(live.length > 0 && present.length === live.length);
+    if (blocked) status = (live.length > 0 && present.length === 0) ? "disabled" : "blocking";
+    else if (restoring) status = "restoring";
+    // Propagate the block/restore state onto each TARGET too, so the per-target Peers grid (which shows
+    // t.status) agrees with the peer-level badge instead of still reading online/ready/dangling.
+    if (blocked) targets.forEach(d => { d.status = (nodeStatus[d.node] === "live" && !d.observed) ? "disabled" : "blocking"; });
+    else if (restoring) targets.forEach(d => { if (!d.observed) d.status = "restoring"; });
+
     let reason = null;   // why a peer isn't healthy — surfaced on the status badge (incl. a DOWN interface)
     if (status === "dangling" || status === "partial" || status === "creating") {
       const dt = targets.find(d => d.down);
@@ -171,6 +188,7 @@ function reconcile(roster, stats, now, cfg) {
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,
       presentCount: present.length, liveCount: live.length,
+      disabled: blocked, selfDisabled: !!p.disabled, userDisabled: !!(user && user.disabled),
     };
   });
 
@@ -185,12 +203,14 @@ function reconcile(roster, stats, now, cfg) {
       if (pr.online) online = true;
       if (status === "empty" || (RANK[pr.status] || 0) > (RANK[status] || 0)) status = pr.status;
     });
+    // a disabled user with no peers still reads "disabled" (the flag, not a derived state)
+    if (u.disabled && mine.length === 0) status = "disabled";
     return {
       id: uid, name: u.name || "", tag: u.tag || "", note: u.note || "", vk_link: u.vk_link || "",
       created_at: u.created_at || null, modified_at: u.modified_at || null,
       peerIds: mine.map(pr => pr.id),
       peerCount: mine.length, onlineCount: mine.filter(pr => pr.online).length,
-      status: status, online: online,
+      status: status, online: online, disabled: !!u.disabled,
     };
   });
 

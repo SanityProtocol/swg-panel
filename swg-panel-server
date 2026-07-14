@@ -903,6 +903,12 @@ def peer_set(roster, pid, fields, now):
     }
     if ov:                                                    # keep the roster tidy: no override key on a default peer
         rec["overrides"] = ov
+    # Block state (declarative access revoke) is preserved across every other mutation — an update-target or
+    # rekey must not silently un-block a peer. Only /api/peers/{block,unblock} change it.
+    for k in ("disabled", "disabled_at", "unblock_at"):
+        v = fields.get(k, p.get(k))
+        if v:
+            rec[k] = v
     roster["peers"][pid] = rec
     return rec
 
@@ -1048,6 +1054,18 @@ def load_sub_users(deps): return _load_sub_json(_sub_users_path(deps))
 def save_sub_users(deps, d):
     os.makedirs(_sub_dir(deps), exist_ok=True)
     atomic_write(_sub_users_path(deps), json.dumps(d, indent=2) + "\n", mode=0o640)   # group-readable: swg-sub maps token→uid
+
+def _sub_suspend_user(deps, uid, enabled):
+    """Flip a user's subscription enabled flag WITHOUT touching token_sha or the escrow — the URL stays valid,
+    swg-sub just serves the "Subscription disabled" screen while enabled is False. Used by user block/unblock so
+    a re-enable is instant (no re-mint, no re-share). No-op if the user has no subscription. Best-effort."""
+    try:
+        users = load_sub_users(deps)
+        if uid in users and bool(users[uid].get("enabled")) != bool(enabled):
+            users[uid]["enabled"] = bool(enabled)
+            save_sub_users(deps, users)
+    except Exception:
+        pass
 
 def load_sub_blobs(deps, uid): return _load_sub_json(_sub_blob_path(deps, uid))
 def save_sub_blobs(deps, uid, d):
@@ -1691,7 +1709,12 @@ def desired_for_node(roster, node_id):
     for p in (roster.get("peers") or {}).values():
         if not isinstance(p, dict):
             continue
-        uname = (users.get(p.get("user_id")) or {}).get("name", "")
+        u = users.get(p.get("user_id")) or {}
+        # BLOCKED access: a disabled peer (or every peer of a disabled user) is dropped from the desired set,
+        # so the node removes it on its next sync and tears down any live session. Unblock re-adds it.
+        if p.get("disabled") or u.get("disabled"):
+            continue
+        uname = u.get("name", "")
         # node-side label (a .conf comment): "user · title" so the operator can tell devices apart
         name = " · ".join(x for x in (uname, p.get("title", "")) if x)
         for t in p.get("targets", []):
@@ -5575,6 +5598,61 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "peer", pid, "Adopted peer", peer_label(roster, roster["peers"][pid]),
                   f"{target['node']}/{target['iface']}")
         return 200, {"ok": True, "data": roster["peers"][pid]}
+
+    # ── Block / unblock access (declarative revoke) ──────────────────────────────────────────────
+    # A blocked peer/user is dropped from every node's desired set (desired_for_node) → the node removes
+    # it and tears down the live session. The keys are UNCHANGED, so unblock re-adds the same peer and the
+    # device reconnects with no reconfiguration. `disabled` overrides the derived status in reconcile.js;
+    # `unblock_at` marks the transient "restoring" window until the node reports the peer ready again.
+    if method == "POST" and path == "/api/peers/block":
+        pid = body.get("peer_id") or ""
+        roster = roster_load(roster_path)
+        p = (roster.get("peers") or {}).get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if not p.get("disabled"):
+            p["disabled"] = True; p["disabled_at"] = now(); p.pop("unblock_at", None); p["modified_at"] = now()
+            roster_save(roster_path, roster)
+            ev_append(roster_path, "peer", pid, "Blocked access", peer_label(roster, p))
+        return 200, {"ok": True, "data": roster["peers"][pid]}
+
+    if method == "POST" and path == "/api/peers/unblock":
+        pid = body.get("peer_id") or ""
+        roster = roster_load(roster_path)
+        p = (roster.get("peers") or {}).get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if p.get("disabled"):
+            p.pop("disabled", None); p.pop("disabled_at", None); p["unblock_at"] = now(); p["modified_at"] = now()
+            roster_save(roster_path, roster)
+            ev_append(roster_path, "peer", pid, "Restored access", peer_label(roster, p))
+        return 200, {"ok": True, "data": roster["peers"][pid]}
+
+    if method == "POST" and path == "/api/user/block":
+        uid = body.get("user_id") or ""
+        roster = roster_load(roster_path)
+        u = (roster.get("users") or {}).get(uid)
+        if not u:
+            return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
+        if not u.get("disabled"):
+            u["disabled"] = True; u["disabled_at"] = now(); u.pop("unblock_at", None); u["modified_at"] = now()
+            roster_save(roster_path, roster)
+            _sub_suspend_user(deps, uid, False)     # non-destructive: keep token_sha → "Subscription disabled" screen
+            ev_append(roster_path, "user", uid, "Blocked access", u.get("name", ""))
+        return 200, {"ok": True, "data": {"id": uid, "disabled": True}}
+
+    if method == "POST" and path == "/api/user/unblock":
+        uid = body.get("user_id") or ""
+        roster = roster_load(roster_path)
+        u = (roster.get("users") or {}).get(uid)
+        if not u:
+            return 404, {"ok": False, "error": "unknown user", "code": "not_found"}
+        if u.get("disabled"):
+            u.pop("disabled", None); u.pop("disabled_at", None); u["unblock_at"] = now(); u["modified_at"] = now()
+            roster_save(roster_path, roster)
+            _sub_suspend_user(deps, uid, True)      # restore the same subscription URL — instant flip, no re-mint
+            ev_append(roster_path, "user", uid, "Restored access", u.get("name", ""))
+        return 200, {"ok": True, "data": {"id": uid, "disabled": False}}
 
     if method == "POST" and path == "/api/nodes/create":
         name = (body.get("name") or "").strip()

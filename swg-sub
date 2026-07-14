@@ -226,6 +226,18 @@ def token_lookup(users, token):
     return None
 
 
+def token_lookup_rec(users, token):
+    """Like token_lookup but matches a SUSPENDED user too (enabled False) → (uid, rec). A blocked user keeps
+    its token_sha so the page can show a "Subscription disabled" screen instead of a bare 404. None if unknown."""
+    if not token:
+        return None
+    sha = hashlib.sha256(token.encode()).hexdigest()
+    for uid, rec in users.items():
+        if isinstance(rec, dict) and hmac.compare_digest(str(rec.get("token_sha", "")), sha):
+            return uid, rec
+    return None
+
+
 # Short-TTL cache for the HEAVY shared read — the roster, the token map, and the describe (which
 # reads EVERY node's snapshot mirror). Without it, each /api hit re-parses the whole roster + all
 # stats-<id>.json from disk, so a flood on one valid token turns into a disk-I/O storm (the panel
@@ -293,10 +305,19 @@ def read_data(state, token):
     if not state.enabled():
         return None
     roster, describe, users, nodes = _shared_read(state)
-    uid = token_lookup(users, token)
-    if uid is None:
+    found = token_lookup_rec(users, token)
+    if found is None:
         return None
+    uid, rec = found
     user = (roster.get("users") or {}).get(uid) or {}
+    subs = state.subscriptions()
+    langs = subs.get("languages") if isinstance(subs.get("languages"), dict) else {}
+    theme = {"theme_color": subs.get("theme_color") or "", "theme_color_light": subs.get("theme_color_light") or "",
+             "langs": {"enabled": langs.get("enabled") or ["en"], "default": langs.get("default") or "en"}}
+    # BLOCKED user (subscription suspended, or the roster flag set): resolve the token to show the name +
+    # theme, but serve NO peers or secrets. The page renders the centered "Subscription disabled" screen.
+    if not rec.get("enabled") or user.get("disabled"):
+        return {"disabled": True, "user": {"name": user.get("name") or ""}, **theme}
     live = {pid: p for pid, p in (roster.get("peers") or {}).items()
             if isinstance(p, dict) and p.get("user_id") == uid}
     blobs = state.sub_blobs(uid)                        # per-user file — small, read fresh so a new peer shows at once

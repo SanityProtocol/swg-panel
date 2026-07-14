@@ -449,6 +449,11 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 .b-orphan{background:rgba(95,117,105,.16);color:var(--unknown)}   /* GREY — unmanaged/external peer, informational */
 .b-creating{background:rgba(232,192,75,.16);color:var(--partial)}   /* YELLOW — being created (POST in flight or within the grace window) */
 .b-rotating{background:rgba(232,192,75,.16);color:var(--partial)}   /* YELLOW — key rotation in flight (active) */
+/* Access blocked — an INTENTIONAL admin revoke, not a fault. disabled=settled (grey), blocking=converging
+   (yellow, node still dropping it), restoring=coming back after unblock (blue) */
+.b-disabled{background:color-mix(in srgb,var(--dangling) 15%,transparent);color:var(--dangling)}   /* RED — access revoked (settled) */
+.b-blocking{background:rgba(232,192,75,.16);color:var(--partial)}   /* AMBER — block converging on the node */
+.b-restoring{background:color-mix(in srgb,var(--ready) 12%,transparent);color:var(--ready)}   /* BLUE — restoring after unblock */
 .ifc-orph{color:#F0913C;font-weight:600}   /* orange orphan (unmanaged) peer count on the interface card */
 .b-unknown{background:rgba(95,117,105,.16);color:var(--unknown)}
 .b-issue{background:color-mix(in srgb,var(--partial) 15%,transparent);color:var(--partial)}
@@ -780,6 +785,16 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .sheet-head h3 .sheet-ver{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--ready);margin-left:4px}   /* deployed version shown right in the turn-proxy sheet title */
 .sheet-head .x{margin-left:auto;background:none;border:0;color:var(--dim);cursor:pointer;font-size:22px;line-height:1}
 .sheet-head .x:hover{color:var(--ink)}
+/* Blocked-access treatment: a modal whose peer/user is blocked reads red at a glance — a red border + soft
+   ring, a faintly red-tinted header, and a solid BLOCKED chip. Restrained on purpose (no full-red fill) so the
+   configs/QRs inside stay legible. */
+.sheet.blocked{border-color:color-mix(in srgb,var(--dangling) 60%,transparent);
+  box-shadow:var(--shadow),0 0 0 3px color-mix(in srgb,var(--dangling) 22%,transparent)}
+.sheet.blocked .sheet-head{background:color-mix(in srgb,var(--dangling) 9%,transparent);
+  border-bottom-color:color-mix(in srgb,var(--dangling) 30%,transparent)}
+.blocked-tag{display:inline-flex;align-items:center;gap:4px;margin-left:10px;padding:3px 9px;border-radius:99px;
+  background:var(--dangling);color:#fff;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;line-height:1}
+.blocked-tag svg{width:11px;height:11px}
 .sheet-body{padding:20px}
 .field{margin-bottom:15px}
 .field>label{display:block;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:7px}
@@ -1943,6 +1958,9 @@ a.tg:hover{filter:brightness(1.25)}
 .ustat.s-dangling,.ustat.s-removing{color:var(--dangling)}
 .ustat.s-unknown,.ustat.s-empty,.ustat.s-off{color:var(--unknown)}   /* s-off = Live "offline" (grey, no animation) */
 .ustat.s-blocked,.ustat.s-faulty{color:var(--fault)}   /* orange — a peer is blocked / faulty */
+.ustat.s-disabled{color:var(--dangling)}   /* red — access revoked (settled) */
+.ustat.s-blocking{color:var(--partial)}   /* amber — block converging */
+.ustat.s-restoring{color:var(--ready)}   /* blue — restoring after unblock */
 /* name row: name · tag · note all on one line, name + note ellipsize */
 .u-name{display:flex;align-items:center;gap:8px;min-width:0;font-size:14px;font-weight:600}
 .u-name>a{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto} .u-name>a:hover{color:var(--brand)}

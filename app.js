@@ -898,6 +898,8 @@ const api = {
   userCreate(b) { return this.post("/api/users/create", b); },
   userUpdate(b) { return this.post("/api/users/update", b); },
   userDelete(b) { return this.post("/api/users/delete", b); },
+  userBlock(b) { return this.post("/api/user/block", b); },       // revoke WG + suspend the subscription URL
+  userUnblock(b) { return this.post("/api/user/unblock", b); },   // restore both
   // peers
   peerCreate(b) { return this.post("/api/peers/create", b); },
   peerUpdate(b) { return this.post("/api/peers/update", b); },
@@ -907,6 +909,8 @@ const api = {
   peerDelete(b) { return this.post("/api/peers/delete", b); },
   peerUnassign(b) { return this.post("/api/peers/unassign", b); },
   peerRekey(b) { return this.post("/api/peers/rekey", b); },
+  peerBlock(b) { return this.post("/api/peers/block", b); },      // drop this peer from every node's desired set
+  peerUnblock(b) { return this.post("/api/peers/unblock", b); },
   peerAdopt(b) { return this.post("/api/peers/adopt", b); },
   ifaceUpdate(b) { return this.post("/api/iface/update", b); },
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
@@ -1483,9 +1487,16 @@ const rowNoSelect = e => { if (e.detail > 1) e.preventDefault(); };   // stop th
 const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
 const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied" };
 const IFOP_FAIL = { start: "failed to start", stop: "failed to stop", restart: "failed to restart", apply: "failed to apply" };
-const STATUS_RANK = { dangling: 0, blocked: 1, faulty: 1, partial: 1, pending: 2, creating: 2, rotating: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
+const STATUS_RANK = { disabled: -1, blocking: -1, dangling: 0, blocked: 1, faulty: 1, partial: 1, pending: 2, creating: 2, rotating: 2, restoring: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
-  blocked: "warn", faulty: "warn", dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info" };
+  blocked: "warn", faulty: "warn", dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info",
+  disabled: "off", blocking: "off", restoring: "refresh" };
+// Display label overrides where the internal status key differs from the word shown. Two remaps, both
+// display-only (keys stay put so persisted settings / filters / deep-links don't move):
+//   disabled → "blocked"    — the access-revoke settled state (key mirrors the roster `disabled` flag)
+//   blocked  → "restricted" — the DPI/no-handshake FAULT (freed the word "blocked" for the revoke state)
+const STATUS_LABEL = { disabled: "blocked", blocked: "restricted" };
+const statusLabel = s => STATUS_LABEL[s] || s;
 // a node/panel host that's mid re-install or method conversion (signalled before it goes down)
 const PROC_LABEL = {
   reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker", updating: "updating", uninstalling: "uninstalling",
@@ -1529,7 +1540,7 @@ function Badge({ s, title }) {
   const ic = STATUS_ICON[s];
   // online → a glowing animated dot in the status colour (green), not a check — matches the turn badge
   if (s === "online") return html`<span class="badge b-online" title=${title || ""}><span class="sdot"></span>online</span>`;
-  return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${s}</span>`;
+  return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${statusLabel(s)}</span>`;
 }
 
 // inline metadata tag (protocol / interface / turn-proxy / generic) — the dense, colored
@@ -1570,7 +1581,7 @@ function gridStatusBadge(t, p) {
     const bc = "var(--fault)";
     return html`<span class="turnwrap">
       <${Badge} s=${st}/>
-      <span class="turnbub statusbub"><span class="statusbub-h" style=${"color:" + bc}><${Ic} i="warn"/>${st === "blocked" ? "Blocked" : "Faulty"}</span>${reason}</span></span>`;
+      <span class="turnbub statusbub"><span class="statusbub-h" style=${"color:" + bc}><${Ic} i="warn"/>${st === "blocked" ? "Restricted" : "Faulty"}</span>${reason}</span></span>`;
   }
   return html`<${Badge} s=${st} title=${reason}/>`;
 }
@@ -1893,6 +1904,56 @@ function confirmDeletePeer(peer, back) {
     body: "This is irreversible — the peer's key is removed from every interface it's deployed on.",
     onConfirm: () => mutate({ key: "peer:" + peer.id, patch: s => { delete s.roster.peers[peer.id]; },
       call: () => api.peerDelete({ peer_id: peer.id }) }) });
+}
+
+// ── Block / unblock access (declarative revoke — reversible, keys unchanged) ──────────────────────
+// Blocking drops the peer (or every peer of a user) from each node's desired set: the node removes it and
+// the live session tears down within a sync. The keys are untouched, so unblocking reconnects the SAME
+// config/QR with no re-issue. A user block also suspends the subscription page (kept — the URL still shows
+// "Subscription disabled" and re-enables instantly). `now_s` stamps the transient "restoring" marker.
+const now_s = () => Math.floor(Date.now() / 1000);
+const _peerName = p => p.title ? " · " + p.title : p.name ? " · " + p.name : "";
+function confirmBlockPeer(peer, back) {
+  openConfirm({ title: "Block access" + _peerName(peer), confirmLabel: "Block", danger: true, back,
+    body: "This removes the peer from every server it's deployed on, cutting its connection within a sync. The keys are unchanged, so unblocking later restores the same config — no new QR needed.",
+    onConfirm: () => mutate({ key: "peer:" + peer.id,
+      patch: s => { const p = s.roster.peers[peer.id]; if (p) p.disabled = true; },
+      call: () => api.peerBlock({ peer_id: peer.id }) }) });
+}
+function confirmUnblockPeer(peer, back) {
+  openConfirm({ title: "Unblock access" + _peerName(peer), confirmLabel: "Unblock", back,
+    body: "This restores the peer on every server it's deployed on. It reconnects with its existing keys once the servers converge.",
+    onConfirm: () => mutate({ key: "peer:" + peer.id,
+      patch: s => { const p = s.roster.peers[peer.id]; if (p) { delete p.disabled; p.unblock_at = now_s(); } },
+      call: () => api.peerUnblock({ peer_id: peer.id }) }) });
+}
+function confirmBlockUser(user, back) {
+  openConfirm({ title: "Block access · " + (user.name || "user"), confirmLabel: "Block", danger: true, back,
+    body: "This blocks every peer of this user and, if they have a subscription, disables its page — the link still resolves but shows “Subscription disabled”. Nothing is deleted: unblocking restores connectivity and the same subscription URL.",
+    onConfirm: () => mutate({ key: "user:" + user.id,
+      patch: s => { const u = s.roster.users[user.id]; if (u) u.disabled = true; },
+      call: () => api.userBlock({ user_id: user.id }) }) });
+}
+function confirmUnblockUser(user, back) {
+  openConfirm({ title: "Unblock access · " + (user.name || "user"), confirmLabel: "Unblock", back,
+    body: "This restores every peer and re-enables the subscription page. Connections come back once the servers converge.",
+    onConfirm: () => mutate({ key: "user:" + user.id,
+      patch: s => { const u = s.roster.users[user.id]; if (u) { delete u.disabled; u.unblock_at = now_s(); } },
+      call: () => api.userUnblock({ user_id: user.id }) }) });
+}
+// Ghost Block/Unblock button — label + action derive from state. A peer blocked only because its whole user is
+// blocked can't be individually unblocked, so point the operator at the user instead of a dead per-peer toggle.
+function peerBlockBtn(peer, back) {
+  if (peer.userDisabled && !peer.selfDisabled)
+    return html`<button class="btn btn-danger" disabled title="Blocked because the user is blocked — unblock the user"><${Ic} i="off"/> Blocked</button>`;
+  return peer.selfDisabled
+    ? html`<button class="btn btn-ghost" onClick=${() => confirmUnblockPeer(peer, back)}><${Ic} i="refresh"/> Unblock</button>`
+    : html`<button class="btn btn-danger" onClick=${() => confirmBlockPeer(peer, back)}><${Ic} i="off"/> Block</button>`;
+}
+function userBlockBtn(user, back) {
+  return user.disabled
+    ? html`<button class="btn btn-ghost" onClick=${() => confirmUnblockUser(user, back)}><${Ic} i="refresh"/> Unblock</button>`
+    : html`<button class="btn btn-danger" onClick=${() => confirmBlockUser(user, back)}><${Ic} i="off"/> Block</button>`;
 }
 
 // A type-to-filter user picker (the "assign to" control for unassigned peers).
@@ -3034,7 +3095,7 @@ function Overview() {
 
   // Needs-attention shown IN BULK: problem peers grouped by status, unassigned grouped by node, orphans
   // grouped by interface — each row lands where you'd fix it (Peers filtered, or the interface detail).
-  const STATUS_WORD = { dangling: "dangling", partial: "partially deployed", blocked: "blocked", faulty: "faulty", pending: "pending", unknown: "on a stale server" };
+  const STATUS_WORD = { dangling: "dangling", partial: "partially deployed", blocked: "restricted", faulty: "faulty", pending: "pending", unknown: "on a stale server" };
   const statusGroups = PROB_STATUSES.map(s => ({ status: s, peers: probs.filter(p => p.status === s) })).filter(g => g.peers.length);
   const unByNode = {};
   unassigned.forEach(p => p.targets.forEach(t => {
@@ -5250,8 +5311,11 @@ function SetupTurnSheet({ node }) {
 // ═════════════════════════ SCREEN: PEERS (by node) ═════════════════════════
 const peersView = { node: "", iface: "", q: "", sort: "status", dir: -1, status: null };
 // Peers-screen status filter options (also the deep-link targets from grouped Needs-attention rows).
+// NB: the value is the internal status KEY (matched against p.status); the label is what's shown. Access-revoke's
+// key is `disabled` (shown "Blocked"); the DPI fault's key is `blocked` (shown "Restricted").
 const PEER_STATUS_FILTERS = [["", "All statuses"], ["online", "Online"], ["ready", "Ready"], ["unassigned", "Unassigned"],
-  ["dangling", "Dangling"], ["partial", "Partial"], ["blocked", "Blocked"], ["faulty", "Faulty"], ["pending", "Pending"], ["unknown", "Unknown"]];
+  ["disabled", "Blocked"], ["blocking", "Blocking"], ["restoring", "Restoring"],
+  ["dangling", "Dangling"], ["partial", "Partial"], ["blocked", "Restricted"], ["faulty", "Faulty"], ["pending", "Pending"], ["unknown", "Unknown"]];
 // Prominent warning when the panel keeps no client configs at rest — QRs/downloads then only work
 // in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.
 function StoreOffBanner() {
@@ -5296,7 +5360,7 @@ function ifaceOptGroups(names) {
 const _ipKey = ip => String(ip || "").split(/[./]/).map(n => String((+n) || 0).padStart(3, "0")).join(".");
 // status order for the clickable "Status" column — online FIRST (STATUS_RANK ranks ready above online, which is
 // right for the Peers-screen default grouping but backwards for an order-by; here online is the top of the sort).
-const PEER_STATUS_RANK = { online: 10, faulty: 9, ready: 8, blocked: 7, partial: 6, pending: 5, creating: 5, rotating: 5, unassigned: 3, unknown: 2, dangling: 1 };
+const PEER_STATUS_RANK = { online: 10, faulty: 9, ready: 8, blocked: 7, partial: 6, pending: 5, creating: 5, rotating: 5, restoring: 4, unassigned: 3, unknown: 2, dangling: 1, blocking: 0, disabled: 0 };
 const PEER_SORT = {
   status: ({ p, t }) => PEER_STATUS_RANK[t.status || p.status] || 0,
   server: ({ t }) => Store.nodeName(t.node).toLowerCase() + "|" + t.iface,
@@ -5375,7 +5439,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
             // faulty / blocked → the "why" bubble on hovering the dot OR the interface badge (same as the peer-grid badge)
             if (t.status === "faulty" || t.status === "blocked") {
               return html`<span class="turnwrap">${dot}${ifaceB}
-                <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${t.status === "blocked" ? "Blocked" : "Faulty"}</span>${STATUS_REASON[t.status]}</span></span>`;
+                <span class="turnbub statusbub"><span class="statusbub-h" style="color:var(--fault)"><${Ic} i="warn"/>${t.status === "blocked" ? "Restricted" : "Faulty"}</span>${STATUS_REASON[t.status]}</span></span>`;
             }
             return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>${ifaceB}`;
           })()}</td>
@@ -5664,7 +5728,7 @@ function userStatTag(user, live) {
   // Live monitor: a user is simply online (has an online peer, green) or offline (grey) — no ready/partial/etc.
   if (live) { const on = user.onlineCount > 0; return html`<span class=${"ustat s-" + (on ? "online" : "off")}>${on ? "online" : "offline"}</span>`; }
   const s = user.peerCount ? user.status : "empty";
-  return html`<span class=${"ustat s-" + s}>${s === "empty" ? "no peers" : s}</span>`;
+  return html`<span class=${"ustat s-" + s}>${s === "empty" ? "no peers" : statusLabel(s)}</span>`;
 }
 // Combined live stats across ALL of a user's peers/targets — for the user row's rate/total/last columns.
 function userStats(uid) {
@@ -5886,6 +5950,20 @@ function EmbeddedPeers({ peers, view, onNew, newLabel, hideUser, hideToolbar, co
 // A horizontal carousel of fixed-width cards. Steps ONE card at a time; the counter + ‹/› enabled-state derive
 // from live scroll metrics (not a mid-scroll index guess), so it never jumps back or gets stuck before the last.
 const QR_ITEM = 256, QR_GAP = 14;
+// ← / → scroll the carousel. Only the TOPMOST mounted (paged) carousel responds — a peer modal opened over a
+// user modal steals the arrows until it closes — so nested modals don't scroll in lockstep. Each paged QRRow
+// pushes a stepper; the last one registered wins. Ignored while typing or with a modifier held.
+const _qrNavStack = [];
+function _qrNavKey(e) {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  const step = _qrNavStack[_qrNavStack.length - 1];
+  if (!step) return;
+  e.preventDefault();
+  step(e.key === "ArrowLeft" ? -1 : 1);
+}
 function QRRow({ cards }) {
   const ref = useRef(null);
   const [m, setM] = useState({ l: 0, cw: 0, sw: 0, step: QR_ITEM + QR_GAP });
@@ -5911,6 +5989,17 @@ function QRRow({ cards }) {
   const last = Math.min(n - 1, first + per - 1);
   const range = first === last ? `${first + 1} of ${n}` : `${first + 1}–${last + 1} of ${n}`;
   const go = d => { const el = ref.current; if (el) el.scrollBy({ left: d * step, behavior: "smooth" }); };
+  // register this carousel as the arrow-key target while it's paged (a stable wrapper calls the freshest `go`,
+  // which closes over the current step measurement)
+  const goRef = useRef(go); goRef.current = go;
+  useEffect(() => {
+    if (!paged) return;
+    const stepper = d => goRef.current(d);
+    if (!_qrNavStack.length) window.addEventListener("keydown", _qrNavKey);
+    _qrNavStack.push(stepper);
+    return () => { const i = _qrNavStack.lastIndexOf(stepper); if (i >= 0) _qrNavStack.splice(i, 1);
+      if (!_qrNavStack.length) window.removeEventListener("keydown", _qrNavKey); };
+  }, [paged]);
   return html`<div class=${"qrrowwrap" + (paged ? " paged" : "")}>
     <div class="qrrow" ref=${ref}>${cards}</div>
     ${paged ? html`<div class="qrnav">
@@ -6016,6 +6105,7 @@ function SubLinkActions({ user }) {
 // modal. Line 1: title (or "Peer .{last IP octet}") · server name + protocol badge. Line 2: interface badge
 // (+N when there are more deployments) · status. Reuses TargetCard's QR body + actions via its `head` override.
 function UserPeerCard({ peer, onOpen }) {
+  useStore();   // re-render on each poll so the status badge (looked up live below) tracks block/unblock, like TargetCard
   const targets = peer.targets || [];
   const t = targets[0] || {};
   const col = Store.nodeColor(t.node);
@@ -6124,14 +6214,29 @@ function openPeerConfigs(peer, opts) {
   const nm = parts.join(" · ");
   const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span></span>`;
   const headExtra = vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true} header=${true}/>` : null;
-  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}>
+  (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}
+    subject=${{ kind: "peer", id: peer.id }} foot=${html`<${QRPeerFoot} pid=${peer.id}/>`}>
     <${VaultUnlockPanel}/>
     ${!hideVk && vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
     <${QRRow} cards=${peer.targets.map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && i === 0}/>`)}/>
   <//>`);
 }
+// Live footer for the QR modals — re-renders on each poll (useStore), so the Block/Unblock label flips right
+// after the action without the modal being reopened.
+function QRPeerFoot({ pid }) {
+  useStore();
+  const p = Store.peer(pid);
+  if (!p) return null;
+  return html`<${Fragment}><span class="grow"></span>${peerBlockBtn(p)}<//>`;
+}
+function QRUserFoot({ uid }) {
+  useStore();
+  const u = Store.user(uid);
+  if (!u) return null;
+  return html`<${Fragment}><span class="grow"></span>${userBlockBtn(u)}<//>`;
+}
 function openUserEdit(user) {
-  openModal(html`<${Sheet} title=${"Edit · " + user.name}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
+  openModal(html`<${Sheet} title=${"Edit · " + user.name} subject=${{ kind: "user", id: user.id }}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
 }
 // Every QR/config the user owns, grouped by peer — one horizontal row of deployment QRs per peer (the peer's
 // PRIMARY deployment first, tagged, when it has more than one). Same TargetCard the peer QR modal uses, so a
@@ -6314,7 +6419,8 @@ function openUserConfigs(user, back) {
   const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
   const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}</span>`;
   const headExtra = html`<span class="hcount">${peers.length} peer${peers.length === 1 ? "" : "s"}${nCfg > 1 ? ` (${nCfg} configs)` : ""}</span>`;
-  openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${back || closeModal}>
+  openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${back || closeModal}
+    subject=${{ kind: "user", id: user.id }} foot=${html`<${QRUserFoot} uid=${user.id}/>`}>
     <${VaultUnlockPanel}/>
     <${SubLinkActions} user=${user}/>
     ${anyTurn ? html`<${VkLinkField} user=${user}/>` : null}
@@ -6327,7 +6433,7 @@ function openUserConfigs(user, back) {
 // Turn always opens FROM another modal (a peer or user QR view), so it's PUSHED — ✕/Esc/backdrop/"Back" pop
 // straight back to whatever it was launched from, with that view intact.
 function openTurnConfigs(peer, t, conf) {
-  pushModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} noGuard=${true} onClose=${closeModal} onBack=${closeModal}>
+  pushModal(html`<${Sheet} title=${"Turn configs · " + (peer.title || peer.name || "peer")} width=${560} noGuard=${true} onClose=${closeModal} onBack=${closeModal} subject=${{ kind: "peer", id: peer.id }}>
     <${TurnConfigSheet} peer=${peer} t=${t} conf=${conf}/>
   <//>`);
 }
@@ -6567,7 +6673,7 @@ function UserEditCard({ user, done }) {
       <input value=${vk} onInput=${e => setVk(e.target.value)} placeholder="https://vk.ru/call/join/…" maxlength="512"/>
       ${vkBad ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
         : html`<div class="hint">Baked into this user's turn-proxy configs. Blank → the panel uses your test link and their subscription page shows no VK link until you set one.</div>`}</div>` : null}
-    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> Delete user</button><span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></div>
+    <div class="editfoot"><button class="btn btn-danger" onClick=${del}><${Ic} i="trash"/> Delete user</button>${userBlockBtn(user, done)}<span class="grow"></span><button class="btn btn-ghost" onClick=${done}>Cancel</button><button class="btn btn-primary" onClick=${save}>Save</button></div>
   </div>`;
 }
 
@@ -8489,7 +8595,7 @@ function PanelSettingsScreen() {
           <div class="seclabel">Peer health detection</div>
           <p class="hint" style="margin:0 0 10px">Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in <span class="b-faulty" style="padding:1px 6px;border-radius:6px">orange</span>.</p>
           <div class="condrow"><${Switch} on=${statusConds.blocked} onChange=${v => setStatusConds(c => ({ ...c, blocked: v }))}/>
-            <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>blocked</span></span>
+            <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>restricted</span></span>
             <span class="cond-t">Endpoint is reaching the server, but the handshake never completes (likely DPI / MTU / wrong AmneziaWG params).</span></div>
           <div class="condrow"><${Switch} on=${statusConds.faulty} onChange=${v => setStatusConds(c => ({ ...c, faulty: v }))}/>
             <span class="cond-b"><span class="badge b-faulty ic"><${Ic} i="warn"/>faulty</span></span>
@@ -8712,8 +8818,18 @@ function SearchBox({ placeholder, value, onInput }) {
 function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
   return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || "Cancel"}</button><button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button><//>`;
 }
-function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, onBack, noGuard }) {
+// subject = {kind:"peer"|"user", id} — when that peer/user is blocked, the whole modal takes the red "blocked"
+// treatment (border + header tint + a BLOCKED chip). Looked up live (useStore) so it reacts to block/unblock
+// done from within the modal, on every modal that carries a subject (QR / view / edit / targets / turn).
+function subjectBlocked(subject) {
+  if (!subject || !subject.id) return false;
+  const rec = subject.kind === "user" ? Store.user(subject.id) : Store.peer(subject.id);
+  return !!(rec && rec.disabled);
+}
+function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, closeRef, onBack, noGuard, subject }) {
+  useStore();                                    // track live block/unblock while the modal is open
   onClose = onClose || closeModal;
+  const blocked = subjectBlocked(subject);
   const ref = useRef(null);
   const dirty = useRef(false);   // set by a real user edit — programmatic value changes don't fire input/change
   const discardRef = useRef(false);             // armed once; read live so the captured onKey closure stays correct
@@ -8774,8 +8890,8 @@ function Sheet({ title, children, foot, onClose, width, headExtra, dirtyRef, clo
   }, []);
 
   return html`<div class="overlay show" onClick=${e => { if (e.target.classList.contains("overlay")) tryClose(); }}>
-    <div class="sheet" role="dialog" aria-modal="true" ref=${ref} style=${width ? "width:" + width + "px;max-width:calc(100vw - 32px)" : ""}>
-      <div class="sheet-head"><h3>${title}</h3>${headExtra || null}${onBack
+    <div class=${"sheet" + (blocked ? " blocked" : "")} role="dialog" aria-modal="true" ref=${ref} style=${width ? "width:" + width + "px;max-width:calc(100vw - 32px)" : ""}>
+      <div class="sheet-head"><h3>${title}</h3>${blocked ? html`<span class="blocked-tag"><${Ic} i="off"/> Blocked</span>` : null}${headExtra || null}${onBack
         ? html`<button class="sheet-back" onClick=${tryClose}><${Ic} i="back"/> Back</button>`
         : html`<button class="x" onClick=${tryClose}>×</button>`}</div>
       <div class="sheet-body">${children}</div>
@@ -9337,7 +9453,7 @@ function AddTargetSheet({ peer, back, child }) {
     } else doSave().then(ok => { if (ok) back(); });
   };
 
-  return html`<${Sheet} title=${"Peer targets"} onClose=${back} onBack=${child ? back : null}
+  return html`<${Sheet} title=${"Peer targets"} onClose=${back} onBack=${child ? back : null} subject=${{ kind: "peer", id: peer.id }}
     foot=${footRow({ onCancel: back, actionCls: "btn " + (chosen.length === 0 ? "btn-danger" : "btn-primary"), disabled: busy || !confLoaded || nochange, onAction: save, action: chosen.length === 0 ? "Delete peer" : ((removed.length || ipChanged.length) ? "Save changes" : "Deploy") })}>
     ${!confLoaded ? html`<div class="loading"><span class="spin"></span>loading config…</div>`
       : html`<${Fragment}>
@@ -9362,12 +9478,13 @@ function PeerViewSheet({ pid, node, iface }) {
   const p = Store.peer(pid);
   if (!p) return html`<${Sheet} title="Peer" foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>Close</button>`}><div class="empty"><b>Peer not found</b>It may have been removed.</div><//>`;
   const u = p.user_id ? Store.user(p.user_id) : null;
-  return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")} width=${640}
+  return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")} width=${640} subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/> QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p)}><${Ic} i="copy"/> Targets</button>
       <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null)}><${Ic} i="pencil"/> Edit</button>
+      ${peerBlockBtn(p)}
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p)}>Delete</button>`
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p)}>Unassign</button>`}<//>`}>
     <div class="pv-head">
@@ -9504,8 +9621,8 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
       } });
   };
 
-  return html`<${Sheet} title=${"Edit peer"} onClose=${done} onBack=${child ? done : null}
-    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
+  return html`<${Sheet} title=${"Edit peer"} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
+    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>${peerBlockBtn(peer)}`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
