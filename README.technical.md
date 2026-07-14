@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.3.3-beta</code></p>
+<p align="center"><code>1.3.4-beta</code></p>
 
 ---
 
@@ -25,6 +25,7 @@ Multi-hop in mind (edge entry → distant exit), and built to scale — from a c
 - [Installing the panel](#installing-the-panel)
 - [Adding a node](#adding-a-node)
 - [Managing peers](#managing-peers)
+- [Subscriptions & access control](#subscriptions--access-control)
 - [Docker](#docker)
 - [Converting between bare-metal and Docker](#converting-between-bare-metal-and-docker)
 - [Configuration reference](#configuration-reference)
@@ -147,7 +148,7 @@ Nodes are managed entirely from the UI — the installer no longer asks about th
    It runs **Node setup** — interfaces (each with its own endpoint IP) and an optional turn-proxy — and starts `swg-noded`. Prefer Docker? The panel shows a `… bash -s docker node -key … -host …` command too.
 3. Within a few seconds the node turns **online** in the Nodes screen.
 
-With a self-signed panel cert the node doesn't verify it by default — the token is the credential and the channel is still encrypted. To verify instead, use a real cert and answer yes to the TLS prompt, or pin the self-signed one with `TLS_FINGERPRINT=<sha256-hex>` (checked during the handshake, before the token is sent).
+Against a **self-signed** panel the installer **auto-pins the cert on first contact** (trust-on-first-use): the node stores its sha256 and checks it on every handshake, before the token is sent — so a man-in-the-middle can't impersonate the panel even without a CA. A **real-CA** panel is verified against the system trust store instead. Override with `TLS_VERIFY=yes|no` or an explicit `TLS_FINGERPRINT=<sha256-hex>`. If the panel later moves (host/port), a node **auto-re-points** to the new address — but only when it still presents the pinned/trusted cert.
 
 **Per-node actions:** **Edit** (endpoint/colour — the endpoint goes into client configs), **Rotate token** (the old one stops working immediately; re-enroll), **Remove** (revokes the token and unassigns the node).
 
@@ -163,6 +164,16 @@ A **peer** is one identity (a keypair + IP + PSK) that can be deployed to severa
 Live status (online, partial, dangling, …) is computed every refresh from the nodes' snapshots — a peer stays "online" while one replica is briefly unreachable. Each deployment also shows its **transport** — **direct** or **via turn-proxy** (inferred when the client's observed endpoint matches a node's turn-proxy) — and, where a turn-proxy is present, the proxy endpoint + **wrap key** to set up the vk-turn-proxy client app.
 
 **Account** — change the panel username/password under the **Account** tab; it takes effect immediately (you're asked to sign in again).
+
+## Subscriptions & access control
+
+**Subscriptions (`swg-sub`)** — a separate, public-facing, **read-only** surface that serves each user a personal page at `https://sub.<domain>/<token>#<unlock-key>` with their config + QR for **every** node they're on: **WireGuard**, **AmneziaWG**, and each **TURN-PROXY fork** they're assigned (WINGS-N, samosvalishe, Moroka8, cacggghp, …), plus a FreeTurn VK-call-link field, protocol/relay badges, light/dark, RU/EN, and copy / download / share. **Off by default** — enable it in **Settings → Subscriptions**.
+
+- **Key custody.** The per-user **unlock key rides in the URL `#fragment`** — never sent to the server. The panel stores only **ciphertext** (encrypted config blobs) plus a public token map (`subs/users.json` = `{token_sha}`); the SK-wrapped unlock keys sit in a separate `subs/escrow.json` the sub surface can't read. A compromise of the internet-facing page yields only ciphertext, never a private key (this is why plaintext `store_configs` was dropped).
+- **Isolation.** `swg-sub` is its own process/container running as a dedicated low-privilege user: it mounts panel state `:ro` and **masks** every secret it must never open (`auth`, `panel-settings.json`, `subs/vault.json`, `subs/escrow.json`, the TLS key) with `/dev/null` + `tmpfs`. No login, write, or node code.
+- **Serving.** Config mirrors to `subs/serve.json` (`enabled`, `serve.{host,port,tls_mode,cert_path,key_path}`, languages). `swg-sub` terminates its own TLS — its own Let's Encrypt cert for `sub.<domain>`, an explicit cert path, or `reverse-proxy` mode (plain HTTP behind your proxy). Docker: the `swg-sub` container (`:8444`, front with your reverse proxy / Cloudflare). Bare-metal: the `swg-sub` systemd service.
+
+**Suspend / block access** — a declarative per-user (or per-node) `disabled` flag. Flip it and the next node reconcile **removes the peer** (tunnels drop) *and* **suspends the subscription** (the page goes dark) — but `token_sha` and keys are kept, so unblocking is instant: the peer is re-added and the page restored with **no re-issued keys**.
 
 ## Docker
 
@@ -278,6 +289,7 @@ A node can serve several interfaces — list them all under `interfaces`; each p
 - **Update:** `… | sudo bash -s update` (or `./update.sh`). Pulls the latest code, auto-detects what's installed (bare-metal panel/node and/or Docker), refreshes the binaries/SPA, and restarts — config + state are preserved. The installed version is stamped in each component's `VERSION` file (repo: [`VERSION`](VERSION)).
 - **Re-install keeps data:** re-running *any* installer on a box detects the existing install and preserves everything (login, cert, roster, nodes, node token, interfaces, turn-proxies), offering current values as defaults — safe after an interrupted run or to change an option. To start clean, uninstall first.
 - **Recover a node's identity:** a re-installed or converted node persists its enrollment identity to `/var/lib/swg-recovery`, so it can rejoin **without re-enrolling**. Open that menu directly with `… | sudo bash -s recovery` (works even on a box that still has a live node — e.g. to reattach a leftover token after a rebuild).
+- **Move the panel:** change its host/port and **pinned nodes auto-re-point** on their next sync — as long as the new address still presents their trusted cert — so a panel migration needs no per-node re-enroll.
 - **Uninstall:** `… | sudo bash -s uninstall` (or `./uninstall.sh`). Lists every installed component — the panel, a bare-metal node, the Docker panel and node containers, AmneziaWG, WireGuard, and **each** turn-proxy server — then loops through and asks to uninstall or keep each one. Nothing is removed without a yes; can keep the roster / node store / Docker data dir for a reinstall. `--yes` removes everything, `--dry-run` previews.
 
 ## External API & Integrations
@@ -376,7 +388,8 @@ Full reference: [`docs/API.md`](docs/API.md).
 
 ## Security
 
-- **Transport:** nodes only ever connect *out* to the panel over TLS. Prefer a real cert (`letsencrypt`/`cloudflare`) so nodes can `verify: true`; with a self-signed cert, pin its fingerprint.
+- **Transport & panel identity:** nodes only ever connect *out* to the panel over TLS. A **real-CA** panel is verified against the system trust store; a **self-signed** one is **auto-pinned (trust-on-first-use)** at enrollment, so a man-in-the-middle can't impersonate it. If the panel later moves (host/port), a node **auto-re-points** to the new address only when it still presents the pinned/trusted cert.
+- **Request signing (replay-resistant):** every node→panel request carries `X-SWG-TS` + `X-SWG-MAC` = HMAC-SHA256(the node's `token_sha`, `ts`·sha256(body)); the panel verifies it inside a short time window (rejecting replays) and looks the node up by a per-node `token_sha` index — constant-time, so a bogus token can't force pbkdf2 amplification.
 - **Node tokens** authenticate a node to the panel. They are shown once, stored only as a hash, and can be rotated. Treat the node's `config.json` (which holds the live token) as a secret — it is mode `600`.
 - **PSKs** are generated per peer and stored in the roster so every node stays consistent; keep `/var/lib/swg-panel` readable only by the panel user.
 - **Private keys** are generated in your browser. By default (`store_configs` on) the panel keeps the generated config — private key included — so QR/download stay available; set `store_configs` off for no secrets at rest, and each private key is shown only once at creation. Either way, if a peer's key is lost, re-issue the peer.

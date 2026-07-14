@@ -1,6 +1,6 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.3.3-beta</code></p>
+<p align="center"><code>1.3.4-beta</code></p>
 
 ---
 
@@ -48,6 +48,8 @@ subscription and no one else sitting in the middle of your traffic.
 
 - **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
+- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [samosvalishe](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys.
+- **Suspend access in one click.** Block a person — or just one of their servers — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
 - **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
 - **Panel here or apart.** Run the panel on the same server as a VPN node, or on a separate box that only manages your nodes — either works.
@@ -69,6 +71,18 @@ subscription and no one else sitting in the middle of your traffic.
 | **List providers** — curated + community geo/domain lists | ![Geo data](screenshots/settings-geo-data.png) |
 | **Turn-proxy** — wrap traffic through relays to beat blocks | ![Turn proxy](screenshots/turn-proxy.png) |
 | **Turn-proxy catalog** — which relay forks are offered, and auto-updates | ![Turn proxies](screenshots/settings-turn-proxies.png) |
+
+**Subscription pages** — each user's private swgSub link, with config + QR for every server (WireGuard, AmneziaWG, and TURN-PROXY forks):
+
+<p align="center">
+  <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="WireGuard subscription" width="150"></a>
+  <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="AmneziaWG subscription" width="150"></a>
+  <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="WINGS-N subscription" width="150"></a>
+  <a href="screenshots/sub-moroka8.jpg"><img src="screenshots/sub-moroka8.jpg" alt="Moroka8 subscription" width="150"></a>
+  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="samosvalishe subscription" width="150"></a>
+  <a href="screenshots/sub-amneziawg-node.jpg"><img src="screenshots/sub-amneziawg-node.jpg" alt="AmneziaWG (dark, second node)" width="150"></a>
+  <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="cacggghp subscription" width="150"></a>
+</p>
 
 </details>
 

@@ -1,6 +1,6 @@
 <p align="center"><a href="README.md">English</a> · <b>Русский</b> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.3.3-beta</code></p>
+<p align="center"><code>1.3.4-beta</code></p>
 
 ---
 
@@ -50,6 +50,8 @@ swgPanel — это панель управления для запуска со
 
 - **Одна страница, чтобы управлять всем.** Добавляйте серверы, добавляйте пользователей, раздавайте доступ — всё из веб-панели.
 - **Доступ в виде QR-кода.** Создайте человека, покажите ему QR — он сканирует его в приложении WireGuard/AmneziaWG. Никаких конфиг-файлов, которые нужно пересылать по почте.
+- **Подписки — персональная ссылка для каждого пользователя.** Вместо разового QR каждый получает свою страницу **swgSub**: удобную для телефона ссылку с конфигом и QR для каждого сервера, где он есть — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg) и TURN-прокси-форки вроде [WINGS-N](screenshots/sub-wings-n.jpg), [samosvalishe](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg) и других — плюс бейджи протокола/реле, светлая/тёмная тема и копирование / скачивание / отправка в одно касание. Ключ расшифровки живёт в `#fragment` ссылки, поэтому сервер хранит только шифротекст и никогда не видит чужие приватные ключи.
+- **Приостановка доступа в один клик.** Заблокируйте человека — или только один из его серверов — мгновенно, не удаляя. Его туннели останавливаются, а страница подписки гаснет; разблокировка восстанавливает доступ с теми же ключами, ничего перевыпускать не нужно.
 - **Смотрите, что происходит, в реальном времени.** Кто онлайн, сколько скачивают, какие серверы загружены — обновление каждые несколько секунд.
 - **Один или несколько серверов.** Разместите серверы в разных странах; человек может переключаться между ними при сбое.
 - **Панель на том же или отдельном сервере.** Запускайте панель на той же машине, что и VPN-узел, или на отдельном сервере, который только управляет узлами — как вам удобнее.
@@ -71,6 +73,18 @@ swgPanel — это панель управления для запуска со
 | **Поставщики списков** — курируемые и общественные гео/доменные списки | ![Гео-данные](screenshots/settings-geo-data.png) |
 | **Turn-прокси** — оборачивайте трафик через реле, чтобы обходить блокировки | ![Turn-прокси](screenshots/turn-proxy.png) |
 | **Каталог turn-прокси** — какие форки реле предлагаются и автообновления | ![Turn-прокси](screenshots/settings-turn-proxies.png) |
+
+**Страницы подписки** — персональная ссылка swgSub каждого пользователя, с конфигом и QR для каждого сервера (WireGuard, AmneziaWG и TURN-прокси-форки):
+
+<p align="center">
+  <a href="screenshots/sub-wireguard.jpg"><img src="screenshots/sub-wireguard.jpg" alt="Подписка WireGuard" width="150"></a>
+  <a href="screenshots/sub-amneziawg.jpg"><img src="screenshots/sub-amneziawg.jpg" alt="Подписка AmneziaWG" width="150"></a>
+  <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="Подписка WINGS-N" width="150"></a>
+  <a href="screenshots/sub-moroka8.jpg"><img src="screenshots/sub-moroka8.jpg" alt="Подписка Moroka8" width="150"></a>
+  <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="Подписка samosvalishe" width="150"></a>
+  <a href="screenshots/sub-amneziawg-node.jpg"><img src="screenshots/sub-amneziawg-node.jpg" alt="AmneziaWG (тёмная тема, второй узел)" width="150"></a>
+  <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="Подписка cacggghp" width="150"></a>
+</p>
 
 </details>
 
