@@ -1810,6 +1810,7 @@ def node_describe(snapshot):
                        for p in peers if p.get("allowed_ips")})
         interfaces[iface] = {
             "public_key": meta.get("public_key"), "listen_port": meta.get("listen_port"),
+            "backup_public_key": meta.get("backup_public_key"),   # node's key-backup pubkey → drift restorability
             "endpoint": meta.get("endpoint"), "address": meta.get("address"),
             "subnet": meta.get("subnet"), "awg_params": meta.get("awg_params", {}),
             "dns": meta.get("dns", []), "used_ips": used, "peer_count": len(peers),
@@ -1863,6 +1864,14 @@ def apply_iface_meta(node_cfg, interfaces):
         ifc["dial_src"] = _lr.get("dial_src") or ""             # source IP this node dials the peer FROM
         ifc["dial_endpoint"] = _lr.get("dial_endpoint") or ""   # which of the peer's IPs this node dials TO (override the peer's ingress)
         ifc["drift"] = dict(ov.get("_drift") or {})    # settings edited directly on the server (key → the node's value)
+        # Can a server-key drift actually be Restored? Only if the node's key BACKUP == the panel's blessed key.
+        # A node re-created/re-seeded with a fresh keypair backs up the NEW key, so Restore would revert to the
+        # drifted key (a no-op) — steer the operator to Adopt instead. Unknown (old node not reporting a backup
+        # pubkey) → leave unset so the UI keeps offering Restore (prior behaviour).
+        if ifc["drift"].get("public_key"):
+            _bk = ifc.get("backup_public_key")
+            if _bk:
+                ifc["drift_restorable"] = (_bk == ov.get("public_key"))
         # AmneziaWG obfuscation params: the override wins for what the panel renders into configs;
         # the node converges its interface to it. awg_pending flags desired != reported in the UI.
         ovawg = ov.get("awg_params")

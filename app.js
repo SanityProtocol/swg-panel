@@ -4679,11 +4679,27 @@ function EditIfaceSheet({ node, iface }) {
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode)} title=${egressError(eg, emode) || ""} onClick=${save}>Save</button></>`}>
     <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div><${SubAutoNote}/></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
-    ${meta.drift && meta.drift.public_key ? html`<div class="notice warn">
-      <${Ic} i="warn"/><span><b>Server key changed on the node.</b> This interface's server keypair was rotated directly on the server, so <b>every client's existing config / QR for this interface no longer connects</b>. The node kept a backup of the original key.
-        <div style="margin-top:9px"><button type="button" class="linkbtn" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: "public_key" }); if (!r.ok) return toast(r.error || "Failed", "err"); closeAllModals(); await Store.poll(); toast("Restoring the original server key on the next sync.", "ok"); }}><b>Restore original key</b></button> <span class="faint">— reverts to the backed-up key; existing clients keep working, no re-distribution.</span></div>
-        <div style="margin-top:6px"><button type="button" class="linkbtn danger" onClick=${() => pushModal(html`<${ConfirmSheet} title="Adopt the new server key?" confirmLabel="Adopt new key" warn=${true} body=${"Every client on this interface will stop connecting with their current config. You must re-issue and re-distribute every QR code / config. The original key is discarded."} onConfirm=${async () => { const r = await api.ifaceAdopt({ node, iface, key: "public_key" }); if (!r.ok) return toast(r.error || "Failed", "err"); closeAllModals(); await Store.poll(); toast("Adopted the new key — re-distribute the QR codes.", "ok"); }}/>`)}><b>Adopt new key</b></button> <span class="faint">— accept it; you'll re-distribute every QR.</span></div>
-      </span></div>` : null}
+    ${meta.drift && meta.drift.public_key ? (() => {
+      // Restore only helps if the node's key BACKUP is the blessed key. `drift_restorable === false` means the
+      // node reported a backup that can't restore it (a re-created node whose backup IS the new key) → hide
+      // Restore, steer to Adopt. Unknown (old node not reporting a backup pubkey) → keep offering Restore.
+      const canRestore = meta.drift_restorable !== false;
+      const restoreAct = html`<div class="kd-act">
+        <button type="button" class="kd-btn kd-restore" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: "public_key" }); if (!r.ok) return toast(r.error || "Failed", "err"); await Store.poll(); openConfirm({ title: "Restoring the original key", confirmLabel: "Got it", body: "The node is reverting this interface to its backed-up original server key on its next sync. Existing clients keep working — no re-distribution needed." }); }}>Restore original key</button>
+        <span class="faint kd-hint">Reverts to the backed-up key — existing clients keep working, no re-distribution.</span>
+      </div>`;
+      const adoptAct = html`<div class="kd-act">
+        <button type="button" class="kd-btn kd-adopt" onClick=${() => pushModal(html`<${ConfirmSheet} title="Adopt the new server key?" confirmLabel="Adopt new key" warn=${true} body=${"Every client on this interface will stop connecting with their current config. You must re-issue and re-distribute every QR code / config. The original key is discarded."} onConfirm=${async () => { const r = await api.ifaceAdopt({ node, iface, key: "public_key" }); if (!r.ok) return toast(r.error || "Failed", "err"); await Store.poll(); openModal(html`<${ConfirmSheet} title="New server key adopted" confirmLabel="Got it" note=${html`<${SubAutoNote}/>`} body=${"The node's new server key is now the panel's key for this interface. Every client's existing config / QR for this interface has stopped working — re-issue and re-distribute the new QR codes / configs to them."}/>`); }}/>`)}>Adopt new key</button>
+        <span class="faint kd-hint">${canRestore ? "Accept the node's new key — you'll re-distribute every QR." : "The node was re-created and no longer holds the original key, so Restore can't recover it — Adopt is the only option. You'll re-distribute every QR."}</span>
+      </div>`;
+      return html`<div class="notice warn">
+        <${Ic} i="warn"/><span><b>Server key changed on the node.</b> This interface's server keypair was rotated directly on the server, so <b>every client's existing config / QR for this interface no longer connects</b>. ${canRestore ? html`The node kept a backup of the original key.` : html`<b>The node no longer holds the original key</b> (it was re-created), so it can't be restored — only adopted.`}
+          <div class=${"keydrift-acts" + (canRestore ? "" : " one")}>
+            ${canRestore ? restoreAct : null}
+            ${adoptAct}
+          </div>
+        </span></div>`;
+    })() : null}
     ${Object.entries(meta.drift || {}).filter(([k]) => k !== "public_key").length ? html`<div class="notice warn">
       <${Ic} i="warn"/><span><b>Edited directly on the server.</b> The panel paused pushing these so your change survives — Adopt to keep the server value, or Restore to re-apply the panel's:
       ${Object.entries(meta.drift).filter(([k]) => k !== "public_key").map(([k, v]) => html`<div style="margin-top:7px"><span class="mono">${k === "awg_params" ? "AWG params" : k}</span> on node = <span class="mono">${k === "awg_params" ? Object.entries(v).map(([a, b]) => a + "=" + b).join(" ") : v}</span>

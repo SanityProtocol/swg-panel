@@ -2014,6 +2014,16 @@ a.tg:hover{filter:brightness(1.25)}
 .iconbtn.recover svg{width:14px;height:14px}
 .linkbtn{background:none;border:0;color:var(--brand);cursor:pointer;padding:0;font:inherit}
 .linkbtn.danger{color:var(--dangling)}
+/* server-key drift resolution — two equal-width actions: green Restore (safe) / red Adopt (destructive) */
+.keydrift-acts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:11px}
+.keydrift-acts.one{grid-template-columns:1fr}   /* re-seeded node: Adopt is the only option */
+.kd-act{display:flex;flex-direction:column;gap:5px;min-width:0}
+.kd-btn{width:100%;display:inline-flex;align-items:center;justify-content:center;padding:8px 12px;font-size:12.5px;font-weight:600;border-radius:7px;cursor:pointer;border:1px solid;transition:all .15s var(--ease)}
+.kd-btn.kd-restore{background:color-mix(in srgb,var(--online) 11%,transparent);color:var(--online);border-color:color-mix(in srgb,var(--online) 34%,transparent)}
+.kd-btn.kd-restore:hover{background:color-mix(in srgb,var(--online) 20%,transparent)}
+.kd-btn.kd-adopt{background:color-mix(in srgb,var(--dangling) 11%,transparent);color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 34%,transparent)}
+.kd-btn.kd-adopt:hover{background:color-mix(in srgb,var(--dangling) 20%,transparent)}
+.kd-hint{font-size:11.5px;line-height:1.35}
 .advtoggle{background:none;border:0;color:var(--ink-2);cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:7px;margin:16px 0 2px;padding:0;letter-spacing:.02em}
 .advtoggle:hover{color:var(--brand)}
 .advtoggle .advcaret{font-size:10px;color:var(--faint);width:10px;display:inline-block}

@@ -142,7 +142,7 @@ def derive_pubkey(cmd, priv):
         return None
 
 
-def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None):
+def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None, iface=None):
     info = parse_interface_section(conf_text)
     addr = info.get("Address", "").split(",")[0].strip()
     subnet = None
@@ -164,6 +164,10 @@ def build_meta(iface_line, conf_text, endpoint_host, dns, cmd=None):
         "subnet": subnet,
         "awg_params": awg_params(info),
         "dns": dns or [],
+        # the pubkey of the node's on-disk key backup for this iface — lets the panel tell whether a
+        # "Restore" can actually recover the blessed key (backup == blessed) or is futile (a re-seeded node
+        # whose backup is the CURRENT key, so the original is gone). Absent-key => None (old node / no backup).
+        "backup_public_key": ((read_iface_backup(iface) or {}).get("public_key") if iface else None),
     }
 
 
@@ -2575,7 +2579,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 except OSError:
                     conf_text = ""
                 _meta = build_meta([], conf_text, ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
-                                   node_cfg.get("dns", []), cmd)
+                                   node_cfg.get("dns", []), cmd, iface)
                 if iface in stopped_set:            # the operator stopped it — a choice, not a failure (no error)
                     interfaces[iface] = {"peers": [], "meta": _meta, "stopped": True}
                 else:
@@ -2598,7 +2602,7 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
                 "peers": peers,
                 "meta": build_meta(iface_line, conf_text,
                                    ic.get("endpoint_host") or node_cfg.get("endpoint_host"),
-                                   node_cfg.get("dns", []), cmd),
+                                   node_cfg.get("dns", []), cmd, iface),
             }
             if iface in stopped_set:               # it's up again (e.g. brought up outside the panel) → clear the stopped mark
                 _set_iface_stopped(iface, False)
