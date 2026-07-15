@@ -4623,6 +4623,7 @@ function ConnectionEditSheet({ node, iface }) {
   <//>`;
 }
 function EditIfaceSheet({ node, iface }) {
+  useStore();   // re-render on each poll so live meta (drift appearing/clearing, cmd_errors) stays current while the sheet is open
   const meta = Store.ifaceMeta(node, iface) || {};
   const emode = ((Store.nodes || []).find(n => n.id === node) || {}).routing_mode || "kernel";   // for smart-rule validation (kernel = IP-only)
   const ep = meta.endpoint || "";
@@ -4681,11 +4682,18 @@ function EditIfaceSheet({ node, iface }) {
     <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div><${SubAutoNote}/></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
-      // Once the operator resolves the drift, this area becomes a terminal confirmation (no buttons). It's kept
-      // visible for the life of the sheet via driftDone (even after the drift itself clears — adopt clears it
-      // panel-side right away), so the stale "Adopt"/"Restore" buttons never linger after acting.
+      // Once the operator acts, this area becomes a terminal confirmation (no buttons), kept for the life of the
+      // sheet via driftDone so the stale Adopt/Restore buttons never linger. ADOPT is instant (panel-side) → one
+      // terminal "adopted". RESTORE is two-phase (request → node reverts on its next sync) → restoring →
+      // restored (drift cleared) OR restore-failed (the node reported an error via cmd_errors — retry below).
+      const rerr = driftDone === "restoring" ? (nrec.cmd_errors || {})[iface] : null;
       if (driftDone === "adopted") return html`<div class="notice ok"><${Ic} i="check"/><span><b>New server key adopted.</b> Re-issue and re-distribute the QR codes / configs — <b>subscribed users update automatically</b>.</span></div>`;
-      if (driftDone === "restoring") return html`<div class="notice ok"><${Ic} i="check"/><span><b>Restoring the original key…</b> The node reverts to its backed-up key on its next sync — existing clients keep working, no re-distribution.</span></div>`;
+      if (driftDone === "restoring" && !rerr) {
+        return (meta.drift && meta.drift.public_key)
+          ? html`<div class="notice ok"><${Ic} i="check"/><span><b>Restoring the original key…</b> The node reverts to its backed-up key on its next sync — existing clients keep working, no re-distribution.</span></div>`
+          : html`<div class="notice ok"><${Ic} i="check"/><span><b>Original key restored.</b> The node reverted to its backed-up key — existing clients keep working, no re-distribution needed.</span></div>`;
+      }
+      // else: the drift warning + buttons — also the RESTORE-FAILED retry surface (driftDone==="restoring" && rerr).
       // Restore only helps if the node's key BACKUP is the blessed key. `drift_restorable === false` means the
       // node reported a backup that can't restore it (a re-created node whose backup IS the new key) → hide
       // Restore, steer to Adopt. Unknown (old node not reporting a backup pubkey) → keep offering Restore.
@@ -4699,7 +4707,9 @@ function EditIfaceSheet({ node, iface }) {
         <span class="faint kd-hint">${canRestore ? "Accept the node's new key — you'll re-distribute every QR." : "The node was re-created and no longer holds the original key, so Restore can't recover it — Adopt is the only option. You'll re-distribute every QR."}</span>
       </div>`;
       return html`<div class="notice warn">
-        <${Ic} i="warn"/><span><b>Server key changed on the node.</b> This interface's server keypair was rotated directly on the server, so <b>every client's existing config / QR for this interface no longer connects</b>. ${canRestore ? html`The node kept a backup of the original key.` : html`<b>The node no longer holds the original key</b> (it was re-created), so it can't be restored — only adopted.`}
+        <${Ic} i="warn"/><span>${rerr
+          ? html`<b style="color:var(--dangling)">Restore failed.</b> The node couldn't revert to its backed-up key: <span class="mono" style="color:var(--dangling)">${rerr}</span> — try again, or adopt the new key instead.`
+          : html`<b>Server key changed on the node.</b> This interface's server keypair was rotated directly on the server, so <b>every client's existing config / QR for this interface no longer connects</b>. ${canRestore ? html`The node kept a backup of the original key.` : html`<b>The node no longer holds the original key</b> (it was re-created), so it can't be restored — only adopted.`}`}
           <div class=${"keydrift-acts" + (canRestore ? "" : " one")}>
             ${canRestore ? restoreAct : null}
             ${adoptAct}

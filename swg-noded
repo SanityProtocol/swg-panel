@@ -4190,18 +4190,22 @@ def main():
                     last_route_sig = _route_sig; last_route_t = time.time()
                 else:
                     eg = {"changed": 0, "errors": []}; cas = {"changed": 0, "errors": []}   # unchanged routing → skip the ip/iptables/nft drift-check shell-outs
-                # surface iface command failures to the panel too (cmd_errors), keyed by iface name
-                for blk in (cr, dl, ob, rs, sp, sa):
+                # surface iface command failures to the panel too (cmd_errors), keyed by iface name — INCLUDING
+                # keypair restore/rebaseline (ik): a failed Restore (e.g. awg-quick up failed) is reported so the
+                # panel can show "restore failed" + the reason instead of hanging on "restoring".
+                for blk in (cr, dl, ob, rs, sp, sa, ik):
                     for e in blk["errors"]:
                         k, _, m = e.partition(": ")
                         NODE_ERRORS[k] = m or e
                 for k in (cr.get("created", []) + dl.get("deleted", []) + ob.get("added", [])
-                          + rs.get("restarted", []) + sp.get("stopped", []) + sa.get("started", [])):
+                          + rs.get("restarted", []) + sp.get("stopped", []) + sa.get("started", [])
+                          + ik.get("done", [])):
                     NODE_ERRORS.pop(k, None)
-                # prune errors for requests the panel has since cleared (iface + turn)
+                # prune errors for requests the panel has since cleared (iface + turn + keypair restore)
                 active = (set(reply.get("create") or {}) | set(reply.get("onboard") or {})
                           | set(reply.get("delete") or []) | set(reply.get("restart") or []) | set(reply.get("turn") or {})
                           | set(reply.get("iface_stop") or []) | set(reply.get("iface_start") or [])
+                          | set(reply.get("iface_key") or {})
                           | set(reply.get("turn_onboard") or []))
                 for k in list(NODE_ERRORS):
                     if k not in active:
