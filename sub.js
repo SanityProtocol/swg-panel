@@ -861,6 +861,7 @@
     applyBrand();                                    // logo + favicon follow the panel's theme colour
     var who = document.getElementById("who");
     who.textContent = data.user && data.user.name ? data.user.name : "";
+    fitBrand();                                      // RU control may have just shown/hidden — re-check logo↔controls fit
     // BLOCKED user: logo (header brand) + username (header "who") stay; the body is a single centered
     // "Subscription disabled" message — no peers, tabs, or QRs. Reversible from the panel (unblock).
     if (data.disabled) {
@@ -1053,8 +1054,22 @@
     });
   }
 
+  // The header defaults to a CENTRED logo below the fixed top-right controls. On narrow screens / wide default
+  // fonts (Android) the centred wordmark collides with those controls; we can't know that from width alone, so
+  // measure it in the centred state and — only then — add body.logo-inline (CSS then moves the logo LEFT onto
+  // the controls' line). Re-checked on resize / orientation / language-toggle (RU shows/hides, changing the gap).
+  function fitBrand() {
+    document.body.classList.remove("logo-inline");                 // always measure the DEFAULT centred layout
+    var brand = document.querySelector(".brand"), ctl = document.querySelector(".topctl");
+    if (brand && ctl && brand.getBoundingClientRect().right > ctl.getBoundingClientRect().left - 8) {
+      document.body.classList.add("logo-inline");
+    }
+  }
+  window.addEventListener("resize", function () { requestAnimationFrame(fitBrand); }, { passive: true });
+  window.addEventListener("orientationchange", function () { setTimeout(fitBrand, 60); });
+
   function start() {
-    wireControls(); paintCtl();                    // theme toggle works even before the data loads
+    wireControls(); paintCtl(); fitBrand();        // theme toggle works even before the data loads
     var lp = document.querySelector("#state p"); if (lp) lp.textContent = t("loading");
     var seg = location.pathname.split("/").filter(Boolean);
     var token = seg.length ? seg[seg.length - 1] : "";

@@ -42,12 +42,16 @@ body {
 /* header — a prominent brand lockup: the LED mark + swgSub wordmark, the user's name beneath it */
 .bar {
   flex: none; display: flex; flex-direction: column; align-items: center; gap: clamp(14px, 4.2vh, 26px);
-  /* logo + username sit BELOW the fixed language/theme controls (top ~10px, ~46px tall) — top padding
-     clears them; keep it viewport-scaled so the header lands the same on every phone */
+  /* DEFAULT: logo + username centred, sitting BELOW the fixed language/theme controls (top ~10px, ~41px tall). */
   padding: calc(clamp(30px, 6vh, 48px) + env(safe-area-inset-top)) 16px 12px;
   text-align: center;
 }
 .brand { display: inline-flex; align-items: center; gap: 12px; }
+/* CONDITIONAL: sub.js measures whether the centred wordmark collides with the top-right controls (font-dependent,
+   so not a width breakpoint) and, only then, adds body.logo-inline — the logo moves LEFT onto the controls' line,
+   vertically centre-aligned to them (min-height matches the 41px .ctl); the username stays centred. */
+body.logo-inline .bar { padding-top: calc(10px + env(safe-area-inset-top)); gap: clamp(10px, 3vh, 18px); }
+body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .brand-mark { width: clamp(30px, 8.5vw, 38px); aspect-ratio: 1; border-radius: 9px; position: relative; flex: none;
   background: radial-gradient(circle at 50% 38%, var(--brand-2), var(--brand));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent), 0 0 18px color-mix(in srgb, var(--brand) 50%, transparent); }
@@ -139,15 +143,15 @@ body {
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }
 
 /* big centred QR — fills most of a phone's width; ceilings keep it sane on tablets/desktop */
-/* A SQUARE white box (aspect-ratio:1) that shrinks uniformly to fit BOTH the width cap AND the available
-   stage height — so on a short in-app-browser viewport the QR gets smaller instead of pushing the command
-   under the action bar (and it can never clip, unlike a fixed-height box). The image fills it via object-fit. */
-.qrbox { align-self: center; background: #fff; padding: clamp(9px, 2.6vw, 14px); border-radius: 16px; line-height: 0; box-shadow: 0 6px 22px rgba(0, 0, 0, .18); cursor: zoom-in; transition: box-shadow .15s;
-  flex: 0 1 auto; min-height: 0; box-sizing: border-box; aspect-ratio: 1; max-width: min(90vw, 62vh, 500px); max-height: 100%; }
+/* White box that hugs a plain square QR image. The IMAGE carries the size (width, height:auto → square via
+   its 1:1 intrinsic) and `margin:0 auto` centres it — a simple, WebKit-safe centre (no aspect-ratio/object-fit
+   on a flex item, which Safari can compute non-square and off-centre). Height fit on short viewports comes
+   from the `vh` caps below + the max-height media tiers, not from an auto-fitting box. */
+.qrbox { align-self: center; margin: 0 auto; background: #fff; padding: clamp(9px, 2.6vw, 14px); border-radius: 16px; line-height: 0; box-shadow: 0 6px 22px rgba(0, 0, 0, .18); max-width: 100%; cursor: zoom-in; transition: box-shadow .15s; }
 /* INSET ring (inside the white padding) so the parent's overflow can't clip its top, unlike an outer ring */
 .qrbox:hover { box-shadow: inset 0 0 0 3px var(--brand), 0 6px 22px rgba(0, 0, 0, .18); }
 .qrbox:active { transform: scale(.99); }
-.qrimg { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+.qrimg { display: block; margin: 0 auto; width: min(90vw, 55vh, 500px); height: auto; image-rendering: pixelated; }
 
 /* Fullscreen QR viewer — tap the QR to enlarge it for scanning; tap anywhere / Esc to close. */
 .qz-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(4, 8, 6, .82); backdrop-filter: blur(4px);
@@ -252,29 +256,30 @@ body {
    and give the QR a touch more room without ballooning. */
 @media (min-width: 640px) {
   .scell-stage { max-width: 400px; }
-  .qrbox { max-width: min(43vw, 40vh, 216px); }   /* keep the compact mobile-sized QR on wide portrait windows too */
+  .qrimg { width: min(43vw, 40vh, 216px); }   /* keep the compact mobile-sized QR on wide portrait windows too */
   .cfgtext { font-size: 13.7px; }
 }
 @media (min-height: 780px) {
-  .qrbox { max-width: min(43vw, 40vh, 216px); }   /* …and on tall portrait windows */
+  .qrimg { width: min(43vw, 40vh, 216px); }   /* …and on tall portrait windows */
 }
 /* Phones: a compact inline QR (about half size — tap it for the fullscreen scan view) and a config box ~15%
    smaller, LEFT-aligned (auto right margin pushes it to the left edge, clear of the right-hand icon rail;
    the QR stays centred). Placed AFTER the taller-screen rule so it wins on tall phones. */
 @media (max-width: 560px) {
-  .qrbox { max-width: min(43vw, 40vh, 216px); }
+  .qrimg { width: min(43vw, 40vh, 216px); }
   .textwrap { max-width: 92%; margin-left: auto; margin-right: auto; }
 }
 /* SHORT viewports (in-app browsers — Telegram/Instagram/etc. — eat vertical space with their own chrome, and
    small phones): claw back the fixed chrome (header, mode-bar, action-bar) so the QR / config keeps real room
    instead of shrinking to nothing. The QR already fits its box; these just give it a bigger box. */
 @media (max-height: 740px) {
-  .bar { padding-top: calc(clamp(16px, 3.2vh, 30px) + env(safe-area-inset-top)); gap: clamp(8px, 2.2vh, 16px); padding-bottom: 8px; }
+  .bar { gap: clamp(8px, 2.2vh, 14px); padding-bottom: 8px; }
   .modebar { gap: 14px; padding: 6px 12px 4px; }
   .modetab { width: 52px; height: 52px; padding: 9px; }
   .pbar { min-height: 84px; padding: 9px 0 calc(9px + env(safe-area-inset-bottom)); }
   .pbtn.ico { width: 52px; height: 52px; min-height: 52px; }
   .pbtn.ico svg { width: 24px; height: 24px; }
+  .qrimg { width: min(43vw, 34vh, 200px); }   /* shorter viewport → smaller QR so it + the command clear the bar */
 }
 @media (max-height: 600px) {
   .bar { padding-top: calc(10px + env(safe-area-inset-top)); gap: 6px; }
@@ -285,6 +290,7 @@ body {
   .pbar { min-height: 66px; padding: 7px 0 calc(7px + env(safe-area-inset-bottom)); }
   .pbtn.ico { width: 46px; height: 46px; min-height: 46px; }
   .pbtn.ico svg { width: 22px; height: 22px; }
+  .qrimg { width: min(40vw, 30vh, 170px); }
 }
 /* PORTRAIT on a mouse device (a desktop/laptop browser, at ANY width — not a touch phone): keep the single-screen
    pager and its up/down arrows, but the left/right deployment HINTS become real clickable BUTTONS (no swipe with a
