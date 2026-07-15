@@ -139,11 +139,15 @@ body {
 .scell-stage { flex: 1; min-height: 0; width: 100%; max-width: 560px; display: flex; align-items: center; justify-content: center; }
 
 /* big centred QR — fills most of a phone's width; ceilings keep it sane on tablets/desktop */
-.qrbox { align-self: center; background: #fff; padding: clamp(9px, 2.6vw, 14px); border-radius: 16px; line-height: 0; box-shadow: 0 6px 22px rgba(0, 0, 0, .18); max-width: 100%; cursor: zoom-in; transition: box-shadow .15s; }
+/* A SQUARE white box (aspect-ratio:1) that shrinks uniformly to fit BOTH the width cap AND the available
+   stage height — so on a short in-app-browser viewport the QR gets smaller instead of pushing the command
+   under the action bar (and it can never clip, unlike a fixed-height box). The image fills it via object-fit. */
+.qrbox { align-self: center; background: #fff; padding: clamp(9px, 2.6vw, 14px); border-radius: 16px; line-height: 0; box-shadow: 0 6px 22px rgba(0, 0, 0, .18); cursor: zoom-in; transition: box-shadow .15s;
+  flex: 0 1 auto; min-height: 0; box-sizing: border-box; aspect-ratio: 1; max-width: min(90vw, 62vh, 500px); max-height: 100%; }
 /* INSET ring (inside the white padding) so the parent's overflow can't clip its top, unlike an outer ring */
 .qrbox:hover { box-shadow: inset 0 0 0 3px var(--brand), 0 6px 22px rgba(0, 0, 0, .18); }
 .qrbox:active { transform: scale(.99); }
-.qrimg { width: min(90vw, 62vh, 500px); height: auto; image-rendering: pixelated; display: block; }
+.qrimg { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
 
 /* Fullscreen QR viewer — tap the QR to enlarge it for scanning; tap anywhere / Esc to close. */
 .qz-overlay { position: fixed; inset: 0; z-index: 60; background: rgba(4, 8, 6, .82); backdrop-filter: blur(4px);
@@ -157,7 +161,7 @@ body {
 
 /* config / link text — a content-sized box centred in the stage (never a giant empty panel); JS grows the
    font to fill up to a ceiling and shrinks it to fit tall configs, then overflow scrolls past the floor */
-.textwrap { width: 100%; overflow-y: hidden; display: flex; flex-direction: column; justify-content: flex-start; gap: 10px; min-height: 0; }
+.textwrap { width: 100%; overflow-y: hidden; display: flex; flex-direction: column; justify-content: flex-start; gap: 10px; min-height: 0; max-height: 100%; }
 .cfgtext { flex: none; margin: 0; width: 100%; overflow: hidden; cursor: pointer;
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
   font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
@@ -248,18 +252,39 @@ body {
    and give the QR a touch more room without ballooning. */
 @media (min-width: 640px) {
   .scell-stage { max-width: 400px; }
-  .qrimg { width: min(43vw, 40vh, 216px); }   /* keep the compact mobile-sized QR on wide portrait windows too */
+  .qrbox { max-width: min(43vw, 40vh, 216px); }   /* keep the compact mobile-sized QR on wide portrait windows too */
   .cfgtext { font-size: 13.7px; }
 }
 @media (min-height: 780px) {
-  .qrimg { width: min(43vw, 40vh, 216px); }   /* …and on tall portrait windows */
+  .qrbox { max-width: min(43vw, 40vh, 216px); }   /* …and on tall portrait windows */
 }
 /* Phones: a compact inline QR (about half size — tap it for the fullscreen scan view) and a config box ~15%
    smaller, LEFT-aligned (auto right margin pushes it to the left edge, clear of the right-hand icon rail;
    the QR stays centred). Placed AFTER the taller-screen rule so it wins on tall phones. */
 @media (max-width: 560px) {
-  .qrimg { width: min(43vw, 40vh, 216px); }
+  .qrbox { max-width: min(43vw, 40vh, 216px); }
   .textwrap { max-width: 92%; margin-left: auto; margin-right: auto; }
+}
+/* SHORT viewports (in-app browsers — Telegram/Instagram/etc. — eat vertical space with their own chrome, and
+   small phones): claw back the fixed chrome (header, mode-bar, action-bar) so the QR / config keeps real room
+   instead of shrinking to nothing. The QR already fits its box; these just give it a bigger box. */
+@media (max-height: 740px) {
+  .bar { padding-top: calc(clamp(16px, 3.2vh, 30px) + env(safe-area-inset-top)); gap: clamp(8px, 2.2vh, 16px); padding-bottom: 8px; }
+  .modebar { gap: 14px; padding: 6px 12px 4px; }
+  .modetab { width: 52px; height: 52px; padding: 9px; }
+  .pbar { min-height: 84px; padding: 9px 0 calc(9px + env(safe-area-inset-bottom)); }
+  .pbtn.ico { width: 52px; height: 52px; min-height: 52px; }
+  .pbtn.ico svg { width: 24px; height: 24px; }
+}
+@media (max-height: 600px) {
+  .bar { padding-top: calc(10px + env(safe-area-inset-top)); gap: 6px; }
+  .brand-name { font-size: clamp(22px, 7vw, 28px); }
+  .who { font-size: clamp(15px, 4.4vw, 18px); }
+  .modebar { gap: 12px; padding: 4px 12px 2px; }
+  .modetab { width: 46px; height: 46px; padding: 8px; }
+  .pbar { min-height: 66px; padding: 7px 0 calc(7px + env(safe-area-inset-bottom)); }
+  .pbtn.ico { width: 46px; height: 46px; min-height: 46px; }
+  .pbtn.ico svg { width: 22px; height: 22px; }
 }
 /* PORTRAIT on a mouse device (a desktop/laptop browser, at ANY width — not a touch phone): keep the single-screen
    pager and its up/down arrows, but the left/right deployment HINTS become real clickable BUTTONS (no swipe with a
