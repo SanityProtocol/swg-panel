@@ -1037,6 +1037,19 @@ const Store = {
       const pr = this.recon.peers.find(p => p.id === id);
       if ((pr && (pr.status === "online" || pr.status === "ready" || pr.status === "partial")) || (Date.now() - this.rotating[id] > 45000)) delete this.rotating[id];
     }
+    // auto-clear a peer's pinned action error once it's no longer true — no manual dismiss needed. A
+    // "<node> hasn't reported <iface> yet" error resolves the instant that iface's meta arrives; a generic
+    // action failure clears once the peer reconciles healthy. A long age cap sweeps anything else (e.g. the
+    // peer was deleted, or a one-off failure on a row that never settles). Runs every apply(), so the bubble
+    // disappears on the same poll the condition clears.
+    for (const k of Object.keys(this.rowErrors)) {
+      if (!k.startsWith("peer:")) continue;
+      const e = this.rowErrors[k];
+      const pr = this.recon.peers.find(p => p.id === k.slice(5));
+      const resolved = e.iface ? !!this.ifaceMeta(e.node, e.iface)
+                               : (pr && (pr.status === "online" || pr.status === "ready"));
+      if (!pr || resolved || Date.now() - (e.at || 0) > 120000) delete this.rowErrors[k];
+    }
     try { recordDashTick(); } catch (_) {}   // accumulate the dashboard's live-only trend series (online counts)
     bus.emit();
   },
@@ -1566,7 +1579,7 @@ const STATUS_REASON = {
   blocked: "reaching the server but the handshake never completes — likely DPI / MTU / wrong AmneziaWG params",
   faulty: "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path",
 };
-function gridStatusBadge(t, p) {
+function gridStatusBadge(t, p, re) {
   const st = t.status || p.status;
   const reason = (t.down ? "Interface " + t.iface + " is down — " + t.down : (p.reason || STATUS_REASON[st])) || "";
   if (t.online && t.viaTurn) {
@@ -1574,6 +1587,13 @@ function gridStatusBadge(t, p) {
     return html`<span class="turnwrap">
       <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${st}</span>
       <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
+  }
+  // A pinned action failure (e.g. "node hasn't reported <iface> yet") rides the status as a hover bubble —
+  // not a persistent inline chip cluttering the row. Dismiss from inside the bubble.
+  if (re) {
+    return html`<span class="turnwrap">
+      <${Badge} s=${st}/>
+      <span class="turnbub statusbub err"><span class="statusbub-h" style="color:var(--dangling)"><${Ic} i="err"/>Error</span>${re.msg}</span></span>`;
   }
   // Blocked / Faulty carry an explanation — show it in our own hover bubble (like the "Connected via" one) instead
   // of a native title, colour-headed with the status colour so the *why* reads at a glance.
@@ -1848,7 +1868,7 @@ async function assignPeerToUser(peer, userId) {
     keys = await genKeys(); psk = genPSK(); configs = {};
     for (const t of peer.targets) {
       const m = Store.ifaceMeta(t.node, t.iface);
-      if (!m) { Store.rowErrors[key] = { msg: Store.nodeName(t.node) + " hasn't reported " + t.iface + " yet", at: Date.now() }; Store.apply(); return; }
+      if (!m) { Store.rowErrors[key] = { msg: Store.nodeName(t.node) + " hasn't reported " + t.iface + " yet", at: Date.now(), node: t.node, iface: t.iface }; Store.apply(); return; }
       configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: t.ip + "/32", dns: m.dns, mtu: 1280, awg_params: m.awg_params, server_pubkey: m.public_key, psk, endpoint: m.endpoint, allowed: "0.0.0.0/0, ::/0", keepalive: 25 });
     }
   } catch (e) { Store.rowErrors[key] = { msg: String(e.message || e), at: Date.now() }; Store.apply(); return; }
@@ -1872,7 +1892,7 @@ async function rotatePeerKeys(peer) {
     keys = await genKeys(); psk = genPSK(); configs = {};   // rotate BOTH the keypair and the PSK
     for (const t of peer.targets) {
       const m = Store.ifaceMeta(t.node, t.iface);
-      if (!m) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: Store.nodeName(t.node) + " hasn't reported " + t.iface + " yet", at: Date.now() }; Store.apply(); return; }
+      if (!m) { delete Store.rotating[peer.id]; Store.rowErrors[key] = { msg: Store.nodeName(t.node) + " hasn't reported " + t.iface + " yet", at: Date.now(), node: t.node, iface: t.iface }; Store.apply(); return; }
       const cur = await getConfig(peer.pubkey, t.node, t.iface);
       const s = cur ? parseFullConf(cur) : null;
       configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: (t.ip || "").split("/")[0] + "/32",
@@ -5431,11 +5451,16 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
         const u = p.user_id ? Store.user(p.user_id) : null;
         const hidden = p.targets.filter(d => !(shownByPeer[p.id] || new Set()).has(tkey(d.node, d.iface)));   // this peer's deployments not shown in the grid
         const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // just-created → one-shot glow
+        const re = rowError("peer:" + p.id);   // pinned action failure → shown on the status hover bubble, not inline
         return html`<tr key=${p.id + "|" + tkey(t.node, t.iface)} data-peer=${p.id} class=${"clk" + (fresh ? " pcreate" : "")} title="Double-click for QR / configs" onMouseDown=${rowNoSelect} onClick=${e => rowSingle(e, () => openPeerView(p.id, t.node, t.iface))} onDblClick=${e => rowDouble(e, () => openPeerConfigs(p))}>
           <td data-label="Status" class="c-status">${(() => {
             const ifaceB = loc ? gridIfaceTag(t) : null;
-            if (!live) return html`${gridStatusBadge(t, p)}${ifaceB}`;
+            if (!live) return html`${gridStatusBadge(t, p, re)}${ifaceB}`;
             const dot = html`<span class=${"condot " + (t.status === "faulty" ? "faulty" : t.status === "blocked" ? "blocked" : t.online ? "on" : "off")}></span>`;
+            if (re) {
+              return html`<span class="turnwrap">${dot}${ifaceB}
+                <span class="turnbub statusbub err"><span class="statusbub-h" style="color:var(--dangling)"><${Ic} i="err"/>Error</span>${re.msg}</span></span>`;
+            }
             // faulty / blocked → the "why" bubble on hovering the dot OR the interface badge (same as the peer-grid badge)
             if (t.status === "faulty" || t.status === "blocked") {
               return html`<span class="turnwrap">${dot}${ifaceB}
@@ -5450,7 +5475,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
             const nodeCell = html`<td data-label="Node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
             const userCell = hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); revealUser(u.id); }) : (e => e.stopPropagation())}>
               ${u ? html`<a class="namecell" href="#/users" onClick=${e => { e.preventDefault(); e.stopPropagation(); revealUser(u.id); }}><span>${u.name}</span><${Ic} i="user"/></a>`
-                  : (live ? html`<span class="faint">unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/><${RowError} k=${"peer:" + p.id}/></div>`)}</td>`;
+                  : (live ? html`<span class="faint">unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/></div>`)}</td>`;
             // embedded / live-peers: Status · [User] · Title · [Endpoint (live)] · Address · Node — iface badge sits by the status
             if (loc) return html`${userCell}${titleCell}${live ? epCell : null}${addrCell}${nodeCell}`;
             const srvAgg = agg ? html`<td data-label=${node === "*" ? "Node" : "IF"}><div class="srvcell">
@@ -5468,7 +5493,6 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
             ${p.unassigned
               ? html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Delete peer"} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
               : html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Unassign peer"} onClick=${() => confirmUnassign(p)}><${Ic} i="link"/></button>`}
-            <${RowError} k=${"peer:" + p.id}/>
           </td>`}</tr>`;
       }) : html`<tr><td colspan=${((agg || loc) ? 9 : 8) - (hideUser ? 1 : 0)} class="empty"><b>${q ? "No matches" : "No peers here"}</b>${q ? "Try a different search." : (!agg ? "Create one, or copy an existing peer onto this interface." : "No peers deployed yet.")}</td></tr>`}
     </tbody></table></div>`;
