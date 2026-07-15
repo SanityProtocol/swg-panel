@@ -256,10 +256,18 @@ lc_emit_post(){ [ -n "${LC_URL:-}" ] && [ -n "${LC_TOKEN:-}" ] || return 0
   # (just restarted / settling, or an opposite convert fired the instant the new panel came up) — exactly why
   # "converting" sometimes never showed and a stale "converted" wouldn't flip to "converting". A few quick retries
   # make converting/converted reliably land. Still best-effort overall (never trips set -e).
-  for _i in 1 2 3 4; do
+  #   • IN-PROGRESS states stay short: the panel is about to restart from THIS op — don't block the update on it.
+  #   • TERMINAL states (updated / converted / reinstalled / *-failed / *-aborted) are emitted right when the
+  #     panel may be restarting from this very op (a master host-update restarts the panel, THEN posts the node's
+  #     "updated"), so wait ~30s for it to come back — otherwise the tag hangs until PROC_GRACE flips it to a
+  #     FALSE "<op> failed". (The panel also self-heals "updating" once the node reports the target version, so
+  #     this is belt-and-suspenders.)
+  local _tries; case "$1" in updating|reinstalling|converting-bare|converting-docker|uninstalling) _tries=4;; *) _tries=25;; esac
+  _i=0
+  while [ "$_i" -lt "$_tries" ]; do
     auth_curl "$LC_TOKEN" -fsS $ins --max-time 6 -X POST -H "Content-Type: application/json" \
       --data "$data" "${LC_URL%/}/api/node/proc-status" >/dev/null 2>&1 && return 0
-    sleep 1
+    _i=$((_i + 1)); sleep 1
   done
   return 0; }
 lc_emit_file(){ local f="${LC_FILE:-}"; [ -n "$f" ] || return 0; mkdir -p "$(dirname "$f")" 2>/dev/null || true

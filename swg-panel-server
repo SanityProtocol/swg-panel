@@ -7198,8 +7198,20 @@ class Handler(BaseHTTPRequestHandler):
         if _tgt and snap.get("kind") == _tgt[0]:
             node["proc_status"] = {"state": _tgt[1], "at": int(time.time())}   # green confirmation for ~8s, then clears
             with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
-        # NB: an in-progress proc_status (reinstalling / updating / converting…) is NOT cleared by a sync —
-        # swg-noded keeps syncing right through a re-install/update, so clearing here would hide the tag
+        # Same idea for an "updating" tag on the co-located node: a MASTER host-update pre-sets it directly
+        # (see /api/host/update), then the updater restarts the panel and POSTs the node's "updated" — which can
+        # hit the API mid-restart and never land (the local host_proc write does, so the header goes green while
+        # the tile hangs). The node reporting the panel's TARGET version is proof the update finished, so clear
+        # it here. The still-old noded keeps reporting the OLD version until it restarts, so this never fires
+        # mid-update; the small age guard keeps the tag visible briefly for feedback on a real update.
+        _ps = node.get("proc_status") or {}
+        if _ps.get("state") == "updating" and snap.get("noded_version") \
+           and snap.get("noded_version") == (VERSIONS.get("panel") or None) \
+           and (time.time() - (_ps.get("at") or 0)) > 8:
+            node["proc_status"] = {"state": "updated", "at": int(time.time())}   # green confirmation, then clears
+            with contextlib.suppress(Exception): nodes_save(Handler.deps["nodes_path"], nodes)
+        # NB: an in-progress proc_status (reinstalling / updating / converting…) is otherwise NOT cleared by a
+        # sync — swg-noded keeps syncing right through a re-install/update, so clearing here would hide the tag
         # immediately. The lifecycle script's TERMINAL (success/aborted/failed) replaces it; a stuck op with
         # no terminal falls back to "<op> failed" after PROC_GRACE (see _proc_view). The re-install key
         # re-bless now happens when "reinstalling" is received (see _node_proc_status), not on sync.
