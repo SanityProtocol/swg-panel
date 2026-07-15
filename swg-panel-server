@@ -7213,8 +7213,11 @@ class Handler(BaseHTTPRequestHandler):
         # the tile hangs). The node reporting the panel's TARGET version is proof the update finished, so clear
         # it here. The still-old noded keeps reporting the OLD version until it restarts, so this never fires
         # mid-update; the small age guard keeps the tag visible briefly for feedback on a real update.
+        # ALSO clears a stale "update-failed": if the grace timeout already flipped it to failed but the node is
+        # in fact reporting the panel's exact version (e.g. the update was a no-op because the box was already
+        # current, so noded never re-reported), it's up to date — a node on the target version has NOT failed.
         _ps = node.get("proc_status") or {}
-        if _ps.get("state") == "updating" and snap.get("noded_version") \
+        if _ps.get("state") in ("updating", "update-failed") and snap.get("noded_version") \
            and snap.get("noded_version") == (VERSIONS.get("panel") or None) \
            and (time.time() - (_ps.get("at") or 0)) > 8:
             node["proc_status"] = {"state": "updated", "at": int(time.time())}   # green confirmation, then clears

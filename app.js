@@ -4633,6 +4633,7 @@ function EditIfaceSheet({ node, iface }) {
   const [mtu, setMtu] = useState(String(meta.mtu || 1280));
   const [ka, setKa] = useState(String(meta.keepalive || 25));
   const [adv, setAdv] = useState(false);     // MTU / keepalive / DNS / AmneziaWG live under "Show advanced"
+  const [driftDone, setDriftDone] = useState(null);   // after resolving a server-key drift: "adopted" | "restoring" — the warning becomes a terminal confirmation (no buttons) until the drift clears on a later sync
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const [eg, setEg] = useState(() => egressInit(meta));
   const isAwg = !!(meta.awg_params && Object.keys(meta.awg_params).length);
@@ -4679,17 +4680,22 @@ function EditIfaceSheet({ node, iface }) {
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode)} title=${egressError(eg, emode) || ""} onClick=${save}>Save</button></>`}>
     <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div><${SubAutoNote}/></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
-    ${meta.drift && meta.drift.public_key ? (() => {
+    ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
+      // Once the operator resolves the drift, this area becomes a terminal confirmation (no buttons). It's kept
+      // visible for the life of the sheet via driftDone (even after the drift itself clears — adopt clears it
+      // panel-side right away), so the stale "Adopt"/"Restore" buttons never linger after acting.
+      if (driftDone === "adopted") return html`<div class="notice ok"><${Ic} i="check"/><span><b>New server key adopted.</b> Re-issue and re-distribute the QR codes / configs — <b>subscribed users update automatically</b>.</span></div>`;
+      if (driftDone === "restoring") return html`<div class="notice ok"><${Ic} i="check"/><span><b>Restoring the original key…</b> The node reverts to its backed-up key on its next sync — existing clients keep working, no re-distribution.</span></div>`;
       // Restore only helps if the node's key BACKUP is the blessed key. `drift_restorable === false` means the
       // node reported a backup that can't restore it (a re-created node whose backup IS the new key) → hide
       // Restore, steer to Adopt. Unknown (old node not reporting a backup pubkey) → keep offering Restore.
       const canRestore = meta.drift_restorable !== false;
       const restoreAct = html`<div class="kd-act">
-        <button type="button" class="kd-btn kd-restore" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: "public_key" }); if (!r.ok) return toast(r.error || "Failed", "err"); await Store.poll(); openConfirm({ title: "Restoring the original key", confirmLabel: "Got it", body: "The node is reverting this interface to its backed-up original server key on its next sync. Existing clients keep working — no re-distribution needed." }); }}>Restore original key</button>
+        <button type="button" class="kd-btn kd-restore" onClick=${async () => { const r = await api.ifaceRestore({ node, iface, key: "public_key" }); if (!r.ok) return toast(r.error || "Failed", "err"); setDriftDone("restoring"); await Store.poll(); openConfirm({ title: "Restoring the original key", confirmLabel: "Got it", body: "The node is reverting this interface to its backed-up original server key on its next sync. Existing clients keep working — no re-distribution needed." }); }}>Restore original key</button>
         <span class="faint kd-hint">Reverts to the backed-up key — existing clients keep working, no re-distribution.</span>
       </div>`;
       const adoptAct = html`<div class="kd-act">
-        <button type="button" class="kd-btn kd-adopt" onClick=${() => pushModal(html`<${ConfirmSheet} title="Adopt the new server key?" confirmLabel="Adopt new key" warn=${true} body=${"Every client on this interface will stop connecting with their current config. You must re-issue and re-distribute every QR code / config. The original key is discarded."} onConfirm=${async () => { const r = await api.ifaceAdopt({ node, iface, key: "public_key" }); if (!r.ok) return toast(r.error || "Failed", "err"); await Store.poll(); openModal(html`<${ConfirmSheet} title="New server key adopted" confirmLabel="Got it" note=${html`<${SubAutoNote}/>`} body=${"The node's new server key is now the panel's key for this interface. Every client's existing config / QR for this interface has stopped working — re-issue and re-distribute the new QR codes / configs to them."}/>`); }}/>`)}>Adopt new key</button>
+        <button type="button" class="kd-btn kd-adopt" onClick=${() => pushModal(html`<${ConfirmSheet} title="Adopt the new server key?" confirmLabel="Adopt new key" warn=${true} body=${"Every client on this interface will stop connecting with their current config. You must re-issue and re-distribute every QR code / config. The original key is discarded."} onConfirm=${async () => { const r = await api.ifaceAdopt({ node, iface, key: "public_key" }); if (!r.ok) return toast(r.error || "Failed", "err"); setDriftDone("adopted"); await Store.poll(); openModal(html`<${ConfirmSheet} title="New server key adopted" confirmLabel="Got it" note=${html`<${SubAutoNote}/>`} body=${"The node's new server key is now the panel's key for this interface. Every client's existing config / QR for this interface has stopped working — re-issue and re-distribute the new QR codes / configs to them."}/>`); }}/>`)}>Adopt new key</button>
         <span class="faint kd-hint">${canRestore ? "Accept the node's new key — you'll re-distribute every QR." : "The node was re-created and no longer holds the original key, so Restore can't recover it — Adopt is the only option. You'll re-distribute every QR."}</span>
       </div>`;
       return html`<div class="notice warn">
