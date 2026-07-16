@@ -3060,14 +3060,16 @@ def _host_is_internal(host):
     return False
 
 def _norm_url(u):
-    """scheme://host[:port] with default ports dropped — so we don't churn on cosmetic differences."""
+    """scheme://host[:port][/path] with default ports dropped + trailing slash trimmed — so we don't churn on
+    cosmetic differences, but DO distinguish a reverse-proxy mount-PATH change (/swg vs /panel is a real address
+    change nodes must follow, not cosmetic)."""
     try:
         p = urllib.parse.urlparse(u if "://" in (u or "") else "https://" + (u or ""))
         host = p.hostname or ""
         default = 443 if p.scheme == "https" else 80
         port = p.port or default
         netloc = host if port == default else (("[%s]:%d" % (host, port)) if ":" in host else "%s:%d" % (host, port))
-        return "%s://%s" % (p.scheme, netloc)
+        return "%s://%s%s" % (p.scheme, netloc, (p.path or "").rstrip("/"))
     except Exception:
         return (u or "").rstrip("/")
 
@@ -3091,6 +3093,89 @@ def _persist_panel_url(node_cfg, new_url):
             f.write(new_url + "\n")
         os.replace(tmp, os.path.join(STATE_DIR, "panel-url"))
 
+
+# The pending reverse-proxy address swap's CANDIDATE — the NEW address the panel is advertising ALONGSIDE our blessed
+# one while the operator re-points the proxy (external: full new URL via panel_url_next; internal: the new listen port
+# via panel_local_port). We keep dialing blessed; if it stops answering (proxy flipped old→new, or confirm dropped the
+# old), we settle onto this. Kept OUT of config.json (a transient) + mirrored to a file so an external node — which has
+# no loopback _heal backstop — survives a restart mid-swap. Cleared once no swap is pending or the candidate is adopted.
+_SWAP = {"cand": ""}
+def _persist_candidate(cand):
+    _SWAP["cand"] = cand or ""
+    try:
+        path = os.path.join(STATE_DIR, "panel-url-cand")
+        if cand:
+            with open(path + ".tmp", "w") as f:
+                f.write(cand + "\n")
+            os.replace(path + ".tmp", path)
+        else:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+    except Exception:
+        pass
+
+def _learn_candidate(panel, reply):
+    """From a valid sync, remember (don't yet switch to) the pending swap's new address. Internal loopback nodes learn
+    it from panel_local_port (new port, same host+path); external nodes from panel_url_next (full new URL). Cleared
+    when the panel advertises no pending swap."""
+    try:
+        cur = (panel.get("url") or "").rstrip("/")
+        cur_host = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur).hostname
+        cand = ""
+        if _host_is_internal(cur_host):
+            _h = (cur_host or "").lower().strip("[]")
+            lp = reply.get("panel_local_port")
+            if lp and (_h == "localhost" or _h.startswith("127.") or _h == "::1"):
+                cu = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur)
+                cur_port = cu.port or (443 if cu.scheme == "https" else 80)
+                cur_base = (cu.path or "").rstrip("/")
+                # a co-located node dials the internal port DIRECTLY (bypasses the proxy), so it follows BOTH the
+                # panel's listen port AND its mount base. A PENDING path swap carries the NEW base in panel_url_next's
+                # path — the LIVE panel_base is still the OLD one until confirm, so read the pending url first; once
+                # confirmed panel_url_next clears and panel_base holds the new base.
+                nxt = (reply.get("panel_url_next") or "").strip()
+                if nxt:
+                    new_base = urllib.parse.urlparse(nxt if "://" in nxt else "https://" + nxt).path.rstrip("/")
+                else:
+                    pb = reply.get("panel_base")
+                    new_base = (pb if pb is not None else cur_base).rstrip("/")
+                if int(lp) != cur_port or new_base != cur_base:
+                    cand = "%s://%s:%d%s" % (cu.scheme, cur_host, int(lp), new_base)
+        else:
+            # candidate = the new address to move toward: the pending swap's next-url (before confirm) OR, once the
+            # panel has CONFIRMED (canonical advanced), the new canonical itself — kept alive until this node actually
+            # sits on it, so a blessed-address death right at/after confirm still has a fail-over target.
+            nxt = (reply.get("panel_url_next") or "").strip().rstrip("/")
+            can = (reply.get("panel_url") or "").strip().rstrip("/")
+            if nxt and _norm_url(nxt) != _norm_url(cur):
+                cand = nxt
+            elif can and _norm_url(can) != _norm_url(cur):
+                cand = can
+        if _norm_url(cand) != _norm_url(_SWAP.get("cand") or ""):
+            _persist_candidate(cand)
+    except Exception as e:
+        print("_learn_candidate:", e, flush=True)
+
+def _failover_candidate(panel, node_cfg):
+    """Our blessed panel address stopped answering while a swap is pending → settle onto the learned candidate if it
+    now answers as the same panel (operator flipped the proxy to the new address, or confirmed the swap so the old was
+    dropped). Verified with our OWN trust anchor — a wrong/hostile address can't capture us. Returns the new sync url
+    if it moved, else None. This is what makes confirm land the node on the new address, cancel keep it on the old."""
+    try:
+        cand = (_SWAP.get("cand") or "").rstrip("/")
+        cur = (panel.get("url") or "").rstrip("/")
+        if not cand or _norm_url(cand) == _norm_url(cur):
+            return None
+        if _verify_panel(cand, panel.get("token") or "", panel):
+            panel["url"] = cand
+            _persist_candidate("")
+            _persist_panel_url(node_cfg, cand)
+            print(f"blessed panel address stopped answering — failed over to {cand} (verified same identity)", flush=True)
+            return cand.rstrip("/") + "/api/node/sync"
+    except Exception as e:
+        print("_failover_candidate:", e, flush=True)
+    return None
+
 def apply_panel_hints(panel, node_cfg, reply):
     """On a VALID sync: (1) opportunistically adopt a cert pin if we're currently UNVERIFIED (TOFU upgrade over an
     already-unverified channel — strictly better); (2) re-point to a new panel URL, pin-gated. Returns the new
@@ -3103,32 +3188,24 @@ def apply_panel_hints(panel, node_cfg, reply):
         # TLS-terminating proxy (Cloudflare) sees the PROXY's cert — adopting the panel-reported fp would
         # pin the wrong cert and fail closed. Pinning belongs at install (Phase 1), where the installer
         # captures the cert the NODE actually sees. Here we only re-point, gated by the EXISTING trust anchor.
+        # (a) LEARN the pending-swap candidate every valid sync (internal: new port; external: new url). We do NOT
+        # switch to it here — we keep dialing blessed and fail over only if blessed stops answering (see
+        # _failover_candidate). This is what keeps a node on BOTH addresses during the transition, settling on the
+        # survivor: confirm drops the old → blessed dies → fail over to new; cancel drops the new → blessed lives on.
+        _learn_candidate(panel, reply)
+        # (b) CANONICAL adopt: the panel's CONFIRMED dial url advanced. Internal links never adopt the public url
+        # (meaningless to a co-located node — they follow the listen PORT via the candidate path). An EXTERNAL node
+        # adopts it once it verifies as the same panel — the graceful path when the old address still serves at confirm.
         if p_url:
             cur = (panel.get("url") or "").rstrip("/")
-            if _norm_url(p_url) != _norm_url(cur):
-                cur_host = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur).hostname
-                if _host_is_internal(cur_host):
-                    # Internal link — never adopt the public panel_url (meaningless to a co-located node). But a TRUE
-                    # LOOPBACK node DOES follow the panel's internal listen PORT so a port change doesn't strand it:
-                    # keep the host + path, swap only the port. (Compose service names / private IPs stay put — a
-                    # docker master's swg-panel:8443 link is stable; a private-IP node the operator manages.)
-                    _h = (cur_host or "").lower().strip("[]")
-                    lp = reply.get("panel_local_port")
-                    if lp and (_h == "localhost" or _h.startswith("127.") or _h == "::1"):
-                        cu = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur)
-                        cur_port = cu.port or (443 if cu.scheme == "https" else 80)
-                        if int(lp) != cur_port:
-                            newp = "%s://%s:%d%s" % (cu.scheme, cur_host, int(lp), (cu.path or "").rstrip("/"))
-                            if _verify_panel(newp, panel.get("token") or "", panel):   # no MITM risk on loopback; still confirms our token answers
-                                panel["url"] = newp
-                                _persist_panel_url(node_cfg, newp)
-                                print(f"panel listen port changed → re-pointed to {newp}", flush=True)
-                                return newp.rstrip("/") + "/api/node/sync"
-                elif not verified:
+            cur_host = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur).hostname
+            if _norm_url(p_url) != _norm_url(cur) and not _host_is_internal(cur_host):
+                if not verified:
                     print(f"panel moved to {p_url}, but this node is unverified — re-point it manually "
                           f"(set panel.url in {CONFIG_PATH} + restart)", flush=True)
                 elif _verify_panel(p_url, panel.get("token") or "", panel):
                     panel["url"] = p_url
+                    _persist_candidate("")   # canonical arrived → the swap is done, drop any candidate
                     _persist_panel_url(node_cfg, p_url)
                     print(f"panel address changed → re-pointed to {p_url} (verified same identity)", flush=True)
                     return p_url.rstrip("/") + "/api/node/sync"
@@ -3159,26 +3236,33 @@ def _heal_local_panel(panel, node_cfg):
         _LOCAL_HEAL["at"] = now
         scheme = u.scheme or "https"
         cur_port = u.port or (443 if scheme == "https" else 80)
-        base = (u.path or "").rstrip("/")                    # keep the reverse-proxy mount path (e.g. /swg) — a subpath panel answers there, not at root
+        cur_base = (u.path or "").rstrip("/")                # keep the reverse-proxy mount path (e.g. /swg) — a subpath panel answers there, not at root
         token = panel.get("token") or ""
         candidates = [443, 8443, 2053, 2083, 2087, 2096, 80, 8080, 8000, 9443]
+        bases = [cur_base]
         for sp in ("/var/lib/swg-panel/panel-settings.json", "/etc/swg-panel/panel-settings.json"):
             try:
-                pp = int((((json.load(open(sp)) or {}).get("access") or {}).get("panel") or {}).get("port") or 0)
+                _acc = (((json.load(open(sp)) or {}).get("access") or {}).get("panel") or {})
+                pp = int(_acc.get("port") or 0)
                 if pp and pp not in candidates:
                     candidates.insert(0, pp)             # the exact configured port → covers a non-standard one
+                sb = urllib.parse.urlparse(str(_acc.get("url") or "")).path.rstrip("/")   # the configured mount base → covers a PATH change (/swg → /panel)
+                if sb not in bases:
+                    bases.insert(0, sb)
                 break
             except Exception:
                 pass
-        for port in candidates:
-            if port == cur_port:
-                continue
-            probe = "%s://%s:%d%s" % (scheme, host, port, base)
-            if _verify_panel(probe, token, panel):
-                panel["url"] = probe
-                _persist_panel_url(node_cfg, probe)
-                print(f"panel not reachable at {cur} — rediscovered it locally at {probe}, re-pointed", flush=True)
-                return probe.rstrip("/") + "/api/node/sync"
+        for base in bases:                               # try the configured base first, then the one we were on
+            for port in candidates:
+                if port == cur_port and base == cur_base:
+                    continue
+                probe = "%s://%s:%d%s" % (scheme, host, port, base)
+                if _verify_panel(probe, token, panel):
+                    panel["url"] = probe
+                    _persist_candidate("")
+                    _persist_panel_url(node_cfg, probe)
+                    print(f"panel not reachable at {cur} — rediscovered it locally at {probe}, re-pointed", flush=True)
+                    return probe.rstrip("/") + "/api/node/sync"
     except Exception as e:
         print("_heal_local_panel:", e, flush=True)
     return None
@@ -4111,6 +4195,8 @@ def main():
     panel_ip = ""; bad_pip = ""                     # bad_pip = a panel_ip that failed to connect → don't keep re-binding it
     with contextlib.suppress(OSError):
         panel_ip = open(PANEL_IP_FILE).read().strip()
+    with contextlib.suppress(OSError):              # resume a mid-swap candidate after a restart (external nodes have no loopback _heal)
+        _SWAP["cand"] = open(os.path.join(STATE_DIR, "panel-url-cand")).read().strip()
     update_started = False                          # spawn the self-updater at most once per process
     print(f"swg-noded: panel={panel['url']} interval={interval}s "
           f"ifaces={list((node_cfg.get('interfaces') or {}).keys())}", flush=True)
@@ -4238,12 +4324,14 @@ def main():
                 interval = reply.get("interval", interval)
             elif status == 0:
                 print("sync error:", reply.get("error"), flush=True)
-                _nu = _heal_local_panel(panel, node_cfg)   # co-located node lost the panel (port moved) → rediscover locally
+                # blessed address unreachable → settle onto a pending-swap candidate if it answers, else (loopback)
+                # rediscover the panel locally. Either one re-points us so a domain/port swap never strands the node.
+                _nu = _failover_candidate(panel, node_cfg) or _heal_local_panel(panel, node_cfg)
                 if _nu:
                     url = _nu
             else:
                 print(f"sync HTTP {status}: {reply.get('error')}", flush=True)
-                _nu = _heal_local_panel(panel, node_cfg)
+                _nu = _failover_candidate(panel, node_cfg) or _heal_local_panel(panel, node_cfg)
                 if _nu:
                     url = _nu
         except Exception as e:

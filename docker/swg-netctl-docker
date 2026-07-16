@@ -18,6 +18,8 @@ Verbs handled (others are a no-op "ok" — e.g. cert issuance is done by acme.sh
 the container, not on the host):
   restart <sub|panel>              -> docker compose restart swg-<svc>
   set-listen <sub|panel> <h> <p>   -> set the published port/bind in .env, recreate swg-<svc>
+  reload <sub|panel>               -> docker compose kill -s HUP swg-<svc>  (re-read config, no restart)
+  set-base <panel> <base>          -> persist SWG_PANEL_BASE (PANEL_BASE in .env) for the next recreate
 """
 import contextlib
 import json
@@ -77,6 +79,24 @@ def _handle(verb, args):
         # container too, killing the very apply request that's in flight (the panel loses its _netctl_wait).
         ok, msg = _compose("up", "-d", "--no-deps", svc)
         return ok, ("%s on %s:%s" % (svc, host, port)) if ok else ("recreate %s failed: %s" % (svc, msg))
+    if verb == "reload":
+        # SIGHUP the container's main process to re-read its config with NO restart. Both swg-panel-server and
+        # swg-sub are exec'd as PID 1 (the sub's entrypoint IS /opt/swg-panel/swg-sub), so the signal reaches them;
+        # each handles SIGHUP (re-read serve.json / swap cert) and keeps running. Mirrors `systemctl kill -s HUP`.
+        svc = SVC.get(args[0] if args else "")
+        if not svc:
+            return False, "unknown service %r" % (args[0] if args else "")
+        ok, msg = _compose("kill", "-s", "HUP", svc)
+        return ok, ("reloaded (SIGHUP) %s" % svc) if ok else ("reload %s failed: %s" % (svc, msg))
+    if verb == "set-base":
+        # args: <panel> <base> — persist the panel's reverse-proxy mount base (compose maps SWG_PANEL_BASE ←
+        # PANEL_BASE). The LIVE panel already switched base in-memory at confirm; this just makes it durable for the
+        # next recreate. No recreate here — that would needlessly bounce the panel (a base change is zero-downtime).
+        who, base = (args + ["", ""])[:2]
+        if who != "panel":
+            return False, "set-base only applies to the panel"
+        _set_env({"PANEL_BASE": base.strip("/")})
+        return True, "persisted panel mount base = %s (takes effect on next recreate)" % (base or "/")
     return True, "no-op (%s handled in-container)" % verb   # cert verbs etc.
 
 

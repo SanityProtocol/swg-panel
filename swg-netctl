@@ -201,6 +201,44 @@ def do_set_listen(service, ip, port):
     return "persisted %s listen = %s:%d (takes effect on next restart)" % (service, ip, port)
 
 
+_BASE_RE = re.compile(r"^/?[A-Za-z0-9][A-Za-z0-9_-]*(/[A-Za-z0-9][A-Za-z0-9_-]*)*/?$")
+def v_base(base):
+    """A safe reverse-proxy mount base: '' (root) or a '/seg[/seg...]' path of [A-Za-z0-9_-] segments. No traversal."""
+    b = (base or "").strip()
+    if b in ("", "/"):
+        return ""
+    if ".." in b or not _BASE_RE.match(b):
+        raise Reject("bad mount base %r" % (base,))
+    return "/" + b.strip("/")
+
+def do_set_base(service, base):
+    """Persist the panel's reverse-proxy mount base (SWG_PANEL_BASE) as a systemd drop-in so a PATH change (e.g.
+    /swg → /panel) survives the next restart. The live process already switched bases at confirm; this only makes
+    it durable. Written to its OWN drop-in so it never clobbers set-listen's."""
+    if v_service(service) != "panel":
+        raise Reject("set-base only applies to the panel")
+    svc = SERVICES["panel"]
+    b = v_base(base)                       # "" (root) or "/panel"
+    dropdir = os.path.join(UNIT_DIR, svc["unit"] + ".d")
+    path = os.path.join(dropdir, "12-base.conf")
+    body = ("# managed by swg-netctl — panel mount base (Access & TLS); do not edit by hand\n"
+            "[Service]\n"
+            "Environment=SWG_PANEL_BASE=%s\n" % b.strip("/"))
+    if DRYRUN:
+        log("would write %s:\n%s" % (path, body))
+    else:
+        os.makedirs(dropdir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(body)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    rc, out = run(["systemctl", "daemon-reload"])
+    if rc:
+        raise Reject("daemon-reload failed: " + out.strip())
+    return "persisted panel mount base = %s (takes effect on next restart)" % (b or "/")
+
+
 def _nrestarts(unit):
     """systemd's cumulative automatic-restart counter for `unit`, or -1 if unavailable."""
     rc, out = run(["systemctl", "show", unit, "-p", "NRestarts", "--value"])
@@ -208,6 +246,16 @@ def _nrestarts(unit):
         return int((out or "").strip())
     except ValueError:
         return -1
+
+
+def do_reload(service):
+    """SIGHUP a service so it re-reads its config with NO rebind + no restart — used when the panel changes swg-sub's
+    mount base / config (a bind change still uses do_restart). No crash-loop verify is needed: nothing is re-bound."""
+    svc = SERVICES[v_service(service)]
+    rc, out = run(["systemctl", "kill", "-s", "HUP", svc["unit"]])
+    if rc:
+        raise Reject("reload %s failed: %s" % (svc["unit"], out.strip()))
+    return "reloaded (SIGHUP) " + svc["unit"]
 
 
 def do_restart(service):
@@ -428,12 +476,14 @@ def do_drop_cert(service, domain):
 
 VERBS = {
     "set-listen": (do_set_listen, 3),
+    "set-base": (do_set_base, 2),
     "issue-cert": (do_issue_cert, (2, 3)),      # optional 3rd arg: reload | noreload (live-apply uses noreload)
     "drop-cert": (do_drop_cert, 2),
     "backup-cert": (do_backup_cert, 1),
     "restore-cert": (do_restore_cert, 1),
     "clear-backup": (do_clear_backup, 1),
     "restart": (do_restart, 1),
+    "reload": (do_reload, 1),
 }
 
 

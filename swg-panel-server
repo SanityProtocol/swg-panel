@@ -79,6 +79,10 @@ def _tls_watch_loop():
 AUTH_FILE  = os.environ.get("SWG_PANEL_AUTH", "")        # file "user:pbkdf2_sha256$...."; blank => no auth
 # Mount the panel under a subpath (e.g. /swg) to live inside an existing site. Blank => served at root.
 PANEL_BASE = "/" + os.environ.get("SWG_PANEL_BASE", "").strip("/") if os.environ.get("SWG_PANEL_BASE", "").strip("/") else ""
+# A SECOND mount base the panel ALSO serves during a reverse-proxy PATH swap (e.g. moving /swg → /panel): both paths
+# answer through the transition so nodes + the operator's tabs migrate without a gap. "" outside a path swap. On
+# confirm PANEL_BASE becomes the new path and _ALT_BASE holds the old one through the migration grace, then clears.
+_ALT_BASE = ""
 NODE_OFFLINE = 30   # seconds since last sync before a node reads "offline"
 MAX_BODY = 8 * 1024 * 1024         # cap on a general API POST body (bytes) — reject larger with 413 (anti-OOM)
 MAX_SYNC_BODY = 64 * 1024 * 1024   # node-sync snapshots can be big on large fleets — a looser cap, still bounded
@@ -305,17 +309,22 @@ CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css",
 
 
 def strip_base(path):
-    """Remove the configured subpath prefix from a request path.
-
-    Returns the root-relative path ("/...", with "/" for the base itself) or None
-    when the request falls outside the mount point. With no PANEL_BASE this is a no-op.
-    """
+    """Remove a served subpath prefix from a request path. During a reverse-proxy PATH swap the panel serves TWO
+    bases — the current PANEL_BASE and the pending _ALT_BASE — so the old and new mount paths BOTH answer through the
+    transition. Records which base matched in _REQ.matched_base (drives the per-request <base href> + cookie path, so
+    a tab opened on the new path gets the right ones). Returns the root-relative path ("/" for the base itself), or
+    None when the request is outside every served mount. With no PANEL_BASE this is a no-op (root-mounted)."""
     if not PANEL_BASE:
-        return path
-    if path == PANEL_BASE:
-        return "/"
-    if path.startswith(PANEL_BASE + "/"):
-        return path[len(PANEL_BASE):]
+        with contextlib.suppress(Exception):
+            _REQ.matched_base = ""
+        return path                              # root-mounted → no-op (a to/from-root path swap isn't supported)
+    for b in (PANEL_BASE, _ALT_BASE):            # serve the current base AND, during a path swap, the pending one
+        if not b:
+            continue
+        if path == b or path.startswith(b + "/"):
+            with contextlib.suppress(Exception):
+                _REQ.matched_base = b
+            return "/" if path == b else path[len(b):]
     return None
 
 
@@ -1113,10 +1122,12 @@ def _sub_mount_base(asub):
     b = (str(asub.get("base") or "").strip()).rstrip("/")
     return b if b and b != "/" else ""
 
-def write_sub_serve(deps):
+def write_sub_serve(deps, base_alt=""):
     """Mirror JUST {enabled, serve} to subs/serve.json (group-readable) so swg-sub reads its own config
     from a tiny dedicated file and never has to open panel-settings.json — which also carries webhook
-    signing secrets and API token hashes that the public subscription surface has no business seeing."""
+    signing secrets and API token hashes that the public subscription surface has no business seeing.
+    base_alt (optional) is an OLD mount base swg-sub should ALSO serve during a reverse-proxy path change,
+    so existing subscription links keep working through the grace; cleared (empty) once the grace ends."""
     ps = deps.get("panel_settings") or {}
     subs = ps.get("subscriptions") or {}
     # The sub's bind + TLS now come from the Access & TLS block (access.sub / access.tls) — the single source
@@ -1132,6 +1143,7 @@ def write_sub_serve(deps):
              "tls_mode": ("reverse-proxy" if amode in ("", "skip") else amode),
              # reverse-proxy mount path (from the sub public URL), so swg-sub can serve under a subpath like /swgsub
              "base": _sub_mount_base(asub),
+             "base_alt": (base_alt or ""),   # transitional OLD base kept live during a path change (dual-base) — empty otherwise
              "cert_path": "", "key_path": ""}
     # turn_enabled + vk_link ride along so swg-sub can offer the TURN tab + build turn-proxy client artifacts
     # without reading panel-settings.json (which also holds webhook secrets). Neither is a secret: vk_link is
@@ -1217,6 +1229,29 @@ def _url_host(url):
     return s.rsplit(":", 1)[0] if s.count(":") == 1 else s  # host:port (v4/name) → host
 
 
+def _url_authority(url):
+    """The host[:port] a browser puts in the Host header for this URL — bare host when the port is the scheme
+    default (443/80), else host:port. Lowercased. '' if unparseable. Used to PROVE a confirm request arrived on the
+    NEW public address (the reverse proxy forwards the original Host, so it identifies which public URL was used)."""
+    s = (str(url or "")).strip()
+    if not s:
+        return ""
+    if not re.match(r"^https?://", s, re.I):
+        s = "https://" + s
+    try:
+        u = urllib.parse.urlparse(s)
+        h = (u.hostname or "").lower()
+        if not h:
+            return ""
+        default = 443 if (u.scheme or "https").lower() == "https" else 80
+        p = u.port or default
+        if p == default:
+            return h
+        return ("[%s]:%d" % (h, p)) if ":" in h else "%s:%d" % (h, p)
+    except Exception:
+        return ""
+
+
 # The public URL nodes are told to dial: the last CONFIRMED one. Frozen while a bind/cert change is verifying, so a
 # node that happens to sync mid-change never re-points to an address that then reverts (which would strand it on a
 # dropped listener). Updated at boot, on apply-confirm, and on a pure public-URL edit (no bind/cert change → there is
@@ -1274,10 +1309,98 @@ def _compute_public_url(deps):
         return raw
 
 
+def _bless_path(deps):
+    return os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "panel-confirmed.json")
+
+
+def _write_bless(deps):
+    """Persist the CONFIRMED public url as the BLESSED baseline nodes are told to dial. It advances ONLY through
+    _confirm_panel_url (a genuine confirm/adopt) — never on a bare save — so on the next boot the panel seeds its
+    canonical from here, not from panel-settings.json (which may hold a saved-but-never-confirmed change sitting
+    ahead of the live panel). The internal bind + mount base are already blessed via the systemd/.env drop-ins."""
+    with contextlib.suppress(Exception):
+        atomic_write(_bless_path(deps), json.dumps({"url": _CONFIRMED_URL or ""}, indent=2) + "\n")
+
+
 def _confirm_panel_url(deps):
     """Adopt the current settings' public URL as the CONFIRMED dial address nodes are told (see _CONFIRMED_URL).
-    Called when a change is genuinely committed: at boot, on apply-confirm, and on a pure public-URL edit."""
+    Called when a change is genuinely committed: on apply-confirm and a pure public-URL edit. Persists the blessed
+    baseline. (Boot uses _seed_confirmed_url_at_boot instead — it trusts the blessed file, not raw settings.)"""
     globals()["_CONFIRMED_URL"] = _compute_public_url(deps)
+    _write_bless(deps)
+
+
+def _reconcile_saved_ahead(deps, blessed_url):
+    """Roll a saved-but-never-confirmed panel change back to what's actually LIVE, so the panel never boots
+    advertising an address that never took effect. Ground truth: the internal bind is SWG_PANEL_HOST/PORT and the
+    mount path is SWG_PANEL_BASE — env, written by the root helper ONLY on confirm; and the confirmed public url is
+    blessed_url (when a blessed file exists). Only rewrites settings when they are PROVABLY ahead — an untouched
+    install (settings == live) is left exactly as-is."""
+    with contextlib.suppress(Exception):
+        ps = deps.get("panel_settings") or {}
+        pnl = (ps.get("access") or {}).get("panel") or {}
+        changed = False
+        if int(pnl.get("port") or 0) != BIND_PORT:                 # internal bind must match the live (env) port
+            pnl["port"] = BIND_PORT; changed = True
+        if BIND_HOST and str(pnl.get("host") or "") not in ("", "0.0.0.0", BIND_HOST):
+            pnl["host"] = BIND_HOST; changed = True
+        saved_url = str(pnl.get("url") or "").strip()
+        if blessed_url:                                            # have a blessed url → the saved one must equal it
+            if _compute_public_url(deps) != blessed_url:
+                pnl["url"] = blessed_url; changed = True
+        elif saved_url:                                           # bootstrap (no blessed file): the domain isn't env-
+            _u = urlparse(saved_url if "://" in saved_url else "https://" + saved_url)   # knowable, so trust it — but
+            if (_u.path or "").rstrip("/") != PANEL_BASE:         # the PATH is (== SWG_PANEL_BASE); force it if ahead
+                _netloc = _u.netloc or (saved_url.split("/")[0])
+                pnl["url"] = "%s://%s%s" % (_u.scheme or "https", _netloc, PANEL_BASE); changed = True
+        if changed:
+            ps.setdefault("access", {})["panel"] = pnl
+            deps["panel_settings"] = ps
+            save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+            print("access: boot reconcile — rolled saved-but-unconfirmed panel settings back to the live address", flush=True)
+
+
+def _seed_confirmed_url_at_boot(deps):
+    """Seed _CONFIRMED_URL (the address nodes dial) at startup from the BLESSED confirmed-state file — NOT from
+    panel-settings.json, which may be ahead of the live panel. If the blessed file exists it's the authority (and any
+    ahead saved settings are reconciled back to it). If it doesn't — a fresh install, OR one configured once at
+    install and never run through a UI confirm — the CURRENT settings ARE the live config (a running install's config
+    is blessed by being live), so we bootstrap the baseline from them and write the file. Before bootstrapping we
+    reconcile only what the env can PROVE is ahead (port / mount path), so we never bless a value that never took."""
+    blessed = load_json(_bless_path(deps), None)
+    bu = (blessed.get("url") if isinstance(blessed, dict) else None) or ""
+    if bu:
+        globals()["_CONFIRMED_URL"] = str(bu)
+        _reconcile_saved_ahead(deps, str(bu))
+        return
+    _reconcile_saved_ahead(deps, None)                    # bootstrap: fix any provably-ahead port/path first
+    globals()["_CONFIRMED_URL"] = _compute_public_url(deps)
+    _write_bless(deps)                                    # establish the blessed baseline from the (now live-consistent) settings
+
+
+def _panel_url_next():
+    """The NEW public URL of a pending reverse-proxy swap that changes the public address, else ''. Advertised in the
+    sync reply ALONGSIDE the canonical (still-old) panel_url so an ONLINE node LEARNS the new address before the
+    operator re-points the proxy — then, if the operator flips the proxy old→new, the node fails over to this learned
+    candidate instead of being stranded. The canonical dial URL only advances on confirm (see confirm-url)."""
+    with _APPLY["lock"]:
+        p = _APPLY["pending"]
+        if p and p.get("kind") == "rp-swap" and p.get("url_changed"):
+            return p.get("new_url") or ""
+    return ""
+
+
+def _rp_swap_msg(pend):
+    """Human-readable summary of a pending reverse-proxy swap — lists exactly what changed (port / path / address).
+    The SPA renders its own richer notice from the flags; this is the status-line fallback."""
+    parts = []
+    if pend.get("port_changed"):
+        parts.append("internal port %s→%s" % (pend.get("old_port"), pend.get("port")))
+    if pend.get("path_changed"):
+        parts.append("path %s→%s" % (pend.get("old_base") or "/", pend.get("new_base") or "/"))
+    elif pend.get("url_changed"):
+        parts.append("public address")
+    return "reverse-proxy change pending (%s) — update your proxy, then confirm" % (", ".join(parts) or "address")
 
 
 def _is_ip(host):
@@ -4273,6 +4396,9 @@ def api(method, path, qs, body, deps):
         if _gu:                                            # expose the LIVE remaining grace (recomputed each poll) so the
             _pstat = dict(_pstat)                          # UI's countdown is anchored to its own clock — immune to any
             _pstat["grace_secs"] = max(0, int(_gu) - int(time.time()))   # skew between the server's and the browser's clocks
+        if _pstat.get("state") == "rp-swap":               # remaining seconds on the Confirm-button arming hold, from
+            _pstat = dict(_pstat)                          # when the swap was armed (`at`) → a page reload continues the
+            _pstat["arm_secs"] = max(0, RP_CONFIRM_ARM_S - (int(time.time()) - int(_pstat.get("at") or 0)))   # SAME countdown, not a fresh 60s
         _cd = _access_cooldown()
         return 200, {"ok": True, "panel": _pstat, "sub": _SUBAPPLY["status"],
                      "pending": bool(_APPLY["pending"]),
@@ -4319,30 +4445,60 @@ def api(method, path, qs, body, deps):
             # for the operator to re-point their proxy at the new port and confirm — only THEN is the old port
             # dropped. Nothing can cut them off: the old port keeps serving until they say the proxy is switched. A
             # URL-only change (no bind change) is just metadata the proxy serves → adopt it.
+            # UNIFIED reverse-proxy swap (rp-swap): a single apply may change the internal PORT, the public DOMAIN,
+            # and/or the mount PATH — in any combination. All are operator-driven, nothing goes down:
+            #   • PORT   → bind the new port ALONGSIDE the old (both serve) until confirm drops the old.
+            #   • PATH   → dual-serve the new mount base until confirm makes it canonical.
+            #   • URL    → advertise the new public url as a fail-over CANDIDATE (nodes learn both); the canonical
+            #              dial url only advances on confirm, PROVED by the confirm arriving on the new Host/path.
+            # The canonical url advances only when a URL change is CONFIRMED (browser proof). A pure internal-port
+            # change leaves the public url untouched → adopt it immediately so nodes' dial url stays current.
             with _APPLY["lock"]:
                 if _APPLY["pending"] is not None:
                     return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
-                if not same_bind:
+                new_pub = _compute_public_url(deps)
+                old_pub = _CONFIRMED_URL if _CONFIRMED_URL is not None else new_pub
+                new_base = urllib.parse.urlparse(new_pub if "://" in new_pub else "https://" + new_pub).path.rstrip("/")
+                old_base = PANEL_BASE
+                port_changed = not same_bind
+                url_changed = bool(new_pub) and new_pub != old_pub    # the public address nodes dial (domain and/or path)
+                path_changed = new_base != old_base
+                if not port_changed and not url_changed:
+                    _apply_status("saved", "saved")
+                    _confirm_panel_url(deps)
+                    return 200, {"ok": True, "applied": True, "message": "saved"}
+                _nonce = secrets.token_hex(12)
+                pend = {"kind": "rp-swap", "nonce": _nonce, "deadline": 0,
+                        "port_changed": port_changed, "url_changed": url_changed, "path_changed": path_changed,
+                        "old_url": old_pub, "new_url": new_pub, "old_base": old_base, "new_base": new_base,
+                        "old_host": cur["host"], "old_port": cur["port"], "host": d_host, "port": d_port}
+                if port_changed:
                     try:
-                        new_lid = LISTENERS.add(d_host, d_port, cur.get("cert"), cur.get("key"))   # bind the NEW port next to the old
+                        new_lid = LISTENERS.add(d_host, d_port, cur.get("cert"), cur.get("key"))   # bind the NEW port alongside the old
                     except OSError as e:
                         _restore_panel_bind(deps, cur["host"], cur["port"])
                         _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
                         return 400, {"ok": False, "error": "couldn't bind %s:%d — %s" % (d_host, d_port, e), "code": "bind_failed"}
-                    _netctl_enqueue(deps, "set-listen", ["panel", d_host, d_port])   # persist so a restart keeps the new port (best-effort)
-                    LISTENERS.set_primary(new_lid)                                    # new bind is canonical; the OLD listener stays UP (no grace-drop timer)
-                    _APPLY["pending"] = {"kind": "proxy-swap", "new_lid": new_lid, "old_lid": lid,
-                                         "host": d_host, "port": d_port, "old_host": cur["host"], "old_port": cur["port"],
-                                         "deadline": 0}   # deadline 0 → NEVER auto-reverts; the operator confirms or reverts
-                    _apply_status("proxy-swap", "serving on both :%d (old) and :%d (new) — re-point your reverse proxy, then confirm" % (cur["port"], d_port),
-                                  old_host=cur["host"], old_port=cur["port"], new_host=d_host, new_port=d_port)
-                    _confirm_panel_url(deps)   # public URL is unchanged behind a proxy → keeps nodes' dial url current
-                    return 200, {"ok": True, "applied": False,
-                                 "proxy_swap": {"old_host": cur["host"], "old_port": cur["port"], "new_host": d_host, "new_port": d_port}}
-                # URL-only change behind a proxy → metadata only (the proxy serves the URL); adopt it, no listener change
-                _apply_status("saved", "saved")
-            _confirm_panel_url(deps)
-            return 200, {"ok": True, "applied": True, "message": "saved"}
+                    _netctl_enqueue(deps, "set-listen", ["panel", d_host, d_port])   # persist the new port (best-effort)
+                    LISTENERS.set_primary(new_lid)                                    # new bind canonical; OLD listener stays UP (no grace-drop timer)
+                    pend["new_lid"] = new_lid
+                    pend["old_lid"] = lid
+                if path_changed:
+                    globals()["_ALT_BASE"] = new_base    # dual-serve the new mount path NOW → confirm + node syncs on it reach this panel
+                if not url_changed:
+                    _confirm_panel_url(deps)   # public url unchanged (pure port change) → keep nodes' dial url current
+                _APPLY["pending"] = pend
+                _apply_status("rp-swap", _rp_swap_msg(pend), nonce=_nonce, old_url=old_pub, new_url=new_pub,
+                              port_changed=port_changed, url_changed=url_changed, path_changed=path_changed,
+                              old_host=cur["host"], old_port=cur["port"],
+                              new_host=(d_host if port_changed else cur["host"]),
+                              new_port=(d_port if port_changed else cur["port"]))
+            return 200, {"ok": True, "applied": False, "rp_swap": {
+                "port_changed": port_changed, "url_changed": url_changed, "path_changed": path_changed,
+                "old_url": old_pub, "new_url": new_pub, "nonce": _nonce,
+                "old_host": cur["host"], "old_port": cur["port"],
+                "new_host": (d_host if port_changed else cur["host"]),
+                "new_port": (d_port if port_changed else cur["port"])}}
         if same_bind and not need_cert:
             new_pub = _compute_public_url(deps)     # the normalised public URL the save now holds
             if not new_pub or new_pub == _CONFIRMED_URL:
@@ -4450,16 +4606,24 @@ def api(method, path, qs, body, deps):
             p_port = 0
         with _APPLY["lock"]:
             _pend = _APPLY["pending"]
-        if _pend is not None and _pend.get("kind") == "proxy-swap":
-            # Revert the reverse-proxy two-port swap: drop the NEW port, keep the OLD one canonical, roll the saved
-            # bind back. Instant + safe — the old port never stopped serving.
+        if _pend is not None and _pend.get("kind") == "rp-swap":
+            # Revert a unified reverse-proxy swap (any of port / path / url). Everything the swap set up was ADDITIVE
+            # (new port bound alongside old, new base dual-served, new url only a candidate) and the canonical url
+            # never left the OLD address for a url change — so revert just tears the additions back down. Instant +
+            # safe: the old port never stopped serving, the old path never stopped, nodes never left the old url.
             with _APPLY["lock"]:
+                _APPLY["pending"] = None
+            if _pend.get("port_changed"):
                 LISTENERS.set_primary(_pend["old_lid"])
                 LISTENERS.remove(_pend["new_lid"])
-                _APPLY["pending"] = None
-            _restore_panel_bind(deps, _pend["old_host"], _pend["old_port"])
-            _netctl_enqueue(deps, "set-listen", ["panel", _pend["old_host"], _pend["old_port"]])   # undo the persisted new bind
-            _apply_status("reverted", "reverted — panel back on %s:%d only" % (_pend["old_host"], _pend["old_port"]))
+                _netctl_enqueue(deps, "set-listen", ["panel", _pend["old_host"], _pend["old_port"]])   # undo the persisted new bind
+            if _pend.get("path_changed"):
+                globals()["_ALT_BASE"] = ""   # stop dual-serving the new mount path (the old path never changed)
+            # The apply had already written the NEW url/bind into settings → roll them back to the address we reverted
+            # TO (path kept), so the form matches the live panel and a restart won't re-adopt the reverted-away value.
+            if _pend.get("url_changed") or _pend.get("port_changed"):
+                _rollback_panel_url(deps, _pend.get("old_url"), _pend.get("old_host"), _pend.get("old_port"))
+            _apply_status("reverted", "reverted — panel stays reached at %s" % (_pend.get("old_url") or "the current address"))
             return 200, {"ok": True, "applied": True, "message": "reverted"}
         if _pend is not None:
             # still VERIFYING (not yet confirmed) → abort it: drop the un-confirmed listener / restore the cert and
@@ -4472,17 +4636,66 @@ def api(method, path, qs, body, deps):
         return 400, {"ok": False, "error": "the previous address is no longer serving — can't cancel instantly", "code": "not_cancelable"}
 
     if method == "POST" and path == "/api/access/confirm-proxy":
-        # The operator asserts their reverse proxy now points at the NEW port → drop the OLD listener. Valid only
-        # for a proxy-swap pending: behind a reverse proxy there is no browser-reachability probe (the internal port
-        # isn't reachable from the browser) — the operator vouches that the proxy is switched.
+        # The operator asserts their reverse proxy now points at the NEW port → drop the OLD listener. Valid only for
+        # a PURE port change (no public-url change): behind a reverse proxy there's no browser probe of the internal
+        # port, so the operator vouches. A swap that ALSO changes the public url must confirm via /confirm-url instead
+        # (browser proof of the new Host/path), which drops the old port too.
         with _APPLY["lock"]:
             pend = _APPLY["pending"]
-            if not pend or pend.get("kind") != "proxy-swap":
+            if not pend or pend.get("kind") != "rp-swap" or not pend.get("port_changed") or pend.get("url_changed"):
                 return 400, {"ok": False, "error": "no reverse-proxy port change is waiting to be confirmed", "code": "bad_request"}
             old_lid, host, port = pend["old_lid"], pend["host"], pend["port"]
             _APPLY["pending"] = None
         LISTENERS.remove(old_lid)                    # stop serving the old port — the proxy is on the new one now
         _apply_status("saved", "panel now on %s:%d" % (host, port))
+        return 200, {"ok": True, "saved": True}
+
+    if method == "POST" and path == "/api/access/confirm-url":
+        # Reverse-proxy DOMAIN/URL swap confirm. PROVE the operator's proxy now routes the NEW public URL to THIS
+        # panel before adopting it as the address nodes dial: the browser opened the new URL, so its SPA re-POSTs
+        # here THROUGH the proxy on the new host — and the proxy forwards that Host, so it identifies which public
+        # URL was actually used. Only on a Host match do we advance the canonical dial URL (nodes then drop the old
+        # candidate and converge on the new). No listener/cert change — behind a proxy the internal bind never moved.
+        nonce = (str(body.get("nonce") or "")).strip()
+        with _APPLY["lock"]:
+            pend = _APPLY["pending"]
+            if not pend or pend.get("kind") != "rp-swap" or not pend.get("url_changed") or not nonce or not hmac.compare_digest(pend.get("nonce", ""), nonce):
+                return 400, {"ok": False, "error": "no matching address change is waiting to be confirmed", "code": "bad_request"}
+            new_url = pend.get("new_url") or ""
+            new_base = pend.get("new_base", PANEL_BASE)
+            old_base = pend.get("old_base", PANEL_BASE)
+            port_changed = pend.get("port_changed")
+            old_lid = pend.get("old_lid")
+            new_lid = pend.get("new_lid")
+        want = _url_authority(new_url)
+        got = (getattr(_REQ, "http_host", "") or "").strip().lower()
+        if want and got and want != got:
+            return 409, {"ok": False, "code": "not_on_new",
+                         "error": "this panel wasn't reached on the new address (arrived on '%s', expected '%s') — re-point your reverse proxy to route %s here, then try again" % (got, want, new_url)}
+        # For a PATH change the host is identical, so the PROOF the proxy routes the new path here is that THIS confirm
+        # arrived on the new mount base (the SPA opened the new url → its api call came in under the new path).
+        got_base = getattr(_REQ, "matched_base", PANEL_BASE)
+        if new_base != old_base and got_base != new_base:
+            return 409, {"ok": False, "code": "not_on_new",
+                         "error": "this panel wasn't reached on the new path (arrived on '%s', expected '%s') — add a location for %s to your reverse proxy, then try again" % (got_base or "/", new_base or "/", new_url)}
+        with _APPLY["lock"]:
+            _APPLY["pending"] = None
+        if new_base != old_base:
+            # The mount path moved. Make the NEW base canonical for the live process AND persist it (survives a
+            # restart), and keep serving the OLD base through the node-migration grace so nodes + the operator's old
+            # tab move over before it stops. Zero downtime — both paths answered the whole time.
+            globals()["PANEL_BASE"] = new_base
+            globals()["_ALT_BASE"] = old_base
+            _netctl_enqueue(deps, "set-base", ["panel", new_base])   # persist SWG_PANEL_BASE for the next restart (best-effort)
+            _drop_alt_base_later(NODE_MIGRATE_GRACE)
+        if port_changed and old_lid is not None and getattr(_REQ, "listener_id", None) == new_lid:
+            # This confirm arrived on the NEW listener → the proxy's upstream really is on the new port, so drop the
+            # old one (a combined port+url change confirms both in one browser proof). If it came in on the OLD port
+            # (upstream not re-pointed yet), leave BOTH serving — harmless — rather than cut off the live upstream.
+            with contextlib.suppress(Exception):
+                LISTENERS.remove(old_lid)
+        _confirm_panel_url(deps)   # adopt the new url → nodes are now told to dial it; the old candidate is dropped
+        _apply_status("saved", "panel is now reached at %s" % new_url, new_url=new_url)
         return 200, {"ok": True, "saved": True}
 
     if method == "POST" and path == "/api/access/apply-sub":
@@ -7065,8 +7278,9 @@ class Handler(BaseHTTPRequestHandler):
                 data = f.read()
         except OSError:
             return self.send_error(404)
-        if PANEL_BASE and STATIC[key] == "index.html":   # point the SPA's <base> at the mount point
-            data = data.replace(b'<base href="/">', ('<base href="%s/">' % PANEL_BASE).encode())
+        _mb = getattr(_REQ, "matched_base", "") or PANEL_BASE   # the base THIS request came in on (a path swap serves two)
+        if _mb and STATIC[key] == "index.html":   # point the SPA's <base> at the mount point this tab is under
+            data = data.replace(b'<base href="/">', ('<base href="%s/">' % _mb).encode())
         # Version-stamp the SPA entry points (?v=<panel version>). The assets are buildless (no content
         # hash in the filename), and a CDN in front (e.g. Cloudflare) caches .js/.css for hours regardless
         # of our no-cache header — so a browser can run a stale app.js against a freshly-updated backend.
@@ -7157,7 +7371,7 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _session_cookie(self, value, max_age):
-        base = (PANEL_BASE or "") + "/"
+        base = ((getattr(_REQ, "matched_base", "") or PANEL_BASE) or "") + "/"   # scope the cookie to the base this request came in on (a path swap serves two)
         secure = "; Secure" if (TLS_CERT and TLS_KEY) else ""
         return f"swgsess={value}; Path={base}; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure}"
 
@@ -7765,7 +7979,9 @@ class Handler(BaseHTTPRequestHandler):
                                 # operator changes the panel host/port (the node verifies the new address with its
                                 # OWN trust anchor before switching). Additive: older nodes ignore it.
                                 "panel_url": _panel_public_url(Handler.deps),
+                                "panel_url_next": _panel_url_next(),   # a pending reverse-proxy domain swap's NEW url → node learns it now, fails over to it if the proxy flips old→new before confirm
                                 "panel_local_port": _panel_local_port(),   # co-located (loopback) nodes track this port on a listen-port change
+                                "panel_base": PANEL_BASE,   # the panel's LIVE mount base → a co-located (loopback) node that dials the internal port directly follows a PATH change (bypasses the proxy, so it can't learn it any other way)
                                 "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
                                 "delete": list((node.get("delete") or {}).keys()),
                                 "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
@@ -7981,6 +8197,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         _REQ.listener_id = getattr(self.server, "listener_id", None)   # which listener → the Access-apply confirm gate
+        _REQ.http_host = (self.headers.get("Host") or "").strip()      # the public host this request arrived on (proxy passes Host $host) → confirm-url proof
         u = urlparse(self.path)
         path = strip_base(u.path)
         if path == "/api/node/sync":
@@ -8023,6 +8240,28 @@ class Handler(BaseHTTPRequestHandler):
             # so mint a fresh session here rather than dumping them at a login on a domain their cookie doesn't
             # cover. Only when the request arrived WITHOUT a valid session (a same-host port change already
             # carries the cookie) and auth is configured.
+            creds = self.deps.get("auth")
+            if 200 <= code < 300 and isinstance(obj, dict) and obj.get("saved") and creds and self._authed_user() is None:
+                tok = make_session(creds[0], self.deps.get("session_secret"))
+                return self._send_with_cookie(code, obj, self._session_cookie(tok, SESSION_TTL))
+            return self._send(code, obj)
+        if path == "/api/access/confirm-url":
+            # Reverse-proxy domain/url swap confirm — nonce-authorized like /api/access/confirm (the operator opened
+            # the NEW url, so this arrives on the new host through their proxy; the nonce came from their authenticated
+            # apply). Mint a fresh session so they land authenticated on the new domain their old cookie doesn't cover.
+            length = self._body_len()
+            if length is None:
+                return
+            try:
+                bodyobj = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                if not isinstance(bodyobj, dict):
+                    raise ValueError
+            except (json.JSONDecodeError, ValueError):
+                return self._send(400, {"ok": False, "error": "invalid JSON body", "code": "bad_request"})
+            with _api_lock:
+                code, obj = api("POST", path, {}, bodyobj, self.deps)
+            if 200 <= code < 300:
+                _invalidate_state_cache()   # the canonical dial url advanced → next /api/state must be fresh
             creds = self.deps.get("auth")
             if 200 <= code < 300 and isinstance(obj, dict) and obj.get("saved") and creds and self._authed_user() is None:
                 tok = make_session(creds[0], self.deps.get("session_secret"))
@@ -8076,6 +8315,11 @@ GATE_STREAK = max(1, int(os.environ.get("SWG_PANEL_GATE_STREAK", "4") or 4))    
 GATE_INTERVAL = min(3.0, max(1.0, float(os.environ.get("SWG_PANEL_GATE_INTERVAL", "1.5") or 1.5)))
 NODE_MIGRATE_GRACE = 180                 # seconds to KEEP the old listener after confirm, so online nodes sync
                                          # once on the old address and learn the new one (pin-gated auto-repoint)
+RP_CONFIRM_ARM_S = 60                    # reverse-proxy swap: the Confirm button is held disabled this long from when
+                                         # the swap was armed (a reload continues the same countdown, not a fresh one)
+SUB_MIGRATE_GRACE = 600                  # a sub PATH change serves the OLD base this long (10 min) before retiring it —
+                                         # longer than the node grace because it's PEOPLE re-copying their links, not
+                                         # nodes auto-following
 
 class _TLSServer(ThreadingHTTPServer):
     # TLS is wrapped PER CONNECTION in the worker thread (not on the listening socket): wrapping the
@@ -8355,6 +8599,24 @@ def _restore_panel_bind(deps, host, port):
         save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
 
 
+def _rollback_panel_url(deps, url, host, port):
+    """Restore the SAVED panel url + bind after a reverse-proxy swap REVERT, KEEPING the url's full path (and any
+    external port) — unlike _save_panel_access, which bares it for the direct scenario. The apply had already written
+    the NEW url into settings, so without this a restart would re-adopt the reverted-away address."""
+    with contextlib.suppress(Exception):
+        ps = deps.get("panel_settings") or {}
+        pnl = (ps.get("access") or {}).get("panel") or {}
+        if url:
+            pnl["url"] = str(url).strip()
+        if host:
+            pnl["host"] = str(host)
+        if port:
+            pnl["port"] = int(port)
+        ps.setdefault("access", {})["panel"] = pnl
+        deps["panel_settings"] = ps
+        save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+
+
 def _save_panel_access(deps, url, host, port):
     """Persist the SAVED panel url + bind (panel_settings.access.panel) — used by the migration CANCEL / revert to
     put the config back on the address it reverted to, so it matches the live listener/cert. The url field is kept
@@ -8441,6 +8703,19 @@ def _drop_listener_later(lid, grace):
     t = threading.Timer(max(1, grace), _drop); t.daemon = True
     with _DROP_TIMERS_LOCK:
         _DROP_TIMERS[lid] = t
+    t.start()
+
+
+def _drop_alt_base_later(grace):
+    """After a reverse-proxy PATH swap confirms, keep serving the OLD mount base for `grace` seconds so online nodes
+    sync once on it and learn the new path, and the operator's old-path tab keeps working — THEN stop serving it
+    (clear _ALT_BASE), leaving only the new base. Only clears if _ALT_BASE is still the one we scheduled."""
+    _target = _ALT_BASE
+    def _drop():
+        if _ALT_BASE == _target:
+            globals()["_ALT_BASE"] = ""
+            print("access: stopped serving the old mount base after the %ds path-migration grace" % grace, flush=True)
+    t = threading.Timer(max(1, grace), _drop); t.daemon = True
     t.start()
 
 
@@ -8655,6 +8930,29 @@ _SUBAPPLY = {"lock": threading.Lock(), "status": {"state": "idle", "message": ""
 # crash-looping on a port it can't bind. Initialised from config at boot (config == live then); advanced
 # only on a successful apply. None until main() seeds it.
 _SUB_LIVE_BIND = None
+_SUB_LIVE_BASE = None                    # the reverse-proxy mount base swg-sub is currently serving → lets an apply tell
+                                         # a PATH change (reload + dual-base, no restart) from a BIND change (restart)
+
+
+def _sub_url_base(url):
+    """The reverse-proxy mount base from a sub PUBLIC url's path (e.g. https://h/swgsub → '/swgsub'), '' for root."""
+    with contextlib.suppress(Exception):
+        p = urlparse((url if "://" in (url or "") else "https://" + (url or ""))).path.rstrip("/")
+        if p and p != "/":
+            return p
+    return ""
+
+
+def _drop_sub_alt_base_later(deps, grace):
+    """After a sub PATH change's dual-base grace, stop serving the OLD base: rewrite serve.json WITHOUT base_alt and
+    SIGHUP swg-sub. Existing links on the old base keep working until here, then move to the new one."""
+    def _drop():
+        with contextlib.suppress(Exception):
+            write_sub_serve(deps)                        # base only, no base_alt
+            _netctl_enqueue(deps, "reload", ["sub"])
+            print("access: sub stopped serving the old mount base after the %ds grace" % grace, flush=True)
+    t = threading.Timer(max(1, grace), _drop); t.daemon = True
+    t.start()
 
 
 def _subapply_status(state, message="", **extra):
@@ -8693,16 +8991,43 @@ def _sub_selfheal(deps, prev, why):
 
 
 def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
-    global _SUB_LIVE_BIND
+    global _SUB_LIVE_BIND, _SUB_LIVE_BASE
     prev = dict(_SUB_LIVE_BIND) if _SUB_LIVE_BIND else {"host": d_host, "port": d_port}   # fall-back on failure
+    new_base = _sub_url_base(d_url)
+    old_base = _SUB_LIVE_BASE if _SUB_LIVE_BASE is not None else new_base
+    bind_changed = (_SUB_LIVE_BIND is None) or (d_host, d_port) != (_SUB_LIVE_BIND.get("host"), _SUB_LIVE_BIND.get("port"))
+    # Behind a reverse proxy, swg-sub only serves the INTERNAL bind — the public address works only if the operator's
+    # proxy actually routes it here. Remind them on every reverse-proxy sub apply (the proxy config is on THEM).
+    _rp_note = (" Make sure your reverse proxy (nginx / Caddy / …) routes this address to swg-sub — see the "
+                "subscription reverse-proxy config sample above.") if mode in ("", "skip") else ""
     try:
         if _cert_needs_issue(SUB_CERT_PATH, d_domain, mode):
             _subapply_status("issuing", "issuing a certificate for %s" % d_domain)
             ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["sub", d_domain]), 180)
             if not ok:
                 return _subapply_status("failed", "certificate issuance failed: " + (msg or "unavailable"))
-        # persist the bind (drop-in), WAIT for it, THEN restart — the two requests must run in order and the
-        # queue is drained by sorted filename, which is random for two ids, so we serialize them here.
+        if not bind_changed:
+            # No new socket → a SIGHUP RELOAD picks up the new base / renewed cert with NO restart and NO crash-loop
+            # wait (nothing is re-bound, so nothing can fail to bind). For a reverse-proxy PATH change we keep the OLD
+            # base live too (dual-base) through a grace, so existing subscription links keep working while users move.
+            _subapply_status("applying", "reloading swg-sub")
+            path_change = old_base != new_base and mode in ("", "skip")
+            if path_change:
+                write_sub_serve(deps, base_alt=old_base)       # serve BOTH the new and old base
+            rid = _netctl_enqueue(deps, "reload", ["sub"])
+            if rid is None:                                     # no root helper (docker) → settings saved; operator reloads
+                _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base
+                return _subapply_status("saved", "settings saved — reload swg-sub to apply "
+                                        "(no root helper on this host: run `systemctl reload swg-sub`, or recreate the container)")
+            _netctl_wait(deps, rid, 15)
+            if path_change:
+                _drop_sub_alt_base_later(deps, SUB_MIGRATE_GRACE)   # after the grace, retire the old base
+            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base
+            return _subapply_status("saved", "subscription server reloaded — now reached at %s%s"
+                                    % ((d_url or "%s:%d" % (d_host, d_port)), _rp_note))
+        # BIND CHANGED → persist the new bind (drop-in), WAIT for it, THEN restart. This is the ONLY path that needs
+        # the crash-loop verify (a bad new bind, e.g. a port already in use). Serialize: the queue drains by sorted
+        # filename, random for two ids, so we wait on set-listen before enqueuing the restart.
         _subapply_status("applying", "applying %s:%d" % (d_host, d_port))
         rid = _netctl_enqueue(deps, "set-listen", ["sub", d_host, d_port])
         if rid is None:
@@ -8710,7 +9035,7 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
             # panel can't rebind or restart swg-sub itself. The settings are ALREADY saved (serve.json), so swg-sub
             # adopts the new bind + reverse-proxy base on its next restart, which the operator / the container
             # orchestrator performs. Keep the saved config — do NOT revert (reverting is what dropped the change).
-            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}
+            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base
             return _subapply_status("saved", "settings saved — restart swg-sub to apply "
                                     "(no root helper on this host: run `systemctl restart swg-sub`, or recreate the container)")
         ok, msg = _netctl_wait(deps, rid, 30)
@@ -8721,8 +9046,8 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
         ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "restart", ["sub"]), 60)
         if not ok:
             return _sub_selfheal(deps, prev, "couldn't bind the subscription server on %s:%d" % (d_host, d_port))
-        _SUB_LIVE_BIND = {"host": d_host, "port": d_port}
-        _subapply_status("saved", "subscription server now on %s:%d" % (d_host, d_port))
+        _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base
+        _subapply_status("saved", "subscription server now on %s:%d%s" % (d_host, d_port, _rp_note))
     except Exception as e:
         _sub_selfheal(deps, prev, "internal error: %s" % (e,))
 
@@ -8792,7 +9117,9 @@ def main():
     globals()["_SUB_LIVE_BIND"] = {   # boot baseline for the sub self-heal — config == live at startup
         "host": str((((Handler.deps["panel_settings"].get("access") or {}).get("sub") or {}).get("host")) or "0.0.0.0"),
         "port": int((((Handler.deps["panel_settings"].get("access") or {}).get("sub") or {}).get("port")) or 8444)}
-    _confirm_panel_url(Handler.deps)   # boot baseline for the node dial URL — config == live (confirmed) at startup
+    globals()["_SUB_LIVE_BASE"] = _sub_url_base((((Handler.deps["panel_settings"].get("access") or {}).get("sub") or {}).get("url"))  # boot baseline for the sub mount base → an apply can tell a path change (reload) from a bind change (restart)
+                                                ) if ((Handler.deps["panel_settings"].get("access") or {}).get("tls") or {}).get("mode", "") in ("", "skip") else ""
+    globals()["_CONFIRMED_URL"] = _compute_public_url(Handler.deps)   # provisional early seed (non-None); the BLESSED-aware seed below is authoritative (after the cert self-heals)
     normalize_sub_perms(Handler.deps)   # make swg-sub's readable subset group-readable (fixes 0600 files from older builds)
     with contextlib.suppress(ValueError, OSError, AttributeError):
         signal.signal(signal.SIGHUP, _sighup_reload)   # install NOW so a SIGHUP during the self-heal below can't kill us
@@ -8848,7 +9175,7 @@ def main():
                 Handler.deps["panel_settings"] = _ps
                 save_critical(Handler.deps.get("panel_settings_path") or "", json.dumps(_ps, indent=2) + "\n")
                 print("access: boot self-heal — saved canonical '%s' not covered by the cert; reconciled to '%s'" % (_saved_dom, _cert_dom), flush=True)
-    _confirm_panel_url(Handler.deps)   # seed _CONFIRMED_URL = the (self-healed) current address, so a revert can always roll the saved url back to a known-good value
+    _seed_confirmed_url_at_boot(Handler.deps)   # seed _CONFIRMED_URL from the BLESSED confirmed-state file (not raw settings) + reconcile any saved-but-unconfirmed change back to what's live; bootstraps the blessed file on a never-confirmed install
     # The primary listener goes into the live registry (so Access & TLS can add a second one on a new
     # address and drop this one only after the browser confirms). _TLSServer with ssl_ctx=None is plain HTTP.
     scheme = "https" if (TLS_CERT and TLS_KEY) else "http"
