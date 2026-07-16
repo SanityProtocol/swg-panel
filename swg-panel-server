@@ -1099,6 +1099,20 @@ def _sub_node_colors(deps):
     return out
 
 
+def _sub_mount_base(asub):
+    """The reverse-proxy mount path swg-sub serves under, taken from the sub's PUBLIC URL path (e.g.
+    https://host/swgsub → "/swgsub"). Empty = root. swg-sub strips this off every request path; the sub page
+    uses relative URLs so a link built as <public-url>/<token> lands on the right routes. Falls back to an
+    explicit access.sub.base if one was set. Set the public URL with the path and everything follows."""
+    u = (asub.get("url") or "").strip()
+    if u:
+        with contextlib.suppress(Exception):
+            p = urlparse(u if "://" in u else "https://" + u).path.rstrip("/")
+            if p and p != "/":
+                return p
+    b = (str(asub.get("base") or "").strip()).rstrip("/")
+    return b if b and b != "/" else ""
+
 def write_sub_serve(deps):
     """Mirror JUST {enabled, serve} to subs/serve.json (group-readable) so swg-sub reads its own config
     from a tiny dedicated file and never has to open panel-settings.json — which also carries webhook
@@ -1116,6 +1130,8 @@ def write_sub_serve(deps):
     serve = {"host": asub.get("host") or _legacy.get("host") or "0.0.0.0",
              "port": asub.get("port") or _legacy.get("port") or 8444,
              "tls_mode": ("reverse-proxy" if amode in ("", "skip") else amode),
+             # reverse-proxy mount path (from the sub public URL), so swg-sub can serve under a subpath like /swgsub
+             "base": _sub_mount_base(asub),
              "cert_path": "", "key_path": ""}
     # turn_enabled + vk_link ride along so swg-sub can offer the TURN tab + build turn-proxy client artifacts
     # without reading panel-settings.json (which also holds webhook secrets). Neither is a secret: vk_link is

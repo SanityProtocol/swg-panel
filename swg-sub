@@ -69,6 +69,24 @@ ASSET_PREFIX = "/_a/"
 STATIC = {"sub.js": "sub.js", "sub.css": "sub.css", "qrcode.js": "vendor/qrcode.js",
           "turn-artifacts.js": "turn-artifacts.js"}
 
+# Reverse-proxy mount base, e.g. "/swgsub" (empty = served at root), mirroring the panel's SWG_PANEL_BASE. Set
+# once at startup from SWG_SUB_BASE or the panel-written serve.base, and stripped off every request path so the
+# routes ("/_a/…", "/api/…", "/<token>") match whether swg-sub is mounted at root or under a subpath. The page's
+# own asset/API URLs are RELATIVE, so nothing needs injecting into the HTML — the browser resolves them under the
+# path the page was served from. A base change (like a bind change) needs a restart; the panel restarts swg-sub.
+SUB_BASE = ""
+def _norm_base(v):
+    v = "/" + str(v or "").strip().strip("/")
+    return "" if v == "/" else v
+def strip_base(path):
+    if not SUB_BASE:
+        return path
+    if path == SUB_BASE:
+        return "/"
+    if path.startswith(SUB_BASE + "/"):
+        return path[len(SUB_BASE):]
+    return path                                              # outside the mount (e.g. a direct /healthz) → untouched
+
 AWG_PARAM_KEYS = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4",
                   "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5"]
 
@@ -437,11 +455,11 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return self._send(500, "subscription page missing\n")
         if VERSION:
-            q = ("?v=" + VERSION).encode()
-            data = (data.replace(b'href="/_a/sub.css"', b'href="/_a/sub.css' + q + b'"')
-                        .replace(b'src="/_a/sub.js"', b'src="/_a/sub.js' + q + b'"')
-                        .replace(b'src="/_a/qrcode.js"', b'src="/_a/qrcode.js' + q + b'"')
-                        .replace(b'src="/_a/turn-artifacts.js"', b'src="/_a/turn-artifacts.js' + q + b'"'))
+            q = ("?v=" + VERSION).encode()   # asset refs are RELATIVE (no leading /) so they resolve under any reverse-proxy mount
+            data = (data.replace(b'href="_a/sub.css"', b'href="_a/sub.css' + q + b'"')
+                        .replace(b'src="_a/sub.js"', b'src="_a/sub.js' + q + b'"')
+                        .replace(b'src="_a/qrcode.js"', b'src="_a/qrcode.js' + q + b'"')
+                        .replace(b'src="_a/turn-artifacts.js"', b'src="_a/turn-artifacts.js' + q + b'"'))
         self._send(200, data, "text/html; charset=utf-8", cache="no-cache", extra={"Content-Security-Policy": self._CSP})
 
     def _client_ident(self):
@@ -458,7 +476,7 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0].split("#", 1)[0]
+        path = strip_base(self.path.split("?", 1)[0].split("#", 1)[0])   # drop the reverse-proxy mount prefix, if any
         st = Handler.state
 
         if path == "/healthz":
@@ -556,6 +574,9 @@ def main():
     state = State(fleet)
     Handler.state = state
 
+    global SUB_BASE                                          # SWG_SUB_BASE wins (infra), else the panel's serve.base (from the sub public URL path)
+    SUB_BASE = _norm_base(os.environ.get("SWG_SUB_BASE") or (state.subscriptions().get("serve") or {}).get("base"))
+
     host, port, cert, key = _serve_config(state)
     scheme = "http"
     if cert and key:
@@ -583,7 +604,7 @@ def main():
         srv = ThreadingHTTPServer((host, port), Handler)
 
     on = "enabled" if state.enabled() else "disabled (all requests 404 until turned on in the panel)"
-    print(f"swg-sub {VERSION} on {scheme}://{host}:{port} — subscriptions {on}", flush=True)
+    print(f"swg-sub {VERSION} on {scheme}://{host}:{port}{SUB_BASE or ''} — subscriptions {on}", flush=True)
     with contextlib.suppress(KeyboardInterrupt):
         srv.serve_forever()
 

@@ -1088,7 +1088,7 @@
 
     crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["decrypt"])
       .then(function (cryptoKey) {
-        return fetch("/api/" + encodeURIComponent(token), { cache: "no-store" }).then(function (res) {
+        return fetch("api/" + encodeURIComponent(token), { cache: "no-store" }).then(function (res) {   // RELATIVE (no leading /) → resolves under any reverse-proxy mount, same as the assets
           if (res.status === 404) { showState(t("notFound"), t("notFoundSub")); return null; }
           if (!res.ok) { showState(t("err"), t("errServer")); return null; }
           return res.json().then(function (j) {

@@ -422,6 +422,8 @@ function normPublicUrl(s) {
 function subBaseUrl() {
   const ps = Store.panelSettings || {};
   const sub = (ps.access || {}).sub || {};
+  const tlsMode = ((ps.access || {}).tls || {}).mode || "";
+  const behindProxy = tlsMode === "" || tlsMode === "skip";   // plain HTTP → a reverse proxy fronts swg-sub on the public port
   let raw = String(sub.url || (ps.subscriptions || {}).base_url || "").trim().replace(/\/+$/, "");
   if (!raw) return "";
   // Re-derive host:port LIVE from the settings every time (only the token is stored), so a port/host change
@@ -431,8 +433,9 @@ function subBaseUrl() {
   try {
     const u = new URL(raw);
     const lp = parseInt(sub.port, 10);
-    // append the configured listen port unless the URL already carries one, or it's the scheme default
-    if (!u.port && lp && !((u.protocol === "https:" && lp === 443) || (u.protocol === "http:" && lp === 80))) u.port = String(lp);
+    // append the sub's INTERNAL listen port only when it's reached DIRECTLY — behind a reverse proxy the public
+    // URL already maps the public port (and may carry a subpath like /swgsub), so appending :8444 would break it.
+    if (!behindProxy && !u.port && lp && !((u.protocol === "https:" && lp === 443) || (u.protocol === "http:" && lp === 80))) u.port = String(lp);
     return (u.origin + u.pathname).replace(/\/+$/, "");
   } catch (_) { return raw.replace(/\/+$/, ""); }
 }
@@ -7783,6 +7786,7 @@ function AccessTLSCard({ onChange }) {
   const panelBindChanged = () => (pHost.trim() || "0.0.0.0") !== (orig.pHost || "0.0.0.0") || _pPortN() !== (+orig.pPort || 443);
   const panelUrlChanged  = () => normPublicUrl(pUrl) !== normPublicUrl(orig.pUrl);   // the public address everyone dials — a change is verified (confirm) before it takes over
   const subBindChanged   = () => (sHost.trim() || "0.0.0.0") !== (orig.sHost || "0.0.0.0") || _sPortN() !== (+orig.sPort || 8444);
+  const subUrlChanged    = () => sUrl.trim() !== (orig.sUrl || "");   // the sub public URL's path is swg-sub's mount base → a change must restart it
   const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
   const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
   const dirty            = () => panelBindChanged() || subBindChanged() || certChanged() || urlChanged();
@@ -7818,7 +7822,7 @@ function AccessTLSCard({ onChange }) {
       const second = subWantsPanelLive() ? "the subscription server" : "the panel";
       return setMsg({ ok: false, t: `The panel and subscription are trading ports. Do it in two saves so one frees the port before the other takes it: first move ${first} and Save, then set ${second}'s port and Save again.` });
     }
-    const needSub = subsOn && (subBindChanged() || certChanged());
+    const needSub = subsOn && (subBindChanged() || certChanged() || subUrlChanged());   // sub-URL change → new mount base → swg-sub must re-read it
     const needPanel = panelBindChanged() || certChanged() || panelUrlChanged();
     didPanelRef.current = needPanel; didSubRef.current = needSub;   // so the status poll reacts only to what THIS save changes (the shared status is stale for the other)
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
@@ -7934,8 +7938,8 @@ function AccessTLSCard({ onChange }) {
 
     ${subsOn ? html`<div class="seclabel">Subscription address</div>
       <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>
-      <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
-      <div class="fieldrow">${ipField(sHost, setSHost, false)}${portField(sPort, setSPort, sBad)}</div>
+      <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com  or  https://example.com/swgsub" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
+      <div class="fieldrow">${ipField(sHost, setSHost, true)}${portField(sPort, setSPort, sBad)}</div>
       ${sBad ? cfNote : null}` : null}
   </div>`;
 }

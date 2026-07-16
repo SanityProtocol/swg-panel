@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="dark light">
 <title>swgSubscription</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231FC8D6'/%3E%3Ccircle cx='16' cy='14.5' r='5.5' fill='%230A0E15'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/_a/sub.css">
+<link rel="stylesheet" href="_a/sub.css">
 </head>
 <body>
 <div class="topctl">
@@ -22,10 +22,12 @@
   <div class="state" id="state"><div class="spin" aria-hidden="true"></div><p>Loading…</p></div>
   <div id="peers" hidden></div>
 </main>
+<!-- Asset URLs are RELATIVE (no leading /) so the page works whether swg-sub is at the domain root or behind a
+     reverse-proxy subpath (e.g. /swgsub/) — the browser resolves them against the served path. -->
 <!-- qrcode is a UMD lib: load as a classic script so it sets the global `qrcode`. -->
-<script src="/_a/qrcode.js"></script>
+<script src="_a/qrcode.js"></script>
 <!-- shared turn-proxy client-config builders (window.SWGTurn) — same file the admin app uses. -->
-<script src="/_a/turn-artifacts.js"></script>
-<script src="/_a/sub.js"></script>
+<script src="_a/turn-artifacts.js"></script>
+<script src="_a/sub.js"></script>
 </body>
 </html>
