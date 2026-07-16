@@ -1230,12 +1230,28 @@ def _panel_public_url(deps):
     pinned/CA identity (a MITM can't redirect a pinned node)."""
     return _CONFIRMED_URL if _CONFIRMED_URL is not None else _compute_public_url(deps)
 
+def _panel_local_port():
+    """The panel's LIVE internal listen port. Sent to nodes alongside panel_url so a CO-LOCATED node dialing a
+    loopback address (127.0.0.1 — its link is independent of the public URL) still follows a listen-port change:
+    it keeps its host + path and tracks this port. During a two-port swap primary() is already the NEW port, so a
+    loopback node re-points while both ports are still up — no gap. None if there's no listener (never sent then)."""
+    with contextlib.suppress(Exception):
+        _lid, _srv = LISTENERS.primary()
+        if _srv is not None:
+            return int(_srv._swg.get("port") or 0) or None
+    return None
+
 
 def _compute_public_url(deps):
-    """Normalise access.panel.url into the dial address: append the configured port when the URL carries none and it
-    isn't the scheme default (mirrors the subscription URL logic) — a panel reached at :8443 (incl. behind Cloudflare
-    on the 8443 edge port) MUST advertise :8443, else nodes dial 443 and get nothing."""
-    p = ((deps.get("panel_settings") or {}).get("access") or {}).get("panel") or {}
+    """Normalise access.panel.url into the dial address: append the configured LISTEN port when the panel is reached
+    directly and the URL carries no port of its own — a panel on :8443 (incl. behind Cloudflare on the 8443 edge
+    port) MUST advertise :8443, else nodes dial 443 and get nothing. But behind a plain reverse proxy (TLS mode
+    none/skip) the proxy fronts the panel on the PUBLIC port and the internal listen port (e.g. 8088) is not
+    publicly reachable — appending it would advertise a dead address (and stall the address-change confirm). So the
+    internal port is only appended when NOT behind a reverse proxy; an explicit port in the URL always wins."""
+    acc = (deps.get("panel_settings") or {}).get("access") or {}
+    p = acc.get("panel") or {}
+    behind_proxy = ((acc.get("tls") or {}).get("mode") or "") in ("", "skip")
     raw = (p.get("url") or "").strip().rstrip("/")
     if not raw:
         return ""
@@ -1247,12 +1263,13 @@ def _compute_public_url(deps):
             return ""
         default = 443 if u.scheme == "https" else 80
         try:
-            lp = int(p.get("port") or 0)
+            lp = 0 if behind_proxy else int(p.get("port") or 0)   # behind a reverse proxy the internal listen port must not leak into the public URL
         except (TypeError, ValueError):
             lp = 0
         port = u.port or lp or default
         netloc = u.hostname if port == default else (("[%s]:%d" % (u.hostname, port)) if ":" in u.hostname else "%s:%d" % (u.hostname, port))
-        return "%s://%s" % (u.scheme, netloc)
+        path = (u.path or "").rstrip("/")   # keep the reverse-proxy mount path (e.g. /swg) — nodes dial there + the address-change confirm opens it
+        return "%s://%s%s" % (u.scheme, netloc, path)
     except Exception:
         return raw
 
@@ -4293,6 +4310,39 @@ def api(method, path, qs, body, deps):
         # cover it) or a real-CA mode is still serving a self-signed placeholder — for a mode that issues certs.
         need_cert = bool(cur.get("cert")) and _cert_needs_issue(cur.get("cert"), d_domain, mode)
         same_bind = (d_host, d_port) == (cur["host"], cur["port"])
+        if mode in ("", "skip"):
+            # Behind a plain reverse proxy the panel is reached THROUGH the proxy on the public URL; the listen
+            # host:port is the proxy's INTERNAL upstream, not a public address. So the "wait for the new address to
+            # respond" + "open the new address to confirm" dance is inapplicable (it can only probe/point at an
+            # internal port the browser can't reach). For a LISTEN change we run an operator-driven TWO-PORT SWAP:
+            # bind the new port ALONGSIDE the old (both serve), keep BOTH up with NO auto-revert timeout, and wait
+            # for the operator to re-point their proxy at the new port and confirm — only THEN is the old port
+            # dropped. Nothing can cut them off: the old port keeps serving until they say the proxy is switched. A
+            # URL-only change (no bind change) is just metadata the proxy serves → adopt it.
+            with _APPLY["lock"]:
+                if _APPLY["pending"] is not None:
+                    return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
+                if not same_bind:
+                    try:
+                        new_lid = LISTENERS.add(d_host, d_port, cur.get("cert"), cur.get("key"))   # bind the NEW port next to the old
+                    except OSError as e:
+                        _restore_panel_bind(deps, cur["host"], cur["port"])
+                        _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
+                        return 400, {"ok": False, "error": "couldn't bind %s:%d — %s" % (d_host, d_port, e), "code": "bind_failed"}
+                    _netctl_enqueue(deps, "set-listen", ["panel", d_host, d_port])   # persist so a restart keeps the new port (best-effort)
+                    LISTENERS.set_primary(new_lid)                                    # new bind is canonical; the OLD listener stays UP (no grace-drop timer)
+                    _APPLY["pending"] = {"kind": "proxy-swap", "new_lid": new_lid, "old_lid": lid,
+                                         "host": d_host, "port": d_port, "old_host": cur["host"], "old_port": cur["port"],
+                                         "deadline": 0}   # deadline 0 → NEVER auto-reverts; the operator confirms or reverts
+                    _apply_status("proxy-swap", "serving on both :%d (old) and :%d (new) — re-point your reverse proxy, then confirm" % (cur["port"], d_port),
+                                  old_host=cur["host"], old_port=cur["port"], new_host=d_host, new_port=d_port)
+                    _confirm_panel_url(deps)   # public URL is unchanged behind a proxy → keeps nodes' dial url current
+                    return 200, {"ok": True, "applied": False,
+                                 "proxy_swap": {"old_host": cur["host"], "old_port": cur["port"], "new_host": d_host, "new_port": d_port}}
+                # URL-only change behind a proxy → metadata only (the proxy serves the URL); adopt it, no listener change
+                _apply_status("saved", "saved")
+            _confirm_panel_url(deps)
+            return 200, {"ok": True, "applied": True, "message": "saved"}
         if same_bind and not need_cert:
             new_pub = _compute_public_url(deps)     # the normalised public URL the save now holds
             if not new_pub or new_pub == _CONFIRMED_URL:
@@ -4400,6 +4450,17 @@ def api(method, path, qs, body, deps):
             p_port = 0
         with _APPLY["lock"]:
             _pend = _APPLY["pending"]
+        if _pend is not None and _pend.get("kind") == "proxy-swap":
+            # Revert the reverse-proxy two-port swap: drop the NEW port, keep the OLD one canonical, roll the saved
+            # bind back. Instant + safe — the old port never stopped serving.
+            with _APPLY["lock"]:
+                LISTENERS.set_primary(_pend["old_lid"])
+                LISTENERS.remove(_pend["new_lid"])
+                _APPLY["pending"] = None
+            _restore_panel_bind(deps, _pend["old_host"], _pend["old_port"])
+            _netctl_enqueue(deps, "set-listen", ["panel", _pend["old_host"], _pend["old_port"]])   # undo the persisted new bind
+            _apply_status("reverted", "reverted — panel back on %s:%d only" % (_pend["old_host"], _pend["old_port"]))
+            return 200, {"ok": True, "applied": True, "message": "reverted"}
         if _pend is not None:
             # still VERIFYING (not yet confirmed) → abort it: drop the un-confirmed listener / restore the cert and
             # roll the saved url back to the confirmed address (all in _apply_timeout). Same as Cancel, one step earlier.
@@ -4409,6 +4470,20 @@ def api(method, path, qs, body, deps):
         if r is not None:
             return r
         return 400, {"ok": False, "error": "the previous address is no longer serving — can't cancel instantly", "code": "not_cancelable"}
+
+    if method == "POST" and path == "/api/access/confirm-proxy":
+        # The operator asserts their reverse proxy now points at the NEW port → drop the OLD listener. Valid only
+        # for a proxy-swap pending: behind a reverse proxy there is no browser-reachability probe (the internal port
+        # isn't reachable from the browser) — the operator vouches that the proxy is switched.
+        with _APPLY["lock"]:
+            pend = _APPLY["pending"]
+            if not pend or pend.get("kind") != "proxy-swap":
+                return 400, {"ok": False, "error": "no reverse-proxy port change is waiting to be confirmed", "code": "bad_request"}
+            old_lid, host, port = pend["old_lid"], pend["host"], pend["port"]
+            _APPLY["pending"] = None
+        LISTENERS.remove(old_lid)                    # stop serving the old port — the proxy is on the new one now
+        _apply_status("saved", "panel now on %s:%d" % (host, port))
+        return 200, {"ok": True, "saved": True}
 
     if method == "POST" and path == "/api/access/apply-sub":
         # Activate the SAVED swg-sub bind (access.sub): issue its cert if the domain changed, persist the
@@ -7690,6 +7765,7 @@ class Handler(BaseHTTPRequestHandler):
                                 # operator changes the panel host/port (the node verifies the new address with its
                                 # OWN trust anchor before switching). Additive: older nodes ignore it.
                                 "panel_url": _panel_public_url(Handler.deps),
+                                "panel_local_port": _panel_local_port(),   # co-located (loopback) nodes track this port on a listen-port change
                                 "remove": node.get("retire") or {},   # pubkeys to drop even on add-only ifaces (rotated/deleted)
                                 "delete": list((node.get("delete") or {}).keys()),
                                 "restart": list((node.get("restart") or {}).keys()),   # interfaces to bounce
@@ -8628,7 +8704,16 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
         # persist the bind (drop-in), WAIT for it, THEN restart — the two requests must run in order and the
         # queue is drained by sorted filename, which is random for two ids, so we serialize them here.
         _subapply_status("applying", "applying %s:%d" % (d_host, d_port))
-        ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "set-listen", ["sub", d_host, d_port]), 30)
+        rid = _netctl_enqueue(deps, "set-listen", ["sub", d_host, d_port])
+        if rid is None:
+            # No root helper on this host (docker / non-split install → the netctl queue dir doesn't exist): the
+            # panel can't rebind or restart swg-sub itself. The settings are ALREADY saved (serve.json), so swg-sub
+            # adopts the new bind + reverse-proxy base on its next restart, which the operator / the container
+            # orchestrator performs. Keep the saved config — do NOT revert (reverting is what dropped the change).
+            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}
+            return _subapply_status("saved", "settings saved — restart swg-sub to apply "
+                                    "(no root helper on this host: run `systemctl restart swg-sub`, or recreate the container)")
+        ok, msg = _netctl_wait(deps, rid, 30)
         if not ok:
             return _sub_selfheal(deps, prev, "couldn't set the subscription address: " + (msg or "unavailable"))
         # do_restart now VERIFIES swg-sub actually stays up (settles past RestartSec) — a bind clash (Errno 98,

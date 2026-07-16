@@ -1435,6 +1435,45 @@ EOF
 }
 wire_host_updater
 
+# The Docker root helper for ADDRESS changes (mirrors the updater above). A bare-metal panel runs unprivileged and
+# delegates host jobs (rebind a listener, restart swg-sub) to swg-netctl; Docker has no swg-netctl, and a container
+# can't `docker compose` the host. So the panel container writes the SAME netctl request to data/lib/netctl/queue,
+# and THIS host unit drains that queue into `docker compose` actions (restart / recreate a service). Polled, not a
+# .path unit — inotify never sees the container's write across a bind mount. Panel-bearing profiles only.
+wire_docker_netctl(){
+  case "$PROFILE" in host|master|host-node) ;; *) return 0;; esac
+  local drainer="$INSTALL_DIR/docker/swg-netctl-docker"
+  if $DRYRUN; then echo "    [skip] wire the docker address helper (swg-netctl-docker.timer → docker compose restart/up)"; return 0; fi
+  [ -f "$drainer" ] || { warn "docker/swg-netctl-docker missing — one-click address changes will fall back to a manual restart"; return 0; }
+  mkdir -p "$INSTALL_DIR/data/lib/netctl/queue" "$INSTALL_DIR/data/lib/netctl/status"   # the panel writes requests here (via the data/lib bind mount)
+  install -m755 "$drainer" /usr/local/bin/swg-netctl-docker
+  cat > /etc/systemd/system/swg-netctl-docker.service <<EOF
+[Unit]
+Description=swg-panel docker address helper (drains the netctl queue into docker compose actions)
+
+[Service]
+Type=oneshot
+Environment=SWG_DOCKER_DIR=$INSTALL_DIR
+ExecStart=/usr/local/bin/swg-netctl-docker
+EOF
+  cat > /etc/systemd/system/swg-netctl-docker.timer <<EOF
+[Unit]
+Description=poll the swg-panel docker netctl queue (address changes)
+
+[Timer]
+OnActiveSec=5s
+OnUnitActiveSec=1s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now swg-netctl-docker.timer >/dev/null 2>&1 || warn "couldn't enable swg-netctl-docker.timer"
+  ok "one-click address changes wired — the panel restarts swg-sub / rebinds via the host on Save"
+}
+wire_docker_netctl
+
 # ───────────────────────── SUMMARY ─────────────────────────
 # TLS=none → the operator fronts the panel + swg-sub with their OWN reverse proxy: print ready nginx/Caddy
 # configs (both on :443, different subdomains → the two containers on loopback). Installs nothing.

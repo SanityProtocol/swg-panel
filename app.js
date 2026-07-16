@@ -419,6 +419,20 @@ function normPublicUrl(s) {
 // to a new panel address, so a domain that isn't wired up (DNS / Cloudflare / firewall) doesn't strand the
 // operator on a dead page with no feedback. no-cors: a genuine network failure throws; any served response
 // (even an error page) resolves — enough to tell "the address exists" from "it doesn't answer at all".
+// Build a copy-paste nginx `location` block for a reverse-proxy front end, from a section's public URL (its path
+// is the mount) and the service's internal listen host:port (the proxy upstream). 0.0.0.0 bind → dial 127.0.0.1.
+function nginxLocationBlock(publicUrl, host, port) {
+  let path = "";
+  try { const u = new URL(/^https?:\/\//i.test(publicUrl) ? publicUrl : "https://" + (publicUrl || "")); path = (u.pathname || "").replace(/\/+$/, ""); } catch (_) {}
+  const loc = (path && path !== "/") ? path + "/" : "/";
+  const up = (host && host.trim() && host.trim() !== "0.0.0.0") ? host.trim() : "127.0.0.1";
+  return "location " + loc + " {\n" +
+    "    proxy_pass http://" + up + ":" + (parseInt(port, 10) || "") + ";\n" +
+    "    proxy_set_header Host              $host;\n" +
+    "    proxy_set_header X-Forwarded-For   $remote_addr;\n" +
+    "    proxy_set_header X-Forwarded-Proto $scheme;\n" +
+    "}";
+}
 function subBaseUrl() {
   const ps = Store.panelSettings || {};
   const sub = (ps.access || {}).sub || {};
@@ -7663,6 +7677,7 @@ function AccessTLSCard({ onChange }) {
   const [polling, setPolling] = useState(false);
   const [confirmUrl, setConfirmUrl] = useState("");   // set while an address change is verifying → the operator confirms it by opening the new address in a new tab (we can't auto-navigate safely: an unreachable new address would strand them, and a cross-origin reachability probe is blocked by our own CSP)
   const [migrate, setMigrate] = useState(null);       // {until, newUrl} after a REBIND confirms elsewhere: THIS tab is on the old address, which stops serving when the node-migration grace ends → show a live countdown ribbon
+  const [proxySwap, setProxySwap] = useState(null);   // reverse-proxy two-port swap in progress: {old_host,old_port,new_host,new_port} — panel serves BOTH ports until the operator re-points the proxy and confirms (no timeout)
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => { if (!migrate) return; const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000); return () => clearInterval(t); }, [migrate]);
   const rollbackRef = useRef(null);            // the panel address that was live BEFORE an apply → restore the SAVED url on revert (the server rolls back the bind/cert, but the saved url is still the new one → it'd advertise a dead address to nodes)
@@ -7673,6 +7688,9 @@ function AccessTLSCard({ onChange }) {
   const [orig, setOrig] = useState({ pUrl: normPublicUrl(p0.url || ""), pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
     sUrl: s0.url || "", sHost: s0.host || "0.0.0.0", sPort: String(s0.port || 8444), mode: t0.mode || "", email: t0.email || "" });
   useEffect(() => { api.get("/api/access/ips").then(r => { if (r && r.ok) setIps(r.ips || []); }); }, []);
+  // Recover an in-progress reverse-proxy two-port swap after a page reload (server keeps both ports up until confirmed).
+  useEffect(() => { api.get("/api/access/status").then(r => { const p = r && r.ok && r.panel;
+    if (p && p.state === "proxy-swap") setProxySwap({ old_host: p.old_host, old_port: p.old_port, new_host: p.new_host, new_port: p.new_port }); }).catch(() => {}); }, []);
   // Pull the CURRENT saved config back into the form (+ baseline) — used after a revert, where the backend rolled
   // the bind back to the live one, so the form never keeps showing a value the panel rejected.
   const resync = async () => {
@@ -7754,6 +7772,7 @@ function AccessTLSCard({ onChange }) {
     { value: "0.0.0.0", label: "0.0.0.0 — any IP" },
     { value: "__custom", label: "Custom IP…" }];
   const cfMode = (mode === "cloudflare" || mode === "cf15");
+  const behindProxy = (mode === "" || mode === "skip");   // plain HTTP → a reverse proxy fronts panel + sub; their listen host:port is internal (nginx upstream), not a public address
   const pBad = cfMode && pPort && !CF_HTTPS_PORTS.includes(+pPort);
   const sBad = subsOn && cfMode && sPort && !CF_HTTPS_PORTS.includes(+sPort);
   const hard = mode === "cf15";                                   // cf15 origin certs ONLY work behind CF → block
@@ -7762,7 +7781,7 @@ function AccessTLSCard({ onChange }) {
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
   const cooldown = Store.accessCooldown || { secs: 0, reason: "" };
   const cooldownActive = (cooldown.secs || 0) > 0;                          // Save is locked on EVERY tab during a change
-  const showCooldownNotice = cooldownActive && !migrate && !confirmUrl && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
+  const showCooldownNotice = cooldownActive && !migrate && !confirmUrl && !proxySwap && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
 
   const ipField = (host, setHost, withLocal) => {
     const val = presets.has(host) ? host : "__custom";
@@ -7823,7 +7842,8 @@ function AccessTLSCard({ onChange }) {
       return setMsg({ ok: false, t: `The panel and subscription are trading ports. Do it in two saves so one frees the port before the other takes it: first move ${first} and Save, then set ${second}'s port and Save again.` });
     }
     const needSub = subsOn && (subBindChanged() || certChanged() || subUrlChanged());   // sub-URL change → new mount base → swg-sub must re-read it
-    const needPanel = panelBindChanged() || certChanged() || panelUrlChanged();
+    const pBindChg = panelBindChanged(), pUrlChg = panelUrlChanged();   // capture BEFORE setOrig resets them → so the post-save proxy guidance knows what changed
+    const needPanel = pBindChg || certChanged() || pUrlChg;
     didPanelRef.current = needPanel; didSubRef.current = needSub;   // so the status poll reacts only to what THIS save changes (the shared status is stale for the other)
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
     const npUrl = normPublicUrl(pUrl), nsUrl = normPublicUrl(sUrl);   // add https:// when the operator omitted it
@@ -7854,6 +7874,10 @@ function AccessTLSCard({ onChange }) {
     if (needPanel) {
       const rp = await api.post("/api/access/apply", {});
       if (rp && rp.ok === false) { setBusy(false); await resync(); return setMsg({ ok: false, t: rp.error || "Couldn't apply the panel address." }); }
+      if (rp && rp.proxy_swap) {   // reverse-proxy port change → the panel now serves BOTH ports; operator re-points the proxy then confirms
+        setProxySwap(rp.proxy_swap); setBusy(false);
+        return setMsg({ ok: true, t: "Saved — the panel is now on both ports. Re-point your reverse proxy, then confirm below." });
+      }
       if (rp && !rp.applied) {    // a live bind/cert change is in progress → the status poll surfaces a Confirm link on the first tick
         setMsg({ ok: true, t: "Preparing the new panel address…" });
         setPolling(true); return;
@@ -7861,7 +7885,7 @@ function AccessTLSCard({ onChange }) {
     }
     if (needSub) setPolling(true);   // no panel redirect — just watch the sub restart finish
     setBusy(false);
-    setMsg({ ok: true, t: needSub ? "Saved & applying — the subscription server is restarting." : (needPanel ? "Saved & applied." : "Saved.") });
+    setMsg({ ok: true, t: needSub ? "Saved & applying — the subscription server is restarting." : (needPanel ? (behindProxy ? "Saved — the reverse proxy serves this URL; nothing to restart." : "Saved & applied.") : "Saved.") });
   };
 
   // Report state up to the settings footer (which owns the Save button + status line, like every other section).
@@ -7899,6 +7923,28 @@ function AccessTLSCard({ onChange }) {
     } catch (_) { toast("Couldn't cancel the change.", "err"); }
     // the polling loop sees the reverted state and clears the confirm affordance + resyncs the form
   };
+  // Reverse-proxy two-port swap: the operator has re-pointed their proxy at the new port → drop the old one.
+  const confirmProxySwap = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post("/api/access/confirm-proxy", {});
+      if (!r || r.ok === false) { toast((r && r.error) || "Couldn't confirm.", "err"); setBusy(false); return; }
+      setProxySwap(null); await resync(); setBusy(false);
+      setMsg({ ok: true, t: "Done — the panel is now on the new port only." });
+      toast("Old port dropped — panel is on the new port.", "ok");
+    } catch (_) { toast("Couldn't confirm.", "err"); setBusy(false); }
+  };
+  // ...or back out: drop the new port, keep serving the old one (which never stopped).
+  const revertProxySwap = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post("/api/access/cancel", {});
+      if (!r || r.ok === false) { toast((r && r.error) || "Couldn't revert.", "err"); setBusy(false); return; }
+      setProxySwap(null); await resync(); setBusy(false);
+      setMsg({ ok: true, t: "Reverted — the panel stays on the current port." });
+      toast("Reverted — kept the current port.", "ok");
+    } catch (_) { toast("Couldn't revert.", "err"); setBusy(false); }
+  };
   let _confHost = confirmUrl; try { _confHost = new URL(confirmUrl).host; } catch (_) {}
   const _migLeft = migrate ? Math.max(0, migrate.until - nowSec) : 0;
   return html`<div class="card acctls">
@@ -7909,7 +7955,11 @@ function AccessTLSCard({ onChange }) {
       <a class="btn btn-mini" href=${migrate.newUrl}>Go to the new address ↗</a>
       ${migrate.prev && _migLeft > 0 ? html`<button class="btn btn-mini addr-ribbon-cancel" onClick=${cancelMove}>Cancel the move</button>` : null}
     </div>` : null}
-    <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out.</p>
+    ${proxySwap ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
+      <b>Two ports are live — finish the switch.</b> The panel is now serving on <b>both</b> its old port <span class="mono">${proxySwap.old_port}</span> and the new port <span class="mono">${proxySwap.new_port}</span>. Point your reverse proxy's upstream at <span class="mono">${(proxySwap.new_host || "127.0.0.1")}:${proxySwap.new_port}</span> (and any co-located node that dials the panel on <span class="mono">127.0.0.1</span> — update its <span class="mono">panel.url</span> to the new port), reload the proxy, and check the panel still opens — then confirm below so it stops serving the old port. External nodes reach the panel through the proxy on the public URL, so they're unaffected. Nothing goes down in between.
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" disabled=${busy} onClick=${confirmProxySwap}>My proxy points to the new port — drop the old one</button><button class="btn btn-ghost" disabled=${busy} onClick=${revertProxySwap}>Revert to the old port</button></div>
+    </div></div>` : null}
+    <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. ${behindProxy ? html`Behind a reverse proxy the listen host/port are <b>internal</b> (your proxy's upstream, not a public address). Changing the port binds the new one <b>alongside</b> the old — both keep serving — so you can re-point your proxy and confirm to drop the old port without any downtime.` : "A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out."}</p>
     ${confirmUrl ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
       <b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab to confirm it — the change is applied <b>only once</b> it loads there. If that tab <b>can't</b> load, just close it: this panel stays on the current address and reverts automatically. Nothing is committed until the new address answers.
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-primary" href=${confirmUrl} target="_blank" rel="noopener">Open the new address to confirm ↗</a><button class="btn btn-ghost" onClick=${cancelChange}>Cancel this change</button></div>
@@ -7932,15 +7982,33 @@ function AccessTLSCard({ onChange }) {
     <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
     <div class="fieldrow">${ipField(pHost, setPHost, true)}${portField(pPort, setPPort, pBad)}</div>
     ${pBad ? cfNote : null}
-    ${panelBindChanged() ? html`<div class="notice" style="margin:2px 0 12px"><${Ic} i="info"/><div style="min-width:0">
+    ${(behindProxy && (panelBindChanged() || panelUrlChanged())) ? html`<div class="notice" style="margin:2px 0 12px"><${Ic} i="info"/><div style="min-width:0">
+      <b>Behind a reverse proxy.</b>
+      ${panelBindChanged() ? html` Saving binds <span class="mono">${(pHost.trim() || "127.0.0.1")}:${_pPortN()}</span> <b>alongside</b> the current port (both keep serving) — you then re-point your reverse proxy and confirm to drop the old one, with no downtime. External nodes dial your public URL through the proxy, so they don't change; only a co-located node that dials the panel on <span class="mono">127.0.0.1</span> needs its <span class="mono">panel.url</span> port updated too.` : null}
+      ${panelUrlChanged() ? html` The public URL is served by <b>your reverse proxy</b>, not the panel — make sure the proxy serves it (server_name / TLS cert / path) before relying on it. The panel's own mount path stays <span class="mono">SWG_PANEL_BASE</span>. Nodes are told this URL as their dial address, so external nodes re-point to it on their next sync — make sure they can reach it; one that can't must have its <span class="mono">panel.url</span> updated by hand.` : null}
+    </div></div>`
+    : panelBindChanged() ? html`<div class="notice" style="margin:2px 0 12px"><${Ic} i="info"/><div style="min-width:0">
       <b>Nodes re-point themselves.</b> On save, online nodes learn the new address on their next sync and switch to it — the old address stays reachable for ~3 minutes so they can. A node that is <b>offline</b> during the change (or one installed without verifying/pinning the panel cert) must be re-pointed by hand: set <span class="mono">panel.url</span> in <span class="mono">/etc/swg-agent/config.json</span> (bare-metal) or <span class="mono">PANEL_URL</span> in <span class="mono">.env</span> (docker) to the new address, then restart <span class="mono">swg-noded</span> / recreate the container.
     </div></div>` : null}
+    ${behindProxy ? html`<details class="nginx-sample" style="margin:2px 0 12px"><summary style="cursor:pointer;color:var(--muted);font-size:.9em">Reverse-proxy config for the panel (nginx) — copy into your HTTPS <span class="mono">server { }</span></summary>
+      <pre class="mono" style="white-space:pre;overflow:auto;padding:10px;border-radius:6px;background:var(--code-bg, rgba(127,127,127,.09));margin:8px 0 6px;font-size:.85em">${nginxLocationBlock(pUrl, pHost, _pPortN())}</pre>
+      <button class="btn btn-mini" onClick=${() => copy(nginxLocationBlock(pUrl, pHost, _pPortN()), "panel nginx block")}><${Ic} i="copy"/> Copy</button>
+      <div class="hint" style="margin-top:6px">Goes inside your <span class="mono">server { listen 443 ssl; server_name …; ssl_certificate …; }</span> — then <span class="mono">nginx -t && systemctl reload nginx</span>.</div>
+    </details>` : null}
 
     ${subsOn ? html`<div class="seclabel">Subscription address</div>
       <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>
       <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com  or  https://example.com/swgsub" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
       <div class="fieldrow">${ipField(sHost, setSHost, true)}${portField(sPort, setSPort, sBad)}</div>
-      ${sBad ? cfNote : null}` : null}
+      ${sBad ? cfNote : null}
+      ${(behindProxy && (subBindChanged() || subUrlChanged())) ? html`<div class="notice warn" style="margin:8px 0 0"><${Ic} i="warn"/><div style="min-width:0">
+        <b>Behind a reverse proxy.</b> Point your proxy at <span class="mono">${(sHost.trim() || "127.0.0.1")}:${_sPortN()}</span> and make sure it serves this URL's path. swg-sub restarts on Save to pick it up — or if the panel has no root helper, it saves and asks you to run <span class="mono">systemctl restart swg-sub</span>.
+      </div></div>` : null}
+      ${behindProxy ? html`<details class="nginx-sample" style="margin:8px 0 4px"><summary style="cursor:pointer;color:var(--muted);font-size:.9em">Reverse-proxy config for the subscription page (nginx)</summary>
+        <pre class="mono" style="white-space:pre;overflow:auto;padding:10px;border-radius:6px;background:var(--code-bg, rgba(127,127,127,.09));margin:8px 0 6px;font-size:.85em">${nginxLocationBlock(sUrl, sHost, _sPortN())}</pre>
+        <button class="btn btn-mini" onClick=${() => copy(nginxLocationBlock(sUrl, sHost, _sPortN()), "subscription nginx block")}><${Ic} i="copy"/> Copy</button>
+        <div class="hint" style="margin-top:6px">Same HTTPS <span class="mono">server { }</span> if it's the same domain, or its own server block for a separate subdomain — then reload nginx.</div>
+      </details>` : null}` : null}
   </div>`;
 }
 

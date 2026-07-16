@@ -3108,7 +3108,22 @@ def apply_panel_hints(panel, node_cfg, reply):
             if _norm_url(p_url) != _norm_url(cur):
                 cur_host = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur).hostname
                 if _host_is_internal(cur_host):
-                    pass   # internal/compose link — independent of the public address; never repoint
+                    # Internal link — never adopt the public panel_url (meaningless to a co-located node). But a TRUE
+                    # LOOPBACK node DOES follow the panel's internal listen PORT so a port change doesn't strand it:
+                    # keep the host + path, swap only the port. (Compose service names / private IPs stay put — a
+                    # docker master's swg-panel:8443 link is stable; a private-IP node the operator manages.)
+                    _h = (cur_host or "").lower().strip("[]")
+                    lp = reply.get("panel_local_port")
+                    if lp and (_h == "localhost" or _h.startswith("127.") or _h == "::1"):
+                        cu = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur)
+                        cur_port = cu.port or (443 if cu.scheme == "https" else 80)
+                        if int(lp) != cur_port:
+                            newp = "%s://%s:%d%s" % (cu.scheme, cur_host, int(lp), (cu.path or "").rstrip("/"))
+                            if _verify_panel(newp, panel.get("token") or "", panel):   # no MITM risk on loopback; still confirms our token answers
+                                panel["url"] = newp
+                                _persist_panel_url(node_cfg, newp)
+                                print(f"panel listen port changed → re-pointed to {newp}", flush=True)
+                                return newp.rstrip("/") + "/api/node/sync"
                 elif not verified:
                     print(f"panel moved to {p_url}, but this node is unverified — re-point it manually "
                           f"(set panel.url in {CONFIG_PATH} + restart)", flush=True)
@@ -3144,6 +3159,7 @@ def _heal_local_panel(panel, node_cfg):
         _LOCAL_HEAL["at"] = now
         scheme = u.scheme or "https"
         cur_port = u.port or (443 if scheme == "https" else 80)
+        base = (u.path or "").rstrip("/")                    # keep the reverse-proxy mount path (e.g. /swg) — a subpath panel answers there, not at root
         token = panel.get("token") or ""
         candidates = [443, 8443, 2053, 2083, 2087, 2096, 80, 8080, 8000, 9443]
         for sp in ("/var/lib/swg-panel/panel-settings.json", "/etc/swg-panel/panel-settings.json"):
@@ -3157,7 +3173,7 @@ def _heal_local_panel(panel, node_cfg):
         for port in candidates:
             if port == cur_port:
                 continue
-            probe = "%s://%s:%d" % (scheme, host, port)
+            probe = "%s://%s:%d%s" % (scheme, host, port, base)
             if _verify_panel(probe, token, panel):
                 panel["url"] = probe
                 _persist_panel_url(node_cfg, probe)

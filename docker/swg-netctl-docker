@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""swg-netctl-docker — the Docker root helper.
+
+The bare-metal panel delegates privileged host jobs (rebind a listener, restart a
+service) to swg-netctl over a queue dir. Docker has no swg-netctl — the panel
+container runs as root but can't reach the HOST to restart a sibling container or
+change a published port. This is the Docker equivalent: it drains the SAME request
+queue the panel already writes (drop-in compatible — the panel needs no change) and
+maps each verb to a `docker compose` action on the host.
+
+Polled by swg-netctl-docker.timer, NOT a .path unit: a host inotify watch never
+sees the container's write to a bind-mounted queue file, so we poll the dir.
+
+Request  (queue/<id>.json):  {"id","verb","args":[...],"nonce"}   — written by the panel
+Result   (status/<id>.json): {"status":"ok"|"error","message":...} — read by the panel's _netctl_wait
+
+Verbs handled (others are a no-op "ok" — e.g. cert issuance is done by acme.sh INSIDE
+the container, not on the host):
+  restart <sub|panel>              -> docker compose restart swg-<svc>
+  set-listen <sub|panel> <h> <p>   -> set the published port/bind in .env, recreate swg-<svc>
+"""
+import contextlib
+import json
+import os
+import re
+import subprocess
+
+DIR = os.environ.get("SWG_DOCKER_DIR", "/opt/swg-panel-docker")
+QUEUE = os.path.join(DIR, "data", "lib", "netctl", "queue")
+STATUS = os.path.join(DIR, "data", "lib", "netctl", "status")
+ENV = os.path.join(DIR, ".env")
+COMPOSE = ["docker", "compose", "-f", os.path.join(DIR, "docker-compose.yml")]
+SVC = {"sub": "swg-sub", "panel": "swg-panel"}
+
+
+def _compose(*args):
+    r = subprocess.run(COMPOSE + list(args), capture_output=True, text=True, timeout=180)
+    return r.returncode == 0, (r.stderr or r.stdout or "").strip()[:200]
+
+
+def _set_env(keys):
+    """Set KEY=value lines in .env (add if absent), atomically."""
+    try:
+        lines = open(ENV).read().splitlines() if os.path.exists(ENV) else []
+    except OSError:
+        lines = []
+    for k, v in keys.items():
+        pat = re.compile(r"^%s=" % re.escape(k))
+        for i, ln in enumerate(lines):
+            if pat.match(ln):
+                lines[i] = "%s=%s" % (k, v)
+                break
+        else:
+            lines.append("%s=%s" % (k, v))
+    tmp = ENV + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, ENV)
+
+
+def _handle(verb, args):
+    if verb == "restart":
+        svc = SVC.get(args[0] if args else "")
+        if not svc:
+            return False, "unknown service %r" % (args[0] if args else "")
+        ok, msg = _compose("restart", svc)
+        return ok, ("restarted %s" % svc) if ok else ("restart %s failed: %s" % (svc, msg))
+    if verb == "set-listen":
+        # args: <sub|panel> <host> <port> — set the container's published port/bind, then recreate it
+        who, host, port = (args + ["", "", ""])[:3]
+        svc = SVC.get(who)
+        if not svc:
+            return False, "unknown service %r" % who
+        _set_env({"SUB_PORT" if who == "sub" else "PANEL_PORT": port,
+                  "SUB_BIND" if who == "sub" else "PANEL_BIND": host})
+        # --no-deps: recreate ONLY this service. Without it, `up` follows depends_on and would recreate the panel
+        # container too, killing the very apply request that's in flight (the panel loses its _netctl_wait).
+        ok, msg = _compose("up", "-d", "--no-deps", svc)
+        return ok, ("%s on %s:%s" % (svc, host, port)) if ok else ("recreate %s failed: %s" % (svc, msg))
+    return True, "no-op (%s handled in-container)" % verb   # cert verbs etc.
+
+
+def main():
+    if not os.path.isdir(QUEUE):
+        return
+    os.makedirs(STATUS, exist_ok=True)
+    for name in sorted(os.listdir(QUEUE)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(QUEUE, name)
+        try:
+            req = json.load(open(path))
+        except (OSError, ValueError):
+            with contextlib.suppress(OSError):
+                os.remove(path)
+            continue
+        rid = str(req.get("id") or name[:-5])
+        try:
+            ok, msg = _handle(str(req.get("verb") or ""), [str(a) for a in (req.get("args") or [])])
+        except Exception as e:
+            ok, msg = False, "internal error: %s" % e
+        with open(os.path.join(STATUS, rid + ".json"), "w") as f:
+            json.dump({"status": "ok" if ok else "error", "message": msg}, f)
+        with contextlib.suppress(OSError):
+            os.remove(path)
+
+
+if __name__ == "__main__":
+    main()
