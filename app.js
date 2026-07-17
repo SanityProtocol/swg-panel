@@ -7846,6 +7846,13 @@ function AccessTLSCard({ onChange }) {
   const setPPortLinked = v => { setPPort(v); if (!behindProxy) setPUrl(withUrlPort(pUrl, v)); };
   const setSUrlLinked = v => { setSUrl(v); if (!behindProxy) setSPort(urlPortOf(v) || "443"); };
   const setSPortLinked = v => { setSPort(v); if (!behindProxy) setSUrl(withUrlPort(sUrl, v)); };
+  // Switching INTO a TLS mode: the URL now carries the port, so fold the current Port field into the URL right away
+  // (so it's linked even if the operator set the port earlier, while still in reverse-proxy mode). Leaving TLS keeps
+  // the URL as-is (behind a proxy the URL's external port is independent of the internal bind).
+  const setModeLinked = m => {
+    setMode(m);
+    if (!(m === "" || m === "skip")) { setPUrl(withUrlPort(pUrl, pPort)); if (subsOn) setSUrl(withUrlPort(sUrl, sPort)); }
+  };
   const wasBehindProxy = (orig.mode === "" || orig.mode === "skip");
   const modeFlip = behindProxy !== wasBehindProxy;                      // the Type change crosses the reverse-proxy ↔ direct-TLS line (the panel's own socket flips HTTP↔HTTPS)
   const flipToTls = modeFlip && !behindProxy;                           // reverse proxy → direct TLS (panel starts terminating its own TLS)
@@ -7950,7 +7957,8 @@ function AccessTLSCard({ onChange }) {
     const needPanel = pBindChg || certChanged() || pUrlChg;
     didPanelRef.current = needPanel; didSubRef.current = needSub;   // so the status poll reacts only to what THIS save changes (the shared status is stale for the other)
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
-    const npUrl = _canonUrl(pUrl), nsUrl = _canonUrl(sUrl);   // add https:// when the operator omitted it; drop the URL port under direct TLS (the Port field owns it)
+    const npUrl = normPublicUrl(behindProxy ? pUrl : withUrlPort(pUrl, pPort)),   // TLS: the URL carries the Port field's port (one socket) — fold it in as a backstop;
+          nsUrl = normPublicUrl(behindProxy ? sUrl : withUrlPort(sUrl, sPort));    // reverse-proxy: the URL's external port is independent, left as typed.
     setPUrl(npUrl); setSUrl(nsUrl);                                    // reflect it back in the fields
     const r = await api.panelSettings({ access: {
       panel: { url: npUrl, host: pHost.trim() || "0.0.0.0", port: _pPortN() },
@@ -8141,7 +8149,7 @@ function AccessTLSCard({ onChange }) {
 
     <div class="seclabel" style="margin-top:0">Certificate</div>
     <p class="hint" style="margin:0 0 12px">How TLS is terminated — this decides which ports are valid below. One choice issues both certificates (the panel's and swg-sub's, always separate keys).</p>
-    <div class="field"><label>Type</label><${Dropdown} value=${mode} onChange=${setMode} options=${TLS_MODE_OPTS}/></div>
+    <div class="field"><label>Type</label><${Dropdown} value=${mode} onChange=${setModeLinked} options=${TLS_MODE_OPTS}/></div>
     ${(mode === "letsencrypt" || mode === "cloudflare") ? html`<div class="field"><label>Account email</label><input type="text" placeholder="admin@example.com" value=${email} onInput=${e => setEmail(e.target.value)}/></div>` : null}
     ${mode === "cloudflare" ? html`<div class="field"><label>Cloudflare API token</label><input type="password" placeholder=${hasCfTok ? "•••••••• (set — leave blank to keep)" : "Zone:DNS:Edit token"} value=${cfTok} onInput=${e => setCfTok(e.target.value)}/>
       <div class="hint">Used for DNS-01 validation. Stored on the panel only; never sent to the browser. Enter "-" to clear.</div></div>` : null}
