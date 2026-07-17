@@ -234,6 +234,68 @@ EOF
   systemctl enable --quiet --now swg-update.timer >/dev/null 2>&1 || warn "couldn't enable swg-update.timer"
 }
 
+ensure_netctl_helper(){   # idempotent: provision the swg-netctl root helper when a bare-metal panel LACKS it.
+  # The panel is unprivileged and can't touch the host itself — it drops JSON requests into a queue the root
+  # helper drains (systemd .path watch + a 10s .timer fallback). Installs that predate the helper (it shipped
+  # with the Access/subscription-address feature) or partial installs have no helper at all, so every Access or
+  # subscription-address change fails with "the root helper is not available", and the version-gated refresh
+  # below never healed it (it only runs when /usr/local/bin/swg-netctl already exists). Provision the whole thing
+  # here, unconditionally, so an update repairs such boxes. MUST mirror install-host.sh's write_netctl.
+  [ -f "$SRC/swg-netctl" ] || return 0
+  local st="${STATE_DIR:-/var/lib/swg-panel}" etc="${ETC_DIR:-/etc/swg-panel}" usr="${PANEL_USER:-swgpanel}"
+  # already complete? (binary + queue dir + both trigger units) → nothing to do; the refresh path keeps it current.
+  if [ -f /usr/local/bin/swg-netctl ] && [ -d "$st/netctl/queue" ] \
+     && [ -f /etc/systemd/system/swg-netctl.path ] && [ -f /etc/systemd/system/swg-netctl.timer ]; then return 0; fi
+  info "provisioning the swg-netctl root helper (missing/incomplete — needed for Access & subscription-address changes)"
+  if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-netctl + ${st}/netctl/{queue,status} + swg-netctl.{service,path,timer}"; return 0; fi
+  cp "$SRC/swg-netctl" /usr/local/bin/swg-netctl; chmod 755 /usr/local/bin/swg-netctl
+  # queue/ — panel-owned so ONLY the panel can enqueue; status/ — root-written, group-readable by the panel.
+  mkdir -p "$st/netctl/queue" "$st/netctl/status"
+  chown "$usr:swg" "$st/netctl" "$st/netctl/queue" 2>/dev/null || true; chmod 750 "$st/netctl" "$st/netctl/queue"
+  chown root:swg "$st/netctl/status" 2>/dev/null || true; chmod 750 "$st/netctl/status"
+  cat > /etc/systemd/system/swg-netctl.service <<EOF
+[Unit]
+Description=swg-panel privileged network/TLS helper (drains the panel's request queue)
+# A single Access apply enqueues several requests in a row; the default 5-starts-per-10s limit trips easily and
+# would fail the .path unit permanently. This drainer is MEANT to start frequently, so disable the rate limit.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/swg-netctl run
+Environment=SWG_PANEL_USER=${usr}
+Environment=SWG_PANEL_GROUP=swg
+Environment=SWG_STATE_DIR=${st}
+Environment=SWG_ETC_DIR=${etc}
+EOF
+  cat > /etc/systemd/system/swg-netctl.path <<EOF
+[Unit]
+Description=watch for swg-netctl requests from the panel
+
+[Path]
+DirectoryNotEmpty=${st}/netctl/queue
+Unit=swg-netctl.service
+
+[Install]
+WantedBy=paths.target
+EOF
+  cat > /etc/systemd/system/swg-netctl.timer <<EOF
+[Unit]
+Description=poll for swg-netctl requests (fallback for the path watch)
+
+[Timer]
+OnActiveSec=10s
+OnUnitActiveSec=10s
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --quiet --now swg-netctl.path 2>/dev/null || warn "couldn't enable swg-netctl.path"
+  systemctl enable --quiet --now swg-netctl.timer 2>/dev/null || warn "couldn't enable swg-netctl.timer"
+  ok "swg-netctl root helper provisioned — Access & subscription-address changes will work now"
+}
+
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   found=1; pan_seen=yes; pold="$(oldver "$PANEL_DIR")"
@@ -274,6 +336,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
       fi
     fi
   else note "bare-metal swg-panel: unchanged (${pold})"; fi
+  ensure_netctl_helper   # runs regardless of should_update — repairs boxes whose helper was never installed
 fi
 
 # ───────────────────────── bare-metal node daemon (node or master) ─────────────────────────
