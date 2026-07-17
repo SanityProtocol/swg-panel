@@ -1037,9 +1037,8 @@ const Store = {
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
-    this.panelMigrateUntil = +(d.panel_migrate_until || 0);   // a confirmed migration still gracing out → live countdown on the "previous address" ribbon
-    this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // panel-controlled (direct-TLS) migration → the ribbon offers "cancel the move"
-    this.panelMigratePrev = d.panel_migrate_prev || null;         // the OLD address to cancel back to
+    this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move" (server auto-clears at grace end)
+    this.panelMigratePrev = d.panel_migrate_prev || null;         // the OLD address to cancel back to (only while revertable)
     this.accessCooldown = d.access_cooldown || { secs: 0, reason: "" };   // one-at-a-time: while a change verifies/graces, Access&TLS disables Save + shows the cooldown
     applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
     applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
@@ -8099,8 +8098,13 @@ function AccessTLSCard({ onChange }) {
           ? html`add a location for the new path <span class="mono" style="font-weight:700;color:var(--online)">${(() => { try { return new URL(rpSwap.new_url).pathname.replace(/\/+$/, "") + "/"; } catch (_) { return "the new path"; } })()}</span>`
           : html`route <span class="mono" style="font-weight:700;color:var(--online)">${rpSwap.new_url}</span> to this panel`} (copy the <b>panel</b> nginx sample below), keeping the old one live for now.</li>` : null}
       </ul>
-      ${rpSwap.url_changed ? html`<div class="hint" style="margin:4px 0 0">On confirm I open the new address to prove your proxy routes it here before switching nodes over; if it can't load, just revert.</div>` : null}
-      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" disabled=${busy || rpArmIn > 0} onClick=${confirmRpSwapGuarded} title=${rpArmIn > 0 ? "Take a moment to open the new address and check your proxy first" : ""}>${rpArmIn > 0 ? ("Confirm in " + rpArmIn + "s — verify your proxy first") : (rpSwap.url_changed ? "Confirm — open the new address ↗" : "Confirm — drop the old port")}</button><button class="btn btn-ghost" disabled=${busy} onClick=${revertRpSwap}>Revert</button></div>
+      ${rpSwap.url_changed ? html`<div class="hint" style="margin:4px 0 0">On confirm the new address opens in a new tab to prove your proxy routes it here before switching nodes over; if it can't load, just revert — nothing changes.</div>
+      <div class="notice warn" style="margin:8px 0 0"><${Ic} i="warn"/><div><b>Make sure the new address already opens this panel</b> (proxy upstream / <span class="mono">server_name</span> / <span class="mono">location</span>). If it doesn't, the confirm simply won't take — the old address keeps serving, so you can't be locked out.</div></div>` : null}
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">${rpArmIn > 0
+        ? html`<button class="btn btn-primary" disabled title="Take a moment to open the new address and check your proxy first">Confirm in ${rpArmIn}s — verify your proxy first</button>`
+        : (rpSwap.url_changed
+            ? html`<a class="btn btn-primary" href=${(String(rpSwap.new_url || "").replace(/\/+$/, "")) + "/?__applyurl=" + encodeURIComponent(rpSwap.nonce || "")} target="_blank" rel="noopener" onClick=${() => { setPolling(true); setMsg({ ok: true, t: "Opening the new address to confirm your proxy routes it here — if it loads, the switch completes and nodes move over." }); }}>Confirm — open the new address ↗</a>`
+            : html`<button class="btn btn-primary" disabled=${busy} onClick=${confirmRpSwapGuarded}>Confirm — drop the old port</button>`)}<button class="btn btn-ghost" disabled=${busy} onClick=${revertRpSwap}>Revert</button></div>
     </div></div>` : null}
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. ${behindProxy ? html`Behind a reverse proxy the listen host/port are <b>internal</b> (your proxy's upstream, not a public address). Changing the port binds the new one <b>alongside</b> the old — both keep serving — so you can re-point your proxy and confirm to drop the old port without any downtime.` : "A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out."}</p>
     ${confirmUrl ? html`<div class="notice ${confirmVerified ? "" : "warn"}" style=${confirmVerified ? "margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))" : "margin:0 0 14px"}><${Ic} i=${confirmVerified ? "info" : "warn"}/><div style="min-width:0">
@@ -10188,10 +10192,17 @@ function oldAddrCurrent() {   // → the current canonical addr {host,scheme,por
 // "you're on a previous address" until this tab moves to the current one.
 function OldAddrRibbon() {
   useStore();
+  // PURE model — we SHOW REALITY, we don't predict it: the ribbon appears iff THIS tab's actual address differs
+  // from the panel's BLESSED (confirmed) address. `oldAddrCurrent()` compares window.location to the server's
+  // CONFIRMED url, which advances ONLY on a real confirm (never on a bare Save). Consequences, all for free:
+  //   • editing + Save (not yet confirmed) → blessed unchanged → a tab on it shows nothing (the confirm/revert
+  //     card owns that screen); no ribbon+confirm collision, no screen special-casing.
+  //   • confirm succeeds → blessed advances → the just-opened new tab matches (no ribbon); OTHER tabs on the old
+  //     address now differ → ribbon.
+  //   • confirm fails / can't validate (CF/nginx/unreachable) → blessed never moved → the new tab differs from
+  //     blessed and points back home; the panel is exactly where it was.
+  // No countdown, no "will stop working" — those were guesses about the future; the browser already knows the truth.
   const c = oldAddrCurrent();
-  const until = c ? +(Store.panelMigrateUntil || 0) : 0;
-  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-  useEffect(() => { if (!until) return; const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000); return () => clearInterval(t); }, [until]);
   const ref = useRef(null);
   useEffect(() => {
     document.body.classList.toggle("has-oldaddr", !!c);
@@ -10199,20 +10210,17 @@ function OldAddrRibbon() {
     return () => document.body.classList.remove("has-oldaddr");
   });
   if (!c) return null;
-  const left = until ? Math.max(0, until - now) : 0;
-  // Only a panel-controlled (direct-TLS) migration can be cancelled instantly, and only while the previous
-  // address is still gracing (both served). A reverse-proxy swap depends on the operator's nginx being pointed
-  // at the new address first, so cancelling could strand the panel — the panel refuses those; no button.
-  const canRevert = left > 0 && Store.panelMigrateRevertable && Store.panelMigratePrev;
+  // "Cancel the move" is ORTHOGONAL to visibility — it never decides whether the ribbon shows. It appears only while
+  // the panel still allows an instant undo (a panel-controlled move whose old address is still served); the server
+  // clears that the moment the grace ends. Clicking it moves blessed back → this tab matches again → ribbon vanishes.
+  const canRevert = Store.panelMigrateRevertable && Store.panelMigratePrev;
   const revertMove = async () => {
     const r = await api.post("/api/access/cancel", Store.panelMigratePrev).catch(() => null);
     if (r && r.ok) { toast("Move cancelled — the panel stays on this address.", "ok"); await Store.poll(); }
     else toast((r && r.error) || "Couldn't cancel the move.", "err");
   };
   return html`<div class="addr-old-ribbon" ref=${ref} role="status">
-    <span>${left > 0
-      ? html`<b>This address stops responding in ${left}s.</b> The panel is now reached at <a href=${c.label}>${c.label}</a> — switch over now.`
-      : html`<b>You're on a previous panel address.</b> The panel is now reached at <a href=${c.label}>${c.label}</a> — this address will stop working. Switch over when you're ready.`}</span>
+    <span><b>You're on a previous panel address.</b> The panel is now reached at <a href=${c.label}>${c.label}</a>.</span>
     ${canRevert ? html`<button class="btn btn-mini" onClick=${revertMove}>Cancel the move — keep this address</button>` : null}
     <a class="btn btn-mini" href=${c.label}>Go to the current address ↗</a>
   </div>`;

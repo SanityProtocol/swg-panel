@@ -4291,6 +4291,8 @@ def api(method, path, qs, body, deps):
             _rest = _raw.split("\n", 1)[1].strip() if "\n" in _raw else ""
             if _rest and (_hp.endswith("-failed") or _hp == "failed"): _hp_err = _rest[:4000]
             _hp_at = os.path.getmtime(_hpf)              # no timestamp in the file → use its mtime for the timeout
+        _mstat = _APPLY["status"] or {}
+        _mgrace = int(_mstat.get("grace_until") or 0) > int(time.time())   # a just-confirmed move still gracing out (old address kept alive) → an instant undo is still possible
         return 200, {"ok": True, "data": {
             "host_proc": _proc_view(_hp, _hp_at),        # this panel host is mid re-install (UI tag); times out → "failed" → clears
             "host_proc_err": _hp_err,                    # failed-state log tail for the appbar error popup
@@ -4303,9 +4305,8 @@ def api(method, path, qs, body, deps):
             "versions": VERSIONS,
             "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps)},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
-            "panel_migrate_until": int((_APPLY["status"] or {}).get("grace_until") or 0),   # a confirmed migration still gracing out → the "previous address" ribbon shows a live countdown (absolute epoch; 0 = none)
-            "panel_migrate_revertable": bool((_APPLY["status"] or {}).get("revertable")),    # the migration is panel-controlled (direct-TLS) → the ribbon offers an instant "cancel the move"
-            "panel_migrate_prev": (_APPLY["status"] or {}).get("revert_to") or None,          # the OLD address to POST /api/access/cancel with
+            "panel_migrate_revertable": bool(_mstat.get("revert_to")) and _mgrace,   # a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move"; auto-clears at grace end (no stale flag)
+            "panel_migrate_prev": (_mstat.get("revert_to") or None) if _mgrace else None,   # the OLD address to POST /api/access/cancel with (only while the undo is still possible)
             "access_cooldown": (lambda cd: {"secs": cd[0], "reason": cd[1]})(_access_cooldown()),   # while a change is verifying/gracing → Access&TLS disables Save + shows the one-at-a-time cooldown
 
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
