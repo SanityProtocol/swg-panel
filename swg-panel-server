@@ -4919,6 +4919,14 @@ def api(method, path, qs, body, deps):
         if new_base != old_base and got_base != new_base:
             return 409, {"ok": False, "code": "not_on_new",
                          "error": "this panel wasn't reached on the new path (arrived on '%s', expected '%s') — add a location for %s to your reverse proxy, then try again" % (got_base or "/", new_base or "/", new_url)}
+        if cert_off and port_changed and getattr(_REQ, "listener_id", None) != new_lid:
+            # A direct-TLS→reverse-proxy flip: committing CLEARS the cert env (→ plain HTTP) and drops the HTTPS
+            # listener — both gated on this confirm arriving on the NEW plain-HTTP bind (proof the proxy now fronts
+            # it). It came in ELSEWHERE (proxy still on the old bind), so committing would flip the mode to
+            # reverse-proxy while the cert env stays ON → HTTPS-on-loopback → 502 on restart. Refuse (nothing was
+            # changed; the swap stays pending) until the proxy is actually re-pointed at the new bind.
+            return 409, {"ok": False, "code": "proxy_not_switched",
+                         "error": "your reverse proxy isn't routing to the new bind yet — point its upstream at %s:%d and reload it, then confirm (nothing was changed)" % (pend.get("host"), pend.get("port"))}
         with _APPLY["lock"]:
             _APPLY["pending"] = None
         if new_base != old_base:
