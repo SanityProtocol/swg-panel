@@ -4633,12 +4633,21 @@ def api(method, path, qs, body, deps):
                         "old_host": cur["host"], "old_port": cur["port"], "host": d_host, "port": d_port,
                         "cert_off": scheme_flip}   # flipping direct-TLS → reverse-proxy: clear the cert env on confirm (plain HTTP henceforth)
                 if port_changed:
-                    try:
-                        new_lid = LISTENERS.add(d_host, d_port, nl_cert, nl_key)   # bind the NEW port alongside the old — reverse-proxy is plain HTTP even when flipping FROM direct TLS
-                    except OSError as e:
-                        _restore_panel_bind(deps, cur["host"], cur["port"])
-                        _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
-                        return 400, {"ok": False, "error": "couldn't bind %s:%d — %s" % (d_host, d_port, e), "code": "bind_failed"}
+                    _found_lid, _found = LISTENERS.find(d_host, d_port)
+                    if _found is not None and not _found._swg.get("cert"):
+                        # A plain-HTTP listener is ALREADY bound here — reuse it instead of binding a second socket.
+                        # This is the direct-TLS→reverse-proxy flip: the dedicated internal loopback listener becomes
+                        # the reverse-proxy primary (nginx fronts it). It stops being a SEPARATE internal listener.
+                        new_lid = _found_lid
+                        if _INTERNAL_LID == new_lid:
+                            globals()["_INTERNAL_LID"] = None
+                    else:
+                        try:
+                            new_lid = LISTENERS.add(d_host, d_port, nl_cert, nl_key)   # bind the NEW port alongside the old — reverse-proxy is plain HTTP even when flipping FROM direct TLS
+                        except OSError as e:
+                            _restore_panel_bind(deps, cur["host"], cur["port"])
+                            _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
+                            return 400, {"ok": False, "error": "couldn't bind %s:%d — %s" % (d_host, d_port, e), "code": "bind_failed"}
                     _netctl_enqueue(deps, "set-listen", ["panel", d_host, d_port])   # persist the new port (best-effort)
                     LISTENERS.set_primary(new_lid)                                    # new bind canonical; OLD listener stays UP (no grace-drop timer)
                     pend["new_lid"] = new_lid
@@ -4763,13 +4772,25 @@ def api(method, path, qs, body, deps):
             _grace_until = 0
             if _rebind:                                          # rebind: promote the new listener, drop the old
                 _netctl_enqueue(deps, "set-listen", ["panel", pend["host"], pend["port"]])   # persist across restarts (root helper)
+                LISTENERS.set_primary(pend["new_lid"])        # sole primary NOW → primary() returns the new bind immediately (the old one keeps serving out the grace, but is no longer canonical)
+                _old_srv = LISTENERS.get(pend["old_lid"])
+                _old_host = (str((_old_srv._swg.get("host") if _old_srv else "") or "")).strip().lower().strip("[]")
+                _keep_internal = (pend.get("flip_to_tls") and _old_srv is not None and not _old_srv._swg.get("cert")
+                                  and (_old_host.startswith("127.") or _old_host == "::1"))
                 if pend.get("flip_to_tls"):
                     _netctl_enqueue(deps, "set-cert-env", ["panel", "on"])   # reverse-proxy→direct-TLS: persist HTTPS so it survives a restart
-                LISTENERS.set_primary(pend["new_lid"])        # sole primary NOW → primary() returns the new bind immediately (the old one keeps serving out the grace, but is no longer canonical)
-                # keep the OLD listener alive for a grace window so ONLINE nodes sync once on the old address and
-                # auto-repoint to the new one before it's dropped (instead of orphaning every node immediately)
-                _drop_listener_later(pend["old_lid"], NODE_MIGRATE_GRACE)
-                _grace_until = int(time.time()) + NODE_MIGRATE_GRACE
+                if _keep_internal:
+                    # Option Y: the panel now serves its own TLS on the public bind, but a co-located node talks plain
+                    # HTTP on loopback — which needs no TLS. So DON'T drop the old loopback listener: keep it as the
+                    # panel's INTERNAL interface (127.0.0.1 HTTP). The co-located node's endpoint never moves → no churn.
+                    globals()["_INTERNAL_LID"] = pend["old_lid"]
+                    globals()["LOCAL_PORT"] = int(_old_srv._swg.get("port") or 0)
+                    _netctl_enqueue(deps, "set-local-port", ["panel", LOCAL_PORT])   # persist the internal loopback port
+                else:
+                    # keep the OLD listener alive for a grace window so ONLINE nodes sync once on the old address and
+                    # auto-repoint to the new one before it's dropped (instead of orphaning every node immediately)
+                    _drop_listener_later(pend["old_lid"], NODE_MIGRATE_GRACE)
+                    _grace_until = int(time.time()) + NODE_MIGRATE_GRACE
             _ob, _nb = pend.get("old_base"), pend.get("new_base")
             if _ob is not None and _nb is not None and _nb != _ob:
                 # A direct-TLS mount-PATH change: PROVE the new path serves — this confirm arrived under the new base

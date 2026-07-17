@@ -276,6 +276,35 @@ def do_set_cert_env(service, state):
     return "persisted panel direct-TLS = %s (takes effect on next restart)" % st
 
 
+def do_set_local_port(service, port):
+    """Persist the panel's INTERNAL loopback-HTTP port (SWG_PANEL_LOCAL_PORT) so the dedicated 127.0.0.1 plain-HTTP
+    listener for co-located nodes comes back on the SAME port after a restart — set when the panel flips to direct-TLS
+    and keeps the old loopback listener as its internal interface. Its OWN drop-in (13-local) so it never clobbers
+    set-listen (10) / set-cert-env (11) / set-base (12)."""
+    if v_service(service) != "panel":
+        raise Reject("set-local-port only applies to the panel")
+    svc = SERVICES["panel"]
+    p = v_port(port)
+    dropdir = os.path.join(UNIT_DIR, svc["unit"] + ".d")
+    path = os.path.join(dropdir, "13-local.conf")
+    body = ("# managed by swg-netctl — panel internal loopback-HTTP port (Access & TLS); do not edit by hand\n"
+            "[Service]\n"
+            "Environment=SWG_PANEL_LOCAL_PORT=%d\n" % p)
+    if DRYRUN:
+        log("would write %s:\n%s" % (path, body))
+    else:
+        os.makedirs(dropdir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(body)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    rc, out = run(["systemctl", "daemon-reload"])
+    if rc:
+        raise Reject("daemon-reload failed: " + out.strip())
+    return "persisted panel internal loopback port = %d (takes effect on next restart)" % p
+
+
 def _nrestarts(unit):
     """systemd's cumulative automatic-restart counter for `unit`, or -1 if unavailable."""
     rc, out = run(["systemctl", "show", unit, "-p", "NRestarts", "--value"])
@@ -515,6 +544,7 @@ VERBS = {
     "set-listen": (do_set_listen, 3),
     "set-base": (do_set_base, 2),
     "set-cert-env": (do_set_cert_env, 2),       # panel direct-TLS on|off (the durable half of a reverse-proxy↔TLS flip)
+    "set-local-port": (do_set_local_port, 2),   # panel internal loopback-HTTP port (co-located nodes, direct-TLS)
     "issue-cert": (do_issue_cert, (2, 3)),      # optional 3rd arg: reload | noreload (live-apply uses noreload)
     "drop-cert": (do_drop_cert, 2),
     "backup-cert": (do_backup_cert, 1),
