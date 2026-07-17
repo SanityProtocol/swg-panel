@@ -4929,6 +4929,7 @@ def api(method, path, qs, body, deps):
                          "error": "your reverse proxy isn't routing to the new bind yet — point its upstream at %s:%d and reload it, then confirm (nothing was changed)" % (pend.get("host"), pend.get("port"))}
         with _APPLY["lock"]:
             _APPLY["pending"] = None
+        _grace_until = 0
         if new_base != old_base:
             # The mount path moved. Make the NEW base canonical for the live process AND persist it (survives a
             # restart), and keep serving the OLD base through the node-migration grace so nodes + the operator's old
@@ -4937,6 +4938,7 @@ def api(method, path, qs, body, deps):
             globals()["_ALT_BASE"] = old_base
             _netctl_enqueue(deps, "set-base", ["panel", new_base])   # persist SWG_PANEL_BASE for the next restart (best-effort)
             _drop_alt_base_later(NODE_MIGRATE_GRACE)
+            _grace_until = int(time.time()) + NODE_MIGRATE_GRACE   # the OLD mount path retires after the grace → phasing-out ribbon on a tab still on it
         if port_changed and old_lid is not None and getattr(_REQ, "listener_id", None) == new_lid:
             # This confirm arrived on the NEW listener → the proxy's upstream really is on the new port, so drop the
             # old one (a combined port+url change confirms both in one browser proof). If it came in on the OLD port
@@ -4946,7 +4948,7 @@ def api(method, path, qs, body, deps):
             if cert_off:
                 _netctl_enqueue(deps, "set-cert-env", ["panel", "off"])   # direct-TLS→reverse-proxy: persist plain HTTP so it survives a restart
         _confirm_panel_url(deps)   # adopt the new url → nodes are now told to dial it; the old candidate is dropped
-        _apply_status("saved", "panel is now reached at %s" % new_url, new_url=new_url)
+        _apply_status("saved", "panel is now reached at %s" % new_url, new_url=new_url, grace_until=_grace_until)
         return 200, {"ok": True, "saved": True}
 
     if method == "POST" and path == "/api/access/apply-sub":
