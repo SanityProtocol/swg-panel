@@ -111,14 +111,20 @@ def _handle(verb, args):
             return True, "persisted TLS=none (direct-TLS off) — recreate swg-panel to apply"
         return True, "direct-TLS on — set TLS=<mode> in .env, then recreate swg-panel"
     if verb == "set-local-port":
-        # the panel's internal loopback-HTTP port for co-located nodes (direct-TLS). Persist to .env so the next
-        # recreate keeps it; the LIVE listener is already bound in-container.
+        # the panel's internal loopback-HTTP port for co-located nodes (direct-TLS). The container can't live-rebind
+        # (the port is read at startup), so persist to .env AND recreate now — like set-listen. Without the recreate
+        # the change wouldn't take effect until the next unrelated recreate, and a plain docker restart / reboot
+        # (restart:unless-stopped) would re-init the OLD port from the container's stale env (co-located nodes then
+        # dial a dead loopback port). --no-deps recreates ONLY the panel (the request's own _netctl_wait is lost, as
+        # for set-listen — best-effort, the recreate still completes).
         who = args[0] if args else ""
         port = (args[1] if len(args) > 1 else "")
         if who != "panel":
             return True, "set-local-port only applies to the panel (no-op)"
         _set_env({"PANEL_LOCAL_PORT": port})
-        return True, "persisted PANEL_LOCAL_PORT=%s — recreate swg-panel to apply" % port
+        ok, msg = _compose("up", "-d", "--no-deps", "swg-panel")
+        return (ok, "panel internal loopback port = %s (recreated)" % port) if ok \
+            else (False, "PANEL_LOCAL_PORT=%s persisted but recreate failed: %s" % (port, msg))
     if verb == "flip":
         # docker reverse-proxy↔direct-TLS SCHEME FLIP. The container can't live-rebind (fixed port map; in
         # reverse-proxy mode there's no cert on disk to bind HTTPS with — the entrypoint issues/clears the cert from
