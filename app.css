@@ -2386,8 +2386,8 @@ table.peergrid{border-collapse:separate;border-spacing:0}
    shown on any tab loaded at a non-current panel address so an old address reads as expected, not a fault. The
    sticky .appbar is pushed down by the measured ribbon height so it's never hidden. */
 .addr-old-ribbon{position:fixed;top:0;left:0;right:0;z-index:31;display:flex;align-items:center;justify-content:center;
-  gap:12px;flex-wrap:wrap;padding:9px 16px;background:#a65a00;color:#fff;font-size:13px;
-  box-shadow:0 2px 8px rgba(0,0,0,.22);border-bottom:1px solid rgba(0,0,0,.22)}
+  gap:12px;flex-wrap:wrap;padding:9px 16px;background:#c62b42;color:#fff;font-size:13px;font-weight:600;
+  box-shadow:0 2px 10px rgba(0,0,0,.28);border-bottom:1px solid rgba(0,0,0,.25)}
 .addr-old-ribbon a{color:#fff;text-decoration:underline;text-underline-offset:2px}
 .addr-old-ribbon .btn-mini{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.5);color:#fff;
   text-decoration:none;padding:3px 10px;border-radius:7px;font-weight:700;white-space:nowrap}
