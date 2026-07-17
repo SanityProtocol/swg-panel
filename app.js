@@ -1037,6 +1037,7 @@ const Store = {
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
+    this.panelMigrateUntil = +(d.panel_migrate_until || 0);   // a confirmed migration still gracing out → live countdown on the "previous address" ribbon
     this.accessCooldown = d.access_cooldown || { secs: 0, reason: "" };   // one-at-a-time: while a change verifies/graces, Access&TLS disables Save + shows the cooldown
     applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
     applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
@@ -7715,12 +7716,11 @@ function AccessTLSCard({ onChange }) {
   const [polling, setPolling] = useState(false);
   const [confirmUrl, setConfirmUrl] = useState("");   // set while an address change is verifying → the operator confirms it by opening the new address in a new tab (we can't auto-navigate safely: an unreachable new address would strand them, and a cross-origin reachability probe is blocked by our own CSP)
   const [confirmVerified, setConfirmVerified] = useState(true);   // false = the reachability gate FAILED-OPEN (revealed Confirm without proving the new address answers) → surface that so Confirm-appearing isn't mistaken for "reachable"
-  const [migrate, setMigrate] = useState(null);       // {until, newUrl} after a REBIND confirms elsewhere: THIS tab is on the old address, which stops serving when the node-migration grace ends → show a live countdown ribbon
   const [rpSwap, setRpSwap] = useState(null);         // unified reverse-proxy swap in progress: {port_changed,url_changed,path_changed,old_url,new_url,old_host,old_port,new_host,new_port,nonce} — panel serves old+new ports/paths and advertises the new url as a node candidate until the operator re-points the proxy and confirms (no timeout). Any combination of port/url/path.
   const [rpArmIn, setRpArmIn] = useState(0);          // seconds until the rp-swap Confirm button ARMS — a deliberate 60s hold (with a confirm modal) so the operator can't reflexively drop the old address before verifying the proxy actually serves the new one
   const [staleWarn, setStaleWarn] = useState(false);  // the server's SAVED address settings changed out from under this open form (a rollback / boot reconcile / another tab) WHILE the operator has unsaved edits → warn before they apply a now-stale value
-  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
-  useEffect(() => { if (!migrate) return; const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000); return () => clearInterval(t); }, [migrate]);
+  // The "you're on a previous panel address" ribbon is GLOBAL (OldAddrRibbon) + server-driven — it shows on every
+  // screen and survives reload, so there's no per-card migration ribbon/state here.
   const rollbackRef = useRef(null);            // the panel address that was live BEFORE an apply → restore the SAVED url on revert (the server rolls back the bind/cert, but the saved url is still the new one → it'd advertise a dead address to nodes)
   const didPanelRef = useRef(false);           // whether THIS save applied a panel change / a sub change — the shared /api/access/status keeps the LAST result of each, so a sub-only save must ignore a stale panel "saved" (and vice-versa)
   const didSubRef = useRef(false);
@@ -7803,14 +7803,12 @@ function AccessTLSCard({ onChange }) {
             if (dp && (p.state === "reverted" || p.state === "failed")) openModal(html`<${ConfirmSheet} title="Address change not confirmed" warn=${true} confirmLabel="OK"
               body=${(p.message && p.state === "failed") ? p.message : "The new address wasn’t confirmed, so the panel kept the current one. Check its DNS / Cloudflare / firewall / port, then try again."}/>`);
           } else {
-            const rbPrev = rollbackRef.current;   // the address we changed AWAY from (this tab's own) → the ribbon's Cancel reverts to it
             rollbackRef.current = null;
             const gs = +(p.grace_secs || 0), nu = p.new_url || "";
             if (dp && p.state === "saved") {
-              if (gs > 0) {   // a REBIND: this tab is on the OLD address, which stops serving after the migration grace
-                setMigrate({ until: Math.floor(Date.now() / 1000) + gs, newUrl: nu, prev: rbPrev });   // anchor the deadline to THIS browser's clock (server sent live remaining secs) → the countdown is correct regardless of clock skew; prev = revert target for Cancel
+              if (gs > 0) {   // a REBIND: this tab may now be on the OLD address — the GLOBAL "previous address" ribbon (top of every screen) guides the operator across + counts down
                 openModal(html`<${ConfirmSheet} title="New address confirmed" confirmLabel="Got it"
-                  body=${html`The panel is now reached at <b>${nu || "the new address"}</b>. This tab is on the <b>previous</b> address — it keeps working while nodes move over, then stops responding. Switch to the new address when you’re ready.`}/>`);
+                  body=${html`The panel is now reached at <b>${nu || "the new address"}</b>. If this tab is on the previous address, the ribbon at the top takes you across — it keeps working while nodes move over, then stops. Switch when you’re ready.`}/>`);
               } else {        // url-only / cert-only: same bind → this address keeps working, just verified the new URL
                 openModal(html`<${ConfirmSheet} title="Panel address confirmed" confirmLabel="Done"
                   body=${html`Verified — the panel is now reached at <b>${nu || "the new address"}</b>.`}/>`);
@@ -7861,7 +7859,7 @@ function AccessTLSCard({ onChange }) {
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
   const cooldown = Store.accessCooldown || { secs: 0, reason: "" };
   const cooldownActive = (cooldown.secs || 0) > 0;                          // Save is locked on EVERY tab during a change
-  const showCooldownNotice = cooldownActive && !migrate && !confirmUrl && !rpSwap && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
+  const showCooldownNotice = cooldownActive && !confirmUrl && !rpSwap && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
 
   const ipField = (host, setHost, withLocal, bad) => {
     const val = presets.has(host) ? host : "__custom";
@@ -7914,7 +7912,7 @@ function AccessTLSCard({ onChange }) {
   // the fields would otherwise ride along on the next Save (exactly the phantom-port-change trap). If the form is
   // CLEAN we adopt the true values; if the operator has UNSAVED edits we warn instead of clobbering them.
   useEffect(() => {
-    if (busy || polling || rpSwap || confirmUrl || migrate) return;   // an in-flight change owns the form
+    if (busy || polling || rpSwap || confirmUrl) return;   // an in-flight change owns the form
     if (!((Store.panelSettings || {}).access || {}).panel) return;    // store not populated yet → never resync to blanks
     if (JSON.stringify(_serverBaseline()) === JSON.stringify(orig)) { if (staleWarn) setStaleWarn(false); return; }
     if (!dirty()) { resyncFromStore(); if (staleWarn) setStaleWarn(false); }
@@ -7942,7 +7940,6 @@ function AccessTLSCard({ onChange }) {
   const saveAndApply = async () => {
     if (blocked) return setMsg({ ok: false, t: "Fix the highlighted port first." });
     if (!dirty()) return;
-    setMigrate(null);   // a new change starts → clear any lingering "old address goes down" ribbon from a prior one
     // Trading ports between panel and sub can't be done in one shot on a single host — one must free its port
     // before the other can take it. Guide the operator through two saves instead of attempting a doomed order.
     if (subWantsPanelLive() || panelWantsSubLive()) {
@@ -8021,27 +8018,6 @@ function AccessTLSCard({ onChange }) {
   // Runs after each render; the parent only re-renders when a DISPLAYED bit actually changes (see onAccess).
   useEffect(() => { if (onChange) onChange({ dirty: dirty() && !blocked && !cooldownActive, busy: busy || polling, msg, run: saveAndApply }); });
 
-  // Cancel the in-flight move and stay on THIS (still-serving) address — the automatic version of manually
-  // typing the old address back into the form. prev = the address we changed away from (this tab's own); the
-  // server re-adopts the live grace listener (immediate, no confirm). Only offered while it's still serving.
-  const cancelMove = () => {
-    const prev = migrate && migrate.prev; if (!prev) return;
-    const dest = migrate.newUrl || "the new address";
-    openModal(html`<${ConfirmSheet} title="Cancel the move?" confirmLabel="Cancel the move" cancelLabel="Continue moving"
-      body=${html`The panel will stay on <b>this</b> address and stop moving to <b>${dest}</b>. It's still serving here during the migration grace, so this takes effect immediately — nodes stay put and the countdown ends.`}
-      onConfirm=${async () => {
-        setMigrate(null);   // stop the countdown at once
-        try {
-          // One dedicated call that reverses the just-confirmed change INSTANTLY (re-adopt the old listener for a
-          // port change, or restore the old domain on the live dual-SAN cert for a domain change) — no confirm.
-          const r = await api.post("/api/access/cancel", { url: prev.url, host: prev.host, port: prev.port });
-          if (!r || r.ok === false) { toast((r && r.error) || "Couldn't cancel the move.", "err"); await resync(); return; }
-          await resync();
-          setMsg({ ok: true, t: "Move cancelled — the panel stays on this address." });   // replace the stale "panel now on …" line
-          toast("Move cancelled — the panel stays on this address.", "ok");
-        } catch (_) { toast("Couldn't cancel the move.", "err"); }
-      }}/>`);
-  };
   // Abort a change that's still VERIFYING (not yet confirmed) — the server drops the un-confirmed listener /
   // restores the cert and rolls the saved url back. The only other option during verifying is to confirm it.
   const cancelChange = async () => {
@@ -8112,15 +8088,7 @@ function AccessTLSCard({ onChange }) {
     } catch (_) { toast("Couldn't revert.", "err"); setBusy(false); }
   };
   let _confHost = confirmUrl; try { _confHost = new URL(confirmUrl).host; } catch (_) {}
-  const _migLeft = migrate ? Math.max(0, migrate.until - nowSec) : 0;
   return html`<div class="card acctls">
-    ${migrate ? html`<div class="addr-migrate-ribbon" role="alert">
-      ${_migLeft > 0
-        ? html`<span><b>This address stops responding in ${_migLeft}s.</b> The panel has moved to <a href=${migrate.newUrl}>${migrate.newUrl}</a> — switch over now.</span>`
-        : html`<span><b>This address is no longer served.</b> The panel is now at <a href=${migrate.newUrl}>${migrate.newUrl}</a>.</span>`}
-      <a class="btn btn-mini" href=${migrate.newUrl}>Go to the new address ↗</a>
-      ${migrate.prev && _migLeft > 0 ? html`<button class="btn btn-mini addr-ribbon-cancel" onClick=${cancelMove}>Cancel the move</button>` : null}
-    </div>` : null}
     ${rpSwap ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
       <b>Finish the reverse-proxy switch.</b> The panel is serving the old <b>and</b> new setup at once — each node keeps its current address and only moves once the old one stops. Update your reverse proxy to match ${rpSwap.port_changed && rpSwap.url_changed ? "(both changes below)" : ""}, then confirm. Nothing goes down in between.
       <ul style="margin:8px 0 2px;padding-left:18px">
@@ -10203,19 +10171,25 @@ function _parseAddr(rawUrl) {
   let u; try { u = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw); } catch (_) { return null; }
   const host = u.hostname, scheme = (u.protocol || "https:").replace(":", "");
   if (!host || host === "0.0.0.0") return null;
-  return { host, scheme, port: _effPort(scheme, u.port) };
+  return { host, scheme, port: _effPort(scheme, u.port), base: (u.pathname || "").replace(/\/+$/, "") };
 }
-function oldAddrCurrent() {   // → the current canonical addr {host,scheme,port,label} if THIS tab is on a different one, else null
+function oldAddrCurrent() {   // → the current canonical addr {host,scheme,port,base,label} if THIS tab is on a different one, else null
   const c = _parseAddr(Store.panelPublicUrl); if (!c) return null;
   const scheme = location.protocol.replace(":", "");
-  if (location.hostname === c.host && _effPort(scheme, location.port) === c.port) return null;   // on the current address
+  const hereBase = location.pathname.replace(/\/+$/, "");
+  if (location.hostname === c.host && _effPort(scheme, location.port) === c.port && hereBase === c.base) return null;   // on the current address (host + port + mount PATH)
   const showPort = !((c.scheme === "https" && c.port === "443") || (c.scheme === "http" && c.port === "80"));
-  return { ...c, label: c.scheme + "://" + c.host + (showPort ? ":" + c.port : "") };
+  return { ...c, label: c.scheme + "://" + c.host + (showPort ? ":" + c.port : "") + c.base };
 }
+// The ONE address-migration ribbon — global, on every screen, server-driven so it survives navigation + reload.
+// Shows a live countdown while a confirmed migration is still gracing out (panel_migrate_until), then falls back to
+// "you're on a previous address" until this tab moves to the current one.
 function OldAddrRibbon() {
   useStore();
-  const migrateUp = typeof document !== "undefined" && !!document.querySelector(".addr-migrate-ribbon");
-  const c = migrateUp ? null : oldAddrCurrent();
+  const c = oldAddrCurrent();
+  const until = c ? +(Store.panelMigrateUntil || 0) : 0;
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => { if (!until) return; const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000); return () => clearInterval(t); }, [until]);
   const ref = useRef(null);
   useEffect(() => {
     document.body.classList.toggle("has-oldaddr", !!c);
@@ -10223,8 +10197,11 @@ function OldAddrRibbon() {
     return () => document.body.classList.remove("has-oldaddr");
   });
   if (!c) return null;
+  const left = until ? Math.max(0, until - now) : 0;
   return html`<div class="addr-old-ribbon" ref=${ref} role="status">
-    <span><b>You're on a previous panel address.</b> The panel is now reached at <a href=${c.label}>${c.label}</a> — this address will stop working. Switch over when you're ready.</span>
+    <span>${left > 0
+      ? html`<b>This address stops responding in ${left}s.</b> The panel is now reached at <a href=${c.label}>${c.label}</a> — switch over now.`
+      : html`<b>You're on a previous panel address.</b> The panel is now reached at <a href=${c.label}>${c.label}</a> — this address will stop working. Switch over when you're ready.`}</span>
     <a class="btn btn-mini" href=${c.label}>Go to the current address ↗</a>
   </div>`;
 }

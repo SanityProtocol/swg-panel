@@ -4301,6 +4301,7 @@ def api(method, path, qs, body, deps):
             "versions": VERSIONS,
             "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps)},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
+            "panel_migrate_until": int((_APPLY["status"] or {}).get("grace_until") or 0),   # a confirmed migration still gracing out → the "previous address" ribbon shows a live countdown (absolute epoch; 0 = none)
             "access_cooldown": (lambda cd: {"secs": cd[0], "reason": cd[1]})(_access_cooldown()),   # while a change is verifying/gracing → Access&TLS disables Save + shows the one-at-a-time cooldown
 
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
