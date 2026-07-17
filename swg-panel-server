@@ -1224,7 +1224,11 @@ def _apply_redirect_url(url, port, nonce):
         pn = 443
     default = 443 if scheme == "https" else 80
     netloc = host if pn == default else ("[%s]:%d" % (host, pn) if ":" in host else "%s:%d" % (host, pn))
-    return "%s://%s%s/?__apply=%s" % (scheme, netloc, PANEL_BASE, nonce)
+    try:                                          # the mount base = the URL's OWN path (== SWG_PANEL_BASE for a bind
+        base = urllib.parse.urlparse(s if "://" in s else "https://" + s).path.rstrip("/")   # change; the NEW base for a
+    except Exception:                             # path change, which the apply dual-serves so this lands). Land on it so
+        base = PANEL_BASE                         # the SPA (served ONLY under the base) loads and can POST the confirm.
+    return "%s://%s%s/?__apply=%s" % (scheme, netloc, base, nonce)
 
 
 def _url_host(url):
@@ -4654,11 +4658,18 @@ def api(method, path, qs, body, deps):
             # The public URL (the address everyone dials) changed, but the bind + cert didn't. VERIFY the new URL
             # actually reaches THIS panel before adopting it and telling nodes to dial it — confirm on the same
             # listener, reached via the new URL. On timeout the URL is left unadopted (_CONFIRMED_URL stays frozen),
-            # so a wrong public URL can neither strand the operator nor misdirect nodes.
+            # so a wrong public URL can neither strand the operator nor misdirect nodes. If the URL's PATH (the mount
+            # base) changed, this is also a mount-base migration — dual-serve the NEW base NOW so the confirm (browser
+            # opens the new path) reaches it, then make it canonical on confirm (keeping the old base through a grace).
+            new_base = urllib.parse.urlparse(new_pub if "://" in new_pub else "https://" + new_pub).path.rstrip("/")
+            old_base = PANEL_BASE
             with _APPLY["lock"]:
                 if _APPLY["pending"] is not None:
                     return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
-                nonce, redirect, deadline = _arm_pending(deps, lid, lid, cur["host"], cur["port"], d_url, kind="url-only")
+                if new_base != old_base:
+                    globals()["_ALT_BASE"] = new_base    # dual-serve the new mount path immediately so confirm + node syncs on it reach this panel
+                nonce, redirect, deadline = _arm_pending(deps, lid, lid, cur["host"], cur["port"], d_url,
+                                                         kind="url-only", old_base=old_base, new_base=new_base)
             return 200, {"ok": True, "applied": False, "nonce": nonce, "host": cur["host"], "port": cur["port"],
                          "expires": deadline, "redirect": redirect}
         with _APPLY["lock"]:
@@ -4717,6 +4728,20 @@ def api(method, path, qs, body, deps):
                 # keep the OLD listener alive for a grace window so ONLINE nodes sync once on the old address and
                 # auto-repoint to the new one before it's dropped (instead of orphaning every node immediately)
                 _drop_listener_later(pend["old_lid"], NODE_MIGRATE_GRACE)
+                _grace_until = int(time.time()) + NODE_MIGRATE_GRACE
+            _ob, _nb = pend.get("old_base"), pend.get("new_base")
+            if _ob is not None and _nb is not None and _nb != _ob:
+                # A direct-TLS mount-PATH change: PROVE the new path serves — this confirm arrived under the new base
+                # (the SPA opened the new url, so its __apply call came in on the new mount base). Make it canonical and
+                # keep the OLD base alive through the node-migration grace (the phasing-out ribbon) before dropping it.
+                _mb = getattr(_REQ, "matched_base", PANEL_BASE)
+                if _mb != _nb:
+                    return 409, {"ok": False, "code": "not_on_new_path",
+                                 "error": "the confirm didn't arrive on the new path %s (it came in on %s) — open the new address and try again" % (_nb or "/", _mb or "/")}
+                globals()["PANEL_BASE"] = _nb
+                globals()["_ALT_BASE"] = _ob                       # keep the OLD path serving through the grace so open tabs + nodes migrate
+                _netctl_enqueue(deps, "set-base", ["panel", _nb])  # persist SWG_PANEL_BASE for the next restart
+                _drop_alt_base_later(NODE_MIGRATE_GRACE)
                 _grace_until = int(time.time()) + NODE_MIGRATE_GRACE
             nd, od = pend.get("new_domain"), pend.get("old_domain")
             # A pure DOMAIN change (same bind) served a dual-SAN cert (new+old) during verifying. Keep it through
@@ -8894,7 +8919,10 @@ def _apply_timeout(nonce, deps, reason="the new address didn't confirm in time �
             LISTENERS.remove(pend["new_lid"])   # rebind: drop the un-confirmed listener (cert-only/url-only kept the same one — removing it would kill the panel)
         nd = pend.get("new_domain")
         _flip = pend.get("flip_to_tls")         # a reverted reverse-proxy→direct-TLS flip → roll the saved mode back too
+        _nb = pend.get("new_base")              # a reverted direct-TLS path change → stop dual-serving the new base
         oh, op = pend.get("old_host"), pend.get("old_port")
+        if _nb is not None and _ALT_BASE == _nb:
+            globals()["_ALT_BASE"] = ""
         _APPLY["pending"] = None
     _apply_status("reverted", reason)
     if _flip:
@@ -8980,7 +9008,7 @@ def _gate_reachable(nonce, deps, url, redirect, host, port):
     threading.Timer(APPLY_TIMEOUT + 1, _apply_timeout, args=(nonce, deps)).start()
 
 
-def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_domain="", kind="rebind", flip_to_tls=False):
+def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_domain="", kind="rebind", flip_to_tls=False, old_base=None, new_base=None):
     """Register the freshly-bound listener as the pending change, then run the reachability gate (which reveals
     the confirm redirect + arms the revert timer once the new front door answers). Caller holds _APPLY['lock'].
     old/new_domain drive the cert commit/revert. kind="cert-only" is a same-bind domain change (no new listener):
@@ -8994,7 +9022,8 @@ def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_dom
                          "host": host, "port": port, "deadline": deadline,
                          "old_host": (_old._swg["host"] if _old else None), "old_port": (_old._swg["port"] if _old else None),
                          "old_domain": old_domain, "new_domain": new_domain, "kind": kind, "gate": "checking",
-                         "flip_to_tls": flip_to_tls}   # reverse-proxy→direct-TLS: on confirm, persist the cert env (HTTPS survives a restart)
+                         "flip_to_tls": flip_to_tls,   # reverse-proxy→direct-TLS: on confirm, persist the cert env (HTTPS survives a restart)
+                         "old_base": old_base, "new_base": new_base}   # direct-TLS path change: on confirm, make new_base canonical + grace out old_base
     # Don't offer Confirm yet (no redirect exposed): the gate probes the new front door first and only then
     # flips to "verifying" with the redirect. The revert timer is armed by the gate, when the confirm window opens.
     _apply_status("checking", "checking %s:%d is reachable before you confirm" % (host, port),
