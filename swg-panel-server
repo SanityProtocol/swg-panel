@@ -1534,6 +1534,16 @@ def _seed_confirmed_url_at_boot(deps):
     bu = (blessed.get("url") if isinstance(blessed, dict) else None) or ""
     if bu:
         globals()["_CONFIRMED_URL"] = str(bu)
+        if IN_DOCKER:
+            # Docker restart-safety: a base migration persists PANEL_BASE to .env but does NOT recreate the
+            # container (set-base stays zero-downtime to preserve the grace dual-serve), so the RUNNING container
+            # keeps its creation-time SWG_PANEL_BASE. A plain `docker restart` / host reboot (restart:unless-stopped)
+            # would then re-init PANEL_BASE from that STALE env and serve the OLD base — stranding nodes that already
+            # moved to the new one. The blessed URL is the confirmed truth and lives in the mounted state volume, so
+            # derive the served mount base from IT. (Bare-metal needs none of this: the 12-base drop-in makes the env
+            # match blessed across a restart.)
+            with contextlib.suppress(Exception):
+                globals()["PANEL_BASE"] = urlparse(str(bu) if "://" in str(bu) else "https://" + str(bu)).path.rstrip("/")
         _reconcile_saved_ahead(deps, str(bu))
         return
     _reconcile_saved_ahead(deps, None)                    # bootstrap: fix any provably-ahead port/path first
