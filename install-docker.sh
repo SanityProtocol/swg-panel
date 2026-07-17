@@ -1059,7 +1059,7 @@ mkdir -p "$PREFIX$INSTALL_DIR"
 cp -a "$SRC/docker-compose.yml" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
 if $BUILD; then
   for f in Dockerfile Dockerfile.node Dockerfile.turn .dockerignore VERSION \
-           swg-panel-server swg-agent swg-noded swg-sub sub.html sub.js sub.css \
+           swg-panel-server swg-agent swg-noded swg-sub swg-passwd sub.html sub.js sub.css \
            index.html app.css app.js reconcile.js turn-artifacts.js; do
     [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
   done
