@@ -58,6 +58,13 @@ TLS_KEY    = os.environ.get("SWG_PANEL_TLS_KEY", "")
 _ETC_DIR     = os.path.dirname(FLEET_PATH) or "/etc/swg-panel"
 MANAGED_CERT = TLS_CERT or os.path.join(_ETC_DIR, "tls", "fullchain.pem")
 MANAGED_KEY  = TLS_KEY  or os.path.join(_ETC_DIR, "tls", "key.pem")
+# The INTERNAL loopback interface for co-located nodes: always PLAIN HTTP on 127.0.0.1 — loopback has no network
+# adversary, so it never needs (and can't get a valid cert for) TLS. When the public bind already IS a
+# loopback-reachable HTTP listener (reverse proxy), that doubles as the internal one. When the panel serves its own
+# TLS (direct-TLS) or binds a specific public IP, a DEDICATED 127.0.0.1:<LOCAL_PORT> HTTP listener is added so a
+# co-located node keeps a plain-HTTP loopback endpoint regardless of the public TLS posture. 0 = not configured.
+LOCAL_PORT = int(os.environ.get("SWG_PANEL_LOCAL_PORT", "0") or 0)
+_INTERNAL_LID = None   # listener id of the dedicated internal loopback-HTTP listener, when one is bound
 # TLS expiry watch: the container's acme.sh --cron renewal silences its own failures, so a stalled renewal is
 # invisible until the cert expires and the whole fleet's node-sync fails the TLS pin (goes dark). The panel
 # instead watches its OWN cert from disk and surfaces days-left in state, warning loudly before expiry — works
@@ -1296,22 +1303,49 @@ def _panel_public_url(deps):
     pinned/CA identity (a MITM can't redirect a pinned node)."""
     return _CONFIRMED_URL if _CONFIRMED_URL is not None else _compute_public_url(deps)
 
+def _srv_is_loopback_http(srv):
+    """True iff `srv` (a live listener) serves plain HTTP on a loopback-reachable bind (127.0.0.1 / 0.0.0.0 / ::) —
+    i.e. a co-located node can dial it directly on 127.0.0.1 with plain HTTP, so no dedicated internal listener is
+    needed. HTTPS (a cert) or a bind that doesn't cover loopback → False."""
+    if srv is None:
+        return False
+    m = getattr(srv, "_swg", {})
+    if m.get("cert"):
+        return False
+    host = (str(m.get("host") or "")).strip().lower().strip("[]")
+    return host in ("", "0.0.0.0", "::", "::1") or host.startswith("127.")
+
+
+def _ensure_internal_listener():
+    """Guarantee a plain-HTTP loopback endpoint for co-located nodes, independent of the public TLS posture. No-op
+    when the primary already IS one (reverse proxy: the loopback-HTTP bind nginx fronts doubles as the internal one)
+    or when no internal port is configured; otherwise bind 127.0.0.1:<LOCAL_PORT> plain HTTP once. Idempotent."""
+    global _INTERNAL_LID
+    if _INTERNAL_LID is not None and LISTENERS.get(_INTERNAL_LID) is not None:
+        return _INTERNAL_LID
+    _lid, srv = LISTENERS.primary()
+    if _srv_is_loopback_http(srv) or not LOCAL_PORT:
+        return None
+    with contextlib.suppress(OSError):
+        _INTERNAL_LID = LISTENERS.add("127.0.0.1", LOCAL_PORT, None, None)   # plain HTTP, loopback only — the internal interface
+        print("internal loopback endpoint on http://127.0.0.1:%d (co-located nodes)" % LOCAL_PORT, flush=True)
+        return _INTERNAL_LID
+    return None
+
+
 def _panel_local_port():
-    """The panel's LIVE internal listen port — sent to a CO-LOCATED node dialing loopback (127.0.0.1, an independent
-    local link) so it follows a listen-port change: it keeps its host + path and tracks this port. During a two-port
-    swap primary() is already the NEW port, so a loopback node re-points while both ports are still up — no gap.
-    Returned ONLY when a co-located node can ACTUALLY reach the panel on http://127.0.0.1:<port>: the primary listener
-    is bound loopback/any (not a specific PUBLIC IP) AND serves plain HTTP (no cert). When the panel is direct-TLS
-    (its own HTTPS) or bound to one public IP, loopback isn't reachable/valid — so we return None, and the co-located
-    node learns the PUBLIC url instead (follows the panel to its public hostname). None if there's no listener."""
-    with contextlib.suppress(Exception):
-        _lid, _srv = LISTENERS.primary()
-        if _srv is not None:
-            m = _srv._swg
-            host = (str(m.get("host") or "")).strip().lower().strip("[]")
-            loopback_reachable = host in ("", "0.0.0.0", "::", "::1") or host.startswith("127.")
-            if loopback_reachable and not m.get("cert"):   # a co-located node dials http://127.0.0.1:<port> — needs a loopback-reachable bind + plain HTTP
-                return int(m.get("port") or 0) or None
+    """The port a CO-LOCATED node dials on 127.0.0.1 with PLAIN HTTP — loopback carries no network adversary, so the
+    internal interface never uses TLS. It's the dedicated internal listener's port when one is bound (direct-TLS), or
+    the primary's when the primary is itself loopback-reachable HTTP (reverse proxy). None when neither exists (the
+    panel serves only its own TLS and no internal listener is configured) — then a co-located node has no loopback
+    endpoint and falls back to the public URL. Sent every sync so a co-located node tracks a listen-port change."""
+    if _INTERNAL_LID is not None:
+        s = LISTENERS.get(_INTERNAL_LID)
+        if s is not None:
+            return int(s._swg.get("port") or 0) or None
+    _lid, srv = LISTENERS.primary()
+    if _srv_is_loopback_http(srv):
+        return int(srv._swg.get("port") or 0) or None
     return None
 
 
@@ -9395,6 +9429,7 @@ def main():
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
     LISTENERS.add(BIND_HOST, BIND_PORT, TLS_CERT if scheme == "https" else None,
                   TLS_KEY if scheme == "https" else None, primary=True)
+    _ensure_internal_listener()   # add a plain-HTTP 127.0.0.1:<LOCAL_PORT> endpoint for co-located nodes when the primary is its own TLS / a specific public IP
     print(f"swg-panel-server on {scheme}://{BIND_HOST}:{BIND_PORT}{auth_note}")
     with contextlib.suppress(KeyboardInterrupt):
         threading.Event().wait()             # the listeners serve in their own threads; block here forever
