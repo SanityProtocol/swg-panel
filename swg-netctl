@@ -540,9 +540,79 @@ def do_drop_cert(service, domain):
     return "stopped auto-renewing %s" % (domain,)
 
 
+_HOST_RE = re.compile(r"^[A-Za-z0-9.:_-]+$")
+
+
+def _v_host(s):
+    s = (s or "").strip()
+    if not s or len(s) > 253 or not _HOST_RE.match(s):
+        raise Reject("bad domain %r" % (s,))
+    return s
+
+
+def _update_conf(updates):
+    """Rewrite install.conf, replacing the given KEY=value pairs in place (preserving comments, order and every
+    key not mentioned) and appending any that were absent. Atomic, 0600 (the file also holds the CF token)."""
+    try:
+        with open(CONF) as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    out, seen = [], set()
+    for line in lines:
+        s = line.strip()
+        if s and not s.startswith("#") and "=" in s:
+            k = s.partition("=")[0].strip()
+            if k in updates:
+                out.append("%s=%s" % (k, updates[k]))
+                seen.add(k)
+                continue
+        out.append(line)
+    for k, val in updates.items():
+        if k not in seen:
+            out.append("%s=%s" % (k, val))
+    body = "\n".join(out).rstrip("\n") + "\n"
+    if DRYRUN:
+        log("would write %s:\n%s" % (CONF, body))
+        return
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    tmp = CONF + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(body)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CONF)
+
+
+def do_persist_url(domain, base, port, serve, tls):
+    """Keep install.conf's public URL + serve/TLS mode in step with a CONFIRMED Access address-migration, so a
+    later re-install or bare→docker convert reproduces the CURRENT address — not the pre-migration one captured
+    at install time. install.conf is otherwise written ONLY by install-host.sh, so without this a migrated panel
+    silently reverts its URL on any convert/re-install and strands its nodes. Reverse-proxy keeps an existing
+    nginx/caddy/skip serve flavour (else 'nginx') and forces TLS_MODE=none; direct-TLS sets SERVE_MODE=internal."""
+    dom = _v_host(domain)
+    b = v_base(base)                                   # "" (root) or "/panel"
+    p = v_port(port) if str(port).strip() else ""
+    serve = (serve or "").strip()
+    cfg = load_conf()
+    if serve == "reverse-proxy":
+        sm = cfg.get("SERVE_MODE", "")
+        serve_mode = sm if sm in ("nginx", "caddy", "skip") else "nginx"
+        tls_mode = "none"
+    else:
+        serve_mode = "internal"
+        tls_mode = (tls or "").strip() or cfg.get("TLS_MODE", "selfsigned")
+    updates = {"PANEL_DOMAIN": dom, "PANEL_BASE": b, "SERVE_MODE": serve_mode, "TLS_MODE": tls_mode}
+    if p:
+        updates["PORT"] = str(p)
+    _update_conf(updates)
+    return "synced install.conf → domain=%s base=%s port=%s serve=%s tls=%s" % (
+        dom, b or "/", p or "-", serve_mode, tls_mode)
+
+
 VERBS = {
     "set-listen": (do_set_listen, 3),
     "set-base": (do_set_base, 2),
+    "persist-url": (do_persist_url, 5),   # keep install.conf's URL+serve/TLS current after a confirmed migration
     "set-cert-env": (do_set_cert_env, 2),       # panel direct-TLS on|off (the durable half of a reverse-proxy↔TLS flip)
     "set-local-port": (do_set_local_port, 2),   # panel internal loopback-HTTP port (co-located nodes, direct-TLS)
     "issue-cert": (do_issue_cert, (2, 3)),      # optional 3rd arg: reload | noreload (live-apply uses noreload)

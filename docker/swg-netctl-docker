@@ -137,6 +137,16 @@ def _handle(verb, args):
         ok, msg = _compose("up", "-d", "--no-deps", "swg-panel")
         return (ok, "flipped panel → TLS=%s bind %s:%s (recreated)" % (tls or "none", host, port)) if ok \
             else (False, "flip .env persisted but recreate failed: %s" % msg)
+    if verb == "persist-url":
+        # Keep .env's PANEL_DOMAIN in step with a CONFIRMED address-migration. The flip verbs already keep
+        # PANEL_PORT/BIND/BASE/LOCAL_PORT/TLS current, but nothing else persists the DOMAIN — so without this a
+        # docker→bare-metal convert (or an in-container cert reissue) would resurrect the pre-migration domain.
+        # args: <domain> <base> <port> <serve> <tls> (base/port/tls already carried by their own verbs).
+        domain = (args[0] if args else "").strip()
+        if not domain:
+            return True, "persist-url: no domain (no-op)"
+        _set_env({"PANEL_DOMAIN": domain})
+        return True, "persisted PANEL_DOMAIN=%s in .env" % domain
     return True, "no-op (%s handled in-container)" % verb   # cert verbs etc.
 
 

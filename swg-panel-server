@@ -1438,6 +1438,28 @@ def _confirm_panel_url(deps):
     baseline. (Boot uses _seed_confirmed_url_at_boot instead — it trusts the blessed file, not raw settings.)"""
     globals()["_CONFIRMED_URL"] = _compute_public_url(deps)
     _write_bless(deps)
+    _persist_install_conf(deps)
+
+
+def _persist_install_conf(deps):
+    """Push the just-confirmed canonical URL + serve/TLS mode into the DURABLE install source (bare-metal
+    install.conf via swg-netctl; docker .env's PANEL_DOMAIN via swg-netctl-docker), so a later re-install or a
+    cross-method convert reproduces the CURRENT address rather than the one captured at first install. Without
+    this, install.conf/.env keep the pre-migration address forever and a convert/re-install strands the nodes.
+    Best-effort — a missing root helper (dev rig) is a silent no-op, exactly like the other durable persists."""
+    with contextlib.suppress(Exception):
+        url = _CONFIRMED_URL or _compute_public_url(deps)
+        if not url:
+            return
+        u = urlparse(url if "://" in url else "https://" + url)
+        domain = (u.hostname or "").strip()
+        if not domain:
+            return
+        base = (u.path or "").rstrip("/")
+        mode = str((((deps.get("panel_settings") or {}).get("access") or {}).get("tls") or {}).get("mode") or "")
+        serve = "reverse-proxy" if mode in ("", "skip") else "internal"
+        tls_mode = "" if serve == "reverse-proxy" else mode
+        _netctl_enqueue(deps, "persist-url", [domain, base, str(BIND_PORT or ""), serve, tls_mode])
 
 
 def _infer_tls_mode(deps):

@@ -7,9 +7,11 @@
 #   from/to          docker | baremetal
 #   role             node | host | master
 #
-# Status: NODE  docker → bare-metal is automated. The reverse (bare-metal → docker) and the PANEL
-# (host, and the panel half of master) are not yet — those exit non-zero so the caller falls back to
-# "keep and re-install" or a manual uninstall+install.
+# Status: all four directions are automated — node and panel, each way (docker ↔ bare-metal), plus master
+# (panel + co-located node) as a unit. A reverse-proxy panel converts to docker plain-HTTP-behind-proxy
+# (TLS=none + loopback binds) and back; identity/roster/nodes/cert/interfaces/turn-proxies are preserved.
+# NOTE: bare→docker reads the panel URL/base/TLS from /etc/swg-panel/install.conf — keep that file current
+# (an Access address-migration must update it, or the convert will resurrect the pre-migration address).
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 . "$SRC/lib/common.sh"   # shared helpers (dl_turn_bin + validators)
