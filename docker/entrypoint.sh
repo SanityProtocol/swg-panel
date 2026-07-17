@@ -74,7 +74,13 @@ acme_install(){ acme_prune_stale
   --reloadcmd 'kill -HUP 1' >/dev/null 2>&1 \
   || log "WARNING: acme --install-cert failed — the panel may fall back to no/old cert"; }
 
-if [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -f "$SWG_PANEL_TLS_CERT" ]; then
+if [ "${TLS:-selfsigned}" = "none" ]; then
+  # Reverse-proxy: serve plain HTTP — and do so even if a cert is still on disk. A flip FROM direct-TLS→reverse-proxy
+  # recreates the container with TLS=none but leaves the old cert in the persisted volume; without this the
+  # "cert already present wins" branch below would keep serving HTTPS and the flip to plain HTTP wouldn't take.
+  log "TLS=none — serving plain HTTP (login travels in the clear; use only behind a tunnel)"
+  unset SWG_PANEL_TLS_CERT SWG_PANEL_TLS_KEY
+elif [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -f "$SWG_PANEL_TLS_CERT" ]; then
   log "using the certificate already present at $SWG_PANEL_TLS_CERT (mounted / previously issued)"
 elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
   mkdir -p "$(dirname "$SWG_PANEL_TLS_CERT")" "$ACME_CFG"
