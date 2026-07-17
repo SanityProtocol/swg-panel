@@ -1204,10 +1204,12 @@ CA_DOMAIN_MODES = ("letsencrypt", "cloudflare", "cf15")   # a public CA validate
 
 
 def _apply_redirect_url(url, port, nonce):
-    """The confirm redirect — it MUST land on the freshly-bound listener. Built from the public URL's scheme +
-    host but the NEW listen port, so a port change is actually reachable (the old code kept the URL's default
-    port → the browser hit the OLD listener → 'confirm must be made on the new address'). A domain-only change
-    keeps the port (== default → no ':port' added), so it's unchanged. None if the URL has no usable host."""
+    """The confirm redirect — it MUST land on the freshly-bound listener, AT the panel's mount base. Built from the
+    public URL's scheme + host but the NEW listen port, so a port change is actually reachable (the old code kept the
+    URL's default port → the browser hit the OLD listener → 'confirm must be made on the new address'). The mount base
+    (SWG_PANEL_BASE, e.g. /test) is included so the SPA — which serves ONLY under the base and is what reads __apply to
+    POST the confirm — actually loads; a bare '/' 404s under a mounted panel and the confirm never fires. A domain-only
+    change keeps the port (== default → no ':port' added). None if the URL has no usable host."""
     s = (str(url or "")).strip()
     if not s:
         return None
@@ -1222,7 +1224,7 @@ def _apply_redirect_url(url, port, nonce):
         pn = 443
     default = 443 if scheme == "https" else 80
     netloc = host if pn == default else ("[%s]:%d" % (host, pn) if ":" in host else "%s:%d" % (host, pn))
-    return "%s://%s/?__apply=%s" % (scheme, netloc, nonce)
+    return "%s://%s%s/?__apply=%s" % (scheme, netloc, PANEL_BASE, nonce)
 
 
 def _url_host(url):
