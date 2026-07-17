@@ -1411,6 +1411,13 @@ def _is_ip(host):
         return False
 
 
+def _is_loopback(host):
+    try:
+        return ipaddress.ip_address((host or "").strip()).is_loopback
+    except ValueError:
+        return (host or "").strip().lower() == "localhost"
+
+
 # Interfaces that are never sensible bind targets for the public panel/sub: the WireGuard/AmneziaWG peer
 # tunnels + mesh (wg*/awg*/swg_*), docker/bridge/veth virtuals, and tun/tap. Binding the public service to
 # one of these tunnel IPs (10.x on awg2, etc.) silently makes it unreachable — so they're filtered out.
@@ -1492,6 +1499,14 @@ def validate_access(incoming, current):
         elif mode == "cloudflare" and ep["port"] not in CF_HTTPS_PORTS:
             warnings.append("%s: if this panel is behind Cloudflare, port %d won't be reachable (CF connects to %s)."
                             % (name, ep["port"], ", ".join(map(str, sorted(CF_HTTPS_PORTS)))))
+
+    # direct TLS (this service terminates its own TLS, reached DIRECTLY) can't listen on loopback — it wouldn't be
+    # reachable from outside (Cloudflare/clients get a 521). Guard the panel here (always served); the SPA also blocks
+    # the sub (which it can gate on subscriptions being enabled). Loopback is only correct behind a reverse proxy.
+    if mode not in ("", "skip") and _is_loopback(panel["host"]):
+        errors.append("Panel: with direct TLS (mode “%s”) the panel is reached directly, so it can't listen on %s "
+                      "(loopback) — it wouldn't be reachable from outside (Cloudflare/clients get 521). Use 0.0.0.0 or "
+                      "a public IP. Loopback is only valid behind a reverse proxy (TLS mode “None”)." % (mode, panel["host"]))
 
     # panel and sub can't occupy the same (bind, port); 0.0.0.0 collides with everything on that port.
     def _collide(a, b):
@@ -4636,17 +4651,25 @@ def api(method, path, qs, body, deps):
         return 400, {"ok": False, "error": "the previous address is no longer serving — can't cancel instantly", "code": "not_cancelable"}
 
     if method == "POST" and path == "/api/access/confirm-proxy":
-        # The operator asserts their reverse proxy now points at the NEW port → drop the OLD listener. Valid only for
-        # a PURE port change (no public-url change): behind a reverse proxy there's no browser probe of the internal
-        # port, so the operator vouches. A swap that ALSO changes the public url must confirm via /confirm-url instead
-        # (browser proof of the new Host/path), which drops the old port too.
+        # Drop the OLD port on a PURE port change (no public-url change). The internal port isn't browser-reachable, so
+        # there's no new-tab probe — BUT the confirm request itself travels through the operator's proxy, so which
+        # LISTENER it arrives on PROVES which port the proxy is really upstreamed to. We only drop the old port if this
+        # confirm came in on the NEW listener; if it arrived on the OLD one the proxy is still on the old port, so
+        # dropping it would lock the operator out — refuse with a clear message instead. (A swap that also changes the
+        # public url confirms via /confirm-url — browser proof of the new Host/path — which drops the old port too.)
         with _APPLY["lock"]:
             pend = _APPLY["pending"]
             if not pend or pend.get("kind") != "rp-swap" or not pend.get("port_changed") or pend.get("url_changed"):
                 return 400, {"ok": False, "error": "no reverse-proxy port change is waiting to be confirmed", "code": "bad_request"}
-            old_lid, host, port = pend["old_lid"], pend["host"], pend["port"]
+            old_lid, new_lid = pend["old_lid"], pend["new_lid"]
+            host, port, old_port = pend["host"], pend["port"], pend.get("old_port")
+        if getattr(_REQ, "listener_id", None) != new_lid:
+            # this confirm arrived through the proxy on the OLD port → the proxy hasn't been re-pointed yet
+            return 409, {"ok": False, "code": "proxy_not_switched",
+                         "error": "your reverse proxy is still routing to the old port %s — point its upstream at %s:%d and reload it, then confirm (nothing was dropped)" % (old_port, host, port)}
+        with _APPLY["lock"]:
             _APPLY["pending"] = None
-        LISTENERS.remove(old_lid)                    # stop serving the old port — the proxy is on the new one now
+        LISTENERS.remove(old_lid)                    # PROVEN: the proxy is on the new port → stop serving the old one
         _apply_status("saved", "panel now on %s:%d" % (host, port))
         return 200, {"ok": True, "saved": True}
 
@@ -8807,7 +8830,9 @@ def _gate_reachable(nonce, deps, url, redirect, host, port):
         _dl = pend["deadline"]
     _msg = (("reachable — open %s:%d in a new tab to confirm" % (host, port)) if reached
             else ("couldn't verify %s:%d from here — open it in a new tab to confirm" % (host, port)))
-    _apply_status("verifying", _msg, nonce=nonce, redirect=redirect, host=host, port=port, expires=_dl)
+    # verified=False means the gate FAILED-OPEN (revealed Confirm without a reachability streak) → the SPA must warn
+    # the operator that Confirm appearing is NOT proof the new address answers, so a 52x on click isn't a surprise.
+    _apply_status("verifying", _msg, nonce=nonce, redirect=redirect, host=host, port=port, expires=_dl, verified=bool(reached))
     threading.Timer(APPLY_TIMEOUT + 1, _apply_timeout, args=(nonce, deps)).start()
 
 

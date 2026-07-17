@@ -7703,9 +7703,11 @@ function AccessTLSCard({ onChange }) {
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
   const [confirmUrl, setConfirmUrl] = useState("");   // set while an address change is verifying → the operator confirms it by opening the new address in a new tab (we can't auto-navigate safely: an unreachable new address would strand them, and a cross-origin reachability probe is blocked by our own CSP)
+  const [confirmVerified, setConfirmVerified] = useState(true);   // false = the reachability gate FAILED-OPEN (revealed Confirm without proving the new address answers) → surface that so Confirm-appearing isn't mistaken for "reachable"
   const [migrate, setMigrate] = useState(null);       // {until, newUrl} after a REBIND confirms elsewhere: THIS tab is on the old address, which stops serving when the node-migration grace ends → show a live countdown ribbon
   const [rpSwap, setRpSwap] = useState(null);         // unified reverse-proxy swap in progress: {port_changed,url_changed,path_changed,old_url,new_url,old_host,old_port,new_host,new_port,nonce} — panel serves old+new ports/paths and advertises the new url as a node candidate until the operator re-points the proxy and confirms (no timeout). Any combination of port/url/path.
   const [rpArmIn, setRpArmIn] = useState(0);          // seconds until the rp-swap Confirm button ARMS — a deliberate 60s hold (with a confirm modal) so the operator can't reflexively drop the old address before verifying the proxy actually serves the new one
+  const [staleWarn, setStaleWarn] = useState(false);  // the server's SAVED address settings changed out from under this open form (a rollback / boot reconcile / another tab) WHILE the operator has unsaved edits → warn before they apply a now-stale value
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => { if (!migrate) return; const t = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000); return () => clearInterval(t); }, [migrate]);
   const rollbackRef = useRef(null);            // the panel address that was live BEFORE an apply → restore the SAVED url on revert (the server rolls back the bind/cert, but the saved url is still the new one → it'd advertise a dead address to nodes)
@@ -7759,8 +7761,11 @@ function AccessTLSCard({ onChange }) {
         const dp = didPanelRef.current, ds = didSubRef.current;   // react ONLY to a service this save actually changed — the shared status keeps each one's LAST result, so it's stale for the other
         if (dp && p.state === "verifying" && p.redirect) {
           setConfirmUrl(p.redirect);   // show the confirm affordance (rendered in the card); the operator opens it to prove the new address is reachable
+          setConfirmVerified(p.verified !== false);   // false = the gate FAILED-OPEN (couldn't reach the new address) → Confirm is unverified, warn
           let h = p.redirect; try { h = new URL(p.redirect).host; } catch (_) {}
-          setMsg({ ok: true, t: "Confirming the new address (" + h + ") — open it in a new tab so it can reach this panel. It reverts on its own if it can't be reached." });
+          setMsg(p.verified === false
+            ? { ok: false, t: "Couldn't verify " + h + " answers yet — it may still be warming up. You can open it to confirm, but if it doesn't load, cancel (nothing is committed until it answers)." }
+            : { ok: true, t: "Confirming the new address (" + h + ") — open it in a new tab so it can reach this panel. It reverts on its own if it can't be reached." });
         } else {
           setConfirmUrl("");
           const parts = [];
@@ -7819,22 +7824,29 @@ function AccessTLSCard({ onChange }) {
   const pBad = cfMode && pPort && !CF_HTTPS_PORTS.includes(+pPort);
   const sBad = subsOn && cfMode && sPort && !CF_HTTPS_PORTS.includes(+sPort);
   const hard = mode === "cf15";                                   // cf15 origin certs ONLY work behind CF → block
-  const blocked = hard && (pBad || sBad);
+  // Direct TLS (not behind a proxy) → this service terminates its own TLS and is reached DIRECTLY, so a loopback
+  // listen IP isn't publicly reachable (Cloudflare/clients can't hit 127.0.0.1) → 521. Only valid behind a proxy.
+  const _isLoopback = (h) => /^(127\.\d|::1|localhost)/i.test((h || "").trim());
+  const pLoopbackDirect = !behindProxy && _isLoopback(pHost);
+  const sLoopbackDirect = subsOn && !behindProxy && _isLoopback(sHost);
+  const blocked = (hard && (pBad || sBad)) || pLoopbackDirect || sLoopbackDirect;
   // ONE-AT-A-TIME cooldown: while a previous address change is verifying or gracing out, Save is locked — the
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
   const cooldown = Store.accessCooldown || { secs: 0, reason: "" };
   const cooldownActive = (cooldown.secs || 0) > 0;                          // Save is locked on EVERY tab during a change
   const showCooldownNotice = cooldownActive && !migrate && !confirmUrl && !rpSwap && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
 
-  const ipField = (host, setHost, withLocal) => {
+  const ipField = (host, setHost, withLocal, bad) => {
     const val = presets.has(host) ? host : "__custom";
-    return html`<div class="field"><label>Listen IP</label>
-      <${Dropdown} value=${val} onChange=${v => setHost(v === "__custom" ? (presets.has(host) ? "" : host) : v)}
-        options=${ipOpts(host, withLocal)}/>
-      ${val === "__custom" ? html`<input class="mt8" type="text" placeholder="e.g. 203.0.113.5" value=${host} onInput=${e => setHost(e.target.value)}/>` : null}</div>`;
+    return html`<div class="field"><label>Listen IP${bad ? html` <span class="ciw" title="Loopback isn't reachable with direct TLS"><${Ic} i="warn"/></span>` : null}</label>
+      <div style=${bad ? "border-radius:8px;box-shadow:0 0 0 3px color-mix(in srgb,var(--dangling) 40%,transparent)" : ""}><${Dropdown} value=${val} onChange=${v => setHost(v === "__custom" ? (presets.has(host) ? "" : host) : v)}
+        options=${ipOpts(host, withLocal)}/></div>
+      ${val === "__custom" ? html`<input class=${"mt8" + (bad ? " bad" : "")} type="text" placeholder="e.g. 203.0.113.5" value=${host} onInput=${e => setHost(e.target.value)}/>` : null}</div>`;
   };
   const portField = (port, setPort, bad) => html`<div class="field"><label>Port${bad ? html` <span class="ciw" title="Cloudflare can't reach this port"><${Ic} i="warn"/></span>` : null}</label>
     <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
+  const loopNote = (which) => html`<div class="notice err"><${Ic} i="warn"/><span>
+    <b>Loopback won't work with direct TLS.</b> The ${which} terminates its own TLS and is reached <b>directly</b> — Cloudflare / clients connect straight to this box — so a <span class="mono">127.0.0.1</span> Listen IP isn't reachable from outside and fails publicly (Cloudflare shows <b>521</b>). Set the Listen IP to <span class="mono">0.0.0.0</span> (a public interface). Loopback is only correct <b>behind a reverse proxy</b> (TLS mode “None”). Save is disabled until this is fixed.</span></div>`;
   const cfNote = html`<div class=${"notice " + (hard ? "err" : "warn")}><${Ic} i="warn"/><span>
     Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}<br/>
     If it IS behind Cloudflare, restrict this port to Cloudflare's IP ranges:<br/>
@@ -7852,6 +7864,25 @@ function AccessTLSCard({ onChange }) {
   const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
   const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
   const dirty            = () => panelBindChanged() || subBindChanged() || certChanged() || urlChanged();
+  // Pull the CURRENT saved settings from the store (kept fresh by the /api/state poll) into the form + baseline —
+  // like resync() but with no fetch. Used to silently correct a form whose baseline drifted behind the server.
+  const _storeAccess = () => (((Store.panelSettings || {}).access) || {});
+  const _serverBaseline = () => { const a = _storeAccess(), pp = a.panel || {}, ss = a.sub || {}, tt = a.tls || {};
+    return { pUrl: normPublicUrl(pp.url || ""), pHost: pp.host || "0.0.0.0", pPort: String(pp.port || 443),
+      sUrl: ss.url || "", sHost: ss.host || "0.0.0.0", sPort: String(ss.port || 8444), mode: tt.mode || "", email: tt.email || "" }; };
+  const resyncFromStore = () => { const b = _serverBaseline();
+    setPUrl(b.pUrl); setPHost(b.pHost); setPPort(b.pPort); setSUrl(b.sUrl); setSHost(b.sHost); setSPort(b.sPort); setMode(b.mode); setEmail(b.email); setOrig(b); };
+  // Detect the SAVED address settings changing out from under this open form — a rollback (an aborted combined
+  // save, or the blessed-startup boot reconcile), or a change confirmed on another tab. A stale port/url left in
+  // the fields would otherwise ride along on the next Save (exactly the phantom-port-change trap). If the form is
+  // CLEAN we adopt the true values; if the operator has UNSAVED edits we warn instead of clobbering them.
+  useEffect(() => {
+    if (busy || polling || rpSwap || confirmUrl || migrate) return;   // an in-flight change owns the form
+    if (!((Store.panelSettings || {}).access || {}).panel) return;    // store not populated yet → never resync to blanks
+    if (JSON.stringify(_serverBaseline()) === JSON.stringify(orig)) { if (staleWarn) setStaleWarn(false); return; }
+    if (!dirty()) { resyncFromStore(); if (staleWarn) setStaleWarn(false); }
+    else if (!staleWarn) setStaleWarn(true);
+  });
   // Contention: the two services would trade ports on one host, so applying both at once needs one to bind a
   // port the other still holds — a single host can't do that atomically. Detect it and guide two saves instead
   // of attempting a doomed order (which is what produced the "Address already in use" + both-on-443 mess).
@@ -7997,12 +8028,18 @@ function AccessTLSCard({ onChange }) {
       setMsg({ ok: true, t: "Opened the new address to confirm your proxy routes it here. If it loads there, the switch completes and nodes move over." });
       return;
     }
-    // pure internal-port change → operator vouches the proxy upstream points at the new port
+    // pure internal-port change → the confirm proves the proxy is on the new port (it travels through the proxy);
+    // the server drops the old port only if this request arrived on the new listener, else it refuses (no lockout).
     (async () => {
       setBusy(true);
       try {
         const r = await api.post("/api/access/confirm-proxy", {});
-        if (!r || r.ok === false) { toast((r && r.error) || "Couldn't confirm.", "err"); setBusy(false); return; }
+        if (!r || r.ok === false) {
+          const em = (r && r.error) || "Couldn't confirm.";
+          setBusy(false); toast(em, "err");
+          if (r && r.code === "proxy_not_switched") setMsg({ ok: false, t: em });   // prominent: fix the proxy then retry — the swap stays pending, nothing was dropped
+          return;
+        }
         setRpSwap(null); await resync(); setBusy(false);
         setMsg({ ok: true, t: "Done — the panel is now on the new port only." });
         toast("Old port dropped — panel is on the new port.", "ok");
@@ -8058,12 +8095,18 @@ function AccessTLSCard({ onChange }) {
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" disabled=${busy || rpArmIn > 0} onClick=${confirmRpSwapGuarded} title=${rpArmIn > 0 ? "Take a moment to open the new address and check your proxy first" : ""}>${rpArmIn > 0 ? ("Confirm in " + rpArmIn + "s — verify your proxy first") : (rpSwap.url_changed ? "Confirm — open the new address ↗" : "Confirm — drop the old port")}</button><button class="btn btn-ghost" disabled=${busy} onClick=${revertRpSwap}>Revert</button></div>
     </div></div>` : null}
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. ${behindProxy ? html`Behind a reverse proxy the listen host/port are <b>internal</b> (your proxy's upstream, not a public address). Changing the port binds the new one <b>alongside</b> the old — both keep serving — so you can re-point your proxy and confirm to drop the old port without any downtime.` : "A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out."}</p>
-    ${confirmUrl ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
-      <b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab to confirm it — the change is applied <b>only once</b> it loads there. If that tab <b>can't</b> load, just close it: this panel stays on the current address and reverts automatically. Nothing is committed until the new address answers.
+    ${confirmUrl ? html`<div class="notice ${confirmVerified ? "" : "warn"}" style=${confirmVerified ? "margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))" : "margin:0 0 14px"}><${Ic} i=${confirmVerified ? "info" : "warn"}/><div style="min-width:0">
+      ${confirmVerified
+        ? html`<b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab to confirm it — the change is applied <b>only once</b> it loads there.`
+        : html`<b>Couldn't verify the new address yet.</b> I probed <span class="mono">${_confHost}</span> from here and it didn't answer in time — it may still be warming up (a fresh Cloudflare origin can be slow), <b>or</b> it's not reachable at all (e.g. a direct-TLS panel bound to <span class="mono">127.0.0.1</span> instead of a public IP, or a port your proxy/DNS doesn't route). Open it to confirm anyway — the change applies <b>only if it loads</b>.`}
+      If that tab <b>can't</b> load, just close it: this panel stays on the current address and reverts automatically. Nothing is committed until the new address answers.
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn-primary" href=${confirmUrl} target="_blank" rel="noopener">Open the new address to confirm ↗</a><button class="btn btn-ghost" onClick=${cancelChange}>Cancel this change</button></div>
     </div></div>` : null}
     ${showCooldownNotice ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
       <b>Operation cooldown.</b> ${cooldown.reason === "verifying" ? "An address change is still waiting to be confirmed." : html`The previous change is still settling (<b>${cooldown.secs}s</b> left).`} Address changes run <b>one at a time</b> — Save is locked until it finishes. If a change is in flight, you can still cancel it from the tab that started it.
+    </div></div>` : null}
+    ${staleWarn ? html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
+      <b>These settings changed elsewhere.</b> The panel's saved address settings were updated by the server (a rollback, a boot reconcile, or a change confirmed in another tab) while you have <b>unsaved edits</b> here — so a field below may be based on an <b>old</b> value. <b>Reload the page</b> before saving, or your change could re-apply a value the panel already reverted. <button class="btn btn-mini" style="margin-left:6px" onClick=${() => { resyncFromStore(); setStaleWarn(false); }}>Discard my edits & refresh</button>
     </div></div>` : null}
 
     <div class="seclabel" style="margin-top:0">Certificate</div>
@@ -8078,8 +8121,8 @@ function AccessTLSCard({ onChange }) {
     <div class="seclabel">Panel address</div>
     <p class="hint" style="margin:0 0 12px">Where the panel itself is reached. If it's directly reachable, the URL's host and this port should match; behind a reverse proxy / Cloudflare, the URL is the public address.</p>
     <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com  or  https://example.com/swgpanel" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
-    <div class="fieldrow">${ipField(pHost, setPHost, true)}${portField(pPort, setPPort, pBad)}</div>
-    ${pBad ? cfNote : null}
+    <div class="fieldrow">${ipField(pHost, setPHost, true, pLoopbackDirect)}${portField(pPort, setPPort, pBad)}</div>
+    ${pLoopbackDirect ? loopNote("panel") : (pBad ? cfNote : null)}
     ${(behindProxy && (panelBindChanged() || panelUrlChanged())) ? html`<div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
       <b>Behind a reverse proxy.</b>
       ${panelBindChanged() ? html` Saving binds <span class="mono">${(pHost.trim() || "127.0.0.1")}:${_pPortN()}</span> <b>alongside</b> the current port (both keep serving) — you then re-point your reverse proxy and confirm to drop the old one, with no downtime. External nodes dial your public URL through the proxy, so they don't change; only a co-located node that dials the panel on <span class="mono">127.0.0.1</span> needs its <span class="mono">panel.url</span> port updated too.` : null}
@@ -8097,8 +8140,8 @@ function AccessTLSCard({ onChange }) {
     ${subsOn ? html`<div class="seclabel">Subscription address</div>
       <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>
       <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com  or  https://example.com/swgsub" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
-      <div class="fieldrow">${ipField(sHost, setSHost, true)}${portField(sPort, setSPort, sBad)}</div>
-      ${sBad ? cfNote : null}
+      <div class="fieldrow">${ipField(sHost, setSHost, true, sLoopbackDirect)}${portField(sPort, setSPort, sBad)}</div>
+      ${sLoopbackDirect ? loopNote("subscription server") : (sBad ? cfNote : null)}
       ${(behindProxy && (subBindChanged() || subUrlChanged())) ? html`<div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
         <b>Behind a reverse proxy.</b> Point your proxy at <span class="mono">${(sHost.trim() || "127.0.0.1")}:${_sPortN()}</span> and make sure it serves this URL's path. swg-sub picks it up on Save — a path or domain change reloads it live (no downtime; existing links keep working during a grace), a host/port change restarts it. If the panel has no root helper, it saves and asks you to run <span class="mono">systemctl reload swg-sub</span>.
       </div></div>` : null}
