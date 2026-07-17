@@ -97,6 +97,19 @@ def _handle(verb, args):
             return False, "set-base only applies to the panel"
         _set_env({"PANEL_BASE": base.strip("/")})
         return True, "persisted panel mount base = %s (takes effect on next recreate)" % (base or "/")
+    if verb == "set-cert-env":
+        # Bare-metal flips the panel HTTP↔HTTPS with a systemd cert-env drop-in. In Docker the panel's scheme is
+        # driven by the TLS= var in .env (the entrypoint issues the cert / clears it on boot), so a reverse-proxy↔
+        # direct-TLS flip is a TLS= change + `compose up` recreate — heavier than a live drop-in. Persist the intent
+        # so the next recreate honors it (the TLS *mode* itself is set separately in .env for the 'on' side).
+        who = args[0] if args else ""
+        state = (args[1].lower() if len(args) > 1 else "")
+        if who != "panel":
+            return True, "set-cert-env only applies to the panel (no-op)"
+        if state == "off":
+            _set_env({"TLS": "none"})
+            return True, "persisted TLS=none (direct-TLS off) — recreate swg-panel to apply"
+        return True, "direct-TLS on — set TLS=<mode> in .env, then recreate swg-panel"
     return True, "no-op (%s handled in-container)" % verb   # cert verbs etc.
 
 

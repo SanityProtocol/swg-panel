@@ -52,6 +52,12 @@ BIND_PORT  = int(os.environ.get("SWG_PANEL_PORT", "8088"))
 # Self-contained mode: serve TLS + Basic-Auth directly, no reverse proxy needed.
 TLS_CERT   = os.environ.get("SWG_PANEL_TLS_CERT", "")   # fullchain.pem; blank => plain HTTP
 TLS_KEY    = os.environ.get("SWG_PANEL_TLS_KEY", "")
+# The MANAGED cert path (where the root helper / acme installs). Falls back to the conventional /etc/swg-panel/tls
+# path when we booted plain-HTTP (reverse-proxy: TLS_CERT env blank) — so a reverse-proxy→direct-TLS FLIP can bind
+# an HTTPS listener with the on-disk cert without a restart, even though the process started with no cert env.
+_ETC_DIR     = os.path.dirname(FLEET_PATH) or "/etc/swg-panel"
+MANAGED_CERT = TLS_CERT or os.path.join(_ETC_DIR, "tls", "fullchain.pem")
+MANAGED_KEY  = TLS_KEY  or os.path.join(_ETC_DIR, "tls", "key.pem")
 # TLS expiry watch: the container's acme.sh --cron renewal silences its own failures, so a stalled renewal is
 # invisible until the cert expires and the whole fleet's node-sync fails the TLS pin (goes dark). The panel
 # instead watches its OWN cert from disk and surfaces days-left in state, warning loudly before expiry — works
@@ -1328,6 +1334,17 @@ def _compute_public_url(deps):
         return raw
 
 
+def _mode_cert(mode):
+    """The (cert, key) the panel should BIND a listener with under `mode`: the managed cert for a direct-TLS mode
+    (→ HTTPS), or (None, None) for a reverse-proxy mode (→ plain HTTP, the proxy terminates TLS). This is what
+    makes a reverse-proxy↔direct-TLS switch flip the SOCKET — a new listener's scheme follows the SAVED mode, not
+    whatever the current primary happens to serve. Returns (None, None) for a TLS mode whose cert isn't on disk
+    yet (the caller must issue one first)."""
+    if mode in ("", "skip"):
+        return None, None
+    return (MANAGED_CERT, MANAGED_KEY) if (os.path.exists(MANAGED_CERT) and os.path.exists(MANAGED_KEY)) else (None, None)
+
+
 def _bless_path(deps):
     return os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "panel-confirmed.json")
 
@@ -1338,7 +1355,32 @@ def _write_bless(deps):
     canonical from here, not from panel-settings.json (which may hold a saved-but-never-confirmed change sitting
     ahead of the live panel). The internal bind + mount base are already blessed via the systemd/.env drop-ins."""
     with contextlib.suppress(Exception):
-        atomic_write(_bless_path(deps), json.dumps({"url": _CONFIRMED_URL or ""}, indent=2) + "\n")
+        _mode = str((((deps.get("panel_settings") or {}).get("access") or {}).get("tls") or {}).get("mode") or "")
+        atomic_write(_bless_path(deps), json.dumps({"url": _CONFIRMED_URL or "", "mode": _mode}, indent=2) + "\n")
+
+
+def _blessed_mode(deps):
+    """The last CONFIRMED TLS mode (from the bless file), or None if unknown. The scheme the panel is really on."""
+    b = load_json(_bless_path(deps), None)
+    return b.get("mode") if isinstance(b, dict) and "mode" in b else None
+
+
+def _restore_blessed_mode(deps):
+    """Roll the saved TLS mode back to the last CONFIRMED (blessed) one — used when a reverse-proxy↔direct-TLS flip
+    REVERTS, so settings.tls.mode doesn't sit ahead of the live scheme (the apply saved the new mode before the flip;
+    a revert must undo it, exactly like the url/bind rollback does)."""
+    bmode = _blessed_mode(deps)
+    if bmode is None:
+        return
+    with contextlib.suppress(Exception):
+        ps = deps.get("panel_settings") or {}
+        tls = (ps.get("access") or {}).get("tls") or {}
+        if str(tls.get("mode") or "") == str(bmode):
+            return
+        tls["mode"] = bmode
+        ps.setdefault("access", {})["tls"] = tls
+        deps["panel_settings"] = ps
+        save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
 
 
 def _confirm_panel_url(deps):
@@ -1372,6 +1414,18 @@ def _reconcile_saved_ahead(deps, blessed_url):
             if (_u.path or "").rstrip("/") != PANEL_BASE:         # the PATH is (== SWG_PANEL_BASE); force it if ahead
                 _netloc = _u.netloc or (saved_url.split("/")[0])
                 pnl["url"] = "%s://%s%s" % (_u.scheme or "https", _netloc, PANEL_BASE); changed = True
+        # mode: the LIVE scheme (TLS_CERT env) is ground truth. If the saved mode's scheme disagrees — a reverse-
+        # proxy↔direct-TLS flip saved but never confirmed (its cert env never persisted) — roll the mode back to the
+        # blessed one, so the panel never boots claiming a scheme it isn't serving.
+        tls = (ps.get("access") or {}).get("tls") or {}
+        saved_mode = str(tls.get("mode") or "")
+        live_https = bool(TLS_CERT)
+        if (saved_mode not in ("", "skip")) != live_https:
+            _bl = load_json(_bless_path(deps), None)
+            _bmode = _bl.get("mode") if isinstance(_bl, dict) else None
+            newmode = _bmode if (_bmode is not None and (str(_bmode) not in ("", "skip")) == live_https) else (saved_mode if live_https else "")
+            if str(newmode) != saved_mode:
+                tls["mode"] = newmode; ps.setdefault("access", {})["tls"] = tls; changed = True
         if changed:
             ps.setdefault("access", {})["panel"] = pnl
             deps["panel_settings"] = ps
@@ -4482,6 +4536,18 @@ def api(method, path, qs, body, deps):
         # cover it) or a real-CA mode is still serving a self-signed placeholder — for a mode that issues certs.
         need_cert = bool(cur.get("cert")) and _cert_needs_issue(cur.get("cert"), d_domain, mode)
         same_bind = (d_host, d_port) == (cur["host"], cur["port"])
+        # SOCKET FLIP: is the panel switching between reverse-proxy (plain HTTP) and direct TLS (its own HTTPS)?
+        # A new listener's scheme follows the SAVED mode (nl_cert), not the current primary — that's what actually
+        # changes the socket. A flip re-architects the ingress (proxy vs panel terminates TLS), so it MUST move the
+        # bind (direct TLS binds a public 0.0.0.0:<port>; behind a proxy the panel stays on 127.0.0.1:<internal>) —
+        # that gives a SECOND listener to confirm on. Refuse an in-place same-socket flip (nothing to dual-listen).
+        nl_cert, nl_key = _mode_cert(mode)
+        cur_https = bool(cur.get("cert"))
+        target_https = mode not in ("", "skip")
+        scheme_flip = target_https != cur_https
+        if scheme_flip and same_bind:
+            return 409, {"ok": False, "code": "flip_needs_bind",
+                         "error": "switching between a reverse proxy and direct TLS also needs a Listen IP/port change — direct TLS binds a public address (e.g. 0.0.0.0:443); behind a proxy the panel stays on 127.0.0.1:<internal>. Set the Listen IP/port to match the new mode, then save."}
         if mode in ("", "skip"):
             # Behind a plain reverse proxy the panel is reached THROUGH the proxy on the public URL; the listen
             # host:port is the proxy's INTERNAL upstream, not a public address. So the "wait for the new address to
@@ -4517,10 +4583,11 @@ def api(method, path, qs, body, deps):
                 pend = {"kind": "rp-swap", "nonce": _nonce, "deadline": 0,
                         "port_changed": port_changed, "url_changed": url_changed, "path_changed": path_changed,
                         "old_url": old_pub, "new_url": new_pub, "old_base": old_base, "new_base": new_base,
-                        "old_host": cur["host"], "old_port": cur["port"], "host": d_host, "port": d_port}
+                        "old_host": cur["host"], "old_port": cur["port"], "host": d_host, "port": d_port,
+                        "cert_off": scheme_flip}   # flipping direct-TLS → reverse-proxy: clear the cert env on confirm (plain HTTP henceforth)
                 if port_changed:
                     try:
-                        new_lid = LISTENERS.add(d_host, d_port, cur.get("cert"), cur.get("key"))   # bind the NEW port alongside the old
+                        new_lid = LISTENERS.add(d_host, d_port, nl_cert, nl_key)   # bind the NEW port alongside the old — reverse-proxy is plain HTTP even when flipping FROM direct TLS
                     except OSError as e:
                         _restore_panel_bind(deps, cur["host"], cur["port"])
                         _apply_status("failed", "couldn't bind %s:%d — %s" % (d_host, d_port, e))
@@ -4545,6 +4612,37 @@ def api(method, path, qs, body, deps):
                 "old_host": cur["host"], "old_port": cur["port"],
                 "new_host": (d_host if port_changed else cur["host"]),
                 "new_port": (d_port if port_changed else cur["port"])}}
+        if scheme_flip and target_https:
+            # reverse-proxy → DIRECT TLS. The panel starts terminating its own TLS on the new (public) bind: bind an
+            # HTTPS listener with the managed cert ALONGSIDE the current HTTP one and confirm from the browser (the
+            # new address is publicly reachable), just like a direct-TLS bind change — the only extra step is
+            # persisting the cert env ON confirm (set-cert-env → HTTPS survives a restart). If the mode issues a cert
+            # and none on disk covers the domain, issue it first (async) then bind. A cancel/timeout leaves the live
+            # reverse-proxy setup untouched: the cert env is never persisted and the old HTTP listener never dropped.
+            need_issue = (not nl_cert) or _cert_needs_issue(MANAGED_CERT, d_domain, mode)
+            with _APPLY["lock"]:
+                if _APPLY["pending"] is not None:
+                    return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
+                _APPLY["pending"] = {"phase": "starting"}
+            if need_issue:
+                threading.Thread(target=_apply_panel_cert_then_bind, name="access-apply-flip",
+                                 args=(deps, d_host, d_port, d_url, d_domain, lid, ""),
+                                 kwargs={"flip_to_tls": True}, daemon=True).start()
+                _apply_status("issuing", "issuing a certificate for %s" % d_domain)
+                return 200, {"ok": True, "applied": False, "async": True, "message": "issuing a certificate"}
+            try:
+                new_lid = LISTENERS.add(d_host, d_port, nl_cert, nl_key)   # HTTPS with the managed cert, alongside the live HTTP listener
+            except OSError as e:
+                with _APPLY["lock"]:
+                    _APPLY["pending"] = None
+                _restore_panel_bind(deps, cur["host"], cur["port"])
+                _apply_status("failed", "couldn't bind %s:%d for direct TLS — %s" % (d_host, d_port, e))
+                return 400, {"ok": False, "code": "bind_failed",
+                             "error": "couldn't bind %s:%d — %s. If your reverse proxy still owns that port, stop it there first — the panel and the proxy can't both hold it." % (d_host, d_port, e)}
+            with _APPLY["lock"]:
+                nonce, redirect, deadline = _arm_pending(deps, new_lid, lid, d_host, d_port, d_url, flip_to_tls=True)
+            return 200, {"ok": True, "applied": False, "nonce": nonce, "host": d_host, "port": d_port,
+                         "expires": deadline, "redirect": redirect}
         if same_bind and not need_cert:
             new_pub = _compute_public_url(deps)     # the normalised public URL the save now holds
             if not new_pub or new_pub == _CONFIRMED_URL:
@@ -4611,6 +4709,8 @@ def api(method, path, qs, body, deps):
             _grace_until = 0
             if _rebind:                                          # rebind: promote the new listener, drop the old
                 _netctl_enqueue(deps, "set-listen", ["panel", pend["host"], pend["port"]])   # persist across restarts (root helper)
+                if pend.get("flip_to_tls"):
+                    _netctl_enqueue(deps, "set-cert-env", ["panel", "on"])   # reverse-proxy→direct-TLS: persist HTTPS so it survives a restart
                 LISTENERS.set_primary(pend["new_lid"])        # sole primary NOW → primary() returns the new bind immediately (the old one keeps serving out the grace, but is no longer canonical)
                 # keep the OLD listener alive for a grace window so ONLINE nodes sync once on the old address and
                 # auto-repoint to the new one before it's dropped (instead of orphaning every node immediately)
@@ -4669,6 +4769,8 @@ def api(method, path, qs, body, deps):
             # TO (path kept), so the form matches the live panel and a restart won't re-adopt the reverted-away value.
             if _pend.get("url_changed") or _pend.get("port_changed"):
                 _rollback_panel_url(deps, _pend.get("old_url"), _pend.get("old_host"), _pend.get("old_port"))
+            if _pend.get("cert_off"):
+                _restore_blessed_mode(deps)   # a reverted direct-TLS→reverse-proxy flip → roll the saved mode back to the (still-live) TLS mode
             _apply_status("reverted", "reverted — panel stays reached at %s" % (_pend.get("old_url") or "the current address"))
             return 200, {"ok": True, "applied": True, "message": "reverted"}
         if _pend is not None:
@@ -4694,6 +4796,7 @@ def api(method, path, qs, body, deps):
                 return 400, {"ok": False, "error": "no reverse-proxy port change is waiting to be confirmed", "code": "bad_request"}
             old_lid, new_lid = pend["old_lid"], pend["new_lid"]
             host, port, old_port = pend["host"], pend["port"], pend.get("old_port")
+            cert_off = pend.get("cert_off")
         if getattr(_REQ, "listener_id", None) != new_lid:
             # this confirm arrived through the proxy on the OLD port → the proxy hasn't been re-pointed yet
             return 409, {"ok": False, "code": "proxy_not_switched",
@@ -4701,6 +4804,8 @@ def api(method, path, qs, body, deps):
         with _APPLY["lock"]:
             _APPLY["pending"] = None
         LISTENERS.remove(old_lid)                    # PROVEN: the proxy is on the new port → stop serving the old one
+        if cert_off:
+            _netctl_enqueue(deps, "set-cert-env", ["panel", "off"])   # direct-TLS→reverse-proxy: persist plain HTTP so it survives a restart
         _apply_status("saved", "panel now on %s:%d" % (host, port))
         return 200, {"ok": True, "saved": True}
 
@@ -4721,6 +4826,7 @@ def api(method, path, qs, body, deps):
             port_changed = pend.get("port_changed")
             old_lid = pend.get("old_lid")
             new_lid = pend.get("new_lid")
+            cert_off = pend.get("cert_off")
         want = _url_authority(new_url)
         got = (getattr(_REQ, "http_host", "") or "").strip().lower()
         if want and got and want != got:
@@ -4748,6 +4854,8 @@ def api(method, path, qs, body, deps):
             # (upstream not re-pointed yet), leave BOTH serving — harmless — rather than cut off the live upstream.
             with contextlib.suppress(Exception):
                 LISTENERS.remove(old_lid)
+            if cert_off:
+                _netctl_enqueue(deps, "set-cert-env", ["panel", "off"])   # direct-TLS→reverse-proxy: persist plain HTTP so it survives a restart
         _confirm_panel_url(deps)   # adopt the new url → nodes are now told to dial it; the old candidate is dropped
         _apply_status("saved", "panel is now reached at %s" % new_url, new_url=new_url)
         return 200, {"ok": True, "saved": True}
@@ -8783,9 +8891,12 @@ def _apply_timeout(nonce, deps, reason="the new address didn't confirm in time �
         if pend.get("kind") not in ("cert-only", "url-only"):
             LISTENERS.remove(pend["new_lid"])   # rebind: drop the un-confirmed listener (cert-only/url-only kept the same one — removing it would kill the panel)
         nd = pend.get("new_domain")
+        _flip = pend.get("flip_to_tls")         # a reverted reverse-proxy→direct-TLS flip → roll the saved mode back too
         oh, op = pend.get("old_host"), pend.get("old_port")
         _APPLY["pending"] = None
     _apply_status("reverted", reason)
+    if _flip:
+        _restore_blessed_mode(deps)             # the flip never confirmed → the mode stays reverse-proxy (its live scheme)
     # Roll the SAVED url + bind back to the CONFIRMED (live) address — server-authoritative, not reliant on the
     # browser's rollback (which fails if that tab is on a now-dead address). This is what stops a reverted change
     # from leaving the saved canonical ahead of the live listener/cert (the mismatch that 526s the panel).
@@ -8867,7 +8978,7 @@ def _gate_reachable(nonce, deps, url, redirect, host, port):
     threading.Timer(APPLY_TIMEOUT + 1, _apply_timeout, args=(nonce, deps)).start()
 
 
-def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_domain="", kind="rebind"):
+def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_domain="", kind="rebind", flip_to_tls=False):
     """Register the freshly-bound listener as the pending change, then run the reachability gate (which reveals
     the confirm redirect + arms the revert timer once the new front door answers). Caller holds _APPLY['lock'].
     old/new_domain drive the cert commit/revert. kind="cert-only" is a same-bind domain change (no new listener):
@@ -8880,7 +8991,8 @@ def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_dom
     _APPLY["pending"] = {"nonce": nonce, "new_lid": new_lid, "old_lid": old_lid,
                          "host": host, "port": port, "deadline": deadline,
                          "old_host": (_old._swg["host"] if _old else None), "old_port": (_old._swg["port"] if _old else None),
-                         "old_domain": old_domain, "new_domain": new_domain, "kind": kind, "gate": "checking"}
+                         "old_domain": old_domain, "new_domain": new_domain, "kind": kind, "gate": "checking",
+                         "flip_to_tls": flip_to_tls}   # reverse-proxy→direct-TLS: on confirm, persist the cert env (HTTPS survives a restart)
     # Don't offer Confirm yet (no redirect exposed): the gate probes the new front door first and only then
     # flips to "verifying" with the redirect. The revert timer is armed by the gate, when the confirm window opens.
     _apply_status("checking", "checking %s:%d is reachable before you confirm" % (host, port),
@@ -8890,10 +9002,11 @@ def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_dom
     return nonce, redirect, deadline
 
 
-def _apply_panel_cert_then_bind(deps, d_host, d_port, d_url, d_domain, old_lid, old_domain):
-    """Background worker for a panel address change that needs a NEW cert (domain changed): back up the live
-    cert, issue the new one over it, dual-listen with it. Any failure restores the backed-up cert so a
-    reverted/failed apply never leaves the wrong cert on disk."""
+def _apply_panel_cert_then_bind(deps, d_host, d_port, d_url, d_domain, old_lid, old_domain, flip_to_tls=False):
+    """Background worker for a panel address change that needs a NEW cert (domain changed, OR a reverse-proxy→direct
+    TLS flip whose mode issues one): back up the live cert, issue the new one over it, dual-listen with it. Any
+    failure restores the backed-up cert so a reverted/failed apply never leaves the wrong cert on disk.
+    flip_to_tls carries through to confirm, where the cert env is persisted (HTTPS survives a restart)."""
     def _fail(msg):
         _netctl_enqueue(deps, "restore-cert", ["panel"])          # undo the clobber
         with _APPLY["lock"]:
@@ -8908,11 +9021,11 @@ def _apply_panel_cert_then_bind(deps, d_host, d_port, d_url, d_domain, old_lid, 
         if not ok:
             return _fail("certificate issuance failed: " + (msg or "unavailable"))
         try:
-            new_lid = LISTENERS.add(d_host, d_port, TLS_CERT, TLS_KEY)   # the freshly-installed panel cert
+            new_lid = LISTENERS.add(d_host, d_port, MANAGED_CERT, MANAGED_KEY)   # the freshly-installed panel cert (managed path — set even when we booted plain-HTTP, for a flip)
         except OSError as e:
             return _fail("couldn't bind %s:%d — %s" % (d_host, d_port, e))
         with _APPLY["lock"]:
-            _arm_pending(deps, new_lid, old_lid, d_host, d_port, d_url, old_domain=old_domain, new_domain=d_domain)
+            _arm_pending(deps, new_lid, old_lid, d_host, d_port, d_url, old_domain=old_domain, new_domain=d_domain, flip_to_tls=flip_to_tls)
     except Exception as e:                   # never leave a stuck reservation
         _fail("internal error: %s" % (e,))
 

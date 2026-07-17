@@ -239,6 +239,43 @@ def do_set_base(service, base):
     return "persisted panel mount base = %s (takes effect on next restart)" % (b or "/")
 
 
+def do_set_cert_env(service, state):
+    """Persist whether the PANEL terminates its OWN TLS: 'on' points SWG_PANEL_TLS_CERT/KEY at the managed cert
+    path (→ HTTPS on the next start = direct TLS); 'off' blanks them (→ plain HTTP behind a reverse proxy). This
+    is the DURABLE half of a reverse-proxy↔direct-TLS switch — the live socket is already flipped by the panel's
+    dual-listen at apply/confirm; this only makes the new scheme survive a restart. Its OWN drop-in (11-cert) so
+    it never clobbers set-listen (10-access) / set-base (12-base), and it overrides the base unit's cert env. The
+    cert PATH is fixed by the service map (never caller-named), so a request can't point the panel at a rogue cert."""
+    if v_service(service) != "panel":
+        raise Reject("set-cert-env only applies to the panel")
+    svc = SERVICES["panel"]
+    st = (state or "").strip().lower()
+    if st not in ("on", "off"):
+        raise Reject("set-cert-env state must be on|off")
+    if st == "on" and not (os.path.exists(svc["cert"]) and os.path.exists(svc["key"])):
+        raise Reject("no certificate at %s — issue one before enabling direct TLS" % svc["cert"])
+    cert, key = (svc["cert"], svc["key"]) if st == "on" else ("", "")
+    dropdir = os.path.join(UNIT_DIR, svc["unit"] + ".d")
+    path = os.path.join(dropdir, "11-cert.conf")
+    body = ("# managed by swg-netctl — panel direct-TLS on/off (Access & TLS); do not edit by hand\n"
+            "[Service]\n"
+            "Environment=SWG_PANEL_TLS_CERT=%s\n"
+            "Environment=SWG_PANEL_TLS_KEY=%s\n" % (cert, key))
+    if DRYRUN:
+        log("would write %s:\n%s" % (path, body))
+    else:
+        os.makedirs(dropdir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(body)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    rc, out = run(["systemctl", "daemon-reload"])
+    if rc:
+        raise Reject("daemon-reload failed: " + out.strip())
+    return "persisted panel direct-TLS = %s (takes effect on next restart)" % st
+
+
 def _nrestarts(unit):
     """systemd's cumulative automatic-restart counter for `unit`, or -1 if unavailable."""
     rc, out = run(["systemctl", "show", unit, "-p", "NRestarts", "--value"])
@@ -477,6 +514,7 @@ def do_drop_cert(service, domain):
 VERBS = {
     "set-listen": (do_set_listen, 3),
     "set-base": (do_set_base, 2),
+    "set-cert-env": (do_set_cert_env, 2),       # panel direct-TLS on|off (the durable half of a reverse-proxy↔TLS flip)
     "issue-cert": (do_issue_cert, (2, 3)),      # optional 3rd arg: reload | noreload (live-apply uses noreload)
     "drop-cert": (do_drop_cert, 2),
     "backup-cert": (do_backup_cert, 1),

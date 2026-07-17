@@ -7842,6 +7842,9 @@ function AccessTLSCard({ onChange }) {
   const sLoopbackDirect = subsOn && !behindProxy && _isLoopback(sHost);
   const pUrlPortInTls = !behindProxy && _urlHasPort(pUrl);              // direct TLS → the port lives in the Port field, not the address
   const sUrlPortInTls = subsOn && !behindProxy && _urlHasPort(sUrl);
+  const wasBehindProxy = (orig.mode === "" || orig.mode === "skip");
+  const modeFlip = behindProxy !== wasBehindProxy;                      // the Type change crosses the reverse-proxy ↔ direct-TLS line (the panel's own socket flips HTTP↔HTTPS)
+  const flipToTls = modeFlip && !behindProxy;                           // reverse proxy → direct TLS (panel starts terminating its own TLS)
   const blocked = (hard && (pBad || sBad)) || pLoopbackDirect || sLoopbackDirect;
   // ONE-AT-A-TIME cooldown: while a previous address change is verifying or gracing out, Save is locked — the
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
@@ -7860,6 +7863,13 @@ function AccessTLSCard({ onChange }) {
     <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
   const loopNote = (which) => html`<div class="notice err"><${Ic} i="warn"/><span>
     <b>Loopback won't work with direct TLS.</b> The ${which} terminates its own TLS and is reached <b>directly</b> — Cloudflare / clients connect straight to this box — so a <span class="mono">127.0.0.1</span> Listen IP isn't reachable from outside and fails publicly (Cloudflare shows <b>521</b>). Set the Listen IP to <span class="mono">0.0.0.0</span> (a public interface). Loopback is only correct <b>behind a reverse proxy</b> (TLS mode “None”). Save is disabled until this is fixed.</span></div>`;
+  // Reverse-proxy ↔ direct-TLS is a COORDINATED CUTOVER: the panel and the proxy can't both hold the public port,
+  // so one has to make way for the other. Spell out exactly what the operator must do around the Save.
+  const flipNote = () => html`<div class="notice warn" style="margin:0 0 14px"><${Ic} i="warn"/><div style="min-width:0">
+    ${flipToTls
+      ? html`<b>Switching to direct TLS — a coordinated cutover.</b> The panel will terminate its <b>own</b> TLS on <span class="mono">${(pHost.trim() || "0.0.0.0")}:${_pPortN()}</span>, so set the Listen IP to a <b>public</b> address (<span class="mono">0.0.0.0</span>) and the port clients reach. Your reverse proxy currently owns that port — <b>free it first</b> (stop nginx/Caddy there); the panel and the proxy can't both hold it. On Save the panel binds the new HTTPS address <b>alongside</b> the current one and you confirm from it — nodes then reach the panel directly. Nothing is dropped until you confirm.`
+      : html`<b>Switching to a reverse proxy — a coordinated cutover.</b> The panel will serve <b>plain HTTP</b> on <span class="mono">${(pHost.trim() || "127.0.0.1")}:${_pPortN()}</span> for your proxy to front, so set the Listen IP to <span class="mono">127.0.0.1</span> and an internal port. Stand up nginx/Caddy to terminate TLS and <span class="mono">proxy_pass</span> to that address (sample below), then confirm — the panel keeps serving its current direct-TLS address until you do.`}
+    </div></div>`;
   // Direct TLS: the address's port and the listen Port are ONE socket → the address stays portless (the Port field owns it).
   const tlsPortNote = (which) => html`<div class="notice warn"><${Ic} i="warn"/><span>
     <b>The address stays portless with direct TLS.</b> The ${which} terminates its own TLS and <b>is</b> the public endpoint, so the address's port and the <b>Port</b> field below are the same socket — set the port only in the Port field. The <span class="mono">:port</span> is removed from the address on save; keeping it could advertise a port nothing listens on. (An external port in the address is only meaningful <b>behind a reverse proxy</b>.)</span></div>`;
@@ -8136,6 +8146,7 @@ function AccessTLSCard({ onChange }) {
       <div class="hint">Used for DNS-01 validation. Stored on the panel only; never sent to the browser. Enter "-" to clear.</div></div>` : null}
     ${mode === "cf15" ? html`<div class="field"><label>Cloudflare Origin CA token</label><input type="password" placeholder=${hasCfOrig ? "•••••••• (set — leave blank to keep)" : "Zone:SSL and Certificates:Edit token"} value=${cfOrig} onInput=${e => setCfOrig(e.target.value)}/>
       <div class="hint">Requests a 15-year Cloudflare Origin certificate — valid <b>only</b> behind Cloudflare's proxy. Stored on the panel only. Enter "-" to clear.</div></div>` : null}
+    ${modeFlip ? flipNote() : null}
 
     <div class="seclabel">Panel address</div>
     <p class="hint" style="margin:0 0 12px">Where the panel itself is reached. If it's directly reachable, the URL's host and this port should match; behind a reverse proxy / Cloudflare, the URL is the public address.</p>
