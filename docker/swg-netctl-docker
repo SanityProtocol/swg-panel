@@ -89,16 +89,19 @@ def _tls_creds(mode):
     return creds
 
 
-def _served_cert_real(port, tries=15):
+def _served_cert_real(port, tries=60):
     """After a flip to a CA mode, is the panel serving a REAL CA cert on 127.0.0.1:<port>? Polls while the container
-    boots + issues. Returns True (issuer != subject → a real CA cert), False (issuer == subject → the self-signed
-    fallback the entrypoint emits when issuance fails, OR the port never served TLS), or None (openssl unavailable →
-    can't judge, caller proceeds without rolling back)."""
+    boots + ISSUES (DNS-01 through Cloudflare can take 40-90s for record propagation + validation, so the window is
+    generous — a too-short one falsely rolls back a slow-but-successful issuance). Returns True (issuer != subject →
+    a real CA cert), False (issuer == subject → the self-signed fallback the entrypoint emits when issuance fails,
+    OR the port never served TLS at all), or None (openssl unavailable → can't judge, caller proceeds w/o rollback).
+    NOTE: the entrypoint issues the cert BEFORE it starts the panel, so during issuance the port is simply not
+    listening yet (connection refused) — that's the 'keep waiting' case, distinct from a served self-signed cert."""
     if subprocess.run(["sh", "-c", "command -v openssl"], capture_output=True).returncode != 0:
         return None
     cmd = ("echo | openssl s_client -connect 127.0.0.1:%s 2>/dev/null | "
            "openssl x509 -noout -issuer -subject 2>/dev/null" % port)
-    for _ in range(tries):
+    for _ in range(tries):                     # tries*3s ≈ 3 min ceiling — covers a slow Cloudflare DNS-01
         r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=15)
         iss = sub = None
         for ln in (r.stdout or "").splitlines():
@@ -108,7 +111,7 @@ def _served_cert_real(port, tries=15):
                 sub = ln.split("=", 1)[1].strip()
         if iss is not None and sub is not None:
             return iss != sub                 # got a cert → decide now (real vs self-signed)
-        time.sleep(2)                          # not serving TLS yet — container still booting/issuing
+        time.sleep(3)                          # not serving TLS yet — container still booting/issuing
     return False                               # never served a cert within the window → treat as failed
 
 

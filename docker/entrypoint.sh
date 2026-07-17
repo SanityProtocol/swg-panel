@@ -74,13 +74,28 @@ acme_install(){ acme_prune_stale
   --reloadcmd 'kill -HUP 1' >/dev/null 2>&1 \
   || log "WARNING: acme --install-cert failed — the panel may fall back to no/old cert"; }
 
+# A present cert is a SELF-SIGNED placeholder when its issuer == subject. A CA mode must NOT reuse one: it means an
+# earlier issuance failed and self-signed (e.g. the credential wasn't there yet), and a validating proxy (Cloudflare
+# Full-strict) then rejects it (526) FOREVER because the reused placeholder shadows every re-issue. So for a CA mode
+# we re-issue when only a self-signed cert is on disk; a REAL CA cert (issuer != subject) is still reused, which is
+# what keeps a restart cheap and rate-limit-safe.
+cert_is_selfsigned(){ local i s
+  i="$(openssl x509 -in "$1" -noout -issuer 2>/dev/null)"; s="$(openssl x509 -in "$1" -noout -subject 2>/dev/null)"
+  [ -n "$i" ] && [ "$i" = "$s" ]; }
+reuse_present_cert(){
+  [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -f "$SWG_PANEL_TLS_CERT" ] || return 1
+  case "${TLS:-selfsigned}" in
+    cloudflare|letsencrypt|letsencrypt-ip|cf15) ! cert_is_selfsigned "$SWG_PANEL_TLS_CERT" ;;
+    *) return 0 ;;
+  esac; }
+
 if [ "${TLS:-selfsigned}" = "none" ]; then
   # Reverse-proxy: serve plain HTTP — and do so even if a cert is still on disk. A flip FROM direct-TLS→reverse-proxy
   # recreates the container with TLS=none but leaves the old cert in the persisted volume; without this the
   # "cert already present wins" branch below would keep serving HTTPS and the flip to plain HTTP wouldn't take.
   log "TLS=none — serving plain HTTP (login travels in the clear; use only behind a tunnel)"
   unset SWG_PANEL_TLS_CERT SWG_PANEL_TLS_KEY
-elif [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -f "$SWG_PANEL_TLS_CERT" ]; then
+elif reuse_present_cert; then
   log "using the certificate already present at $SWG_PANEL_TLS_CERT (mounted / previously issued)"
 elif [ -n "${SWG_PANEL_TLS_CERT:-}" ]; then
   mkdir -p "$(dirname "$SWG_PANEL_TLS_CERT")" "$ACME_CFG"
