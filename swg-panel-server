@@ -1440,6 +1440,20 @@ def _confirm_panel_url(deps):
     _write_bless(deps)
 
 
+def _infer_tls_mode(deps):
+    """Best-guess a direct-TLS mode when the live socket is HTTPS but NEITHER the saved nor the blessed mode names
+    one — a partial reverse-proxy flip that blessed reverse-proxy ("") yet never flipped the cert env off, so the
+    panel boots serving its own TLS with a reverse-proxy config. Pick a mode the config can actually drive so
+    settings never sit inconsistent with the live cert: a CF DNS token → cloudflare; an ACME email → letsencrypt;
+    else self-signed."""
+    tls = ((deps.get("panel_settings") or {}).get("access") or {}).get("tls") or {}
+    if str(tls.get("cf_token") or "").strip():
+        return "cloudflare"
+    if str(tls.get("email") or "").strip():
+        return "letsencrypt"
+    return "selfsigned"
+
+
 def _reconcile_saved_ahead(deps, blessed_url):
     """Roll a saved-but-never-confirmed panel change back to what's actually LIVE, so the panel never boots
     advertising an address that never took effect. Ground truth: the internal bind is SWG_PANEL_HOST/PORT and the
@@ -1463,16 +1477,21 @@ def _reconcile_saved_ahead(deps, blessed_url):
             if (_u.path or "").rstrip("/") != PANEL_BASE:         # the PATH is (== SWG_PANEL_BASE); force it if ahead
                 _netloc = _u.netloc or (saved_url.split("/")[0])
                 pnl["url"] = "%s://%s%s" % (_u.scheme or "https", _netloc, PANEL_BASE); changed = True
-        # mode: the LIVE scheme (TLS_CERT env) is ground truth. If the saved mode's scheme disagrees — a reverse-
-        # proxy↔direct-TLS flip saved but never confirmed (its cert env never persisted) — roll the mode back to the
-        # blessed one, so the panel never boots claiming a scheme it isn't serving.
+        # mode: the LIVE scheme (TLS_CERT env) is ground truth — the panel must never boot claiming a scheme it isn't
+        # serving. If the saved mode's scheme disagrees (a reverse-proxy↔direct-TLS flip saved/half-confirmed but the
+        # cert env didn't follow), roll it to something consistent with the live socket: HTTPS → a direct-TLS mode
+        # (the blessed one if it names one, else INFER one the config supports — closes the "both saved+blessed are
+        # reverse-proxy but the cert env is on" gap that used to leave mode≠socket); plain HTTP → reverse-proxy ("").
         tls = (ps.get("access") or {}).get("tls") or {}
         saved_mode = str(tls.get("mode") or "")
         live_https = bool(TLS_CERT)
         if (saved_mode not in ("", "skip")) != live_https:
             _bl = load_json(_bless_path(deps), None)
             _bmode = _bl.get("mode") if isinstance(_bl, dict) else None
-            newmode = _bmode if (_bmode is not None and (str(_bmode) not in ("", "skip")) == live_https) else (saved_mode if live_https else "")
+            if live_https:
+                newmode = _bmode if (_bmode is not None and str(_bmode) not in ("", "skip")) else _infer_tls_mode(deps)
+            else:
+                newmode = ""   # the socket is plain HTTP → reverse-proxy (no cert), regardless of a stale TLS mode
             if str(newmode) != saved_mode:
                 tls["mode"] = newmode; ps.setdefault("access", {})["tls"] = tls; changed = True
         if changed:
