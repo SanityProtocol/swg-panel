@@ -1,6 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.3.10-beta</code></p>
+<p align="center"><a href="CHANGELOG.md"><code>1.3.11-beta</code></a></p>
+
+<!-- WHATS-NEW:START -->
+> **What's new in 1.3.11-beta** — [full changelog](CHANGELOG.md)
+> - **Change the panel's address from the UI** — reverse-proxy ↔ built-in HTTPS, or path/port/domain, without SSH; nodes follow automatically and the old address stays live during the switch.
+> - **Fixes** — "root helper not available" on update; address preserved across Docker-convert / re-install; Docker restart-safety; a safe Docker switch to built-in HTTPS (auto-rollback if the certificate can't be issued).
+<!-- WHATS-NEW:END -->
 
 ---
 

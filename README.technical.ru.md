@@ -1,6 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <b>Техническое (RU)</b></p>
 
-<p align="center"><code>1.3.10-beta</code></p>
+<p align="center"><a href="CHANGELOG.ru.md"><code>1.3.11-beta</code></a></p>
+
+<!-- WHATS-NEW:START -->
+> **Что нового в 1.3.11-beta** — [полный список изменений](CHANGELOG.ru.md)
+> - **Смена адреса панели из интерфейса** — reverse-proxy ↔ встроенный HTTPS, либо путь/порт/домен, без SSH; узлы переходят автоматически, а старый адрес работает во время перехода.
+> - **Исправления** — «root helper недоступен» при обновлении; адрес сохраняется при конвертации в Docker / переустановке; устойчивость к перезапуску контейнера; безопасное переключение Docker на встроенный HTTPS (автооткат, если сертификат не выпустить).
+<!-- WHATS-NEW:END -->
 
 ---
 

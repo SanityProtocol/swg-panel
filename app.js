@@ -7716,6 +7716,8 @@ function AccessTLSCard({ onChange }) {
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
   const [confirmUrl, setConfirmUrl] = useState("");   // set while an address change is verifying → the operator confirms it by opening the new address in a new tab (we can't auto-navigate safely: an unreachable new address would strand them, and a cross-origin reachability probe is blocked by our own CSP)
+  const [dockerFlip, setDockerFlip] = useState("");   // Docker TLS flip: the container is recreating into the new mode + issuing its cert. new dial url — shown with a "reconnect" button HELD for a few seconds (see dockerArm) so the operator doesn't open it before the container is back
+  const [dockerArm, setDockerArm] = useState(0);      // seconds until the Docker-flip reconnect button arms — a short hold covering the container restart (opening the new address before it's up just fails)
   const [confirmVerified, setConfirmVerified] = useState(true);   // false = the reachability gate FAILED-OPEN (revealed Confirm without proving the new address answers) → surface that so Confirm-appearing isn't mistaken for "reachable"
   const [rpSwap, setRpSwap] = useState(null);         // unified reverse-proxy swap in progress: {port_changed,url_changed,path_changed,old_url,new_url,old_host,old_port,new_host,new_port,nonce} — panel serves old+new ports/paths and advertises the new url as a node candidate until the operator re-points the proxy and confirms (no timeout). Any combination of port/url/path.
   const [rpArmIn, setRpArmIn] = useState(0);          // seconds until the rp-swap Confirm button ARMS — a deliberate 60s hold (with a confirm modal) so the operator can't reflexively drop the old address before verifying the proxy actually serves the new one
@@ -7746,6 +7748,12 @@ function AccessTLSCard({ onChange }) {
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, [rpSwap]);
+  // Docker-flip reconnect hold: tick down to 0, then the reconnect button arms (gives the container time to restart)
+  useEffect(() => {
+    if (dockerArm <= 0) return;
+    const t = setTimeout(() => setDockerArm(dockerArm - 1), 1000);
+    return () => clearTimeout(t);
+  }, [dockerArm]);
   // Pull the CURRENT saved config back into the form (+ baseline) — used after a revert, where the backend rolled
   // the bind back to the live one, so the form never keeps showing a value the panel rejected.
   const resync = async () => {
@@ -7968,7 +7976,7 @@ function AccessTLSCard({ onChange }) {
     // remember the address that was live before this apply — if the new one doesn't confirm, we re-save this so the
     // panel's canonical url (advertised to nodes) rolls back with the bind/cert the server already reverts.
     if (needPanel) rollbackRef.current = { url: orig.pUrl, host: orig.pHost || "0.0.0.0", port: +orig.pPort || 443 };
-    setConfirmUrl("");
+    setConfirmUrl(""); setDockerFlip(""); setDockerArm(0);
     setOrig({ pUrl: npUrl, pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
       sUrl: nsUrl, sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim() });
     // subscription server first (a background restart — it can never lock you out of the panel). Don't start
@@ -7998,10 +8006,10 @@ function AccessTLSCard({ onChange }) {
     if (needPanel) {
       const rp = await api.post("/api/access/apply", {});
       if (rp && rp.ok === false) { setBusy(false); await resync(); return setMsg({ ok: false, t: rp.error || "Couldn't apply the panel address." }); }
-      if (rp && rp.docker_recreate) {   // Docker flip: no live dual-listen — the container is being RECREATED into the new TLS mode. This connection drops during the recreate, so guide the operator to reconnect at the new address (it comes back there in a few seconds).
+      if (rp && rp.docker_recreate) {   // Docker flip: no live dual-listen — the container is RECREATED into the new TLS mode and issues its cert on boot. This connection drops during the recreate; the flip self-verifies + auto-rolls-back, so we don't ask for a manual confirm — we show a reconnect button HELD for the restart (dockerArm) so it isn't opened before the panel is back.
         setBusy(false);
-        setConfirmUrl(rp.new_url || "");   // renders the "open the new address ↗" link (the current tab can't reach the panel across the recreate)
-        return setMsg({ ok: true, t: rp.message || ("Recreating the panel container to switch TLS mode — reconnect at " + rp.new_url + " in a few seconds.") });
+        setDockerFlip(rp.new_url || ""); setDockerArm(20);   // reconnect button, armed after a ~20s restart hold
+        return setMsg({ ok: true, t: rp.message || ("Switching TLS — recreating the panel container. Reconnect at " + rp.new_url + " once it's back.") });
       }
       if (rp && rp.rp_swap) {   // unified reverse-proxy swap (port and/or url and/or path) → both old+new serve; operator re-points the proxy then confirms below
         const s = { ...rp.rp_swap, armUntil: Date.now() + 60000 }; setRpSwap(s); setBusy(false);   // fresh swap → full 60s arming hold
@@ -8112,6 +8120,12 @@ function AccessTLSCard({ onChange }) {
             : html`<button class="btn btn-primary" disabled=${busy} onClick=${confirmRpSwapGuarded}>Confirm — drop the old port</button>`)}<button class="btn btn-ghost" disabled=${busy} onClick=${revertRpSwap}>Revert</button></div>
     </div></div>` : null}
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. ${behindProxy ? html`Behind a reverse proxy the listen host/port are <b>internal</b> (your proxy's upstream, not a public address). Changing the port binds the new one <b>alongside</b> the old — both keep serving — so you can re-point your proxy and confirm to drop the old port without any downtime.` : "A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out."}</p>
+    ${dockerFlip ? html`<div class="notice" style="margin:0 0 14px;border:1px solid var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="clock"/><div style="min-width:0">
+      <b>Switching TLS — the container is restarting.</b> Reconnect at the new address once it's back. If the certificate can't be issued, the panel rolls back automatically to the current address.
+      <div style="margin-top:10px">${dockerArm > 0
+        ? html`<button class="btn btn-primary" disabled title="Waiting for the container to restart">Reconnect in ${dockerArm}s…</button>`
+        : html`<a class="btn btn-primary" href=${dockerFlip} target="_blank" rel="noopener">Reconnect at the new address ↗</a>`}</div>
+    </div></div>` : null}
     ${confirmUrl ? html`<div class="notice ${confirmVerified ? "" : "warn"}" style=${confirmVerified ? "margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))" : "margin:0 0 14px"}><${Ic} i=${confirmVerified ? "info" : "warn"}/><div style="min-width:0">
       ${confirmVerified
         ? html`<b>Confirm the new address.</b> Open <span class="mono">${_confHost}</span> in a new tab to confirm it — the change is applied <b>only once</b> it loads there.`
@@ -8977,6 +8991,7 @@ function PanelSettingsScreen() {
           <${NodeEgressForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>`
             : html`<p class="hint" style="margin:0">No nodes yet — enroll a node to configure its egress.</p>`}
         </div>` : null}
+        ${section === "access" && accessRef.current.busy ? html`<p class="hint" style="margin:2px 0 8px">Applying your change — this can take up to a minute or two. It hasn't hung; please wait.</p>` : null}
         <div class="setfoot">
           ${section === "access"
             ? (accessRef.current.msg ? html`<span class=${"formmsg setfoot-msg " + (accessRef.current.msg.ok ? "ok" : "err")}>${accessRef.current.msg.t}</span>` : null)
