@@ -1628,17 +1628,9 @@ def validate_access(incoming, current):
                       "(loopback) — it wouldn't be reachable from outside (Cloudflare/clients get 521). Use 0.0.0.0 or "
                       "a public IP. Loopback is only valid behind a reverse proxy (TLS mode “None”)." % (mode, panel["host"]))
 
-    # direct TLS: the address's port and the listen Port are the SAME socket — the listen Port field owns it, so
-    # strip any explicit port from the public URL (a URL :2096 with a Port of 2053 advertises a dead address).
-    # Behind a reverse proxy (mode none/skip) the URL's external port is legitimate control and is kept.
-    if mode not in ("", "skip"):
-        for _nm, _ep in (("Panel", panel), ("Subscription", sub)):
-            if _ep.get("url"):
-                _clean = _strip_url_port(_ep["url"])
-                if _clean != _ep["url"]:
-                    _ep["url"] = _clean
-                    warnings.append("%s: dropped the port from the address — with direct TLS the listen Port field "
-                                    "sets it, so the address stays portless." % _nm)
+    # NOTE: the URL always carries its port (both modes). In direct TLS the Port field and the URL's port are the
+    # SAME socket and the SPA keeps them in sync; behind a reverse proxy the URL's external port is nginx's, separate
+    # from the internal bind. Either way the port is kept in the URL — never stripped.
 
     # panel and sub can't occupy the same (bind, port); 0.0.0.0 collides with everything on that port.
     def _collide(a, b):
