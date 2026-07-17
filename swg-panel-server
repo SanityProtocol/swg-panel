@@ -1229,6 +1229,25 @@ def _url_host(url):
     return s.rsplit(":", 1)[0] if s.count(":") == 1 else s  # host:port (v4/name) → host
 
 
+def _strip_url_port(url):
+    """Drop an explicit :port from a URL's authority, keeping scheme + host + path. With direct TLS the service
+    terminates its own TLS and IS the public endpoint, so the address's port and the listen port are one socket —
+    the listen Port field owns it and the URL stays portless (a URL :2096 with a Port of 2053 would advertise a
+    port nothing listens on). Behind a reverse proxy the URL's external port is legitimate and is left alone."""
+    s = (str(url or "")).strip()
+    if not s:
+        return s
+    m = re.match(r"^(https?://)", s, re.I)
+    scheme, s = (m.group(1), s[m.end():]) if m else ("", s)
+    slash = s.find("/")
+    authority, rest = (s[:slash], s[slash:]) if slash >= 0 else (s, "")
+    if authority.startswith("[") and "]" in authority:    # [v6](:port) → keep through the bracket
+        authority = authority[:authority.index("]") + 1]
+    elif authority.count(":") == 1:                       # host:port → host
+        authority = authority.rsplit(":", 1)[0]
+    return scheme + authority + rest
+
+
 def _url_authority(url):
     """The host[:port] a browser puts in the Host header for this URL — bare host when the port is the scheme
     default (443/80), else host:port. Lowercased. '' if unparseable. Used to PROVE a confirm request arrived on the
@@ -1507,6 +1526,18 @@ def validate_access(incoming, current):
         errors.append("Panel: with direct TLS (mode “%s”) the panel is reached directly, so it can't listen on %s "
                       "(loopback) — it wouldn't be reachable from outside (Cloudflare/clients get 521). Use 0.0.0.0 or "
                       "a public IP. Loopback is only valid behind a reverse proxy (TLS mode “None”)." % (mode, panel["host"]))
+
+    # direct TLS: the address's port and the listen Port are the SAME socket — the listen Port field owns it, so
+    # strip any explicit port from the public URL (a URL :2096 with a Port of 2053 advertises a dead address).
+    # Behind a reverse proxy (mode none/skip) the URL's external port is legitimate control and is kept.
+    if mode not in ("", "skip"):
+        for _nm, _ep in (("Panel", panel), ("Subscription", sub)):
+            if _ep.get("url"):
+                _clean = _strip_url_port(_ep["url"])
+                if _clean != _ep["url"]:
+                    _ep["url"] = _clean
+                    warnings.append("%s: dropped the port from the address — with direct TLS the listen Port field "
+                                    "sets it, so the address stays portless." % _nm)
 
     # panel and sub can't occupy the same (bind, port); 0.0.0.0 collides with everything on that port.
     def _collide(a, b):

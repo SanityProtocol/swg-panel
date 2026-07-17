@@ -415,6 +415,17 @@ function normPublicUrl(s) {
   // drop the scheme-default port so the field shows "host", not "host:443" — the listen port is its own field
   return s.replace(/^(https:\/\/[^/:]+):443\b/i, "$1").replace(/^(http:\/\/[^/:]+):80\b/i, "$1");
 }
+// Drop ANY explicit :port from a public URL's host (keeping scheme + host + path). With direct TLS the service
+// terminates its own TLS and IS the public endpoint, so the address's port and the listen Port field are the
+// SAME socket — the Port field owns it and the address must stay portless. A URL :2096 with a Port of 2053 would
+// advertise a port nothing listens on. (Behind a reverse proxy the URL's external port is legitimate control and
+// is kept — that path never calls this.)
+function stripUrlPort(s) {
+  s = (s || "").trim();
+  if (!s) return s;
+  return s.replace(/^(https?:\/\/)?(\[[^\]]+\]|[^/:]+):\d+/i, "$1$2");
+}
+const _urlHasPort = s => /^(https?:\/\/)?(\[[^\]]+\]|[^/:]+):\d+/i.test((s || "").trim());
 // Is an apply-redirect address actually reachable from THIS browser? Probed BEFORE we navigate the whole page
 // to a new panel address, so a domain that isn't wired up (DNS / Cloudflare / firewall) doesn't strand the
 // operator on a dead page with no feedback. no-cors: a genuine network failure throws; any served response
@@ -7829,6 +7840,8 @@ function AccessTLSCard({ onChange }) {
   const _isLoopback = (h) => /^(127\.\d|::1|localhost)/i.test((h || "").trim());
   const pLoopbackDirect = !behindProxy && _isLoopback(pHost);
   const sLoopbackDirect = subsOn && !behindProxy && _isLoopback(sHost);
+  const pUrlPortInTls = !behindProxy && _urlHasPort(pUrl);              // direct TLS → the port lives in the Port field, not the address
+  const sUrlPortInTls = subsOn && !behindProxy && _urlHasPort(sUrl);
   const blocked = (hard && (pBad || sBad)) || pLoopbackDirect || sLoopbackDirect;
   // ONE-AT-A-TIME cooldown: while a previous address change is verifying or gracing out, Save is locked — the
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
@@ -7847,6 +7860,9 @@ function AccessTLSCard({ onChange }) {
     <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
   const loopNote = (which) => html`<div class="notice err"><${Ic} i="warn"/><span>
     <b>Loopback won't work with direct TLS.</b> The ${which} terminates its own TLS and is reached <b>directly</b> — Cloudflare / clients connect straight to this box — so a <span class="mono">127.0.0.1</span> Listen IP isn't reachable from outside and fails publicly (Cloudflare shows <b>521</b>). Set the Listen IP to <span class="mono">0.0.0.0</span> (a public interface). Loopback is only correct <b>behind a reverse proxy</b> (TLS mode “None”). Save is disabled until this is fixed.</span></div>`;
+  // Direct TLS: the address's port and the listen Port are ONE socket → the address stays portless (the Port field owns it).
+  const tlsPortNote = (which) => html`<div class="notice warn"><${Ic} i="warn"/><span>
+    <b>The address stays portless with direct TLS.</b> The ${which} terminates its own TLS and <b>is</b> the public endpoint, so the address's port and the <b>Port</b> field below are the same socket — set the port only in the Port field. The <span class="mono">:port</span> is removed from the address on save; keeping it could advertise a port nothing listens on. (An external port in the address is only meaningful <b>behind a reverse proxy</b>.)</span></div>`;
   const cfNote = html`<div class=${"notice " + (hard ? "err" : "warn")}><${Ic} i="warn"/><span>
     Cloudflare's proxy only reaches origin HTTPS on ${CF_HTTPS_PORTS.join(", ")}. ${hard ? "A cf15 origin certificate is only valid behind Cloudflare, so this port won't work — pick one of those." : "If this panel is behind Cloudflare, this port won't be reachable."}<br/>
     If it IS behind Cloudflare, restrict this port to Cloudflare's IP ranges:<br/>
@@ -7857,10 +7873,13 @@ function AccessTLSCard({ onChange }) {
   //    dual-listen + browser-confirm dance (a wrong value auto-reverts — it can never lock you out). ──
   const _pPortN = () => Math.max(1, Math.min(65535, parseInt(pPort) || 443));
   const _sPortN = () => Math.max(1, Math.min(65535, parseInt(sPort) || 8444));
+  // canonical public URL for change-detection/save: behind a proxy the URL's external port stays; with direct TLS
+  // it's stripped (the listen Port field owns the port), so a portless↔ported URL isn't seen as a spurious change.
+  const _canonUrl = raw => normPublicUrl(behindProxy ? raw : stripUrlPort(raw));
   const panelBindChanged = () => (pHost.trim() || "0.0.0.0") !== (orig.pHost || "0.0.0.0") || _pPortN() !== (+orig.pPort || 443);
-  const panelUrlChanged  = () => normPublicUrl(pUrl) !== normPublicUrl(orig.pUrl);   // the public address everyone dials — a change is verified (confirm) before it takes over
+  const panelUrlChanged  = () => _canonUrl(pUrl) !== _canonUrl(orig.pUrl);   // the public address everyone dials — a change is verified (confirm) before it takes over
   const subBindChanged   = () => (sHost.trim() || "0.0.0.0") !== (orig.sHost || "0.0.0.0") || _sPortN() !== (+orig.sPort || 8444);
-  const subUrlChanged    = () => sUrl.trim() !== (orig.sUrl || "");   // the sub public URL's path is swg-sub's mount base → a change must restart it
+  const subUrlChanged    = () => _canonUrl(sUrl) !== _canonUrl(orig.sUrl);   // the sub public URL's path is swg-sub's mount base → a change must restart it
   const certChanged      = () => mode !== (orig.mode || "") || email.trim() !== (orig.email || "") || !!cfTok || !!cfOrig;
   const urlChanged       = () => pUrl.trim() !== (orig.pUrl || "") || sUrl.trim() !== (orig.sUrl || "");
   const dirty            = () => panelBindChanged() || subBindChanged() || certChanged() || urlChanged();
@@ -7920,7 +7939,7 @@ function AccessTLSCard({ onChange }) {
     const needPanel = pBindChg || certChanged() || pUrlChg;
     didPanelRef.current = needPanel; didSubRef.current = needSub;   // so the status poll reacts only to what THIS save changes (the shared status is stale for the other)
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
-    const npUrl = normPublicUrl(pUrl), nsUrl = normPublicUrl(sUrl);   // add https:// when the operator omitted it
+    const npUrl = _canonUrl(pUrl), nsUrl = _canonUrl(sUrl);   // add https:// when the operator omitted it; drop the URL port under direct TLS (the Port field owns it)
     setPUrl(npUrl); setSUrl(nsUrl);                                    // reflect it back in the fields
     const r = await api.panelSettings({ access: {
       panel: { url: npUrl, host: pHost.trim() || "0.0.0.0", port: _pPortN() },
@@ -8120,9 +8139,10 @@ function AccessTLSCard({ onChange }) {
 
     <div class="seclabel">Panel address</div>
     <p class="hint" style="margin:0 0 12px">Where the panel itself is reached. If it's directly reachable, the URL's host and this port should match; behind a reverse proxy / Cloudflare, the URL is the public address.</p>
-    <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com  or  https://example.com/swgpanel" value=${pUrl} onInput=${e => setPUrl(e.target.value)}/></div>
+    <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com  or  https://example.com/swgpanel" value=${pUrl} onInput=${e => setPUrl(e.target.value)} onBlur=${() => { if (!behindProxy) setPUrl(stripUrlPort(pUrl)); }}/></div>
     <div class="fieldrow">${ipField(pHost, setPHost, true, pLoopbackDirect)}${portField(pPort, setPPort, pBad)}</div>
     ${pLoopbackDirect ? loopNote("panel") : (pBad ? cfNote : null)}
+    ${pUrlPortInTls ? tlsPortNote("panel") : null}
     ${(behindProxy && (panelBindChanged() || panelUrlChanged())) ? html`<div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
       <b>Behind a reverse proxy.</b>
       ${panelBindChanged() ? html` Saving binds <span class="mono">${(pHost.trim() || "127.0.0.1")}:${_pPortN()}</span> <b>alongside</b> the current port (both keep serving) — you then re-point your reverse proxy and confirm to drop the old one, with no downtime. External nodes dial your public URL through the proxy, so they don't change; only a co-located node that dials the panel on <span class="mono">127.0.0.1</span> needs its <span class="mono">panel.url</span> port updated too.` : null}
@@ -8139,9 +8159,10 @@ function AccessTLSCard({ onChange }) {
 
     ${subsOn ? html`<div class="seclabel">Subscription address</div>
       <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>
-      <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com  or  https://example.com/swgsub" value=${sUrl} onInput=${e => setSUrl(e.target.value)}/></div>
+      <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com  or  https://example.com/swgsub" value=${sUrl} onInput=${e => setSUrl(e.target.value)} onBlur=${() => { if (!behindProxy) setSUrl(stripUrlPort(sUrl)); }}/></div>
       <div class="fieldrow">${ipField(sHost, setSHost, true, sLoopbackDirect)}${portField(sPort, setSPort, sBad)}</div>
       ${sLoopbackDirect ? loopNote("subscription server") : (sBad ? cfNote : null)}
+      ${sUrlPortInTls ? tlsPortNote("subscription server") : null}
       ${(behindProxy && (subBindChanged() || subUrlChanged())) ? html`<div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
         <b>Behind a reverse proxy.</b> Point your proxy at <span class="mono">${(sHost.trim() || "127.0.0.1")}:${_sPortN()}</span> and make sure it serves this URL's path. swg-sub picks it up on Save — a path or domain change reloads it live (no downtime; existing links keep working during a grace), a host/port change restarts it. If the panel has no root helper, it saves and asks you to run <span class="mono">systemctl reload swg-sub</span>.
       </div></div>` : null}
