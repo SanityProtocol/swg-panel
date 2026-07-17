@@ -1038,6 +1038,8 @@ const Store = {
     this.panelSettings = d.panel_settings || this.panelSettings || {};
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
     this.panelMigrateUntil = +(d.panel_migrate_until || 0);   // a confirmed migration still gracing out → live countdown on the "previous address" ribbon
+    this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // panel-controlled (direct-TLS) migration → the ribbon offers "cancel the move"
+    this.panelMigratePrev = d.panel_migrate_prev || null;         // the OLD address to cancel back to
     this.accessCooldown = d.access_cooldown || { secs: 0, reason: "" };   // one-at-a-time: while a change verifies/graces, Access&TLS disables Save + shows the cooldown
     applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
     applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
@@ -10198,10 +10200,20 @@ function OldAddrRibbon() {
   });
   if (!c) return null;
   const left = until ? Math.max(0, until - now) : 0;
+  // Only a panel-controlled (direct-TLS) migration can be cancelled instantly, and only while the previous
+  // address is still gracing (both served). A reverse-proxy swap depends on the operator's nginx being pointed
+  // at the new address first, so cancelling could strand the panel — the panel refuses those; no button.
+  const canRevert = left > 0 && Store.panelMigrateRevertable && Store.panelMigratePrev;
+  const revertMove = async () => {
+    const r = await api.post("/api/access/cancel", Store.panelMigratePrev).catch(() => null);
+    if (r && r.ok) { toast("Move cancelled — the panel stays on this address.", "ok"); await Store.poll(); }
+    else toast((r && r.error) || "Couldn't cancel the move.", "err");
+  };
   return html`<div class="addr-old-ribbon" ref=${ref} role="status">
     <span>${left > 0
       ? html`<b>This address stops responding in ${left}s.</b> The panel is now reached at <a href=${c.label}>${c.label}</a> — switch over now.`
       : html`<b>You're on a previous panel address.</b> The panel is now reached at <a href=${c.label}>${c.label}</a> — this address will stop working. Switch over when you're ready.`}</span>
+    ${canRevert ? html`<button class="btn btn-mini" onClick=${revertMove}>Cancel the move — keep this address</button>` : null}
     <a class="btn btn-mini" href=${c.label}>Go to the current address ↗</a>
   </div>`;
 }

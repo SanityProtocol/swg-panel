@@ -65,6 +65,8 @@ MANAGED_KEY  = TLS_KEY  or os.path.join(_ETC_DIR, "tls", "key.pem")
 # co-located node keeps a plain-HTTP loopback endpoint regardless of the public TLS posture. 0 = not configured.
 LOCAL_PORT = int(os.environ.get("SWG_PANEL_LOCAL_PORT", "0") or 0)
 _INTERNAL_LID = None   # listener id of the dedicated internal loopback-HTTP listener, when one is bound
+_FLIP_REVERT = None    # a just-confirmed direct-TLS→reverse-proxy flip, still in grace → how to undo it (the old HTTPS
+                       # bind kept alive, the pre-flip mode, the loopback listener to hand back as the internal one)
 # TLS expiry watch: the container's acme.sh --cron renewal silences its own failures, so a stalled renewal is
 # invisible until the cert expires and the whole fleet's node-sync fails the TLS pin (goes dark). The panel
 # instead watches its OWN cert from disk and surfaces days-left in state, warning loudly before expiry — works
@@ -4302,6 +4304,8 @@ def api(method, path, qs, body, deps):
             "panel_settings": {**panel_settings, "api": _api_public_view(deps), "access": _access_public_view(deps)},   # Panel settings screen (api + access sub-dicts redacted: no token hashes / webhook secrets / CF tokens to the browser)
             "panel_public_url": _panel_public_url(deps),   # the CONFIRMED canonical address (advances only on confirm) → SPA flags a tab sitting on a previous/old panel address
             "panel_migrate_until": int((_APPLY["status"] or {}).get("grace_until") or 0),   # a confirmed migration still gracing out → the "previous address" ribbon shows a live countdown (absolute epoch; 0 = none)
+            "panel_migrate_revertable": bool((_APPLY["status"] or {}).get("revertable")),    # the migration is panel-controlled (direct-TLS) → the ribbon offers an instant "cancel the move"
+            "panel_migrate_prev": (_APPLY["status"] or {}).get("revert_to") or None,          # the OLD address to POST /api/access/cancel with
             "access_cooldown": (lambda cd: {"secs": cd[0], "reason": cd[1]})(_access_cooldown()),   # while a change is verifying/gracing → Access&TLS disables Save + shows the one-at-a-time cooldown
 
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
@@ -4807,7 +4811,15 @@ def api(method, path, qs, body, deps):
                 _grace_until = int(time.time()) + NODE_MIGRATE_GRACE
             _APPLY["pending"] = None
             _msg = ("panel now on %s:%d" % (pend["host"], pend["port"])) if _rebind else "panel address confirmed"
-            _apply_status("saved", _msg, new_url=_compute_public_url(deps), grace_until=_grace_until)
+            # REVERTABLE: within-direct-TLS changes are panel-controlled — the old address is still served (a graced
+            # listener / dual-SAN cert / the old base), so the ribbon can offer an instant "cancel the move". A
+            # reverse-proxy→TLS flip is NOT (the old address is nginx-fronted). revert_to = the OLD address to cancel to.
+            _revertable = _grace_until and not pend.get("flip_to_tls")
+            _revert_to = ({"url": _CONFIRMED_URL or _compute_public_url(deps),
+                           "host": (pend.get("old_host") or pend.get("host")),
+                           "port": (pend.get("old_port") or pend.get("port"))} if _revertable else None)
+            _apply_status("saved", _msg, new_url=_compute_public_url(deps), grace_until=_grace_until,
+                          revertable=bool(_revert_to), revert_to=_revert_to)
         _confirm_panel_url(deps)   # the change is committed → NOW nodes may be told the new dial URL (frozen until here)
         if _cert_only_domain:                                 # keep the dual-SAN cert through the grace, then reissue new-only (drops the old domain)
             _reissue_cert_newonly_later(deps, nd, od, NODE_MIGRATE_GRACE)
@@ -4940,16 +4952,42 @@ def api(method, path, qs, body, deps):
             _netctl_enqueue(deps, "set-base", ["panel", new_base])   # persist SWG_PANEL_BASE for the next restart (best-effort)
             _drop_alt_base_later(NODE_MIGRATE_GRACE)
             _grace_until = int(time.time()) + NODE_MIGRATE_GRACE   # the OLD mount path retires after the grace → phasing-out ribbon on a tab still on it
+        _revert_to = None
         if port_changed and old_lid is not None and getattr(_REQ, "listener_id", None) == new_lid:
-            # This confirm arrived on the NEW listener → the proxy's upstream really is on the new port, so drop the
-            # old one (a combined port+url change confirms both in one browser proof). If it came in on the OLD port
-            # (upstream not re-pointed yet), leave BOTH serving — harmless — rather than cut off the live upstream.
-            with contextlib.suppress(Exception):
-                LISTENERS.remove(old_lid)
+            # This confirm arrived on the NEW listener → the proxy's upstream really is on the new port.
             if cert_off:
-                _netctl_enqueue(deps, "set-cert-env", ["panel", "off"])   # direct-TLS→reverse-proxy: persist plain HTTP so it survives a restart
+                # direct-TLS → reverse-proxy flip. Reverting to direct TLS is PANEL-controlled (the panel owns its own
+                # HTTPS bind), so keep the OLD HTTPS listener ALIVE through the node-migration grace instead of dropping
+                # it now — that makes the flip revertable from the ribbon (re-adopt the HTTPS bind, cert-env back ON,
+                # mode back to the pre-flip one). Stash exactly what to hand back; _cancel_migration consumes it.
+                _old_srv = LISTENERS.get(old_lid)
+                _new_srv = LISTENERS.get(new_lid)
+                _new_host = (str((_new_srv._swg.get("host") if _new_srv else "") or "")).strip().lower().strip("[]")
+                _new_loopback = _new_srv is not None and (_new_host.startswith("127.") or _new_host == "::1")
+                globals()["_FLIP_REVERT"] = {
+                    "https_lid": old_lid,
+                    "https_host": (_old_srv._swg.get("host") if _old_srv else pend.get("old_host")),
+                    "https_port": (_old_srv._swg.get("port") if _old_srv else pend.get("old_port")),
+                    "https_url": pend.get("old_url"),
+                    "internal_lid": (new_lid if _new_loopback else None),   # the loopback primary hands back to being the internal listener
+                    "internal_port": (int(_new_srv._swg.get("port") or 0) if _new_loopback else 0),
+                    "mode": _blessed_mode(deps),                            # captured BEFORE _confirm_panel_url reblesses to reverse-proxy
+                    "expires": int(time.time()) + NODE_MIGRATE_GRACE}
+                _drop_listener_later(old_lid, NODE_MIGRATE_GRACE)           # HTTPS bind kept alive for the grace, then dropped
+                _clear_flip_revert_later(NODE_MIGRATE_GRACE)
+                _netctl_enqueue(deps, "set-cert-env", ["panel", "off"])     # persist plain HTTP so it survives a restart
+                _grace_until = int(time.time()) + NODE_MIGRATE_GRACE        # → phasing-out ribbon on the old HTTPS address, with a Cancel button
+                _revert_to = {"url": pend.get("old_url"),
+                              "host": (_old_srv._swg.get("host") if _old_srv else pend.get("old_host")),
+                              "port": (_old_srv._swg.get("port") if _old_srv else pend.get("old_port"))}
+            else:
+                # A plain reverse-proxy port swap (no scheme flip): the old port isn't panel-controlled ingress, so drop
+                # it now (a combined port+url change confirms both in one browser proof) — not revertable, no button.
+                with contextlib.suppress(Exception):
+                    LISTENERS.remove(old_lid)
         _confirm_panel_url(deps)   # adopt the new url → nodes are now told to dial it; the old candidate is dropped
-        _apply_status("saved", "panel is now reached at %s" % new_url, new_url=new_url, grace_until=_grace_until)
+        _apply_status("saved", "panel is now reached at %s" % new_url, new_url=new_url, grace_until=_grace_until,
+                      revertable=bool(_revert_to), revert_to=_revert_to)
         return 200, {"ok": True, "saved": True}
 
     if method == "POST" and path == "/api/access/apply-sub":
@@ -8902,6 +8940,38 @@ def _cancel_migration(deps, p_url, p_host, p_port):
     if srv is None or not p_url or not p_port:
         return None
     cur = srv._swg
+    # CASE 0 — undo a direct-TLS→reverse-proxy FLIP (its old HTTPS bind is still alive in the grace). This is a mirror
+    # of the flip: re-adopt the HTTPS listener as the public primary, hand the loopback listener back to being the
+    # INTERNAL interface (so the co-located node never churns), turn the cert env back ON, and restore the pre-flip
+    # TLS mode. Panel-controlled + instant — the panel owns its own HTTPS bind, no operator proxy change needed.
+    _fr = _FLIP_REVERT
+    if _fr is not None and LISTENERS.get(_fr.get("https_lid")) is not None \
+            and (str(_fr.get("https_host") or "").lower().strip("[]"), int(_fr.get("https_port") or 0)) \
+                == (str(p_host or "").lower().strip("[]"), int(p_port or 0)):
+        h_lid, h_host, h_port = _fr["https_lid"], _fr.get("https_host"), int(_fr.get("https_port") or 0)
+        _cancel_drop(h_lid)                                          # keep the HTTPS bind — cancel its scheduled grace-drop
+        LISTENERS.set_primary(h_lid)                                 # public primary is direct-TLS again
+        if _fr.get("internal_lid") is not None and LISTENERS.get(_fr["internal_lid"]) is not None:
+            globals()["_INTERNAL_LID"] = _fr["internal_lid"]         # the loopback listener is the internal interface once more
+            globals()["LOCAL_PORT"] = int(_fr.get("internal_port") or 0)
+            _netctl_enqueue(deps, "set-local-port", ["panel", LOCAL_PORT])
+        _netctl_enqueue(deps, "set-listen", ["panel", h_host, h_port])
+        _netctl_enqueue(deps, "set-cert-env", ["panel", "on"])       # persist direct TLS so it survives a restart
+        _bmode = _fr.get("mode")
+        if _bmode:                                                   # restore the pre-flip TLS mode (bless was reblessed to reverse-proxy)
+            with contextlib.suppress(Exception):
+                ps = deps.get("panel_settings") or {}
+                tls = (ps.get("access") or {}).get("tls") or {}
+                tls["mode"] = _bmode
+                ps.setdefault("access", {})["tls"] = tls
+                deps["panel_settings"] = ps
+                save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+        globals()["_FLIP_REVERT"] = None
+        _save_panel_access(deps, _fr.get("https_url") or p_url, h_host, h_port)
+        _confirm_panel_url(deps)
+        _apply_status("saved", "move cancelled — back on direct TLS at %s" % (_fr.get("https_url") or p_url),
+                      new_url=_compute_public_url(deps), grace_until=int(time.time()) + NODE_MIGRATE_GRACE)
+        return 200, {"ok": True, "applied": True, "message": "move cancelled"}
     # CASE 1 — port re-adopt: the previous bind is a live listener (still in grace) other than the primary
     re_lid, re_srv = LISTENERS.find(p_host, p_port)
     if re_srv is not None and re_lid != lid:
@@ -8925,6 +8995,21 @@ def _cancel_migration(deps, p_url, p_host, p_port):
         if cur_domain and cur_domain != p_domain:
             _reissue_cert_newonly_later(deps, p_domain, cur_domain, NODE_MIGRATE_GRACE)   # retire the domain we're LEAVING, after the grace
         _apply_status("saved", "move cancelled — back on %s" % p_domain,
+                      new_url=_compute_public_url(deps), grace_until=int(time.time()) + NODE_MIGRATE_GRACE)
+        return 200, {"ok": True, "applied": True, "message": "move cancelled"}
+    # CASE 3 — PATH reverse: an active mount-base grace (the previous path is still served as _ALT_BASE) and we're
+    # reverting to it → make it canonical again + grace OUT the base we're leaving. The bind doesn't move for a path
+    # swap (it's dual-served on the SAME listener), so this is a panel-controlled instant undo like the port re-adopt.
+    p_base = urllib.parse.urlparse(p_url if "://" in p_url else "https://" + p_url).path.rstrip("/")
+    if _ALT_BASE and p_base == _ALT_BASE and p_base != PANEL_BASE:
+        _leaving = PANEL_BASE
+        globals()["PANEL_BASE"] = p_base
+        globals()["_ALT_BASE"] = _leaving
+        _netctl_enqueue(deps, "set-base", ["panel", p_base])
+        _drop_alt_base_later(NODE_MIGRATE_GRACE)                     # now grace OUT the base we're leaving
+        _rollback_panel_url(deps, p_url, None, None)                 # settings.url → the old base (bind unchanged)
+        _confirm_panel_url(deps)                                      # canonical → the previous path, immediately
+        _apply_status("saved", "move cancelled — back on %s" % (p_base or "/"),
                       new_url=_compute_public_url(deps), grace_until=int(time.time()) + NODE_MIGRATE_GRACE)
         return 200, {"ok": True, "applied": True, "message": "move cancelled"}
     return None
@@ -8970,6 +9055,18 @@ def _drop_alt_base_later(grace):
             globals()["_ALT_BASE"] = ""
             print("access: stopped serving the old mount base after the %ds path-migration grace" % grace, flush=True)
     t = threading.Timer(max(1, grace), _drop); t.daemon = True
+    t.start()
+
+
+def _clear_flip_revert_later(grace):
+    """After a direct-TLS→reverse-proxy flip's grace elapses, forget how to undo it (the old HTTPS bind is dropped by
+    its own _drop_listener_later at the same time). Only clears the plan we scheduled — a revert in the meantime
+    replaces _FLIP_REVERT with None itself, and a fresh flip installs a newer one this must not stomp."""
+    _target = _FLIP_REVERT
+    def _clear():
+        if _FLIP_REVERT is _target:
+            globals()["_FLIP_REVERT"] = None
+    t = threading.Timer(max(1, grace), _clear); t.daemon = True
     t.start()
 
 
