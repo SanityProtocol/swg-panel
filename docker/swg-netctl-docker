@@ -119,6 +119,24 @@ def _handle(verb, args):
             return True, "set-local-port only applies to the panel (no-op)"
         _set_env({"PANEL_LOCAL_PORT": port})
         return True, "persisted PANEL_LOCAL_PORT=%s — recreate swg-panel to apply" % port
+    if verb == "flip":
+        # docker reverse-proxy↔direct-TLS SCHEME FLIP. The container can't live-rebind (fixed port map; in
+        # reverse-proxy mode there's no cert on disk to bind HTTPS with — the entrypoint issues/clears the cert from
+        # TLS= on boot), so a flip is ONE atomic .env write of the whole target scheme+bind, then ONE recreate.
+        # Doing it as one verb (not separate set-cert-env/set-listen) avoids the queue's filename-sort ordering
+        # racing the recreate ahead of the TLS= change. args: <panel> <tls> <host> <port> [localport]
+        # (tls = a direct-TLS mode name, or "none" for reverse-proxy).
+        who, tls, host, port = (args + ["", "", "", ""])[:4]
+        localport = args[4] if len(args) > 4 else ""
+        if who != "panel":
+            return False, "flip only applies to the panel"
+        env = {"TLS": tls or "none", "PANEL_PORT": port, "PANEL_BIND": host}
+        if localport:
+            env["PANEL_LOCAL_PORT"] = localport
+        _set_env(env)
+        ok, msg = _compose("up", "-d", "--no-deps", "swg-panel")
+        return (ok, "flipped panel → TLS=%s bind %s:%s (recreated)" % (tls or "none", host, port)) if ok \
+            else (False, "flip .env persisted but recreate failed: %s" % msg)
     return True, "no-op (%s handled in-container)" % verb   # cert verbs etc.
 
 

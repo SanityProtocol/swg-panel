@@ -7998,6 +7998,11 @@ function AccessTLSCard({ onChange }) {
     if (needPanel) {
       const rp = await api.post("/api/access/apply", {});
       if (rp && rp.ok === false) { setBusy(false); await resync(); return setMsg({ ok: false, t: rp.error || "Couldn't apply the panel address." }); }
+      if (rp && rp.docker_recreate) {   // Docker flip: no live dual-listen — the container is being RECREATED into the new TLS mode. This connection drops during the recreate, so guide the operator to reconnect at the new address (it comes back there in a few seconds).
+        setBusy(false);
+        setConfirmUrl(rp.new_url || "");   // renders the "open the new address ↗" link (the current tab can't reach the panel across the recreate)
+        return setMsg({ ok: true, t: rp.message || ("Recreating the panel container to switch TLS mode — reconnect at " + rp.new_url + " in a few seconds.") });
+      }
       if (rp && rp.rp_swap) {   // unified reverse-proxy swap (port and/or url and/or path) → both old+new serve; operator re-points the proxy then confirms below
         const s = { ...rp.rp_swap, armUntil: Date.now() + 60000 }; setRpSwap(s); setBusy(false);   // fresh swap → full 60s arming hold
         const bits = [];

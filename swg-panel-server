@@ -4612,6 +4612,22 @@ def api(method, path, qs, body, deps):
         if scheme_flip and same_bind:
             return 409, {"ok": False, "code": "flip_needs_bind",
                          "error": "switching between a reverse proxy and direct TLS also needs a Listen IP/port change — direct TLS binds a public address (e.g. 0.0.0.0:443); behind a proxy the panel stays on 127.0.0.1:<internal>. Set the Listen IP/port to match the new mode, then save."}
+        if scheme_flip and IN_DOCKER:
+            # Docker can't live-rebind: the port map is fixed at container creation and, in reverse-proxy mode, there's
+            # no cert on disk to bind HTTPS with — the entrypoint issues/clears the cert from TLS= on boot. So a flip
+            # is NOT the bare-metal dual-listen+confirm dance; it's one atomic .env write of the whole target
+            # scheme+bind (via the netctl-docker `flip` verb) + a container RECREATE that brings the panel up in the
+            # new mode. That's an atomic recreate (a few seconds of downtime), not a graceful cutover, so the SPA
+            # warns and reconnects at the new address. Nodes are told the new dial url now (the recreate makes it live).
+            _lp = cur["port"] if target_https else ""   # direct-TLS keeps the old reverse-proxy port as the loopback internal one for co-located nodes; reverse-proxy's primary IS the internal port
+            _netctl_enqueue(deps, "flip", ["panel", (mode if target_https else "none"), d_host, str(d_port), str(_lp)])
+            # the SPA already saved the target settings (url incl. mount base, host, port, tls.mode) before /apply —
+            # so just adopt that url as the new dial address for nodes (the recreate makes it live). NOT
+            # _save_panel_access, which strips the url bare (no port/path) for the cancel path and would drop the base.
+            _confirm_panel_url(deps)
+            _apply_status("saved", "recreating the panel container to switch TLS — reconnect at %s" % d_url, new_url=d_url)
+            return 200, {"ok": True, "applied": True, "docker_recreate": True, "new_url": d_url,
+                         "message": "switching TLS mode recreates the panel container (a few seconds of downtime) — reconnect at %s once it's back" % d_url}
         if mode in ("", "skip"):
             # Behind a plain reverse proxy the panel is reached THROUGH the proxy on the public URL; the listen
             # host:port is the proxy's INTERNAL upstream, not a public address. So the "wait for the new address to
