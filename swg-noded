@@ -3115,36 +3115,40 @@ def _persist_candidate(cand):
         pass
 
 def _learn_candidate(panel, reply):
-    """From a valid sync, remember (don't yet switch to) the pending swap's new address. Internal loopback nodes learn
-    it from panel_local_port (new port, same host+path); external nodes from panel_url_next (full new URL). Cleared
-    when the panel advertises no pending swap."""
+    """From a valid sync, remember (don't yet switch to) the new address the panel is advertising. A co-located
+    loopback node that can STILL dial the panel on loopback follows the listen PORT (+ mount base) via
+    panel_local_port. But when the panel is direct-TLS / bound to a public IP, panel_local_port is None (loopback no
+    longer reaches it) — so even a co-located node learns the PUBLIC url (panel_url_next before confirm, panel_url
+    after), following the panel to its public hostname. External nodes always learn the public url. Cleared when the
+    panel advertises no new address."""
     try:
         cur = (panel.get("url") or "").rstrip("/")
-        cur_host = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur).hostname
+        cu = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur)
+        cur_host = cu.hostname
+        _h = (cur_host or "").lower().strip("[]")
+        lp = reply.get("panel_local_port")
+        loopback_node = _host_is_internal(cur_host) and (_h == "localhost" or _h.startswith("127.") or _h == "::1")
         cand = ""
-        if _host_is_internal(cur_host):
-            _h = (cur_host or "").lower().strip("[]")
-            lp = reply.get("panel_local_port")
-            if lp and (_h == "localhost" or _h.startswith("127.") or _h == "::1"):
-                cu = urllib.parse.urlparse(cur if "://" in cur else "https://" + cur)
-                cur_port = cu.port or (443 if cu.scheme == "https" else 80)
-                cur_base = (cu.path or "").rstrip("/")
-                # a co-located node dials the internal port DIRECTLY (bypasses the proxy), so it follows BOTH the
-                # panel's listen port AND its mount base. A PENDING path swap carries the NEW base in panel_url_next's
-                # path — the LIVE panel_base is still the OLD one until confirm, so read the pending url first; once
-                # confirmed panel_url_next clears and panel_base holds the new base.
-                nxt = (reply.get("panel_url_next") or "").strip()
-                if nxt:
-                    new_base = urllib.parse.urlparse(nxt if "://" in nxt else "https://" + nxt).path.rstrip("/")
-                else:
-                    pb = reply.get("panel_base")
-                    new_base = (pb if pb is not None else cur_base).rstrip("/")
-                if int(lp) != cur_port or new_base != cur_base:
-                    cand = "%s://%s:%d%s" % (cu.scheme, cur_host, int(lp), new_base)
+        if loopback_node and lp:
+            # co-located loopback node, panel STILL loopback-reachable → follow the internal port AND mount base
+            # directly (bypasses any proxy). A PENDING path swap carries the NEW base in panel_url_next's path (the
+            # LIVE panel_base is still the OLD one until confirm); once confirmed panel_url_next clears + panel_base
+            # holds the new base.
+            cur_port = cu.port or (443 if cu.scheme == "https" else 80)
+            cur_base = (cu.path or "").rstrip("/")
+            nxt = (reply.get("panel_url_next") or "").strip()
+            if nxt:
+                new_base = urllib.parse.urlparse(nxt if "://" in nxt else "https://" + nxt).path.rstrip("/")
+            else:
+                pb = reply.get("panel_base")
+                new_base = (pb if pb is not None else cur_base).rstrip("/")
+            if int(lp) != cur_port or new_base != cur_base:
+                cand = "%s://%s:%d%s" % (cu.scheme, cur_host, int(lp), new_base)
         else:
-            # candidate = the new address to move toward: the pending swap's next-url (before confirm) OR, once the
-            # panel has CONFIRMED (canonical advanced), the new canonical itself — kept alive until this node actually
-            # sits on it, so a blessed-address death right at/after confirm still has a fail-over target.
+            # external node — OR a co-located node whose panel went direct-TLS / public (no usable loopback port, so it
+            # must move to the public hostname). Candidate = the pending swap's next-url (before confirm) OR the
+            # advanced canonical url — kept alive until this node actually sits on it, so a blessed-address death
+            # right at/after confirm still has a fail-over target.
             nxt = (reply.get("panel_url_next") or "").strip().rstrip("/")
             can = (reply.get("panel_url") or "").strip().rstrip("/")
             if nxt and _norm_url(nxt) != _norm_url(cur):

@@ -1297,14 +1297,21 @@ def _panel_public_url(deps):
     return _CONFIRMED_URL if _CONFIRMED_URL is not None else _compute_public_url(deps)
 
 def _panel_local_port():
-    """The panel's LIVE internal listen port. Sent to nodes alongside panel_url so a CO-LOCATED node dialing a
-    loopback address (127.0.0.1 — its link is independent of the public URL) still follows a listen-port change:
-    it keeps its host + path and tracks this port. During a two-port swap primary() is already the NEW port, so a
-    loopback node re-points while both ports are still up — no gap. None if there's no listener (never sent then)."""
+    """The panel's LIVE internal listen port — sent to a CO-LOCATED node dialing loopback (127.0.0.1, an independent
+    local link) so it follows a listen-port change: it keeps its host + path and tracks this port. During a two-port
+    swap primary() is already the NEW port, so a loopback node re-points while both ports are still up — no gap.
+    Returned ONLY when a co-located node can ACTUALLY reach the panel on http://127.0.0.1:<port>: the primary listener
+    is bound loopback/any (not a specific PUBLIC IP) AND serves plain HTTP (no cert). When the panel is direct-TLS
+    (its own HTTPS) or bound to one public IP, loopback isn't reachable/valid — so we return None, and the co-located
+    node learns the PUBLIC url instead (follows the panel to its public hostname). None if there's no listener."""
     with contextlib.suppress(Exception):
         _lid, _srv = LISTENERS.primary()
         if _srv is not None:
-            return int(_srv._swg.get("port") or 0) or None
+            m = _srv._swg
+            host = (str(m.get("host") or "")).strip().lower().strip("[]")
+            loopback_reachable = host in ("", "0.0.0.0", "::", "::1") or host.startswith("127.")
+            if loopback_reachable and not m.get("cert"):   # a co-located node dials http://127.0.0.1:<port> — needs a loopback-reachable bind + plain HTTP
+                return int(m.get("port") or 0) or None
     return None
 
 
