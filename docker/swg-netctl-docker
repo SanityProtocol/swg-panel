@@ -26,6 +26,7 @@ import json
 import os
 import re
 import subprocess
+import time
 
 DIR = os.environ.get("SWG_DOCKER_DIR", "/opt/swg-panel-docker")
 QUEUE = os.path.join(DIR, "data", "lib", "netctl", "queue")
@@ -58,6 +59,88 @@ def _set_env(keys):
     with open(tmp, "w") as f:
         f.write("\n".join(lines) + "\n")
     os.replace(tmp, ENV)
+
+
+def _read_env(keys):
+    """Current values of KEYs in .env (missing keys omitted) — a snapshot to roll back to."""
+    out = {}
+    with contextlib.suppress(OSError):
+        for ln in open(ENV).read().splitlines():
+            for k in keys:
+                if ln.startswith(k + "="):
+                    out[k] = ln[len(k) + 1:]
+    return out
+
+
+def _tls_creds(mode):
+    """The cert credential a direct-TLS CA mode needs, read from the panel's OWN settings on the host and mapped to
+    the env vars docker-compose passes into the container. The netctl protocol carries NO secrets — the helper
+    fetches them itself (as bare-metal swg-netctl reads install.conf), so a queued request never exposes the token."""
+    creds = {}
+    with contextlib.suppress(Exception):
+        t = ((json.load(open(os.path.join(DIR, "data", "lib", "panel-settings.json"))).get("access") or {})
+             .get("tls") or {})
+        if t.get("email"):
+            creds["ACME_EMAIL"] = str(t["email"])
+        if t.get("cf_token"):
+            creds["CF_TOKEN"] = str(t["cf_token"])
+        if t.get("cf_origin_token"):
+            creds["CF_ORIGIN_TOKEN"] = str(t["cf_origin_token"])
+    return creds
+
+
+def _served_cert_real(port, tries=15):
+    """After a flip to a CA mode, is the panel serving a REAL CA cert on 127.0.0.1:<port>? Polls while the container
+    boots + issues. Returns True (issuer != subject → a real CA cert), False (issuer == subject → the self-signed
+    fallback the entrypoint emits when issuance fails, OR the port never served TLS), or None (openssl unavailable →
+    can't judge, caller proceeds without rolling back)."""
+    if subprocess.run(["sh", "-c", "command -v openssl"], capture_output=True).returncode != 0:
+        return None
+    cmd = ("echo | openssl s_client -connect 127.0.0.1:%s 2>/dev/null | "
+           "openssl x509 -noout -issuer -subject 2>/dev/null" % port)
+    for _ in range(tries):
+        r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=15)
+        iss = sub = None
+        for ln in (r.stdout or "").splitlines():
+            if ln.startswith("issuer="):
+                iss = ln.split("=", 1)[1].strip()
+            elif ln.startswith("subject="):
+                sub = ln.split("=", 1)[1].strip()
+        if iss is not None and sub is not None:
+            return iss != sub                 # got a cert → decide now (real vs self-signed)
+        time.sleep(2)                          # not serving TLS yet — container still booting/issuing
+    return False                               # never served a cert within the window → treat as failed
+
+
+BLESS = os.path.join(DIR, "data", "lib", "panel-confirmed.json")   # the blessed dial address nodes are told
+
+
+def _bless_snapshot():
+    """Raw current blessed file, or None if absent — an exact value to restore on a rollback."""
+    with contextlib.suppress(OSError):
+        return open(BLESS).read()
+    return None
+
+
+def _bless_write(url, mode):
+    """Adopt <url> as the blessed dial address (atomically). The flip verb writes this OPTIMISTICALLY before the
+    recreate so a verified flip is a single recreate that comes up already advertising the new url; a failed CA flip
+    calls _bless_restore below to undo it. Mirrors the panel's own _write_bless payload ({url, mode})."""
+    tmp = BLESS + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"url": url, "mode": mode}, f, indent=2)
+    os.replace(tmp, BLESS)
+
+
+def _bless_restore(snap):
+    if snap is None:
+        with contextlib.suppress(OSError):
+            os.remove(BLESS)
+        return
+    tmp = BLESS + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(snap)
+    os.replace(tmp, BLESS)
 
 
 def _handle(verb, args):
@@ -132,17 +215,41 @@ def _handle(verb, args):
         # Doing it as one verb (not separate set-cert-env/set-listen) avoids the queue's filename-sort ordering
         # racing the recreate ahead of the TLS= change. args: <panel> <tls> <host> <port> [localport]
         # (tls = a direct-TLS mode name, or "none" for reverse-proxy).
+        # args: <panel> <tls> <host> <port> [localport] [target_url]
         who, tls, host, port = (args + ["", "", "", ""])[:4]
         localport = args[4] if len(args) > 4 else ""
+        target_url = args[5] if len(args) > 5 else ""
         if who != "panel":
             return False, "flip only applies to the panel"
+        ca = tls in ("cloudflare", "cf15", "letsencrypt", "letsencrypt-ip")
+        target_mode = "" if tls in ("", "none") else tls
+        # Snapshot the current scheme AND the blessed dial address, so a failed CA flip restores BOTH atomically.
+        old_env = _read_env(["TLS", "PANEL_PORT", "PANEL_BIND", "PANEL_LOCAL_PORT"])
+        old_bless = _bless_snapshot()
+        # OPTIMISTIC adopt: advance blessed to the target BEFORE the recreate, so a verified flip is a SINGLE recreate
+        # and the panel comes up already advertising the new url (no racy boot-time "did the scheme match" guess — the
+        # authority is HERE, host-side). A CA failure below restores env + blessed together.
+        if target_url:
+            _bless_write(target_url, target_mode)
         env = {"TLS": tls or "none", "PANEL_PORT": port, "PANEL_BIND": host}
         if localport:
             env["PANEL_LOCAL_PORT"] = localport
+        if ca:
+            env.update(_tls_creds(tls))       # carry the cert credential so the entrypoint can issue a REAL cert
         _set_env(env)
         ok, msg = _compose("up", "-d", "--no-deps", "swg-panel")
-        return (ok, "flipped panel → TLS=%s bind %s:%s (recreated)" % (tls or "none", host, port)) if ok \
-            else (False, "flip .env persisted but recreate failed: %s" % msg)
+        if not ok:                            # the recreate itself failed → restore the previous scheme + address
+            _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
+            return False, "flip recreate failed (%s) — rolled back to the previous address" % msg
+        if ca and _served_cert_real(port) is False:
+            # A CA mode that fell back to self-signed (missing/blocked token, unreachable :80, rate limit) would be
+            # rejected by a validating proxy (Cloudflare 526) and strand nodes. Roll BOTH the scheme and the blessed
+            # address back, so the panel comes up on the still-working old address and never advertises the broken one.
+            _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
+            return False, ("the %s certificate could not be issued (served a self-signed fallback) — rolled back "
+                           "to the previous address. Check the TLS credential / DNS, then try again." % tls)
+        return True, "flipped panel → TLS=%s bind %s:%s (recreated%s)" % (
+            tls or "none", host, port, ", cert verified" if ca else "")
     if verb == "persist-url":
         # Keep .env's PANEL_DOMAIN in step with a CONFIRMED address-migration. The flip verbs already keep
         # PANEL_PORT/BIND/BASE/LOCAL_PORT/TLS current, but nothing else persists the DOMAIN — so without this a
