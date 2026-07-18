@@ -438,8 +438,10 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//' || true; }   # || true: a missing .env must fall through to recovery state, not abort under pipefail+set -e
   PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"
   PBASE="$(getv PANEL_BASE)"; PUSER="$(getv PANEL_USER)"; PCFT="$(getv CF_TOKEN)"; PCFO="$(getv CF_ORIGIN_TOKEN)"
-  PSUBPORT="$(getv SUB_PORT)"; [ -n "$PSUBPORT" ] || PSUBPORT=8444   # the docker sub's published port → the bare swg-sub's bind
-  PLOCALPORT="$(getv PANEL_LOCAL_PORT)"; [ -n "$PLOCALPORT" ] || PLOCALPORT=8088   # the co-located node's loopback dial port
+  # awk $1: some .env lines carry an inline "# comment" (e.g. PANEL_LOCAL_PORT=8088  # …) — take just the value, else
+  # it leaks into the unquoted env passed to install-host and env chokes on the '#'.
+  PSUBPORT="$(getv SUB_PORT | awk '{print $1}')"; [ -n "$PSUBPORT" ] || PSUBPORT=8444   # the docker sub's published port → the bare swg-sub's bind
+  PLOCALPORT="$(getv PANEL_LOCAL_PORT | awk '{print $1}')"; [ -n "$PLOCALPORT" ] || PLOCALPORT=8088   # the co-located node's loopback dial port
   NTOK="$(getv NODE_TOKEN)"; NEP="$(getv NODE_ENDPOINT)"   # master: the local node's preserved identity
   # fallback: a docker master's node token should be in .env, but if it's blank/placeholder read it straight from
   # the running node container so the local-node tile reliably gets "converting" at the START (matches bare→docker).
