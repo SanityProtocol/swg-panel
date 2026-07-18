@@ -6,6 +6,78 @@ set -eu
 
 log() { printf '\033[0;36m[entrypoint]\033[0m %s\n' "$*"; }
 
+# ─────────────────────── swg-sub certificate (defined up front) ───────────────────────
+# Defined here so the `sub-cert <domain>` RUNTIME subcommand — swg-netctl-docker calls `entrypoint.sh sub-cert
+# <domain>` when the panel's subscription address changes (a DIFFERENT host the panel cert doesn't cover) — can
+# issue swg-sub's cert WITHOUT running the whole panel bootstrap. The boot path below calls the same issue_sub_cert.
+ACME="/opt/acme.sh/acme.sh"; ACME_CFG="${ACME_CONFIG:-/etc/swg-panel/acme}"
+acme(){ "$ACME" --config-home "$ACME_CFG" "$@"; }
+cert_is_selfsigned(){ local i s
+  # strip openssl's `issuer=`/`subject=` labels — else the two strings ALWAYS differ and self-signed is never seen.
+  i="$(openssl x509 -in "$1" -noout -issuer 2>/dev/null | sed 's/^issuer= *//')"
+  s="$(openssl x509 -in "$1" -noout -subject 2>/dev/null | sed 's/^subject= *//')"
+  [ -n "$i" ] && [ "$i" = "$s" ]; }
+# Does cert $1 cover hostname $2 — an exact SAN/CN, or a single-label *.wildcard (so *.example.com covers
+# sub.example.com but not a.b.example.com)?
+cert_covers_host(){ local host="$2" dns base pre
+  for dns in $(openssl x509 -in "$1" -noout -text 2>/dev/null | grep -oE 'DNS:[^,[:space:]]+' | cut -d: -f2); do
+    [ "$dns" = "$host" ] && return 0
+    case "$dns" in \*.*) base="${dns#\*.}"; pre="${host%".$base"}"
+      [ "$pre" != "$host" ] && [ "$pre" = "${host%%.*}" ] && return 0 ;;
+    esac
+  done
+  return 1; }
+SUB_TLS_DIR="/etc/swg-sub/tls"; SC="$SUB_TLS_DIR/fullchain.pem"; SK="$SUB_TLS_DIR/key.pem"
+sub_selfsigned(){ mkdir -p "$SUB_TLS_DIR"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout "$SK" -out "$SC" \
+    -subj "/CN=$SUB_DOMAIN" -addext "subjectAltName=DNS:$SUB_DOMAIN" >/dev/null 2>&1
+  log "swg-sub: generated self-signed cert (CN=$SUB_DOMAIN)"; }
+# Ensure swg-sub's cert for $SUB_DOMAIN. Rule: if the panel's OWN cert already covers the sub host (same domain, or a
+# SAN/wildcard) reuse it — no second issuance; else issue a SEPARATE cert (own key). Never blocks the caller fatally.
+issue_sub_cert(){ set +e
+  mkdir -p "$SUB_TLS_DIR"
+  if [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -s "$SWG_PANEL_TLS_CERT" ] && [ -s "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] \
+       && cert_covers_host "$SWG_PANEL_TLS_CERT" "$SUB_DOMAIN"; then
+    cp "$SWG_PANEL_TLS_CERT" "$SC"; cp "$SWG_PANEL_TLS_KEY" "$SK"
+    log "swg-sub: panel certificate covers $SUB_DOMAIN — reusing it for the subscription page"
+  elif [ -s "$SC" ] && { [ "${TLS:-selfsigned}" = selfsigned ] || ! cert_is_selfsigned "$SC"; } \
+       && cert_covers_host "$SC" "$SUB_DOMAIN"; then
+    log "swg-sub: reusing present cert for $SUB_DOMAIN"
+  else case "${TLS:-selfsigned}" in
+    cloudflare)
+      if [ -n "${CF_TOKEN:-}" ] \
+         && { CF_Token="$CF_TOKEN" acme --issue -d "$SUB_DOMAIN" --dns dns_cf --server letsencrypt --keylength ec-256 >/dev/null 2>&1 \
+              || [ -s "$ACME_CFG/${SUB_DOMAIN}_ecc/${SUB_DOMAIN}.cer" ]; } \
+         && acme --install-cert -d "$SUB_DOMAIN" --ecc --key-file "$SK" --fullchain-file "$SC" --reloadcmd 'true' >/dev/null 2>&1; then
+        log "swg-sub: Cloudflare DNS-01 cert for $SUB_DOMAIN installed"
+      else log "WARNING: swg-sub Cloudflare cert for $SUB_DOMAIN failed — falling back to self-signed (set the sub hostname to CF Flexible, or check the token)"; sub_selfsigned; fi ;;
+    cf15)
+      key="$(openssl ecparam -name prime256v1 -genkey -noout 2>/dev/null)"
+      csr="$(printf '%s\n' "$key" | openssl req -new -key /dev/stdin -subj "/CN=$SUB_DOMAIN" 2>/dev/null)"
+      cert="$(CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-}" PANEL_DOMAIN="$SUB_DOMAIN" CSR="$csr" python3 - <<'PY'
+import os,json,urllib.request,urllib.error,sys
+body=json.dumps({"hostnames":[os.environ["PANEL_DOMAIN"]],"requested_validity":5475,"request_type":"origin-ecc","csr":os.environ["CSR"]}).encode()
+req=urllib.request.Request("https://api.cloudflare.com/client/v4/certificates",data=body,method="POST",
+    headers={"Content-Type":"application/json","Authorization":"Bearer "+os.environ["CF_ORIGIN_TOKEN"]})
+try:
+    with urllib.request.urlopen(req,timeout=30) as r: d=json.load(r)
+except urllib.error.HTTPError as e: d=json.load(e)
+except Exception as e: sys.stderr.write(str(e)); sys.exit(1)
+sys.stdout.write(d["result"]["certificate"]) if d.get("success") else sys.exit(1)
+PY
+)" && [ -n "$cert" ] && { mkdir -p "$SUB_TLS_DIR"; printf '%s\n' "$cert" > "$SC"; printf '%s\n' "$key" > "$SK"; log "swg-sub: Cloudflare Origin cert for $SUB_DOMAIN installed (15y)"; } \
+        || { log "WARNING: swg-sub cf15 cert for $SUB_DOMAIN failed — self-signed fallback"; sub_selfsigned; } ;;
+    *) sub_selfsigned ;;
+  esac; fi
+  [ -f "$SK" ] && chmod 600 "$SK" 2>/dev/null || true
+  return 0; }
+# Runtime subcommand (panel-managed): re-issue swg-sub's cert for a specific domain, then exit — no panel bootstrap.
+if [ "${1:-}" = "sub-cert" ]; then
+  SUB_DOMAIN="${2:-${SUB_DOMAIN:-}}"
+  [ -n "${SUB_DOMAIN:-}" ] || { log "sub-cert: no domain given"; exit 2; }
+  issue_sub_cert; exit 0
+fi
+
 PANEL_USER="${PANEL_USER:-admin}"
 PANEL_DOMAIN="${PANEL_DOMAIN:-localhost}"
 STATS_DIR="${STATS_DIR:-/var/www/wgstats}"
@@ -33,8 +105,7 @@ fi
 #    A mounted cert at $SWG_PANEL_TLS_CERT always wins (skips everything below).
 #    selfsigned (default) | none | letsencrypt | letsencrypt-ip | cloudflare | cf15.  acme.sh state persists
 #    under /etc/swg-panel/acme (mounted volume), so a restart renews/reuses rather than re-issues.
-ACME="/opt/acme.sh/acme.sh"; ACME_CFG="${ACME_CONFIG:-/etc/swg-panel/acme}"
-acme(){ "$ACME" --config-home "$ACME_CFG" "$@"; }
+#    (ACME/acme() are defined at the top of this file, alongside the sub-cert helpers.)
 # reliable "is there an ISSUED cert?" check — `acme --info` returns 0 even with none, so check disk
 acme_has_cert(){ [ -s "$ACME_CFG/${PANEL_DOMAIN}_ecc/${PANEL_DOMAIN}.cer" ] || [ -s "$ACME_CFG/${PANEL_DOMAIN}/${PANEL_DOMAIN}.cer" ]; }
 # call after a failed acme run with its output — flag the common, confusing causes
@@ -79,9 +150,7 @@ acme_install(){ acme_prune_stale
 # Full-strict) then rejects it (526) FOREVER because the reused placeholder shadows every re-issue. So for a CA mode
 # we re-issue when only a self-signed cert is on disk; a REAL CA cert (issuer != subject) is still reused, which is
 # what keeps a restart cheap and rate-limit-safe.
-cert_is_selfsigned(){ local i s
-  i="$(openssl x509 -in "$1" -noout -issuer 2>/dev/null)"; s="$(openssl x509 -in "$1" -noout -subject 2>/dev/null)"
-  [ -n "$i" ] && [ "$i" = "$s" ]; }
+# cert_is_selfsigned() and cert_covers_host() are defined at the top of this file (shared with the sub-cert path).
 # Does cert $1 actually name $PANEL_DOMAIN (in its subject CN or a SAN)? A LEFTOVER cert for a DIFFERENT domain —
 # e.g. after flipping swgt2→swgt — is a real CA cert but the wrong one, and reusing it makes the proxy reject it.
 cert_covers_domain(){ openssl x509 -in "$1" -noout -text 2>/dev/null | grep -qF "$PANEL_DOMAIN"; }
@@ -168,6 +237,44 @@ PY
   esac
   [ -n "${SWG_PANEL_TLS_KEY:-}" ] && [ -f "${SWG_PANEL_TLS_KEY:-/nonexistent}" ] && chmod 600 "$SWG_PANEL_TLS_KEY" 2>/dev/null || true
 fi
+
+# DRY-RUN: verify the NEW params can produce a usable cert (the risky, failure-prone step) WITHOUT starting the
+# server — so the panel can prove a scheme/port/domain change will work BEFORE it recreates the live container.
+# The cert we just issued lands in the mounted acme/tls volume, so the real recreate reuses it (no second issuance).
+# Exit 0 = the change is safe to apply; non-zero = abort (the caller keeps the old container running untouched).
+if [ "${DRY_RUN:-}" = 1 ]; then
+  case "${TLS:-selfsigned}" in
+    none) log "dry-run OK: reverse-proxy (plain HTTP) — no certificate needed"; exit 0 ;;
+    selfsigned|"")
+      { [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -f "$SWG_PANEL_TLS_CERT" ] && cert_covers_domain "$SWG_PANEL_TLS_CERT"; } \
+        && { log "dry-run OK: self-signed certificate for $PANEL_DOMAIN"; exit 0; }
+      log "dry-run FAILED: couldn't produce a self-signed certificate for $PANEL_DOMAIN"; exit 3 ;;
+    *)
+      { [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -f "$SWG_PANEL_TLS_CERT" ] && ! cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && cert_covers_domain "$SWG_PANEL_TLS_CERT"; } \
+        && { log "dry-run OK: a valid $TLS certificate for $PANEL_DOMAIN is ready"; exit 0; }
+      log "dry-run FAILED: no valid certificate for $PANEL_DOMAIN (would serve self-signed / wrong-domain)"; exit 3 ;;
+  esac
+fi
+
+# 2b) swg-sub's OWN cert (direct-TLS). Issued via issue_sub_cert() defined at the top of this file. Runs in the
+#     BACKGROUND (`&`): a fresh DNS-01 issue can take ~60s and blocking the panel boot on it would starve a flip's
+#     reachability commit (false auto-revert). The panel serves immediately; swg-sub picks the cert up on its next
+#     (re)start. At RUNTIME the panel-managed path is swg-netctl-docker's issue-cert verb → `entrypoint.sh sub-cert`.
+# The sub's domain is PANEL-MANAGED (access.sub.url in panel-settings.json), so prefer that over the static install
+# env — otherwise a restart would re-issue for the env default and clobber a cert the UI issued for a different sub
+# host. Env stays the bootstrap for a first boot before any sub address is saved.
+_sub_dom_cfg="$(python3 - /var/lib/swg-panel/panel-settings.json 2>/dev/null <<'PY'
+import json,sys
+from urllib.parse import urlparse
+try:
+    u = (((json.load(open(sys.argv[1])).get("access") or {}).get("sub") or {}).get("url") or "")
+    print(urlparse(u).hostname or "")
+except Exception:
+    print("")
+PY
+)"
+[ -n "$_sub_dom_cfg" ] && SUB_DOMAIN="$_sub_dom_cfg"
+if [ "${TLS:-selfsigned}" != none ] && [ -n "${SUB_DOMAIN:-}" ]; then ( issue_sub_cert ) & fi
 
 # 3) fleet.json: use the mounted one; else write a starter. Nodes are managed in
 #    the UI (Nodes screen) and live in nodes.json — not listed here.

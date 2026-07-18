@@ -46,6 +46,7 @@ ACME_EMAIL="${ACME_EMAIL:-}"           # account email for letsencrypt/cloudflar
 CF_TOKEN="${CF_TOKEN:-}"               # cloudflare DNS-01: API token with Zone:DNS:Edit + Zone:Read
 CF_ORIGIN_TOKEN="${CF_ORIGIN_TOKEN:-${CF_ORIGIN_KEY:-}}"  # cf15: API token with Zone:SSL and Certificates:Edit
 PANEL_PORT="${PANEL_PORT:-}"           # host-published port; blank = derive from URL, else 443 (Step 1)
+PANEL_LOCAL_PORT="${PANEL_LOCAL_PORT:-8088}"   # dedicated STABLE plain-HTTP loopback port a co-located node dials (a public flip never moves it)
 SUB_PORT="${SUB_PORT:-8444}"           # swg-sub host port (bound to loopback in reverse-proxy/TLS=none mode)
 SUB_DOMAIN="${SUB_DOMAIN:-}"           # subscription page hostname, for the printed reverse-proxy config (TLS=none)
 PANEL_BIND="${PANEL_BIND:-0.0.0.0}"    # host bind for the panel publish; 127.0.0.1 in reverse-proxy mode
@@ -1086,10 +1087,12 @@ if [ "$PROFILE" = node ] || [ "$PROFILE" = master ]; then
     case "$NODE_NET" in h) NODE_NET=host;; b) NODE_NET=bridge;; esac
   fi
   case "$NODE_NET" in host|bridge) ;; *) NODE_NET=host;; esac
-  if [ "$PROFILE" = master ]; then       # the master's node reaches the local panel differently per mode
-    if [ "$NODE_NET" = host ]; then PANEL_URL="https://127.0.0.1:${PANEL_PORT:-443}"   # over the host-published port
-    else PANEL_URL="https://swg-panel:8443"; fi                                         # over the compose network DNS
-    TLS_VERIFY="${TLS_VERIFY:-no}"
+  if [ "$PROFILE" = master ]; then       # the master's node reaches the local panel over the STABLE plain-HTTP loopback
+    # The panel always publishes a dedicated internal plain-HTTP port (PANEL_LOCAL_PORT) at ROOT that a public
+    # TLS/port/domain/path change NEVER moves — so the co-located node can't strand across an address change.
+    if [ "$NODE_NET" = host ]; then PANEL_URL="http://127.0.0.1:${PANEL_LOCAL_PORT:-8088}"   # host-published stable loopback (root, plain HTTP)
+    else PANEL_URL="http://swg-panel:${PANEL_LOCAL_PORT:-8088}"; fi                            # compose-network stable internal port (root, plain HTTP)
+    TLS_VERIFY="${TLS_VERIFY:-no}"     # loopback plain HTTP → nothing to verify
   fi
   if [ "$NODE_NET" = host ]; then
     if $DRYRUN; then echo "    [skip] enable host networking for the node service + host ip_forward"
@@ -1173,6 +1176,7 @@ CF_TOKEN=$CF_TOKEN
 CF_ORIGIN_TOKEN=$CF_ORIGIN_TOKEN
 PANEL_PORT=$PANEL_PORT
 PANEL_BIND=${PANEL_BIND:-0.0.0.0}
+PANEL_LOCAL_PORT=${PANEL_LOCAL_PORT:-8088}   # dedicated STABLE plain-HTTP loopback port for a co-located node (published on 127.0.0.1; a public flip never moves it)
 SUB_PORT=${SUB_PORT:-8444}
 SUB_BIND=${SUB_BIND:-0.0.0.0}
 SUB_TRUST_XFF=${SUB_TRUST_XFF:-0}

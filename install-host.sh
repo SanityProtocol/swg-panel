@@ -39,6 +39,7 @@ BASIC_PASS="${BASIC_PASS:-}"           # blank -> random, printed at the end
 PANEL_DIR="${PANEL_DIR:-/opt/swg-panel}"
 SUB_DIR="${SUB_DIR:-/opt/swg-sub}"     # the public subscription surface (swg-sub); off until enabled in the panel
 SUB_PORT="${SUB_PORT:-8444}"           # swg-sub's listener (overridable in Settings → Subscriptions)
+LOCAL_PORT="${LOCAL_PORT:-8088}"       # dedicated STABLE plain-HTTP loopback port a co-located (master) node dials at ROOT; a public flip never moves it. Bumped below if it clashes with PORT/SUB_PORT.
 SUB_DOMAIN="${SUB_DOMAIN:-}"           # subscription page hostname, for the printed reverse-proxy config (blank = placeholder)
 SUB_BIND="${SUB_BIND:-0.0.0.0}"        # swg-sub bind addr; set to 127.0.0.1 in reverse-proxy modes so only the proxy reaches it
 SUB_USER="${SUB_USER:-swgsub}"         # swg-sub's own unprivileged user (group swg, read-only) — NOT the panel user
@@ -664,7 +665,7 @@ echo; info "BARE-METAL SWG PANEL SETUP"
 # Idempotent re-install: detect an existing panel UP FRONT and offer its saved answers as the
 # defaults for every step (mirrors the docker installer's .env reuse). To start fresh, uninstall first.
 EXISTING_HOST=no; KEEP_AUTH=no
-DOM_SAVED=""; BASE_SAVED=""; PORT_SAVED=""; TLS_SAVED=""; SERVE_SAVED=""; ROLE_SAVED=""; EMAIL_SAVED=""; NODENAME_SAVED=""; ENDPOINT_SAVED=""
+DOM_SAVED=""; BASE_SAVED=""; PORT_SAVED=""; TLS_SAVED=""; SERVE_SAVED=""; ROLE_SAVED=""; EMAIL_SAVED=""; NODENAME_SAVED=""; ENDPOINT_SAVED=""; LOCAL_PORT_SAVED=""
 _unit=/etc/systemd/system/swg-panel-server.service
 if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
   EXISTING_HOST=yes; KEEP_AUTH=yes
@@ -680,6 +681,7 @@ if [ -f "$ETC_DIR/auth" ] || [ -f "$_unit" ]; then
     EMAIL_SAVED="$(sed -n 's/^ACME_EMAIL=//p'        "$ETC_DIR/install.conf" | head -1)"
     NODENAME_SAVED="$(sed -n 's/^HOST_NODE_NAME=//p' "$ETC_DIR/install.conf" | head -1)"
     ENDPOINT_SAVED="$(sed -n 's/^HOST_ENDPOINT_IP=//p' "$ETC_DIR/install.conf" | head -1)"
+    LOCAL_PORT_SAVED="$(sed -n 's/^LOCAL_PORT=//p'   "$ETC_DIR/install.conf" | head -1)"
     # CF tokens load straight into the live vars so the prompt self-skips and re-issue (if any) just works
     [ -z "$CF_TOKEN" ]        && CF_TOKEN="$(sed -n 's/^CF_TOKEN=//p'               "$ETC_DIR/install.conf" | head -1)"
     [ -z "$CF_ORIGIN_TOKEN" ] && CF_ORIGIN_TOKEN="$(sed -n 's/^CF_ORIGIN_TOKEN=//p' "$ETC_DIR/install.conf" | head -1)"
@@ -901,6 +903,12 @@ else
   [ -z "$PORT" ] && PORT="${URL_PORT:-${PORT_SAVED:-8088}}"
 fi
 
+# dedicated stable loopback port for a co-located node: prefer the saved value (keep it stable across re-installs),
+# recover from a pre-install.conf unit, then bump off any clash with PORT/SUB_PORT so all three can bind at once.
+[ -n "$LOCAL_PORT_SAVED" ] && LOCAL_PORT="$LOCAL_PORT_SAVED"
+[ -z "$LOCAL_PORT_SAVED" ] && [ -f "$_unit" ] && { _lp="$(sed -n 's/^Environment=SWG_PANEL_LOCAL_PORT=//p' "$_unit" | head -1)"; [ -n "$_lp" ] && LOCAL_PORT="$_lp"; }
+while [ "$LOCAL_PORT" = "$PORT" ] || [ "$LOCAL_PORT" = "$SUB_PORT" ]; do LOCAL_PORT=$((LOCAL_PORT + 1)); done
+
 # (existing-install detection + saved-settings load happen up-front, at the top of PANEL SETUP)
 # Admin login — auto-generated (username admin + 3 random digits, password random); both are
 # printed at the end and can be changed later in the panel (Account). Override via BASIC_USER=/BASIC_PASS= env.
@@ -998,11 +1006,9 @@ if [ "$HOST_HAS_WG" = yes ]; then
   [ -f "$SRC/VERSION" ] && cp "$SRC/VERSION" "$PREFIX$NODED_DIR/" || true
   mkdir -p "$PREFIX/var/lib/swg-noded" "$PREFIX/var/log/swg-agent"
 
-  # the local node always reaches the local panel on loopback (works for every serve mode);
-  # scheme is https only when the panel terminates TLS itself (internal mode with a cert).
-  LOCAL_SCHEME=http
-  [ "$SERVE_MODE" = internal ] && [ "$TLS_MODE" != skip ] && LOCAL_SCHEME=https
-  LOCAL_PANEL_URL="${LOCAL_SCHEME}://127.0.0.1:${PORT}${PANEL_BASE}"
+  # the local node dials the panel's dedicated STABLE plain-HTTP loopback port, served at ROOT (no subpath).
+  # A public address/port/path/cert flip never moves this port, so the co-located node never strands.
+  LOCAL_PANEL_URL="http://127.0.0.1:${LOCAL_PORT}"
 
   # Keep an existing agent config ONLY if it already points at THIS (local) panel — a genuine re-run on a
   # master. If it points at a REMOTE panel (this box was a NODE for another panel before), re-point it to the
@@ -1033,6 +1039,15 @@ if added: json.dump(d,open(p,"w"),indent=2)
 print(",".join(added))
 PY
 )" || _merged=""
+    fi
+    # migrate the kept config to the dedicated stable loopback port (older masters dialled 127.0.0.1:<public-port><base>,
+    # which strands on a public flip). Token stays put — only the URL moves to the flip-proof root port.
+    if ! $DRYRUN; then python3 - "$PREFIX/etc/swg-agent/config.json" "$LOCAL_PANEL_URL" <<'PY' || true
+import json,sys
+p,url=sys.argv[1],sys.argv[2]
+d=json.load(open(p)); pan=d.setdefault("panel",{})
+if pan.get("url")!=url: pan["url"]=url; pan["verify"]=False; json.dump(d,open(p,"w"),indent=2)
+PY
     fi
     ok "keeping existing /etc/swg-agent/config.json (local node already enrolled)${_merged:+ + added interface(s): $(col "$C_GREEN" "$_merged")}"
   else
@@ -1152,6 +1167,7 @@ ROLE_SEL=${ROLE_SEL}
 PANEL_DOMAIN=${PANEL_DOMAIN}
 PANEL_BASE=${PANEL_BASE}
 PORT=${PORT}
+LOCAL_PORT=${LOCAL_PORT}
 TLS_MODE=${TLS_MODE}
 SERVE_MODE=${SERVE_MODE}
 SUB_DOMAIN=${SUB_DOMAIN:-}
@@ -1168,6 +1184,8 @@ write_panel_unit(){   # bind/TLS/base depend on SERVE_MODE; called from the serv
   extra="Environment=SWG_PANEL_AUTH=${ETC_DIR}/auth"            # panel does its own login in every serve mode
   [ -n "$PANEL_BASE" ] && extra="$extra
 Environment=SWG_PANEL_BASE=${PANEL_BASE}"
+  [ "$HOST_HAS_WG" = yes ] && extra="$extra
+Environment=SWG_PANEL_LOCAL_PORT=${LOCAL_PORT}"          # master: dedicated stable plain-HTTP loopback the co-located node dials at ROOT
   if [ "$SERVE_MODE" = internal ]; then
     bind="0.0.0.0"                                              # internal mode faces the network directly
     [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ] && extra="$extra

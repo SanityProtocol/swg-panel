@@ -329,6 +329,13 @@ def strip_base(path):
     transition. Records which base matched in _REQ.matched_base (drives the per-request <base href> + cookie path, so
     a tab opened on the new path gets the right ones). Returns the root-relative path ("/" for the base itself), or
     None when the request is outside every served mount. With no PANEL_BASE this is a no-op (root-mounted)."""
+    if _INTERNAL_LID is not None and getattr(_REQ, "listener_id", None) == _INTERNAL_LID:
+        # The dedicated INTERNAL loopback listener (co-located node) is ROOT-mounted, decoupled from the public mount
+        # path: a co-located node dials http://127.0.0.1:<LOCAL_PORT>/api/node/sync at a STABLE base that a public
+        # URL/path change never moves — otherwise a pathless direct-TLS URL (PANEL_BASE="") would 401 its node-sync.
+        with contextlib.suppress(Exception):
+            _REQ.matched_base = ""
+        return path
     if not PANEL_BASE:
         with contextlib.suppress(Exception):
             _REQ.matched_base = ""
@@ -1319,32 +1326,39 @@ def _srv_is_loopback_http(srv):
 
 
 def _ensure_internal_listener():
-    """Guarantee a plain-HTTP loopback endpoint for co-located nodes, independent of the public TLS posture. No-op
-    when the primary already IS one (reverse proxy: the loopback-HTTP bind nginx fronts doubles as the internal one)
-    or when no internal port is configured; otherwise bind 127.0.0.1:<LOCAL_PORT> plain HTTP once. Idempotent."""
+    """Bind the DEDICATED plain-HTTP loopback endpoint a co-located node dials — a STABLE `127.0.0.1:<LOCAL_PORT>` that
+    exists in EVERY posture (reverse-proxy OR direct-TLS) and that a public address/scheme/port/domain change never
+    moves, so the local node can't strand. Loopback carries no adversary, so this interface is always plain HTTP, never
+    a cert. In DOCKER the container side binds 0.0.0.0 so the compose-published `127.0.0.1:<LOCAL_PORT>` mapping reaches
+    it (a publish always targets the container's 0.0.0.0); it stays host-loopback-only because ONLY `127.0.0.1:<LOCAL_PORT>`
+    is published. No-op when LOCAL_PORT is 0 (no co-located node configured) or the port is already held (it must differ
+    from the public port — validation enforces that). Idempotent; (re)called at boot and after a rebind."""
     global _INTERNAL_LID
     if _INTERNAL_LID is not None and LISTENERS.get(_INTERNAL_LID) is not None:
         return _INTERNAL_LID
-    _lid, srv = LISTENERS.primary()
-    if _srv_is_loopback_http(srv) or not LOCAL_PORT:
+    if not LOCAL_PORT:
         return None
     with contextlib.suppress(OSError):
-        _INTERNAL_LID = LISTENERS.add("127.0.0.1", LOCAL_PORT, None, None)   # plain HTTP, loopback only — the internal interface
+        _INTERNAL_LID = LISTENERS.add("0.0.0.0" if IN_DOCKER else "127.0.0.1", LOCAL_PORT, None, None)   # dedicated STABLE plain-HTTP loopback
         print("internal loopback endpoint on http://127.0.0.1:%d (co-located nodes)" % LOCAL_PORT, flush=True)
         return _INTERNAL_LID
     return None
 
 
 def _panel_local_port():
-    """The port a CO-LOCATED node dials on 127.0.0.1 with PLAIN HTTP — loopback carries no network adversary, so the
-    internal interface never uses TLS. It's the dedicated internal listener's port when one is bound (direct-TLS), or
-    the primary's when the primary is itself loopback-reachable HTTP (reverse proxy). None when neither exists (the
-    panel serves only its own TLS and no internal listener is configured) — then a co-located node has no loopback
-    endpoint and falls back to the public URL. Sent every sync so a co-located node tracks a listen-port change."""
+    """The port a CO-LOCATED node dials on 127.0.0.1 with PLAIN HTTP — loopback carries no adversary, so the internal
+    interface never uses TLS. The DEDICATED stable internal listener's port when one is bound; in DOCKER the stable
+    SWG_PANEL_LOCAL_PORT the compose publishes on 127.0.0.1 (host port == container port) even before the listener is
+    up — a public flip never moves it, which is what fixes the docker co-located-node strand. Bare-metal fallback (no
+    dedicated port set, e.g. an older reverse-proxy install): the primary when it's itself loopback-reachable HTTP.
+    None when neither exists → the co-located node falls back to the public url. Sent every sync so the node tracks a
+    (rare, operator-initiated) local-port change."""
     if _INTERNAL_LID is not None:
         s = LISTENERS.get(_INTERNAL_LID)
         if s is not None:
             return int(s._swg.get("port") or 0) or None
+    if IN_DOCKER:
+        return LOCAL_PORT or None                     # stable published loopback port (even if the listener isn't up yet)
     _lid, srv = LISTENERS.primary()
     if _srv_is_loopback_http(srv):
         return int(srv._swg.get("port") or 0) or None
@@ -1412,6 +1426,27 @@ def _blessed_mode(deps):
     """The last CONFIRMED TLS mode (from the bless file), or None if unknown. The scheme the panel is really on."""
     b = load_json(_bless_path(deps), None)
     return b.get("mode") if isinstance(b, dict) and "mode" in b else None
+
+
+def _flip_marker_path(deps):
+    """Where the DOCKER restart-safe flow parks its 'awaiting reachability confirm' marker — a sibling of the bless
+    file, in the mounted state volume so it SURVIVES the container recreate. Written just before the forward recreate,
+    read by the NEW container on boot to arm the auto-revert timer, deleted on commit / discarded once acted on."""
+    return os.path.join(os.path.dirname(deps.get("nodes_path") or ".") or ".", "panel-flip-pending.json")
+
+
+def _write_flip_marker(deps, marker):
+    with contextlib.suppress(Exception):
+        atomic_write(_flip_marker_path(deps), json.dumps(marker, indent=2) + "\n")
+
+
+def _read_flip_marker(deps):
+    return load_json(_flip_marker_path(deps), None)
+
+
+def _clear_flip_marker(deps):
+    with contextlib.suppress(OSError):
+        os.unlink(_flip_marker_path(deps))
 
 
 def _restore_blessed_mode(deps):
@@ -1558,7 +1593,10 @@ def _panel_url_next():
     candidate instead of being stranded. The canonical dial URL only advances on confirm (see confirm-url)."""
     with _APPLY["lock"]:
         p = _APPLY["pending"]
-        if p and p.get("kind") == "rp-swap" and p.get("url_changed"):
+        # A reverse-proxy swap (bare-metal + docker) OR a docker restart-safe change advertises its NEW url as a
+        # fail-over candidate the moment Save runs — so ONLINE nodes dual-connect and are already reaching the new
+        # address before the docker container recreates onto it (the pre-learning that stops a recreate stranding them).
+        if p and p.get("kind") in ("rp-swap", "docker-restart") and p.get("url_changed"):
             return p.get("new_url") or ""
     return ""
 
@@ -1633,6 +1671,21 @@ def _clean_endpoint(inc, cur, default_port):
     return {"url": (str(pick("url", "") or "")).strip()[:300], "base": base, "host": host, "port": port}
 
 
+def _dns_resolves(host):
+    """True if `host` has a DNS record, False if it definitively doesn't (NXDOMAIN), None if unknown (a slow/hung
+    resolver — we time out at 2s so a settings save can NEVER stall on DNS, and stay silent rather than false-warn)."""
+    res = [None]
+    def _r():
+        try:
+            socket.getaddrinfo(host, None); res[0] = True
+        except socket.gaierror:
+            res[0] = False
+        except Exception:
+            res[0] = None
+    t = threading.Thread(target=_r, daemon=True); t.start(); t.join(2.0)
+    return res[0]
+
+
 def validate_access(incoming, current):
     """Validate + sanitize an incoming `access` block, MERGED over `current` — a partial block (any of
     panel/sub/tls absent, or a sub-block with only some fields) updates just what it carries and keeps the
@@ -1699,6 +1752,38 @@ def validate_access(incoming, current):
         errors.append("Panel and subscription are on the same host and port but different paths — two separate "
                       "servers can't share host:port. Use a different subdomain or a different port.")
 
+    # A Cloudflare CA mode can only issue with its credential present; without it issuance falls back to a self-signed
+    # cert a validating proxy (Cloudflare Full-strict) rejects with 526. Catch it HERE (a clear save error), not
+    # mid-apply. The credential may be the stored one (a blank field keeps it), so check the MERGED value.
+    if mode == "cloudflare" and not (tls["cf_token"] or "").strip():
+        errors.append("Cloudflare TLS needs a Cloudflare DNS API token (Zone:DNS:Edit + Zone:Read) — add it before "
+                      "switching, otherwise it issues a self-signed certificate Cloudflare rejects (526).")
+    if mode == "cf15" and not (tls["cf_origin_token"] or "").strip():
+        errors.append("Cloudflare Origin (cf15) TLS needs a Cloudflare Origin CA token (Zone:SSL + Certificates:Edit) — add it before switching.")
+
+    # The dedicated internal HTTP port a co-located node dials on 127.0.0.1 (plain HTTP, loopback-only) — a STABLE
+    # port a public flip never moves. Lives on the panel block. 0/absent = no co-located node configured. Must be a
+    # distinct free port (it binds its own listener), so it can't equal the panel or sub port.
+    _pin = inc.get("panel") if isinstance(inc.get("panel"), dict) else {}
+    _pcur = cur.get("panel") if isinstance(cur.get("panel"), dict) else {}
+    _lpv = _pin.get("local_port") if "local_port" in _pin else _pcur.get("local_port")
+    try:
+        panel["local_port"] = max(0, min(65535, int(_lpv or 0)))
+    except (TypeError, ValueError):
+        panel["local_port"] = 0
+    if panel["local_port"] and panel["local_port"] in (panel["port"], sub["port"]):
+        errors.append("The local-node port %d clashes with the panel/subscription port — pick a distinct, free "
+                      "loopback port for the co-located node." % panel["local_port"])
+
+    # advisory (never blocks): a domain URL with NO DNS record is almost always a typo or an un-set-up domain, and the
+    # address change would then fail its reachability confirm. Only for a real hostname (not an IP); silent on a slow
+    # resolver so the save can't stall.
+    for name, ep in (("Panel", panel), ("Subscription", sub)):
+        _h = _url_host(ep["url"])
+        if ep["url"] and _h and not _is_ip(_h) and _dns_resolves(_h) is False:
+            warnings.append("%s: the domain %s has no DNS record — check the URL and its DNS, or the new address "
+                            "won't be reachable." % (name, _h))
+
     return {"panel": panel, "sub": sub, "tls": tls}, errors, warnings
 
 
@@ -1706,7 +1791,16 @@ def _access_public_view(deps):
     """Redacted `access` for the browser: the CF tokens never leave the panel (has_* booleans instead)."""
     acc = (deps.get("panel_settings") or {}).get("access") or {}
     tls = acc.get("tls") or {}
-    return {"panel": acc.get("panel") or {}, "sub": acc.get("sub") or {},
+    panel = dict(acc.get("panel") or {})
+    # The co-located node's loopback port. The dedicated internal listener binds from SWG_PANEL_LOCAL_PORT, so the
+    # LIVE bound port is the single source of truth (a saved value can't rebind it) — always surface that. Absent →
+    # no co-located node → the UI hides the field. Shown read-only: it's set at install and a public flip never moves it.
+    _lp = _panel_local_port()
+    if _lp:
+        panel["local_port"] = _lp
+    else:
+        panel.pop("local_port", None)
+    return {"panel": panel, "sub": acc.get("sub") or {},
             "tls": {"mode": tls.get("mode") or "", "email": tls.get("email") or "",
                     "has_cf_token": bool(tls.get("cf_token")),
                     "has_cf_origin_token": bool(tls.get("cf_origin_token"))}}
@@ -4359,6 +4453,8 @@ def api(method, path, qs, body, deps):
             "panel_migrate_revertable": bool(_mstat.get("revert_to")) and _mgrace,   # a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move"; auto-clears at grace end (no stale flag)
             "panel_migrate_prev": (_mstat.get("revert_to") or None) if _mgrace else None,   # the OLD address to POST /api/access/cancel with (only while the undo is still possible)
             "access_cooldown": (lambda cd: {"secs": cd[0], "reason": cd[1]})(_access_cooldown()),   # while a change is verifying/gracing → Access&TLS disables Save + shows the one-at-a-time cooldown
+            "docker_awaiting": ({"nonce": _mstat.get("nonce"), "new_url": _mstat.get("new_url")}   # docker restart-safe recreate came up awaiting a reachability confirm → THIS browser reaching /api/state IS the proof, so any tab auto-commits (see the global effect); absent otherwise
+                                if _mstat.get("state") == "docker-awaiting" and _mstat.get("nonce") else None),
 
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
@@ -4564,6 +4660,20 @@ def api(method, path, qs, body, deps):
             if _acc_errs:
                 return 400, {"ok": False, "error": "; ".join(_acc_errs), "errors": _acc_errs,
                              "warnings": _access_warnings, "code": "bad_request"}
+            # Don't let an address change land while a previous one is still un-confirmed: persisting it would push
+            # the saved settings AHEAD of the live listener/cert (the settings-ahead-of-live trap a rollback then
+            # can't cleanly undo). The UI disables Save during a pending change; this closes the API path too. Only
+            # the address-shaping fields gate it — an unrelated re-save (or an identical no-op) still passes.
+            def _acc_addr_sig(a):
+                p = (a or {}).get("panel") or {}; s = (a or {}).get("sub") or {}; t = (a or {}).get("tls") or {}
+                return (p.get("url"), p.get("host"), p.get("port"),
+                        s.get("url"), s.get("host"), s.get("port"), t.get("mode"))
+            with _APPLY["lock"]:
+                _acc_pending = _APPLY["pending"] is not None
+            if _acc_pending and _acc_addr_sig(_acc_clean) != _acc_addr_sig(cur.get("access")):
+                return 409, {"ok": False, "code": "cooldown",
+                             "error": "an address change is still waiting to be confirmed — confirm it on the new "
+                                      "address, cancel it, or wait for it to revert before changing these settings."}
             cur["access"] = _acc_clean
         deps["panel_settings"] = cur
         # NB: a public-URL change is NOT adopted as the node dial URL here — the browser always follows a URL save
@@ -4595,6 +4705,11 @@ def api(method, path, qs, body, deps):
         if _pstat.get("state") == "rp-swap":               # remaining seconds on the Confirm-button arming hold, from
             _pstat = dict(_pstat)                          # when the swap was armed (`at`) → a page reload continues the
             _pstat["arm_secs"] = max(0, RP_CONFIRM_ARM_S - (int(time.time()) - int(_pstat.get("at") or 0)))   # SAME countdown, not a fresh 60s
+        if _pstat.get("state") == "docker-restart":        # remaining arming hold from the pending's absolute arm_at →
+            with _APPLY["lock"]:                           # a reload continues the SAME node-learning countdown, not a fresh one
+                _dp = _APPLY["pending"] or {}
+            _pstat = dict(_pstat)
+            _pstat["arm_secs"] = max(0, int(_dp.get("arm_at") or 0) - int(time.time()))
         _cd = _access_cooldown()
         return 200, {"ok": True, "panel": _pstat, "sub": _SUBAPPLY["status"],
                      "pending": bool(_APPLY["pending"]),
@@ -4644,16 +4759,19 @@ def api(method, path, qs, body, deps):
         if scheme_flip and same_bind:
             return 409, {"ok": False, "code": "flip_needs_bind",
                          "error": "switching between a reverse proxy and direct TLS also needs a Listen IP/port change — direct TLS binds a public address (e.g. 0.0.0.0:443); behind a proxy the panel stays on 127.0.0.1:<internal>. Set the Listen IP/port to match the new mode, then save."}
-        if scheme_flip and IN_DOCKER:
-            # Docker can't live-rebind or dual-serve two schemes, so a flip is one atomic .env write of the target
-            # scheme+bind (via the netctl-docker `flip` verb) + a container RECREATE. That means NO bare-metal
-            # dual-listen+confirm dance — so we HARDEN it three ways so a bad flip can never strand nodes:
-            #  (1) pre-flight: refuse a CA mode whose credential is missing (it would serve a self-signed cert a
-            #      validating proxy like Cloudflare rejects with 526);
-            #  (2) the flip verb carries the cert credential into .env, recreates, VERIFIES the served cert is a real
-            #      CA cert, and AUTO-ROLLS-BACK the container to the previous scheme if it fell back to self-signed;
-            #  (3) we do NOT advance the blessed dial address here — a pending-flip marker lets the panel adopt the new
-            #      url on its next boot ONLY if it actually came up in the target scheme (a rollback keeps the old url).
+        docker_recreate = IN_DOCKER and (scheme_flip or not same_bind or (target_https and need_cert))
+        if docker_recreate:
+            # DOCKER restart-safe address change. A single container can't live-rebind or dual-serve two schemes/ports,
+            # so any node-affecting change (a reverse-proxy↔direct-TLS flip, a direct-TLS port/domain change) — or a
+            # restart-safety one (a reverse-proxy INTERNAL-port move) — is applied by RECREATING the container. To keep
+            # that recreate from stranding nodes, and to PROVE the new address works before the old one is torn down, it
+            # runs as a THREE-STEP flow (this is Save = step 1) instead of one shot:
+            #   (1) Save (here): advertise the new url to nodes as a fail-over CANDIDATE (via _panel_url_next → nodes
+            #       dual-connect and LEARN it) and arm a Confirm/Revert card. NOTHING is recreated — Revert is a no-op.
+            #   (2) Confirm (/api/access/docker-confirm): DRY-RUN the new params in a throwaway container (issue+verify
+            #       the cert, check the target port is free); only on success recreate the live container + park a marker.
+            #   (3) After the recreate the NEW panel reads the marker, arms an AUTO-REVERT timer, and the browser lands
+            #       on the new url and commits; if the new url is never reached before the deadline it recreates back.
             _tls = acc.get("tls") or {}
             if target_https and mode == "cloudflare" and not str(_tls.get("cf_token") or "").strip():
                 return 409, {"ok": False, "code": "flip_needs_cred",
@@ -4661,18 +4779,38 @@ def api(method, path, qs, body, deps):
             if target_https and mode == "cf15" and not str(_tls.get("cf_origin_token") or "").strip():
                 return 409, {"ok": False, "code": "flip_needs_cred",
                              "error": "Cloudflare Origin (cf15) TLS needs a Cloudflare Origin CA token — add it in Access & TLS before switching."}
-            _lp = cur["port"] if target_https else ""   # direct-TLS keeps the old reverse-proxy port as the loopback internal one for co-located nodes; reverse-proxy's primary IS the internal port
-            # The flip verb (host-side) is the AUTHORITY: it optimistically blesses d_url, recreates, verifies the
-            # served cert, and rolls BOTH the scheme and the blessed dial address back on failure — so a broken flip
-            # can never advertise the new url to nodes. Pass d_url so it can bless it; we do NOT advance blessed here.
-            _netctl_enqueue(deps, "flip", ["panel", (mode if target_https else "none"), d_host, str(d_port), str(_lp), d_url])
-            _apply_status("saved", "recreating the panel container to switch TLS — reconnect at %s once it's back. "
-                          "The switch is verified: if the certificate can't be issued it rolls back automatically." % d_url,
-                          new_url=d_url)
-            return 200, {"ok": True, "applied": True, "docker_recreate": True, "new_url": d_url,
-                         "message": "switching TLS mode recreates the panel container (a few seconds of downtime). "
-                                    "It's verified — if the new certificate can't be issued, the panel rolls back to the "
-                                    "current address. Reconnect at %s once it's back." % d_url}
+            new_pub = _compute_public_url(deps)
+            old_pub = _CONFIRMED_URL if _CONFIRMED_URL is not None else new_pub
+            url_changed = bool(new_pub) and _url_authority(new_pub) != _url_authority(old_pub)
+            new_base = urllib.parse.urlparse(new_pub if "://" in new_pub else "https://" + new_pub).path.rstrip("/")
+            _lp = ""   # NEVER change PANEL_LOCAL_PORT on a public flip — the co-located node's dedicated 127.0.0.1:<LOCAL_PORT> HTTP endpoint is STABLE (set once at install, published separately), so a flip leaves it untouched and the local node can't strand
+            _bmode = _blessed_mode(deps)
+            _old_tls = (_bmode if (cur_https and _bmode) else ("selfsigned" if cur_https else "none"))
+            with _APPLY["lock"]:
+                if _APPLY["pending"] is not None:
+                    return 409, {"ok": False, "error": "an address change is already pending", "code": "busy"}
+                _nonce = secrets.token_hex(12)
+                _now = int(time.time())
+                _APPLY["pending"] = {
+                    "kind": "docker-restart", "nonce": _nonce,
+                    "arm_at": _now + DOCKER_ARM_S, "deadline": _now + DOCKER_STEP1_TTL,
+                    "url_changed": url_changed, "old_url": old_pub, "new_url": new_pub,
+                    # forward target (the flip-verb args used to recreate onto the new address at Confirm)
+                    "tls": (mode if target_https else "none"), "host": d_host, "port": d_port,
+                    "localport": _lp, "domain": d_domain, "new_base": new_base,
+                    # the address to recreate BACK to if the new one is never reached (the auto-revert target)
+                    "old": {"tls": _old_tls, "host": cur["host"], "port": cur["port"],
+                            "localport": (str(LOCAL_PORT) if LOCAL_PORT else ""),
+                            "url": old_pub, "base": PANEL_BASE}}
+            threading.Thread(target=_docker_step1_expire, name="docker-step1-ttl",
+                             args=(deps, _nonce, DOCKER_STEP1_TTL), daemon=True).start()
+            _apply_status("docker-restart", "review the change, then Confirm & restart (or Revert)",
+                          nonce=_nonce, arm_secs=DOCKER_ARM_S, url_changed=url_changed,
+                          old_url=old_pub, new_url=new_pub, probe_url=new_pub, port=d_port,
+                          port_move=(not url_changed))
+            return 200, {"ok": True, "applied": False, "docker_restart": {
+                "nonce": _nonce, "arm_secs": DOCKER_ARM_S, "url_changed": url_changed,
+                "old_url": old_pub, "new_url": new_pub, "port": d_port, "port_move": (not url_changed)}}
         if mode in ("", "skip"):
             # Behind a plain reverse proxy the panel is reached THROUGH the proxy on the public URL; the listen
             # host:port is the proxy's INTERNAL upstream, not a public address. So the "wait for the new address to
@@ -5069,6 +5207,83 @@ def api(method, path, qs, body, deps):
         _confirm_panel_url(deps)   # adopt the new url → nodes are now told to dial it; the old candidate is dropped
         _apply_status("saved", "panel is now reached at %s" % new_url, new_url=new_url, grace_until=_grace_until,
                       revertable=bool(_revert_to), revert_to=_revert_to)
+        return 200, {"ok": True, "saved": True}
+
+    if method == "POST" and path == "/api/access/docker-confirm":
+        # DOCKER restart-safe flow, STEP 2: the operator hit "Confirm & restart". DRY-RUN the new params in a throwaway
+        # container first (issue+verify the cert, check the port is free) — WITHOUT touching the live panel — and only
+        # if that passes do we park the auto-revert marker and recreate the live container onto the new address. A
+        # dry-run failure changes nothing: the candidate stays advertised so the operator can fix it and retry, or Revert.
+        nonce = (str(body.get("nonce") or "")).strip()
+        with _APPLY["lock"]:
+            pend = _APPLY["pending"]
+            if not pend or pend.get("kind") != "docker-restart" or not nonce or not hmac.compare_digest(pend.get("nonce", ""), nonce):
+                return 400, {"ok": False, "error": "no matching change is waiting to be confirmed", "code": "bad_request"}
+            _arm_left = int(pend.get("arm_at", 0)) - int(time.time())
+            if _arm_left > 0:
+                return 409, {"ok": False, "code": "arming", "arm_secs": _arm_left,
+                             "error": "hold on %ds — the nodes are still learning the new address so the restart won't strand them" % _arm_left}
+            _p = dict(pend)   # snapshot the fields we need OUTSIDE the lock (the dry-run can take a while)
+        rid = _netctl_enqueue(deps, "dryrun", [_p["tls"], _p.get("domain") or "", str(_p["port"])])
+        ok, msg = _netctl_wait(deps, rid, timeout=220)
+        if not ok:
+            _apply_status("docker-restart", "the dry-run failed — nothing was changed. %s" % (msg or "the new address wouldn't work"),
+                          nonce=nonce, arm_secs=0, url_changed=_p.get("url_changed"), dryrun_failed=True,
+                          old_url=_p.get("old_url"), new_url=_p.get("new_url"), probe_url=_p.get("new_url"))
+            return 200, {"ok": False, "code": "dryrun_failed",
+                         "error": (msg or "the new address wouldn't work") + " — nothing was changed. Fix it and try again, or Revert."}
+        # Dry-run passed → park the marker (survives the recreate; the NEW panel reads it to arm auto-revert) THEN
+        # recreate. The flip verb optimistically blesses the new url + rolls back on a CA failure, so a broken cert can
+        # never advertise the new address; the marker layer on top catches the residual case (the cert is fine but the
+        # new url is unreachable through the proxy — e.g. a firewall not opened) and recreates back after the grace.
+        _write_flip_marker(deps, {"nonce": nonce, "grace_secs": DOCKER_REACH_GRACE,
+                                  "new_url": _p.get("new_url"), "url_changed": bool(_p.get("url_changed")),
+                                  "old": _p.get("old")})
+        _netctl_enqueue(deps, "flip", ["panel", _p["tls"], _p["host"], str(_p["port"]),
+                                       str(_p.get("localport") or ""), _p.get("new_url") or ""])
+        _port_move = not _p.get("url_changed")
+        _recmsg = ("restarting the panel container onto internal port %s — re-point your reverse proxy to it (it reverts if it stays unreachable)" % _p.get("port")
+                   if _port_move else "restarting the panel container — reconnect at %s once it's back" % (_p.get("new_url") or "the new address"))
+        _apply_status("docker-recreating", _recmsg, nonce=nonce, url_changed=_p.get("url_changed"),
+                      new_url=_p.get("new_url"), probe_url=_p.get("new_url"), port=_p.get("port"), port_move=_port_move)
+        _msg = (("the panel container is restarting onto internal port %s. Re-point your reverse proxy's upstream to it and "
+                 "reload the proxy — it confirms automatically once reachable, or rolls back to the current port." % _p.get("port"))
+                if _port_move else
+                ("the panel container is restarting. Reconnect at %s once it's back — if it can't be reached there it rolls "
+                 "back to the current address automatically." % (_p.get("new_url") or "the new address")))
+        return 200, {"ok": True, "docker_recreate": True, "new_url": _p.get("new_url"),
+                     "port": _p.get("port"), "port_move": _port_move, "message": _msg}
+
+    if method == "POST" and path == "/api/access/docker-revert":
+        # DOCKER restart-safe flow, REVERT before the recreate: drop the candidate the nodes were dual-connecting to and
+        # roll the saved settings back to the blessed address. Everything step 1 did was ADDITIVE (a candidate url + a
+        # saved-ahead settings write); nothing was recreated, so this is an instant, safe no-op for the live panel.
+        with _APPLY["lock"]:
+            pend = _APPLY["pending"]
+            if not pend or pend.get("kind") != "docker-restart":
+                return 400, {"ok": False, "error": "no pending change to revert", "code": "bad_request"}
+            old = pend.get("old") or {}
+            _APPLY["pending"] = None
+        _rollback_panel_url(deps, old.get("url"), old.get("host"), old.get("port"))
+        _restore_blessed_mode(deps)
+        _apply_status("saved", "reverted — nothing changed")
+        return 200, {"ok": True, "reverted": True}
+
+    if method == "POST" and path == "/api/access/docker-commit":
+        # DOCKER restart-safe flow, STEP 3: the browser reached THIS (new) panel on the new url — that IS the
+        # reachability proof (nodes dial the same url through the same proxy). Commit: clear the marker + drop the
+        # awaiting pending so the boot-time auto-revert timer stands down. The blessed url already advanced (the flip
+        # verb blessed it before the recreate), so there's nothing else to adopt.
+        nonce = (str(body.get("nonce") or "")).strip()
+        with _APPLY["lock"]:
+            pend = _APPLY["pending"]
+            if not pend or pend.get("kind") != "docker-awaiting" or not nonce or not hmac.compare_digest(pend.get("nonce", ""), nonce):
+                return 400, {"ok": False, "error": "no reachability confirmation is pending", "code": "bad_request"}
+            _APPLY["pending"] = None
+        _clear_flip_marker(deps)
+        _confirm_panel_url(deps)   # re-affirm the (already-blessed) new url as the dial address; drops the candidate
+        _apply_status("saved", "the panel is now reached at %s" % (pend.get("new_url") or "the new address"),
+                      new_url=pend.get("new_url"))
         return 200, {"ok": True, "saved": True}
 
     if method == "POST" and path == "/api/access/apply-sub":
@@ -8690,6 +8905,14 @@ NODE_MIGRATE_GRACE = 180                 # seconds to KEEP the old listener afte
                                          # once on the old address and learn the new one (pin-gated auto-repoint)
 RP_CONFIRM_ARM_S = 60                    # reverse-proxy swap: the Confirm button is held disabled this long from when
                                          # the swap was armed (a reload continues the same countdown, not a fresh one)
+DOCKER_ARM_S     = 20                    # docker restart-safe change: hold "Confirm & restart" disabled this long after
+                                         # Save so ONLINE nodes sync at least once and LEARN the new url (dual-connect)
+                                         # BEFORE the recreate — that pre-learning is what stops the recreate stranding them
+DOCKER_STEP1_TTL = 600                   # if the operator neither confirms nor reverts within this, auto-drop the candidate
+                                         # (nothing was recreated yet, so this is a clean no-op — just stops a stuck pending)
+DOCKER_REACH_GRACE = 150                 # after the recreate, the new panel waits this long for a reachability confirm
+                                         # (browser proves the new url answers through the proxy); no confirm → AUTO-REVERT
+                                         # the container to the previous address, so an unreachable new url self-heals
 SUB_MIGRATE_GRACE = 600                  # a sub PATH change serves the OLD base this long (10 min) before retiring it —
                                          # longer than the node grace because it's PEOPLE re-copying their links, not
                                          # nodes auto-following
@@ -8970,6 +9193,80 @@ def _restore_panel_bind(deps, host, port):
         ps.setdefault("access", {})["panel"] = pnl
         deps["panel_settings"] = ps
         save_critical(deps.get("panel_settings_path") or "", json.dumps(ps, indent=2) + "\n")
+
+
+def _docker_step1_expire(deps, nonce, ttl):
+    """Auto-drop a docker restart-safe CANDIDATE the operator never confirmed or reverted within DOCKER_STEP1_TTL. A
+    clean no-op (nothing was recreated) — it just stops a stuck pending from blocking further changes and stops the
+    nodes dual-connecting to an address that's going nowhere."""
+    time.sleep(max(1, int(ttl)))
+    with _APPLY["lock"]:
+        pend = _APPLY["pending"]
+        if not pend or pend.get("kind") != "docker-restart" or pend.get("nonce") != nonce:
+            return
+        old = pend.get("old") or {}
+        _APPLY["pending"] = None
+    _rollback_panel_url(deps, old.get("url"), old.get("host"), old.get("port"))
+    _restore_blessed_mode(deps)
+    _apply_status("idle", "the pending change expired — nothing was changed")
+
+
+def _docker_await_reachability(deps, marker):
+    """In the NEW container after a docker restart-safe recreate: wait DOCKER_REACH_GRACE for a reachability commit
+    (the browser reaching the new url → /api/access/docker-commit clears the awaiting pending). If none arrives, the
+    new address is unreachable through the proxy (e.g. a firewall port never opened) → RECREATE back to the previous
+    address so nodes and the operator self-heal onto the address that still works. On that reverted boot the marker's
+    new_url no longer matches the (restored) blessed url, so _arm_docker_flip_marker discards it and reports the fail."""
+    nonce = marker.get("nonce")
+    deadline = int(time.time()) + int(marker.get("grace_secs") or DOCKER_REACH_GRACE)
+    while int(time.time()) < deadline:
+        time.sleep(2)
+        with _APPLY["lock"]:
+            pend = _APPLY["pending"]
+        if not pend or pend.get("kind") != "docker-awaiting" or pend.get("nonce") != nonce:
+            return                                # committed (reachable) — the change stuck; nothing to revert
+    old = marker.get("old") or {}
+    _apply_status("docker-reverting", "the new %s couldn't be reached — rolling back to the previous one" % ("port" if not marker.get("url_changed") else "address"),
+                  new_url=old.get("url"))
+    # A url-changed rollback is detected on the reverted boot (blessed != marker new_url) and cleared there. A PORT move
+    # never moves blessed, so the reverted boot can't tell it rolled back — clear the marker HERE, else it re-arms forever.
+    if not marker.get("url_changed"):
+        _clear_flip_marker(deps)
+    # revert-flip restores the .env + blessed snapshot the forward flip saved host-side — the ONLY place that knows the
+    # real published PANEL_PORT (distinct from the panel's in-container bind). Reconstructing a `flip` from the panel's
+    # own listener would use the wrong port (the internal 8443) and the recreate would fail. No args: the snapshot IS the target.
+    _netctl_enqueue(deps, "revert-flip", ["panel"])
+    # the recreate replaces this process; the reverted boot discards the stale marker (new_url != blessed).
+
+
+def _arm_docker_flip_marker(deps):
+    """At boot, act on a docker restart-safe marker parked just before a recreate (see /api/access/docker-confirm):
+      • a url-CHANGED flip whose blessed url did NOT advance → the flip verb rolled the container back (a CA failure)
+        → clear it + surface the fail;
+      • otherwise the recreate took → AWAIT a reachability commit, else auto-revert. This covers both a url-changed
+        flip (blessed advanced) AND a reverse-proxy INTERNAL-port move (public url unchanged, but the published port
+        moved so the proxy must be re-pointed — the reachability check catches a forgotten re-point and reverts)."""
+    mk = _read_flip_marker(deps)
+    if not mk:
+        return
+    new_url = mk.get("new_url") or ""
+    blessed = _CONFIRMED_URL if _CONFIRMED_URL is not None else _compute_public_url(deps)
+    if mk.get("url_changed") and not (new_url and _url_authority(blessed) == _url_authority(new_url)):
+        _clear_flip_marker(deps)   # a url-changed flip that never advanced blessed → the flip verb rolled it back
+        _apply_status("failed", "the address change was rolled back automatically — the panel is still reached at %s" % blessed,
+                      new_url=blessed)
+        return
+    _port_move = not mk.get("url_changed")
+    with _APPLY["lock"]:
+        _APPLY["pending"] = {"kind": "docker-awaiting", "nonce": mk.get("nonce"),
+                             "deadline": int(time.time()) + int(mk.get("grace_secs") or DOCKER_REACH_GRACE),
+                             "url_changed": bool(mk.get("url_changed")), "new_url": new_url, "old": mk.get("old")}
+    _msg = ("restarted onto a new internal port — re-point your reverse proxy to it; reverting if it stays unreachable…"
+            if _port_move else "confirming the panel is reachable at %s…" % new_url)
+    _apply_status("docker-awaiting", _msg, nonce=mk.get("nonce"), new_url=new_url, probe_url=new_url,
+                  arm_secs=0, url_changed=bool(mk.get("url_changed")), port_move=_port_move)
+    threading.Thread(target=_docker_await_reachability, name="docker-reach",
+                     args=(deps, mk), daemon=True).start()
 
 
 def _rollback_panel_url(deps, url, host, port):
@@ -9375,6 +9672,8 @@ _SUBAPPLY = {"lock": threading.Lock(), "status": {"state": "idle", "message": ""
 _SUB_LIVE_BIND = None
 _SUB_LIVE_BASE = None                    # the reverse-proxy mount base swg-sub is currently serving → lets an apply tell
                                          # a PATH change (reload + dual-base, no restart) from a BIND change (restart)
+_SUB_LIVE_TLS = None                     # whether swg-sub is currently serving its OWN TLS (direct-TLS) vs plain HTTP
+                                         # (reverse-proxy) → a scheme flip must RESTART it (SIGHUP can't switch HTTP↔HTTPS)
 
 
 def _sub_url_base(url):
@@ -9434,11 +9733,13 @@ def _sub_selfheal(deps, prev, why):
 
 
 def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
-    global _SUB_LIVE_BIND, _SUB_LIVE_BASE
+    global _SUB_LIVE_BIND, _SUB_LIVE_BASE, _SUB_LIVE_TLS
     prev = dict(_SUB_LIVE_BIND) if _SUB_LIVE_BIND else {"host": d_host, "port": d_port}   # fall-back on failure
     new_base = _sub_url_base(d_url)
     old_base = _SUB_LIVE_BASE if _SUB_LIVE_BASE is not None else new_base
     bind_changed = (_SUB_LIVE_BIND is None) or (d_host, d_port) != (_SUB_LIVE_BIND.get("host"), _SUB_LIVE_BIND.get("port"))
+    _want_tls = mode not in ("", "skip")
+    scheme_change = (_SUB_LIVE_TLS is not None) and (_want_tls != bool(_SUB_LIVE_TLS))   # crossed reverse-proxy ↔ direct-TLS → swg-sub must REBIND its scheme (a SIGHUP reload can't switch HTTP↔HTTPS), so restart it
     # Behind a reverse proxy, swg-sub only serves the INTERNAL bind — the public address works only if the operator's
     # proxy actually routes it here. Remind them on every reverse-proxy sub apply (the proxy config is on THEM).
     _rp_note = (" Make sure your reverse proxy (nginx / Caddy / …) routes this address to swg-sub — see the "
@@ -9449,24 +9750,38 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
             ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "issue-cert", ["sub", d_domain]), 180)
             if not ok:
                 return _subapply_status("failed", "certificate issuance failed: " + (msg or "unavailable"))
-        if not bind_changed:
-            # No new socket → a SIGHUP RELOAD picks up the new base / renewed cert with NO restart and NO crash-loop
-            # wait (nothing is re-bound, so nothing can fail to bind). For a reverse-proxy PATH change we keep the OLD
-            # base live too (dual-base) through a grace, so existing subscription links keep working while users move.
+        if not bind_changed and not scheme_change:
+            # No new socket + no scheme flip → a SIGHUP RELOAD picks up the new base / renewed cert with NO restart and
+            # NO crash-loop wait (nothing is re-bound, so nothing can fail to bind). For a reverse-proxy PATH change we
+            # keep the OLD base live too (dual-base) through a grace, so existing subscription links keep working.
             _subapply_status("applying", "reloading swg-sub")
             path_change = old_base != new_base and mode in ("", "skip")
             if path_change:
                 write_sub_serve(deps, base_alt=old_base)       # serve BOTH the new and old base
             rid = _netctl_enqueue(deps, "reload", ["sub"])
             if rid is None:                                     # no root helper (docker) → settings saved; operator reloads
-                _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base
+                _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base; _SUB_LIVE_TLS = _want_tls
                 return _subapply_status("saved", "settings saved — reload swg-sub to apply "
                                         "(no root helper on this host: run `systemctl reload swg-sub`, or recreate the container)")
             _netctl_wait(deps, rid, 15)
             if path_change:
                 _drop_sub_alt_base_later(deps, SUB_MIGRATE_GRACE)   # after the grace, retire the old base
-            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base
+            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base; _SUB_LIVE_TLS = _want_tls
             return _subapply_status("saved", "subscription server reloaded — now reached at %s%s"
+                                    % ((d_url or "%s:%d" % (d_host, d_port)), _rp_note))
+        if scheme_change and not bind_changed:
+            # SCHEME FLIP with the same bind → swg-sub must RESTART to switch HTTP↔HTTPS (a SIGHUP can't) and pick up
+            # its own cert (the panel issues it async). No new socket to clash → no crash-loop verify, just restart.
+            # In docker `restart sub` recreates swg-sub, which then WAITS for its cert before binding HTTPS.
+            _subapply_status("applying", "restarting swg-sub for the TLS change")
+            rid = _netctl_enqueue(deps, "restart", ["sub"])
+            if rid is None:
+                _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base; _SUB_LIVE_TLS = _want_tls
+                return _subapply_status("saved", "settings saved — restart swg-sub to apply the TLS change "
+                                        "(no root helper on this host: run `systemctl restart swg-sub`, or recreate the container)")
+            _netctl_wait(deps, rid, 120)                       # allow swg-sub's cert-wait (a fresh cert can take ~90s)
+            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base; _SUB_LIVE_TLS = _want_tls
+            return _subapply_status("saved", "subscription server restarted — now reached at %s%s"
                                     % ((d_url or "%s:%d" % (d_host, d_port)), _rp_note))
         # BIND CHANGED → persist the new bind (drop-in), WAIT for it, THEN restart. This is the ONLY path that needs
         # the crash-loop verify (a bad new bind, e.g. a port already in use). Serialize: the queue drains by sorted
@@ -9478,7 +9793,7 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
             # panel can't rebind or restart swg-sub itself. The settings are ALREADY saved (serve.json), so swg-sub
             # adopts the new bind + reverse-proxy base on its next restart, which the operator / the container
             # orchestrator performs. Keep the saved config — do NOT revert (reverting is what dropped the change).
-            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base
+            _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base; _SUB_LIVE_TLS = _want_tls
             return _subapply_status("saved", "settings saved — restart swg-sub to apply "
                                     "(no root helper on this host: run `systemctl restart swg-sub`, or recreate the container)")
         ok, msg = _netctl_wait(deps, rid, 30)
@@ -9489,7 +9804,7 @@ def _apply_sub_worker(deps, d_host, d_port, d_url, d_domain, mode):
         ok, msg = _netctl_wait(deps, _netctl_enqueue(deps, "restart", ["sub"]), 60)
         if not ok:
             return _sub_selfheal(deps, prev, "couldn't bind the subscription server on %s:%d" % (d_host, d_port))
-        _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base
+        _SUB_LIVE_BIND = {"host": d_host, "port": d_port}; _SUB_LIVE_BASE = new_base; _SUB_LIVE_TLS = _want_tls
         _subapply_status("saved", "subscription server now on %s:%d%s" % (d_host, d_port, _rp_note))
     except Exception as e:
         _sub_selfheal(deps, prev, "internal error: %s" % (e,))
@@ -9619,6 +9934,8 @@ def main():
                 save_critical(Handler.deps.get("panel_settings_path") or "", json.dumps(_ps, indent=2) + "\n")
                 print("access: boot self-heal — saved canonical '%s' not covered by the cert; reconciled to '%s'" % (_saved_dom, _cert_dom), flush=True)
     _seed_confirmed_url_at_boot(Handler.deps)   # seed _CONFIRMED_URL from the BLESSED confirmed-state file (not raw settings) + reconcile any saved-but-unconfirmed change back to what's live; bootstraps the blessed file on a never-confirmed install
+    if IN_DOCKER:
+        _arm_docker_flip_marker(Handler.deps)   # did we just recreate for a docker restart-safe change? arm the reachability-confirm/auto-revert timer (or clear a rolled-back marker)
     # The primary listener goes into the live registry (so Access & TLS can add a second one on a new
     # address and drop this one only after the browser confirms). _TLSServer with ssl_ctx=None is plain HTTP.
     scheme = "https" if (TLS_CERT and TLS_KEY) else "http"

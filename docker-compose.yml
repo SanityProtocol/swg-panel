@@ -22,14 +22,23 @@ services:
     restart: unless-stopped
     profiles: ["host", "master", "host-node"]
     ports:
-      - "${PANEL_BIND:-0.0.0.0}:${PANEL_PORT:-443}:8443"   # host-published port → container's 8443
+      - "${PANEL_BIND:-0.0.0.0}:${PANEL_PORT:-443}:8443"   # PUBLIC port → container's 8443 (moves on a scheme/port change)
       # PANEL_BIND=127.0.0.1 (set by install-docker for TLS=none) keeps the panel on loopback so ONLY your
       # own reverse proxy reaches it. host port 80 (Let's Encrypt HTTP-01) is added by docker-compose.override.yml,
       # which the installer writes ONLY for TLS=letsencrypt(-ip) — so other TLS methods don't clash with nginx/apache on :80.
+      # STABLE co-located-node endpoint: a dedicated plain-HTTP loopback port (host==container) that a public flip
+      # NEVER moves, so a master's local node dials http://127.0.0.1:<PANEL_LOCAL_PORT> and can't strand. Host-loopback
+      # only. Distinct from the public port. (Harmless spare listener on a host-only panel with no co-located node.)
+      - "127.0.0.1:${PANEL_LOCAL_PORT:-8088}:${PANEL_LOCAL_PORT:-8088}"
     environment:
       PANEL_USER: "${PANEL_USER:-admin}"
       PANEL_PASSWORD: "${PANEL_PASSWORD:?set PANEL_PASSWORD in .env}"
       PANEL_DOMAIN: "${PANEL_DOMAIN:-localhost}"
+      # The subscription page's own hostname. When set (and TLS is a real mode) the entrypoint issues swg-sub its
+      # OWN cert for this name into ./data/sub-tls — the direct-TLS sub then serves HTTPS instead of 525'ing behind
+      # a Cloudflare Full zone. Defaults to PANEL_DOMAIN so a sub sharing the panel's domain (a different port) just
+      # works; set it explicitly in .env when the sub is on its own subdomain.
+      SUB_DOMAIN: "${SUB_DOMAIN:-${PANEL_DOMAIN:-}}"
       # TLS is issued INSIDE the container by the bundled acme.sh — same options as bare-metal:
       #   letsencrypt | letsencrypt-ip | cloudflare | cf15 | selfsigned | none   (or mount a real cert below)
       TLS: "${TLS:-selfsigned}"
@@ -37,12 +46,14 @@ services:
       CF_TOKEN: "${CF_TOKEN:-}"           # cloudflare DNS-01: token with Zone:DNS:Edit + Zone:Read
       CF_ORIGIN_TOKEN: "${CF_ORIGIN_TOKEN:-}"  # cf15: token with Zone:SSL and Certificates:Edit
       SWG_PANEL_BASE: "${PANEL_BASE:-}"   # optional subpath mount, e.g. /swg (blank = root)
+      SWG_PANEL_LOCAL_PORT: "${PANEL_LOCAL_PORT:-8088}"   # the panel binds a dedicated 0.0.0.0:<this> plain-HTTP listener → reached ONLY via the 127.0.0.1:<this> publish above; the STABLE loopback endpoint a co-located node dials
       SWG_UPDATE_TRIGGER: "${SWG_UPDATE_TRIGGER:-}"   # set by install-docker when it wires the host one-click updater (swg-update.path watches data/lib/.update-request); blank = manual update only
       SWG_HOST_HOSTNAME: "${SWG_HOST_HOSTNAME:-}"     # the HOST's hostname (install-docker sets it) — lets the panel recognise a master's co-located node, which reports the host hostname via host-networking (the panel container's own hostname is a random id)
     volumes:
       - ./data/etc:/etc/swg-panel         # fleet.json + nodes.json + auth + tls/ + acme/ persist here
       - ./data/lib:/var/lib/swg-panel     # roster (users.json), node store, stored configs
       - ./data/stats:/var/www/wgstats     # status snapshots (fed by node syncs)
+      - ./data/sub-tls:/etc/swg-sub/tls   # the entrypoint issues swg-sub's OWN cert here (direct-TLS + a sub domain) → swg-sub reads it read-only, terminating its own TLS
       # --- mount a real cert instead of self-signed (e.g. a Cloudflare Origin cert) ---
       # - ./tls/fullchain.pem:/etc/swg-panel/tls/fullchain.pem:ro
       # - ./tls/key.pem:/etc/swg-panel/tls/key.pem:ro
@@ -77,6 +88,7 @@ services:
       - ./data/etc:/etc/swg-panel:ro              # fleet.json (paths) — read-only
       - ./data/lib:/var/lib/swg-panel:ro          # roster + nodes + subs (token map / blobs / serve.json) — READ-ONLY
       - ./data/stats:/var/www/wgstats:ro          # node snapshot mirrors (endpoint / server pubkey / awg params)
+      - ./data/sub-tls:/etc/swg-sub/tls:ro        # swg-sub's OWN cert (direct-TLS mode) — its own key, NOT the panel's; the panel issues it here (so a CF Full zone gets a real origin cert, not 525)
       # Defence-in-depth: mask the secrets this public surface must never read (containers run as root,
       # so :ro alone wouldn't stop a compromise from opening them). swg-sub reads NONE of these — it takes
       # its config from subs/serve.json. /dev/null masks a file; tmpfs masks a directory.

@@ -588,6 +588,22 @@ def main():
     SUB_BASE, SUB_BASE_ALT = _read_bases()
 
     host, port, cert, key = _serve_config(state)
+    # Direct-TLS: the panel issues swg-sub's OWN cert ASYNCHRONOUSLY (docker), so it may not be on disk yet when we
+    # (re)start right after a mode change. Falling straight to plain HTTP would then 525 behind a Cloudflare Full zone.
+    # Wait a bounded while for the cert to appear, re-reading each pass; give up to plain HTTP if it never comes (a
+    # reverse proxy / CF Flexible can still front it). Skipped when a cert is already present or pinned via env.
+    _sv = (state.subscriptions().get("serve") or {})
+    if not (cert and key) and _sv.get("tls_mode") not in (None, "", "reverse-proxy") \
+            and not (os.environ.get("SWG_SUB_TLS_CERT") and os.environ.get("SWG_SUB_TLS_KEY")):
+        print("swg-sub: direct-TLS (%s) but no certificate yet — waiting for the panel to issue it…" % _sv.get("tls_mode"), flush=True)
+        for _ in range(45):                       # ~90s ceiling — a Cloudflare DNS-01 issue+install
+            time.sleep(2)
+            state = State(fleet); Handler.state = state
+            host, port, cert, key = _serve_config(state)
+            if cert and key:
+                print("swg-sub: certificate ready — serving HTTPS", flush=True); break
+        else:
+            print("swg-sub: no certificate after ~90s — serving plain HTTP (front with a TLS proxy / Cloudflare Flexible)", flush=True)
     scheme = "http"
     if cert and key:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

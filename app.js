@@ -1040,6 +1040,7 @@ const Store = {
     this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move" (server auto-clears at grace end)
     this.panelMigratePrev = d.panel_migrate_prev || null;         // the OLD address to cancel back to (only while revertable)
     this.accessCooldown = d.access_cooldown || { secs: 0, reason: "" };   // one-at-a-time: while a change verifies/graces, Access&TLS disables Save + shows the cooldown
+    this.dockerAwaiting = d.docker_awaiting || null;   // a docker restart-safe recreate awaiting a reachability confirm → a global effect auto-commits (reaching /api/state here IS the proof)
     applyForkColors();   // keep every .tf-<fork> tag/badge in sync with the picker override
     applyThemeColors();  // keep wg/awg/blocked/faulty colours + the --brand theme in sync with the pickers
     this.smartCaps = d.smart_caps || this.smartCaps || {};   // per-category {ip,host} → [IP]/[Host] grouping + kernel-mode greying
@@ -1869,7 +1870,13 @@ function meshHealth(nodeId) {
     : (hs(nid, iface) == null ? "connecting" : (hs(nid, iface) < 180 ? "up" : "down"));
   const peers = mp.map(({ peer, iface, reprovisioning }) => {
     const pmp = ((byId(peer) || {}).mesh_peers || []).find(x => x.peer === nodeId) || {};
-    return { peer, out: stat(nodeId, iface, reprovisioning), in: stat(peer, pmp.iface, pmp.reprovisioning) };
+    // A mesh link is live only when BOTH ends are reporting. If either endpoint is stale/offline, neither direction
+    // can be asserted up: the surviving end's handshake age lags up to 180s behind the peer actually going away —
+    // which showed an offline node ↓1/1 AND its still-online peer ↑1/1 to a node that's already gone. Zero both.
+    const linkDown = nodeStale(nodeId) || nodeStale(peer);
+    return { peer,
+      out: linkDown ? "down" : stat(nodeId, iface, reprovisioning),
+      in:  linkDown ? "down" : stat(peer, pmp.iface, pmp.reprovisioning) };
   });
   return { peers, total: peers.length,
     okIn: peers.filter(p => p.in === "up").length, okOut: peers.filter(p => p.out === "up").length };
@@ -7708,6 +7715,7 @@ function AccessTLSCard({ onChange }) {
   const acc = (Store.panelSettings || {}).access || {};
   const p0 = acc.panel || {}, s0 = acc.sub || {}, t0 = acc.tls || {};
   const subsOn = !!((Store.panelSettings || {}).subscriptions || {}).enabled;
+  const localPort = Number(p0.local_port || 0);   // co-located node's loopback port (live, read-only) — 0/absent ⇒ no local node ⇒ hide the field
   const [pUrl, setPUrl] = useState(normPublicUrl(p0.url || "")); const [pHost, setPHost] = useState(p0.host || "0.0.0.0"); const [pPort, setPPort] = useState(String(p0.port || 443));
   const [sUrl, setSUrl] = useState(s0.url || ""); const [sHost, setSHost] = useState(s0.host || "0.0.0.0"); const [sPort, setSPort] = useState(String(s0.port || 8444));
   const [mode, setMode] = useState(t0.mode || ""); const [email, setEmail] = useState(t0.email || "");
@@ -7716,8 +7724,11 @@ function AccessTLSCard({ onChange }) {
   const [ips, setIps] = useState([]); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
   const [confirmUrl, setConfirmUrl] = useState("");   // set while an address change is verifying → the operator confirms it by opening the new address in a new tab (we can't auto-navigate safely: an unreachable new address would strand them, and a cross-origin reachability probe is blocked by our own CSP)
-  const [dockerFlip, setDockerFlip] = useState("");   // Docker TLS flip: the container is recreating into the new mode + issuing its cert. new dial url — shown with a "reconnect" button HELD for a few seconds (see dockerArm) so the operator doesn't open it before the container is back
-  const [dockerArm, setDockerArm] = useState(0);      // seconds until the Docker-flip reconnect button arms — a short hold covering the container restart (opening the new address before it's up just fails)
+  const [dockerFlip, setDockerFlip] = useState("");   // Docker restart-safe change, step 3: the container is recreating onto the new address. new dial url — shown with a "reconnect" button HELD for a few seconds (see dockerArm) so the operator doesn't open it before the container is back
+  const [dockerArm, setDockerArm] = useState(0);      // seconds until the Docker reconnect button arms — a short hold covering the container restart (opening the new address before it's up just fails)
+  const [dockerRestart, setDockerRestart] = useState(null);   // Docker restart-safe change, step 1 (Save done): {nonce,url_changed,old_url,new_url,port,port_move,armUntil,error} — nodes now dual-connect to new_url; the operator reviews, then Confirm & restart (dry-run + recreate) or Revert (no-op). Nothing has recreated yet.
+  const [drArmIn, setDrArmIn] = useState(0);          // seconds until the "Confirm & restart" button arms — a hold covering one node-sync so nodes LEARN the new address before the recreate (so it can't strand them)
+  const [dockerFlipPort, setDockerFlipPort] = useState(0);   // >0 = the step-3 reconnect card is for a reverse-proxy INTERNAL-port move: show the new port to re-point the proxy at (the public url is unchanged), not a "reconnect at new address" link
   const [confirmVerified, setConfirmVerified] = useState(true);   // false = the reachability gate FAILED-OPEN (revealed Confirm without proving the new address answers) → surface that so Confirm-appearing isn't mistaken for "reachable"
   const [rpSwap, setRpSwap] = useState(null);         // unified reverse-proxy swap in progress: {port_changed,url_changed,path_changed,old_url,new_url,old_host,old_port,new_host,new_port,nonce} — panel serves old+new ports/paths and advertises the new url as a node candidate until the operator re-points the proxy and confirms (no timeout). Any combination of port/url/path.
   const [rpArmIn, setRpArmIn] = useState(0);          // seconds until the rp-swap Confirm button ARMS — a deliberate 60s hold (with a confirm modal) so the operator can't reflexively drop the old address before verifying the proxy actually serves the new one
@@ -7736,7 +7747,14 @@ function AccessTLSCard({ onChange }) {
   useEffect(() => { api.get("/api/access/status").then(r => { const p = r && r.ok && r.panel;
     // Recover a swap after reload — and continue the SAME arming countdown (server sends arm_secs remaining from when
     // the swap was armed), so a reload can't reset the safety hold back to a fresh 60s.
-    if (p && p.state === "rp-swap") setRpSwap({ port_changed: p.port_changed, url_changed: p.url_changed, path_changed: p.path_changed, old_url: p.old_url, new_url: p.new_url, old_host: p.old_host, old_port: p.old_port, new_host: p.new_host, new_port: p.new_port, nonce: p.nonce, armUntil: Date.now() + (p.arm_secs != null ? p.arm_secs : 60) * 1000 }); }).catch(() => {}); }, []);
+    if (p && p.state === "rp-swap") setRpSwap({ port_changed: p.port_changed, url_changed: p.url_changed, path_changed: p.path_changed, old_url: p.old_url, new_url: p.new_url, old_host: p.old_host, old_port: p.old_port, new_host: p.new_host, new_port: p.new_port, nonce: p.nonce, armUntil: Date.now() + (p.arm_secs != null ? p.arm_secs : 60) * 1000 });
+    // Recover an in-progress docker restart-safe change after a reload — step 1 (awaiting Confirm/Revert), continuing
+    // the SAME arming countdown the server reports.
+    else if (p && p.state === "docker-restart") setDockerRestart({ nonce: p.nonce, url_changed: p.url_changed, old_url: p.old_url, new_url: p.new_url, port: p.port, port_move: p.port_move, armUntil: Date.now() + (p.arm_secs != null ? p.arm_secs : 20) * 1000, error: p.dryrun_failed ? (p.message || "") : "" });
+    // The new container came up in "awaiting reachability" — THIS page reaching the panel here IS the proof, so commit
+    // (clears the marker + stands the auto-revert timer down). If it can't reach the panel it never gets here → auto-revert.
+    else if (p && p.state === "docker-awaiting" && p.nonce) api.post("/api/access/docker-commit", { nonce: p.nonce }).catch(() => {});
+    }).catch(() => {}); }, []);
   // The Confirm button is held disabled until rpSwap.armUntil (an absolute clock deadline), so the operator has time
   // to open the new address + verify their proxy first. Anchoring to a deadline (not a from-60 counter) means a page
   // reload continues the same countdown — the server tells us the remaining time on recovery.
@@ -7754,6 +7772,17 @@ function AccessTLSCard({ onChange }) {
     const t = setTimeout(() => setDockerArm(dockerArm - 1), 1000);
     return () => clearTimeout(t);
   }, [dockerArm]);
+  // The "Confirm & restart" button is held disabled until dockerRestart.armUntil so ONLINE nodes sync at least once
+  // and learn the new address (they now dual-connect) BEFORE the recreate — anchored to a deadline so a reload
+  // continues the same countdown (the server reports the remaining arm_secs on recovery).
+  useEffect(() => {
+    if (!dockerRestart) { setDrArmIn(0); return; }
+    const until = dockerRestart.armUntil || (Date.now() + 20000);
+    const tick = () => setDrArmIn(Math.max(0, Math.ceil((until - Date.now()) / 1000)));
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [dockerRestart]);
   // Pull the CURRENT saved config back into the form (+ baseline) — used after a revert, where the backend rolled
   // the bind back to the live one, so the form never keeps showing a value the panel rejected.
   const resync = async () => {
@@ -7868,7 +7897,7 @@ function AccessTLSCard({ onChange }) {
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
   const cooldown = Store.accessCooldown || { secs: 0, reason: "" };
   const cooldownActive = (cooldown.secs || 0) > 0;                          // Save is locked on EVERY tab during a change
-  const showCooldownNotice = cooldownActive && !confirmUrl && !rpSwap && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
+  const showCooldownNotice = cooldownActive && !confirmUrl && !rpSwap && !dockerRestart && !polling && !busy;   // only surface the notice where THIS tab isn't already driving the change — the driver shows its own progress ("Waiting…") then the confirm area, so confirm always wins the race over the generic cooldown
 
   const ipField = (host, setHost, withLocal, bad) => {
     const val = presets.has(host) ? host : "__custom";
@@ -7921,7 +7950,7 @@ function AccessTLSCard({ onChange }) {
   // the fields would otherwise ride along on the next Save (exactly the phantom-port-change trap). If the form is
   // CLEAN we adopt the true values; if the operator has UNSAVED edits we warn instead of clobbering them.
   useEffect(() => {
-    if (busy || polling || rpSwap || confirmUrl) return;   // an in-flight change owns the form
+    if (busy || polling || rpSwap || dockerRestart || confirmUrl) return;   // an in-flight change owns the form
     if (!((Store.panelSettings || {}).access || {}).panel) return;    // store not populated yet → never resync to blanks
     if (JSON.stringify(_serverBaseline()) === JSON.stringify(orig)) { if (staleWarn) setStaleWarn(false); return; }
     if (!dirty()) { resyncFromStore(); if (staleWarn) setStaleWarn(false); }
@@ -7947,6 +7976,14 @@ function AccessTLSCard({ onChange }) {
   };
 
   const saveAndApply = async () => {
+    // Scroll the status/confirm area (top of the card) into view — the Save button lives in the footer, so the
+    // result (a status line, a proxy-confirm card, or a validation error) would otherwise land off-screen above.
+    // Clear the sticky header stack (appbar + the optional old-address ribbon) so the banner isn't hidden under it.
+    requestAnimationFrame(() => {
+      const c = document.querySelector(".acctls"); if (!c) return;
+      let off = 0; document.querySelectorAll(".appbar, .addr-old-ribbon").forEach(el => { const cs = getComputedStyle(el); if (cs.position === "sticky" || cs.position === "fixed") off += el.getBoundingClientRect().height; });
+      window.scrollTo({ top: Math.max(0, c.getBoundingClientRect().top + window.scrollY - off - 12), behavior: "smooth" });
+    });
     if (blocked) return setMsg({ ok: false, t: "Fix the highlighted port first." });
     if (!dirty()) return;
     // Trading ports between panel and sub can't be done in one shot on a single host — one must free its port
@@ -7976,7 +8013,7 @@ function AccessTLSCard({ onChange }) {
     // remember the address that was live before this apply — if the new one doesn't confirm, we re-save this so the
     // panel's canonical url (advertised to nodes) rolls back with the bind/cert the server already reverts.
     if (needPanel) rollbackRef.current = { url: orig.pUrl, host: orig.pHost || "0.0.0.0", port: +orig.pPort || 443 };
-    setConfirmUrl(""); setDockerFlip(""); setDockerArm(0);
+    setConfirmUrl(""); setDockerFlip(""); setDockerArm(0); setDockerFlipPort(0);
     setOrig({ pUrl: npUrl, pHost: pHost.trim() || "0.0.0.0", pPort: String(_pPortN()),
       sUrl: nsUrl, sHost: sHost.trim() || "0.0.0.0", sPort: String(_sPortN()), mode, email: email.trim() });
     // subscription server first (a background restart — it can never lock you out of the panel). Don't start
@@ -8006,10 +8043,10 @@ function AccessTLSCard({ onChange }) {
     if (needPanel) {
       const rp = await api.post("/api/access/apply", {});
       if (rp && rp.ok === false) { setBusy(false); await resync(); return setMsg({ ok: false, t: rp.error || "Couldn't apply the panel address." }); }
-      if (rp && rp.docker_recreate) {   // Docker flip: no live dual-listen — the container is RECREATED into the new TLS mode and issues its cert on boot. This connection drops during the recreate; the flip self-verifies + auto-rolls-back, so we don't ask for a manual confirm — we show a reconnect button HELD for the restart (dockerArm) so it isn't opened before the panel is back.
-        setBusy(false);
-        setDockerFlip(rp.new_url || ""); setDockerArm(20);   // reconnect button, armed after a ~20s restart hold
-        return setMsg({ ok: true, t: rp.message || ("Switching TLS — recreating the panel container. Reconnect at " + rp.new_url + " once it's back.") });
+      if (rp && rp.docker_restart) {   // Docker restart-safe change, step 1: nodes now dual-connect to the new address; the operator reviews, then Confirm & restart (dry-run + recreate) or Revert. NOTHING is recreated yet — no dual-listen is possible in a single container, so the recreate waits until Confirm.
+        const d = rp.docker_restart; setBusy(false);
+        setDockerRestart({ nonce: d.nonce, url_changed: d.url_changed, old_url: d.old_url, new_url: d.new_url, port: d.port, port_move: d.port_move, armUntil: Date.now() + (d.arm_secs != null ? d.arm_secs : 20) * 1000, error: "" });
+        return setMsg({ ok: true, t: d.port_move ? "Saved — review, then Confirm & restart below (you'll re-point your reverse proxy to the new port)." : "Saved — the nodes are learning the new address. Review, then Confirm & restart below (or Revert)." });
       }
       if (rp && rp.rp_swap) {   // unified reverse-proxy swap (port and/or url and/or path) → both old+new serve; operator re-points the proxy then confirms below
         const s = { ...rp.rp_swap, armUntil: Date.now() + 60000 }; setRpSwap(s); setBusy(false);   // fresh swap → full 60s arming hold
@@ -8101,8 +8138,41 @@ function AccessTLSCard({ onChange }) {
       toast("Reverted — kept the current address.", "ok");
     } catch (_) { toast("Couldn't revert.", "err"); setBusy(false); }
   };
+  // Docker restart-safe change, step 2: Confirm & restart. The server first DRY-RUNS the new settings in a throwaway
+  // container (issue+verify the cert, check the port is free); only on success does it recreate the live container.
+  // A dry-run failure changes nothing — we keep the card and show why, so the operator can fix it and retry, or revert.
+  const confirmDockerRestart = async () => {
+    if (!dockerRestart) return;
+    setBusy(true); setMsg({ ok: true, t: "Checking the new address (dry-run)…" });
+    try {
+      const r = await api.post("/api/access/docker-confirm", { nonce: dockerRestart.nonce });
+      if (r && r.docker_recreate) {   // dry-run passed → the container is recreating onto the new address; show the reconnect hold
+        setDockerRestart(null); setDockerFlip(r.new_url || dockerRestart.new_url || ""); setDockerFlipPort(r.port_move ? (r.port || dockerRestart.port || 0) : 0); setDockerArm(20); setBusy(false);
+        return setMsg({ ok: true, t: r.message || ("Restarting the panel container. Reconnect at " + (r.new_url || dockerRestart.new_url) + " once it's back.") });
+      }
+      setBusy(false);
+      setDockerRestart({ ...dockerRestart, error: (r && r.error) || "The dry-run failed — nothing was changed." });
+      return setMsg({ ok: false, t: (r && r.error) || "The dry-run failed — nothing was changed." });
+    } catch (_) { setBusy(false); setMsg({ ok: false, t: "Couldn't run the dry-run." }); }
+  };
+  // Revert step 1 before any recreate: drop the candidate the nodes were dual-connecting to and roll settings back.
+  // Everything step 1 did was additive, so this is an instant, safe no-op for the live panel.
+  const revertDockerRestart = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post("/api/access/docker-revert", {});
+      if (!r || r.ok === false) { toast((r && r.error) || "Couldn't revert.", "err"); setBusy(false); return; }
+      setDockerRestart(null); await resync(); setBusy(false);
+      setMsg({ ok: true, t: "Reverted — the panel stays on the current address." });
+      toast("Reverted — kept the current address.", "ok");
+    } catch (_) { toast("Couldn't revert.", "err"); setBusy(false); }
+  };
   let _confHost = confirmUrl; try { _confHost = new URL(confirmUrl).host; } catch (_) {}
   return html`<div class="card acctls">
+    ${(busy || msg) ? html`<div class=${"notice acc-status" + (busy || (msg && msg.ok) ? "" : " warn")} style=${"margin:0 0 14px" + (busy || (msg && msg.ok) ? ";border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))" : "")}><${Ic} i=${busy ? "clock" : (msg && msg.ok ? "info" : "warn")}/><div style="min-width:0">
+      ${msg ? html`<b>${msg.t}</b>` : null}
+      ${busy ? html`<div class="hint" style="margin:4px 0 0">Applying your change — this can take up to a minute or two. It hasn't hung; please wait.</div>` : null}
+    </div></div>` : null}
     ${rpSwap ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
       <b>Finish the reverse-proxy switch.</b> The panel is serving the old <b>and</b> new setup at once — each node keeps its current address and only moves once the old one stops. Update your reverse proxy to match ${rpSwap.port_changed && rpSwap.url_changed ? "(both changes below)" : ""}, then confirm. Nothing goes down in between.
       <ul style="margin:8px 0 2px;padding-left:18px">
@@ -8120,11 +8190,30 @@ function AccessTLSCard({ onChange }) {
             : html`<button class="btn btn-primary" disabled=${busy} onClick=${confirmRpSwapGuarded}>Confirm — drop the old port</button>`)}<button class="btn btn-ghost" disabled=${busy} onClick=${revertRpSwap}>Revert</button></div>
     </div></div>` : null}
     <p class="hint" style="margin:0 0 12px">How the panel${subsOn ? " and subscription page are" : " is"} reached. Fill these in and press <b>Save</b> — the panel applies whatever changed, safely. ${behindProxy ? html`Behind a reverse proxy the listen host/port are <b>internal</b> (your proxy's upstream, not a public address). Changing the port binds the new one <b>alongside</b> the old — both keep serving — so you can re-point your proxy and confirm to drop the old port without any downtime.` : "A panel-address change is verified from your browser before it takes over, so a wrong value can never lock you out."}</p>
+    ${dockerRestart ? html`<div class="notice ${dockerRestart.error ? "warn" : ""}" style=${dockerRestart.error ? "margin:0 0 14px" : "margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"}><${Ic} i=${dockerRestart.error ? "warn" : "info"}/><div style="min-width:0">
+      ${dockerRestart.port_move
+        ? html`<b>Confirm the internal-port change.</b> The public address doesn't change, so the nodes aren't affected — but the panel will restart onto a new internal port, so your <b>reverse proxy must be re-pointed</b> to it. When you Confirm, the panel dry-runs the new port (checks it's free), restarts onto it, then waits for you to re-point the proxy. If it stays unreachable it <b>rolls back to the current port automatically</b>.`
+        : html`<b>Confirm the address change.</b> The nodes are now told to <b>also</b> try <span class="mono">${dockerRestart.new_url}</span>, so they're already connected there before the restart. When you Confirm, the panel first <b>dry-runs</b> the new settings in a throwaway container (issues the certificate, checks the port), and only then restarts onto the new address. If it can't be reached afterwards, it <b>rolls back automatically</b>.`}
+      ${dockerRestart.port_move
+        ? html`<ul style="margin:8px 0 2px;padding-left:18px"><li>New internal port <span class="mono" style="font-weight:700;color:var(--online)">${dockerRestart.port}</span> — after Confirm, point your reverse proxy's upstream at it and reload the proxy.</li></ul>`
+        : dockerRestart.url_changed
+        ? html`<ul style="margin:8px 0 2px;padding-left:18px"><li>New address <span class="mono" style="font-weight:700;color:var(--online)">${dockerRestart.new_url}</span> — make sure DNS / your firewall / Cloudflare route it to this panel.</li></ul>`
+        : null}
+      ${dockerRestart.error ? html`<div class="notice warn" style="margin:8px 0 0"><${Ic} i="warn"/><div style="min-width:0"><b>Dry-run failed — nothing was changed.</b> ${dockerRestart.error} Fix it and try again, or revert.</div></div>` : null}
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">${drArmIn > 0
+        ? html`<button class="btn btn-primary" disabled title="The nodes are still learning the new address">Confirm & restart in ${drArmIn}s…</button>`
+        : html`<button class="btn btn-primary" disabled=${busy} onClick=${confirmDockerRestart}>${busy ? "Checking…" : "Confirm & restart"}</button>`}<button class="btn btn-ghost" disabled=${busy} onClick=${revertDockerRestart}>Revert</button></div>
+    </div></div>` : null}
     ${dockerFlip ? html`<div class="notice" style="margin:0 0 14px;border:1px solid var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="clock"/><div style="min-width:0">
-      <b>Switching TLS — the container is restarting.</b> Reconnect at the new address once it's back. If the certificate can't be issued, the panel rolls back automatically to the current address.
-      <div style="margin-top:10px">${dockerArm > 0
-        ? html`<button class="btn btn-primary" disabled title="Waiting for the container to restart">Reconnect in ${dockerArm}s…</button>`
-        : html`<a class="btn btn-primary" href=${dockerFlip} target="_blank" rel="noopener">Reconnect at the new address ↗</a>`}</div>
+      ${dockerFlipPort > 0
+        ? html`<b>Restarting onto internal port <span class="mono">${dockerFlipPort}</span>.</b> Point your reverse proxy's upstream at <span class="mono">127.0.0.1:${dockerFlipPort}</span> and reload the proxy — this page comes back once it routes there. It confirms itself when reachable; if it stays unreachable it rolls back to the current port automatically.
+          <div style="margin-top:10px">${dockerArm > 0
+            ? html`<button class="btn btn-primary" disabled title="Waiting for the container to restart">Restarting in ${dockerArm}s…</button>`
+            : html`<a class="btn btn-primary" href=${dockerFlip} target="_blank" rel="noopener">Reload this page ↻</a>`}</div>`
+        : html`<b>Restarting the panel container.</b> Reconnect at the new address once it's back — it confirms itself when you reach it. If the new address can't be reached (or the certificate can't be issued), the panel rolls back automatically to the current address.
+          <div style="margin-top:10px">${dockerArm > 0
+            ? html`<button class="btn btn-primary" disabled title="Waiting for the container to restart">Reconnect in ${dockerArm}s…</button>`
+            : html`<a class="btn btn-primary" href=${dockerFlip} target="_blank" rel="noopener">Reconnect at the new address ↗</a>`}</div>`}
     </div></div>` : null}
     ${confirmUrl ? html`<div class="notice ${confirmVerified ? "" : "warn"}" style=${confirmVerified ? "margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))" : "margin:0 0 14px"}><${Ic} i=${confirmVerified ? "info" : "warn"}/><div style="min-width:0">
       ${confirmVerified
@@ -8155,6 +8244,8 @@ function AccessTLSCard({ onChange }) {
     <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com  or  https://example.com/swgpanel" value=${pUrl} onInput=${e => setPUrlLinked(e.target.value)}/></div>
     <div class="fieldrow">${ipField(pHost, setPHost, true, pLoopbackDirect)}${portField(pPort, setPPortLinked, pBad)}</div>
     ${pLoopbackDirect ? loopNote("panel") : (pBad ? cfNote : null)}
+    ${localPort > 0 ? html`<div class="field"><label>Local node port</label><input type="text" value=${"127.0.0.1:" + localPort} readonly disabled class="mono"/>
+      <div class="hint">This box's own node reaches the panel here — a dedicated plain-HTTP loopback port, served at the root. It's set at install and a public address, port, path, or certificate change never moves it, so the co-located node never loses the panel. To change it, re-run the installer.</div></div>` : null}
     ${(behindProxy && (panelBindChanged() || panelUrlChanged())) ? html`<div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
       <b>Behind a reverse proxy.</b>
       ${panelBindChanged() ? html` Saving binds <span class="mono">${(pHost.trim() || "127.0.0.1")}:${_pPortN()}</span> <b>alongside</b> the current port (both keep serving) — you then re-point your reverse proxy and confirm to drop the old one, with no downtime. External nodes dial your public URL through the proxy, so they don't change; only a co-located node that dials the panel on <span class="mono">127.0.0.1</span> needs its <span class="mono">panel.url</span> port updated too.` : null}
@@ -8991,10 +9082,9 @@ function PanelSettingsScreen() {
           <${NodeEgressForm} node=${nodeRec} vals=${nodeEdits[selNode]} set=${p => setNV(selNode, p)}/>`
             : html`<p class="hint" style="margin:0">No nodes yet — enroll a node to configure its egress.</p>`}
         </div>` : null}
-        ${section === "access" && accessRef.current.busy ? html`<p class="hint" style="margin:2px 0 8px">Applying your change — this can take up to a minute or two. It hasn't hung; please wait.</p>` : null}
         <div class="setfoot">
           ${section === "access"
-            ? (accessRef.current.msg ? html`<span class=${"formmsg setfoot-msg " + (accessRef.current.msg.ok ? "ok" : "err")}>${accessRef.current.msg.t}</span>` : null)
+            ? null   /* access status (incl. "applying, be patient") is consolidated into the card's top banner, scrolled into view on Save */
             : (Date.now() < saved ? html`<span class="savedflash"><${Ic} i="check"/> All settings saved</span>` : null)}
           <span class="grow"></span>
           <button class="btn btn-ghost" onClick=${leaveSettings}>Back</button>
@@ -10273,6 +10363,18 @@ function App() {
         body=${((fail && fail !== "1" && fail) || "The confirmation didn’t match a pending change.") + " The panel kept its current address."}/>`);
     }, 0);
   }, []);
+  // Docker restart-safe change, step 3 (reachability commit) — GLOBAL so it fires on ANY screen, not only when the
+  // Access & TLS card is open. The new container came up "awaiting reachability"; this browser reaching /api/state
+  // here IS the proof the new address answers through the proxy (nodes dial the same url the same way), so commit —
+  // which clears the marker and stands the server's auto-revert timer down. A guard ref makes it fire once per nonce.
+  const committedNonce = useRef("");
+  useEffect(() => {
+    const a = Store.dockerAwaiting;
+    if (a && a.nonce && committedNonce.current !== a.nonce) {
+      committedNonce.current = a.nonce;
+      api.post("/api/access/docker-commit", { nonce: a.nonce }).then(() => Store.poll && Store.poll()).catch(() => { committedNonce.current = ""; });
+    }
+  });
   useEffect(() => {
     const onHash = () => {
       const nh = location.hash || "#/";

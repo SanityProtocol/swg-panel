@@ -25,6 +25,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from urllib.parse import urlparse
@@ -40,6 +41,26 @@ SVC = {"sub": "swg-sub", "panel": "swg-panel"}
 def _compose(*args):
     r = subprocess.run(COMPOSE + list(args), capture_output=True, text=True, timeout=180)
     return r.returncode == 0, (r.stderr or r.stdout or "").strip()[:200]
+
+
+def _cert_covers_host(cert_path, host):
+    """Does the cert at cert_path name `host` — an exact SAN/CN, or a single-label *.wildcard (so *.example.com
+    covers sub.example.com but not a.b.example.com)? Mirrors the entrypoint's cert_covers_host, host-side."""
+    try:
+        out = subprocess.run(["openssl", "x509", "-in", cert_path, "-noout", "-text"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for dns in re.findall(r"DNS:([^,\s]+)", out):
+        if dns == host:
+            return True
+        if dns.startswith("*."):
+            base = dns[2:]
+            if host.endswith("." + base):
+                pre = host[:-(len(base) + 1)]
+                if pre and "." not in pre:
+                    return True
+    return False
 
 
 def _set_env(keys):
@@ -90,18 +111,22 @@ def _tls_creds(mode):
     return creds
 
 
-def _served_cert_real(port, domain="", tries=60):
-    """After a flip to a CA mode, is the panel serving a REAL CA cert THAT COVERS <domain> on 127.0.0.1:<port>?
+def _served_cert_real(port, domain="", host="", tries=60):
+    """After a flip to a CA mode, is the panel serving a REAL CA cert THAT COVERS <domain> on <host>:<port>?
     Polls while the container boots + ISSUES (DNS-01 through Cloudflare can take 40-90s for record propagation +
     validation, so the window is generous — a too-short one falsely rolls back a slow-but-successful issuance).
     Returns True (issuer != subject AND the cert names <domain>), False (self-signed fallback, wrong-domain cert,
     or the port never served TLS), or None (openssl unavailable → can't judge, caller proceeds w/o rollback).
     NOTE: the entrypoint issues the cert BEFORE it starts the panel, so during issuance the port is simply not
-    listening yet (connection refused) — that's the 'keep waiting' case, distinct from a served cert."""
+    listening yet (connection refused) — that's the 'keep waiting' case, distinct from a served cert.
+    <host> is the panel's PUBLISHED bind — connect to THAT, not a hardcoded 127.0.0.1: a bind to a specific public
+    IP (PANEL_BIND=<ip>, not 0.0.0.0) doesn't answer on loopback, so probing 127.0.0.1 there falsely 'never served a
+    cert' → a false rollback that then strands nodes that already followed the candidate. 0.0.0.0/::/blank → loopback."""
     if subprocess.run(["sh", "-c", "command -v openssl"], capture_output=True).returncode != 0:
         return None
-    cmd = ("echo | openssl s_client -connect 127.0.0.1:%s 2>/dev/null | "
-           "openssl x509 -noout -issuer -subject -ext subjectAltName 2>/dev/null" % port)
+    ch = host.strip() if (host or "").strip() and host.strip() not in ("0.0.0.0", "::", "*") else "127.0.0.1"
+    cmd = ("echo | openssl s_client -connect %s:%s 2>/dev/null | "
+           "openssl x509 -noout -issuer -subject -ext subjectAltName 2>/dev/null" % (ch, port))
     for _ in range(tries):                     # tries*3s ≈ 3 min ceiling — covers a slow Cloudflare DNS-01
         r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=15)
         out = r.stdout or ""
@@ -120,6 +145,7 @@ def _served_cert_real(port, domain="", tries=60):
 
 
 BLESS = os.path.join(DIR, "data", "lib", "panel-confirmed.json")   # the blessed dial address nodes are told
+REVERT = os.path.join(DIR, "data", "lib", "panel-flip-revert.json")   # host-side .env+bless snapshot for an auto-revert
 
 
 def _bless_snapshot():
@@ -148,6 +174,17 @@ def _bless_restore(snap):
     with open(tmp, "w") as f:
         f.write(snap)
     os.replace(tmp, BLESS)
+
+
+def _revert_snapshot_write(old_env, old_bless):
+    """Persist the pre-flip .env values + blessed file so a LATER auto-revert (driven by the panel's reachability
+    timer, in a different process) can restore the EXACT previous address. This is what the panel can't do itself: in
+    docker the host-published PANEL_PORT (what the proxy targets) is a .env fact, distinct from the port the panel binds
+    INSIDE the container — so reconstructing the revert target from the panel's own listener would use the wrong port."""
+    tmp = REVERT + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"env": old_env, "bless": old_bless}, f)
+    os.replace(tmp, REVERT)
 
 
 def _handle(verb, args):
@@ -215,6 +252,33 @@ def _handle(verb, args):
         ok, msg = _compose("up", "-d", "--no-deps", "swg-panel")
         return (ok, "panel internal loopback port = %s (recreated)" % port) if ok \
             else (False, "PANEL_LOCAL_PORT=%s persisted but recreate failed: %s" % (port, msg))
+    if verb == "dryrun":
+        # Prove a scheme/port/domain change is safe BEFORE recreating the live container. args: <tls> <domain>
+        # <port> <base>. Two checks, neither touches the running panel:
+        #   (1) the target host port must be free (a recreate can't publish a port another service already holds);
+        #   (2) a THROWAWAY container (`compose run --rm`, DRY_RUN=1, NO ports published → no conflict/state writes)
+        #       runs the entrypoint, which issues+validates the cert into the shared volume, then exits 0/non-0.
+        tls, domain, port = (args + ["", "", "", ""])[:3]
+        ca = tls in ("cloudflare", "cf15", "letsencrypt", "letsencrypt-ip")
+        if port:
+            busy = subprocess.run(["sh", "-c", "ss -lntH 'sport = :%s' 2>/dev/null | grep -q ." % port],
+                                  capture_output=True).returncode == 0
+            if busy and str(port) != str(_read_env(["PANEL_PORT"]).get("PANEL_PORT", "")):
+                return False, "port %s is already in use on this host — choose a free port" % port
+        env = ["-e", "DRY_RUN=1", "-e", "TLS=%s" % (tls or "none")]
+        if domain:
+            env += ["-e", "PANEL_DOMAIN=%s" % domain]
+        if ca:
+            for k, v in _tls_creds(tls).items():
+                env += ["-e", "%s=%s" % (k, v)]
+        r = subprocess.run(COMPOSE + ["run", "--rm", "--no-deps", "-T"] + env + ["swg-panel"],
+                           capture_output=True, text=True, timeout=180)
+        if r.returncode == 0:
+            return True, "dry-run passed — the new address has a valid certificate; safe to switch"
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or r.stderr or ""))   # strip the entrypoint log's ANSI colours
+        clean = clean.replace("[entrypoint]", "").strip()
+        tail = " ".join(clean.splitlines()[-3:])[:280]
+        return False, "dry-run failed — the new address wouldn't get a valid certificate. %s" % tail
     if verb == "flip":
         # docker reverse-proxy↔direct-TLS SCHEME FLIP. The container can't live-rebind (fixed port map; in
         # reverse-proxy mode there's no cert on disk to bind HTTPS with — the entrypoint issues/clears the cert from
@@ -240,6 +304,7 @@ def _handle(verb, args):
         # Snapshot the current scheme + DOMAIN/BASE + the blessed dial address, so a failed CA flip restores them all.
         old_env = _read_env(["TLS", "PANEL_PORT", "PANEL_BIND", "PANEL_LOCAL_PORT", "PANEL_DOMAIN", "PANEL_BASE"])
         old_bless = _bless_snapshot()
+        _revert_snapshot_write(old_env, old_bless)   # the panel's reachability timer can undo THIS flip via `revert-flip`
         # OPTIMISTIC adopt: advance blessed to the target BEFORE the recreate, so a verified flip is a SINGLE recreate
         # and the panel comes up already advertising the new url (no racy boot-time "did the scheme match" guess — the
         # authority is HERE, host-side). A CA failure below restores env + blessed together.
@@ -258,7 +323,7 @@ def _handle(verb, args):
         if not ok:                            # the recreate itself failed → restore the previous scheme + address
             _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
             return False, "flip recreate failed (%s) — rolled back to the previous address" % msg
-        if ca and _served_cert_real(port, dom) is False:
+        if ca and _served_cert_real(port, dom, host) is False:
             # The cert must be a REAL CA cert that COVERS this domain. A self-signed fallback (missing/blocked token,
             # unreachable :80, rate limit) OR a stale cert for a DIFFERENT domain would be rejected by a validating
             # proxy (Cloudflare 526) and strand nodes. Roll BOTH the scheme and the blessed address back, so the panel
@@ -269,6 +334,26 @@ def _handle(verb, args):
                            % (tls, dom or "the panel"))
         return True, "flipped panel → TLS=%s bind %s:%s (recreated%s)" % (
             tls or "none", host, port, ", cert verified" if ca else "")
+    if verb == "revert-flip":
+        # Undo the most recent flip, back to the address it came from — the panel's reachability timer enqueues this when
+        # a recreated-onto address is never confirmed reachable. Restores the .env + blessed snapshot the forward flip
+        # saved (the host-side truth, incl. the right published PANEL_PORT) and recreates. No args: the snapshot IS the
+        # target, so this can't use a wrong reconstructed port (the bug where the panel's internal 8443 leaked in).
+        if not os.path.exists(REVERT):
+            return True, "no revert snapshot on file — nothing to undo"
+        try:
+            snap = json.load(open(REVERT))
+        except (OSError, ValueError) as e:
+            return False, "revert snapshot unreadable: %s" % e
+        _set_env(snap.get("env") or {})
+        _bless_restore(snap.get("bless"))
+        ok, msg = _compose("up", "-d", "--no-deps", "swg-panel")
+        if not ok:
+            return False, "revert recreate failed: %s" % msg
+        with contextlib.suppress(OSError):
+            os.remove(REVERT)
+        env = snap.get("env") or {}
+        return True, "reverted the panel to the previous address (TLS=%s PANEL_PORT=%s)" % (env.get("TLS", "?"), env.get("PANEL_PORT", "?"))
     if verb == "persist-url":
         # Keep .env's PANEL_DOMAIN in step with a CONFIRMED address-migration. The flip verbs already keep
         # PANEL_PORT/BIND/BASE/LOCAL_PORT/TLS current, but nothing else persists the DOMAIN — so without this a
@@ -279,6 +364,31 @@ def _handle(verb, args):
             return True, "persist-url: no domain (no-op)"
         _set_env({"PANEL_DOMAIN": domain})
         return True, "persisted PANEL_DOMAIN=%s in .env" % domain
+    if verb == "issue-cert":
+        # RUNTIME, panel-managed sub-cert issuance. Bare-metal swg-netctl issues via acme directly; docker used to
+        # no-op this ("handled in-container" at boot only), so a sub address set/changed in the UI never got a
+        # matching cert → 525. Now: apply the operator's rule host-side — if the panel's OWN cert already covers the
+        # sub host, copy it (no issuance, no container touch); otherwise issue a SEPARATE cert inside the panel
+        # container (which holds acme + the CF credentials), writing into the shared ./data/sub-tls volume.
+        svc = args[0] if args else ""
+        domain = (args[1] if len(args) > 1 else "").strip()
+        if svc != "sub" or not domain:
+            return True, "issue-cert: nothing to do (panel cert is issued by the boot flow / flip verb)"
+        panel_cert = os.path.join(DIR, "data", "etc", "tls", "fullchain.pem")
+        panel_key = os.path.join(DIR, "data", "etc", "tls", "key.pem")
+        sub_dir = os.path.join(DIR, "data", "sub-tls")
+        with contextlib.suppress(OSError):
+            os.makedirs(sub_dir, exist_ok=True)
+        sc, sk = os.path.join(sub_dir, "fullchain.pem"), os.path.join(sub_dir, "key.pem")
+        if os.path.exists(panel_cert) and os.path.exists(panel_key) and _cert_covers_host(panel_cert, domain):
+            try:
+                shutil.copyfile(panel_cert, sc); shutil.copyfile(panel_key, sk); os.chmod(sk, 0o600)
+            except OSError as e:
+                return False, "could not copy the panel certificate for the subscription page: %s" % e
+            return True, "reused the panel certificate for %s" % domain
+        # Not covered → a distinct sub hostname needs its own cert: run the panel container's issuance for it.
+        ok, msg = _compose("exec", "-T", "swg-panel", "/entrypoint.sh", "sub-cert", domain)
+        return ok, (msg or ("issued a separate certificate for %s" % domain))
     return True, "no-op (%s handled in-container)" % verb   # cert verbs etc.
 
 
