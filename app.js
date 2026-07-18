@@ -8177,6 +8177,10 @@ function AccessTLSCard({ onChange }) {
     ${(busy || msg) ? html`<div class=${"notice acc-status" + (busy || (msg && msg.ok) ? "" : " warn")} style=${"margin:0 0 14px" + (busy || (msg && msg.ok) ? ";border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))" : "")}><${Ic} i=${busy ? "clock" : (msg && msg.ok ? "info" : "warn")}/><div style="min-width:0">
       ${msg ? html`<b>${msg.t}</b>` : null}
       ${busy ? html`<div class="hint" style="margin:4px 0 0">Applying your change — this can take up to a minute or two. It hasn't hung; please wait.</div>` : null}
+      ${/* Gate-wait (probing/issuing the new address, before the confirm affordance) — give the operator an escape hatch
+            instead of only waiting out the auto-revert. Uniquely the PANEL apply keeps busy true through polling (a
+            sub-only save clears it); the confirm card owns Cancel once confirmUrl is set. */""}
+      ${(busy && polling && !confirmUrl && !rpSwap && !dockerRestart && !dockerFlip) ? html`<div style="margin-top:10px"><button class="btn btn-ghost btn-mini" onClick=${cancelChange}>Cancel this change</button></div>` : null}
     </div></div>` : null}
     ${rpSwap ? html`<div class="notice" style="margin:0 0 14px;border-color:var(--accent);background:var(--accent-dim, rgba(31,200,214,.08))"><${Ic} i="info"/><div style="min-width:0">
       <b>Finish the reverse-proxy switch.</b> The panel is serving the old <b>and</b> new setup at once — each node keeps its current address and only moves once the old one stops. Update your reverse proxy to match ${rpSwap.port_changed && rpSwap.url_changed ? "(both changes below)" : ""}, then confirm. Nothing goes down in between.

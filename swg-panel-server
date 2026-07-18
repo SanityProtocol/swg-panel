@@ -1534,6 +1534,13 @@ def _reconcile_saved_ahead(deps, blessed_url):
             if (_u.path or "").rstrip("/") != PANEL_BASE:         # the PATH is (== SWG_PANEL_BASE); force it if ahead
                 _netloc = _u.netloc or (saved_url.split("/")[0])
                 pnl["url"] = "%s://%s%s" % (_u.scheme or "https", _netloc, PANEL_BASE); changed = True
+        # Keep the redundant base sub-field in step with the url's path. Nothing authoritative reads access.panel.base
+        # (the mount is SWG_PANEL_BASE env; the dial url + confirm redirect use the url's own path), but a path
+        # migration reconciled the url without it, leaving a stale base (e.g. "/test" under a root url) — a confusing
+        # trap for anything that later trusts it. Fires only when it actually drifted, so a normal install is untouched.
+        _bpath = (urlparse((lambda u: u if "://" in u else "https://" + u)(str(pnl.get("url") or "").strip())).path.rstrip("/") if pnl.get("url") else "") or "/"
+        if str(pnl.get("base") or "") != _bpath:
+            pnl["base"] = _bpath; changed = True
         # mode: the LIVE scheme (TLS_CERT env) is ground truth — the panel must never boot claiming a scheme it isn't
         # serving. If the saved mode's scheme disagrees (a reverse-proxy↔direct-TLS flip saved/half-confirmed but the
         # cert env didn't follow), roll it to something consistent with the live socket: HTTPS → a direct-TLS mode
