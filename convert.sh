@@ -615,11 +615,13 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
       sub "imported local-node interface $(b "$nm") → $dest (host NAT added)"; mnames="${mnames:+$mnames }$nm"
     done
     if [ -d "$DOCKER_DIR/data/node/iface-keys" ]; then mkdir -p /var/lib/swg-noded/iface-keys; cp -a "$DOCKER_DIR/data/node/iface-keys/." /var/lib/swg-noded/iface-keys/ 2>/dev/null || true; fi
-    if [ -n "$mnames" ]; then   # install-node migrates the docker turns itself (Step 2), so no separate turn step here
-      env NODE_TOKEN="$NTOK" PANEL_URL="https://127.0.0.1:$PPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
-          SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
-        || warn "the local node setup reported an error — check it on the panel."
-    fi
+    # ALWAYS run install-node for a master — even with NO interfaces to migrate. The co-located node still has to
+    # become a bare swg-noded that syncs (ready for interfaces added later from the panel); gating on $mnames left a
+    # 0-interface master's node orphaned as a docker container after the dir-move below. (install-node migrates the
+    # docker turn-proxies itself in Step 2, so there's no separate turn step here.)
+    env NODE_TOKEN="$NTOK" PANEL_URL="https://127.0.0.1:$PPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
+        SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
+      || warn "the local node setup reported an error — check it on the panel."
   else
     # host-only (no node phase): the bare panel is up → flip the header tile to "converted" NOW, mirroring the
     # master's tile-split above. Otherwise only the end-of-run EXIT trap emits it (after the dir-move + summary),
