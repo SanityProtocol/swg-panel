@@ -502,6 +502,10 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   [ "${_rrd_src:-0}" -gt 0 ] && [ "${_rrd_dst:-0}" != "${_rrd_src:-0}" ] && warn "health graphs: transferred ${_rrd_dst:-0}/${_rrd_src} rrd file(s) — some node-health history may be missing"
   # GUARD: never proceed (and let install-host seed a blank panel) if the login + node store didn't come across.
   { [ -s "$ETC/auth" ] && [ -f "$STATE/nodes.json" ]; } || die "couldn't stage the panel state (login/nodes missing) — aborting to avoid data loss. The docker panel is untouched; check 'docker exec swg-panel ls -la /var/lib/swg-panel /etc/swg-panel'."
+  # Stash the JUST-STAGED settings + blessed url NOW, while they're known-good — install-host's cert reloadcmd can
+  # transiently (re)start the panel mid-install and reset them (see §2c, restored right before the switch).
+  [ -f "$STATE/panel-settings.json" ]  && cp -a "$STATE/panel-settings.json"  "$STATE/.panel-settings.preconvert"  2>/dev/null || true
+  [ -f "$STATE/panel-confirmed.json" ] && cp -a "$STATE/panel-confirmed.json" "$STATE/.panel-confirmed.preconvert" 2>/dev/null || true
   # carry the acme renewal state back to the host (/root/.acme.sh) + repoint its reload cmd at the systemd unit
   if [ -d "$ETC/acme" ]; then
     mkdir -p /root/.acme.sh; cp -a "$ETC/acme/." /root/.acme.sh/ 2>/dev/null || true
@@ -530,6 +534,16 @@ EOF
       CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 SWG_DEFER_START=1 \
       bash "$SRC/install-host.sh" \
     || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
+
+  # 2c) RESTORE the known-good staged settings, right before the switch. install-host's acme --install-cert reloadcmd
+  #     restarts swg-panel-server DURING the install (while docker still holds the port), so the panel partial-boots
+  #     once and reconciles the staged panel-settings/blessed against a not-yet-final state — which can leave the bare
+  #     panel booting on a blank url / wrong TLS mode (UI shows selfsigned / no address / subs off though it serves the
+  #     real cert). We stashed the good copies right after staging (below §1); put them back so the real start reads the
+  #     preserved access + subs + blessed url intact. (Bare-metal only; the bare->docker block uses .env.)
+  _owner="$(stat -c '%U:%G' "$STATE" 2>/dev/null || echo root:root)"
+  [ -f "$STATE/.panel-settings.preconvert" ]  && { mv -f "$STATE/.panel-settings.preconvert"  "$STATE/panel-settings.json";  chown "$_owner" "$STATE/panel-settings.json"  2>/dev/null || true; }
+  [ -f "$STATE/.panel-confirmed.preconvert" ] && { mv -f "$STATE/.panel-confirmed.preconvert" "$STATE/panel-confirmed.json"; chown "$_owner" "$STATE/panel-confirmed.json" 2>/dev/null || true; }
 
   # 3) THE ATOMIC SWITCH — only NOW stop the docker panel and start the bare one. Downtime is just this stop+start
   #    (~1-3s), not the whole install above. Same URL/port ⇒ nodes stay connected. A master keeps its docker NODE

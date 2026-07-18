@@ -1564,7 +1564,10 @@ serve_internal(){
   obtain_cert_internal
   write_panel_unit
   run systemctl daemon-reload
-  if [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then run systemctl restart swg-panel-server; fi
+  # Don't start the panel here during a DEFERRED-START install (a convert): the old panel still holds the port, so
+  # this restart just fails to bind — but not before the panel partial-boots and reconciles the staged settings/blessed
+  # against a not-yet-live state (blanking the saved address / TLS mode). The convert starts it once at the switch.
+  if [ "${SWG_DEFER_START:-}" != 1 ] && [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ]; then run systemctl restart swg-panel-server; fi
   if command -v ufw >/dev/null 2>&1; then run ufw allow "${PORT}/tcp" 2>/dev/null || true; fi
   local sch="https"; [ -n "${CERT_FULLCHAIN:-}" ] || sch="http"
   [ "$sch" = http ] && warn "TLS skipped — login travels in the clear. Use selfsigned/letsencrypt/cloudflare for real use."
