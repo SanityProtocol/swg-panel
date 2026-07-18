@@ -438,6 +438,7 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   getv(){ sed -n "s/^$1=//p" "$envf" 2>/dev/null | head -1 | sed 's/^"//; s/"$//' || true; }   # || true: a missing .env must fall through to recovery state, not abort under pipefail+set -e
   PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"
   PBASE="$(getv PANEL_BASE)"; PUSER="$(getv PANEL_USER)"; PCFT="$(getv CF_TOKEN)"; PCFO="$(getv CF_ORIGIN_TOKEN)"
+  PSUBPORT="$(getv SUB_PORT)"; [ -n "$PSUBPORT" ] || PSUBPORT=8444   # the docker sub's published port → the bare swg-sub's bind
   NTOK="$(getv NODE_TOKEN)"; NEP="$(getv NODE_ENDPOINT)"   # master: the local node's preserved identity
   # fallback: a docker master's node token should be in .env, but if it's blank/placeholder read it straight from
   # the running node container so the local-node tile reliably gets "converting" at the START (matches bare→docker).
@@ -529,8 +530,12 @@ EOF
   #    installs + enables the panel but does NOT start it (so it doesn't fight docker for :443) — the docker panel
   #    keeps the port and keeps showing "converting" (header + node tile) through this whole step. It reuses the
   #    staged login (KEEP_AUTH); TLS defaults to reuse when the staged cert still covers the host (else it prompts).
+  # Clear any STALE swg-sub drop-ins from a PRIOR bare-metal install (this box may have been bare→docker→bare): they're
+  # swg-netctl-managed env overrides (SWG_SUB_HOST/PORT) that would shadow the fresh unit with a dead bind. The panel
+  # re-writes the correct one via apply-sub after the switch. (A no-op on a box that was never bare-metal.)
+  rm -f /etc/systemd/system/swg-sub.service.d/*.conf 2>/dev/null || true
   info "Installing the bare-metal panel — the docker panel keeps serving until the switch…"
-  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" \
+  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" SUB_PORT="$PSUBPORT" \
       CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 SWG_DEFER_START=1 \
       bash "$SRC/install-host.sh" \
     || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
@@ -549,6 +554,7 @@ EOF
   #    (~1-3s), not the whole install above. Same URL/port ⇒ nodes stay connected. A master keeps its docker NODE
   #    running for the node phase below (copy-first); install-node tears it down at its OWN switch (the last step).
   info "Switching over — stopping the docker panel, starting the bare-metal panel…"
+  docker rm -f swg-sub >/dev/null 2>&1 || true   # stop the docker subscription surface too (else it keeps holding the sub port; the bare swg-sub takes over below)
   if [ "$ROLE" = master ]; then
     docker rm -f swg-panel >/dev/null 2>&1 || true   # stop ONLY the panel — the docker NODE keeps serving (copy-first)
   else
@@ -560,6 +566,20 @@ EOF
   # below — an early stamp ages out of the success-show window before the panel can serve the console's first poll,
   # so the header would blank instead of flipping converting→converted the moment the bare panel is reachable.
   for _i in $(seq 1 30); do curl -sk -o /dev/null --max-time 2 "https://127.0.0.1:${PPORT}${PBASE}/" 2>/dev/null && break; sleep 1; done
+
+  # Bring the bare swg-sub up when subscriptions were ON: issue its cert (same acme state — reuses the panel cert for a
+  # same-domain sub) and (re)start it so the public sub surface migrates too. The main unit already binds SWG_SUB_PORT
+  # =$PSUBPORT and the stale drop-ins are gone, so a restart binds the right port. Best-effort: a missing sub host /
+  # disabled subs just leaves swg-sub inert (its normal state until turned on in the panel).
+  if python3 -c 'import json,sys; sys.exit(0 if (json.load(open(sys.argv[1])).get("subscriptions") or {}).get("enabled") else 1)' "$STATE/panel-settings.json" 2>/dev/null; then
+    _subhost="$(python3 -c 'import json,sys
+from urllib.parse import urlparse
+print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") or {}).get("url") or "")).hostname or "")' "$STATE/panel-settings.json" 2>/dev/null || true)"
+    [ -n "$_subhost" ] || _subhost="$PDOM"
+    /usr/local/bin/swg-netctl issue-cert sub "$_subhost" >/dev/null 2>&1 || true
+    systemctl restart swg-sub 2>/dev/null || true
+    sub "brought up the subscription surface (swg-sub) for $_subhost:$PSUBPORT"
+  fi
 
   # THEN THE NODE — only after the panel is up (host first, then node). Stage the local node straight from the
   # still-running swg-node container (confs → bare locations + host NAT, keypairs, turn units deferred), then
