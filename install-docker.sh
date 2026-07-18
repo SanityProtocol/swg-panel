@@ -1008,7 +1008,7 @@ case "$PROFILE" in
     # loopback default 8088. Bump it clear, exactly like install-host.sh does for the bare-metal SWG_PANEL_LOCAL_PORT.
     while [ "$PANEL_LOCAL_PORT" = "$PANEL_PORT" ] || [ "$PANEL_LOCAL_PORT" = "$SUB_PORT" ]; do PANEL_LOCAL_PORT=$((PANEL_LOCAL_PORT + 1)); done
     if [ "$PROFILE" = master ]; then
-      PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
+      PANEL_URL="https://swg-panel:8443"   # placeholder; manage_node_ifaces (below) resets it to the STABLE loopback (http://127.0.0.1:$PANEL_LOCAL_PORT for host-net, http://swg-panel:$PANEL_LOCAL_PORT for bridge) — the port a public flip never moves
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
       echo; info "DOCKER SWG NODE SETUP"
       step "Node name for THIS box"
@@ -1121,7 +1121,7 @@ PYHOST
       printf 'net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.route_localnet = 1\n' > /etc/sysctl.d/99-swg-node.conf 2>/dev/null || true
       sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
       sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 || true   # host-net node: Force-DNS needs loopback DNAT (container can't set this itself)
-      [ "$PROFILE" = master ] && ok "host networking — every port reachable; node → panel via 127.0.0.1:${PANEL_PORT:-443}" \
+      [ "$PROFILE" = master ] && ok "host networking — every port reachable; node → panel via 127.0.0.1:${PANEL_LOCAL_PORT:-8088}" \
                              || ok "host networking — every interface port reachable, no per-port publishing"
     fi
   else
