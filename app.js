@@ -7738,6 +7738,7 @@ function AccessTLSCard({ onChange }) {
   const rollbackRef = useRef(null);            // the panel address that was live BEFORE an apply → restore the SAVED url on revert (the server rolls back the bind/cert, but the saved url is still the new one → it'd advertise a dead address to nodes)
   const didPanelRef = useRef(false);           // whether THIS save applied a panel change / a sub change — the shared /api/access/status keeps the LAST result of each, so a sub-only save must ignore a stale panel "saved" (and vice-versa)
   const didSubRef = useRef(false);
+  const cancelledRef = useRef(false);          // the operator CANCELLED this change (vs it timing out unconfirmed) → the revert message/modal should say "cancelled", not "check DNS/firewall". Set on the Cancel click, cleared when a fresh apply starts + once the revert is shown.
   // Baseline of what's currently live — the form is compared to this to decide what changed (and thus what needs
   // a live apply). Refreshed after a successful save so the button disables until the next edit.
   const [orig, setOrig] = useState({ pUrl: normPublicUrl(p0.url || ""), pHost: p0.host || "0.0.0.0", pPort: String(p0.port || 443),
@@ -7818,8 +7819,10 @@ function AccessTLSCard({ onChange }) {
         } else {
           setConfirmUrl("");
           const parts = [];
-          if (dp && p.state === "reverted")   // the new address never confirmed (unreachable / not opened) → say what to check
-            parts.push("The new address wasn't confirmed — kept the current one. Check its DNS / Cloudflare / firewall / port, then try again.");
+          if (dp && p.state === "reverted")   // pending ended without a confirm: a deliberate Cancel vs a timeout (unreachable/not opened) read differently
+            parts.push(cancelledRef.current
+              ? "Change cancelled — kept the current address."
+              : "The new address wasn't confirmed — kept the current one. Check its DNS / Cloudflare / firewall / port, then try again.");
           else if (dp && (p.state === "checking" || p.state === "issuing"))   // pre-confirm progress: reachability probe / cert issuance — not an error, not done
             parts.push(p.state === "issuing" ? (p.message || "Issuing the certificate…") : "Waiting for the new address to start responding…");
           else if (dp && p.state === "rp-swap")   // reverse-proxy swap still pending — the notice drives it; just wait for the confirm
@@ -7838,8 +7841,12 @@ function AccessTLSCard({ onChange }) {
             const rb = rollbackRef.current; rollbackRef.current = null;
             if (rb) { try { await api.panelSettings({ access: { panel: { url: rb.url, host: rb.host, port: rb.port } } }); } catch (_) {} }
             resync();    // the form was left showing the rejected value → pull the rolled-back config back in
-            if (dp && (p.state === "reverted" || p.state === "failed")) openModal(html`<${ConfirmSheet} title="Address change not confirmed" warn=${true} confirmLabel="OK"
-              body=${(p.message && p.state === "failed") ? p.message : "The new address wasn’t confirmed, so the panel kept the current one. Check its DNS / Cloudflare / firewall / port, then try again."}/>`);
+            if (dp && (p.state === "reverted" || p.state === "failed")) {
+              const cancelled = p.state === "reverted" && cancelledRef.current;   // deliberate Cancel → neutral "cancelled", not a warning to troubleshoot
+              openModal(html`<${ConfirmSheet} title=${cancelled ? "Address change cancelled" : "Address change not confirmed"} warn=${!cancelled} confirmLabel="OK"
+                body=${cancelled ? "You cancelled the change — the panel kept the current address." : ((p.message && p.state === "failed") ? p.message : "The new address wasn’t confirmed, so the panel kept the current one. Check its DNS / Cloudflare / firewall / port, then try again.")}/>`);
+            }
+            cancelledRef.current = false;   // consumed
           } else {
             rollbackRef.current = null;
             const gs = +(p.grace_secs || 0), nu = p.new_url || "";
@@ -8004,6 +8011,7 @@ function AccessTLSCard({ onChange }) {
     const pBindChg = panelBindChanged(), pUrlChg = panelUrlChanged();   // capture BEFORE setOrig resets them → so the post-save proxy guidance knows what changed
     const needPanel = pBindChg || certChanged() || pUrlChg;
     didPanelRef.current = needPanel; didSubRef.current = needSub;   // so the status poll reacts only to what THIS save changes (the shared status is stale for the other)
+    cancelledRef.current = false;   // fresh apply — a later revert is a timeout unless the operator clicks Cancel
     setBusy(true); setMsg({ ok: true, t: "Saving your changes…" });
     const npUrl = normPublicUrl(behindProxy ? pUrl : withUrlPort(pUrl, pPort)),   // TLS: the URL carries the Port field's port (one socket) — fold it in as a backstop;
           nsUrl = normPublicUrl(behindProxy ? sUrl : withUrlPort(sUrl, sPort));    // reverse-proxy: the URL's external port is independent, left as typed.
@@ -8077,6 +8085,7 @@ function AccessTLSCard({ onChange }) {
   // Abort a change that's still VERIFYING (not yet confirmed) — the server drops the un-confirmed listener /
   // restores the cert and rolls the saved url back. The only other option during verifying is to confirm it.
   const cancelChange = async () => {
+    cancelledRef.current = true;   // so the reverted-state message/modal reads "cancelled", not the "check DNS/firewall" troubleshooting copy
     try {
       const r = await api.post("/api/access/cancel", {});
       if (!r || r.ok === false) toast((r && r.error) || "Couldn't cancel the change.", "err");
