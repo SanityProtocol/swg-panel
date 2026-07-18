@@ -8088,9 +8088,9 @@ function AccessTLSCard({ onChange }) {
     cancelledRef.current = true;   // so the reverted-state message/modal reads "cancelled", not the "check DNS/firewall" troubleshooting copy
     try {
       const r = await api.post("/api/access/cancel", {});
-      if (!r || r.ok === false) toast((r && r.error) || "Couldn't cancel the change.", "err");
+      if (!r || r.ok === false) { cancelledRef.current = false; toast((r && r.error) || "Couldn't cancel the change.", "err"); }   // cancel didn't take → a later timeout-revert should read as a failure, not "cancelled"
       else toast("Change cancelled — kept the current address.", "ok");
-    } catch (_) { toast("Couldn't cancel the change.", "err"); }
+    } catch (_) { cancelledRef.current = false; toast("Couldn't cancel the change.", "err"); }
     // the polling loop sees the reverted state and clears the confirm affordance + resyncs the form
   };
   // Confirm a unified reverse-proxy swap. If the PUBLIC URL changed, we prove the proxy routes the new address here
