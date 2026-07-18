@@ -619,7 +619,10 @@ print(urlparse(((( json.load(open(sys.argv[1])).get("access") or {}).get("sub") 
     # become a bare swg-noded that syncs (ready for interfaces added later from the panel); gating on $mnames left a
     # 0-interface master's node orphaned as a docker container after the dir-move below. (install-node migrates the
     # docker turn-proxies itself in Step 2, so there's no separate turn step here.)
-    env NODE_TOKEN="$NTOK" PANEL_URL="https://127.0.0.1:$PPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
+    # Dial the DEDICATED STABLE loopback ($PLOCALPORT, plain HTTP at ROOT) — the same URL a fresh master's node uses
+    # (install-host.sh LOCAL_PANEL_URL) — NOT the public TLS port. A later panel address/port flip never moves :8088,
+    # so the co-located node can't be stranded by it; pointing it at the public port would defeat that stable-port design.
+    env NODE_TOKEN="$NTOK" PANEL_URL="http://127.0.0.1:$PLOCALPORT" ENDPOINT_IP="$NEP" ADOPTED_IFACES="$mnames" \
         SWG_CONVERT=1 TLS_VERIFY=no SWG_DOCKER_DIR="$DOCKER_DIR" bash "$SRC/install-node.sh" \
       || warn "the local node setup reported an error — check it on the panel."
   else
