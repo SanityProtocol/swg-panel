@@ -564,7 +564,13 @@ EOF
   else
     ( cd "$DOCKER_DIR" && on_tty docker compose down ) 2>/dev/null || true; docker rm -f swg-panel >/dev/null 2>&1 || true
   fi
-  _pu=no; for _i in 1 2 3; do if systemctl start swg-panel-server 2>/dev/null; then _pu=yes; break; fi; sleep 1; done   # bind :443 now that docker released it (brief retry for the handoff)
+  # Wait for docker to FULLY release the panel port before starting the bare one. On a slow / 1-core box the
+  # docker-proxy teardown lingers, so an immediate start binds into a busy port, crashes, and its Restart loop then
+  # contends on the state-dir lock. Poll until the port is free (bounded), then start.
+  for _i in $(seq 1 30); do ss -ltnH "sport = :$PPORT" 2>/dev/null | grep -q . || break; sleep 0.5; done
+  # Clear a STALE state-dir lock (only when NO swg-panel-server is alive) so a crashed prior start can't block the switch.
+  pgrep -f "swg-panel-server" >/dev/null 2>&1 || rm -f "$STATE/.panel.lock" 2>/dev/null || true
+  _pu=no; for _i in 1 2 3 4 5; do if systemctl start swg-panel-server 2>/dev/null; then _pu=yes; break; fi; sleep 2; done   # bind the port now that docker released it (retry for the handoff)
   [ "$_pu" = yes ] || die "couldn't start the bare-metal panel after stopping the docker panel — check 'systemctl status swg-panel-server'; your panel state is safe in $STATE + $ETC"
   # wait until the bare panel actually ANSWERS (not just "systemctl start" returned) before stamping "converted"
   # below — an early stamp ages out of the success-show window before the panel can serve the console's first poll,

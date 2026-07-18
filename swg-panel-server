@@ -9828,13 +9828,46 @@ def main():
     globals()["LIST_DIR"] = os.path.join(_statedir, "lists")                    # resolved per-category lists served to nodes
     _prov_status_load()
     _lp = os.path.join(_statedir, ".panel.lock")
+    def _other_panel_pid():
+        # Any OTHER live swg-panel-server on this box? Scans /proc, matching PRECISELY (arg0 is the script, or python
+        # runs it) — so `grep swg-panel-server` / `systemctl restart swg-panel-server` / a py_compile don't count as a
+        # live holder and block the stale-lock self-heal.
+        _me = os.getpid()
+        for _d in os.listdir("/proc"):
+            if not _d.isdigit() or int(_d) == _me:
+                continue
+            with contextlib.suppress(Exception):
+                _args = [a for a in open("/proc/%s/cmdline" % _d, "rb").read().split(b"\0") if a]
+                if not _args:
+                    continue
+                _a0 = os.path.basename(_args[0])
+                if _a0 == b"swg-panel-server" or (_a0.startswith(b"python") and len(_args) > 1
+                                                  and os.path.basename(_args[1]) == b"swg-panel-server"):
+                    return int(_d)
+        return None
+    def _grab_lock():
+        _fd = os.open(_lp, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        fcntl.flock(_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return _fd
     try:
-        _lockfd = os.open(_lp, os.O_WRONLY | os.O_CREAT, 0o600)
-        fcntl.flock(_lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lockfd = _grab_lock()
     except OSError:
-        raise SystemExit(f"refusing to start: another swg-panel-server already holds {_lp} (state dir {_statedir}). "
-                         f"Two panels on one state dir clobber nodes.json (desyncs node tokens → sync 401). "
-                         f"Stop the other instance first, or point this one at a separate state dir.")
+        # flock is held. A REAL second panel must be refused; but a crashed/killed start on a slow box can leave the
+        # lock stuck (e.g. its Restart loop overlapping itself) with NO live holder — self-heal from that rather than
+        # crash-loop forever needing a manual `rm .panel.lock`. Only break it when no other swg-panel-server is alive.
+        _pid = _other_panel_pid()
+        if _pid is not None:
+            raise SystemExit(f"refusing to start: another swg-panel-server (pid {_pid}) already holds {_lp} (state dir "
+                             f"{_statedir}). Two panels on one state dir clobber nodes.json (desyncs node tokens → sync "
+                             f"401). Stop the other instance first, or point this one at a separate state dir.")
+        with contextlib.suppress(Exception):
+            os.unlink(_lp)
+        try:
+            _lockfd = _grab_lock()
+        except OSError:
+            raise SystemExit(f"refusing to start: couldn't acquire {_lp} (state dir {_statedir}) — a lock is held but no "
+                             f"swg-panel-server is running. Check for a stray process, or remove the file by hand.")
+        print("access: cleared a stale state-dir lock (no live swg-panel-server held it)", flush=True)
     os.ftruncate(_lockfd, 0); os.write(_lockfd, (str(os.getpid()) + "\n").encode())
     globals()["_STATE_LOCK_FD"] = _lockfd     # keep the fd open for the process lifetime → lock held until exit
     # After the state-dir lock (so two panels can't repair concurrently) and before serving: one-shot rebuild of
