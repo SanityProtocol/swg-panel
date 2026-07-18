@@ -1715,6 +1715,18 @@ def validate_access(incoming, current):
            "cf_token": _secret("cf_token"), "cf_origin_token": _secret("cf_origin_token")}
 
     # ── cross-field rules ──
+    # Reject an out-of-range port up front (before the clamp in _clean_endpoint can hide it): _clean_endpoint pins the
+    # bind to [1,65535] but keeps the URL's :port verbatim, so an entry like :99999 would silently save url=:99999 with
+    # bind=:65535 — a desync the change then fails on. A hard error keeps the URL and the bind port the same value.
+    for name, raw in (("Panel", inc.get("panel")), ("Subscription", inc.get("sub"))):
+        if isinstance(raw, dict) and raw.get("port") not in (None, ""):
+            try:
+                _rp = int(raw.get("port"))
+            except (TypeError, ValueError):
+                _rp = None
+            if _rp is None or not (1 <= _rp <= 65535):
+                errors.append("%s: port must be a number between 1 and 65535." % name)
+
     for name, ep in (("Panel", panel), ("Subscription", sub)):
         host = _url_host(ep["url"])
         if ep["url"] and mode in CA_DOMAIN_MODES and _is_ip(host):

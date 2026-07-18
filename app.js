@@ -7870,6 +7870,11 @@ function AccessTLSCard({ onChange }) {
   const behindProxy = (mode === "" || mode === "skip");   // plain HTTP → a reverse proxy fronts panel + sub; their listen host:port is internal (nginx upstream), not a public address
   const pBad = cfMode && pPort && !CF_HTTPS_PORTS.includes(+pPort);
   const sBad = subsOn && cfMode && sPort && !CF_HTTPS_PORTS.includes(+sPort);
+  // A port outside 1–65535 is invalid on ANY mode. Block it here — otherwise the port silently clamps to 65535 on
+  // save while the URL keeps the out-of-range :port, a url/bind desync the change then fails on. (Server rejects too.)
+  const _portRangeBad = p => { const s = String(p == null ? "" : p).trim(); return !!s && (!/^\d+$/.test(s) || +s < 1 || +s > 65535); };
+  const pPortRangeBad = _portRangeBad(pPort);
+  const sPortRangeBad = subsOn && _portRangeBad(sPort);
   const hard = mode === "cf15";                                   // cf15 origin certs ONLY work behind CF → block
   // Direct TLS (not behind a proxy) → this service terminates its own TLS and is reached DIRECTLY, so a loopback
   // listen IP isn't publicly reachable (Cloudflare/clients can't hit 127.0.0.1) → 521. Only valid behind a proxy.
@@ -7892,7 +7897,7 @@ function AccessTLSCard({ onChange }) {
   const wasBehindProxy = (orig.mode === "" || orig.mode === "skip");
   const modeFlip = behindProxy !== wasBehindProxy;                      // the Type change crosses the reverse-proxy ↔ direct-TLS line (the panel's own socket flips HTTP↔HTTPS)
   const flipToTls = modeFlip && !behindProxy;                           // reverse proxy → direct TLS (panel starts terminating its own TLS)
-  const blocked = (hard && (pBad || sBad)) || pLoopbackDirect || sLoopbackDirect;
+  const blocked = (hard && (pBad || sBad)) || pLoopbackDirect || sLoopbackDirect || pPortRangeBad || sPortRangeBad;
   // ONE-AT-A-TIME cooldown: while a previous address change is verifying or gracing out, Save is locked — the
   // only allowed action is Cancel. Server-enforced too (a stray apply gets a 'cooldown' 409); this just mirrors it.
   const cooldown = Store.accessCooldown || { secs: 0, reason: "" };
@@ -7906,7 +7911,7 @@ function AccessTLSCard({ onChange }) {
         options=${ipOpts(host, withLocal)}/></div>
       ${val === "__custom" ? html`<input class=${"mt8" + (bad ? " bad" : "")} type="text" placeholder="e.g. 203.0.113.5" value=${host} onInput=${e => setHost(e.target.value)}/>` : null}</div>`;
   };
-  const portField = (port, setPort, bad) => html`<div class="field"><label>Port${bad ? html` <span class="ciw" title="Cloudflare can't reach this port"><${Ic} i="warn"/></span>` : null}</label>
+  const portField = (port, setPort, bad, badTitle) => html`<div class="field"><label>Port${bad ? html` <span class="ciw" title=${badTitle || "Cloudflare can't reach this port"}><${Ic} i="warn"/></span>` : null}</label>
     <input class=${bad ? "bad" : ""} type="text" value=${port} onInput=${e => setPort(e.target.value)}/></div>`;
   const loopNote = (which) => html`<div class="notice err"><${Ic} i="warn"/><span>
     <b>Loopback won't work with direct TLS.</b> The ${which} terminates its own TLS and is reached <b>directly</b> — Cloudflare / clients connect straight to this box — so a <span class="mono">127.0.0.1</span> Listen IP isn't reachable from outside and fails publicly (Cloudflare shows <b>521</b>). Set the Listen IP to <span class="mono">0.0.0.0</span> (a public interface). Loopback is only correct <b>behind a reverse proxy</b> (TLS mode “None”). Save is disabled until this is fixed.</span></div>`;
@@ -8242,7 +8247,7 @@ function AccessTLSCard({ onChange }) {
     <div class="seclabel">Panel address</div>
     <p class="hint" style="margin:0 0 12px">Where the panel itself is reached. If it's directly reachable, the URL's host and this port should match; behind a reverse proxy / Cloudflare, the URL is the public address.</p>
     <div class="field"><label>Public URL</label><input type="text" placeholder="https://panel.example.com  or  https://example.com/swgpanel" value=${pUrl} onInput=${e => setPUrlLinked(e.target.value)}/></div>
-    <div class="fieldrow">${ipField(pHost, setPHost, true, pLoopbackDirect)}${portField(pPort, setPPortLinked, pBad)}</div>
+    <div class="fieldrow">${ipField(pHost, setPHost, true, pLoopbackDirect)}${portField(pPort, setPPortLinked, pBad || pPortRangeBad, pPortRangeBad ? "Port must be a number between 1 and 65535" : null)}</div>
     ${pLoopbackDirect ? loopNote("panel") : (pBad ? cfNote : null)}
     ${localPort > 0 ? html`<div class="field"><label>Local node port</label><input type="text" value=${"127.0.0.1:" + localPort} readonly disabled class="mono"/>
       <div class="hint">This box's own node reaches the panel here — a dedicated plain-HTTP loopback port, served at the root. It's set at install and a public address, port, path, or certificate change never moves it, so the co-located node never loses the panel. To change it, re-run the installer.</div></div>` : null}
@@ -8263,7 +8268,7 @@ function AccessTLSCard({ onChange }) {
     ${subsOn ? html`<div class="seclabel">Subscription address</div>
       <p class="hint" style="margin:0 0 12px">Where the swg-sub page is reached (a separate service; changing it only restarts swg-sub).</p>
       <div class="field"><label>Public URL</label><input type="text" placeholder="https://sub.example.com  or  https://example.com/swgsub" value=${sUrl} onInput=${e => setSUrlLinked(e.target.value)}/></div>
-      <div class="fieldrow">${ipField(sHost, setSHost, true, sLoopbackDirect)}${portField(sPort, setSPortLinked, sBad)}</div>
+      <div class="fieldrow">${ipField(sHost, setSHost, true, sLoopbackDirect)}${portField(sPort, setSPortLinked, sBad || sPortRangeBad, sPortRangeBad ? "Port must be a number between 1 and 65535" : null)}</div>
       ${sLoopbackDirect ? loopNote("subscription server") : (sBad ? cfNote : null)}
       ${(behindProxy && (subBindChanged() || subUrlChanged())) ? html`<div class="notice" style="margin:8px 0 12px"><${Ic} i="info"/><div style="min-width:0">
         <b>Behind a reverse proxy.</b> Point your proxy at <span class="mono">${(sHost.trim() || "127.0.0.1")}:${_sPortN()}</span> and make sure it serves this URL's path. swg-sub picks it up on Save — a path or domain change reloads it live (no downtime; existing links keep working during a grace), a host/port change restarts it. If the panel has no root helper, it saves and asks you to run <span class="mono">systemctl reload swg-sub</span>.
