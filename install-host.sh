@@ -909,6 +909,20 @@ fi
 [ -z "$LOCAL_PORT_SAVED" ] && [ -f "$_unit" ] && { _lp="$(sed -n 's/^Environment=SWG_PANEL_LOCAL_PORT=//p' "$_unit" | head -1)"; [ -n "$_lp" ] && LOCAL_PORT="$_lp"; }
 while [ "$LOCAL_PORT" = "$PORT" ] || [ "$LOCAL_PORT" = "$SUB_PORT" ]; do LOCAL_PORT=$((LOCAL_PORT + 1)); done
 
+# Does this box have a co-located node? A master obviously does; but a docker→bare-metal MASTER convert runs
+# install-host as ROLE=host (the node is a SEPARATE install-node step), so HOST_HAS_WG is 'no' here even though the
+# node — and its loopback dial URL — already exist. Detect that from the present agent config so the panel still
+# binds the dedicated loopback port, and adopt the exact port the node already dials (don't strand it on a mismatch).
+_HAS_LOCAL_NODE=no; [ "$HOST_HAS_WG" = yes ] && _HAS_LOCAL_NODE=yes
+if [ -f /etc/swg-agent/config.json ]; then
+  _au="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
+  case "$_au" in *127.0.0.1*|*localhost*)
+    _HAS_LOCAL_NODE=yes
+    _ap="$(printf '%s' "$_au" | sed -nE 's#^https?://[^:/]+:([0-9]+).*#\1#p')"
+    [ -n "$_ap" ] && LOCAL_PORT="$_ap" ;;   # bind exactly what the co-located node already dials
+  esac
+fi
+
 # (existing-install detection + saved-settings load happen up-front, at the top of PANEL SETUP)
 # Admin login — auto-generated (username admin + 3 random digits, password random); both are
 # printed at the end and can be changed later in the panel (Account). Override via BASIC_USER=/BASIC_PASS= env.
@@ -1184,8 +1198,8 @@ write_panel_unit(){   # bind/TLS/base depend on SERVE_MODE; called from the serv
   extra="Environment=SWG_PANEL_AUTH=${ETC_DIR}/auth"            # panel does its own login in every serve mode
   [ -n "$PANEL_BASE" ] && extra="$extra
 Environment=SWG_PANEL_BASE=${PANEL_BASE}"
-  [ "$HOST_HAS_WG" = yes ] && extra="$extra
-Environment=SWG_PANEL_LOCAL_PORT=${LOCAL_PORT}"          # master: dedicated stable plain-HTTP loopback the co-located node dials at ROOT
+  [ "$_HAS_LOCAL_NODE" = yes ] && extra="$extra
+Environment=SWG_PANEL_LOCAL_PORT=${LOCAL_PORT}"          # co-located node present: dedicated stable plain-HTTP loopback it dials at ROOT (also the convert-master case where ROLE=host)
   if [ "$SERVE_MODE" = internal ]; then
     bind="0.0.0.0"                                              # internal mode faces the network directly
     [ -n "${CERT_FULLCHAIN:-}" ] && [ -n "${CERT_KEY:-}" ] && extra="$extra
