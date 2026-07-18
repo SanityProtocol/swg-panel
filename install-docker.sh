@@ -1002,6 +1002,11 @@ case "$PROFILE" in
     [ "$ROLE" = master ] && PROFILE=master || PROFILE=host
     echo; info "DOCKER SWG PANEL SETUP"
     ask_panel_login; ask_panel_tls
+    # The co-located node's dedicated loopback port gets its OWN 127.0.0.1:<port> publish in docker-compose, so it must
+    # not equal the panel's public port or the sub port — else compose fails at `up` with "port is already allocated".
+    # This bites the DEFAULT reverse-proxy install: TLS=none sets PANEL_PORT=8088 (ask_panel_tls), the same as the
+    # loopback default 8088. Bump it clear, exactly like install-host.sh does for the bare-metal SWG_PANEL_LOCAL_PORT.
+    while [ "$PANEL_LOCAL_PORT" = "$PANEL_PORT" ] || [ "$PANEL_LOCAL_PORT" = "$SUB_PORT" ]; do PANEL_LOCAL_PORT=$((PANEL_LOCAL_PORT + 1)); done
     if [ "$PROFILE" = master ]; then
       PANEL_URL="https://swg-panel:8443"   # the local node reaches the panel on the compose network
       TLS_VERIFY="${TLS_VERIFY:-no}"        # local node → local panel is self-signed on the compose net
