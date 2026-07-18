@@ -910,10 +910,10 @@ fi
 while [ "$LOCAL_PORT" = "$PORT" ] || [ "$LOCAL_PORT" = "$SUB_PORT" ]; do LOCAL_PORT=$((LOCAL_PORT + 1)); done
 
 # Does this box have a co-located node? A master obviously does; but a docker→bare-metal MASTER convert runs
-# install-host as ROLE=host (the node is a SEPARATE install-node step), so HOST_HAS_WG is 'no' here even though the
-# node — and its loopback dial URL — already exist. Detect that from the present agent config so the panel still
-# binds the dedicated loopback port, and adopt the exact port the node already dials (don't strand it on a mismatch).
-_HAS_LOCAL_NODE=no; [ "$HOST_HAS_WG" = yes ] && _HAS_LOCAL_NODE=yes
+# install-host as ROLE=host (the node is a SEPARATE, LATER install-node step), so HOST_HAS_WG is 'no' AND there's no
+# agent config to detect YET — the convert flags it with SWG_HAS_LOCAL_NODE=1 (and passes LOCAL_PORT). Otherwise detect
+# an already-present node from its agent config, and adopt the exact port it dials (don't strand it on a mismatch).
+_HAS_LOCAL_NODE=no; { [ "$HOST_HAS_WG" = yes ] || [ "${SWG_HAS_LOCAL_NODE:-}" = 1 ]; } && _HAS_LOCAL_NODE=yes
 if [ -f /etc/swg-agent/config.json ]; then
   _au="$(python3 -c 'import json;print((json.load(open("/etc/swg-agent/config.json")).get("panel") or {}).get("url",""))' 2>/dev/null || true)"
   case "$_au" in *127.0.0.1*|*localhost*)

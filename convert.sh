@@ -439,6 +439,7 @@ if { [ "$ROLE" = host ] || [ "$ROLE" = master ]; } && [ "$FROM" = docker ] && [ 
   PDOM="$(getv PANEL_DOMAIN)"; PPORT="$(getv PANEL_PORT)"; PTLS="$(getv TLS)"; PEMAIL="$(getv ACME_EMAIL)"
   PBASE="$(getv PANEL_BASE)"; PUSER="$(getv PANEL_USER)"; PCFT="$(getv CF_TOKEN)"; PCFO="$(getv CF_ORIGIN_TOKEN)"
   PSUBPORT="$(getv SUB_PORT)"; [ -n "$PSUBPORT" ] || PSUBPORT=8444   # the docker sub's published port → the bare swg-sub's bind
+  PLOCALPORT="$(getv PANEL_LOCAL_PORT)"; [ -n "$PLOCALPORT" ] || PLOCALPORT=8088   # the co-located node's loopback dial port
   NTOK="$(getv NODE_TOKEN)"; NEP="$(getv NODE_ENDPOINT)"   # master: the local node's preserved identity
   # fallback: a docker master's node token should be in .env, but if it's blank/placeholder read it straight from
   # the running node container so the local-node tile reliably gets "converting" at the START (matches bare→docker).
@@ -535,7 +536,10 @@ EOF
   # re-writes the correct one via apply-sub after the switch. (A no-op on a box that was never bare-metal.)
   rm -f /etc/systemd/system/swg-sub.service.d/*.conf 2>/dev/null || true
   info "Installing the bare-metal panel — the docker panel keeps serving until the switch…"
-  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" SUB_PORT="$PSUBPORT" \
+  # A MASTER has a co-located node coming in the LATER install-node step, but there's no agent config for install-host
+  # to detect yet — flag it so the panel binds the dedicated loopback port (SWG_PANEL_LOCAL_PORT) that the node dials.
+  _LNENV=""; [ "$ROLE" = master ] && _LNENV="SWG_HAS_LOCAL_NODE=1 LOCAL_PORT=$PLOCALPORT"
+  env ROLE=host PANEL_DOMAIN="$PDOM" PORT="$PPORT" PANEL_BASE="$PBASE" ACME_EMAIL="$PEMAIL" SUB_PORT="$PSUBPORT" $_LNENV \
       CF_TOKEN="$PCFT" CF_ORIGIN_TOKEN="$PCFO" BASIC_USER="$PUSER" SERVE_MODE=internal SWG_CONVERT_DIR=convert-bare SWG_LC_PARENT=1 SWG_DEFER_START=1 \
       bash "$SRC/install-host.sh" \
     || die "install-host.sh failed — your panel state is safe in $STATE + $ETC; re-run the bare-metal host install to finish"
