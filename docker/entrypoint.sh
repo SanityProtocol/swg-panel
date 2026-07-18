@@ -82,10 +82,16 @@ acme_install(){ acme_prune_stale
 cert_is_selfsigned(){ local i s
   i="$(openssl x509 -in "$1" -noout -issuer 2>/dev/null)"; s="$(openssl x509 -in "$1" -noout -subject 2>/dev/null)"
   [ -n "$i" ] && [ "$i" = "$s" ]; }
+# Does cert $1 actually name $PANEL_DOMAIN (in its subject CN or a SAN)? A LEFTOVER cert for a DIFFERENT domain —
+# e.g. after flipping swgt2→swgt — is a real CA cert but the wrong one, and reusing it makes the proxy reject it.
+cert_covers_domain(){ openssl x509 -in "$1" -noout -text 2>/dev/null | grep -qF "$PANEL_DOMAIN"; }
 reuse_present_cert(){
   [ -n "${SWG_PANEL_TLS_CERT:-}" ] && [ -f "$SWG_PANEL_TLS_CERT" ] || return 1
   case "${TLS:-selfsigned}" in
-    cloudflare|letsencrypt|letsencrypt-ip|cf15) ! cert_is_selfsigned "$SWG_PANEL_TLS_CERT" ;;
+    # A CA mode reuses the on-disk cert ONLY if it's a REAL CA cert that COVERS this domain; a self-signed
+    # placeholder OR a leftover cert for another domain must be RE-ISSUED (which overwrites it) so the change
+    # can't be broken by whatever cert happened to be left behind.
+    cloudflare|letsencrypt|letsencrypt-ip|cf15) ! cert_is_selfsigned "$SWG_PANEL_TLS_CERT" && cert_covers_domain "$SWG_PANEL_TLS_CERT" ;;
     *) return 0 ;;
   esac; }
 

@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import time
+from urllib.parse import urlparse
 
 DIR = os.environ.get("SWG_DOCKER_DIR", "/opt/swg-panel-docker")
 QUEUE = os.path.join(DIR, "data", "lib", "netctl", "queue")
@@ -89,28 +90,31 @@ def _tls_creds(mode):
     return creds
 
 
-def _served_cert_real(port, tries=60):
-    """After a flip to a CA mode, is the panel serving a REAL CA cert on 127.0.0.1:<port>? Polls while the container
-    boots + ISSUES (DNS-01 through Cloudflare can take 40-90s for record propagation + validation, so the window is
-    generous — a too-short one falsely rolls back a slow-but-successful issuance). Returns True (issuer != subject →
-    a real CA cert), False (issuer == subject → the self-signed fallback the entrypoint emits when issuance fails,
-    OR the port never served TLS at all), or None (openssl unavailable → can't judge, caller proceeds w/o rollback).
+def _served_cert_real(port, domain="", tries=60):
+    """After a flip to a CA mode, is the panel serving a REAL CA cert THAT COVERS <domain> on 127.0.0.1:<port>?
+    Polls while the container boots + ISSUES (DNS-01 through Cloudflare can take 40-90s for record propagation +
+    validation, so the window is generous — a too-short one falsely rolls back a slow-but-successful issuance).
+    Returns True (issuer != subject AND the cert names <domain>), False (self-signed fallback, wrong-domain cert,
+    or the port never served TLS), or None (openssl unavailable → can't judge, caller proceeds w/o rollback).
     NOTE: the entrypoint issues the cert BEFORE it starts the panel, so during issuance the port is simply not
-    listening yet (connection refused) — that's the 'keep waiting' case, distinct from a served self-signed cert."""
+    listening yet (connection refused) — that's the 'keep waiting' case, distinct from a served cert."""
     if subprocess.run(["sh", "-c", "command -v openssl"], capture_output=True).returncode != 0:
         return None
     cmd = ("echo | openssl s_client -connect 127.0.0.1:%s 2>/dev/null | "
-           "openssl x509 -noout -issuer -subject 2>/dev/null" % port)
+           "openssl x509 -noout -issuer -subject -ext subjectAltName 2>/dev/null" % port)
     for _ in range(tries):                     # tries*3s ≈ 3 min ceiling — covers a slow Cloudflare DNS-01
         r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=15)
+        out = r.stdout or ""
         iss = sub = None
-        for ln in (r.stdout or "").splitlines():
+        for ln in out.splitlines():
             if ln.startswith("issuer="):
                 iss = ln.split("=", 1)[1].strip()
             elif ln.startswith("subject="):
                 sub = ln.split("=", 1)[1].strip()
-        if iss is not None and sub is not None:
-            return iss != sub                 # got a cert → decide now (real vs self-signed)
+        if iss is not None and sub is not None:   # got a cert → decide now
+            real = iss != sub                     # a real CA cert (not the self-signed fallback)
+            covers = (not domain) or (domain in out)   # the cert's subject/SAN actually names this domain
+            return real and covers
         time.sleep(3)                          # not serving TLS yet — container still booting/issuing
     return False                               # never served a cert within the window → treat as failed
 
@@ -226,8 +230,15 @@ def _handle(verb, args):
             return False, "flip only applies to the panel"
         ca = tls in ("cloudflare", "cf15", "letsencrypt", "letsencrypt-ip")
         target_mode = "" if tls in ("", "none") else tls
-        # Snapshot the current scheme AND the blessed dial address, so a failed CA flip restores BOTH atomically.
-        old_env = _read_env(["TLS", "PANEL_PORT", "PANEL_BIND", "PANEL_LOCAL_PORT"])
+        # The target url carries the DOMAIN and the mount PATH too — a flip can change them alongside the scheme, and
+        # they must reach .env or the entrypoint issues the cert for the OLD domain (wrong-domain cert → proxy 526)
+        # and serves the wrong base. (persist-url/set-base cover these on the reverse-proxy path; the flip bypasses
+        # both, so we do it here.)
+        _u = urlparse(target_url if "://" in target_url else "https://" + target_url) if target_url else None
+        dom = (_u.hostname or "") if _u else ""
+        base = ((_u.path or "").strip("/")) if _u else ""
+        # Snapshot the current scheme + DOMAIN/BASE + the blessed dial address, so a failed CA flip restores them all.
+        old_env = _read_env(["TLS", "PANEL_PORT", "PANEL_BIND", "PANEL_LOCAL_PORT", "PANEL_DOMAIN", "PANEL_BASE"])
         old_bless = _bless_snapshot()
         # OPTIMISTIC adopt: advance blessed to the target BEFORE the recreate, so a verified flip is a SINGLE recreate
         # and the panel comes up already advertising the new url (no racy boot-time "did the scheme match" guess — the
@@ -237,6 +248,9 @@ def _handle(verb, args):
         env = {"TLS": tls or "none", "PANEL_PORT": port, "PANEL_BIND": host}
         if localport:
             env["PANEL_LOCAL_PORT"] = localport
+        if dom:
+            env["PANEL_DOMAIN"] = dom          # so the entrypoint issues the cert for the RIGHT domain
+            env["PANEL_BASE"] = base           # keep the mount path in step (blank = root)
         if ca:
             env.update(_tls_creds(tls))       # carry the cert credential so the entrypoint can issue a REAL cert
         _set_env(env)
@@ -244,13 +258,15 @@ def _handle(verb, args):
         if not ok:                            # the recreate itself failed → restore the previous scheme + address
             _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
             return False, "flip recreate failed (%s) — rolled back to the previous address" % msg
-        if ca and _served_cert_real(port) is False:
-            # A CA mode that fell back to self-signed (missing/blocked token, unreachable :80, rate limit) would be
-            # rejected by a validating proxy (Cloudflare 526) and strand nodes. Roll BOTH the scheme and the blessed
-            # address back, so the panel comes up on the still-working old address and never advertises the broken one.
+        if ca and _served_cert_real(port, dom) is False:
+            # The cert must be a REAL CA cert that COVERS this domain. A self-signed fallback (missing/blocked token,
+            # unreachable :80, rate limit) OR a stale cert for a DIFFERENT domain would be rejected by a validating
+            # proxy (Cloudflare 526) and strand nodes. Roll BOTH the scheme and the blessed address back, so the panel
+            # comes up on the still-working old address and never advertises the broken one.
             _set_env(old_env); _bless_restore(old_bless); _compose("up", "-d", "--no-deps", "swg-panel")
-            return False, ("the %s certificate could not be issued (served a self-signed fallback) — rolled back "
-                           "to the previous address. Check the TLS credential / DNS, then try again." % tls)
+            return False, ("the %s certificate could not be issued for %s (served a self-signed or wrong-domain cert)"
+                           " — rolled back to the previous address. Check the TLS credential / DNS, then try again."
+                           % (tls, dom or "the panel"))
         return True, "flipped panel → TLS=%s bind %s:%s (recreated%s)" % (
             tls or "none", host, port, ", cert verified" if ca else "")
     if verb == "persist-url":
