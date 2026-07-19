@@ -9696,8 +9696,13 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   const all = useMemo(allTargets, [Store.describe]);
   // locked: launched from one interface — show only that target, no toggling, just the IP.
   const locked = !!(prefill && prefill.lock && prefill.node && prefill.iface);
-  const targets = locked ? all.filter(t => t.node === prefill.node && t.iface === prefill.iface)
+  const baseAll = locked ? all.filter(t => t.node === prefill.node && t.iface === prefill.iface)
     : (exclude ? all.filter(t => !exclude.has(tkey(t.node, t.iface))) : all);
+  // existing deployments whose interface the node no longer reports (dangling/missing) — still list them so the
+  // operator can UNCHECK to drop them; otherwise a dangling deployment is stuck on the peer with no way to remove it.
+  const missingExisting = (!locked && initial) ? initial.filter(t => !baseAll.some(a => a.node === t.node && a.iface === t.iface))
+    .map(t => ({ node: t.node, iface: t.iface, type: t.type, missing: true })) : [];
+  const targets = baseAll.concat(missingExisting);
   const [sel, setSel] = useState({});
   const allocIp = async (node, iface) => {
     const k = tkey(node, iface);
@@ -9731,19 +9736,20 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   // jumps up to join the selected group and every selection stays gathered at the top with its IP visible.
   const _sv = Object.values(sel);
   const lockType = _sv.length ? iTypeOf(_sv[0].node, _sv[0].iface) : null;   // a peer is one protocol — hide the other kind once one is ticked
-  const ordered = [...targets].filter(t => !lockType || iTypeOf(t.node, t.iface) === lockType).sort((a, b) =>
+  const ordered = [...targets].filter(t => t.missing || !lockType || iTypeOf(t.node, t.iface) === lockType).sort((a, b) =>
     (sel[tkey(a.node, a.iface)] ? 0 : 1) - (sel[tkey(b.node, b.iface)] ? 0 : 1)
     || (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
     || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class="targetpick">${ordered.map(t => {
     const k = tkey(t.node, t.iface); const s = sel[k];
     const im = (Store.describe[t.node] || {})[t.iface] || {};
-    const ity = (im.awg_params && Object.keys(im.awg_params).length) ? "awg" : "wg";
-    return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "")}>
+    const ity = t.missing ? (t.type || "wg") : ((im.awg_params && Object.keys(im.awg_params).length) ? "awg" : "wg");
+    return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "") + (t.missing ? " missing" : "")}>
       <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
         <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
         <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
-        <span class="tp">${t.iface}</span></label>
+        <span class="tp">${t.iface}</span>
+        ${t.missing ? html`<span class="topt-missing" title="This interface is gone from the node — uncheck to remove this deployment from the peer">missing</span>` : null}</label>
       <${Tag} kind=${ity} label=${ity}/>
       ${s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} title=${s.ip && !V.ipv4(s.ip) ? "not a valid IPv4 address" : ""} onInput=${e => setIp(k, e.target.value)}/>` : null}
     </div>`;
@@ -9957,7 +9963,7 @@ function AddTargetSheet({ peer, back, child }) {
     return () => { ok = false; };
   }, [peer.id]);
 
-  const initial = useMemo(() => peer.targets.map(t => ({ node: t.node, iface: t.iface, ip: t.ip })), [peer.id]);
+  const initial = useMemo(() => peer.targets.map(t => ({ node: t.node, iface: t.iface, ip: t.ip, type: t.type })), [peer.id]);
   const haveKeys = new Set(peer.targets.map(t => tkey(t.node, t.iface)));
   const origIp = {}; peer.targets.forEach(t => origIp[tkey(t.node, t.iface)] = String(t.ip || "").split("/")[0]);
   const chosenKeys = new Set(chosen.map(c => tkey(c.node, c.iface)));
@@ -10050,13 +10056,17 @@ function PeerViewSheet({ pid, node, iface }) {
   const p = Store.peer(pid);
   if (!p) return html`<${Sheet} title="Peer" foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>Close</button>`}><div class="empty"><b>Peer not found</b>It may have been removed.</div><//>`;
   const u = p.user_id ? Store.user(p.user_id) : null;
+  // Editing is peer-WIDE (keys, AmneziaWG params, DNS, address apply to every deployment), so it's locked while any
+  // deployment is on a missing (dangling) or misconfigured (broken) interface — a change there can't reach that
+  // deployment and would leave the peer inconsistent. The operator must Restore/Fix the interface, or drop it from Targets.
+  const editLocked = p.targets.some(t => t.status === "dangling" || t.status === "broken");
   return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")} width=${640} subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/> QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p)}><${Ic} i="copy"/> Targets</button>
-      ${p.status === "dangling"
-        ? html`<button class="btn btn-ghost" disabled title="This peer's interface is gone from the node — Restore the interface before editing"><${Ic} i="pencil"/> Edit</button>`
+      ${editLocked
+        ? html`<button class="btn btn-ghost" disabled title="Fix or remove the problem interface first — see the note above"><${Ic} i="pencil"/> Edit</button>`
         : html`<button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null)}><${Ic} i="pencil"/> Edit</button>`}
       ${peerBlockBtn(p)}
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p)}>Delete</button>`
@@ -10087,6 +10097,7 @@ function PeerViewSheet({ pid, node, iface }) {
           <span><span class="k">Online</span> ${seen(obs ? obs.handshake_age : null)}</span>
         </div></div>`;
     })}</div>
+    ${editLocked ? html`<div class="notice warn" style="margin-top:14px"><${Ic} i="warn"/><span>Editing is off while a deployment sits on a <b>missing</b> or <b>misconfigured</b> interface. A peer edit (keys, AmneziaWG params, DNS, address) applies to <b>every</b> deployment, so it would leave this peer inconsistent. To edit it, either <b>Restore</b> / <b>Fix</b> the interface above, or open <b>Targets</b> and remove that interface from this peer.</span></div>` : null}
   <//>`;
 }
 

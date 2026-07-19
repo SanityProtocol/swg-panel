@@ -605,6 +605,9 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .targetopt.sel .box{border-color:var(--brand);background:color-mix(in srgb,var(--brand) 16%,transparent)}
 .targetopt .nm{font-weight:600}
 .targetopt .tp{font-size:13.5px;color:var(--faint);font-family:var(--mono)}
+/* an existing deployment whose interface is gone — flagged so it reads as removable-only, not a fresh option */
+.targetopt.missing{border-color:color-mix(in srgb,var(--dangling) 34%,var(--line-solid));background:color-mix(in srgb,var(--dangling) 5%,transparent)}
+.topt-missing{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--dangling);border:1px solid color-mix(in srgb,var(--dangling) 34%,transparent);border-radius:99px;padding:1px 6px}
 .targetopt .tg{flex:none;margin-right:2px}   /* wg/awg type tag sits just before the address */
 .targetopt .topt-ip{width:130px;flex:none;padding:5px 8px;font-size:12.5px}
 .targetopt .topt-ip.existing{display:inline-flex;align-items:center;justify-content:flex-end;font-family:var(--mono);color:var(--ink-2);text-align:right}   /* already-deployed address, read-only */
