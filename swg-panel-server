@@ -6565,6 +6565,50 @@ def api(method, path, qs, body, deps):
                   f"{target['node']}/{target['iface']}")
         return 200, {"ok": True, "data": roster["peers"][pid]}
 
+    if method == "POST" and path == "/api/peers/correct":
+        # Fix a BROKEN peer: its roster IP is OUTSIDE the target interface's subnet (the interface was
+        # recreated with a different subnet, or the record predates a subnet change), so the node's agent
+        # rejects the peer. Reassign the lowest free IP inside the live subnet; the node re-converges the
+        # peer's AllowedIPs on the next sync. Keys / PSK / every other target are untouched.
+        pid = body.get("peer_id") or ""; tgt = body.get("target") or {}
+        node = tgt.get("node") or ""; iface = (tgt.get("iface") or "").strip()
+        roster = roster_load(roster_path)
+        p = (roster.get("peers") or {}).get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        if node not in nodes:
+            return 400, {"ok": False, "error": "unknown node", "code": "bad_request"}
+        if not any(t.get("node") == node and t.get("iface") == iface for t in p.get("targets", [])):
+            return 400, {"ok": False, "error": "peer has no such target", "code": "bad_request"}
+        meta = (((deps.get("node_snaps") or {}).get(node) or {}).get("interfaces") or {}).get(iface) or {}
+        subnet = (meta.get("meta") or {}).get("subnet")
+        if not subnet:
+            return 400, {"ok": False, "error": "interface isn't reporting a subnet (is it present and online?)", "code": "bad_request"}
+        try:
+            net = ipaddress.ip_network(subnet, strict=False)
+        except Exception:
+            return 400, {"ok": False, "error": f"interface subnet {subnet!r} is invalid", "code": "bad_request"}
+        # the targets to move: this peer's targets on THIS iface (one identity shares one IP across its nodes)
+        movers = [t for t in p.get("targets", []) if t.get("iface") == iface]
+        cur = ((movers[0].get("ip") if movers else "") or "").split("/")[0]
+        try:
+            if cur and ipaddress.ip_address(cur) in net:
+                return 400, {"ok": False, "error": "peer IP is already inside the interface subnet — nothing to correct", "code": "bad_request"}
+        except ValueError:
+            pass
+        same_iface_nodes = sorted({t.get("node") for t in movers if t.get("node") in nodes})
+        nxt = panel_next_ip(snaps, roster, same_iface_nodes or [node], iface)
+        if not nxt.get("ok"):
+            return 400, {"ok": False, "error": nxt.get("error") or "no free address in the subnet", "code": nxt.get("code") or "bad_request"}
+        new_ip = nxt["data"]["next_ip"].split("/")[0]
+        for t in movers:
+            t["ip"] = new_ip
+        peer_set(roster, pid, {"targets": p["targets"]}, now())
+        roster_save(roster_path, roster)
+        ev_append(roster_path, "peer", pid, "Corrected peer address", peer_label(roster, roster["peers"][pid]),
+                  f"{cur or '?'} → {new_ip} ({iface})")
+        return 200, {"ok": True, "data": {"peer": roster["peers"][pid], "ip": new_ip, "was": cur}}
+
     # ── Block / unblock access (declarative revoke) ──────────────────────────────────────────────
     # A blocked peer/user is dropped from every node's desired set (desired_for_node) → the node removes
     # it and tears down the live session. The keys are UNCHANGED, so unblock re-adds the same peer and the
