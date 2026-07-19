@@ -1571,7 +1571,7 @@ const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending:
 //   disabled → "blocked"    — the access-revoke settled state (key mirrors the roster `disabled` flag)
 //   blocked  → "restricted" — the DPI/no-handshake FAULT (freed the word "blocked" for the revoke state)
 const STATUS_LABEL = { disabled: "blocked", blocked: "restricted" };
-const statusLabel = s => STATUS_LABEL[s] || s;
+const statusLabel = s => { const t = STATUS_LABEL[s] || s || ""; return t.charAt(0).toUpperCase() + t.slice(1); };   // badges show a capitalised label (Online / Dangling / Broken …)
 // a node/panel host that's mid re-install or method conversion (signalled before it goes down)
 const PROC_LABEL = {
   reinstalling: "re-installing", "converting-bare": "converting to bare-metal", "converting-docker": "converting to docker", updating: "updating", uninstalling: "uninstalling",
@@ -1614,7 +1614,7 @@ function dismissHostProc() {   // optimistic
 function Badge({ s, title }) {
   const ic = STATUS_ICON[s];
   // online → a glowing animated dot in the status colour (green), not a check — matches the turn badge
-  if (s === "online") return html`<span class="badge b-online" title=${title || ""}><span class="sdot"></span>online</span>`;
+  if (s === "online") return html`<span class="badge b-online" title=${title || ""}><span class="sdot"></span>${statusLabel(s)}</span>`;
   return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${statusLabel(s)}</span>`;
 }
 
@@ -1648,7 +1648,7 @@ function gridStatusBadge(t, p, re) {
   if (t.online && t.viaTurn) {
     const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap">
-      <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${st}</span>
+      <span class="badge b-turn" style=${"--tfc:" + tc}><span class="sdot"></span>${statusLabel(st)}</span>
       <span class="turnbub">Connected via <span class="tg tg-turn" style=${"--tfc:" + tc}>${tn}</span>${ptitle ? html` <b class="turnbub-t">${ptitle}</b>` : null}</span></span>`;
   }
   // A pinned action failure (e.g. "node hasn't reported <iface> yet") rides the status as a hover bubble —
@@ -2006,7 +2006,7 @@ function _missingIface(node, iface) {
   const nr = (Store.nodes || []).find(n => n.id === node) || {};
   return (nr.missing_ifaces || {})[iface] || null;   // {subnet, listen_port, address, awg_params, public_key, key_source} | null
 }
-function _restoreGate(t) { return "This interface has been gone for " + _durText(t.problemMs) + ", so it's a real outage — not a brief hiccup or a peer still being created."; }
+function _restoreGate(t) { return "This isn't a brief hiccup or a peer still being created — the interface has stayed missing for " + _durText(t.problemMs) + "."; }
 
 function confirmRestoreDeployment(peer, t, back) {
   const mi = _missingIface(t.node, t.iface);
@@ -2018,7 +2018,7 @@ function confirmRestoreDeployment(peer, t, back) {
     : clean
       ? "Recreate interface " + t.iface + " on " + Store.nodeName(t.node) + " with its ORIGINAL server key (" + src + ") and saved settings. Every peer that lives on it re-converges over the next few syncs, and existing clients keep working — no new QR / config to distribute. " + _restoreGate(t)
       : "Recreate interface " + t.iface + " on " + Store.nodeName(t.node) + " with its saved settings. The original server key can't be recovered, so it gets a NEW key — every client on this interface must re-import a fresh QR / config. " + _restoreGate(t);
-  openConfirm({ title: "Restore " + where, confirmLabel: mi ? "Restore" : "Close", danger: !!mi && !clean, back,
+  openConfirm({ title: "Restore " + where, confirmLabel: mi ? "Restore" : "Close", danger: !!mi && !clean, back, body,
     note: (mi && clean) ? html`<${SubAutoNote}/>` : null,
     onConfirm: mi ? (() => mutate({ key: "peer:" + peer.id, call: () => api.ifaceRecreate({ node: t.node, iface: t.iface }),
       onOk: () => toast("Restoring " + t.iface + " on " + Store.nodeName(t.node) + " — its peers re-converge over the next syncs.", "ok") })) : null });
@@ -2027,7 +2027,7 @@ function confirmRestoreDeployment(peer, t, back) {
 function confirmCorrectDeployment(peer, t, back) {
   const who = peer.title || peer.name || "peer";
   const where = Store.nodeName(t.node) + " · " + t.iface;
-  const gate = "The address has been out of range for " + _durText(t.problemMs) + ", so it's a real record mismatch, not a transient state.";
+  const gate = "This isn't a transient state — the address has stayed out of range for " + _durText(t.problemMs) + ".";
   openConfirm({ title: "Correct " + who + " · " + where, confirmLabel: "Correct", back,
     body: "This peer's address " + (t.ip || "—") + " is outside " + t.iface + "'s subnet on " + Store.nodeName(t.node) + ", so the node can't add it. Assign the next free in-subnet address and let the node re-converge. Keys and PSK stay the same. " + gate,
     note: html`<${SubAutoNote}/>`,
@@ -2041,8 +2041,9 @@ function confirmRestoreAll(rows, back) {
   for (const { t } of rows) { if (!t.restorable) continue; const k = t.node + "|" + t.iface; if (seen.has(k)) continue; seen.add(k); targets.push(t); }
   if (!targets.length) { toast("Nothing to restore yet — a missing interface must persist a couple of minutes before it's offered.", "info"); return; }
   const dirty = targets.filter(t => { const mi = _missingIface(t.node, t.iface); return !mi || !mi.key_source; }).length;
-  openConfirm({ title: "Restore " + targets.length + " missing interface" + (targets.length > 1 ? "s" : ""), confirmLabel: "Restore " + targets.length, danger: dirty > 0, back,
-    body: "Recreate " + targets.length + " missing interface" + (targets.length > 1 ? "s" : "") + " with their saved settings and, where recoverable, their ORIGINAL server keys — every dangling peer on them re-converges." + (dirty ? " " + dirty + " has no recoverable key, so it gets a new one and those clients must re-import." : " Existing clients keep working — no re-distribution.") + " Only interfaces missing long enough to be a real outage are included.",
+  const n = targets.length, one = n === 1;
+  openConfirm({ title: "Restore " + n + " missing interface" + (one ? "" : "s"), confirmLabel: "Restore " + n, danger: dirty > 0, back,
+    body: "Recreate " + n + " missing interface" + (one ? "" : "s") + " with saved settings and, where recoverable, the ORIGINAL server key — every dangling peer on " + (one ? "it" : "them") + " re-converges." + (dirty ? " " + dirty + (dirty === 1 ? " has" : " have") + " no recoverable key, so " + (dirty === 1 ? "it gets" : "they get") + " a new one and those clients must re-import." : " Existing clients keep working — no re-distribution.") + " Only interfaces missing long enough to be a real outage are included.",
     note: html`<ul class="restore-list">${targets.map(t => html`<li>${Store.nodeName(t.node)} · ${t.iface}${_missingIface(t.node, t.iface) && !_missingIface(t.node, t.iface).key_source ? html` <span class="rl-new">new key</span>` : null}</li>`)}</ul>`,
     onConfirm: async () => { let ok = 0; for (const t of targets) { const r = await mutate({ call: () => api.ifaceRecreate({ node: t.node, iface: t.iface }) }); if (r && r.ok) ok++; } toast("Restoring " + ok + " interface" + (ok !== 1 ? "s" : "") + " — peers re-converge over the next syncs.", "ok"); } });
 }
@@ -5661,9 +5662,11 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
           <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
           <td data-label="Total">${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</td>
           ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
-            ${t.restorable ? html`<button class="iconbtn restore" title=${"Restore " + t.iface + " (recreate the missing interface with its original identity)"} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>` : null}
-            ${t.correctable ? html`<button class="iconbtn correct" title=${"Correct address — " + (t.ip || "?") + " is outside " + t.iface + "'s subnet"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>` : null}
-            <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>
+            ${t.restorable
+              ? html`<button class="iconbtn restore" title=${"Restore " + t.iface + " (recreate the missing interface with its original identity)"} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>`
+              : t.correctable
+                ? html`<button class="iconbtn correct" title=${"Correct address — " + (t.ip || "?") + " is outside " + t.iface + "'s subnet"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>`
+                : html`<button class="iconbtn qr" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>`}
             <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit peer"} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
             ${p.unassigned
               ? html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Delete peer"} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
@@ -5941,9 +5944,9 @@ const userPeerViews = {};   // uid -> its own { node, iface, q, page, pageSize, 
 // status, just smaller — not the pill Badge used inside the grids.
 function userStatTag(user, live) {
   // Live monitor: a user is simply online (has an online peer, green) or offline (grey) — no ready/partial/etc.
-  if (live) { const on = user.onlineCount > 0; return html`<span class=${"ustat s-" + (on ? "online" : "off")}>${on ? "online" : "offline"}</span>`; }
+  if (live) { const on = user.onlineCount > 0; return html`<span class=${"ustat s-" + (on ? "online" : "off")}>${on ? "Online" : "Offline"}</span>`; }
   const s = user.peerCount ? user.status : "empty";
-  return html`<span class=${"ustat s-" + s}>${s === "empty" ? "no peers" : statusLabel(s)}</span>`;
+  return html`<span class=${"ustat s-" + s}>${s === "empty" ? "No peers" : statusLabel(s)}</span>`;
 }
 // Combined live stats across ALL of a user's peers/targets — for the user row's rate/total/last columns.
 function userStats(uid) {
@@ -6763,7 +6766,7 @@ function UserRow({ user, live, onlineOnly, q }) {
         <span class="u-thru">${rateCell(st.rx, st.tx)}</span>
         <span class="u-total">${xferCell(db, ub)}</span>
         ${live ? null : html`<span class="u-acts" onClick=${e => e.stopPropagation()}>
-          <button class="iconbtn" title="Show QR / configs" onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
+          <button class="iconbtn qr" title="Show QR / configs" onClick=${() => openUserConfigs(user)}><${Ic} i="qr"/></button>
           <button class="iconbtn" title="Edit user" onClick=${() => openUserEdit(user)}><${Ic} i="pencil"/></button>
           <button class="iconbtn iconbtn-add" title="Add peer" onClick=${() => openAddPeers(user.id, user.name)}><${Ic} i="plus"/></button>
         </span>`}

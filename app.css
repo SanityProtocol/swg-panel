@@ -2012,6 +2012,9 @@ a.tg:hover{filter:brightness(1.25)}
 .iconbtn.restore:hover{color:var(--online);border-color:var(--online);background:color-mix(in srgb,var(--online) 12%,transparent)}
 .iconbtn.correct{color:var(--fault)}
 .iconbtn.correct:hover{color:var(--fault);border-color:var(--fault);background:color-mix(in srgb,var(--fault) 12%,transparent)}
+/* QR (show configs) — the panel's theme/brand colour, in the peers + users grids */
+.iconbtn.qr{color:var(--brand)}
+.iconbtn.qr:hover{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 12%,transparent)}
 /* Toolbar batch buttons — same tones as the per-row icons */
 .btn-restore{background:color-mix(in srgb,var(--online) 12%,transparent);color:var(--online);border:1px solid color-mix(in srgb,var(--online) 34%,transparent);font-weight:700;padding:9px 13px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease);display:inline-flex;align-items:center;gap:6px}
 .btn-restore:hover{background:color-mix(in srgb,var(--online) 20%,transparent)}
