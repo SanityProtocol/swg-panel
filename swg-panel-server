@@ -2234,7 +2234,31 @@ def _node_issues(c, snap):
     for tp in (snap.get("turn_proxies") or []):
         if tp.get("running") is False:
             issues.append((tp.get("service") or "turn-proxy") + ": not running")
+    for ifn in _missing_ifaces(c, snap):
+        issues.append(ifn + ": interface missing on the node (restore available)")
     return issues
+
+def _missing_ifaces(c, snap):
+    """USER interfaces the panel EXPECTS (it holds a persisted _lastcfg from when they were up) but the node
+    no longer reports — a delete / wipe / re-install. Keyed by iface, each entry carries the last-known config
+    to recreate it plus the key source: 'backup' (node still has the private key on disk → clean restore) or
+    'vault' (node key gone → recover from the operator vault, if escrowed) or '' (no key → recreate = clients
+    re-import). Empty when nothing is missing. Mesh/system links are panel-owned and self-heal, so excluded."""
+    live = snap.get("interfaces") or {}
+    backups = snap.get("iface_key_backups") or {}
+    out = {}
+    for ifn, ov in (c.get("ifaces") or {}).items():
+        if ifn in live or ov.get("system"):
+            continue
+        lc = ov.get("_lastcfg")
+        if not lc:
+            continue                       # never captured a config → can't offer a clean recreate
+        blessed = ov.get("public_key") or ""
+        key_src = "backup" if (backups.get(ifn) and backups[ifn] == blessed) else ("vault" if ov.get("key_vaulted") else "")
+        out[ifn] = {"subnet": lc.get("subnet"), "listen_port": lc.get("listen_port"),
+                    "address": lc.get("address"), "awg_params": lc.get("awg_params") or {},
+                    "public_key": blessed, "key_source": key_src}
+    return out
 
 # Node lifecycle status. A script (install / convert / update / uninstall) signals the panel where it is:
 # an IN-PROGRESS state right after step 1, then a TERMINAL outcome (success / aborted / failed).
@@ -4397,7 +4421,8 @@ def api(method, path, qs, body, deps):
                         "cmd_errors": (snap.get("cmd_errors") or {}),               # request key -> last host->node command error
                         "cmd_progress": (snap.get("cmd_progress") or {}),           # request key -> transient "what's happening now" (yellow card note)
                         "issues": _node_issues(c, snap),                            # health-check roll-up: drift / missing egress / turn down
-                        "interfaces": list((snap.get("interfaces") or {}).keys())})
+                        "interfaces": list((snap.get("interfaces") or {}).keys()),
+                        "missing_ifaces": _missing_ifaces(c, snap)})                  # user ifaces expected but gone (restore signal + last-known config)
         return out
 
     def describe_view():

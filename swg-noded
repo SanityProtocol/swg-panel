@@ -205,6 +205,19 @@ def read_iface_backup(iface):
             return json.load(f)
     return None
 
+def list_iface_backups():
+    """{iface: backup_public_key} for every on-disk key backup — reported in the snapshot so the panel knows
+    which interfaces can be cleanly RESTORED from the node's own key even after the live interface is gone
+    (a delete / wipe). Live interfaces already carry backup_public_key in their meta; this covers the missing ones."""
+    out = {}
+    with contextlib.suppress(Exception):
+        for fn in (os.listdir(IFACE_KEYS_DIR) if os.path.isdir(IFACE_KEYS_DIR) else []):
+            if fn.endswith(".json"):
+                rec = read_iface_backup(fn[:-5]) or {}
+                if rec.get("public_key"):
+                    out[fn[:-5]] = rec["public_key"]
+    return out
+
 def ensure_iface_backup(iface, conf_text, cmd=None):
     """Write a backup if one doesn't exist yet — covers create/onboard/install/first-sight. Re-install
     and conversion overwrite it explicitly; Adopt re-baselines it via a panel request."""
@@ -2625,7 +2638,8 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
             "quarantined": op_quarantined(),   # ops in repeated-failure backoff — visible, not silently churning
             "node_ips": list_node_ips(_addrs), "node_ifaces": list_node_ifaces(_addrs),
-            "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status()}
+            "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status(),
+            "iface_key_backups": list_iface_backups()}   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     snap["inet"] = sample_inet(node_cfg, now)   # measured internet up/down (B/s); cached, refreshed off the 5s path
