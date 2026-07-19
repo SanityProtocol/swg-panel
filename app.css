@@ -2026,12 +2026,19 @@ a.tg:hover{filter:brightness(1.25)}
 .btn-ghost.restore:hover{color:var(--online);border-color:var(--online)}
 .btn-ghost.correct{color:var(--fault)}
 .btn-ghost.correct:hover{color:var(--fault);border-color:var(--fault)}
-/* missing-interface card on the node detail (expected but gone) + its green Restore mini-button. Flex column so
-   the card stretches to the grid row's height (matching the other interface cards) with the button pinned bottom-right */
-.ifcard.missing{display:flex;flex-direction:column;border-color:color-mix(in srgb,var(--dangling) 40%,var(--line-solid));background:color-mix(in srgb,var(--dangling) 5%,transparent)}
-.ifcard.missing .ifcard-rows{flex:1;justify-content:space-between}
-.mi-text{color:var(--dim);font-size:12px;line-height:1.5}
-.mi-act{display:flex;justify-content:flex-end;margin-top:8px}
+/* missing-interface card on the node detail (expected but gone). The Restore control sits in the header next to
+   the MISSING tag (a green pill at the same weight), and the body text is justified. */
+.ifcard.missing{border-color:color-mix(in srgb,var(--dangling) 40%,var(--line-solid));background:color-mix(in srgb,var(--dangling) 5%,transparent)}
+.ifcard.missing .ifcard-top{overflow:visible;flex-wrap:wrap;row-gap:6px}
+.ifcard.missing .ifcard-top .ifname{flex-shrink:0;overflow:visible;text-overflow:clip}   /* don't ellipsize the name to fit the two pills — wrap the row instead */
+.mi-text{color:var(--dim);font-size:12px;line-height:1.5;text-align:justify}
+.mi-ok{color:var(--online);font-weight:600}
+.mi-bad{color:var(--dangling);font-weight:600}
+.mi-restore{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--online);border:1px solid color-mix(in srgb,var(--online) 34%,transparent);border-radius:99px;padding:1px 8px;background:transparent;cursor:pointer;line-height:1.45;white-space:nowrap}
+.mi-restore:hover{background:color-mix(in srgb,var(--online) 12%,transparent)}
+.mi-restore:disabled{opacity:.5;cursor:not-allowed}
+.mi-restore .ic svg{width:11px;height:11px}
+/* Restore on the interface-detail (read-only) screen keeps the full 'Restore interface' btn-mini styling */
 .btn-mini.restore{color:var(--online);border-color:color-mix(in srgb,var(--online) 34%,var(--line-solid))}
 .btn-mini.restore:hover{color:var(--online);border-color:var(--online);background:color-mix(in srgb,var(--online) 10%,transparent)}
 /* Confirm-modal list of what's about to be restored/corrected */

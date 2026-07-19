@@ -3649,16 +3649,14 @@ function NodeDetail({ node: rawName }) {
         // MISSING user interfaces: expected (the panel holds a saved config) but the node no longer reports them
         // — a warning card that recreates the interface with its original identity, recovering every peer on it.
         const mcard = (ifn, mi) => { const mtype = (mi.awg_params && Object.keys(mi.awg_params).length) ? "awg" : "wg";
-          const sentence = "The node no longer reports interface " + ifn + " (" + (mi.subnet || "?") + ") — " + (mi.key_source
-            ? "its original server key is recoverable, so Restore can recreate the interface and recover every peer on it."
-            : "its original server key can't be recovered, so Restore can recreate the interface with a NEW key, recovering every peer but requiring clients to re-import.");
-          return html`<div class="ifcard missing" key=${"missing:" + ifn}>
-            <div class="ifcard-top"><span class=${"iftype " + mtype}>${mtype}</span><span class="ifname">${ifn}</span><span class="grow"></span>
-              <${StatusTag} cls="tg-del" icon="warn" label="missing" title="This interface is gone from the node"/></div>
-            <div class="ifcard-rows">
-              <div class="mi-text">${sentence}</div>
-              <div class="mi-act"><button class="btn btn-mini restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? "Recreate this interface with its original identity — recovers every peer on it" : "Confirming it's really gone (a couple of minutes) before Restore is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> Restore interface</button></div>
-            </div></div>`; };
+          const sentence = html`The node no longer reports interface ${ifn} (subnet ${mi.subnet || "?"}). ${mi.key_source
+            ? html`<span class="mi-ok">Its original server key is recoverable</span>, so Restore recreates it cleanly — no client changes.`
+            : html`<span class="mi-bad">Its original server key can't be recovered</span>, so Restore recreates it with a new key — clients re-import.`}`;
+          return html`<a class="ifcard missing" key=${"missing:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title="Open the interface (read-only) — peers, saved config, and Restore">
+            <div class="ifcard-top"><span class=${"iftype " + mtype}>${mtype}</span><span class="ifname">${ifn}</span>
+              <${StatusTag} cls="tg-del" icon="warn" label="missing" title="This interface is gone from the node"/>
+              <button class="mi-restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? "Recreate this interface with its original identity — recovers every peer on it" : "Confirming it's really gone (a couple of minutes) before Restore is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> Restore</button><span class="grow"></span></div>
+            <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
         const mcards = Object.entries(nrec.missing_ifaces || {})
           .filter(([ifn]) => !(meta && meta[ifn]) && !isSysName(ifn))
           .map(([ifn, mi]) => mcard(ifn, mi));
@@ -3725,11 +3723,12 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
   const dname = nrec.name || node;
   const meta = Store.ifaceMeta(node, iface);
+  const missIf = (!meta && nrec.missing_ifaces && nrec.missing_ifaces[iface]) || null;   // expected but GONE from the node → read-only view whose only action is Restore interface
   const live = Store.recon.nodeStatus[node] === "live";
-  const blocked = !live || inProc(nrec.proc_status);   // node down or mid convert/re-install → only the per-peer QR (view config) stays enabled (a timed-out/failed tag doesn't block)
+  const blocked = !live || inProc(nrec.proc_status) || !!missIf;   // missing → fully read-only (every edit/lifecycle button off; only Restore acts)
   // a pending listen-port change: desired (panel) != reported (node) until the node converges
   const updating = !!(meta && meta.desired_port && meta.listen_port && Number(meta.desired_port) !== Number(meta.listen_port));
-  const type = (meta && meta.awg_params && Object.keys(meta.awg_params).length) ? "awg" : "wg";
+  const type = (((meta && meta.awg_params) || (missIf && missIf.awg_params)) && Object.keys((meta && meta.awg_params) || (missIf && missIf.awg_params) || {}).length) ? "awg" : "wg";
   const peers = Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface));
   const onl = peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface && t.online)).length;
   const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
@@ -3741,7 +3740,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
   const op = Store.ifaceOp[node + "|" + iface];   // start/stop/restart lifecycle (busy/ok/fail flash)
   // AmneziaWG params split into the four header columns: J* under Endpoint, S* under Server
   // address, H* under DNS, and I* (+ anything else) under MTU.
-  const ap = (meta && meta.awg_params) || {};
+  const ap = (meta && meta.awg_params) || (missIf && missIf.awg_params) || {};
   const awgGrp = pred => Object.entries(ap).filter(([k]) => pred(k)).map(([k, v]) => k + "=" + v);
   const awgCols = [awgGrp(k => k[0] === "J"), awgGrp(k => k[0] === "S"), awgGrp(k => k[0] === "H"), awgGrp(k => !"JSH".includes(k[0]))];
   const rows = peers.slice().sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || String(a.name).localeCompare(String(b.name)));
@@ -3759,12 +3758,24 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <${NodeRail} active=${node}/>
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${istopped ? html`<span class="nstat stopped" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/> stopped</span>` : idown ? html`<span class="nstat down" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/> down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="nstat stale"><${Ic} i="info"/> stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${missIf ? html`<span class="nstat down"><${Ic} i="warn"/> missing</span>` : istopped ? html`<span class="nstat stopped" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/> stopped</span>` : idown ? html`<span class="nstat down" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/> down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="nstat stale"><${Ic} i="info"/> stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
 
-    ${!meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
+    ${missIf ? html`<${Fragment}>
+        <div class="notice warn"><${Ic} i="warn"/><span>Interface <b>${iface}</b> is gone from ${dname} — the panel no longer sees it, so this view is <b>read-only</b> and shows the panel's saved config. ${missIf.key_source ? "Its original server key is recoverable, so Restore recreates it cleanly and every peer below reconnects with no changes." : "Its original server key can't be recovered, so Restore recreates it with a NEW key and the peers below must re-import a fresh config."} The only action here is <b>Restore interface</b>.</span></div>
+        <${Panel} icon="key" title="Interface details (saved)" tone=""
+          actions=${html`<button class="btn btn-mini restore" disabled=${!missIf.ripe} title=${missIf.ripe ? "Recreate this interface with its original identity — recovers every peer on it" : "Confirming it's really gone (a couple of minutes) before Restore is offered"} onClick=${() => confirmRestoreInterface(node, iface, missIf)}><${Ic} i="refresh"/> Restore interface</button>`}>
+          <div class="iface-grid">
+            <div class="ig-item"><span class="ig-l">Endpoint</span><span class="ig-v">${((missIf.address ? missIf.address.split("/")[0] : "") + (missIf.listen_port ? ":" + missIf.listen_port : "")) || "—"}</span></div>
+            <div class="ig-item"><span class="ig-l">Server address</span><span class="ig-v">${missIf.address || "—"}</span></div>
+            <div class="ig-item"><span class="ig-l">Subnet</span><span class="ig-v">${missIf.subnet || "—"}</span></div>
+            <div class="ig-item"><span class="ig-l">Listen port</span><span class="ig-v">${missIf.listen_port || "—"}</span></div>
+          </div>
+          ${type === "awg" ? html`<div class="iface-amnezia"><span class="ig-l">AmneziaWG</span><div class="iface-grid" style="margin-top:8px">${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}</div></div>` : null}
+        <//></>`
+      : !meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
           actions=${html`<${Fragment}>${op && op.phase === "busy" ? html`<span class="tg-busy"><${Ic} i="clock"/>${IFOP_BUSY[op.verb] || op.verb}…</span>` : op && op.phase === "ok" ? html`<span class="tg-ok"><${Ic} i="check"/>${IFOP_DONE[op.verb] || op.verb}</span>` : op && op.phase === "fail" ? html`<${StatusTag} cls="tg-del" icon="warn" label=${IFOP_FAIL[op.verb] || "failed"} msg=${op.err || "the action failed on the node"} title="Action failed on the node"/>` : null}${(op && op.phase === "busy") ? null : notup
               ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Bring this interface up on the node"} onClick=${() => startOrRestartIface(node, iface, "start")}><${Ic} i="play"/> Start service</button>`
@@ -10044,7 +10055,9 @@ function PeerViewSheet({ pid, node, iface }) {
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/> QR</button>
       <button class="btn btn-ghost" onClick=${() => openAddTarget(p)}><${Ic} i="copy"/> Targets</button>
-      <button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null)}><${Ic} i="pencil"/> Edit</button>
+      ${p.status === "dangling"
+        ? html`<button class="btn btn-ghost" disabled title="This peer's interface is gone from the node — Restore the interface before editing"><${Ic} i="pencil"/> Edit</button>`
+        : html`<button class="btn btn-ghost" onClick=${() => openEditPeer(p, node && iface ? { node, iface } : null)}><${Ic} i="pencil"/> Edit</button>`}
       ${peerBlockBtn(p)}
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p)}>Delete</button>`
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p)}>Unassign</button>`}<//>`}>
