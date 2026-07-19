@@ -1329,6 +1329,9 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tip-by{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
 .tipfoot{display:flex;justify-content:flex-end;margin-top:10px}
 /* on/off switch */
+/* Access&TLS: the co-located node's loopback port — static, theme-tinted text (not an editable field) */
+.localnode-note{margin:6px 2px 12px;font-size:12.5px;line-height:1.6;color:color-mix(in srgb,var(--brand) 42%,var(--ink))}
+.localnode-note b{color:var(--brand);font-weight:700}
 /* interface-key escrow toggle row (encryption settings) */
 .ivk-escrow{margin:12px 0 4px;padding-top:12px;border-top:1px solid var(--line)}
 .ivk-esc-row{display:flex;align-items:flex-start;gap:11px;font-size:13px;line-height:1.55;color:var(--dim);cursor:pointer}
