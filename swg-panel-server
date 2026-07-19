@@ -2254,7 +2254,9 @@ def _missing_ifaces(c, snap):
         if not lc:
             continue                       # never captured a config → can't offer a clean recreate
         blessed = ov.get("public_key") or ""
-        key_src = "backup" if (backups.get(ifn) and backups[ifn] == blessed) else ("vault" if ov.get("key_vaulted") else "")
+        # backup (node still has the key) > vault (a sealed blob for THIS blessed key is escrowed) > '' (no key)
+        key_src = ("backup" if (backups.get(ifn) and backups[ifn] == blessed)
+                   else ("vault" if (blessed and (ov.get("key_blob") or {}).get("pub") == blessed) else ""))
         out[ifn] = {"subnet": lc.get("subnet"), "listen_port": lc.get("listen_port"),
                     "address": lc.get("address"), "awg_params": lc.get("awg_params") or {},
                     "public_key": blessed, "key_source": key_src}
@@ -5562,7 +5564,24 @@ def api(method, path, qs, body, deps):
         v = load_sub_vault(deps)
         return 200, {"ok": True, "data": {"exists": bool(v.get("sk_by_pw")),
                                           "salt": v.get("salt"), "sk_by_pw": v.get("sk_by_pw"), "sk_check": v.get("sk_check"),
-                                          "sk_verify": v.get("sk_verify")}}   # SK self-verifier → the browser validates a cached SK against THIS vault
+                                          "sk_verify": v.get("sk_verify"),   # SK self-verifier → the browser validates a cached SK against THIS vault
+                                          # interface-key vault keypair: public (plaintext, nodes seal to it) + private half SK-wrapped (browser-only)
+                                          "ivk_pub": v.get("ivk_pub"), "ivk_priv_by_sk": v.get("ivk_priv_by_sk")}}
+
+    if method == "POST" and path == "/api/sub/ivk":
+        # Set the interface-key vault keypair ONCE (minted in the browser after unlock): public key plaintext,
+        # private half AES-GCM-wrapped under the SK. Set-once — rotating it would orphan every escrowed blob.
+        pub, priv = body.get("ivk_pub"), body.get("ivk_priv_by_sk")
+        if not (isinstance(pub, str) and isinstance(priv, str) and pub and priv):
+            return 400, {"ok": False, "error": "ivk_pub and ivk_priv_by_sk are required", "code": "bad_request"}
+        v = load_sub_vault(deps)
+        if not v.get("sk_by_pw"):
+            return 400, {"ok": False, "error": "set up the vault first", "code": "no_vault"}
+        if v.get("ivk_pub"):
+            return 200, {"ok": True, "data": {"saved": False, "ivk_pub": v.get("ivk_pub")}}   # already set — keep it (blobs depend on it)
+        v["ivk_pub"] = pub; v["ivk_priv_by_sk"] = priv
+        save_sub_vault(deps, v)
+        return 200, {"ok": True, "data": {"saved": True, "ivk_pub": pub}}
 
     if method == "POST" and path == "/api/sub/vault":                # set on first enable / re-wrap on password change
         salt, sk, chk = body.get("salt"), body.get("sk_by_pw"), body.get("sk_check")
@@ -7057,6 +7076,11 @@ def api(method, path, qs, body, deps):
             req["address"] = lc["address"].strip()
         if isinstance(lc.get("awg_params"), dict) and lc["awg_params"]:
             req["awg_params"] = lc["awg_params"]
+        # Vault path (full wipe — the node lost its on-disk backup): the browser unsealed the key from the operator
+        # vault and RE-sealed it to this node's transport key, so we relay only ciphertext. The node unseals it.
+        _sk = body.get("sealed_key")
+        if isinstance(_sk, dict) and _sk.get("ct") and _sk.get("eph") and _sk.get("mac"):
+            req["sealed_key"] = {k: _sk[k] for k in ("eph", "ct", "mac")}
         nodes[nid].setdefault("create", {})[iface] = req
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Restoring interface", iface)
@@ -8440,6 +8464,12 @@ class Handler(BaseHTTPRequestHandler):
                 _lc = {k: rep.get(k) for k in ("subnet", "listen_port", "address", "awg_params") if rep.get(k)}
                 if _lc and ov.get("_lastcfg") != _lc:
                     ov["_lastcfg"] = _lc; ifaces_dirty = True
+            # Escrow the node's sealed interface key (full-wipe restore): store the blob for THIS iface's current
+            # key, replaced when the key rotates (blob.pub changes). Ciphertext only — the panel can't open it.
+            if not sysif:
+                _sb = (snap.get("iface_key_sealed") or {}).get(ifn)
+                if isinstance(_sb, dict) and _sb.get("pub") and _sb.get("ct") and ov.get("key_blob") != _sb:
+                    ov["key_blob"] = _sb; ifaces_dirty = True
             def _clear_drift(k):
                 if k in drift:
                     drift.pop(k, None); return True
@@ -8693,7 +8723,19 @@ class Handler(BaseHTTPRequestHandler):
                     _ent[_tier] = _mt["v"]
             if _ent:
                 _list_manifest[_c] = _ent
+        # Interface-key vault: the operator vault's PUBLIC key (nodes seal their interface keys to it, for a
+        # full-wipe restore) + the ifaces the panel still needs a CURRENT sealed key for (no blob, or the blob is
+        # for an older/rotated key). Absent a vault → empty, so nodes seal nothing.
+        _ivk_pub = (load_sub_vault(Handler.deps) or {}).get("ivk_pub") or ""
+        _ivk_want = []
+        if _ivk_pub:
+            for _ifn, _pk in (snap.get("iface_key_backups") or {}).items():
+                _ov = (node.get("ifaces") or {}).get(_ifn) or {}
+                if _pk and not _ov.get("system") and (_ov.get("key_blob") or {}).get("pub") != _pk:
+                    _ivk_want.append(_ifn)
         return self._send(200, {"desired": desired, "desired_ifaces": desired_ifaces,
+                                "iface_vault_pub": _ivk_pub,     # operator vault public key — node seals its interface keys to it
+                                "iface_vault_want": _ivk_want,   # ifaces the panel needs a current sealed key for
                                 # canonical panel dial address → lets an online node re-point itself when the
                                 # operator changes the panel host/port (the node verifies the new address with its
                                 # OWN trust anchor before switching). Additive: older nodes ignore it.

@@ -18,6 +18,7 @@ Config (/etc/swg-agent/config.json), see config.example.json:
   node:  { interval, agent, sudo }
 """
 
+import base64
 import contextlib
 import fcntl
 import hashlib
@@ -226,6 +227,105 @@ def ensure_iface_backup(iface, conf_text, cmd=None):
     rec = harvest_iface_backup(conf_text, cmd)
     if rec:
         write_iface_backup(iface, rec)
+
+
+# ───────── interface-key vault crypto (pure stdlib: X25519 + HKDF-SHA256 + keystream-XOR + HMAC) ─────────
+# Lets the node SEAL its interface private key to the operator's vault public key so a FULL wipe can still be
+# restored cleanly, and UNSEAL a key the browser re-sealed to this node's transport key at restore time — the
+# panel only ever relays ciphertext, never plaintext. Round-trips against WebCrypto (X25519/HKDF/HMAC), so no
+# openssl / third-party dep — bare-metal and container behave identically. See docs/…-KEY-VAULT-PLAN.md §2.
+_IVK_P = 2**255 - 19
+def _x25519(k_bytes, u_bytes):
+    A24 = 121665
+    k = bytearray(k_bytes[:32]); k[0] &= 248; k[31] &= 127; k[31] |= 64
+    k = int.from_bytes(k, "little")
+    u = bytearray(u_bytes[:32]); u[31] &= 127
+    x1 = int.from_bytes(u, "little")
+    x2, z2, x3, z3, swap = 1, 0, x1, 1, 0
+    for t in range(254, -1, -1):
+        kt = (k >> t) & 1
+        swap ^= kt
+        if swap: x2, x3, z2, z3 = x3, x2, z3, z2
+        swap = kt
+        A = (x2 + z2) % _IVK_P; AA = (A * A) % _IVK_P
+        B = (x2 - z2) % _IVK_P; BB = (B * B) % _IVK_P
+        E = (AA - BB) % _IVK_P
+        C = (x3 + z3) % _IVK_P; D = (x3 - z3) % _IVK_P
+        DA = (D * A) % _IVK_P; CB = (C * B) % _IVK_P
+        x3 = pow((DA + CB) % _IVK_P, 2, _IVK_P)
+        z3 = (x1 * pow((DA - CB) % _IVK_P, 2, _IVK_P)) % _IVK_P
+        x2 = (AA * BB) % _IVK_P
+        z2 = (E * ((AA + (A24 * E)) % _IVK_P)) % _IVK_P
+    if swap: x2, x3, z2, z3 = x3, x2, z3, z2
+    return ((x2 * pow(z2, _IVK_P - 2, _IVK_P)) % _IVK_P).to_bytes(32, "little")
+_IVK_BASE = b"\x09" + b"\x00" * 31
+def _ivk_pub(priv): return _x25519(priv, _IVK_BASE)
+def _ivk_hkdf(ikm, salt, info, length):
+    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+    okm, t, i = b"", b"", 1
+    while len(okm) < length:
+        t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest(); okm += t; i += 1
+    return okm[:length]
+def ivk_seal(vault_pub_b64, plaintext):
+    """Seal bytes to an X25519 public key → {eph, ct, mac} (base64). Only the matching private key can open it."""
+    vault_pub = base64.b64decode(vault_pub_b64)
+    eph_priv = secrets.token_bytes(32); eph_pub = _ivk_pub(eph_priv)
+    shared = _x25519(eph_priv, vault_pub)
+    ks = _ivk_hkdf(shared, eph_pub, b"swg-ivk-enc", len(plaintext))
+    mk = _ivk_hkdf(shared, eph_pub, b"swg-ivk-mac", 32)
+    ct = bytes(a ^ b for a, b in zip(plaintext, ks))
+    mac = hmac.new(mk, eph_pub + ct, hashlib.sha256).digest()
+    return {"eph": base64.b64encode(eph_pub).decode(), "ct": base64.b64encode(ct).decode(),
+            "mac": base64.b64encode(mac).decode()}
+def ivk_unseal(priv, blob):
+    """Open a {eph, ct, mac} blob sealed to `priv` (32 raw bytes). Raises on a bad MAC / wrong key."""
+    eph_pub = base64.b64decode(blob["eph"]); ct = base64.b64decode(blob["ct"]); mac = base64.b64decode(blob["mac"])
+    shared = _x25519(priv, eph_pub)
+    mk = _ivk_hkdf(shared, eph_pub, b"swg-ivk-mac", 32)
+    if not hmac.compare_digest(hmac.new(mk, eph_pub + ct, hashlib.sha256).digest(), mac):
+        raise ValueError("bad mac")
+    ks = _ivk_hkdf(shared, eph_pub, b"swg-ivk-enc", len(ct))
+    return bytes(a ^ b for a, b in zip(ct, ks))
+
+# This node's TRANSPORT keypair — persistent, node-owned. The browser re-seals a vaulted interface key to this
+# public key at restore so the panel relays only ciphertext; the node opens it with the private half.
+_TRANSPORT_PATH = os.path.join(IFACE_KEYS_DIR, "..", "transport.json")
+def transport_keypair():
+    with contextlib.suppress(Exception):
+        with open(_TRANSPORT_PATH) as f:
+            d = json.load(f)
+            if d.get("priv") and d.get("pub"): return d
+    priv = secrets.token_bytes(32); pub = _ivk_pub(priv)
+    d = {"priv": base64.b64encode(priv).decode(), "pub": base64.b64encode(pub).decode()}
+    with contextlib.suppress(Exception):
+        os.makedirs(os.path.dirname(_TRANSPORT_PATH), exist_ok=True)
+        p = _TRANSPORT_PATH; tmp = p + ".tmp"
+        with open(tmp, "w") as f: json.dump(d, f)
+        os.chmod(tmp, 0o600); os.replace(tmp, p)
+    return d
+def transport_pub(): return transport_keypair().get("pub") or ""
+def transport_priv(): return base64.b64decode(transport_keypair().get("priv") or "")
+
+_IVK_VAULT_PUB = ""
+_IVK_SEALED = {}   # iface -> {pub, eph, ct, mac} : sealed interface keys the panel doesn't yet hold (ride the next snapshot)
+def ivk_process(vault_pub, want):
+    """Seal the interface keys the panel asked for (`want`) to its vault public key; drop ones it now holds. A
+    sealed blob rides the NEXT snapshot. No-op without a vault pub or a readable on-disk backup key."""
+    global _IVK_VAULT_PUB
+    if vault_pub: _IVK_VAULT_PUB = vault_pub
+    want = set(want or [])
+    for ifn in list(_IVK_SEALED):
+        if ifn not in want: _IVK_SEALED.pop(ifn, None)   # panel now holds it → stop sending
+    if not (_IVK_VAULT_PUB and want): return
+    for ifn in want:
+        with contextlib.suppress(Exception):
+            rec = read_iface_backup(ifn) or {}
+            priv = (rec.get("private_key") or "").strip()
+            if not priv: continue
+            cur = _IVK_SEALED.get(ifn)
+            if cur and cur.get("pub") == rec.get("public_key"): continue   # already sealed THIS key
+            blob = ivk_seal(_IVK_VAULT_PUB, priv.encode()); blob["pub"] = rec.get("public_key") or ""
+            _IVK_SEALED[ifn] = blob
 
 
 def peer_view(peers, last, dt, online_max, now):
@@ -2639,7 +2739,9 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             "quarantined": op_quarantined(),   # ops in repeated-failure backoff — visible, not silently churning
             "node_ips": list_node_ips(_addrs), "node_ifaces": list_node_ifaces(_addrs),
             "node_ip_ifaces": list_node_ip_ifaces(_addrs), "smartroute": smart_status(),
-            "iface_key_backups": list_iface_backups()}   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
+            "iface_key_backups": list_iface_backups(),   # {iface: pubkey} of on-disk key backups (restorability of MISSING ifaces)
+            "transport_pub": transport_pub(),            # node re-seal target — the browser seals a restored key to this
+            "iface_key_sealed": dict(_IVK_SEALED)}       # {iface: {pub, eph, ct, mac}} interface keys sealed to the vault, pending upload
     if hcfg.get("enabled", True):      # additive + opt-out; mounts default to ["/"]
         snap["health"] = collect_health(mounts=hcfg.get("mounts"))
     snap["inet"] = sample_inet(node_cfg, now)   # measured internet up/down (B/s); cached, refreshed off the 5s path
@@ -3309,9 +3411,13 @@ def create_ifaces(node_cfg, create, agent, sudo):
             continue
         cmd = want.get("cmd") or ["awg"]
         # RESTORE of a vanished interface: recreate it with its ORIGINAL server key so no client re-imports.
-        # Key source, in order: a vault-supplied private_key (the node lost its backup), else the node's own
-        # on-disk backup. Absent both → fall through to a brand-new genkey (agent side): a fresh identity.
+        # Key source, in order: a sealed_key the browser re-sealed to THIS node's transport key from the operator
+        # vault (a full wipe — panel relayed only ciphertext); else the node's own on-disk backup. Absent both →
+        # fall through to a brand-new genkey (agent side): a fresh identity.
         priv = (want.get("private_key") or "").strip()
+        if not priv and want.get("sealed_key"):
+            with contextlib.suppress(Exception):
+                priv = ivk_unseal(transport_priv(), want["sealed_key"]).decode().strip()   # vault key, delivered sealed
         if not priv and want.get("restore"):
             priv = ((read_iface_backup(iface) or {}).get("private_key") or "").strip()
         r = run_agent(agent, sudo, {"op": "create-iface", "iface": iface, "cmd": cmd,
@@ -4270,6 +4376,7 @@ def main():
                 _newurl = apply_panel_hints(panel, node_cfg, reply)   # pin-gated auto-repoint on a panel host/port change
                 if _newurl:
                     url = _newurl                                     # dial the new address from the next sync on
+                ivk_process(reply.get("iface_vault_pub"), reply.get("iface_vault_want"))   # seal interface keys the panel wants for the operator vault (blob rides the next snapshot)
                 _upd0 = reply.get("update")
                 if _upd0 and not update_started:   # already fired THIS exact request (a recreate restarted us)? then DON'T re-fire — else the update loops forever (recreate → restart → re-trigger → recreate …)
                     _at = str((_upd0 or {}).get("at") or "")
