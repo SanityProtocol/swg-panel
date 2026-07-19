@@ -267,6 +267,61 @@ async function sha256hex(s) {
 }
 const _importAes = (bytes, uses) => crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, uses);
 
+// ── interface-key vault (P4): X25519 sealed-box (ECDH → HKDF → keystream-XOR + HMAC), byte-identical to
+//    swg-noded's pure-stdlib implementation, so a node seal opens here and a browser seal opens on the node.
+//    Lets a FULLY-WIPED node restore its interface cleanly — the panel only ever relays ciphertext. ──
+const _X25519_PKCS8 = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20]);
+async function _ivkHkdf(ikm, salt, infoStr, len) {
+  const k = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info: new TextEncoder().encode(infoStr) }, k, len * 8));
+}
+async function ivkSeal(pubB64, plaintext) {   // seal bytes to an X25519 public key → {eph, ct, mac}
+  const eph = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  const ephPub = new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey));
+  const pub = await crypto.subtle.importKey("raw", _b64ToBytes(pubB64), { name: "X25519" }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "X25519", public: pub }, eph.privateKey, 256));
+  const ks = await _ivkHkdf(shared, ephPub, "swg-ivk-enc", plaintext.length);
+  const mk = await _ivkHkdf(shared, ephPub, "swg-ivk-mac", 32);
+  const ct = plaintext.map((b, i) => b ^ ks[i]);
+  const mkKey = await crypto.subtle.importKey("raw", mk, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const macIn = new Uint8Array(ephPub.length + ct.length); macIn.set(ephPub); macIn.set(ct, ephPub.length);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", mkKey, macIn));
+  return { eph: b64(ephPub), ct: b64(ct), mac: b64(mac) };
+}
+async function ivkUnseal(privRaw, blob) {     // open a {eph, ct, mac} blob with a raw 32-byte X25519 private key
+  const pkcs8 = new Uint8Array(_X25519_PKCS8.length + 32); pkcs8.set(_X25519_PKCS8); pkcs8.set(privRaw, _X25519_PKCS8.length);
+  const priv = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "X25519" }, false, ["deriveBits"]);
+  const ephPub = _b64ToBytes(blob.eph), ct = _b64ToBytes(blob.ct), mac = _b64ToBytes(blob.mac);
+  const pub = await crypto.subtle.importKey("raw", ephPub, { name: "X25519" }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "X25519", public: pub }, priv, 256));
+  const mk = await _ivkHkdf(shared, ephPub, "swg-ivk-mac", 32);
+  const mkKey = await crypto.subtle.importKey("raw", mk, { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const macIn = new Uint8Array(ephPub.length + ct.length); macIn.set(ephPub); macIn.set(ct, ephPub.length);
+  if (!(await crypto.subtle.verify("HMAC", mkKey, mac, macIn))) throw new Error("vault blob failed its integrity check");
+  const ks = await _ivkHkdf(shared, ephPub, "swg-ivk-enc", ct.length);
+  return ct.map((b, i) => b ^ ks[i]);
+}
+// Mint the operator vault's interface-key keypair once (private half SK-wrapped). Called on unlock so nodes seal
+// PROACTIVELY — the key has to be escrowed BEFORE a wipe, not after. No-op if the vault isn't unlocked.
+async function ivkEnsureVaultKey() {
+  const sk = subSKCached(); if (!sk) return null;
+  try {
+    const v = await api.subVault();
+    if (v && v.ok && v.data && v.data.ivk_pub) return v.data.ivk_pub;
+    const kp = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+    const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+    const pk8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
+    const r = await api.post("/api/sub/ivk", { ivk_pub: b64(pubRaw), ivk_priv_by_sk: await subEnc(sk, pk8.slice(-32)) });
+    return (r && r.ok && r.data && r.data.ivk_pub) || null;
+  } catch (_) { return null; }
+}
+async function ivkVaultPriv() {               // the vault X25519 private key (raw 32 bytes), unwrapped under the SK
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the vault first.");
+  const v = await api.subVault();
+  if (!v || !v.ok || !v.data || !v.data.ivk_priv_by_sk) throw new Error("No interface-key vault is set up.");
+  return await subDec(sk, v.data.ivk_priv_by_sk);
+}
+
 let _subSK = null;                       // the unwrapped encryption key (CryptoKey), cached for this session
 const _SK_CACHE = "swg_ck";              // key-cache: sessionStorage always (tab-scoped); ALSO localStorage when the
 const _SK_PERSIST = "swg_ck_keep";       // operator opts into "keep this device unlocked" (survives a browser restart).
@@ -312,6 +367,7 @@ async function subBootRestore() {
       if (!ok) { subForget(); return; }                                       // stale SK (a different/reset vault) → discard, never trust
     }
     _subSK = key;
+    try { ivkEnsureVaultKey(); } catch (_) {}   // ensure the interface-key vault keypair exists (proactive node sealing)
   } catch (_) { subForget(); }
 }
 async function subUnlock(password) {      // unwrap the SK from the vault with the password → cache it
@@ -332,6 +388,7 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
   }
   try { subFlushPending(); } catch (_) {}   // save anything the operator skipped earlier this session (incl. overwriting a stale rotate blob)
   try { subAutoHeal(); } catch (_) {}   // key just became available → silently publish anything left unpublished while locked
+  try { ivkEnsureVaultKey(); } catch (_) {}   // ensure the interface-key vault keypair exists so nodes seal their keys proactively
   return _subSK;
 }
 // Re-wrap the vault under a NEW panel password so the convenience cache keeps auto-unlocking after a password
@@ -2041,16 +2098,29 @@ function _openRestoreInterface({ node, iface, mi, problemMs, rowKey, back }) {
   const where = Store.nodeName(node) + " · " + iface;
   const gate = "This isn't a brief hiccup or a peer still being created — the interface has stayed missing for " + _durText(problemMs) + ".";
   const clean = !!(mi && mi.key_source);                 // "backup" | "vault" → original key recoverable
-  const src = mi && mi.key_source === "vault" ? "the operator vault" : "the node's own backup";
+  const vault = !!(mi && mi.key_source === "vault");     // key gone from the node → recover from the operator vault (full wipe)
+  const src = vault ? "the operator vault" : "the node's own backup";
+  const lockedVault = vault && !subSKCached();
   const body = !mi
     ? "The panel has no saved configuration for interface " + iface + " on " + Store.nodeName(node) + " yet, so it can't be recreated automatically. " + gate
     : clean
-      ? "Recreate the missing interface " + iface + " on " + Store.nodeName(node) + " with its ORIGINAL server key (from " + src + ") and saved settings. This restores the INTERFACE, not a single peer — every peer that lives on " + iface + " re-converges over the next few syncs, and existing clients keep working (no new QR / config to distribute). " + gate
+      ? "Recreate the missing interface " + iface + " on " + Store.nodeName(node) + " with its ORIGINAL server key (from " + src + ") and saved settings. This restores the INTERFACE, not a single peer — every peer that lives on " + iface + " re-converges over the next few syncs, and existing clients keep working (no new QR / config to distribute). " + (lockedVault ? "You'll be asked to unlock the vault first to release the escrowed key. " : "") + gate
       : "Recreate the missing interface " + iface + " on " + Store.nodeName(node) + " with its saved settings. This restores the INTERFACE, not a single peer. The original server key can't be recovered, so the interface gets a NEW key — every client on " + iface + " must re-import a fresh QR / config. " + gate;
   openConfirm({ title: "Restore interface · " + where, confirmLabel: mi ? "Restore interface" : "Close", danger: !!mi && !clean, back, body,
     note: (mi && clean) ? html`<${SubAutoNote}/>` : null,
-    onConfirm: mi ? (() => mutate({ key: rowKey, call: () => api.ifaceRecreate({ node, iface }),
-      onOk: () => toast("Restoring interface " + iface + " on " + Store.nodeName(node) + " — its peers re-converge over the next syncs.", "ok") })) : null });
+    onConfirm: mi ? (async () => {
+      let sealed = null;
+      if (vault) {   // unseal the key from the vault, RE-seal it to the node's transport key so the panel relays only ciphertext
+        if (!subSKCached()) { toast("Unlock the vault (Settings → encryption) to release the escrowed key, then Restore again.", "err", 5000); return; }
+        if (!mi.key_blob) { toast("No escrowed key is stored for this interface.", "err"); return; }
+        const tpub = ((Store.stats[node] || {}).transport_pub) || "";
+        if (!tpub) { toast("The node hasn't reported its transport key yet — try again in a few seconds.", "err"); return; }
+        try { sealed = await ivkSeal(tpub, await ivkUnseal(await ivkVaultPriv(), mi.key_blob)); }
+        catch (e) { toast("Vault restore failed: " + ((e && e.message) || e), "err", 5000); return; }
+      }
+      await mutate({ key: rowKey, call: () => api.ifaceRecreate({ node, iface, ...(sealed ? { sealed_key: sealed } : {}) }),
+        onOk: () => toast("Restoring interface " + iface + " on " + Store.nodeName(node) + " — its peers re-converge over the next syncs.", "ok") });
+    }) : null });
 }
 function confirmRestoreDeployment(peer, t, back) {
   _openRestoreInterface({ node: t.node, iface: t.iface, mi: _missingIface(t.node, t.iface), problemMs: t.problemMs, rowKey: "peer:" + peer.id, back });

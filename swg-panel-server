@@ -2260,6 +2260,8 @@ def _missing_ifaces(c, snap):
         out[ifn] = {"subnet": lc.get("subnet"), "listen_port": lc.get("listen_port"),
                     "address": lc.get("address"), "awg_params": lc.get("awg_params") or {},
                     "public_key": blessed, "key_source": key_src}
+        if key_src == "vault":   # the escrowed ciphertext blob — the browser unseals it (operator-unlock) at restore
+            out[ifn]["key_blob"] = ov.get("key_blob")
     return out
 
 # Node lifecycle status. A script (install / convert / update / uninstall) signals the panel where it is:
