@@ -10010,7 +10010,10 @@ function PeerViewSheet({ pid, node, iface }) {
           <span class="tags">
             <${Tag} kind=${proto} label=${proto} muted=${!t.online}/>
             ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}
-          </span></div>
+          </span>
+          <span class="grow"></span>
+          ${t.restorable ? html`<button class="btn-restore btn-fix" title="Recreate this missing interface with its original identity" onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/> Restore</button>`
+            : t.correctable ? html`<button class="btn-correct btn-fix" title=${"Reassign an in-subnet address (" + (t.ip || "?") + " is out of range)"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/> Correct</button>` : null}</div>
         <div class="pv-dep-grid">
           <span><span class="k">Node</span> <span style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></span>
           <span><span class="k">Interface</span> ${t.iface}</span>
@@ -10131,8 +10134,19 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
       } });
   };
 
+  // A dangling / broken deployment replaces "Rotate keys" with its fix (Restore recreates the missing
+  // interface; Correct reassigns an in-subnet IP) — targeting the deployment the edit is focused on, or the
+  // first problem deployment when it's not target-scoped. Otherwise the normal Rotate-keys button shows.
+  const _rp = Store.peer(peer.id) || peer;
+  const _fixT = (focus && (_rp.targets || []).find(t => t.node === focus.node && t.iface === focus.iface))
+             || (_rp.targets || []).find(t => t.restorable || t.correctable) || null;
+  const fixBtn = (_fixT && _fixT.restorable)
+    ? html`<button class="btn btn-restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> Restore</button>`
+    : (_fixT && _fixT.correctable)
+      ? html`<button class="btn btn-correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> Correct</button>`
+      : html`<button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`;
   return html`<${Sheet} title=${"Edit peer"} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
-    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button><button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>${peerBlockBtn(peer)}`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
+    foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button>${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
