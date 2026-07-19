@@ -1,11 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><a href="CHANGELOG.md"><code>1.3.11-beta</code></a></p>
+<p align="center"><code>1.3.12-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.3.11-beta** — [full changelog](CHANGELOG.md)
-> - **Change the panel's address from the UI** — reverse-proxy ↔ built-in HTTPS, or path/port/domain, without SSH; nodes follow automatically and the old address stays live during the switch.
-> - **Fixes** — "root helper not available" on update; address preserved across Docker-convert / re-install; Docker restart-safety; a safe Docker switch to built-in HTTPS (auto-rollback if the certificate can't be issued).
+> **What's new in 1.3.12-beta** — [full changelog](CHANGELOG.md)
+> - **Restore a missing or broken interface** — one click recreates it with the *same keys* and re-adds every peer; a peer whose address drifted out of subnet gets a **Fix**. Works per-peer or across a whole node.
+> - **Optional interface-key escrow** — nodes seal their server keys to a vault only you hold, so a wiped node can be rebuilt without the panel ever seeing a private key.
+> - **Fixes** — flip a subpath reverse proxy to built-in HTTPS (and back) without stranding nodes; a peer's address is checked against its subnet before it's applied; Docker↔bare-metal convert keeps your address and settings.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -419,7 +420,7 @@ swgPanel integrates several excellent open-source projects — huge thanks to th
 
 - [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — the original
 - [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe/vk-turn-proxy](https://github.com/samosvalishe/vk-turn-proxy)
+- [samosvalishe/free-turn-proxy](https://github.com/samosvalishe/free-turn-proxy)
 - [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
 - [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
 - [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)

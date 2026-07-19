@@ -3,7 +3,34 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+## [1.3.12-beta] — 2026-07-19
+
+### Added
+- **Restore a missing or broken interface — keys and all.** If a server loses an interface (its config
+  wiped, or the whole box rebuilt), the panel flags it as *dangling* and offers a one-click **Restore**
+  that recreates the interface with the **same keys** and re-adds every peer — clients keep working, with
+  no configs to redistribute. A peer whose address has drifted out of its interface's subnet shows as
+  *broken* with a **Fix** button that corrects the address in place. Both work on a single peer or as a
+  batch across a whole node, including rebuilding a node from scratch.
+- **Optional interface-key escrow.** Turn on escrow and each node seals its interface private keys to a
+  vault key that only you hold; the panel keeps only the ciphertext. A wiped node's keys can then be
+  restored from the vault — the panel never sees a private key. Off by default.
+
+### Fixed
+- **Switching the panel between a subpath reverse proxy and its own HTTPS now works both ways.** A reverse
+  proxy mounted under a path (e.g. `/panel`) can be flipped to built-in TLS at the root — and back —
+  without the confirmation failing, and remote nodes re-point themselves to the new address during the
+  switch instead of stranding on the old one.
+- **A peer's address is validated against its interface subnet before it's applied**, so a bad or
+  multi-range address can't quietly break a peer.
+- **Converting between Docker and bare-metal keeps your panel address and settings** and no longer trips a
+  port collision on the co-located node.
+- Assorted robustness fixes to the address-change flow — out-of-range ports are rejected instead of
+  silently clamped, and cancel / confirm now report their outcome clearly.
+
+### Changed
+- The peer status model and the "needs attention" and missing-interface cards were reworked for clearer
+  at-a-glance state — *online / partial / broken / dangling*.
 
 ## [1.3.11-beta] — 2026-07-18
 

@@ -1,11 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <b>Техническое (RU)</b></p>
 
-<p align="center"><a href="CHANGELOG.ru.md"><code>1.3.11-beta</code></a></p>
+<p align="center"><code>1.3.12-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **Что нового в 1.3.11-beta** — [полный список изменений](CHANGELOG.ru.md)
-> - **Смена адреса панели из интерфейса** — reverse-proxy ↔ встроенный HTTPS, либо путь/порт/домен, без SSH; узлы переходят автоматически, а старый адрес работает во время перехода.
-> - **Исправления** — «root helper недоступен» при обновлении; адрес сохраняется при конвертации в Docker / переустановке; устойчивость к перезапуску контейнера; безопасное переключение Docker на встроенный HTTPS (автооткат, если сертификат не выпустить).
+> **Что нового в 1.3.12-beta** — [полный список изменений](CHANGELOG.ru.md)
+> - **Восстановление пропавшего или сломанного интерфейса** — один клик пересоздаёт его с *теми же ключами* и возвращает всех пиров; если адрес пира вышел за пределы подсети, доступна кнопка **Исправить**. Работает по пиру или по всему узлу.
+> - **Опциональное хранение ключей интерфейсов** — узлы запечатывают свои серверные ключи в хранилище, доступное только вам, поэтому стёртый узел можно пересобрать, а панель никогда не видит приватный ключ.
+> - **Исправления** — переключение reverse-proxy с подпутём на встроенный HTTPS (и обратно) без потери узлов; адрес пира проверяется по подсети перед применением; конвертация Docker↔bare-metal сохраняет адрес и настройки.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -419,7 +420,7 @@ swgPanel использует несколько прекрасных проек
 
 - [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — оригинал
 - [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe/vk-turn-proxy](https://github.com/samosvalishe/vk-turn-proxy)
+- [samosvalishe/free-turn-proxy](https://github.com/samosvalishe/free-turn-proxy)
 - [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
 - [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
 - [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)
