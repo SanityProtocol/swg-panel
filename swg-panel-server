@@ -5061,7 +5061,8 @@ def api(method, path, qs, body, deps):
                 _old_srv = LISTENERS.get(pend["old_lid"])
                 _old_host = (str((_old_srv._swg.get("host") if _old_srv else "") or "")).strip().lower().strip("[]")
                 _keep_internal = (pend.get("flip_to_tls") and _old_srv is not None and not _old_srv._swg.get("cert")
-                                  and (_old_host.startswith("127.") or _old_host == "::1"))
+                                  and (_old_host.startswith("127.") or _old_host == "::1")
+                                  and not pend.get("old_base"))   # only when the old reverse-proxy was ROOT-mounted: then the loopback served root and can BECOME the co-located node's root internal. A SUBPATH reverse-proxy's loopback is the proxy's /base upstream (the co-located node uses a separate root internal) — repurposing it to root-only would 404 the proxy's /base during the grace, stranding external nodes mid-migration; grace-drop it instead so it keeps serving the old base via _ALT_BASE until nodes move.
                 if pend.get("flip_to_tls"):
                     _netctl_enqueue(deps, "set-cert-env", ["panel", "on"])   # reverse-proxy→direct-TLS: persist HTTPS so it survives a restart
                 if _keep_internal:
