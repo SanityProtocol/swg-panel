@@ -1329,6 +1329,10 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tip-by{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
 .tipfoot{display:flex;justify-content:flex-end;margin-top:10px}
 /* on/off switch */
+/* interface-key escrow toggle row (encryption settings) */
+.ivk-escrow{margin:12px 0 4px;padding-top:12px;border-top:1px solid var(--line)}
+.ivk-esc-row{display:flex;align-items:flex-start;gap:11px;font-size:13px;line-height:1.55;color:var(--dim);cursor:pointer}
+.ivk-esc-row b{color:var(--ink)}
 .swt{position:relative;display:inline-flex;align-items:center;width:34px;height:19px;flex:none;cursor:pointer}
 .swt input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
 .swt .track{width:34px;height:19px;border-radius:99px;background:var(--surface-2);border:1px solid var(--line-solid);transition:background .15s,border-color .15s}

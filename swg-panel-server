@@ -5567,23 +5567,26 @@ def api(method, path, qs, body, deps):
         return 200, {"ok": True, "data": {"exists": bool(v.get("sk_by_pw")),
                                           "salt": v.get("salt"), "sk_by_pw": v.get("sk_by_pw"), "sk_check": v.get("sk_check"),
                                           "sk_verify": v.get("sk_verify"),   # SK self-verifier → the browser validates a cached SK against THIS vault
-                                          # interface-key vault keypair: public (plaintext, nodes seal to it) + private half SK-wrapped (browser-only)
+                                          # interface-key escrow: on/off + the keypair (public plaintext, private half SK-wrapped)
+                                          "ivk_enabled": bool(v.get("ivk_enabled")),
                                           "ivk_pub": v.get("ivk_pub"), "ivk_priv_by_sk": v.get("ivk_priv_by_sk")}}
 
     if method == "POST" and path == "/api/sub/ivk":
-        # Set the interface-key vault keypair ONCE (minted in the browser after unlock): public key plaintext,
-        # private half AES-GCM-wrapped under the SK. Set-once — rotating it would orphan every escrowed blob.
-        pub, priv = body.get("ivk_pub"), body.get("ivk_priv_by_sk")
-        if not (isinstance(pub, str) and isinstance(priv, str) and pub and priv):
-            return 400, {"ok": False, "error": "ivk_pub and ivk_priv_by_sk are required", "code": "bad_request"}
+        # Enable / disable interface-key escrow. Enabling mints the vault keypair once (browser sends public +
+        # SK-wrapped private); it's KEPT across a disable so existing escrowed blobs stay valid and re-enabling
+        # reuses it. Disabling just stops the panel handing nodes the vault key (they stop sealing).
         v = load_sub_vault(deps)
         if not v.get("sk_by_pw"):
-            return 400, {"ok": False, "error": "set up the vault first", "code": "no_vault"}
-        if v.get("ivk_pub"):
-            return 200, {"ok": True, "data": {"saved": False, "ivk_pub": v.get("ivk_pub")}}   # already set — keep it (blobs depend on it)
-        v["ivk_pub"] = pub; v["ivk_priv_by_sk"] = priv
+            return 400, {"ok": False, "error": "set up the encryption key first", "code": "no_vault"}
+        enabled = bool(body.get("enabled"))
+        if enabled and not v.get("ivk_pub"):
+            pub, priv = body.get("ivk_pub"), body.get("ivk_priv_by_sk")
+            if not (isinstance(pub, str) and isinstance(priv, str) and pub and priv):
+                return 400, {"ok": False, "error": "ivk_pub and ivk_priv_by_sk are required to enable escrow", "code": "bad_request"}
+            v["ivk_pub"] = pub; v["ivk_priv_by_sk"] = priv
+        v["ivk_enabled"] = enabled
         save_sub_vault(deps, v)
-        return 200, {"ok": True, "data": {"saved": True, "ivk_pub": pub}}
+        return 200, {"ok": True, "data": {"enabled": enabled, "ivk_pub": v.get("ivk_pub")}}
 
     if method == "POST" and path == "/api/sub/vault":                # set on first enable / re-wrap on password change
         salt, sk, chk = body.get("salt"), body.get("sk_by_pw"), body.get("sk_check")
@@ -8728,7 +8731,8 @@ class Handler(BaseHTTPRequestHandler):
         # Interface-key vault: the operator vault's PUBLIC key (nodes seal their interface keys to it, for a
         # full-wipe restore) + the ifaces the panel still needs a CURRENT sealed key for (no blob, or the blob is
         # for an older/rotated key). Absent a vault → empty, so nodes seal nothing.
-        _ivk_pub = (load_sub_vault(Handler.deps) or {}).get("ivk_pub") or ""
+        _vault = load_sub_vault(Handler.deps) or {}
+        _ivk_pub = (_vault.get("ivk_pub") or "") if _vault.get("ivk_enabled") else ""   # only hand nodes the key when escrow is ON
         _ivk_want = []
         if _ivk_pub:
             for _ifn, _pk in (snap.get("iface_key_backups") or {}).items():

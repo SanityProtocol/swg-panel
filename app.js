@@ -301,19 +301,22 @@ async function ivkUnseal(privRaw, blob) {     // open a {eph, ct, mac} blob with
   const ks = await _ivkHkdf(shared, ephPub, "swg-ivk-enc", ct.length);
   return ct.map((b, i) => b ^ ks[i]);
 }
-// Mint the operator vault's interface-key keypair once (private half SK-wrapped). Called on unlock so nodes seal
-// PROACTIVELY — the key has to be escrowed BEFORE a wipe, not after. No-op if the vault isn't unlocked.
-async function ivkEnsureVaultKey() {
-  const sk = subSKCached(); if (!sk) return null;
-  try {
-    const v = await api.subVault();
-    if (v && v.ok && v.data && v.data.ivk_pub) return v.data.ivk_pub;
+// Enable / disable interface-key escrow. Enabling mints the vault X25519 keypair once (private half SK-wrapped)
+// so nodes seal their interface keys PROACTIVELY — the key has to be escrowed BEFORE a wipe. Disabling keeps the
+// keypair + blobs (so re-enabling reuses them) and just stops the panel handing nodes the vault key.
+async function ivkSetEscrow(enabled) {
+  if (!enabled) { const r = await api.post("/api/sub/ivk", { enabled: false }); if (!r || !r.ok) throw new Error((r && r.error) || "couldn't disable escrow"); return false; }
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the encryption key first.");
+  const body = { enabled: true };
+  const v = await api.subVault();
+  if (!(v && v.ok && v.data && v.data.ivk_pub)) {   // first enable → mint the keypair in the browser
     const kp = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
     const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
     const pk8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
-    const r = await api.post("/api/sub/ivk", { ivk_pub: b64(pubRaw), ivk_priv_by_sk: await subEnc(sk, pk8.slice(-32)) });
-    return (r && r.ok && r.data && r.data.ivk_pub) || null;
-  } catch (_) { return null; }
+    body.ivk_pub = b64(pubRaw); body.ivk_priv_by_sk = await subEnc(sk, pk8.slice(-32));
+  }
+  const r = await api.post("/api/sub/ivk", body); if (!r || !r.ok) throw new Error((r && r.error) || "couldn't enable escrow");
+  return true;
 }
 async function ivkVaultPriv() {               // the vault X25519 private key (raw 32 bytes), unwrapped under the SK
   const sk = subSKCached(); if (!sk) throw new Error("Unlock the vault first.");
@@ -367,7 +370,6 @@ async function subBootRestore() {
       if (!ok) { subForget(); return; }                                       // stale SK (a different/reset vault) → discard, never trust
     }
     _subSK = key;
-    try { ivkEnsureVaultKey(); } catch (_) {}   // ensure the interface-key vault keypair exists (proactive node sealing)
   } catch (_) { subForget(); }
 }
 async function subUnlock(password) {      // unwrap the SK from the vault with the password → cache it
@@ -388,7 +390,6 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
   }
   try { subFlushPending(); } catch (_) {}   // save anything the operator skipped earlier this session (incl. overwriting a stale rotate blob)
   try { subAutoHeal(); } catch (_) {}   // key just became available → silently publish anything left unpublished while locked
-  try { ivkEnsureVaultKey(); } catch (_) {}   // ensure the interface-key vault keypair exists so nodes seal their keys proactively
   return _subSK;
 }
 // Re-wrap the vault under a NEW panel password so the convenience cache keeps auto-unlocking after a password
@@ -8532,8 +8533,20 @@ function SubVaultCard() {
   const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
   const [sk, setSk] = useState(null);                    // the shown-once Subscription Key
   const [resetMode, setResetMode] = useState(false); const [confirm, setConfirm] = useState("");
-  const load = () => api.subVault().then(r => setState({ loading: false, exists: !!(r && r.ok && r.data && r.data.exists) })).catch(() => setState({ loading: false, exists: false }));
+  const load = () => api.subVault().then(r => setState({ loading: false, exists: !!(r && r.ok && r.data && r.data.exists), escrow: !!(r && r.ok && r.data && r.data.ivk_enabled) })).catch(() => setState({ loading: false, exists: false }));
   useEffect(() => { load(); }, []);
+  const toggleEscrow = async (on) => {
+    setBusy(true);
+    try {
+      if (on && !subSKCached()) {   // enabling stores a key wrapped under the SK → need it unlocked
+        const ok = await new Promise(res => pushModal(html`<${VaultPromptSheet} opts=${{ title: "Unlock to enable escrow", reason: "Enabling interface-key escrow stores each server's interface key wrapped under your encryption key. Unlock it to continue." }} onDone=${res}/>`));
+        if (!ok || !subSKCached()) { setBusy(false); return; }
+      }
+      await ivkSetEscrow(on); setState(s => ({ ...s, escrow: on }));
+      toast(on ? "Interface-key escrow enabled — entry servers will vault their interface keys." : "Interface-key escrow disabled.", "ok");
+    } catch (e) { toast((e && e.message) || "Failed", "err"); }
+    setBusy(false);
+  };
   const create = async () => {
     if (!pw) return; setBusy(true);
     try { setSk(await subVaultCreate(pw)); setPw(""); }
@@ -8563,6 +8576,11 @@ function SubVaultCard() {
     </div><//>`;
   return html`<${Fragment}>
     <div class="notice ok" style="margin-bottom:8px"><${Ic} i="check"/><span>Encryption is configured — stored configs are wrapped automatically, and their QRs (and any subscription links) keep working across your password changes.</span></div>
+    <div class="ivk-escrow">
+      <label class="ivk-esc-row"><${Switch} on=${!!state.escrow} disabled=${busy} onChange=${toggleEscrow}/>
+        <span><b>Escrow interface server keys</b> — each entry server seals its interface private key to a browser-held vault key (the panel only ever stores ciphertext). Lets you <b>Restore an interface cleanly after a full wipe / lost box</b>, with no client re-import. Off ⇒ a wiped node's interfaces can only be recreated with new keys, and every client on them re-imports.</span></label>
+      ${state.escrow && Store.storeMode === "encrypted" && !subSKCached() ? html`<div class="hint" style="margin-top:6px">Keep the encryption key unlocked when you need to restore — releasing an escrowed key requires it.</div>` : null}
+    </div>
     ${resetMode
       ? html`<div class="notice warn"><div style="min-width:0"><b>Reset drops all stored encrypted configs and invalidates every subscription URL.</b> You'll set up a new encryption key afterwards, then re-issue affected peers. Type <b>RESET</b> to confirm.
           <div class="chiprow" style="margin-top:8px"><input type="text" placeholder="RESET" value=${confirm} onInput=${e => setConfirm(e.target.value)} style="max-width:120px"/>
