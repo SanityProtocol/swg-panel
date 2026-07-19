@@ -324,6 +324,16 @@ async function ivkVaultPriv() {               // the vault X25519 private key (r
   if (!v || !v.ok || !v.data || !v.data.ivk_priv_by_sk) throw new Error("No interface-key vault is set up.");
   return await subDec(sk, v.data.ivk_priv_by_sk);
 }
+// For a vault-sourced missing interface: unseal the escrowed key and RE-seal it to the node's transport key, so
+// the panel relays only ciphertext. Returns the sealed_key for /api/iface/recreate, or null if not a vault key.
+async function ivkResealForNode(node, mi) {
+  if (!mi || mi.key_source !== "vault") return null;
+  if (!subSKCached()) throw new Error("Unlock the encryption key first.");
+  if (!mi.key_blob) throw new Error("No escrowed key is stored for this interface.");
+  const tpub = ((Store.stats[node] || {}).transport_pub) || "";
+  if (!tpub) throw new Error("The node hasn't reported its transport key yet — try again in a few seconds.");
+  return await ivkSeal(tpub, await ivkUnseal(await ivkVaultPriv(), mi.key_blob));
+}
 
 let _subSK = null;                       // the unwrapped encryption key (CryptoKey), cached for this session
 const _SK_CACHE = "swg_ck";              // key-cache: sessionStorage always (tab-scoped); ALSO localStorage when the
@@ -2111,14 +2121,8 @@ function _openRestoreInterface({ node, iface, mi, problemMs, rowKey, back }) {
     note: (mi && clean) ? html`<${SubAutoNote}/>` : null,
     onConfirm: mi ? (async () => {
       let sealed = null;
-      if (vault) {   // unseal the key from the vault, RE-seal it to the node's transport key so the panel relays only ciphertext
-        if (!subSKCached()) { toast("Unlock the vault (Settings → encryption) to release the escrowed key, then Restore again.", "err", 5000); return; }
-        if (!mi.key_blob) { toast("No escrowed key is stored for this interface.", "err"); return; }
-        const tpub = ((Store.stats[node] || {}).transport_pub) || "";
-        if (!tpub) { toast("The node hasn't reported its transport key yet — try again in a few seconds.", "err"); return; }
-        try { sealed = await ivkSeal(tpub, await ivkUnseal(await ivkVaultPriv(), mi.key_blob)); }
-        catch (e) { toast("Vault restore failed: " + ((e && e.message) || e), "err", 5000); return; }
-      }
+      try { sealed = await ivkResealForNode(node, mi); }   // vault key → unseal + re-seal to the node (null for a backup/new-key restore)
+      catch (e) { toast("Vault restore failed: " + ((e && e.message) || e), "err", 5000); return; }
       await mutate({ key: rowKey, call: () => api.ifaceRecreate({ node, iface, ...(sealed ? { sealed_key: sealed } : {}) }),
         onOk: () => toast("Restoring interface " + iface + " on " + Store.nodeName(node) + " — its peers re-converge over the next syncs.", "ok") });
     }) : null });
@@ -2128,6 +2132,31 @@ function confirmRestoreDeployment(peer, t, back) {
 }
 function confirmRestoreInterface(node, iface, mi, back) {
   _openRestoreInterface({ node, iface, mi, problemMs: (mi && mi.problemMs) || 0, rowKey: "iface:" + node + "|" + iface, back });
+}
+// Node-rebuild recovery (P5): after re-installing a wiped box (it re-enrolls empty), one press recreates ALL of
+// its missing interfaces with their original identities — vault keys released with a single unlock, then each
+// peer re-converges. Interfaces without a recoverable key get a fresh one (their clients re-import).
+function confirmRestoreAllInterfaces(nid, back) {
+  const nr = (Store.nodes || []).find(n => n.id === nid) || {};
+  const miss = Object.entries(nr.missing_ifaces || {}).filter(([, mi]) => mi && mi.ripe);
+  if (!miss.length) { toast("No interfaces to restore yet — a missing interface must persist a couple of minutes first.", "info"); return; }
+  const anyVault = miss.some(([, mi]) => mi.key_source === "vault");
+  const newKey = miss.filter(([, mi]) => !mi.key_source).length;
+  openConfirm({ title: "Restore " + miss.length + " interface" + (miss.length > 1 ? "s" : "") + " · " + Store.nodeName(nid),
+    confirmLabel: "Restore " + miss.length, danger: newKey > 0, back,
+    body: "Recreate " + miss.length + " missing interface" + (miss.length > 1 ? "s" : "") + " on " + Store.nodeName(nid) + " with their saved settings and, where recoverable, their ORIGINAL server keys — every peer re-converges." + (anyVault ? " You'll unlock the vault once to release the escrowed keys." : "") + (newKey ? " " + newKey + " ha" + (newKey === 1 ? "s" : "ve") + " no recoverable key, so " + (newKey === 1 ? "it gets" : "they get") + " a new one and those clients must re-import." : " Existing clients keep working — no re-distribution.") + " This is the node-rebuild recovery: after re-installing the box, one press brings its interfaces back.",
+    note: html`<ul class="restore-list">${miss.map(([ifn, mi]) => html`<li>${ifn}${!mi.key_source ? html` <span class="rl-new">new key</span>` : mi.key_source === "vault" ? html` <span class="faint">(from vault)</span>` : null}</li>`)}</ul>`,
+    onConfirm: async () => {
+      let ok = 0, failed = 0;
+      for (const [ifn, mi] of miss) {
+        let sealed = null;
+        try { sealed = await ivkResealForNode(nid, mi); }
+        catch (e) { failed++; toast(ifn + ": " + ((e && e.message) || e), "err", 5000); continue; }
+        const r = await mutate({ key: "iface:" + nid + "|" + ifn, call: () => api.ifaceRecreate({ node: nid, iface: ifn, ...(sealed ? { sealed_key: sealed } : {}) }) });
+        if (r && r.ok) ok++; else failed++;
+      }
+      toast("Restoring " + ok + " interface" + (ok !== 1 ? "s" : "") + " on " + Store.nodeName(nid) + (failed ? " (" + failed + " failed)" : "") + " — peers re-converge over the next syncs.", failed ? "info" : "ok");
+    } });
 }
 
 function confirmCorrectDeployment(peer, t, back) {
@@ -3681,7 +3710,7 @@ function NodeDetail({ node: rawName }) {
     <//>` : null}
 
     <${Panel} icon="globe" title="User interfaces" tone="ready" count=${userKeys.length}
-        actions=${html`<${Fragment}>${turnEnabled() && nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini ico" title="Interface defaults in Settings → Interfaces" onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
+        actions=${html`<${Fragment}>${(() => { const mr = Object.values(nrec.missing_ifaces || {}).filter(mi => mi && mi.ripe).length; return mr ? html`<button class="btn btn-mini restore" title="Recreate this node's missing interfaces with their original identities — node-rebuild recovery" onClick=${() => confirmRestoreAllInterfaces(name)}><${Ic} i="refresh"/> Restore ${mr > 1 ? mr + " interfaces" : "interface"}</button>` : null; })()}${turnEnabled() && nrec.turn_manage && !hasTurns ? html`<button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Set up the node's first turn-proxy"} onClick=${() => openSetupTurn(name)}><${Ic} i="plus"/> Setup turn-proxy</button>` : null}<button class="btn btn-mini ico" title="Interface defaults in Settings → Interfaces" onClick=${() => goSettings("defaults")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openOnboardIface(name)}><${Ic} i="plus"/> Create new interface</button><//>`}>
       ${(() => {
         // server-side pending (no data yet): the simple "waiting…" chip. creating → wg/awg tag; onboarding → "load".
         const pcard = (ifn, label, type) => html`<div class="ifcard pending" key=${label + ":" + ifn}>
