@@ -2026,8 +2026,12 @@ a.tg:hover{filter:brightness(1.25)}
 .btn-ghost.restore:hover{color:var(--online);border-color:var(--online)}
 .btn-ghost.correct{color:var(--fault)}
 .btn-ghost.correct:hover{color:var(--fault);border-color:var(--fault)}
-/* missing-interface card on the node detail (expected but gone) + its green Restore mini-button */
-.ifcard.missing{border-color:color-mix(in srgb,var(--dangling) 40%,var(--line-solid));background:color-mix(in srgb,var(--dangling) 5%,transparent)}
+/* missing-interface card on the node detail (expected but gone) + its green Restore mini-button. Flex column so
+   the card stretches to the grid row's height (matching the other interface cards) with the button pinned bottom-right */
+.ifcard.missing{display:flex;flex-direction:column;border-color:color-mix(in srgb,var(--dangling) 40%,var(--line-solid));background:color-mix(in srgb,var(--dangling) 5%,transparent)}
+.ifcard.missing .ifcard-rows{flex:1;justify-content:space-between}
+.mi-text{color:var(--dim);font-size:12px;line-height:1.5}
+.mi-act{display:flex;justify-content:flex-end;margin-top:8px}
 .btn-mini.restore{color:var(--online);border-color:color-mix(in srgb,var(--online) 34%,var(--line-solid))}
 .btn-mini.restore:hover{color:var(--online);border-color:var(--online);background:color-mix(in srgb,var(--online) 10%,transparent)}
 /* Confirm-modal list of what's about to be restored/corrected */

@@ -3643,14 +3643,16 @@ function NodeDetail({ node: rawName }) {
         // MISSING user interfaces: expected (the panel holds a saved config) but the node no longer reports them
         // — a warning card that recreates the interface with its original identity, recovering every peer on it.
         const mcard = (ifn, mi) => { const mtype = (mi.awg_params && Object.keys(mi.awg_params).length) ? "awg" : "wg";
+          const sentence = "The node no longer reports interface " + ifn + " (subnet " + (mi.subnet || "?") + ") — " + (mi.key_source
+            ? "its original server key is recoverable, so Restore recreates the interface cleanly and recovers every peer on it, with no client changes."
+            : "its original server key can't be recovered, so Restore recreates the interface with a NEW key, recovering every peer but requiring clients to re-import.");
           return html`<div class="ifcard missing" key=${"missing:" + ifn}>
             <div class="ifcard-top"><span class=${"iftype " + mtype}>${mtype}</span><span class="ifname">${ifn}</span><span class="grow"></span>
               <${StatusTag} cls="tg-del" icon="warn" label="missing" title="This interface is gone from the node"/></div>
             <div class="ifcard-rows">
-              <div class="ifrow"><span class="l">Subnet</span><span class="r addr">${mi.subnet || "—"}</span></div>
-              <div class="ifrow"><span class="l">Server key</span><span class="r">${mi.key_source ? html`<span class="faint">recoverable — clean restore</span>` : html`<span class="rl-new">new key — clients re-import</span>`}</span></div>
-              <div class="ifrow"><span class="l faint">The node no longer reports this interface.</span><button class="btn btn-mini restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? "Recreate this interface with its original identity — recovers every peer on it" : "Confirming it's really gone (a couple of minutes) before Restore is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> Restore interface</button></div>
-              <${RowError} k=${"iface:" + name + "|" + ifn}/></div></div>`; };
+              <div class="mi-text">${sentence}</div>
+              <div class="mi-act"><button class="btn btn-mini restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? "Recreate this interface with its original identity — recovers every peer on it" : "Confirming it's really gone (a couple of minutes) before Restore is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> Restore interface</button></div>
+            </div></div>`; };
         const mcards = Object.entries(nrec.missing_ifaces || {})
           .filter(([ifn]) => !(meta && meta[ifn]) && !isSysName(ifn))
           .map(([ifn, mi]) => mcard(ifn, mi));
