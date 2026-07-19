@@ -376,21 +376,33 @@ def op_add_peer(cfg, req):
     # out (endpoint) and its AllowedIPs is intentionally the whole internet, not an address in the link /31.
     # (op_set_peer_allowed flips an existing peer to /0; this lets the very FIRST add already carry /0 — needed
     # when the iface is rebuilt, e.g. after a reboot, while the cascade is already active.)
-    if "/" not in allowed:
-        raise AgentError("bad_request", "allowed_ips must be CIDR, e.g. 10.0.0.5/32")
-    ip = allowed.split("/")[0]
+    members = [c.strip() for c in allowed.split(",") if c.strip()]
+    if not members or not all("/" in m for m in members):
+        raise AgentError("bad_request", "allowed_ips must be CIDR(s), e.g. 10.0.0.5/32")
     net = iface_net(info)
-    if allowed.strip() not in ("0.0.0.0/0", "::/0"):
-        try:
-            addr = ipaddress.ip_address(ip)
-        except ValueError:
-            raise AgentError("bad_request", f"invalid ip {ip}")
-        if addr not in net.network:
-            raise AgentError("bad_request", f"{ip} not in subnet {net.network}")
-        if ip == str(net.ip):
-            raise AgentError("ip_in_use", f"{ip} is the server address")
-        if ip in used_ips(peers):
-            raise AgentError("ip_in_use", f"{ip} already assigned")
+    # A default-route member (0.0.0.0/0 or ::/0) marks a mesh/cascade peer that carries arbitrary destinations
+    # into the link — exempt from the in-subnet address checks (it dials out; its AllowedIPs is the whole internet).
+    if not any(m in ("0.0.0.0/0", "::/0") for m in members):
+        # Validate the peer's TUNNEL address: the member whose host IP is INSIDE the interface subnet. A peer may
+        # legitimately also carry routed subnets outside the link's range (e.g. a LAN behind it), so check the
+        # in-subnet member specifically rather than blindly the first CIDR — and reject if NONE is in-subnet
+        # (that's the record mismatch the panel flags as "broken"; the node refuses it too, as defence in depth).
+        in_sub = []
+        for m in members:
+            _ip = m.split("/")[0]
+            try:
+                _a = ipaddress.ip_address(_ip)
+            except ValueError:
+                raise AgentError("bad_request", f"invalid ip {_ip}")
+            if _a in net.network:
+                in_sub.append(_ip)
+        if not in_sub:
+            raise AgentError("bad_request", f"no address in {allowed} is inside subnet {net.network}")
+        for ip in in_sub:
+            if ip == str(net.ip):
+                raise AgentError("ip_in_use", f"{ip} is the server address")
+            if ip in used_ips(peers):
+                raise AgentError("ip_in_use", f"{ip} already assigned")
 
     # PSK: default auto-generate; explicit value honored; "none"/false disables.
     if psk_req in (None, "none", False):
