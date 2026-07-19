@@ -2020,9 +2020,12 @@ a.tg:hover{filter:brightness(1.25)}
 .btn-restore:hover{background:color-mix(in srgb,var(--online) 20%,transparent)}
 .btn-correct{background:color-mix(in srgb,var(--fault) 12%,transparent);color:var(--fault);border:1px solid color-mix(in srgb,var(--fault) 34%,transparent);font-weight:700;padding:9px 13px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease);display:inline-flex;align-items:center;gap:6px}
 .btn-correct:hover{background:color-mix(in srgb,var(--fault) 20%,transparent)}
-/* compact fix button inside a peer-view deployment row */
-.btn-fix{padding:4px 10px;font-size:11.5px;border-radius:6px;gap:5px}
-.btn-fix .ic svg{width:13px;height:13px}
+/* fix buttons INSIDE modals reuse the ghost button shape (like Targets / Block / Rotate keys) — just recoloured,
+   matching the .btn-ghost.danger pattern — so they don't read heavier than their neighbours */
+.btn-ghost.restore{color:var(--online)}
+.btn-ghost.restore:hover{color:var(--online);border-color:var(--online)}
+.btn-ghost.correct{color:var(--fault)}
+.btn-ghost.correct:hover{color:var(--fault);border-color:var(--fault)}
 /* Confirm-modal list of what's about to be restored/corrected */
 .restore-list{margin:10px 0 2px;padding-left:18px;max-height:200px;overflow:auto;font-size:13px;line-height:1.7}
 .restore-list li{color:var(--ink)}

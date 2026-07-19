@@ -2001,7 +2001,7 @@ function confirmDeletePeer(peer, back) {
 // how long it's been wrong so the operator doesn't act prematurely. Restore is per-INTERFACE — recreating a
 // vanished interface recovers EVERY dangling peer on it at once — so pressing it on any dangling row (or the
 // batch) recreates that node/iface. Correct is per-PEER — each broken peer's own record needs a valid address.
-function _durText(ms) { const m = Math.floor((ms || 0) / 60000); return m < 1 ? "under a minute" : m === 1 ? "about a minute" : m + " minutes"; }
+function _durText(ms) { const m = Math.max(1, Math.floor((ms || 0) / 60000)); return "more than " + m + (m === 1 ? " minute" : " minutes"); }
 function _missingIface(node, iface) {
   const nr = (Store.nodes || []).find(n => n.id === node) || {};
   return (nr.missing_ifaces || {})[iface] || null;   // {subnet, listen_port, address, awg_params, public_key, key_source} | null
@@ -10012,8 +10012,8 @@ function PeerViewSheet({ pid, node, iface }) {
             ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}
           </span>
           <span class="grow"></span>
-          ${t.restorable ? html`<button class="btn-restore btn-fix" title="Recreate this missing interface with its original identity" onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/> Restore</button>`
-            : t.correctable ? html`<button class="btn-correct btn-fix" title=${"Reassign an in-subnet address (" + (t.ip || "?") + " is out of range)"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/> Correct</button>` : null}</div>
+          ${t.restorable ? html`<button class="btn btn-ghost restore" title="Recreate this missing interface with its original identity" onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/> Restore</button>`
+            : t.correctable ? html`<button class="btn btn-ghost correct" title=${"Reassign an in-subnet address (" + (t.ip || "?") + " is out of range)"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/> Correct</button>` : null}</div>
         <div class="pv-dep-grid">
           <span><span class="k">Node</span> <span style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></span>
           <span><span class="k">Interface</span> ${t.iface}</span>
@@ -10141,9 +10141,9 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
   const _fixT = (focus && (_rp.targets || []).find(t => t.node === focus.node && t.iface === focus.iface))
              || (_rp.targets || []).find(t => t.restorable || t.correctable) || null;
   const fixBtn = (_fixT && _fixT.restorable)
-    ? html`<button class="btn btn-restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> Restore</button>`
+    ? html`<button class="btn btn-ghost restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> Restore</button>`
     : (_fixT && _fixT.correctable)
-      ? html`<button class="btn btn-correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> Correct</button>`
+      ? html`<button class="btn btn-ghost correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> Correct</button>`
       : html`<button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`;
   return html`<${Sheet} title=${"Edit peer"} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
     foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button>${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
