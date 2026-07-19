@@ -3653,7 +3653,7 @@ function NodeDetail({ node: rawName }) {
                   <div class="ifrow"><span class="l">Peers</span><span class="r">${ps.length
                     ? html`<${OnlinePeersTag} nodeId=${name} iface=${ifn} orphans=${orph} orphHref=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)}
                         trigger=${() => html`<b class=${"oncount" + (onlc ? " on" : "")}>${onlc}</b><span class="faint">/${ps.length}</span>${orph ? html` <span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>(${orph})</span>` : null}`}/>`
-                    : (orph ? html`<span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>${orph}</span>` : html`<span class="faint">none</span>`)}</span></div>
+                    : (orph ? html`<span class="ifc-orph" title=${orph + " unmanaged (orphan) peer" + (orph === 1 ? "" : "s")}>${orph}</span>` : html`<span class="faint">None</span>`)}</span></div>
                 </div></a>`;
             })}${pcards}</div>`; })()}
     <//>
@@ -5643,13 +5643,13 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
             return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>${ifaceB}`;
           })()}</td>
           ${(() => {
-            const titleCell = html`<td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">untitled</span>`}</td>`;
+            const titleCell = html`<td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">Untitled</span>`}</td>`;
             const addrCell = html`<td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
             const epCell = html`<td data-label="Endpoint">${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label="Node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
             const userCell = hideUser ? null : html`<td data-label="User" class=${"usercell" + (u ? " linked" : "")} onClick=${u ? (e => { e.stopPropagation(); revealUser(u.id); }) : (e => e.stopPropagation())}>
               ${u ? html`<a class="namecell" href="#/users" onClick=${e => { e.preventDefault(); e.stopPropagation(); revealUser(u.id); }}><span>${u.name}</span><${Ic} i="user"/></a>`
-                  : (live ? html`<span class="faint">unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/></div>`)}</td>`;
+                  : (live ? html`<span class="faint">Unassigned</span>` : html`<div class="assigncell"><${UserCombo} onPick=${uid => assignPeer(p, uid)}/></div>`)}</td>`;
             // embedded / live-peers: Status · [User] · Title · [Endpoint (live)] · Address · Node — iface badge sits by the status
             if (loc) return html`${userCell}${titleCell}${live ? epCell : null}${addrCell}${nodeCell}`;
             const srvAgg = agg ? html`<td data-label=${node === "*" ? "Node" : "IF"}><div class="srvcell">
@@ -5745,7 +5745,7 @@ function PeersScreen() {
       </select>
       <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; peersView.page = 1; force(x => x + 1); }}>
         ${(node === "*" || ifaceOpts.length > 1) ? html`<option value="*">All interfaces</option>` : null}
-        ${ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : (node === "*" ? null : html`<option value="">no interfaces reported</option>`)}
+        ${ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : (node === "*" ? null : html`<option value="">No interfaces reported</option>`)}
       </select>
       <select class="selwrap" value=${peersView.status || ""} onChange=${e => { peersView.status = e.target.value || null; peersView.page = 1; force(x => x + 1); }}>
         ${PEER_STATUS_FILTERS.map(([v, l]) => html`<option value=${v}>${l}</option>`)}
@@ -6857,7 +6857,7 @@ function PeerTitle({ peer }) {
   if (editing) return html`<span class="ptitle-edit"><input autofocus value=${val} maxlength="64" placeholder="title"
       onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}/>
     <button class="btn btn-mini" onClick=${save}><${Ic} i="check"/></button></span>`;
-  return html`<span class="ptitle">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">untitled</span>`}
+  return html`<span class="ptitle">${peer.title ? html`<b>${peer.title}</b>` : html`<span class="faint">Untitled</span>`}
     <button class="editname" title="Rename peer" onClick=${() => { setVal(peer.title || ""); setEditing(true); }}><${Ic} i="pencil"/></button></span>`;
 }
 
@@ -9151,7 +9151,7 @@ function PanelSettingsScreen() {
               : html`<div class="hint">Off returns 404 for every subscription URL, regardless of the rest.</div>`}</div>
           <div class="seclabel">Address & certificate</div>
           <div class="subaddr">
-            <div class="subaddr-row"><span class="subaddr-k">Public URL</span><span class="subaddr-v mono">${subBaseUrl() || html`<span class="faint">not set</span>`}</span></div>
+            <div class="subaddr-row"><span class="subaddr-k">Public URL</span><span class="subaddr-v mono">${subBaseUrl() || html`<span class="faint">Not set</span>`}</span></div>
             <div class="subaddr-row"><span class="subaddr-k">Listen</span><span class="subaddr-v mono">${(((ps.access || {}).sub || {}).host || "0.0.0.0")}:${(((ps.access || {}).sub || {}).port || 8444)}</span></div>
             <div class="subaddr-row"><span class="subaddr-k">Certificate</span><span class="subaddr-v mono">${(TLS_MODE_OPTS.find(o => o.value === (((ps.access || {}).tls || {}).mode || "")) || {}).label || "—"}</span></div>
           </div>
