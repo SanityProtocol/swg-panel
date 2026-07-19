@@ -17,20 +17,35 @@
 //   ready    present on every live target, none online yet
 //   partial  present on some live targets, missing on others — redundancy gap
 //   pending  brand new, still inside the grace window, not yet seen anywhere
-//   dangling missing on every live target, past grace
+//   dangling missing on every live target, past grace (the interface is GONE from the node -> Restore recreates it)
+//   broken   the interface IS present but the peer's IP is outside its subnet -> the node can't add it; the
+//            record is wrong, not the interface (-> Correct fixes the record; distinct from dangling)
 //   unknown  every target's node is stale -> can't assert anything
 // A peer with no user (user_id null) is flagged `unassigned` (rendered grey); its
 // deployment status is still computed so you can see whether it is live.
 // Stale nodes never count as "missing" (they're unknown, not absent), so a peer
 // stays "online" while a replica is briefly unreachable.
 
-const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000, unblockMs: 300000 };   // unblockMs: how long "restoring" shows after an unblock before falling back to the real status
+const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000, unblockMs: 300000, restoreGraceMs: 120000 };   // unblockMs: how long "restoring" shows after an unblock before falling back to the real status. restoreGraceMs: how long a peer must stay dangling/broken before Restore/Correct is offered (not a hiccup / mid-create)
 
 // status priority for rolling several targets/peers into one (most-alive wins). faulty (handshake up, no data)
 // sits just under online; blocked (reaching but no handshake) is a fault above the plain-missing states.
 // disabled/blocking rank BELOW every live state so a single per-peer block never dominates a user that still
 // has healthy peers; restoring ranks with the other transitional states.
-const RANK = { online: 8, faulty: 7, ready: 6, blocked: 5, partial: 4, restoring: 3, pending: 3, creating: 3, rotating: 3, dangling: 2, blocking: 1, disabled: 0, unknown: 1 };
+const RANK = { online: 8, faulty: 7, ready: 6, blocked: 5, partial: 4, restoring: 3, pending: 3, creating: 3, rotating: 3, dangling: 2, broken: 2, blocking: 1, disabled: 0, unknown: 1 };
+
+// IPv4 membership: is `ip` inside `cidr`? Unknown/unparseable -> true (never false-flag "broken"). IPv6 -> true
+// (skip; the "broken" check only guards IPv4 subnets). Used to tell a present-but-wrong peer (broken) from a
+// gone-interface peer (dangling).
+function ipInCidr(ip, cidr) {
+  if (!ip || !cidr || String(cidr).indexOf("/") < 0 || String(ip).indexOf(":") >= 0) return true;
+  const parts = String(cidr).split("/"); const bits = +parts[1];
+  if (!(bits >= 0 && bits <= 32)) return true;
+  const toInt = a => { const o = String(a).split("."); if (o.length !== 4) return null; let v = 0; for (let i = 0; i < 4; i++) { const n = +o[i]; if (!(n >= 0 && n <= 255)) return null; v = (v * 256) + n; } return v >>> 0; };
+  const a = toInt(ip), b = toInt(parts[0]); if (a === null || b === null) return true;
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  return ((a & mask) >>> 0) === ((b & mask) >>> 0);
+}
 
 function ipOf(hostport) {
   if (!hostport) return "";
@@ -117,7 +132,15 @@ function reconcile(roster, stats, now, cfg) {
           st = "blocked";
         } else st = "ready";
       }
-      else st = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
+      else {
+        // Not observed on a LIVE node. If the interface is still present but the peer's IP is outside its
+        // subnet, the node CAN'T add it — that's a record mismatch ("broken", → Correct), NOT the interface
+        // being gone ("dangling", → Restore recreates it).
+        const ifm = ((stats[t.node] || {}).interfaces || {})[t.iface];
+        const sub = ifm && ifm.meta && ifm.meta.subnet;
+        if (sub && t.ip && !ipInCidr(t.ip, sub)) st = "broken";
+        else st = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
+      }
       const epIp = (obs && obs.endpoint) ? ipOf(obs.endpoint) : "";
       const via = epIp ? ((turnConnIps[t.node] || {})[epIp] ? "turn" : "direct") : null;
       let viaTurn = null;
@@ -143,7 +166,8 @@ function reconcile(roster, stats, now, cfg) {
     let status;
     if (p._creating) status = "creating";          // optimistic: the create POST is still in flight
     else if (targets.length === 0 || live.length === 0) status = "unknown";
-    else if (present.length === 0) status = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
+    else if (present.length === 0) status = (live.length && live.every(d => d.status === "broken")) ? "broken"
+                                            : ((now - createdMs) <= cfg.graceMs ? "creating" : "dangling");   // broken record vs gone interface
     else if (present.length < live.length) status = "partial";
     else { status = "ready"; present.forEach(d => { if ((RANK[d.status] || 0) > (RANK[status] || 0)) status = d.status; }); }   // all present → best of the targets' states (online/faulty/blocked/ready)
 
@@ -173,6 +197,19 @@ function reconcile(roster, stats, now, cfg) {
                      : status === "partial" ? "missing on some live servers" : "created — not seen on a node yet");
     } else if (status === "blocked") reason = "reaching the server but the handshake never completes — likely DPI / MTU / wrong AmneziaWG params";
     else if (status === "faulty") reason = "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path";
+    else if (status === "broken") reason = "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface";
+
+    // Restore/Correct is a REAL-PROBLEM affordance, not a hiccup: track how long the peer has been dangling/broken
+    // and only mark it ready to act on (`restorable`/`correctable`) once that has persisted past restoreGraceMs.
+    // A peer just created, a brief node blip, or a re-provision in flight must NOT prompt it. cfg.probSince is a
+    // persisted {pid: firstProblemMs} the caller carries across refreshes (like cfg.history).
+    const isProblem = (status === "dangling" || status === "broken");
+    if (cfg.probSince) {
+      if (isProblem) { if (!cfg.probSince[pid]) cfg.probSince[pid] = now; }
+      else if (cfg.probSince[pid]) delete cfg.probSince[pid];
+    }
+    const problemMs = (cfg.probSince && cfg.probSince[pid]) ? (now - cfg.probSince[pid]) : 0;
+    const ripe = problemMs >= (cfg.restoreGraceMs || 120000);
 
     let lastAge = null;
     targets.forEach(d => {
@@ -188,6 +225,9 @@ function reconcile(roster, stats, now, cfg) {
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,
       presentCount: present.length, liveCount: live.length,
+      restorable: (status === "dangling") && ripe,     // dangling long enough to be a real problem, not a hiccup → offer Restore
+      correctable: (status === "broken") && ripe,       // broken long enough → offer Correct
+      problemMs: isProblem ? problemMs : 0,             // how long it's been a problem (for the confirm modal message)
       disabled: blocked, selfDisabled: !!p.disabled, userDisabled: !!(user && user.disabled),
     };
   });

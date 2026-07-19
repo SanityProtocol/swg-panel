@@ -1085,10 +1085,12 @@ const Store = {
     const _adv = (this.panelSettings || {}).advanced || {};   // operator-tunable stale/grace thresholds
     // rx-history for FAULTY detection persists across polls (keyed node|iface|pubkey, like reconcile's `observed`)
     this._rxHistory = this._rxHistory || {};
+    this._probSince = this._probSince || {};   // {pid: firstProblemMs} — persists so Restore/Correct only offers after a real, sustained problem (not a hiccup / mid-create)
     const _sc = (this.panelSettings || {}).status_conditions || {};   // peer-health detection toggles (default on)
     this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
-      history: this._rxHistory, faultyMs: _adv.faulty_ms || 45000,
+      history: this._rxHistory, faultyMs: _adv.faulty_ms || 45000, probSince: this._probSince,
       detectBlocked: _sc.blocked !== false, detectFaulty: _sc.faulty !== false,
+      ...(_adv.restore_grace_ms ? { restoreGraceMs: _adv.restore_grace_ms } : {}),
       ...(_adv.node_stale_ms ? { nodeStaleMs: _adv.node_stale_ms } : {}), ...(_adv.peer_grace_ms ? { graceMs: _adv.peer_grace_ms } : {}) });
     // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
     for (const id of Object.keys(this.rotating)) {
@@ -1558,9 +1560,9 @@ const rowNoSelect = e => { if (e.detail > 1) e.preventDefault(); };   // stop th
 const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
 const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied" };
 const IFOP_FAIL = { start: "failed to start", stop: "failed to stop", restart: "failed to restart", apply: "failed to apply" };
-const STATUS_RANK = { disabled: -1, blocking: -1, dangling: 0, blocked: 1, faulty: 1, partial: 1, pending: 2, creating: 2, rotating: 2, restoring: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
+const STATUS_RANK = { disabled: -1, blocking: -1, dangling: 0, broken: 0, blocked: 1, faulty: 1, partial: 1, pending: 2, creating: 2, rotating: 2, restoring: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
-  blocked: "warn", faulty: "warn", dangling: "err", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info",
+  blocked: "warn", faulty: "warn", dangling: "err", broken: "warn", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info",
   disabled: "off", blocking: "off", restoring: "refresh" };
 // Display label overrides where the internal status key differs from the word shown. Two remaps, both
 // display-only (keys stay put so persisted settings / filters / deep-links don't move):
@@ -1636,6 +1638,7 @@ function gridIfaceTag(t) {
 const STATUS_REASON = {
   blocked: "reaching the server but the handshake never completes — likely DPI / MTU / wrong AmneziaWG params",
   faulty: "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path",
+  broken: "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface",
 };
 function gridStatusBadge(t, p, re) {
   const st = t.status || p.status;
@@ -5431,7 +5434,7 @@ const peersView = { node: "", iface: "", q: "", sort: "status", dir: -1, status:
 // key is `disabled` (shown "Blocked"); the DPI fault's key is `blocked` (shown "Restricted").
 const PEER_STATUS_FILTERS = [["", "All statuses"], ["online", "Online"], ["ready", "Ready"], ["unassigned", "Unassigned"],
   ["disabled", "Blocked"], ["blocking", "Blocking"], ["restoring", "Restoring"],
-  ["dangling", "Dangling"], ["partial", "Partial"], ["blocked", "Restricted"], ["faulty", "Faulty"], ["pending", "Pending"], ["unknown", "Unknown"]];
+  ["dangling", "Dangling"], ["broken", "Broken"], ["partial", "Partial"], ["blocked", "Restricted"], ["faulty", "Faulty"], ["pending", "Pending"], ["unknown", "Unknown"]];
 // Prominent warning when the panel keeps no client configs at rest — QRs/downloads then only work
 // in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.
 function StoreOffBanner() {
@@ -5476,7 +5479,7 @@ function ifaceOptGroups(names) {
 const _ipKey = ip => String(ip || "").split(/[./]/).map(n => String((+n) || 0).padStart(3, "0")).join(".");
 // status order for the clickable "Status" column — online FIRST (STATUS_RANK ranks ready above online, which is
 // right for the Peers-screen default grouping but backwards for an order-by; here online is the top of the sort).
-const PEER_STATUS_RANK = { online: 10, faulty: 9, ready: 8, blocked: 7, partial: 6, pending: 5, creating: 5, rotating: 5, restoring: 4, unassigned: 3, unknown: 2, dangling: 1, blocking: 0, disabled: 0 };
+const PEER_STATUS_RANK = { online: 10, faulty: 9, ready: 8, blocked: 7, partial: 6, pending: 5, creating: 5, rotating: 5, restoring: 4, unassigned: 3, unknown: 2, dangling: 1, broken: 1, blocking: 0, disabled: 0 };
 const PEER_SORT = {
   status: ({ p, t }) => PEER_STATUS_RANK[t.status || p.status] || 0,
   server: ({ t }) => Store.nodeName(t.node).toLowerCase() + "|" + t.iface,
