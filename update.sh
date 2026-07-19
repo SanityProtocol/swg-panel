@@ -296,6 +296,84 @@ EOF
   ok "swg-netctl root helper provisioned — Access & subscription-address changes will work now"
 }
 
+ensure_sub_server(){   # idempotent: provision the swg-sub subscription surface when a bare-metal panel LACKS it.
+  # swg-sub is the public, read-only per-user QR/config page. The panel drives it entirely over swg-netctl
+  # (set-listen / restart the swg-sub.service unit), so a panel with NO unit can't bind or rebind the sub
+  # server — every Settings → Subscriptions apply fails with "couldn't bind the subscription server …" and
+  # rolls back. Installs that predate swg-sub, or partial ones that dropped the files without the unit (and
+  # without swg-sub's own user), have no service at all, and the version-gated refresh below only runs when
+  # the binary already exists. Provision the whole thing here, unconditionally, so an update repairs such
+  # boxes. MUST mirror install-host.sh's swg-sub install + write_sub_unit. Inert until enabled in the panel
+  # (the whole surface 404s until then), so enabling --now here exposes nothing.
+  [ -f "$SRC/swg-sub" ] || return 0
+  local st="${STATE_DIR:-/var/lib/swg-panel}" etc="${ETC_DIR:-/etc/swg-panel}" tls="${TLS_DIR:-/etc/swg-panel/tls}"
+  local usr="${PANEL_USER:-swgpanel}" subusr="${SUB_USER:-swgsub}" subport="${SUB_PORT:-8444}" subbind="${SUB_BIND:-0.0.0.0}"
+  # already complete? (binary + own user + service unit) → nothing to do; the refresh path keeps it current.
+  if [ -f "$SUB_DIR/swg-sub" ] && id "$subusr" >/dev/null 2>&1 && [ -f /etc/systemd/system/swg-sub.service ]; then return 0; fi
+  info "provisioning the swg-sub subscription surface (missing/incomplete — needed for Settings → Subscriptions)"
+  if $DRYRUN; then echo "    [skip] install ${SUB_DIR}/swg-sub + user ${subusr} + /etc/swg-sub/tls + swg-sub.service (enable --now)"; return 0; fi
+  # swg-sub's OWN unprivileged user (group swg, read-only) — NOT the panel user. It reads only the
+  # group-readable subset of state; the secrets stay 0600/owner-only + masked by the unit (below).
+  id "$subusr" >/dev/null 2>&1 || useradd -r -g swg -d "$SUB_DIR" -s /usr/sbin/nologin "$subusr" 2>/dev/null || true
+  usermod -d "$SUB_DIR" -g swg "$subusr" 2>/dev/null || true
+  # group(swg) traverse so swg-sub can reach the roster/nodes/subs it may read (idempotent on a live panel).
+  chown "$usr:swg" "$st" 2>/dev/null || true; chmod 750 "$st" 2>/dev/null || true
+  [ -d "$st/subs" ] && { chown -R "$usr:swg" "$st/subs" 2>/dev/null || true; chmod 750 "$st/subs" 2>/dev/null || true; [ -d "$st/subs/blobs" ] && chmod 750 "$st/subs/blobs" 2>/dev/null || true; }
+  mkdir -p "$SUB_DIR/vendor"
+  cp "$SRC/swg-sub" "$SUB_DIR/"; chmod 755 "$SUB_DIR/swg-sub"
+  for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SRC/$f" ] && cp "$SRC/$f" "$SUB_DIR/"; done
+  [ -f "$SRC/vendor/qrcode.js" ] && cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"
+  stamp "$SUB_DIR"
+  # swg-sub's OWN TLS dir — its cert lives here (never the panel's key). swg-netctl/acme write it as root;
+  # group swg (swgsub) reads it. Separate from — and NOT — the masked panel tls dir.
+  mkdir -p /etc/swg-sub/tls; chown root:swg /etc/swg-sub/tls 2>/dev/null || true; chmod 750 /etc/swg-sub/tls
+  local subextra=""
+  [ "$subport" -lt 1024 ] 2>/dev/null && subextra="AmbientCapabilities=CAP_NET_BIND_SERVICE
+"
+  # served as PLAIN HTTP behind the operator's TLS (reverse proxy / Cloudflare) or swg-sub's own cert; it
+  # deliberately never reuses the panel's TLS key. The panel overrides the listen addr via a set-listen
+  # drop-in (10-access) after this, so the default host/port below is just the pre-reconcile fallback.
+  cat > /etc/systemd/system/swg-sub.service <<EOF
+[Unit]
+Description=swg-sub subscription surface (public, read-only)
+After=network.target
+
+[Service]
+Type=simple
+User=${subusr}
+Group=swg
+ExecStart=${SUB_DIR}/swg-sub
+Environment=SWG_SUB_FLEET=${etc}/fleet.json
+Environment=SWG_SUB_WEB=${SUB_DIR}
+Environment=SWG_SUB_HOST=${subbind}
+Environment=SWG_SUB_PORT=${subport}
+Environment=SWG_SUB_TRUST_XFF=${SUB_TRUST_XFF:-0}
+${subextra}Restart=on-failure
+RestartSec=2
+# hardening — read-only (no ReadWritePaths), and the secrets are masked at the kernel level so even a
+# bug in this internet-facing process cannot open the login hash, the TLS key, the subscription-key
+# vault, panel-settings (webhook secrets), or any stored configs, regardless of file permissions.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+InaccessiblePaths=-${etc}/auth -${tls} -${st}/subs/vault.json -${st}/subs/escrow.json -${st}/panel-settings.json -${st}/configs
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --quiet --now swg-sub 2>/dev/null || warn "couldn't enable swg-sub"
+  ok "swg-sub subscription surface provisioned — Settings → Subscriptions will work now"
+}
+
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
 if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
   found=1; pan_seen=yes; pold="$(oldver "$PANEL_DIR")"
@@ -310,8 +388,9 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     install_update_unit                              # ensure one-click host self-update is wired
     if run systemctl restart swg-panel-server; then ok "swg-panel updated + restarted"; note "bare-metal swg-panel: ${pold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-panel-server"; note "bare-metal swg-panel: updated but RESTART FAILED"; fi
-    # swg-sub (the subscription surface) ships with the panel. Refresh it in place when already installed —
-    # first-time provisioning (binary + unit) is done by install-host.sh. Inert unless enabled in the panel.
+    # swg-sub (the subscription surface) ships with the panel. Refresh it in place when already installed;
+    # ensure_sub_server (below, unconditional) provisions it first-time on a panel that lacks the unit/user.
+    # Inert unless enabled in the panel.
     if [ -f "$SUB_DIR/swg-sub" ] && [ -f "$SRC/swg-sub" ]; then
       run cp "$SRC/swg-sub" "$SUB_DIR/"; run chmod 755 "$SUB_DIR/swg-sub"
       for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SRC/$f" ] && run cp "$SRC/$f" "$SUB_DIR/"; done
@@ -337,6 +416,7 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
     fi
   else note "bare-metal swg-panel: unchanged (${pold})"; fi
   ensure_netctl_helper   # runs regardless of should_update — repairs boxes whose helper was never installed
+  ensure_sub_server      # ditto — provisions swg-sub's unit/user on a panel that has the files but no service
 fi
 
 # ───────────────────────── bare-metal node daemon (node or master) ─────────────────────────

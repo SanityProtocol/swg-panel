@@ -3,6 +3,17 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.3.13-beta] — 2026-07-20
+
+### Fixed
+- **Updating now repairs a panel that was missing its subscription server.** If a box ended up with the
+  subscription files but no `swg-sub` service — an older install, or one where the unit was lost — the
+  panel could not start or move the subscription server, and Settings → Subscriptions failed with
+  "couldn't bind the subscription server" and rolled back. An update now installs the service (and its
+  own unprivileged user) when it's absent, the same way it already heals the privileged network helper —
+  so a plain update fixes it, with no need to reinstall. The panel's configured subscription address is
+  preserved.
+
 ## [1.3.12-beta] — 2026-07-19
 
 ### Added

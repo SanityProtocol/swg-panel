@@ -1,9 +1,9 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.3.12-beta</code></p>
+<p align="center"><code>1.3.13-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.3.12-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.3.13-beta** — [full changelog](CHANGELOG.md)
 > - **Restore a missing or broken interface** — one click recreates it with the *same keys* and re-adds every peer; a peer whose address drifted out of subnet gets a **Fix**. Works per-peer or across a whole node.
 > - **Optional interface-key escrow** — nodes seal their server keys to a vault only you hold, so a wiped node can be rebuilt without the panel ever seeing a private key.
 > - **Fixes** — flip a subpath reverse proxy to built-in HTTPS (and back) without stranding nodes; a peer's address is checked against its subnet before it's applied; Docker↔bare-metal convert keeps your address and settings.
