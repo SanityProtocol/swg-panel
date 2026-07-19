@@ -105,7 +105,7 @@ h1,h2,h3{font-family:var(--sans)}
 .tabs a.active::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;border-radius:2px;
   background:var(--brand);box-shadow:0 0 9px color-mix(in srgb,var(--brand) 55%,transparent)}
 .appbar-right{margin-left:auto;display:flex;align-items:center;gap:14px}
-.livepill{display:flex;align-items:center;gap:7px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+.livepill{display:flex;align-items:center;gap:7px;font-size:11px;text-transform:capitalize;letter-spacing:.08em;
   color:var(--dim);font-family:var(--mono);padding:5px 11px;border:1px solid var(--line-solid);border-radius:99px;background:var(--surface-2)}
 .livepill b{color:var(--online);font-weight:600;font-size:13px;letter-spacing:-.02em}
 /* the node-detail update lifecycle pills (update to … / updating / up to date) — sized to match the reporting
@@ -126,7 +126,7 @@ h1,h2,h3{font-family:var(--sans)}
 .livepill.off b{color:var(--dim)}                /* no peers online → grey count … */
 .livepill.off .dot{display:none}                 /* … and no glowing dot */
 /* this panel host is mid re-install/convert (header slot, holds through the panel's own downtime) */
-.hostproc-tag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--partial);border:1px solid var(--partial);border-radius:99px;padding:4px 11px;background:color-mix(in srgb,var(--partial) 10%,transparent)}   /* in-progress = YELLOW (matches the .upd-busy pill, so the header tag doesn't flip yellow→purple mid-update) */
+.hostproc-tag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:capitalize;color:var(--partial);border:1px solid var(--partial);border-radius:99px;padding:4px 11px;background:color-mix(in srgb,var(--partial) 10%,transparent)}   /* in-progress = YELLOW (matches the .upd-busy pill, so the header tag doesn't flip yellow→purple mid-update) */
 .hostproc-tag.ok{color:var(--online);border-color:var(--online);background:rgba(63,216,154,.1)}        /* host re-install succeeded — green, auto-clears */
 .hostproc-tag.aborted{color:var(--unknown);border-color:var(--unknown);background:color-mix(in srgb,var(--unknown) 12%,transparent)}  /* host re-install aborted — grey, dismissable */
 .hostproc-tag.fail,.hostproc-tag.procuninstall{color:var(--dangling);border-color:var(--dangling);background:color-mix(in srgb,var(--dangling) 10%,transparent)}   /* failed / uninstalling — RED (error popup + × on fail) */
@@ -378,7 +378,7 @@ a.stat.clk:hover{border-color:var(--line-solid);background:var(--raise)}
 #host-tport.baremetal{border-color:color-mix(in srgb,var(--tport-bare) 40%,transparent);background:color-mix(in srgb,var(--tport-bare) 9%,transparent)}
 #host-tport.docker{border-color:color-mix(in srgb,var(--tport-dock) 45%,transparent);background:color-mix(in srgb,var(--tport-dock) 10%,transparent)}
 /* "reporting" — bare status tag matching .nstat (the "updating" style); the only one that keeps a glowing, blinking dot */
-.reporting{display:inline-flex;align-items:center;gap:6px;line-height:normal;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em;
+.reporting{display:inline-flex;align-items:center;gap:6px;line-height:normal;font-family:var(--mono);font-size:10px;text-transform:capitalize;letter-spacing:.05em;
   font-weight:700;color:var(--online)}   /* line-height:normal (not 1) so the label baseline matches the .tport bare-metal/docker pill exactly */
 .reporting::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--online);box-shadow:0 0 8px rgba(63,216,154,.7);animation:blink 2.6s infinite}
 /* one-line node ribbon: interface/turn tags left, sync/uptime right */
@@ -903,7 +903,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 #appver .ver-upd{margin-left:10px;vertical-align:middle}
 .spin.sm{width:10px;height:10px;border-width:1.5px}
 .ncard .grow{flex:1}
-.nstat{display:inline-flex;align-items:center;gap:6px;line-height:normal;font-size:10px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;font-family:var(--mono)}   /* line-height:normal matches .reporting + the .tport pills so every status tag's label sits on the same baseline */
+.nstat{display:inline-flex;align-items:center;gap:6px;line-height:normal;font-size:10px;letter-spacing:.05em;text-transform:capitalize;font-weight:700;font-family:var(--mono)}   /* line-height:normal matches .reporting + the .tport pills so every status tag's label sits on the same baseline */
 .nstat::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
 .nstat.online{color:var(--online)} .nstat.online::before{animation:pulse 2.6s infinite}
 .nstat.offline{color:var(--unknown)} .nstat.offline::before{display:none}   /* offline: GREY, info icon (no dot) */
@@ -1075,12 +1075,12 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 /* blocked/faulty "why" bubble — same surface as the turn bubble but allowed to wrap onto a couple of lines,
    with a colour-headed first line (the status name) over the explanation. */
 .turnbub.statusbub{white-space:normal;flex-direction:column;align-items:flex-start;gap:3px;width:250px;line-height:1.45}
-.statusbub-h{display:inline-flex;align-items:center;gap:5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;font-size:10.5px}
+.statusbub-h{display:inline-flex;align-items:center;gap:5px;font-weight:600;text-transform:capitalize;letter-spacing:.04em;font-size:10.5px}
 .statusbub-h svg{width:12px;height:12px}
 /* status pills (busy/ok/warn/del) — ONE uniform shape; colour per state. Defined after .tg so the
    pill shape wins even when written as "tg tg-busy" on cards (the type tags .tg-wg/.tg-awg stay small). */
 /* status pills — ONE shape/size/font for all; only colour differs (busy=cyan, ok=green, warn=yellow, del=red, off=grey) */
-.tg-busy,.tg-ok,.tg-warn,.tg-del,.tg-off,.tg-pending,.tg-convert,.tg-ready{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:1px 8px;font-family:var(--mono);font-size:9.5px;font-weight:700;line-height:1.45;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;border:1px solid transparent}
+.tg-busy,.tg-ok,.tg-warn,.tg-del,.tg-off,.tg-pending,.tg-convert,.tg-ready{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:1px 8px;font-family:var(--mono);font-size:9.5px;font-weight:700;line-height:1.45;text-transform:capitalize;letter-spacing:.04em;white-space:nowrap;border:1px solid transparent}
 .tg-busy{background:rgba(232,192,75,.16);color:var(--partial);border-color:color-mix(in srgb,var(--partial) 32%,transparent)}   /* active work: installing / creating — YELLOW */
 .tg-pending{background:rgba(240,145,60,.13);color:#F0913C;border-color:color-mix(in srgb,#F0913C 30%,transparent)}   /* queued / awaiting the node — ORANGE */
 .tg-convert{background:color-mix(in srgb,var(--pending) 16%,transparent);color:var(--pending);border-color:color-mix(in srgb,var(--pending) 32%,transparent)}   /* converting bare↔docker — PURPLE */
@@ -1948,7 +1948,7 @@ a.tg:hover{filter:brightness(1.25)}
 .urow.open .u-exp{transform:rotate(90deg);color:var(--dim)}
 /* user-row status: bare node-style tag (dot + uppercase mono label), like the nodes list "reporting/offline"
    but a touch smaller — NOT the pill Badge used inside the grids */
-.ustat{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;line-height:normal;white-space:nowrap;color:var(--unknown)}
+.ustat{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:capitalize;line-height:normal;white-space:nowrap;color:var(--unknown)}
 .ustat::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
 .ustat.s-online{color:var(--online)} .ustat.s-online::before{box-shadow:0 0 8px currentColor;animation:blink 2.6s infinite}
 .ustat.s-ready{color:var(--ready)}
