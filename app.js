@@ -1649,13 +1649,19 @@ function gridIfaceTag(t) {
 // badge with a glowing animated dot, plus a "Connected via <fork> <title>" hover bubble — consistent in
 // every grid regardless of which columns are shown. Otherwise the normal Badge.
 const STATUS_REASON = {
-  blocked: "reaching the server but the handshake never completes — likely DPI / MTU / wrong AmneziaWG params",
+  blocked: "reaching the server but the handshake never completes — likely DPI / MTU / wrong Wireguard or AmneziaWG params",
   faulty: "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path",
   broken: "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface",
 };
+// The blocked "wrong params" hint, naming the datapath the deployment runs (wg → Wireguard, awg → AmneziaWG,
+// unknown → both) so it points at the right knobs. Mirrors the dynamic reason reconcile.js sets peer-wide.
+function protoLabel(type) { return type === "awg" ? "AmneziaWG" : type === "wg" ? "Wireguard" : "Wireguard or AmneziaWG"; }
+function blockedReason(type) { return "reaching the server but the handshake never completes — likely DPI / MTU / wrong " + protoLabel(type) + " params"; }
 function gridStatusBadge(t, p, re) {
   const st = t.status || p.status;
-  const reason = (t.down ? "Interface " + t.iface + " is down — " + t.down : (p.reason || STATUS_REASON[st])) || "";
+  const reason = (t.down ? "Interface " + t.iface + " is down — " + t.down
+    : st === "blocked" ? blockedReason(t.type)   // name THIS deployment's datapath (wg / awg) in the "wrong params" hint
+    : (p.reason || STATUS_REASON[st])) || "";
   if (t.online && t.viaTurn) {
     const tn = turnLabel(t.viaTurn), tc = turnColor(tn), ptitle = turnProxyTitle(t.node, t.viaTurn);
     return html`<span class="turnwrap">
@@ -3643,9 +3649,9 @@ function NodeDetail({ node: rawName }) {
         // MISSING user interfaces: expected (the panel holds a saved config) but the node no longer reports them
         // — a warning card that recreates the interface with its original identity, recovering every peer on it.
         const mcard = (ifn, mi) => { const mtype = (mi.awg_params && Object.keys(mi.awg_params).length) ? "awg" : "wg";
-          const sentence = "The node no longer reports interface " + ifn + " (subnet " + (mi.subnet || "?") + ") — " + (mi.key_source
-            ? "its original server key is recoverable, so Restore recreates the interface cleanly and recovers every peer on it, with no client changes."
-            : "its original server key can't be recovered, so Restore recreates the interface with a NEW key, recovering every peer but requiring clients to re-import.");
+          const sentence = "The node no longer reports interface " + ifn + " (" + (mi.subnet || "?") + ") — " + (mi.key_source
+            ? "its original server key is recoverable, so Restore can recreate the interface and recover every peer on it."
+            : "its original server key can't be recovered, so Restore can recreate the interface with a NEW key, recovering every peer but requiring clients to re-import.");
           return html`<div class="ifcard missing" key=${"missing:" + ifn}>
             <div class="ifcard-top"><span class=${"iftype " + mtype}>${mtype}</span><span class="ifname">${ifn}</span><span class="grow"></span>
               <${StatusTag} cls="tg-del" icon="warn" label="missing" title="This interface is gone from the node"/></div>
@@ -9151,7 +9157,7 @@ function PanelSettingsScreen() {
           <p class="hint" style="margin:0 0 10px">Which failure conditions the panel flags on a peer. All on by default — untick one to stop it showing that status (the peer just reads online / ready instead). Both appear in <span class="b-faulty" style="padding:1px 6px;border-radius:6px">orange</span>.</p>
           <div class="condrow"><${Switch} on=${statusConds.blocked} onChange=${v => setStatusConds(c => ({ ...c, blocked: v }))}/>
             <span class="cond-b"><span class="badge b-blocked ic"><${Ic} i="warn"/>restricted</span></span>
-            <span class="cond-t">Endpoint is reaching the server, but the handshake never completes (likely DPI / MTU / wrong AmneziaWG params).</span></div>
+            <span class="cond-t">Endpoint is reaching the server, but the handshake never completes (likely DPI / MTU / wrong Wireguard or AmneziaWG params).</span></div>
           <div class="condrow"><${Switch} on=${statusConds.faulty} onChange=${v => setStatusConds(c => ({ ...c, faulty: v }))}/>
             <span class="cond-b"><span class="badge b-faulty ic"><${Ic} i="warn"/>faulty</span></span>
             <span class="cond-t">Handshake is up but no inbound data has flowed for a while — a one-way block / DPI on the return path. (This can't tell a genuinely-stuck peer from a simply-idle one, so turn it off if idle peers bother you.)</span></div>
@@ -10051,7 +10057,7 @@ function PeerViewSheet({ pid, node, iface }) {
       const obs = t.observed;
       const proto = targetType(t);
       return html`<div class=${"pv-dep" + (node === t.node && iface === t.iface ? " hl" : "")} key=${tkey(t.node, t.iface)}>
-        <div class="pv-dep-top">${badgeWithReason(t.status, STATUS_REASON[t.status])}
+        <div class="pv-dep-top">${badgeWithReason(t.status, t.status === "blocked" ? blockedReason(t.type) : STATUS_REASON[t.status])}
           <span class="tags">
             <${Tag} kind=${proto} label=${proto} muted=${!t.online}/>
             ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}

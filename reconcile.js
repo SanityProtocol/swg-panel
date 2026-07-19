@@ -209,7 +209,13 @@ function reconcile(roster, stats, now, cfg) {
       reason = dt ? ("interface " + dt.iface + " is down — " + dt.down)
                   : (status === "dangling" ? "missing on every server"
                      : status === "partial" ? "missing on some live servers" : "created — not seen on a node yet");
-    } else if (status === "blocked") reason = "reaching the server but the handshake never completes — likely DPI / MTU / wrong AmneziaWG params";
+    } else if (status === "blocked") {
+      // name the datapath the peer's blocked interface(s) actually run (Wireguard vs AmneziaWG), so the "wrong
+      // params" hint points at the right knobs; mixed / unknown → name both.
+      const bt = new Set(targets.filter(d => d.status === "blocked").map(d => d.type));
+      const proto = (bt.has("awg") && bt.has("wg")) ? "Wireguard or AmneziaWG" : bt.has("awg") ? "AmneziaWG" : bt.has("wg") ? "Wireguard" : "Wireguard or AmneziaWG";
+      reason = "reaching the server but the handshake never completes — likely DPI / MTU / wrong " + proto + " params";
+    }
     else if (status === "faulty") reason = "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path";
     else if (status === "broken") reason = "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface";
 
