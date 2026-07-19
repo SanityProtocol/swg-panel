@@ -8335,6 +8335,14 @@ class Handler(BaseHTTPRequestHandler):
             drift = ov.setdefault("_drift", {})
             d = {}
             sysif = bool(ov.get("system"))   # mesh link — panel-managed: AUTO-ADOPT any node-side change, never drift
+            # Persist the reported USER-interface config (subnet / listen_port / address / AWG params) as a
+            # last-known-good record while the interface is up, so a RESTORE can recreate it with its ORIGINAL
+            # identity after it goes missing (a wipe / re-install). The node's on-disk keypair backup carries the
+            # private key; `_lastcfg` carries the rest. System (mesh) ifaces don't need it — they persist via `links`.
+            if rep and not sysif:
+                _lc = {k: rep.get(k) for k in ("subnet", "listen_port", "address", "awg_params") if rep.get(k)}
+                if _lc and ov.get("_lastcfg") != _lc:
+                    ov["_lastcfg"] = _lc; ifaces_dirty = True
             def _clear_drift(k):
                 if k in drift:
                     drift.pop(k, None); return True
