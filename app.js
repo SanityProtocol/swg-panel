@@ -5514,8 +5514,19 @@ function sortPeerRows(rows, sort, dir, freeze) {
   const key = PEER_SORT[sort] || PEER_SORT.status;
   const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1)
     || String(a.p.title || a.p.name || "").localeCompare(String(b.p.title || b.p.name || ""));
-  return freeze ? stableOrder(freeze + "|" + sort + "|" + dir, rows, r => r.p.id + "|" + tkey(r.t.node, r.t.iface), cmp)
+  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir, rows, r => r.p.id + "|" + tkey(r.t.node, r.t.iface), cmp)
     : rows.slice().sort(cmp);
+  return pinRecentlyCreated(s, r => r.p.id);   // a just-created peer stays on TOP regardless of sort/freeze
+}
+// Keep just-created rows at the TOP of a grid, newest first, regardless of the active sort — so a peer/user you
+// just made isn't buried. Session-scoped (Store.recentlyCreated resets on reload). Stable: existing rows keep order.
+function pinRecentlyCreated(sorted, idOf) {
+  const rc = Store.recentlyCreated;
+  if (!rc || !sorted.some(x => rc[idOf(x)])) return sorted;
+  const pin = [], rest = [];
+  for (const x of sorted) (rc[idOf(x)] ? pin : rest).push(x);
+  pin.sort((a, b) => (rc[idOf(b)] || 0) - (rc[idOf(a)] || 0));   // newest-created first
+  return pin.concat(rest);
 }
 function peerSortBy(view, col) { if (view.sort === col) view.dir = -view.dir; else { view.sort = col; view.dir = PEER_DEFDIR[col] || 1; } }
 // Pager scroll: turning to the NEXT page brings the grid's TOP just under the sticky header; PREV brings its BOTTOM
@@ -5628,7 +5639,17 @@ function PeersScreen() {
   // filtering or editing never reshuffles the frozen rows
   rows = sortPeerRows(rows, peersView.sort, peersView.dir, "peers|" + node + "|" + iface);
   if (q) rows = rows.filter(({ p, t }) => searchMatch((p.title || "") + " " + (p.name || "") + " " + (t.ip || "") + " " + Store.nodeName(t.node) + " " + t.iface, q));
-  if (peersView.status) rows = rows.filter(({ p }) => peersView.status === "unassigned" ? p.unassigned : p.status === peersView.status);   // status filter (set directly, or via a grouped Needs-attention click)
+  if (peersView.status) {
+    // Filter on the DEPLOYMENT status (t.status) — the same value the row badge shows — so the filter never
+    // returns rows whose badge reads something else (the "select Partial, see Ready rows" confusion). Two
+    // peer-level exceptions that aren't a single deployment's state: `unassigned` (no owner), and `partial`
+    // (a redundancy gap) → surface the MISSING side (the dangling/broken deployments) of partial peers.
+    const f = peersView.status;
+    rows = rows.filter(({ p, t }) =>
+      f === "unassigned" ? p.unassigned
+      : f === "partial" ? (p.status === "partial" && (t.status === "dangling" || t.status === "broken"))
+      : t.status === f);
+  }
   // which of each peer's deployments are actually visible as rows here — so a row can flag the rest
   // (filtered out by server/interface or search) with a "+N" the operator can hover/tap.
   const shownByPeer = {};
@@ -5908,7 +5929,8 @@ const USER_DEFDIR = { status: -1, peers: -1, online: -1, last: 1, rate: -1, tota
 function sortUsers(users, sort, dir, freeze) {
   const key = USER_SORT[sort] || USER_SORT.status;
   const cmp = (a, b) => ((x, y) => x < y ? -1 : x > y ? 1 : 0)(key(a), key(b)) * (dir || -1) || String(a.name).localeCompare(String(b.name));
-  return freeze ? stableOrder(freeze + "|" + sort + "|" + dir, users, u => u.id, cmp) : users.slice().sort(cmp);
+  const s = freeze ? stableOrder(freeze + "|" + sort + "|" + dir, users, u => u.id, cmp) : users.slice().sort(cmp);
+  return pinRecentlyCreated(s, u => u.id);   // a just-created user stays on TOP regardless of sort/freeze
 }
 function sortColToggle(view, sk, dk, col, defdir) { if (view[sk] === col) view[dk] = -view[dk]; else { view[sk] = col; view[dk] = defdir[col] || 1; } }
 // The sortable header line above a users list — same grid columns as .urow-head so the titles (which the rows no
