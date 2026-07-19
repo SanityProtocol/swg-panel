@@ -6990,6 +6990,34 @@ def api(method, path, qs, body, deps):
         ev_append(roster_path, "node", nid, "Creating interface", iface)
         return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
 
+    if method == "POST" and path == "/api/iface/recreate":
+        # Restore a USER interface the node LOST (delete / wipe / re-install) with its ORIGINAL identity —
+        # the panel-persisted _lastcfg (subnet / port / address / AWG params) + the original server key
+        # (node's own on-disk backup, or the operator vault). Peers re-converge on the next syncs, so no
+        # client re-import when the key is recoverable. Distinct from /api/iface/restore (per-setting drift).
+        nid = body.get("node") or ""; iface = (body.get("iface") or "").strip()
+        if nid not in nodes:
+            return 404, {"ok": False, "error": "unknown node", "code": "not_found"}
+        ov = (nodes[nid].get("ifaces") or {}).get(iface)
+        lc = (ov or {}).get("_lastcfg")
+        if not ov or not lc:
+            return 400, {"ok": False, "error": "no saved config for that interface — cannot recreate", "code": "bad_request"}
+        snap = (deps.get("node_snaps") or {}).get(nid) or {}
+        if iface in (snap.get("interfaces") or {}):
+            return 400, {"ok": False, "error": "interface is already present on the node — nothing to recreate", "code": "bad_request"}
+        # protocol: explicit AWG params ⇒ AmneziaWG; otherwise awg (which speaks plain WG too, so it's safe either way)
+        req = {"cmd": ["awg"], "subnet": lc.get("subnet"), "restore": True}
+        if str(lc.get("listen_port") or "").isdigit() or isinstance(lc.get("listen_port"), int):
+            req["listen_port"] = int(lc["listen_port"])
+        if (lc.get("address") or "").strip():
+            req["address"] = lc["address"].strip()
+        if isinstance(lc.get("awg_params"), dict) and lc["awg_params"]:
+            req["awg_params"] = lc["awg_params"]
+        nodes[nid].setdefault("create", {})[iface] = req
+        nodes_save(deps["nodes_path"], nodes)
+        ev_append(roster_path, "node", nid, "Restoring interface", iface)
+        return 200, {"ok": True, "data": {"node": nid, "iface": iface}}
+
     if method == "POST" and path == "/api/iface/cancel":
         # Drop a pending create/onboard request (clears a stuck "creating"/"onboarding" card). Does
         # NOT touch anything the node already brought up — it only removes the panel-side request.

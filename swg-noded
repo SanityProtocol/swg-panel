@@ -3308,9 +3308,17 @@ def create_ifaces(node_cfg, create, agent, sudo):
         if iface in ifaces:                 # already created — nothing to do (panel clears it)
             continue
         cmd = want.get("cmd") or ["awg"]
+        # RESTORE of a vanished interface: recreate it with its ORIGINAL server key so no client re-imports.
+        # Key source, in order: a vault-supplied private_key (the node lost its backup), else the node's own
+        # on-disk backup. Absent both → fall through to a brand-new genkey (agent side): a fresh identity.
+        priv = (want.get("private_key") or "").strip()
+        if not priv and want.get("restore"):
+            priv = ((read_iface_backup(iface) or {}).get("private_key") or "").strip()
         r = run_agent(agent, sudo, {"op": "create-iface", "iface": iface, "cmd": cmd,
                                     "subnet": want.get("subnet"), "listen_port": want.get("listen_port"),
                                     "address": want.get("address"),   # explicit addr (mesh /31 ends)
+                                    "private_key": priv,               # blank => agent genkeys a new one
+                                    "awg_params": want.get("awg_params"),   # restore: original obfuscation (else agent randomizes)
                                     "mtu": want.get("mtu")})
         if not r.get("ok"):
             res["errors"].append(f"{iface}: {r.get('error')}"); continue
@@ -3318,6 +3326,8 @@ def create_ifaces(node_cfg, create, agent, sudo):
         conf = data.get("conf") or ""
         if not conf:
             res["errors"].append(f"{iface}: agent returned no conf path"); continue
+        with contextlib.suppress(Exception):
+            ensure_iface_backup(iface, open(conf).read(), cmd)   # (re)seed the key backup (no-op if it already exists)
         # the agent may have fallen back (e.g. wg→awg on a node with only amneziawg-go) — record the
         # tool it ACTUALLY used, or we'll later run the wrong CLI (`wg show`) and "can't read" it
         ifaces[iface] = {"cmd": data.get("cmd") or cmd, "conf": conf}

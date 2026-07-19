@@ -591,9 +591,13 @@ def op_create_iface(cfg, req):
     if os.path.exists(conf):
         raise AgentError("exists", f"{conf} already exists")
     os.makedirs(conf_dir, exist_ok=True)
-    priv = run(cmd + ["genkey"]).strip()
+    # A supplied private_key RECREATES the interface with its ORIGINAL identity (Restore of a vanished iface —
+    # key from the node's own backup or the operator vault); absent → genkey a brand-new interface.
+    priv = (req.get("private_key") or "").strip()
     if not priv:
-        raise AgentError("internal", f"{tool} genkey produced no key")
+        priv = run(cmd + ["genkey"]).strip()
+        if not priv:
+            raise AgentError("internal", f"{tool} genkey produced no key")
     pub = run(cmd + ["pubkey"], input_text=priv + "\n").strip()
     ov_addr = (req.get("address") or "").strip()   # explicit iface address (mesh /31 ends differ per side)
     if ov_addr:
@@ -619,7 +623,11 @@ def op_create_iface(cfg, req):
     if (req.get("table") or "").strip().lower() == "off":   # mesh link: cascade manages routing — wg-quick must
         body += "Table = off\n"                              # NOT install AllowedIPs routes (a /0 would hijack default)
     if tool == "awg" and add_obf:               # only genuine AmneziaWG gets obfuscation params
-        body += _awg_obfuscation()
+        # RESTORE reuses the ORIGINAL obfuscation params (baked into every client) — never regenerate, or the
+        # recreated interface won't speak the clients' handshake. A brand-new create gets fresh random params.
+        supp = req.get("awg_params") if isinstance(req.get("awg_params"), dict) else None
+        supp = {k: str(supp[k]) for k in AWG_KEYS if supp and str(supp.get(k, "")) != ""} if supp else None
+        body += ("".join(f"{k} = {supp[k]}\n" for k in AWG_KEYS if k in supp)) if supp else _awg_obfuscation()
     write_conf_atomic(conf, body)
     try:
         run([tool + "-quick", "up", iface])
