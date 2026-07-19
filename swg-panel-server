@@ -3523,7 +3523,12 @@ def cascade_plan(nodes, snaps, custom_lists=None):
         if sp["allowed"].get(dev_p) != "0.0.0.0/0":    # base /31 ∪ S, unless an entry role already set /0
             cur = set(filter(None, (sp["allowed"].get(dev_p) or (base_p + "/32")).split(",")))
             cur |= {base_p + "/32", S}
-            sp["allowed"][dev_p] = ",".join(sorted(cur))
+            # The mesh link /32 (the peer's OWN in-subnet address) MUST come first: swg-agent validates
+            # allowed_ips.split("/")[0] against the link subnet, so a plain sorted() that puts a routed user
+            # subnet (e.g. 10.17.0.0/24) ahead of the base (10.255.0.1/32) makes the peer add fail "not in subnet"
+            # and the mesh link never establishes. Base first, routes sorted after (order is routing-irrelevant).
+            _base = base_p + "/32"
+            sp["allowed"][dev_p] = ",".join([_base] + sorted(cur - {_base}))
 
     # 1) collect forward + smart items; per-node target order (UNION) → stable table ids shared by both modes
     fwd_items, smart_items = [], []
