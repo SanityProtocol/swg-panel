@@ -8032,8 +8032,10 @@ class Handler(BaseHTTPRequestHandler):
                 data = f.read()
         except OSError:
             return self.send_error(404)
-        _mb = getattr(_REQ, "matched_base", "") or PANEL_BASE   # the base THIS request came in on (a path swap serves two)
-        if _mb and STATIC[key] == "index.html":   # point the SPA's <base> at the mount point this tab is under
+        _mb = getattr(_REQ, "matched_base", None)   # the base THIS request came in on (a path swap serves two)
+        if _mb is None:                             # only fall back to the canonical mount when strip_base didn't match one
+            _mb = PANEL_BASE                        # "" is a VALID (root) match during a swap — must NOT fall through to PANEL_BASE
+        if _mb and STATIC[key] == "index.html":   # point the SPA's <base> at the mount point this tab is under (_mb=="" → root, keep the default <base href="/">)
             data = data.replace(b'<base href="/">', ('<base href="%s/">' % _mb).encode())
         # Version-stamp the SPA entry points (?v=<panel version>). The assets are buildless (no content
         # hash in the filename), and a CDN in front (e.g. Cloudflare) caches .js/.css for hours regardless
@@ -8125,7 +8127,8 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _session_cookie(self, value, max_age):
-        base = ((getattr(_REQ, "matched_base", "") or PANEL_BASE) or "") + "/"   # scope the cookie to the base this request came in on (a path swap serves two)
+        _cb = getattr(_REQ, "matched_base", None)   # scope the cookie to the base this request came in on (a path swap serves two)
+        base = (PANEL_BASE if _cb is None else _cb) + "/"   # "" is a VALID (root) match during a swap → cookie Path=/ (not the canonical subpath)
         secure = "; Secure" if (TLS_CERT and TLS_KEY) else ""
         return f"swgsess={value}; Path={base}; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure}"
 
