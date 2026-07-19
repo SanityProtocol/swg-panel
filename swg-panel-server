@@ -4950,6 +4950,12 @@ def api(method, path, qs, body, deps):
             # persisting the cert env ON confirm (set-cert-env → HTTPS survives a restart). If the mode issues a cert
             # and none on disk covers the domain, issue it first (async) then bind. A cancel/timeout leaves the live
             # reverse-proxy setup untouched: the cert env is never persisted and the old HTTP listener never dropped.
+            # A flip can ALSO move the mount path (a reverse-proxy SUBPATH → direct-TLS ROOT, or the reverse). Dual-serve
+            # the new base on the fresh HTTPS listener from the moment it binds so the gate probe AND the confirm reach
+            # it (the confirm makes it canonical); without this the new listener answers only the OLD base and the
+            # confirm 404s. Mirrors the direct-TLS→reverse-proxy path swap, which sets _ALT_BASE the same way.
+            _ftls_old_base = PANEL_BASE
+            _ftls_new_base = urllib.parse.urlparse(d_url if "://" in d_url else "https://" + d_url).path.rstrip("/")
             need_issue = (not nl_cert) or _cert_needs_issue(MANAGED_CERT, d_domain, mode)
             with _APPLY["lock"]:
                 if _APPLY["pending"] is not None:
@@ -4958,7 +4964,8 @@ def api(method, path, qs, body, deps):
             if need_issue:
                 threading.Thread(target=_apply_panel_cert_then_bind, name="access-apply-flip",
                                  args=(deps, d_host, d_port, d_url, d_domain, lid, ""),
-                                 kwargs={"flip_to_tls": True}, daemon=True).start()
+                                 kwargs={"flip_to_tls": True, "old_base": _ftls_old_base, "new_base": _ftls_new_base},
+                                 daemon=True).start()
                 _apply_status("issuing", "issuing a certificate for %s" % d_domain)
                 return 200, {"ok": True, "applied": False, "async": True, "message": "issuing a certificate"}
             try:
@@ -4970,8 +4977,11 @@ def api(method, path, qs, body, deps):
                 _apply_status("failed", "couldn't bind %s:%d for direct TLS — %s" % (d_host, d_port, e))
                 return 400, {"ok": False, "code": "bind_failed",
                              "error": "couldn't bind %s:%d — %s. If your reverse proxy still owns that port, stop it there first — the panel and the proxy can't both hold it." % (d_host, d_port, e)}
+            if _ftls_new_base != _ftls_old_base:
+                globals()["_ALT_BASE"] = _ftls_new_base   # dual-serve the new mount path on the fresh HTTPS listener → gate probe + confirm reach it
             with _APPLY["lock"]:
-                nonce, redirect, deadline = _arm_pending(deps, new_lid, lid, d_host, d_port, d_url, flip_to_tls=True)
+                nonce, redirect, deadline = _arm_pending(deps, new_lid, lid, d_host, d_port, d_url, flip_to_tls=True,
+                                                         old_base=_ftls_old_base, new_base=_ftls_new_base)
             return 200, {"ok": True, "applied": False, "nonce": nonce, "host": d_host, "port": d_port,
                          "expires": deadline, "redirect": redirect}
         if same_bind and not need_cert:
@@ -9756,11 +9766,13 @@ def _arm_pending(deps, new_lid, old_lid, host, port, url, old_domain="", new_dom
     return nonce, redirect, deadline
 
 
-def _apply_panel_cert_then_bind(deps, d_host, d_port, d_url, d_domain, old_lid, old_domain, flip_to_tls=False):
+def _apply_panel_cert_then_bind(deps, d_host, d_port, d_url, d_domain, old_lid, old_domain, flip_to_tls=False,
+                                old_base=None, new_base=None):
     """Background worker for a panel address change that needs a NEW cert (domain changed, OR a reverse-proxy→direct
     TLS flip whose mode issues one): back up the live cert, issue the new one over it, dual-listen with it. Any
     failure restores the backed-up cert so a reverted/failed apply never leaves the wrong cert on disk.
-    flip_to_tls carries through to confirm, where the cert env is persisted (HTTPS survives a restart)."""
+    flip_to_tls carries through to confirm, where the cert env is persisted (HTTPS survives a restart). old/new_base
+    carry a mount-path move made in the same flip: dual-serve the new base at bind so the confirm reaches it."""
     def _fail(msg):
         _netctl_enqueue(deps, "restore-cert", ["panel"])          # undo the clobber
         with _APPLY["lock"]:
@@ -9778,8 +9790,11 @@ def _apply_panel_cert_then_bind(deps, d_host, d_port, d_url, d_domain, old_lid, 
             new_lid = LISTENERS.add(d_host, d_port, MANAGED_CERT, MANAGED_KEY)   # the freshly-installed panel cert (managed path — set even when we booted plain-HTTP, for a flip)
         except OSError as e:
             return _fail("couldn't bind %s:%d — %s" % (d_host, d_port, e))
+        if old_base is not None and new_base is not None and new_base != old_base:
+            globals()["_ALT_BASE"] = new_base   # dual-serve the new mount path on the fresh HTTPS listener → confirm reaches it
         with _APPLY["lock"]:
-            _arm_pending(deps, new_lid, old_lid, d_host, d_port, d_url, old_domain=old_domain, new_domain=d_domain, flip_to_tls=flip_to_tls)
+            _arm_pending(deps, new_lid, old_lid, d_host, d_port, d_url, old_domain=old_domain, new_domain=d_domain,
+                         flip_to_tls=flip_to_tls, old_base=old_base, new_base=new_base)
     except Exception as e:                   # never leave a stuck reservation
         _fail("internal error: %s" % (e,))
 
