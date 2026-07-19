@@ -967,6 +967,7 @@ const api = {
   peerBlock(b) { return this.post("/api/peers/block", b); },      // drop this peer from every node's desired set
   peerUnblock(b) { return this.post("/api/peers/unblock", b); },
   peerAdopt(b) { return this.post("/api/peers/adopt", b); },
+  peerCorrect(b) { return this.post("/api/peers/correct", b); },   // broken: reassign an in-subnet IP
   ifaceUpdate(b) { return this.post("/api/iface/update", b); },
   ifaceOnboard(b) { return this.post("/api/iface/onboard", b); },
   ifaceCreate(b) { return this.post("/api/iface/create", b); },
@@ -977,6 +978,7 @@ const api = {
   ifaceStart(b) { return this.post("/api/iface/start", b); },       // start (up + enable) the iface
   ifaceAdopt(b) { return this.post("/api/iface/adopt", b); },     // drift: pull the node's server-edited value
   ifaceRestore(b) { return this.post("/api/iface/restore", b); }, // drift: re-assert the panel's value
+  ifaceRecreate(b) { return this.post("/api/iface/recreate", b); }, // restore a MISSING iface with its original identity
   turnManage(b) { return this.post("/api/turn/manage", b); },     // edit listen/connect (+ wrap key)
   turnTitle(b) { return this.post("/api/turn/title", b); },       // set the display title only — no restart/bounce
   turnRotate(b) { return this.post("/api/turn/rotate", b); },     // regenerate the wrap key
@@ -1991,6 +1993,67 @@ function confirmDeletePeer(peer, back) {
     body: "This is irreversible — the peer's key is removed from every interface it's deployed on.",
     onConfirm: () => mutate({ key: "peer:" + peer.id, patch: s => { delete s.roster.peers[peer.id]; },
       call: () => api.peerDelete({ peer_id: peer.id }) }) });
+}
+
+// ── Restore a missing interface (dangling) · Correct an out-of-subnet IP (broken) ─────────────────
+// Both affordances are GATED: reconcile only sets a deployment restorable/correctable once the problem has
+// persisted past the ~2-minute grace (never a hiccup or a peer still being created), and every modal states
+// how long it's been wrong so the operator doesn't act prematurely. Restore is per-INTERFACE — recreating a
+// vanished interface recovers EVERY dangling peer on it at once — so pressing it on any dangling row (or the
+// batch) recreates that node/iface. Correct is per-PEER — each broken peer's own record needs a valid address.
+function _durText(ms) { const m = Math.floor((ms || 0) / 60000); return m < 1 ? "under a minute" : m === 1 ? "about a minute" : m + " minutes"; }
+function _missingIface(node, iface) {
+  const nr = (Store.nodes || []).find(n => n.id === node) || {};
+  return (nr.missing_ifaces || {})[iface] || null;   // {subnet, listen_port, address, awg_params, public_key, key_source} | null
+}
+function _restoreGate(t) { return "This interface has been gone for " + _durText(t.problemMs) + ", so it's a real outage — not a brief hiccup or a peer still being created."; }
+
+function confirmRestoreDeployment(peer, t, back) {
+  const mi = _missingIface(t.node, t.iface);
+  const where = Store.nodeName(t.node) + " · " + t.iface;
+  const clean = !!(mi && mi.key_source);                 // "backup" | "vault" → original key recoverable
+  const src = mi && mi.key_source === "vault" ? "from the operator vault" : "from the node's own backup";
+  const body = !mi
+    ? "The panel has no saved configuration for " + t.iface + " on " + Store.nodeName(t.node) + " yet, so it can't be recreated automatically. Recreate the interface from its screen, then its peers re-converge. " + _restoreGate(t)
+    : clean
+      ? "Recreate interface " + t.iface + " on " + Store.nodeName(t.node) + " with its ORIGINAL server key (" + src + ") and saved settings. Every peer that lives on it re-converges over the next few syncs, and existing clients keep working — no new QR / config to distribute. " + _restoreGate(t)
+      : "Recreate interface " + t.iface + " on " + Store.nodeName(t.node) + " with its saved settings. The original server key can't be recovered, so it gets a NEW key — every client on this interface must re-import a fresh QR / config. " + _restoreGate(t);
+  openConfirm({ title: "Restore " + where, confirmLabel: mi ? "Restore" : "Close", danger: !!mi && !clean, back,
+    note: (mi && clean) ? html`<${SubAutoNote}/>` : null,
+    onConfirm: mi ? (() => mutate({ key: "peer:" + peer.id, call: () => api.ifaceRecreate({ node: t.node, iface: t.iface }),
+      onOk: () => toast("Restoring " + t.iface + " on " + Store.nodeName(t.node) + " — its peers re-converge over the next syncs.", "ok") })) : null });
+}
+
+function confirmCorrectDeployment(peer, t, back) {
+  const who = peer.title || peer.name || "peer";
+  const where = Store.nodeName(t.node) + " · " + t.iface;
+  const gate = "The address has been out of range for " + _durText(t.problemMs) + ", so it's a real record mismatch, not a transient state.";
+  openConfirm({ title: "Correct " + who + " · " + where, confirmLabel: "Correct", back,
+    body: "This peer's address " + (t.ip || "—") + " is outside " + t.iface + "'s subnet on " + Store.nodeName(t.node) + ", so the node can't add it. Assign the next free in-subnet address and let the node re-converge. Keys and PSK stay the same. " + gate,
+    note: html`<${SubAutoNote}/>`,
+    onConfirm: () => mutate({ key: "peer:" + peer.id, call: () => api.peerCorrect({ peer_id: peer.id, target: { node: t.node, iface: t.iface } }),
+      onOk: r => toast("Address corrected" + (r && r.data && r.data.ip ? " → " + r.data.ip : "") + ".", "ok") }) });
+}
+
+// Batch (grid button next to the status dropdown). `rows` = the currently-filtered {p, t} rows.
+function confirmRestoreAll(rows, back) {
+  const seen = new Set(), targets = [];
+  for (const { t } of rows) { if (!t.restorable) continue; const k = t.node + "|" + t.iface; if (seen.has(k)) continue; seen.add(k); targets.push(t); }
+  if (!targets.length) { toast("Nothing to restore yet — a missing interface must persist a couple of minutes before it's offered.", "info"); return; }
+  const dirty = targets.filter(t => { const mi = _missingIface(t.node, t.iface); return !mi || !mi.key_source; }).length;
+  openConfirm({ title: "Restore " + targets.length + " missing interface" + (targets.length > 1 ? "s" : ""), confirmLabel: "Restore " + targets.length, danger: dirty > 0, back,
+    body: "Recreate " + targets.length + " missing interface" + (targets.length > 1 ? "s" : "") + " with their saved settings and, where recoverable, their ORIGINAL server keys — every dangling peer on them re-converges." + (dirty ? " " + dirty + " has no recoverable key, so it gets a new one and those clients must re-import." : " Existing clients keep working — no re-distribution.") + " Only interfaces missing long enough to be a real outage are included.",
+    note: html`<ul class="restore-list">${targets.map(t => html`<li>${Store.nodeName(t.node)} · ${t.iface}${_missingIface(t.node, t.iface) && !_missingIface(t.node, t.iface).key_source ? html` <span class="rl-new">new key</span>` : null}</li>`)}</ul>`,
+    onConfirm: async () => { let ok = 0; for (const t of targets) { const r = await mutate({ call: () => api.ifaceRecreate({ node: t.node, iface: t.iface }) }); if (r && r.ok) ok++; } toast("Restoring " + ok + " interface" + (ok !== 1 ? "s" : "") + " — peers re-converge over the next syncs.", "ok"); } });
+}
+function confirmCorrectAll(rows, back) {
+  const seen = new Set(), items = [];
+  for (const { p, t } of rows) { if (!t.correctable) continue; const k = p.id + "|" + t.iface; if (seen.has(k)) continue; seen.add(k); items.push({ p, t }); }
+  if (!items.length) { toast("Nothing to correct yet — a broken address must persist a couple of minutes before it's offered.", "info"); return; }
+  openConfirm({ title: "Correct " + items.length + " broken address" + (items.length > 1 ? "es" : ""), confirmLabel: "Correct " + items.length, back,
+    body: "Reassign a free in-subnet address to " + items.length + " peer" + (items.length > 1 ? "s" : "") + " whose IP falls outside its interface's subnet, then let the nodes re-converge. Keys and PSK are unchanged. Only records wrong long enough to be a real mismatch are included.",
+    note: html`<${Fragment}><ul class="restore-list">${items.map(({ p, t }) => html`<li>${p.title || p.name || "peer"} · ${Store.nodeName(t.node)} · ${t.iface} <span class="faint">(${t.ip || "—"})</span></li>`)}</ul><${SubAutoNote}/></>`,
+    onConfirm: async () => { let ok = 0; for (const { p, t } of items) { const r = await mutate({ key: "peer:" + p.id, call: () => api.peerCorrect({ peer_id: p.id, target: { node: t.node, iface: t.iface } }) }); if (r && r.ok) ok++; } toast("Corrected " + ok + " address" + (ok !== 1 ? "es" : "") + ".", "ok"); } });
 }
 
 // ── Block / unblock access (declarative revoke — reversible, keys unchanged) ──────────────────────
@@ -5598,6 +5661,8 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
           <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
           <td data-label="Total">${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</td>
           ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
+            ${t.restorable ? html`<button class="iconbtn restore" title=${"Restore " + t.iface + " (recreate the missing interface with its original identity)"} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>` : null}
+            ${t.correctable ? html`<button class="iconbtn correct" title=${"Correct address — " + (t.ip || "?") + " is outside " + t.iface + "'s subnet"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>` : null}
             <button class="iconbtn" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>
             <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit peer"} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
             ${p.unassigned
@@ -5650,6 +5715,10 @@ function PeersScreen() {
       : f === "partial" ? (p.status === "partial" && (t.status === "dangling" || t.status === "broken"))
       : t.status === f);
   }
+  // batch Restore/Correct affordance: how many of the currently-shown rows are actionable. Restore is
+  // per-interface (dedupe node|iface — one recreate fixes every dangling peer on it); Correct is per-peer.
+  const restorableCount = peersView.status === "dangling" ? new Set(rows.filter(({ t }) => t.restorable).map(({ t }) => t.node + "|" + t.iface)).size : 0;
+  const correctableCount = peersView.status === "broken" ? rows.filter(({ t }) => t.correctable).length : 0;
   // which of each peer's deployments are actually visible as rows here — so a row can flag the rest
   // (filtered out by server/interface or search) with a "+N" the operator can hover/tap.
   const shownByPeer = {};
@@ -5678,6 +5747,8 @@ function PeersScreen() {
       <select class="selwrap" value=${peersView.status || ""} onChange=${e => { peersView.status = e.target.value || null; peersView.page = 1; force(x => x + 1); }}>
         ${PEER_STATUS_FILTERS.map(([v, l]) => html`<option value=${v}>${l}</option>`)}
       </select>
+      ${restorableCount ? html`<button class="btn btn-restore" title="Recreate every missing interface shown here with its original identity" onClick=${() => confirmRestoreAll(rows)}><${Ic} i="refresh"/> Restore all dangling${restorableCount > 1 ? " · " + restorableCount : ""}</button>` : null}
+      ${correctableCount ? html`<button class="btn btn-correct" title="Reassign an in-subnet address to every broken peer shown here" onClick=${() => confirmCorrectAll(rows)}><${Ic} i="check"/> Correct all broken${correctableCount > 1 ? " · " + correctableCount : ""}</button>` : null}
       <button class="btn btn-primary" onClick=${() => openCreatePeer(agg ? {} : { node, iface })}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
     </div>
 

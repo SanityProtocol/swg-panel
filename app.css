@@ -2007,6 +2007,20 @@ a.tg:hover{filter:brightness(1.25)}
 .iconbtn .ic{display:flex;align-items:center;justify-content:center}   /* kill the inline baseline gap so the glyph centres vertically (was sitting high) */
 .iconbtn:hover{color:var(--ink);background:var(--raise);border-color:var(--line-solid)}
 .iconbtn.danger:hover{color:var(--dangling);border-color:var(--dangling)}
+/* Restore (recreate a missing interface — green, the recovery action) + Correct (fix an out-of-subnet IP — amber) */
+.iconbtn.restore{color:var(--online)}
+.iconbtn.restore:hover{color:var(--online);border-color:var(--online);background:color-mix(in srgb,var(--online) 12%,transparent)}
+.iconbtn.correct{color:var(--fault)}
+.iconbtn.correct:hover{color:var(--fault);border-color:var(--fault);background:color-mix(in srgb,var(--fault) 12%,transparent)}
+/* Toolbar batch buttons — same tones as the per-row icons */
+.btn-restore{background:color-mix(in srgb,var(--online) 12%,transparent);color:var(--online);border:1px solid color-mix(in srgb,var(--online) 34%,transparent);font-weight:700;padding:9px 13px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease);display:inline-flex;align-items:center;gap:6px}
+.btn-restore:hover{background:color-mix(in srgb,var(--online) 20%,transparent)}
+.btn-correct{background:color-mix(in srgb,var(--fault) 12%,transparent);color:var(--fault);border:1px solid color-mix(in srgb,var(--fault) 34%,transparent);font-weight:700;padding:9px 13px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease);display:inline-flex;align-items:center;gap:6px}
+.btn-correct:hover{background:color-mix(in srgb,var(--fault) 20%,transparent)}
+/* Confirm-modal list of what's about to be restored/corrected */
+.restore-list{margin:10px 0 2px;padding-left:18px;max-height:200px;overflow:auto;font-size:13px;line-height:1.7}
+.restore-list li{color:var(--ink)}
+.restore-list .rl-new{color:var(--fault);font-size:11px;border:1px solid color-mix(in srgb,var(--fault) 34%,transparent);border-radius:5px;padding:0 5px;margin-left:4px}
 .iconbtn-add:hover{color:var(--brand);border-color:var(--brand);background:color-mix(in srgb,var(--brand) 12%,transparent)}   /* Add-peer (+) highlights in the theme colour */
 /* down-node Recover button (replaces the rotate-token icon): green, labelled */
 .iconbtn.recover{width:auto;gap:5px;padding:0 10px;color:var(--online);border-color:color-mix(in srgb,var(--online) 45%,transparent);background:color-mix(in srgb,var(--online) 12%,transparent);font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
