@@ -94,10 +94,11 @@ def _tls_watch_loop():
 AUTH_FILE  = os.environ.get("SWG_PANEL_AUTH", "")        # file "user:pbkdf2_sha256$...."; blank => no auth
 # Mount the panel under a subpath (e.g. /swg) to live inside an existing site. Blank => served at root.
 PANEL_BASE = "/" + os.environ.get("SWG_PANEL_BASE", "").strip("/") if os.environ.get("SWG_PANEL_BASE", "").strip("/") else ""
-# A SECOND mount base the panel ALSO serves during a reverse-proxy PATH swap (e.g. moving /swg → /panel): both paths
-# answer through the transition so nodes + the operator's tabs migrate without a gap. "" outside a path swap. On
-# confirm PANEL_BASE becomes the new path and _ALT_BASE holds the old one through the migration grace, then clears.
-_ALT_BASE = ""
+# A SECOND mount base the panel ALSO serves during a reverse-proxy PATH swap (e.g. moving /swg → /panel, OR to/from
+# ROOT): both paths answer through the transition so nodes + the operator's tabs migrate without a gap. On confirm
+# PANEL_BASE becomes the new path and _ALT_BASE holds the old one through the migration grace, then clears.
+# None = NO swap in flight (don't serve an alt). "" = a swap whose OTHER side is ROOT (serve root too). "/x" = subpath.
+_ALT_BASE = None
 NODE_OFFLINE = 30   # seconds since last sync before a node reads "offline"
 MAX_BODY = 8 * 1024 * 1024         # cap on a general API POST body (bytes) — reject larger with 413 (anti-OOM)
 MAX_SYNC_BODY = 64 * 1024 * 1024   # node-sync snapshots can be big on large fleets — a looser cap, still bounded
@@ -336,13 +337,16 @@ def strip_base(path):
         with contextlib.suppress(Exception):
             _REQ.matched_base = ""
         return path
-    if not PANEL_BASE:
-        with contextlib.suppress(Exception):
-            _REQ.matched_base = ""
-        return path                              # root-mounted → no-op (a to/from-root path swap isn't supported)
-    for b in (PANEL_BASE, _ALT_BASE):            # serve the current base AND, during a path swap, the pending one
-        if not b:
-            continue
+    # Bases this panel answers: the current mount (PANEL_BASE) plus, during a path swap, the pending one (_ALT_BASE).
+    # Either may be "" (root). _ALT_BASE is None outside a swap. Match the LONGEST base first so a subpath claims its
+    # own requests before root (the empty base) catches everything else — this is what lets a to/from-ROOT swap
+    # dual-serve (root + subpath together) instead of the old early-return that ignored _ALT_BASE when root-mounted.
+    bases = [PANEL_BASE] if _ALT_BASE is None else [PANEL_BASE, _ALT_BASE]
+    for b in sorted(set(bases), key=len, reverse=True):
+        if b == "":                              # root — claims anything not already taken by a longer (subpath) base
+            with contextlib.suppress(Exception):
+                _REQ.matched_base = ""
+            return path
         if path == b or path.startswith(b + "/"):
             with contextlib.suppress(Exception):
                 _REQ.matched_base = b
@@ -5132,7 +5136,7 @@ def api(method, path, qs, body, deps):
                 LISTENERS.remove(_pend["new_lid"])
                 _netctl_enqueue(deps, "set-listen", ["panel", _pend["old_host"], _pend["old_port"]])   # undo the persisted new bind
             if _pend.get("path_changed"):
-                globals()["_ALT_BASE"] = ""   # stop dual-serving the new mount path (the old path never changed)
+                globals()["_ALT_BASE"] = None   # stop dual-serving the new mount path (the old path never changed)
             # The apply had already written the NEW url/bind into settings → roll them back to the address we reverted
             # TO (path kept), so the form matches the live panel and a restart won't re-adopt the reverted-away value.
             if _pend.get("url_changed") or _pend.get("port_changed"):
@@ -9558,7 +9562,7 @@ def _cancel_migration(deps, p_url, p_host, p_port):
     # reverting to it → make it canonical again + grace OUT the base we're leaving. The bind doesn't move for a path
     # swap (it's dual-served on the SAME listener), so this is a panel-controlled instant undo like the port re-adopt.
     p_base = urllib.parse.urlparse(p_url if "://" in p_url else "https://" + p_url).path.rstrip("/")
-    if _ALT_BASE and p_base == _ALT_BASE and p_base != PANEL_BASE:
+    if _ALT_BASE is not None and p_base == _ALT_BASE and p_base != PANEL_BASE:   # "" is a valid (root) alt base — test None, not truthiness
         _leaving = PANEL_BASE
         globals()["PANEL_BASE"] = p_base
         globals()["_ALT_BASE"] = _leaving
@@ -9608,8 +9612,8 @@ def _drop_alt_base_later(grace):
     (clear _ALT_BASE), leaving only the new base. Only clears if _ALT_BASE is still the one we scheduled."""
     _target = _ALT_BASE
     def _drop():
-        if _ALT_BASE == _target:
-            globals()["_ALT_BASE"] = ""
+        if _ALT_BASE == _target:                 # still the base we scheduled (a later swap would have replaced it)
+            globals()["_ALT_BASE"] = None         # None (not "") — "" is a valid root alt-base, None means "no swap"
             print("access: stopped serving the old mount base after the %ds path-migration grace" % grace, flush=True)
     t = threading.Timer(max(1, grace), _drop); t.daemon = True
     t.start()
@@ -9641,7 +9645,7 @@ def _apply_timeout(nonce, deps, reason="the new address didn't confirm in time �
         _nb = pend.get("new_base")              # a reverted direct-TLS path change → stop dual-serving the new base
         oh, op = pend.get("old_host"), pend.get("old_port")
         if _nb is not None and _ALT_BASE == _nb:
-            globals()["_ALT_BASE"] = ""
+            globals()["_ALT_BASE"] = None       # None (not "") — "" is now a valid root alt-base; None means "no swap"
         _APPLY["pending"] = None
     _apply_status("reverted", reason)
     if _flip:
