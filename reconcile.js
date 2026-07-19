@@ -141,6 +141,17 @@ function reconcile(roster, stats, now, cfg) {
         if (sub && t.ip && !ipInCidr(t.ip, sub)) st = "broken";
         else st = (now - createdMs) <= cfg.graceMs ? "creating" : "dangling";
       }
+      // Per-deployment Restore/Correct ripeness. A PARTIAL peer has individually dangling/broken targets that
+      // must each ripen on their own before we offer to act, so the gate is keyed per deployment (not per peer).
+      // Same persistence rule as the rollup below: only a sustained problem (not a hiccup / mid-create) qualifies.
+      const _tk = pid + "|" + t.node + "|" + t.iface;
+      const _tprob = (st === "dangling" || st === "broken");
+      if (cfg.probSince) {
+        if (_tprob) { if (!cfg.probSince[_tk]) cfg.probSince[_tk] = now; }
+        else if (cfg.probSince[_tk]) delete cfg.probSince[_tk];
+      }
+      const _tms = (cfg.probSince && cfg.probSince[_tk]) ? (now - cfg.probSince[_tk]) : 0;
+      const _trip = _tms >= (cfg.restoreGraceMs || 120000);
       const epIp = (obs && obs.endpoint) ? ipOf(obs.endpoint) : "";
       const via = epIp ? ((turnConnIps[t.node] || {})[epIp] ? "turn" : "direct") : null;
       let viaTurn = null;
@@ -157,6 +168,9 @@ function reconcile(roster, stats, now, cfg) {
       return { node: t.node, iface: t.iface, ip: t.ip, type: t.type,
                status: st, online: !!(obs && obs.online), observed: obs, via: via,
                viaTurn: viaTurn,   // the SPECIFIC turn-proxy service the peer came in through (one per connection)
+               restorable: (st === "dangling") && _trip,   // this deployment's interface is gone long enough → offer Restore
+               correctable: (st === "broken") && _trip,     // this deployment's IP is out-of-subnet long enough → offer Correct
+               problemMs: _tprob ? _tms : 0,                // how long THIS deployment has been a problem (confirm-modal copy)
                down: ifDown[t.node + "|" + t.iface] || null };
     });
 
@@ -186,8 +200,8 @@ function reconcile(roster, stats, now, cfg) {
     else if (restoring) status = "restoring";
     // Propagate the block/restore state onto each TARGET too, so the per-target Peers grid (which shows
     // t.status) agrees with the peer-level badge instead of still reading online/ready/dangling.
-    if (blocked) targets.forEach(d => { d.status = (nodeStatus[d.node] === "live" && !d.observed) ? "disabled" : "blocking"; });
-    else if (restoring) targets.forEach(d => { if (!d.observed) d.status = "restoring"; });
+    if (blocked) targets.forEach(d => { d.status = (nodeStatus[d.node] === "live" && !d.observed) ? "disabled" : "blocking"; d.restorable = d.correctable = false; d.problemMs = 0; });
+    else if (restoring) targets.forEach(d => { if (!d.observed) { d.status = "restoring"; d.restorable = d.correctable = false; d.problemMs = 0; } });
 
     let reason = null;   // why a peer isn't healthy — surfaced on the status badge (incl. a DOWN interface)
     if (status === "dangling" || status === "partial" || status === "creating") {
@@ -199,17 +213,12 @@ function reconcile(roster, stats, now, cfg) {
     else if (status === "faulty") reason = "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path";
     else if (status === "broken") reason = "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface";
 
-    // Restore/Correct is a REAL-PROBLEM affordance, not a hiccup: track how long the peer has been dangling/broken
-    // and only mark it ready to act on (`restorable`/`correctable`) once that has persisted past restoreGraceMs.
-    // A peer just created, a brief node blip, or a re-provision in flight must NOT prompt it. cfg.probSince is a
-    // persisted {pid: firstProblemMs} the caller carries across refreshes (like cfg.history).
-    const isProblem = (status === "dangling" || status === "broken");
-    if (cfg.probSince) {
-      if (isProblem) { if (!cfg.probSince[pid]) cfg.probSince[pid] = now; }
-      else if (cfg.probSince[pid]) delete cfg.probSince[pid];
-    }
-    const problemMs = (cfg.probSince && cfg.probSince[pid]) ? (now - cfg.probSince[pid]) : 0;
-    const ripe = problemMs >= (cfg.restoreGraceMs || 120000);
+    // Restore/Correct is a REAL-PROBLEM affordance, not a hiccup: each deployment tracks how long it has been
+    // dangling/broken (per-target block above, gated by restoreGraceMs) so a just-created peer, a brief node
+    // blip, or a re-provision in flight never prompts it. The peer rolls up to "any deployment ripe".
+    const restorable = targets.some(d => d.restorable);
+    const correctable = targets.some(d => d.correctable);
+    const problemMs = targets.reduce((m, d) => Math.max(m, d.problemMs || 0), 0);
 
     let lastAge = null;
     targets.forEach(d => {
@@ -225,9 +234,9 @@ function reconcile(roster, stats, now, cfg) {
       targets: targets, created_at: p.created_at || null, modified_at: p.modified_at || null,
       status: status, reason: reason, online: onlineAny, lastHandshakeAge: lastAge,
       presentCount: present.length, liveCount: live.length,
-      restorable: (status === "dangling") && ripe,     // dangling long enough to be a real problem, not a hiccup → offer Restore
-      correctable: (status === "broken") && ripe,       // broken long enough → offer Correct
-      problemMs: isProblem ? problemMs : 0,             // how long it's been a problem (for the confirm modal message)
+      restorable: restorable,     // any deployment dangling long enough to be a real problem, not a hiccup → offer Restore
+      correctable: correctable,   // any deployment broken long enough → offer Correct
+      problemMs: problemMs,       // longest a deployment has been a problem (for the confirm modal copy)
       disabled: blocked, selfDisabled: !!p.disabled, userDisabled: !!(user && user.disabled),
     };
   });
