@@ -81,6 +81,10 @@ body{
 a{color:inherit;text-decoration:none}
 ::selection{background:color-mix(in srgb,var(--brand) 32%,transparent);color:var(--ink)}   /* --ink adapts per theme so selected text stays legible in light AND dark */
 :focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:5px}
+/* buttons / toggles / tabs carry their own hover + active/selected feedback, so the full-strength global ring read
+   as a stray heavy border on them — soften it here, but keep it VISIBLE for keyboard navigation (:focus-visible ⇒
+   plain mouse clicks stay ring-free). Text inputs keep their own focus styling. */
+button:focus-visible,[role=button]:focus-visible,.tabs a:focus-visible,summary:focus-visible,label:focus-visible{outline:2px solid color-mix(in srgb,var(--brand) 60%,transparent);outline-offset:2px}
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 button{font-family:inherit}
 h1,h2,h3{font-family:var(--sans)}
@@ -133,8 +137,12 @@ h1,h2,h3{font-family:var(--sans)}
 .hostproc-tag.procconvert{color:var(--pending);border-color:var(--pending);background:color-mix(in srgb,var(--pending) 10%,transparent)}   /* converting — PURPLE */
 .hostproc-tag .xbtn{margin-left:4px;padding:1px}
 .updslot{display:inline-flex;align-items:center;gap:14px}   /* match .appbar-right gap so HC ↔ update spacing is even */
-.updpill{cursor:pointer;border-color:color-mix(in srgb,var(--ready) 42%,var(--line-solid))}
-.updpill b{color:var(--ready);font-size:11.5px}  /* online-count style, blue + a touch smaller */
+/* the update-to pill is TEXT-ONLY (no icon), so it drops the icon-optical padding nudge from .updpill,.upd-busy,…
+   above and uses SYMMETRIC vertical padding — the "update … to <version>" content sits dead-centre in the pill. */
+.updpill{cursor:pointer;border-color:color-mix(in srgb,var(--ready) 42%,var(--line-solid));padding:4px 10px 3px;font-size:9.5px}   /* small (node) pill: a hair smaller; near-symmetric padding (a touch more top) optically centres the caps */
+.appbar-right .updpill{padding:8px 12px;font-size:11px}
+.updpill b{color:var(--ready);font-size:10.5px;font-weight:650}     /* the version — blue, only a hair larger than the label so the pill reads balanced */
+.appbar-right .updpill b{font-size:11.5px}
 .updpill:hover{border-color:var(--ready);background:color-mix(in srgb,var(--ready) 12%,transparent)}
 
 .btn{cursor:pointer;border-radius:var(--r-sm);font-size:13px;border:1px solid transparent;transition:all .15s var(--ease);
@@ -427,6 +435,28 @@ tbody tr.flash{animation:flash 2.6s var(--ease)}
 .rate{font-family:var(--mono);font-size:12px;color:var(--dim);white-space:nowrap}
 .rowarrow{color:var(--faint);transition:transform .15s,color .15s}
 tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
+/* panel-host service health → needs attention (critical = crimson like a dangling peer, warn = amber) */
+.attn-row.svc{cursor:pointer}
+.attn-row.svc.critical{border-color:color-mix(in srgb,var(--dangling) 42%,var(--line))}
+.svc-badge{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:99px;white-space:nowrap}
+.svc-badge svg{width:12px;height:12px}
+.svc-badge.critical{color:var(--dangling);background:color-mix(in srgb,var(--dangling) 15%,transparent)}
+.svc-badge.warn{color:var(--partial);background:color-mix(in srgb,var(--partial) 15%,transparent)}
+.svc-modal{display:flex;flex-direction:column;gap:12px;min-width:min(440px,86vw)}
+.svc-item{border:1px solid var(--line);border-left-width:3px;border-radius:8px;padding:11px 13px;background:var(--surface)}
+.svc-item.critical{border-left-color:var(--dangling)}
+.svc-item.warn{border-left-color:var(--partial)}
+.svc-head{display:flex;align-items:center;gap:8px}
+.svc-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.svc-dot.critical{background:var(--dangling)}
+.svc-dot.warn{background:var(--partial)}
+.svc-tag{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:99px}
+.svc-tag.critical{color:var(--dangling);background:color-mix(in srgb,var(--dangling) 14%,transparent)}
+.svc-tag.warn{color:var(--partial);background:color-mix(in srgb,var(--partial) 14%,transparent)}
+.svc-msg{margin-top:6px;color:var(--ink);font-size:13px}
+.svc-cmd{margin-top:7px;font-size:11px;color:var(--dim)}
+.svc-cmd code{font-family:var(--mono);background:var(--surface-2);padding:1px 5px;border-radius:4px;color:var(--dim)}
+.svc-foot{color:var(--faint);font-size:12px;line-height:1.5}
 .empty{padding:40px 16px;text-align:center;color:var(--faint);font-size:13px}
 .empty b{display:block;color:var(--dim);margin-bottom:4px;font-weight:600;font-size:14px}
 
@@ -452,6 +482,14 @@ tbody tr.clk:hover .rowarrow{color:var(--dim);transform:translateX(2px)}
 /* Access blocked — an INTENTIONAL admin revoke, not a fault. disabled=settled (grey), blocking=converging
    (yellow, node still dropping it), restoring=coming back after unblock (blue) */
 .b-disabled{background:color-mix(in srgb,var(--dangling) 15%,transparent);color:var(--dangling)}   /* RED — access revoked (settled) */
+.b-expired{background:color-mix(in srgb,var(--dangling) 15%,transparent);color:var(--dangling)}    /* RED — access date passed */
+.b-expiring{background:color-mix(in srgb,var(--fault) 15%,transparent);color:var(--fault)}          /* ORANGE — about to expire */
+/* access-lifecycle flag icon shown BEFORE the peer title / username when the status badge didn't already say it
+   (i.e. a non-"ready" status) — red circle = blocked, red triangle = expired, orange triangle = about to expire */
+.lc-ic{display:inline-flex;align-items:center;flex:none;margin-right:5px;vertical-align:middle}
+.lc-ic svg{width:13px;height:13px}
+.lc-blocked,.lc-expired{color:var(--dangling)} .lc-expiring{color:var(--fault)}
+.u-name .lc-ic{margin-right:0}   /* the u-name flex row already gaps its children */
 .b-blocking{background:rgba(232,192,75,.16);color:var(--partial)}   /* AMBER — block converging on the node */
 .b-restoring{background:color-mix(in srgb,var(--ready) 12%,transparent);color:var(--ready)}   /* BLUE — restoring after unblock */
 .ifc-orph{color:#F0913C;font-weight:600}   /* orange orphan (unmanaged) peer count on the interface card */
@@ -614,32 +652,44 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 .targetopt .topt-ip[readonly]{color:var(--ink-2);text-align:right;font-family:var(--mono)}
 .targetpick.scroll{max-height:232px}   /* Add-peers carousel grid: scroll after ~5 rows */
 
-/* Add-peers peer carousel: ◀ [kind · name · N/M] ▶ ✕ + a click-to-jump menu */
-.peercar{position:relative;display:flex;align-items:center;gap:6px;margin:2px 0 12px}
-.pc-arrow,.pc-x{flex:none;width:34px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);color:var(--ink-2);cursor:pointer;font-size:12px;transition:all .14s}
-.pc-arrow:hover:not(:disabled){border-color:var(--line-solid);color:var(--ink)}
-.pc-arrow:disabled{opacity:.35;cursor:not-allowed}
-.pc-x{background:transparent;color:var(--dim)}
-.pc-x:hover{border-color:#e0574d;color:#e0574d}
-.pc-x svg{width:19px;height:19px}   /* the unlink icon reads larger inside the button */
-.pc-face{flex:1;min-width:0;display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);cursor:pointer;transition:all .14s}
-.pc-face:hover{border-color:var(--line-solid)}
-.pc-kind{flex:none;font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;padding:3px 6px;border-radius:5px;font-weight:600}
-.pc-kind.wg{background:rgba(63,216,154,.14);color:var(--online)}
-.pc-kind.awg{background:rgba(31,200,214,.15);color:var(--brand)}
-.pc-kind.new{background:color-mix(in srgb,var(--brand) 18%,transparent);color:var(--brand)}
-.pc-name{flex:1;min-width:0;display:flex;align-items:center;overflow:hidden;white-space:nowrap;font-size:13px}
-.pc-titletext{color:var(--ink);cursor:text;padding:1px 4px;border-radius:4px;transition:background .12s}
-.pc-titletext:hover{background:color-mix(in srgb,var(--brand) 10%,transparent)}
-.pc-rest{flex:1;min-width:0;color:var(--dim);overflow:hidden;text-overflow:ellipsis}
-.pc-title{border:none;outline:none;font:inherit;font-size:13px;color:var(--ink);padding:1px 4px;border-radius:4px;width:100px;min-width:35px;max-width:100px;background:none;box-shadow:inset 0 -1.5px 0 var(--brand)}
-.pc-title::placeholder{color:var(--faint)}
-.pc-count{flex:none;font-family:var(--mono);font-size:11px;color:var(--dim);font-weight:600;margin-left:8px}
-.pc-menu{position:absolute;top:44px;left:40px;right:40px;z-index:20;max-height:240px;overflow-y:auto;background:var(--surface);border:1px solid var(--line-solid);border-radius:10px;box-shadow:var(--shadow);padding:4px;display:flex;flex-direction:column;gap:2px}
-.pc-menu button{display:flex;align-items:center;gap:8px;text-align:left;padding:7px 9px;border:none;border-radius:7px;background:transparent;color:var(--ink-2);cursor:pointer;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pc-menu button:hover{background:var(--surface-2)}
-.pc-menu button.on{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--ink)}
-.pc-mi{flex:none;font-family:var(--mono);font-size:10px;color:var(--faint)}
+/* Add-peers — two grids (this user's peers · unassigned pool). Each peer is a bordered block; a multi-deployment
+   peer stacks its targets under one border, primary row tinted and tagged, backups beneath, so it reads as one identity. */
+.pg2-sec{margin:0 0 20px}
+.pg2-sec:last-child{margin:0}
+.pg2-hdr{display:flex;align-items:center;gap:10px;margin:0 0 9px}
+.pg2-hdr label{margin:0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+.pg2-fresh{flex:none}
+.pg2{display:grid;grid-template-columns:auto minmax(140px,1.7fr) minmax(140px,1.1fr) 66px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line-solid) transparent}
+.pg2::-webkit-scrollbar{width:9px}
+.pg2::-webkit-scrollbar-track{background:transparent}
+.pg2::-webkit-scrollbar-thumb{background:var(--line-solid);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+.pg2::-webkit-scrollbar-thumb:hover{background:var(--dim);background-clip:padding-box}
+.pg2-peer{grid-column:1/-1;display:grid;grid-template-columns:subgrid;border:1px solid var(--line-solid);border-radius:10px;background:var(--surface-2);margin:0 0 8px;overflow:hidden}
+.pg2-peer:last-child{margin:0}
+.pg2-peer.pcreate{animation:pcreate 1.5s var(--ease)}   /* same glow as a just-created users/peers-grid row */
+.pg2-dep{grid-column:1/-1;display:grid;grid-template-columns:subgrid;align-items:center;column-gap:12px;padding:8px 11px}
+.pg2-dep+.pg2-dep{border-top:1px dashed var(--line)}
+.pg2-dep.clk{cursor:pointer;transition:background .12s}
+.pg2-dep.clk:hover{background:var(--row-hover)}
+.pg2-dep.primary{background:color-mix(in srgb,var(--brand) 7%,transparent)}
+.pg2-dep.primary.clk:hover{background:color-mix(in srgb,var(--brand) 12%,transparent)}
+.pg2-c{min-width:0}
+.pg2-title{display:flex;align-items:center;gap:10px}
+.pg2-nm{font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pg2-rel{flex:none;margin-left:auto;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;border-radius:4px;padding:1.5px 6px}
+.pg2-rel.primary{color:var(--brand);background:color-mix(in srgb,var(--brand) 15%,transparent)}
+.pg2-bk{font-style:italic;font-weight:400;color:var(--dim)}
+.pg2-if{display:flex;align-items:center;gap:6px;white-space:nowrap;font-family:var(--mono);font-size:12px}
+.pg2-ifn{color:var(--muted)}
+.pg2-ip{color:var(--ink-2)}
+.pg2-ctl{display:flex;justify-content:flex-end;gap:5px}
+.pg2-act{flex:none;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer;transition:all .14s}
+.pg2-act svg{width:17px;height:17px}
+.pg2-act.add:hover{color:var(--brand);border-color:var(--brand)}
+.pg2-act.free:hover{color:var(--online);border-color:var(--online)}
+.pg2-act.mine:hover{color:#e0574d;border-color:#e0574d}
+.pg2-empty{padding:16px;text-align:center;color:var(--dim);border:1px dashed var(--line-solid);border-radius:10px;font-size:13px}
+.lockeduser{padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);color:var(--ink);font-weight:500}
 
 /* ───── node pips (redundancy signature) ───── */
 .pips{display:inline-flex;gap:5px;align-items:center}
@@ -661,9 +711,9 @@ a.ifcard:hover{border-color:var(--brand);box-shadow:0 6px 16px rgba(0,0,0,.28)} 
 input,select{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);
   padding:9px 12px;font-family:var(--mono);font-size:13px;transition:border-color .15s,box-shadow .15s;width:100%}
 input::placeholder{color:var(--faint)}
-input:focus,select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 13%,transparent)}
+input:focus,select:focus{outline:none;border-color:var(--brand)}
 textarea.ta{background:var(--surface-2);border:1px solid var(--line-solid);color:var(--ink);border-radius:var(--r-sm);padding:10px 12px;font-family:var(--mono);font-size:13px;width:100%;resize:vertical;line-height:1.6;min-height:84px;word-break:break-all}
-textarea.ta:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 13%,transparent)}
+textarea.ta:focus{outline:none;border-color:var(--brand)}
 textarea.ta::placeholder{color:var(--faint)}
 textarea.ta{scrollbar-width:thin;scrollbar-color:var(--line-solid) transparent}
 textarea.ta::-webkit-scrollbar{width:10px}
@@ -786,7 +836,7 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .sheet-head{display:flex;align-items:center;padding:18px 20px;border-bottom:1px solid var(--line)}
 .sheet-head h3{margin:0;font-size:15px;color:var(--ink);font-weight:650;letter-spacing:.01em}
 .sheet-head h3 .sheet-ver{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--ready);margin-left:4px}   /* deployed version shown right in the turn-proxy sheet title */
-.sheet-head .x{margin-left:auto;background:none;border:0;color:var(--dim);cursor:pointer;font-size:22px;line-height:1}
+.sheet-head .x{margin-left:auto;background:none;border:0;color:var(--dim);cursor:pointer;font-size:22px;line-height:1;position:relative;top:-2px}   /* the "×" glyph renders ~2.5px LOW in its box — pull it up so its optical centre lines up with the header text row */
 .sheet-head .x:hover{color:var(--ink)}
 /* Blocked-access treatment: a modal whose peer/user is blocked reads red at a glance — a red border + soft
    ring, a faintly red-tinted header, and a solid BLOCKED chip. Restrained on purpose (no full-red fill) so the
@@ -800,6 +850,10 @@ select{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:32px
 .blocked-tag svg{width:11px;height:11px}
 .sheet-body{padding:20px}
 .field{margin-bottom:15px}
+/* two settings fields per row (turn client-settings forms); textarea/wide fields span both columns */
+.fld2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:20px}
+.fld2>.field.span2{grid-column:1/-1}
+@media (max-width:560px){.fld2{grid-template-columns:1fr}}
 .field>label{display:block;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:7px}
 .field .hint{font-size:11.5px;color:var(--faint);margin-top:6px}
 /* validation: invalid field + error hint */
@@ -813,6 +867,14 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .vkfield.set .vkbox > .ic{color:#3b9eff}
 .hint.vk-warn{color:#b5741a;line-height:1.5}
 :root[data-theme="dark"] .hint.vk-warn{color:#e0a85f}
+/* multi-VK-link manager (VkLinksSheet) — a CRUD grid of rows: [primary radio] [url box] [delete] */
+.vklinks-grid{display:flex;flex-direction:column;gap:8px;margin:12px 0}
+.vklinks-row{display:flex;align-items:center;gap:10px}
+.vklinks-row.warn .vkbox{border-color:#e0a85f;background:color-mix(in srgb,#e0a85f 8%,var(--bg))}
+.vklinks-prim{display:flex;align-items:center;gap:6px;cursor:pointer;flex:0 0 auto;min-width:74px;font-size:12px;font-weight:700;color:var(--dim);user-select:none}
+.vklinks-prim input{accent-color:var(--brand);cursor:pointer}
+.vklinks-prim input:focus,.vklinks-prim input:focus-visible{outline:none}   /* no bluish square around the radio on click */
+.vklinks-prim:has(input:checked){color:var(--brand)}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .hint.vk-warn{color:#e0a85f}}
 .inline{display:flex;gap:8px}.inline input{flex:1}
 @media(max-width:480px){}
@@ -839,6 +901,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .loading{display:flex;align-items:center;justify-content:center;padding:60px;color:var(--dim);gap:12px;font-family:var(--mono);font-size:13px}
 .spin{width:16px;height:16px;border:2px solid var(--line-solid);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+.ic-spin{display:inline-flex;animation:spin .8s linear infinite}
 
 /* ───── responsive: collapse tables to cards ───── */
 @media(max-width:680px){
@@ -953,6 +1016,11 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .nm-cpu .nm-v{flex:none;min-width:31px;text-align:right}
 @media(max-width:680px){.nmeta{grid-template-columns:1fr}}
 .btn-danger{background:color-mix(in srgb,var(--dangling) 10%,transparent);color:var(--dangling);border:1px solid color-mix(in srgb,var(--dangling) 32%,transparent);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease)}
+/* Set expiry / Reset expiry — same size + outlined style as .btn-danger (Block) so the footer trio matches; neutral when no expiry, orange once one is set. */
+.btn-exp{background:transparent;color:var(--dim);border:1px solid var(--line-solid);padding:5px 11px;font-size:12px;border-radius:7px}
+.btn-exp:hover{color:var(--ink);border-color:color-mix(in srgb,var(--dim) 45%,var(--line-solid))}
+.btn-exp.on{color:#e0a85f;background:color-mix(in srgb,#e0a85f 10%,transparent);border-color:color-mix(in srgb,#e0a85f 34%,transparent)}
+.btn-exp.on:hover{background:color-mix(in srgb,#e0a85f 16%,transparent);border-color:color-mix(in srgb,#e0a85f 46%,transparent)}
 .btn-danger:hover{background:color-mix(in srgb,var(--dangling) 20%,transparent)}
 .btn-danger:disabled{opacity:.5;cursor:not-allowed}
 .btn-warn{background:color-mix(in srgb,#C0821A 11%,transparent);color:#C0821A;border:1px solid color-mix(in srgb,#C0821A 34%,transparent);padding:5px 11px;font-size:12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease);display:inline-flex;align-items:center;gap:5px}
@@ -1164,7 +1232,7 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .prov-st.upd{color:var(--dim)}
 .prov-st.ok{color:var(--online)}
 .prov-st.err{color:var(--partial)}
-.prov-repo{font-family:var(--mono);font-size:11.5px;color:var(--faint);white-space:nowrap;text-decoration:none}   /* match .tf-repo (turn-proxies) */
+.prov-repo{font-family:var(--mono);font-size:11.5px;color:var(--faint);white-space:nowrap;text-decoration:none}   /* GitHub repo link on a routing-list provider row */
 .prov-repo:hover{color:var(--ready);text-decoration:underline}
 .provrow .tf-arrow{display:inline-flex;animation:spin 1s linear infinite}
 .provrow .tf-arrow .ic svg{width:13px;height:13px}
@@ -1184,7 +1252,8 @@ input.bad,.bad{border-color:var(--dangling) !important;box-shadow:0 0 0 3px colo
 .cl-preview:hover .cl-ptext{color:var(--ink)}
 .cl-more{font-size:11px;color:var(--faint);white-space:nowrap;flex:none}
 .tf-swatch{width:10px;height:10px;border-radius:50%;background:var(--c,var(--brand));flex:none;box-shadow:0 0 0 1px color-mix(in srgb,var(--c,var(--brand)) 40%,transparent)}
-.tf-name{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:12.5px}
+.tf-name{font-weight:600;color:var(--ink);font-family:var(--mono);font-size:12.5px;text-decoration:none;cursor:pointer}
+.tf-name:hover{text-decoration:underline dotted;text-underline-offset:3px}
 /* version chip — tinted with the fork's picker colour (--tfc, set on .tf-verwrap) so the picker visibly drives it */
 .tf-verwrap{position:relative;display:inline-flex}
 .tf-ver{font-family:var(--mono);font-size:11px;color:var(--tfc,var(--ready));background:color-mix(in srgb,var(--tfc,var(--ready)) 13%,transparent);padding:1px 7px;border-radius:99px;white-space:nowrap;cursor:default;border:1px solid color-mix(in srgb,var(--tfc,var(--ready)) 22%,transparent)}
@@ -1210,8 +1279,6 @@ button.tf-updbtn{background:none;border:none;cursor:pointer;padding:2px 5px;bord
 button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tf-arrow{display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;line-height:0;color:var(--partial)}
 .tf-arrow svg{display:block;width:13px;height:13px;transform-box:view-box;transform-origin:center;animation:spin .8s linear infinite}   /* spin the SVG on its viewBox centre (same pattern as .updspin / .iconbtn) so it's centred even on a fresh load */
-.tf-repo{font-family:var(--mono);font-size:11.5px;color:var(--faint);white-space:nowrap;text-decoration:none}   /* right-aligned link to the fork's GitHub repo */
-.tf-repo:hover{color:var(--ready);text-decoration:underline}
 /* which interface types the fork's client supports — wg always; awg only for the non-WG-only forks */
 .cl-caps{display:inline-flex;align-items:center;gap:4px;flex:none;margin-left:-2px;cursor:help}
 .warntext{color:var(--partial);font-weight:600}
@@ -1221,6 +1288,138 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .tf-color::-webkit-color-swatch{border:none;border-radius:4px}
 .tf-color::-moz-color-swatch{border:none;border-radius:4px}
 .cllist.dimmed{opacity:.5;pointer-events:none}
+.turnsubtabs{margin:0 0 14px}
+.tf-gear{flex:none;margin-left:4px}
+/* per-OS platform buttons: fill = native(emerald)/crossplatform(sky) @30% · border = plain(red)/obfs(neutral) · icon = sidecar(yellow)/app(ink) */
+.tf-plats{display:flex;align-items:center;gap:9px;margin-right:12px}
+.tf-plat{width:32px;height:32px;flex:none;border-radius:8px;display:grid;place-items:center;border:1px solid var(--line-solid);background:transparent;color:var(--ink-2);cursor:pointer;padding:0;transition:transform .1s,box-shadow .1s}
+.tf-plat:hover{transform:translateY(-1px);box-shadow:0 2px 6px -2px rgba(30,52,84,.35)}
+.tf-plat .ic{display:grid;place-items:center;line-height:0}
+.tf-plat .ic svg{width:17px;height:17px;display:block}
+.tf-plat.nat{background:color-mix(in srgb,#10B981 30%,transparent)}
+.tf-plat.cross{background:color-mix(in srgb,#0EA5E9 30%,transparent)}
+.tf-plat.plain{border-color:#EF4444}
+.tf-plat.cli{color:#EAB308}
+.tf-plat.off{cursor:not-allowed;background:color-mix(in srgb,var(--dim) 22%,transparent);border-color:var(--line-solid);color:var(--faint)}
+.tf-plat.off:hover{transform:none;box-shadow:none}
+/* a disabled fork dims its row via opacity — keep the platform GROUP at full opacity (so the hover bubble stays solid)
+   and dim just the buttons instead; the bubble is a sibling of the button, so it reads clearly even when the fork is off */
+.cl-row.off > .tf-plats{opacity:1}
+.cl-row.off .tf-plat{opacity:.5}
+/* hover bubble on a platform button: app · by author / with <core> core, obfuscation type aligned right */
+.tf-platwrap{display:inline-flex}
+.tf-plbub{left:auto;right:18px;top:calc(100% - 9px);flex-direction:row;align-items:flex-start;gap:20px;white-space:nowrap;z-index:5}
+.tf-plbub-l{display:flex;flex-direction:column;gap:2px}
+.tf-plbub-app{color:var(--ink);font-weight:600}
+.tf-plbub-by{color:var(--dim);font-weight:400}
+.tf-plbub-core{color:var(--dim)}
+.tf-plbub-obf{margin-left:auto;align-self:center;font-family:var(--mono);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#A974F2;background:color-mix(in srgb,#A974F2 16%,transparent);border-radius:4px;padding:2px 6px}
+.tf-plbub-obf.plain{color:var(--dangling);background:color-mix(in srgb,var(--dangling) 15%,transparent)}
+/* Server "Clients" sheet — equal-width OS segmented control (icon over label; greyed when the fork has no app for
+   that OS) + the per-app config reference */
+.osseg{display:grid;grid-template-columns:repeat(5,1fr);border:1px solid var(--line-solid);border-radius:10px;overflow:hidden;background:var(--surface-2)}
+.osseg-cell{display:flex;align-items:center;justify-content:center;gap:7px;padding:10px 6px;background:none;border:0;border-left:1px solid var(--line);color:var(--ink-2);font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.02em;cursor:pointer;transition:background .12s,color .12s;min-width:0}
+.osseg-cell:first-child{border-left:0}
+.osseg-ic{display:flex;align-items:center;justify-content:center;flex:none}
+.osseg-lbl{white-space:nowrap}
+.osseg-cell:not(.off):hover{background:color-mix(in srgb,var(--brand) 8%,transparent);color:var(--ink)}
+.osseg-cell.on{background:color-mix(in srgb,var(--brand) 15%,transparent);color:var(--brand)}
+.osseg-cell.off{opacity:.36;cursor:not-allowed;color:var(--dim)}
+.clientcfg{margin-top:12px;border:1px solid var(--line-solid);border-radius:9px;overflow:hidden}
+.clientcfg-row{display:flex;align-items:center;gap:12px;padding:9px 12px;font-size:12.5px;border-top:1px solid var(--line)}
+.clientcfg-row:first-child{border-top:0}
+.clientcfg-row .ccl{color:var(--ink-2);font-weight:600;min-width:92px;flex:none}
+.clientcfg-row .ccr{color:var(--ink);flex:1;min-width:0}
+.clientcfg-row a.ccr,.clientcfg-row .ccr.lnk{color:var(--brand);text-decoration:none;word-break:break-all}
+.clientcfg-row a.ccr:hover{text-decoration:underline}
+.clapp-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-left:7px;vertical-align:middle;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 12%,transparent)}
+/* styled OS dropdown (glyph + name), used in the turn-config modal — mirrors the Clients-sheet OS visuals */
+.turncfg-os{display:flex;align-items:center;gap:12px;margin:0 0 12px}
+.turncfg-os > label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
+.osdd{position:relative;display:inline-block}
+.osdd-btn{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border:1px solid var(--line-solid);border-radius:8px;background:var(--surface-2);color:var(--ink);font-family:var(--mono);font-size:12px;font-weight:600;cursor:pointer;min-width:150px}
+.osdd-btn:hover,.osdd-btn.open{border-color:color-mix(in srgb,var(--brand) 45%,var(--line-solid))}
+.osdd-btn .osdd-car{margin-left:auto;color:var(--dim);font-size:10px}
+.osdd-ic{display:flex;align-items:center}
+.osdd-lbl{white-space:nowrap}
+.osdd-menu{position:absolute;top:calc(100% + 4px);left:0;z-index:50;min-width:100%;background:var(--surface);border:1px solid var(--line-solid);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;display:flex;flex-direction:column;gap:1px}
+.osdd-opt{display:flex;align-items:center;gap:8px;padding:7px 9px;border:0;border-radius:6px;background:none;color:var(--ink-2);font-family:var(--mono);font-size:12px;font-weight:600;cursor:pointer;text-align:left;white-space:nowrap}
+.osdd-opt:hover{background:color-mix(in srgb,var(--brand) 9%,transparent);color:var(--ink)}
+.osdd-opt.on{color:var(--brand)}
+.osdd-opt .ic{margin-left:auto}
+/* Turn client picker — styled dropdown; each row = name·by author·[with core] + three badges (relation / obfuscation / kind) */
+.cpick{position:relative}
+.cpick-btn{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;border:1px solid var(--line-solid);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer;font:inherit}
+.cpick-btn.open{border-color:var(--brand)}
+.cpick-car{margin-left:4px;color:var(--muted);flex:0 0 auto}
+.cpick-menu{position:absolute;z-index:50;top:calc(100% + 4px);left:0;right:0;background:var(--surface);border:1px solid var(--line-solid);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:1px}
+.cpick-opt{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 10px;border:0;border-radius:6px;background:none;color:var(--ink-2);cursor:pointer;font:inherit}
+.cpick-opt:hover{background:color-mix(in srgb,var(--brand) 9%,transparent);color:var(--ink)}
+.cpick-opt.on{background:color-mix(in srgb,var(--brand) 12%,transparent);color:var(--ink)}
+.ce-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.ce-by{color:var(--muted)}
+.ce-auth{font-weight:700}
+.ce-badges{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+.ce-tag{display:inline-flex;align-items:center;font-family:var(--mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:2px 5px;border-radius:4px;line-height:1.45;white-space:nowrap;background:color-mix(in srgb,currentColor 15%,transparent)}
+.ce-native{color:var(--online)}
+.ce-cross{color:var(--ready)}
+.ce-obf{color:#A974F2}
+.ce-plain{color:var(--dangling)}
+.ce-cli{color:#D9B84A}
+.ce-app{color:#5FA8E0}
+.ce-launch{margin:9px 0 0;font-size:12px;color:var(--muted)}
+.cfgline{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.cfgline-r{margin-left:auto;text-align:right}
+/* ★ primary-connection toggle on a peer's deployment cards */
+.primtog{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--line-solid);border-radius:999px;background:none;color:var(--muted);cursor:pointer;font-size:11px;font-weight:600;line-height:1.5;white-space:nowrap}
+.primtog:hover:not(:disabled){border-color:#E0B93E;color:#E0B93E}
+.primtog.on{border-color:#E0B93E;color:#E0B93E;cursor:default}
+.primtog:disabled{cursor:default}
+.primstar{font-size:13px;line-height:1}
+/* client-roster drift check modal */
+.rosterlist{display:flex;flex-direction:column;gap:8px}
+.roster-row{border:1px solid var(--line-solid);border-radius:9px;padding:9px 12px}
+.roster-row.changed{border-color:color-mix(in srgb,var(--fault) 40%,var(--line-solid))}
+.roster-hd{display:flex;align-items:center;gap:10px;margin-bottom:3px}
+.roster-nm{font-weight:600;font-size:13px}
+.roster-by{font-size:11.5px;color:var(--dim);font-weight:600}
+.roster-file{display:flex;align-items:center;gap:10px;font-size:11.5px;padding:2px 0;color:var(--ink-2);flex-wrap:wrap}
+.roster-file a{color:var(--brand);text-decoration:none}
+.roster-file a:hover{text-decoration:underline}
+.roster-file a.faint{color:var(--dim)}
+.roster-fdiff{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.fd-sum{font-family:var(--mono);font-size:11px;font-weight:600;white-space:nowrap}
+.fd-sum.add{color:var(--online)}
+.fd-sum.rem{color:var(--dangling)}
+.fd-approx{font-size:10px;color:var(--dim);font-style:italic;cursor:help;white-space:nowrap}
+.revlist{display:flex;flex-direction:column;gap:2px}
+.rev-all{display:flex;align-items:center;gap:8px;padding:4px 2px 8px;font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line);margin-bottom:4px}
+.rev-item{display:flex;align-items:center;gap:8px;padding:5px 2px;font-size:12px;border-radius:6px;cursor:pointer}
+.rev-item:hover{background:var(--surface-2)}
+.rev-item input[type=checkbox],.rev-all input[type=checkbox]{width:15px;height:15px;flex:0 0 auto;margin:0;accent-color:var(--brand);cursor:pointer}
+.rev-item.disabled{cursor:default;opacity:.72}
+.rev-item.disabled:hover{background:none}
+.rev-file{color:var(--ink-2);font-size:11px}
+/* roster grid: per-field counters, version picker, needs-wiring tag */
+.rc-counts{display:inline-flex;gap:5px;align-items:center}
+.rc-cnt{font-family:var(--mono);font-size:11px;font-weight:700;border-radius:5px;padding:1px 6px;border:1px solid transparent;white-space:nowrap}
+.rc-cnt.add{color:var(--online);background:color-mix(in srgb,var(--online) 13%,transparent);border-color:color-mix(in srgb,var(--online) 32%,transparent)}
+.rc-cnt.rem{color:var(--dangling);background:color-mix(in srgb,var(--dangling) 13%,transparent);border-color:color-mix(in srgb,var(--dangling) 32%,transparent)}
+.rc-cnt.wire{color:var(--fault);background:color-mix(in srgb,var(--fault) 13%,transparent);border-color:color-mix(in srgb,var(--fault) 32%,transparent)}
+.rc-cnt.val{color:var(--ready);background:color-mix(in srgb,var(--ready) 13%,transparent);border-color:color-mix(in srgb,var(--ready) 32%,transparent)}
+.fd-sum.val{color:var(--ready)}
+.rc-ver{font-family:var(--mono);font-size:11px;padding:3px 6px;border-radius:6px;border:1px solid var(--line-solid);background:var(--surface-2);color:var(--ink);max-width:170px}
+.rc-wtag{font-size:10px;font-weight:600;color:var(--fault);background:color-mix(in srgb,var(--fault) 12%,transparent);border-radius:5px;padding:1px 6px;white-space:nowrap}
+.tg-plat{background:var(--surface-2);border:1px solid var(--line);color:var(--dim);border-radius:5px;padding:1px 6px;font-size:10px;font-weight:600}
+.clist-nk{font-size:11px;white-space:nowrap}
+.clist-usedby{font-size:11px;min-width:0;max-width:44%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Server-defaults ExecStart box: a read-only auto/obfuscation block above an editable free-flags textarea, as one field */
+.obfrow{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.obfctl{display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:12px;cursor:pointer}
+.execbox{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--bg)}
+.execbox-auto{background:var(--surface-2);color:var(--dim);font-family:var(--mono);font-size:12px;line-height:1.55;padding:9px 11px;white-space:pre-wrap;word-break:break-word;border-bottom:1px dashed var(--line-solid);user-select:text}
+.execbox-extra{display:block;width:100%;box-sizing:border-box;border:0;background:transparent;padding:9px 11px;font-family:var(--mono);font-size:12px;line-height:1.55;color:var(--ink);resize:vertical;min-height:54px;outline:none;box-shadow:none}
+.execbox-extra:focus{outline:none;box-shadow:none}
 /* palette pickers (Panel settings → Interfaces / Display): a concept label + a themed (dark|light) swatch pair */
 .palrow{display:flex;flex-wrap:wrap;gap:12px 22px;margin:0 0 6px}
 .palcell{display:inline-flex;align-items:center;gap:11px}
@@ -1253,11 +1452,24 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .turncfg{display:flex;flex-direction:column;gap:14px}
 .turntabs{display:flex;flex-wrap:wrap;gap:8px}
 .turntab{font-size:12px}
+.turnclients{margin-top:8px}
+.xtag{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;padding:1px 5px;border-radius:4px;margin-left:6px;background:rgba(232,192,75,.14);color:var(--pending);border:1px solid rgba(232,192,75,.3)}
+/* the head "experimental" tag explains itself in a hover/focus bubble (justified) instead of an on-screen banner */
+.xtag-tip{position:relative;cursor:help;outline:none}
+.xtip-bubble{display:none;position:absolute;top:calc(100% + 7px);right:0;z-index:60;width:min(280px,72vw);
+  text-align:justify;text-transform:none;letter-spacing:normal;font-family:var(--sans);font-size:11px;font-weight:400;line-height:1.5;
+  color:var(--pending);background:color-mix(in srgb,#E8C04B 9%,var(--surface-2));border:1px solid rgba(232,192,75,.25);border-radius:8px;padding:8px 10px;box-shadow:0 8px 24px rgba(0,0,0,.28)}
+.xtag-tip:hover .xtip-bubble,.xtag-tip:focus .xtip-bubble,.xtag-tip:focus-visible .xtip-bubble{display:block}
+.turncfg-item>.hint{font-size:11px;line-height:1.5}
 /* redundant same-fork proxies: title left, dropdown right, on one line */
 .turninst{display:flex;align-items:center;gap:12px}
 .turninst label{flex:none;font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
 .turninst .selwrap{margin-left:auto;min-width:220px;max-width:360px}
 .turncfg-item{display:flex;flex-direction:column;gap:4px}
+.turncfg-qr{display:flex;justify-content:center;padding:10px 0}
+.turncfg-qr .qr{background:#fff;border:1px solid var(--line);border-radius:var(--r-sm);padding:8px;line-height:0;cursor:zoom-in}
+.turncfg-qr .qr .qrimg{display:block;width:min(208px,58vw);height:auto;image-rendering:pixelated;image-rendering:crisp-edges}
+.turncfg-qr.qr-pending{color:var(--faint);font-size:12px;padding:34px 0}
 .turncfg-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .turncfg-foot{display:flex;align-items:center;gap:8px;margin-top:6px}
 .turncfg-foot .grow{flex:1}
@@ -1336,6 +1548,7 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 .ivk-escrow{margin:12px 0 4px;padding-top:12px;border-top:1px solid var(--line)}
 .ivk-esc-row{display:flex;align-items:flex-start;gap:11px;font-size:13px;line-height:1.55;color:var(--dim);cursor:pointer}
 .ivk-esc-row b{color:var(--ink)}
+.field>label.toggle-row{display:flex;align-items:center;gap:12px;margin-bottom:7px}   /* switch + a one-line title; must set display:flex here — .field>label{display:block} out-specifies .ivk-esc-row's flex, so without this the row is block and align-items does nothing. The description sits below as a normal .hint */
 .swt{position:relative;display:inline-flex;align-items:center;width:34px;height:19px;flex:none;cursor:pointer}
 .swt input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
 .swt .track{width:34px;height:19px;border-radius:99px;background:var(--surface-2);border:1px solid var(--line-solid);transition:background .15s,border-color .15s}
@@ -1968,7 +2181,8 @@ a.tg:hover{filter:brightness(1.25)}
 .ustat.s-dangling,.ustat.s-removing{color:var(--dangling)}
 .ustat.s-unknown,.ustat.s-empty,.ustat.s-off{color:var(--unknown)}   /* s-off = Live "offline" (grey, no animation) */
 .ustat.s-blocked,.ustat.s-faulty{color:var(--fault)}   /* orange — a peer is blocked / faulty */
-.ustat.s-disabled{color:var(--dangling)}   /* red — access revoked (settled) */
+.ustat.s-disabled,.ustat.s-expired{color:var(--dangling)}   /* red — access revoked / expired */
+.ustat.s-expiring{color:var(--fault)}   /* orange — about to expire */
 .ustat.s-blocking{color:var(--partial)}   /* amber — block converging */
 .ustat.s-restoring{color:var(--ready)}   /* blue — restoring after unblock */
 /* name row: name · tag · note all on one line, name + note ellipsize */
@@ -2048,6 +2262,20 @@ a.tg:hover{filter:brightness(1.25)}
 .mi-restore:hover{background:color-mix(in srgb,var(--online) 12%,transparent)}
 .mi-restore:disabled{opacity:.5;cursor:not-allowed}
 .mi-restore .ic svg{width:11px;height:11px}
+/* GHOST interface — lost + keyless (recreate fresh + rekey, not restore). Crimson, semi-transparent phantom
+   card (opaque on hover, like .ifcard.down); the recreate affordances reuse --dangling everywhere. */
+.ifcard.ghost{opacity:.5;border-color:color-mix(in srgb,var(--dangling) 40%,var(--line-solid));background:color-mix(in srgb,var(--dangling) 5%,transparent)}
+.ifcard.ghost:hover{opacity:.85}
+.ifcard.ghost .ifcard-top{overflow:visible;flex-wrap:wrap;row-gap:6px}
+.ifcard.ghost .ifcard-top .ifname{flex-shrink:0;overflow:visible;text-overflow:clip}
+.iftype.gh{background:color-mix(in srgb,var(--dangling) 14%,transparent);color:var(--dangling)}
+.mi-restore.ghost{color:var(--dangling);border-color:color-mix(in srgb,var(--dangling) 40%,transparent)}
+.mi-restore.ghost:hover{background:color-mix(in srgb,var(--dangling) 12%,transparent)}
+.iconbtn.ghost{color:var(--dangling)}
+.iconbtn.ghost:hover{color:var(--dangling);border-color:var(--dangling);background:color-mix(in srgb,var(--dangling) 12%,transparent)}
+.btn-mini.ghost,.btn-ghost.gh{color:var(--dangling)}
+.btn-mini.ghost:hover,.btn-ghost.gh:hover{border-color:var(--dangling);background:color-mix(in srgb,var(--dangling) 10%,transparent)}
+.notice.danger{background:color-mix(in srgb,var(--dangling) 9%,transparent);border:1px solid color-mix(in srgb,var(--dangling) 30%,transparent);color:var(--dim)}
 /* Restore on the interface-detail (read-only) screen keeps the full 'Restore interface' btn-mini styling */
 .btn-mini.restore{color:var(--online);border-color:color-mix(in srgb,var(--online) 34%,var(--line-solid))}
 .btn-mini.restore:hover{color:var(--online);border-color:var(--online);background:color-mix(in srgb,var(--online) 10%,transparent)}
@@ -2075,6 +2303,17 @@ a.tg:hover{filter:brightness(1.25)}
 .advtoggle{background:none;border:0;color:var(--ink-2);cursor:pointer;font:inherit;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:7px;margin:16px 0 2px;padding:0;letter-spacing:.02em}
 .advtoggle:hover{color:var(--brand)}
 .advtoggle .advcaret{font-size:10px;color:var(--faint);width:10px;display:inline-block}
+/* One-line section strip (proxy sheet): Server / Client parameters / Version & rollback — click a segment to reveal its panel below. */
+.secbar{display:flex;margin:22px 0 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:color-mix(in srgb,var(--ink) 3%,transparent)}
+.secbar-item{flex:1 1 0;min-width:0;display:flex;align-items:center;justify-content:center;gap:7px;padding:11px 12px;font:inherit;font-size:12px;font-weight:600;letter-spacing:.02em;color:var(--ink-2);background:none;border:0;border-right:1px solid var(--line);cursor:pointer;white-space:nowrap;transition:background .12s,color .12s}
+.secbar-item:last-child{border-right:0}
+.secbar-item>span:first-child{overflow:hidden;text-overflow:ellipsis}
+.secbar-item:hover{background:color-mix(in srgb,var(--brand) 8%,transparent);color:var(--ink)}
+.secbar-item.on{background:color-mix(in srgb,var(--brand) 14%,transparent);color:var(--ink)}
+.secbar-car{font-size:10px;color:var(--faint);flex:0 0 auto}
+.secbar-item.on .secbar-car{color:var(--brand)}
+.secbar-dot{width:6px;height:6px;border-radius:50%;background:var(--warn,#e0603a);flex:0 0 auto}
+.secpanel{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:10px 0 16px;background:color-mix(in srgb,var(--ink) 2%,transparent)}
 /* User QR modal: one group per peer, its deployment QRs on a single (scrollable) horizontal line. */
 .usercfg{display:flex;flex-direction:column;gap:18px}
 .usercfg-peer{display:flex;flex-direction:column;gap:8px}
@@ -2102,7 +2341,8 @@ a.tg:hover{filter:brightness(1.25)}
 .qrhd{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .qrhd-nm{font-weight:700}
 .qrhd-tag{font-size:12px;font-weight:600;color:var(--faint);letter-spacing:.02em}
-.qrhd-count{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;color:var(--faint);text-transform:uppercase}
+.qrhd-count{font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;color:var(--faint);text-transform:uppercase;margin-left:14px}   /* peer count sits next to the username, with a clear gap; the subscription status goes on the far right */
+.qrfoot-count{align-self:center;font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;color:var(--faint);text-transform:uppercase;white-space:nowrap}   /* peer/config count in the user QR modal foot — left-aligned; a grow spacer pushes the action buttons right */
 .substatus{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin:-2px 0 12px;font-size:12px;color:var(--muted,#8a97ad)}
 .substatus b{font-weight:700}
 /* compact "In subscription" badge in the sheet title row, right-aligned just before the ×/Go-back control */
@@ -2115,6 +2355,20 @@ a.tg:hover{filter:brightness(1.25)}
 .substatus-dot{width:7px;height:7px;border-radius:50%;flex:none}
 .substatus.active{color:var(--online)} .substatus.active .substatus-dot{background:var(--online)}
 .substatus.disabled{color:var(--faint)} .substatus.disabled .substatus-dot{background:var(--faint)}
+/* subscription lifecycle colours — the whole sentence takes one colour: green active / orange about-to-expire /
+   red blocked|expired. Used by the subscription sentence (.substat) and the peer modal's clause. */
+.s-active{color:var(--online)} .s-blocked,.s-expired{color:var(--dangling)} .s-expiring{color:var(--fault)}
+/* the subscription sentence ("Subscription is active", "… is about to expire on …", "… expired on …"). header =
+   the modal title row: Alice left · sentence centred (flex:1 fills the gap) · peer count right. center = its own
+   centred line at the top of the edit-user card. */
+.substat{font-size:12px;font-weight:600;white-space:nowrap}
+.substat-hd{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:center;padding:0 12px}   /* centred in the user modal title row (subscription) */
+.substat-hr{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:right;padding:0 12px}    /* right-aligned in the peer modal title row (subscription) */
+.substat-bar{display:block;text-align:right;margin:-12px 0 10px;white-space:normal}                       /* a right-aligned line UNDER the header (peer modal / edit-peer): the peer's own status — pulled up close to the divider */
+.substat-center{display:block;text-align:center;margin:0 0 14px;font-size:13px}
+/* access-expiry date input (edit-user / edit-peer) */
+.daterow{display:flex;align-items:center;gap:8px}
+.datein{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);color-scheme:light dark}
 .unlockpanel{margin:0 0 16px;padding:13px 15px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2,rgba(127,127,127,.05));display:flex;flex-direction:column;gap:10px}
 .unlockpanel-msg{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink)}
 .unlockpanel-msg .ic{color:var(--brand);flex:none}
@@ -2131,16 +2385,21 @@ a.tg:hover{filter:brightness(1.25)}
 .vkbox{flex:1;min-width:0;box-sizing:border-box;min-height:30px;display:flex;align-items:center;gap:9px;padding:5px 11px;border:1px solid var(--line);border-radius:8px;transition:border-color .12s,background .12s}
 .vkbox > .ic{flex:none}
 .vkbox-input{flex:1;min-width:0;border:0;background:transparent;padding:0;font-family:var(--mono);font-size:12px;line-height:16px;color:var(--ink);outline:none;box-shadow:none}
+.vkbox-input:focus{box-shadow:none;outline:none;border:0}   /* the .vkbox draws the border; kill the global input:focus glow so there's no bluish inner border */
 /* save status sits at the LEFT of the button group, before the Save button (margin-right:auto pushes it left) */
 .vk-status{margin-right:auto;display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;white-space:nowrap}
 .vk-status.ok{color:var(--online)}
+.savedmsg{font-size:11.5px;font-weight:600;white-space:normal;line-height:1.35;max-width:62%;align-items:flex-start}
+.savedmsg .ic{margin-top:1px}
+.obfctl-lbl{color:var(--ink-2);font-weight:600}
+.notgen{font-size:11.5px;font-weight:600;color:#e0a85f;white-space:nowrap}
 .vk-status.err{color:var(--dangling)}
 .vk-status .ic{width:14px;height:14px}
 .vkfield-row .btn{flex:none}
 /* fixed-width trailing button group → the VK input and the sub-link box line up to the SAME width, and every
    button (Save / Rotate / Disable) is the same size so Save sits right under Disable */
-.fieldbtns{flex:none;display:flex;gap:8px;justify-content:flex-end;width:156px}
-.fieldbtns .btn{min-width:72px;justify-content:center}
+.fieldbtns{flex:none;display:flex;gap:8px;justify-content:flex-end;align-items:center}
+.fbtn{width:112px;flex:none;justify-content:center;text-align:center;white-space:nowrap;padding-left:8px;padding-right:8px}   /* the 4 link-row buttons all one width; the input shrinks to fit */
 .sublink-field{margin-bottom:14px}
 .sublink-field .sublink{margin:0}
 /* user-modal peer card: the whole card opens the peer modal (except the QR + action buttons).

@@ -32,7 +32,7 @@ const DEFAULTS = { graceMs: 60000, nodeStaleMs: 30000, unblockMs: 300000, restor
 // sits just under online; blocked (reaching but no handshake) is a fault above the plain-missing states.
 // disabled/blocking rank BELOW every live state so a single per-peer block never dominates a user that still
 // has healthy peers; restoring ranks with the other transitional states.
-const RANK = { online: 8, faulty: 7, ready: 6, blocked: 5, partial: 4, restoring: 3, pending: 3, creating: 3, rotating: 3, dangling: 2, broken: 2, blocking: 1, disabled: 0, unknown: 1 };
+const RANK = { online: 8, faulty: 7, ready: 6, expiring: 6, blocked: 5, partial: 4, restoring: 3, pending: 3, creating: 3, rotating: 3, dangling: 2, broken: 2, blocking: 1, disabled: 0, expired: 0, unknown: 1 };
 
 // IPv4 membership: is `ip` inside `cidr`? Unknown/unparseable -> true (never false-flag "broken"). IPv6 -> true
 // (skip; the "broken" check only guards IPv4 subnets). Used to tell a present-but-wrong peer (broken) from a
@@ -165,7 +165,7 @@ function reconcile(roster, stats, now, cfg) {
         const svcs = (turnByPort[t.node] || {})[String(lp)] || [];
         viaTurn = bySport || (svcs.length ? svcs[0] : null);
       }
-      return { node: t.node, iface: t.iface, ip: t.ip, type: t.type,
+      return { node: t.node, iface: t.iface, ip: t.ip, type: t.type, primary: !!t.primary,
                status: st, online: !!(obs && obs.online), observed: obs, via: via,
                viaTurn: viaTurn,   // the SPECIFIC turn-proxy service the peer came in through (one per connection)
                restorable: (st === "dangling") && _trip,   // this deployment's interface is gone long enough → offer Restore
@@ -188,20 +188,36 @@ function reconcile(roster, stats, now, cfg) {
     // a key rotation in flight: the new key isn't on the wire yet — show "rotating", not dangling
     if (cfg.rotating && cfg.rotating.has(pid) && (status === "dangling" || status === "creating" || status === "unknown")) status = "rotating";
 
-    // BLOCKED access (stored override, wins over any derived state). A peer OR any peer of a disabled user is
-    // dropped from the node's desired set: "blocking" while the node still reports it (converging), "disabled"
-    // once it's gone from every live target. With no live target to confirm against, stay "blocking".
-    // UNBLOCK: `unblock_at` shows "restoring" until the peer is back on every live target (then the real status
-    // shows through); a stale marker (past the window) is ignored so a later-offline peer reads dangling, not stuck.
+    // ACCESS LIFECYCLE (block / expiry) — DISPLAY rule. Priority: blocked > expired > about-to-expire > restoring.
+    // Enforcement (dropping the peer from the node's desired set) is separate — this only decides the badge.
+    //   • blocked / expired INTENTIONALLY remove the peer, so a resulting OFF-interface status (dangling, unknown,
+    //     creating, broken, partial) is EXPECTED — show Blocked/Expired, NOT "dangling". A dangling peer that ISN'T
+    //     blocked/expired is a real gone-interface fault and stands (→ Restore). The connected states (online/faulty)
+    //     always stand — the block just hasn't propagated to the wire yet.
+    //   • expiring / restoring don't remove the peer, so they overwrite only the neutral "ready".
     const blocked = !!(p.disabled || (user && user.disabled));
-    const ublkAt = Math.max(p.unblock_at || 0, (user && user.unblock_at) || 0);   // per-peer OR whole-user unblock
+    const nowSec = now / 1000;
+    const peerExp = +p.expiry || 0, userExp = (user && +user.expiry) || 0;
+    const effExpiry = (peerExp && userExp) ? Math.min(peerExp, userExp) : (peerExp || userExp);   // the earlier binding date
+    const selfExpired = peerExp > 0 && nowSec >= peerExp;
+    const userExpired = userExp > 0 && nowSec >= userExp;
+    const expired = !blocked && (selfExpired || userExpired);
+    const warnS = (cfg.expiryWarnDays != null ? cfg.expiryWarnDays : 3) * 86400;
+    const expiring = !blocked && !expired && effExpiry > 0 && nowSec >= (effExpiry - warnS);   // inside the warn window, not yet past
+    // UNBLOCK transient: `unblock_at` reads "restoring" briefly after an unblock, until the peer is back everywhere.
+    const ublkAt = Math.max(p.unblock_at || 0, (user && user.unblock_at) || 0);
     const restoring = !blocked && ublkAt && (now - ublkAt * 1000) < cfg.unblockMs && !(live.length > 0 && present.length === live.length);
-    if (blocked) status = (live.length > 0 && present.length === 0) ? "disabled" : "blocking";
-    else if (restoring) status = "restoring";
-    // Propagate the block/restore state onto each TARGET too, so the per-target Peers grid (which shows
-    // t.status) agrees with the peer-level badge instead of still reading online/ready/dangling.
-    if (blocked) targets.forEach(d => { d.status = (nodeStatus[d.node] === "live" && !d.observed) ? "disabled" : "blocking"; d.restorable = d.correctable = false; d.problemMs = 0; });
-    else if (restoring) targets.forEach(d => { if (!d.observed) { d.status = "restoring"; d.restorable = d.correctable = false; d.problemMs = 0; } });
+    const lifecycle = blocked ? "disabled" : expired ? "expired" : expiring ? "expiring" : restoring ? "restoring" : null;
+    const removedByAccess = blocked || expired;   // these DROP the peer from the interface → its off-interface state is intended
+    const OFF_STATES = { dangling: 1, unknown: 1, creating: 1, broken: 1, partial: 1 };
+    const takesLifecycle = s => s === "ready" || (removedByAccess && OFF_STATES[s]);   // online/faulty always stand
+    if (lifecycle && takesLifecycle(status)) status = lifecycle;
+    targets.forEach(d => {
+      if (lifecycle && takesLifecycle(d.status)) d.status = lifecycle;   // per-target: same rule (the grid reads t.status)
+      // a blocked/expired peer is intentionally off the node — never offer Restore/Correct, even when a removed
+      // deployment reads "dangling".
+      if (removedByAccess) { d.restorable = d.correctable = false; d.problemMs = 0; }
+    });
 
     let reason = null;   // why a peer isn't healthy — surfaced on the status badge (incl. a DOWN interface)
     if (status === "dangling" || status === "partial" || status === "creating") {
@@ -218,6 +234,7 @@ function reconcile(roster, stats, now, cfg) {
     }
     else if (status === "faulty") reason = "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path";
     else if (status === "broken") reason = "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface";
+    else if (status === "expired") reason = selfExpired ? "this peer's access date has passed" : "the subscription's access date has passed";
 
     // Restore/Correct is a REAL-PROBLEM affordance, not a hiccup: each deployment tracks how long it has been
     // dangling/broken (per-target block above, gated by restoreGraceMs) so a just-created peer, a brief node
@@ -244,6 +261,10 @@ function reconcile(roster, stats, now, cfg) {
       correctable: correctable,   // any deployment broken long enough → offer Correct
       problemMs: problemMs,       // longest a deployment has been a problem (for the confirm modal copy)
       disabled: blocked, selfDisabled: !!p.disabled, userDisabled: !!(user && user.disabled),
+      disabledAt: p.disabled_at || 0,   // when THIS peer was blocked (for "Peer was blocked on <date>")
+      expired: expired, selfExpired: selfExpired, userExpired: userExpired, expiring: expiring,
+      expiry: effExpiry,          // the binding expiry date (epoch s; peer's own, else the subscription's) — for "until <date>"
+      ownExpiry: peerExp,         // the peer's OWN expiry date (0 if it only inherits the subscription's) — for the edit field + peer status
     };
   });
 
@@ -258,14 +279,26 @@ function reconcile(roster, stats, now, cfg) {
       if (pr.online) online = true;
       if (status === "empty" || (RANK[pr.status] || 0) > (RANK[status] || 0)) status = pr.status;
     });
-    // a disabled user with no peers still reads "disabled" (the flag, not a derived state)
-    if (u.disabled && mine.length === 0) status = "disabled";
+    // The user's own access lifecycle overwrites ONLY a neutral rollup — "ready" (peers configured, none connected)
+    // or "empty" (no peers). A meaningful rollup (online / dangling / …) stands, the same rule as per-peer.
+    const uExp = +u.expiry || 0, nowSecU = now / 1000, warnSU = (cfg.expiryWarnDays != null ? cfg.expiryWarnDays : 3) * 86400;
+    const uExpired = !u.disabled && uExp > 0 && nowSecU >= uExp;
+    const uExpiring = !u.disabled && !uExpired && uExp > 0 && nowSecU >= (uExp - warnSU);
+    if (status === "ready" || status === "empty") {
+      if (u.disabled) status = "disabled";
+      else if (uExpired) status = "expired";
+      else if (uExpiring) status = "expiring";
+    }
     return {
       id: uid, name: u.name || "", tag: u.tag || "", note: u.note || "", vk_link: u.vk_link || "",
+      vk_links: Array.isArray(u.vk_links) ? u.vk_links : (u.vk_link ? [u.vk_link] : []),   // full ordered set (primary first) — the VK-links manager reads all of these
+
       created_at: u.created_at || null, modified_at: u.modified_at || null,
       peerIds: mine.map(pr => pr.id),
       peerCount: mine.length, onlineCount: mine.filter(pr => pr.online).length,
       status: status, online: online, disabled: !!u.disabled,
+      disabledAt: u.disabled_at || 0,   // when the subscription was blocked (for "Subscription was blocked on <date>")
+      expired: uExpired, expiring: uExpiring, expiry: uExp,
     };
   });
 

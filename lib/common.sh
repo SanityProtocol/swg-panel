@@ -370,12 +370,32 @@ lc_clear_convert_leftover(){
   fi
   return 0; }   # always succeed — best-effort cleanup; "nothing to clear" must not return non-zero and trip set -e in callers
 
-# ── turn-proxy: the 6 forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
+# ── turn-proxy: the curated forks + their owner/repo, and the binary download (GitHub direct, then opt-in mirrors) ──
 turn_repo_owner(){ case "$1" in
   WINGS-N) echo "WINGS-N/vk-turn-proxy";; samosvalishe) echo "samosvalishe/free-turn-proxy";;
   kiper292) echo "kiper292/vk-turn-proxy";; anton48) echo "anton48/vk-turn-proxy";;
-  Moroka8) echo "Moroka8/vk-turn-proxy";;
+  Moroka8) echo "Moroka8/vk-turn-proxy";; MYSOREZ) echo "MYSOREZ/vk-turn-proxy";;
   cacggghp) echo "cacggghp/vk-turn-proxy";; *) return 1;; esac; }
+
+# Axis-2 P3: systemd sandbox for turn-proxy units — shared by install-host/node + convert (mirrors swg-noded's
+# TURN_UNIT_HARDENING). A forwarder only shuffles bytes between two sockets, so confine it hard: a compromised
+# fork binary is contained to its sockets, not root. Injected into the unit's [Service] via $TURN_HARDENING.
+# ⚠️ SystemCallFilter=@system-service is the one that could refuse an odd Go syscall — first suspect if a proxy
+# won't start after install (check `journalctl -u <svc>` for a seccomp kill).
+TURN_HARDENING='NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM'
 dl_turn_bin(){ local owner="$1" arch="$2" out="$3" base url m; base="https://github.com/$owner/releases/latest/download/server-linux-$arch"
   for url in "$base" $(for m in ${SWG_TURN_MIRROR:-}; do printf '%s ' "${m%/}/$base"; done); do
     curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "$url" -o "$out" && return 0
@@ -455,4 +475,81 @@ print_proxy_configs(){
   echo; echo "  $(b "── nginx ──  ${dir}/swg-nginx.conf")"; gen_proxy_conf nginx "$pd" "$pt" "$pbase" "$sd" "$st" | sed 's/^/    /'
   echo; echo "  $(b "── Caddy ──  ${dir}/swg-Caddyfile")"; gen_proxy_conf caddy "$pd" "$pt" "$pbase" "$sd" "$st" | sed 's/^/    /'
   echo
+}
+
+# ── docker one-click self-update wiring (STATIC templates — no per-install config) ──────────────────────────────
+# The swg-update + swg-update-check wrappers and the poll service/timer. Shared by install-docker.sh's
+# wire_host_updater (fresh install) AND update.sh's ensure_update_unit_docker (heal) so both write byte-identical
+# pieces. Writes the files, retires the legacy .path watch, stamps NOW (so the first poll can't fire a spurious
+# update), reloads systemd, and enables the 30s timer. Caller owns $DRYRUN gating + container trigger pre-creation.
+# systemctl calls are best-effort so this never trips set -e. Returns 0.
+write_docker_updater(){
+  cat > /usr/local/bin/swg-update <<'WRAP'
+#!/usr/bin/env bash
+# swg-update — root entrypoint for the panel/node one-click update. swg programs + images only (--no-components
+# skips docker engine / wg-awg / turn-proxies); on a docker box this is `compose pull && up`. A container can't
+# recreate itself, so the panel/node touches its trigger and THIS (host, root) unit does the recreate.
+set -euo pipefail
+URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
+curl -fsSL "$URL" | bash -s update -y --no-components
+WRAP
+  chmod 755 /usr/local/bin/swg-update
+  # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
+  # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
+  # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 30s.
+  cat > /usr/local/bin/swg-update-check <<'WRAP2'
+#!/usr/bin/env bash
+set -euo pipefail
+STAMP=/var/lib/swg-update.stamp
+_run=no
+for _t in /var/lib/swg-panel/.update-request /var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/lib/.update-request /opt/swg-panel-docker/data/node/.update-request; do
+  [ -f "$_t" ] || continue
+  { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; } && _run=yes
+done
+[ "$_run" = yes ] || exit 0
+touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
+exec /usr/local/bin/swg-update
+WRAP2
+  chmod 755 /usr/local/bin/swg-update-check
+  cat > /etc/systemd/system/swg-update.service <<EOF
+[Unit]
+Description=swg-panel one-click self-update (swg programs only)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/swg-update-check
+EOF
+  cat > /etc/systemd/system/swg-update.timer <<EOF
+[Unit]
+Description=poll for a swg-panel one-click update request (docker)
+
+[Timer]
+OnActiveSec=30s
+OnUnitActiveSec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl disable --now swg-update.path >/dev/null 2>&1 || true   # retire the old inotify watch from a pre-poll install
+  rm -f /etc/systemd/system/swg-update.path
+  touch /var/lib/swg-update.stamp   # stamp NOW (newer than any just-created triggers) so the first poll doesn't fire a spurious update
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now swg-update.timer >/dev/null 2>&1 || true
+  return 0
+}
+
+# ── docker: pre-create the secret files swg-sub masks with /dev/null (docker-compose.yml) ───────────────────────
+# swg-sub bind-mounts /dev/null over the panel's auth/panel-settings/vault/escrow so the public surface can never
+# read them. Docker needs the mount TARGET to already exist, and swg-sub mounts /etc/swg-panel + /var/lib/swg-panel
+# READ-ONLY — so on a FRESH install (files not yet written by the panel) docker can't create the mountpoint and
+# swg-sub dies with "read-only file system". Pre-create empty placeholders before `compose up`: the panel's load_json
+# treats an empty file as its default, and the entrypoint overwrites auth from PANEL_PASSWORD. Idempotent — an
+# existing install already has these files, so this is a no-op (backwards compatible). $1 = install dir.
+ensure_docker_mask_files(){
+  local d="${1:-}" f; [ -n "$d" ] || return 0
+  mkdir -p "$d/data/etc" "$d/data/lib/subs" 2>/dev/null || true
+  for f in data/etc/auth data/lib/panel-settings.json data/lib/subs/vault.json data/lib/subs/escrow.json; do
+    [ -e "$d/$f" ] || : > "$d/$f" 2>/dev/null || true
+  done
+  return 0
 }

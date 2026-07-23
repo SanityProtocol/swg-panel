@@ -575,6 +575,7 @@ EnvironmentFile=-${dir}/turn.env
 ExecStart=${bin} -listen \${SWG_LISTEN} -connect \${SWG_CONNECT} \$SWG_PARAMS
 Restart=on-failure
 RestartSec=3
+$TURN_HARDENING
 
 [Install]
 WantedBy=multi-user.target

@@ -1,9 +1,9 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.3.13-beta</code></p>
+<p align="center"><code>1.4.0-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.3.13-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.4.0-beta** — [full changelog](CHANGELOG.md)
 > - **Restore a missing or broken interface** — one click recreates it with the *same keys* and re-adds every peer; a peer whose address drifted out of subnet gets a **Fix**. Works per-peer or across a whole node.
 > - **Optional interface-key escrow** — nodes seal their server keys to a vault only you hold, so a wiped node can be rebuilt without the panel ever seeing a private key.
 > - **Fixes** — flip a subpath reverse proxy to built-in HTTPS (and back) without stranding nodes; a peer's address is checked against its subnet before it's applied; Docker↔bare-metal convert keeps your address and settings.
@@ -55,7 +55,7 @@ subscription and no one else sitting in the middle of your traffic.
 
 - **One page to run everything.** Add servers, add users, hand out access — all from the web panel.
 - **Access in a QR code.** Create a person, show them the QR, they scan it in the WireGuard/AmneziaWG app — no fiddly config files to email around.
-- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [samosvalishe](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys.
+- **Subscriptions — one private link per user.** Instead of a one-off QR, each person gets their own **swgSub** page: a phone-friendly link with the config and QR for every server they're on — [WireGuard](screenshots/sub-wireguard.jpg), [AmneziaWG](screenshots/sub-amneziawg.jpg), and TURN-PROXY forks like [WINGS-N](screenshots/sub-wings-n.jpg), [samosvalishe](screenshots/sub-samosvalishe.jpg), [Moroka8](screenshots/sub-moroka8.jpg), [anton48](screenshots/sub-anton48.jpg) and others — plus protocol/relay badges, light/dark mode, and one-tap copy / download / share. The unlock key rides in the link's `#fragment`, so the server stores only ciphertext and never sees anyone's private keys.
 - **Suspend access in one click.** Block a person — or just one of their servers — instantly, without deleting them. Their tunnels stop and their subscription page goes dark; unblock to restore with the same keys, nothing to re-issue.
 - **See what’s happening, live.** Who’s online, how much they’re downloading, which servers are busy — updated every few seconds.
 - **Single or multiple servers.** Put servers in different countries; a person can fail over between them.
@@ -87,7 +87,7 @@ subscription and no one else sitting in the middle of your traffic.
   <a href="screenshots/sub-wings-n.jpg"><img src="screenshots/sub-wings-n.jpg" alt="WINGS-N subscription" width="150"></a>
   <a href="screenshots/sub-moroka8.jpg"><img src="screenshots/sub-moroka8.jpg" alt="Moroka8 subscription" width="150"></a>
   <a href="screenshots/sub-samosvalishe.jpg"><img src="screenshots/sub-samosvalishe.jpg" alt="samosvalishe subscription" width="150"></a>
-  <a href="screenshots/sub-amneziawg-node.jpg"><img src="screenshots/sub-amneziawg-node.jpg" alt="AmneziaWG (dark, second node)" width="150"></a>
+  <a href="screenshots/sub-anton48.jpg"><img src="screenshots/sub-anton48.jpg" alt="anton48 subscription" width="150"></a>
   <a href="screenshots/sub-cacggghp.jpg"><img src="screenshots/sub-cacggghp.jpg" alt="cacggghp subscription" width="150"></a>
 </p>
 

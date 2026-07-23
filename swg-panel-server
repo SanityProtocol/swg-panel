@@ -18,6 +18,7 @@ Standalone: set SWG_PANEL_TLS_CERT/KEY + SWG_PANEL_AUTH and bind 0.0.0.0 to serv
 HTTPS + Basic-Auth + /wgstats directly. Or bind 127.0.0.1 behind your own nginx.
 """
 
+import ast
 import base64
 import contextlib
 import fcntl
@@ -155,6 +156,49 @@ def _detect_versions():
             pass
     return {k: v for k, v in out.items() if v}
 
+# ── panel-host service health ────────────────────────────────────────────────────────────────────────
+# A read-only self-probe of THIS panel host's OWN systemd units, surfaced in /api/state so the SPA can
+# flag a swg service that's down / disabled / missing on the panel box (the same units the update heal pass
+# provisions: sub, netctl, update, panel-server). The fix-it is "run update" (heals missing) or "restart"
+# (via swg-netctl, for broken). Querying unit STATE needs no privilege, so the unprivileged panel does it
+# itself — like it already reads `ip addr`; only mutations go through swg-netctl. Cached so the SPA's 5s
+# /api/state polls don't re-shell every time. Bare-metal only: a docker panel is a container with its own
+# health path (deferred), and `systemctl` there wouldn't see the host's units anyway. Raw state only — the
+# browser derives severity (config-aware: e.g. sub down while subscriptions are disabled isn't critical).
+_PANEL_UNITS = (("panel", "swg-panel-server.service"), ("sub", "swg-sub.service"),
+                ("netctl_path", "swg-netctl.path"), ("netctl_timer", "swg-netctl.timer"),
+                ("update", "swg-update.timer"))
+_PANEL_SVC = {"at": 0.0, "data": {}}
+def panel_service_health(ttl=20):
+    if IN_DOCKER:
+        return {}                                    # container: host units aren't ours to probe (deferred path)
+    now = time.time()
+    if _PANEL_SVC["data"] and now - _PANEL_SVC["at"] < ttl:
+        return _PANEL_SVC["data"]                     # fresh enough → skip the re-shell (many tabs poll every 5s)
+    try:
+        units = [u for _, u in _PANEL_UNITS]
+        p = subprocess.run(["systemctl", "show", *units, "-p", "Id,LoadState,ActiveState,UnitFileState"],
+                           capture_output=True, text=True, timeout=5)
+        blocks, cur = {}, {}                          # systemctl show separates multiple units by a blank line
+        for line in (p.stdout or "").splitlines():
+            if not line.strip():
+                if cur.get("Id"): blocks[cur["Id"]] = cur
+                cur = {}; continue
+            k, _, v = line.partition("="); cur[k] = v
+        if cur.get("Id"): blocks[cur["Id"]] = cur
+        out = {}
+        for key, unit in _PANEL_UNITS:
+            b = blocks.get(unit) or {}
+            load = b.get("LoadState", "")
+            out[key] = {"unit": unit,
+                        "active": b.get("ActiveState", "unknown"),    # active|inactive|failed|activating|…
+                        "enabled": b.get("UnitFileState", ""),         # enabled|disabled|masked|static|""
+                        "present": bool(load) and load != "not-found"} # LoadState=not-found → unit file gone
+    except Exception:
+        return _PANEL_SVC["data"]                     # probe failed → keep the last good reading; never break /api/state
+    _PANEL_SVC["at"] = now; _PANEL_SVC["data"] = out
+    return out
+
 
 VERSIONS = _detect_versions()
 
@@ -215,13 +259,225 @@ def _resolve_turn_tag(owner):
         return ""
     url = "https://github.com/" + owner + "/releases/latest/download/server-linux-amd64"
     try:
-        r = subprocess.run(["curl", "-fsS", "-o", os.devnull, "-w", "%{redirect_url}",
+        r = subprocess.run(["curl", "-4", "-fsS", "-o", os.devnull, "-w", "%{redirect_url}",
                             "--connect-timeout", "12", "--max-time", "25", url],
                            capture_output=True, text=True, timeout=30)
         m = re.search(r"/releases/download/([^/]+)/", r.stdout or "")
         return m.group(1) if m else ""
     except Exception:
         return ""
+
+
+# ── turn-proxy binary mirror + checksum gate (Axis 2 · P1 checksum, P2 mirror) ────────────────────────────
+# The panel is the trust anchor: it fetches each fork's release binary ONCE, sha256's it, and KEEPS the bytes in
+# a per-tag store (TURN_BINS_DIR). It PINS {tag, sums:{arch:sha}} into the install/reinstall request; the node
+# pins that immutable tag, pulls the binary FROM THE PANEL (censorship-robust — a node in a GitHub-blocked
+# network reaches the panel over its existing outbound-only channel; GitHub-direct is the fallback), re-hashes,
+# and refuses to chmod+exec a mismatch (fail-closed). The store doubles as a rollback cache (last N tags per
+# fork). Fail-OPEN only when the PANEL itself can't fetch (no sha → the node proceeds as before + logs) — never
+# on a real mismatch. See docs/TURN-PROXY-OVERHAUL-PLAN.md (Axis 2 · P1/P2), subsumes turn-binary-cache-todo.
+TURN_SUMS_PATH = "/var/lib/swg-panel/turn-sums.json"   # overridden from the state dir in main()
+TURN_BINS_DIR = "/var/lib/swg-panel/turn-bins"         # overridden from the state dir in main(); <owner>/<tag>/server-linux-<arch>
+TURN_HOLDS_PATH = "/var/lib/swg-panel/turn-holds.json" # overridden in main(); {"<nid>|<svc>": {tag,at}} — a proxy rolled back to a specific version; the auto-updater must NOT roll it forward until the operator updates it
+_TURN_HOLDS_LOCK = threading.Lock()
+TURN_ROSTER_PATH = "/var/lib/swg-panel/turn-roster.json"  # overridden in main(). Per client: P1 `files:{path:{commit,at,fields?}}` (commit-drift ack baseline) COEXISTS with P4 `snapshots:[{app_version,at,commits,fields,values}]` + `active` + `active_vals` + `hidden` + `pinned_snapshot` (the versioned per-field/value roster the grid drives).
+_TURN_ROSTER_LOCK = threading.Lock()
+_GH_COMMIT_CACHE = {}   # "owner/repo@branch:path" -> {res, at} — brief cache so a re-check doesn't re-hit the GitHub API
+_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")   # a release tag (rollback target); also the store dir component
+TURN_BINS_KEEP = 5                    # per fork, keep the newest N tags' binaries (rollback store); prune older
+TURN_ARCHES = ("amd64", "arm64")
+_TURN_SUMS = {}                       # "owner|tag|arch" -> sha256 hex (only successful hashes cached; a failed fetch retries)
+_TURN_SUMS_LOCK = threading.Lock()
+_TURN_SUM_SEM = threading.BoundedSemaphore(2)   # cap concurrent multi-MB asset fetches so a warm burst can't swamp a 1-core panel
+_TURN_PIN_CACHE = {}                  # owner -> {"pin": {...}, "at": ts} — re-resolve the tag/sums at most every TTL
+_TURN_PIN_TTL = 900
+
+def _turn_sums_load():
+    global _TURN_SUMS
+    with contextlib.suppress(Exception):
+        with open(TURN_SUMS_PATH) as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            _TURN_SUMS = d
+
+def _turn_safe(s):
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(s or ""))
+
+def _turn_store_path(owner, tag, arch):   # the mirrored binary on disk (P2 store)
+    return os.path.join(TURN_BINS_DIR, _turn_safe(owner), _turn_safe(tag), "server-linux-" + arch)
+
+def _turn_asset_url(owner, tag, arch):    # the immutable per-tag GitHub release asset
+    return "https://github.com/" + owner + "/releases/download/" + tag + "/server-linux-" + arch
+
+def _turn_sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _turn_bins_prune(owner):
+    """Keep only the newest TURN_BINS_KEEP tag dirs for a fork (rollback store) — bound disk growth as forks update."""
+    d = os.path.join(TURN_BINS_DIR, _turn_safe(owner))
+    with contextlib.suppress(OSError):
+        tags = [os.path.join(d, t) for t in os.listdir(d)]
+        tags = [p for p in tags if os.path.isdir(p)]
+        tags.sort(key=lambda p: os.path.getmtime(p), reverse=True)   # mtime = when we mirrored it (chronological enough)
+        for old in tags[TURN_BINS_KEEP:]:
+            shutil.rmtree(old, ignore_errors=True)
+
+def turn_sum(owner, tag, arch):
+    """sha256 of a fork's release binary at a PINNED tag — fetched once, the BYTES KEPT in the mirror store, the
+    hash cached + persisted. Reuses a mirrored file after a restart (hash from disk, no re-download). "" if the
+    panel can't fetch/hash it (only successes are cached, so a transient failure retries)."""
+    if not owner or "/" not in owner or not tag or arch not in TURN_ARCHES:
+        return ""
+    key = owner + "|" + tag + "|" + arch
+    with _TURN_SUMS_LOCK:
+        if key in _TURN_SUMS:
+            return _TURN_SUMS[key]
+    dest = _turn_store_path(owner, tag, arch)
+    with _TURN_SUM_SEM:
+        with _TURN_SUMS_LOCK:             # re-check: a peer may have filled it while we queued on the semaphore
+            if key in _TURN_SUMS:
+                return _TURN_SUMS[key]
+        sha = ""
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:   # already mirrored (survives a sums-cache loss) → hash from disk
+            with contextlib.suppress(OSError):
+                sha = _turn_sha256_file(dest)
+        else:
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+            except OSError:
+                return ""
+            tmp = dest + ".dl." + str(os.getpid())
+            try:
+                r = subprocess.run(["curl", "-4", "-fsSL", "--connect-timeout", "15", "--max-time", "180",
+                                    "--retry", "2", "--retry-delay", "2", _turn_asset_url(owner, tag, arch), "-o", tmp],
+                                   capture_output=True, text=True, timeout=200)
+                if r.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+                    sha = _turn_sha256_file(tmp)
+                    os.replace(tmp, dest)   # KEEP the bytes — the mirror store (node pulls from here; rollback cache)
+            except Exception:
+                sha = ""
+            finally:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp)
+        if sha:                           # cache successes only — a transient fetch failure must not pin "unverifiable" forever
+            with _TURN_SUMS_LOCK:
+                _TURN_SUMS[key] = sha
+                with contextlib.suppress(Exception):
+                    atomic_write(TURN_SUMS_PATH, json.dumps(_TURN_SUMS) + "\n", mode=0o600)
+            _turn_bins_prune(owner)
+        return sha
+
+def _node_arch(deps, nid):
+    """The install-target node's arch, from its snapshot → so turn_pin fetches ONLY that arch. [arch] or None
+    (unknown/old node → fall back to both arches)."""
+    a = ((deps.get("node_snaps") or {}).get(nid) or {}).get("arch")
+    return [a] if a in TURN_ARCHES else None
+
+def turn_pin_tag(owner, tag, arches=None):
+    """Pin a SPECIFIC (older) tag for a ROLLBACK — {tag, sums:{arch:sha}} straight from the mirror store (instant
+    for a cached tag; fetches otherwise). No latest-resolve, no pin cache. {}/partial sums if the tag can't be
+    mirrored — the caller rejects an empty pin so a rollback never proceeds to an unverifiable binary."""
+    owner = (owner or "").strip()
+    if not owner or "/" not in owner or not tag:
+        return {}
+    want = [a for a in (arches or TURN_ARCHES) if a in TURN_ARCHES] or list(TURN_ARCHES)
+    sums = {}
+    for a in want:
+        s = turn_sum(owner, tag, a)
+        if s:
+            sums[a] = s
+    return {"tag": tag, "sums": sums}
+
+def turn_available_tags(owner):
+    """The fork's mirrored tags — the rollback cache — newest-first: [{tag, arches:[...], at}]. Real tags come from
+    the sums map (the on-disk dir names are sanitised) filtered to those whose binary is still present (not pruned)."""
+    owner = (owner or "").strip()
+    out = {}
+    if owner and "/" in owner:
+        with _TURN_SUMS_LOCK:
+            keys = list(_TURN_SUMS.keys())
+        for k in keys:
+            p = k.split("|")
+            if len(p) != 3 or p[0] != owner:
+                continue
+            tag, arch = p[1], p[2]
+            fp = _turn_store_path(owner, tag, arch)
+            with contextlib.suppress(OSError):
+                if os.path.isfile(fp) and os.path.getsize(fp) > 0:
+                    e = out.setdefault(tag, {"tag": tag, "arches": [], "at": 0})
+                    if arch not in e["arches"]:
+                        e["arches"].append(arch)
+                    e["at"] = max(e["at"], int(os.path.getmtime(fp)))
+    res = list(out.values())
+    res.sort(key=lambda x: x["at"], reverse=True)
+    return res
+
+def _turn_holds_load():
+    with contextlib.suppress(Exception):
+        with open(TURN_HOLDS_PATH) as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            return d
+    return {}
+
+def _turn_hold_set(nid, svc, tag):
+    with _TURN_HOLDS_LOCK:
+        d = _turn_holds_load(); d[str(nid) + "|" + str(svc)] = {"tag": tag, "at": int(time.time())}
+        with contextlib.suppress(Exception):
+            atomic_write(TURN_HOLDS_PATH, json.dumps(d) + "\n", mode=0o600)
+
+def _turn_hold_clear(nid, svc):
+    with _TURN_HOLDS_LOCK:
+        d = _turn_holds_load()
+        if d.pop(str(nid) + "|" + str(svc), None) is not None:
+            with contextlib.suppress(Exception):
+                atomic_write(TURN_HOLDS_PATH, json.dumps(d) + "\n", mode=0o600)
+
+def _turn_hold_get(nid, svc):
+    return (_turn_holds_load().get(str(nid) + "|" + str(svc)) or {}).get("tag") or ""
+
+def turn_pin(owner, arches=None, wait=25, force=False):
+    """{tag, sums:{arch:sha}} for a fork's latest release, attached to an install/reinstall request so the node
+    pins + verifies. Fetches ONLY the target arch(es) (an install targets ONE node → one arch — no wasted/failing
+    cross-arch fetch), in PARALLEL, with a BOUNDED wait so a slow/flaky GitHub fetch never blocks the request for
+    long. Any arch not fetched within `wait` keeps mirroring in the BACKGROUND (daemon), so a later re-pin picks it
+    up → the checksum gate self-heals instead of staying fail-open. {} if the tag is unresolvable."""
+    owner = (owner or "").strip()
+    if not owner or "/" not in owner:
+        return {}
+    want = [a for a in (arches or TURN_ARCHES) if a in TURN_ARCHES] or list(TURN_ARCHES)
+    now = time.time()
+    if not force:
+        c = _TURN_PIN_CACHE.get(owner)
+        if c and (now - c["at"]) < _TURN_PIN_TTL and all(a in (c["pin"].get("sums") or {}) for a in want):
+            return c["pin"]                          # cached AND covers every wanted arch
+    tag = _resolve_turn_tag(owner)
+    if not tag:
+        c = _TURN_PIN_CACHE.get(owner)
+        return c["pin"] if c else {}                 # keep the last good pin if the tag is momentarily unreachable
+    sums, threads = {}, []
+    for a in want:
+        with _TURN_SUMS_LOCK:
+            cached = _TURN_SUMS.get(owner + "|" + tag + "|" + a)
+        if cached:
+            sums[a] = cached
+        else:                                        # daemon: keeps mirroring past the deadline (populates _TURN_SUMS + the store)
+            t = threading.Thread(target=turn_sum, args=(owner, tag, a), daemon=True)
+            t.start(); threads.append((a, t))
+    deadline = now + max(1, wait)
+    for a, t in threads:
+        t.join(max(0.1, deadline - time.time()))
+        with _TURN_SUMS_LOCK:
+            s = _TURN_SUMS.get(owner + "|" + tag + "|" + a)
+        if s:
+            sums[a] = s
+    pin = {"tag": tag, "sums": sums}
+    _TURN_PIN_CACHE[owner] = {"pin": pin, "at": now}   # a late daemon fills _TURN_SUMS → the next re-pin returns the complete pin
+    return pin
 
 
 def _remote_version_loop():
@@ -277,6 +533,8 @@ def _turn_autoupdate_tick():
             # The operator recreates it as a free-turn-proxy proxy; one already on -obf-profile updates normally.
             if fork == "samosvalishe" and "-wrap" in (tp.get("params") or "") and "-obf" not in (tp.get("params") or ""):
                 continue
+            if _turn_hold_get(nid, svc):                 # operator rolled this proxy back to a specific version → don't auto-roll it forward
+                continue
             if fork not in latest:
                 latest[fork] = _resolve_turn_tag(owner)
             tag = latest[fork]
@@ -285,7 +543,8 @@ def _turn_autoupdate_tick():
             pend = (nodes[nid].get("turn") or {}).get(svc)
             if pend and pend.get("action") == "reinstall":   # a reinstall is already staged — don't double-stage
                 continue
-            nodes[nid].setdefault("turn", {})[svc] = {"action": "reinstall", "at": now_ts, "owner": owner, "auto": True}
+            nodes[nid].setdefault("turn", {})[svc] = {"action": "reinstall", "at": now_ts, "owner": owner, "auto": True,
+                                                      "pin": turn_pin(owner, _node_arch(deps, nid))}   # checksum gate (this node's arch; bounded+bg)
             changed = True
             with contextlib.suppress(Exception):
                 ev_append(deps["roster_path"], "node", nid, "Auto-updating turn-proxy", svc + " → " + tag)
@@ -762,13 +1021,29 @@ def peer_label(roster, p):
 
 
 def clean_target(t):
-    """Normalise one deployment target: {node, iface, ip, type}."""
-    return {
+    """Normalise one deployment target: {node, iface, ip, type, primary?}. `primary` marks the peer's
+    preferred connection (ordered first on the subscription page); at most one target carries it."""
+    out = {
         "node": t.get("node", ""),
         "iface": t.get("iface", ""),
         "ip": (t.get("ip", "") or "").split("/")[0],
         "type": t.get("type", "") or "wg",
     }
+    if t.get("primary"):
+        out["primary"] = True
+    return out
+
+
+def _one_primary(targets):
+    """Keep `primary` on at most ONE target (the first so flagged); a peer with none defaults to its first target."""
+    seen = False
+    for t in targets:
+        if t.get("primary"):
+            if seen:
+                t.pop("primary", None)
+            else:
+                seen = True
+    return targets
 
 
 def clean_overrides(raw):
@@ -906,14 +1181,61 @@ def count_plaintext_configs(config_dir):
     return n
 
 
+def _norm_vk_links(fields, u):
+    """The user's VK call links as an ordered list — index 0 is the PRIMARY. `vk_link` (legacy single field) is
+    kept in sync = the primary, so every existing reader keeps working. Migrates an old single vk_link into the
+    list on first touch. A `vk_link` field in the update makes that URL the primary (moved to the front)."""
+    prev = u.get("vk_links")
+    if not isinstance(prev, list):
+        prev = [u["vk_link"]] if u.get("vk_link") else []            # migrate the legacy single link
+    links = fields.get("vk_links", prev)
+    if not isinstance(links, list):
+        links = []
+    links = [s for s in (str(x).strip()[:512] for x in links) if s][:16]   # cleaned, non-empty, capped
+    seen = set(); links = [x for x in links if not (x in seen or seen.add(x))]   # dedupe, keep order
+    if "vk_link" in fields:                                          # legacy single-field save → make it the primary
+        vk = str(fields.get("vk_link") or "").strip()[:512]
+        links = ([vk] + [x for x in links if x != vk]) if vk else links
+    return links, (links[0] if links else "")
+
+def coerce_expiry(v):
+    """Parse an API expiry value into epoch seconds (int). Returns None for garbage (caller rejects);
+    0 for an empty/absent value (= no expiry / clear). Expiry mirrors the block flag but with an
+    effective DATE — an expired peer/user is dropped from every node's desired set, just like a block."""
+    if v is None or v == "":
+        return 0
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else 0
+
+
+def is_expired(rec, nowv):
+    """True if rec (a user or a peer) carries an expiry date that has already passed. 0/absent = never expires."""
+    exp = (rec or {}).get("expiry") or 0
+    return bool(exp) and nowv >= int(exp)
+
+
+def fmt_day(epoch):
+    """An expiry epoch as a plain YYYY-MM-DD (server-local) — only for human-readable API error messages."""
+    try:
+        return time.strftime("%Y-%m-%d", time.localtime(int(epoch)))
+    except Exception:
+        return "?"
+
+
 def user_set(roster, uid, fields, now):
     u = roster["users"].get(uid) or {}
+    vk_links, vk_link = _norm_vk_links(fields, u)
     roster["users"][uid] = {
         "id": uid,
         "name": fields.get("name", u.get("name", "")),
         "tag": fields.get("tag", u.get("tag", "")),
         "note": fields.get("note", u.get("note", "")),
-        "vk_link": fields.get("vk_link", u.get("vk_link", "")),   # per-user VK call link for their turn-proxy configs
+        "vk_link": vk_link,       # the PRIMARY VK call link (single-link forks + the panel-wide fallback use this)
+        "vk_links": vk_links,     # all of the user's VK call links, ordered (primary first) — freeturn passes them all
+        "expiry": int(fields.get("expiry", u.get("expiry", 0)) or 0),   # epoch secs; 0 = no expiry. Subscription-wide.
         "created_at": u.get("created_at", now),
         "modified_at": now,
     }
@@ -932,15 +1254,16 @@ def peer_set(roster, pid, fields, now):
         "title": (fields.get("title", p.get("title", "")) or "")[:64],   # operator label to tell devices apart
         "pubkey": fields.get("pubkey", p.get("pubkey", "")),
         "psk": fields.get("psk", p.get("psk", "")),
-        "targets": [clean_target(t) for t in targets],
+        "targets": _one_primary([clean_target(t) for t in targets]),   # at most one target keeps `primary`
         "created_at": p.get("created_at", now),
         "modified_at": now,
     }
     if ov:                                                    # keep the roster tidy: no override key on a default peer
         rec["overrides"] = ov
-    # Block state (declarative access revoke) is preserved across every other mutation — an update-target or
-    # rekey must not silently un-block a peer. Only /api/peers/{block,unblock} change it.
-    for k in ("disabled", "disabled_at", "unblock_at"):
+    # Block state (declarative access revoke) + expiry (timed revoke) are preserved across every other mutation —
+    # an update-target or rekey must not silently un-block or un-expire a peer. Only the block/unblock endpoints
+    # and /api/peers/update (expiry) change these. An explicit falsy value (e.g. expiry=0) clears the key.
+    for k in ("disabled", "disabled_at", "unblock_at", "expiry"):
         v = fields.get(k, p.get(k))
         if v:
             rec[k] = v
@@ -1183,6 +1506,13 @@ def write_sub_serve(deps, base_alt=""):
            "theme_color_light": (ps.get("theme_color_light") or ""),
            # per-fork + per-protocol colour overrides so the sub's fork tags + WG/AWG tabs match the admin's picks
            "turn_fork_colors": (ps.get("turn_fork_colors") or {}),
+           "turn_client_settings": (ps.get("turn_client_settings") or {}),   # SETTINGS SPLIT: sub page generates client configs with the admin's chosen app values (non-secret)
+           "turn_client_default": (ps.get("turn_client_default") or {}),     # per (fork, OS) END-USER default app the sub page hands out {fork: {os: client_id}}
+           "turn_server_defaults": (ps.get("turn_server_defaults") or {}),   # per-fork server-flag defaults (pre-fill new proxies)
+           # the turn catalog (server→client/app/scheme/store metadata) so swg-sub can offer download/open-app
+           # buttons without a hardcoded fork table. Non-secret (public app links + wire-format identity only).
+           "turn_catalog": turn_catalog_view(),
+           "wg_catalog": wg_catalog_view(),   # WG/AWG client apps + per-OS resolved installer (the sub's download bubble)
            "iface_colors": (ps.get("iface_colors") or {}),
            # per-node colours (keyed by node id) so the sub renders each server name in its panel colour
            "node_colors": _sub_node_colors(deps),
@@ -1899,6 +2229,11 @@ def sub_read_data(deps, roster, describe, token):
     if uid is None:
         return None
     user = (roster.get("users") or {}).get(uid) or {}
+    nowv = int(time.time())
+    # EXPIRED subscription: the token still resolves (the sub record stays enabled — expiry is a live date test,
+    # not a suspend), but serve no peers or secrets. The page renders the centered "Subscription expired" screen.
+    if is_expired(user, nowv):
+        return {"expired": True, "user": {"id": uid, "name": user.get("name") or ""}}
     live = sub_live_peers(roster, uid)
     blobs = sub_gc_user(deps, uid, roster)            # read-time reconcile against the roster
     peers_out = []
@@ -1918,8 +2253,10 @@ def sub_read_data(deps, roster, describe, token):
                 "awg": meta.get("awg_params") or {},
                 "primary": (n_t > 1 and i == 0),      # the default deployment, tagged first
             })
-        peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts})
-    return {"user": {"id": uid, "name": user.get("name") or ""}, "peers": peers_out}
+        peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
+                          "disabled": bool(p.get("disabled")), "expired": is_expired(p, nowv),
+                          "expiry": int(p.get("expiry") or 0)})
+    return {"user": {"id": uid, "name": user.get("name") or "", "expiry": int(user.get("expiry") or 0)}, "peers": peers_out}
 
 
 def nodes_load(path):
@@ -2023,6 +2360,36 @@ def migrate_provider_defaults(nodes_path, panel_settings_path):
     ps["providers_defaulted"] = True
     save_critical(panel_settings_path, json.dumps(ps, indent=2) + "\n")   # rotating backups (recoverable)
     print("provider defaults: kept %d in-use provider(s) enabled; new providers now default off" % len(inuse), flush=True)
+
+
+def migrate_enabled_turn_forks(nodes_path, panel_settings_path, stats_dir):
+    """One-time: enabled_turn_forks (the install-a-fork picker filter) defaults to a small set for a fresh fleet.
+    An EXISTING fleet whose proxies are OTHER forks would, after an update, drop those forks out of the install
+    picker AND the Overview traffic-by-fork chart until re-enabled. Seed enabled_turn_forks with the forks a node
+    ALREADY runs (from the persisted snapshot mirrors), unioned with the defaults, so nothing already deployed goes
+    stale. This is purely a panel-UI setting — it NEVER touches deployed proxies, node desired sets, or any config a
+    client has already imported. Idempotent + conservative: runs only when the key is genuinely unset in the SAVED
+    file (respects an explicit choice), and only writes when a non-default fork is actually deployed (a fresh fleet /
+    default-only fleet is left unset so it tracks the dynamic default)."""
+    raw = load_settings_critical(panel_settings_path)   # RAW saved file (not merged) → "unset" is distinguishable
+    if not isinstance(raw, dict) or "enabled_turn_forks" in raw:
+        return
+    default = set(PANEL_SETTINGS_DEFAULTS.get("enabled_turn_forks") or [])
+    forks = set(default)
+    nodes = load_json(nodes_path, {}) or {}
+    if isinstance(nodes, dict):
+        for nid, cfg in nodes.items():
+            sf = (cfg or {}).get("stats_file") or ("stats-%s.json" % nid)
+            snap = load_json(os.path.join(stats_dir, sf), {})
+            for tp in ((snap or {}).get("turn_proxies") or []):
+                fk = turn_fork((tp or {}).get("service") or "")
+                if fk:
+                    forks.add(fk)
+    if forks == default:
+        return   # nothing deployed beyond the defaults → leave unset so it keeps tracking the built-in default
+    raw["enabled_turn_forks"] = sorted(forks)
+    save_critical(panel_settings_path, json.dumps(raw, indent=2) + "\n")   # rotating backups (recoverable)
+    print("enabled_turn_forks: seeded from deployed proxies -> %s" % sorted(forks), flush=True)
 
 
 def normalize_stats_files(nodes_path, stats_dir):
@@ -2186,6 +2553,7 @@ def desired_for_node(roster, node_id):
     — so swg-noded / swg-agent are untouched by the schema change.
     """
     users = roster.get("users") or {}
+    nowv = int(time.time())
     out = {}
     for p in (roster.get("peers") or {}).values():
         if not isinstance(p, dict):
@@ -2193,7 +2561,9 @@ def desired_for_node(roster, node_id):
         u = users.get(p.get("user_id")) or {}
         # BLOCKED access: a disabled peer (or every peer of a disabled user) is dropped from the desired set,
         # so the node removes it on its next sync and tears down any live session. Unblock re-adds it.
-        if p.get("disabled") or u.get("disabled"):
+        # EXPIRED access is the same drop, but triggered by a date passing (peer or its owning subscription) —
+        # enforced live here so no scheduler is needed; the peer reappears automatically if the date is extended.
+        if p.get("disabled") or u.get("disabled") or is_expired(p, nowv) or is_expired(u, nowv):
             continue
         uname = u.get("name", "")
         # node-side label (a .conf comment): "user · title" so the operator can tell devices apart
@@ -2266,6 +2636,44 @@ def _missing_ifaces(c, snap):
                     "public_key": blessed, "key_source": key_src}
         if key_src == "vault":   # the escrowed ciphertext blob — the browser unseals it (operator-unlock) at restore
             out[ifn]["key_blob"] = ov.get("key_blob")
+    return out
+
+def _ghost_refs(roster):
+    """{node_id: {iface: [peer_id,...]}} — every (node, iface) the roster references, walked ONCE per
+    /api/state (not per node) so ghost detection adds no measurable cost."""
+    refs = {}
+    for pid, p in (roster.get("peers") or {}).items():
+        for t in (p.get("targets") or []):
+            n, i = t.get("node"), t.get("iface")
+            if n and i:
+                refs.setdefault(n, {}).setdefault(i, []).append(pid)
+    return refs
+
+def _ghost_ifaces(c, snap, refs, online):
+    """GHOST interfaces: the roster still references (node, iface) but the node no longer reports it AND the
+    panel has NO persisted _lastcfg for it — a lost/keyless interface with nothing to restore (the user's
+    original 'why no restore, no missing interface?' case: wg1 gone, _lastcfg None). _missing_ifaces skips
+    these (it requires _lastcfg), so Restore can't help — the ONLY fix is recreate-fresh + rekey every peer
+    (clients re-import). Warm-but-keyless ifaces (a _lastcfg exists but key_source '') DO surface via
+    _missing_ifaces and are handled there. Mesh/system links self-heal → excluded. Keyed by iface →
+    {peer_ids, peer_count}.
+    ONLINE-GATED: an OFFLINE node's interfaces aren't 'lost' — we just can't see them; only a node that's
+    reporting NOW but without the iface is a real ghost (the SPA adds a further ~2min grace on top)."""
+    if not online or not refs:
+        return {}
+    live = snap.get("interfaces") or {}
+    known = c.get("ifaces") or {}
+    out = {}
+    for ifn, pids in (refs or {}).items():
+        if ifn in live:                      # node still has it → not a ghost
+            continue
+        ov = known.get(ifn) or {}
+        if ov.get("system"):                 # mesh/system link → self-heals
+            continue
+        if ov.get("_lastcfg"):               # has a saved config → surfaced (recoverable or keyless) via _missing_ifaces
+            continue
+        uniq = sorted(set(pids))
+        out[ifn] = {"peer_ids": uniq, "peer_count": len(uniq)}
     return out
 
 # Node lifecycle status. A script (install / convert / update / uninstall) signals the panel where it is:
@@ -2807,6 +3215,1079 @@ CATALOG_PROVIDERS = {
 CATALOG_PROVIDER_ORDER = ["mc", "v2", "ls", "rf", "bm"]
 CATALOG_TTL = 86400
 CATALOG_PATH = "/var/lib/swg-panel/catalog-index.json"          # overridden from the state dir in main()
+
+# ── Turn-proxy catalog — the SINGLE source of truth ──────────────────────────────────────────────────────
+# Unifies what used to be triplicated: the SPA's TURN_FORKS + TURN_WG_ONLY, this server's turn_fork* helpers,
+# and turn-artifacts.js's per-fork client encoders. The panel OWNS it; the SPA (via /api/state.turn_catalog)
+# and swg-sub (via subs/serve.json) consume it instead of their own hardcoded copies. The curated built-ins
+# below reproduce the six blessed forks EXACTLY (owners, obfuscation flags, colours, wg/awg support) — this is
+# a zero-behaviour-change keystone; the dynamic settings schema + supply-chain checksums + client store links
+# land on top of it in later phases (see docs/TURN-PROXY-OVERHAUL-PLAN.md).
+#   • server = installable ON A NODE (what we used to call a "fork").
+#   • client = the END-USER app that consumes a server (the servers⁄clients split — 1.a).
+# `wrap`/`keyflag` are the fork's default obfuscation ExecStart flags (the create form pre-fills them + a fresh
+# key). `protocols` supersedes TURN_WG_ONLY (a server missing "awg" is WireGuard-only). `settings` (typed
+# per-knob schema, Axis 1) and client `platforms` store/APK URLs (Axis 3) are stubs now — the SHAPE is fixed,
+# the values fill in later. `encoder` ids correspond to the turn-artifacts.js branches.
+TURN_CLIENTS = {
+    "wingsv":      {"name": "WINGS V",        "encoder": "wingsv",   "scheme": "wingsv://",      "platforms": {"android": {"github": "https://github.com/WINGS-N/WINGSV/releases"},
+                                                                                                   "windows": {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"},
+                                                                                                   "linux":   {"name": "WINGS DeX", "github": "https://github.com/WINGS-N/WINGSV_DeX/releases"}}},
+    "vkturnproxy": {"name": "VK TURN Proxy",  "encoder": "anton48",  "scheme": "vkturnproxy://", "platforms": {"ios": {"github": "https://github.com/anton48/vk-turn-proxy-ios/releases", "appstore": "https://testflight.apple.com/join/ANm6cmDv"}}},   # iOS has no App Store listing; the app installs via TestFlight (the .ipa in Releases needs self-signing → advanced only)
+    "wgturn":      {"name": "WireGuard-TURN", "encoder": "kiper292", "scheme": None,             "platforms": {"android": {"github": "https://github.com/kiper292/wireguard-turn-android/releases"}}},
+    "freeturn":    {"name": "FreeTurn",       "encoder": "freeturn", "scheme": "freeturn://",    "platforms": {"android": {"github": "https://github.com/samosvalishe/turn-proxy-android/releases"}}},
+    "mysorez":     {"name": "VK TURN Proxy",  "encoder": "vktgz",    "scheme": None,             "platforms": {"android": {"github": "https://github.com/MYSOREZ/vk-turn-proxy-android/releases"}}},
+    "sidecar":     {"name": "Sidecar",         "encoder": "sidecar",  "scheme": None,             "platforms": {   # the Go CLI ("sidecar" = a helper binary run beside WireGuard): samosvalishe/free-turn-proxy ships client-<os>-<arch>; flags match the shared vk-turn-proxy family, so it drives cacggghp/Moroka8 relays too (per-author builds offered)
+                       "linux":   {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
+                       "windows": {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
+                       "macos":   {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"},
+                       "android": {"github": "https://github.com/samosvalishe/free-turn-proxy/releases"}}},   # client-android-arm64 → run it under Termux (the sub shows Termux steps)
+}
+# The plain WG/AWG client apps (NOT turn forks) — Amnezia VPN / AmneziaWG / WireGuard. Same `platforms[os]` shape as
+# TURN_CLIENTS so they ride the SAME latest-release resolver (_turn_warm_assets → _client_platforms_resolved): where an
+# OS has a `github` releases dir we resolve the newest per-OS installer into `url` (the sub's per-row download icon);
+# store/`url`/`page` links stay verbatim. `page` = the app's human downloads page (the sub row body links here).
+WG_APPS = {
+    "amneziavpn": {"name": "AmneziaVPN", "page": "https://amnezia.org/en/downloads",
+                   "platforms": {"android": {"store": "https://play.google.com/store/apps/details?id=org.amnezia.vpn"},
+                                 "ios":     {"store": "https://apps.apple.com/app/amneziavpn/id1600529900"},
+                                 "macos":   {"store": "https://apps.apple.com/app/amneziavpn/id1600529900"},   # Apple-Silicon Macs run the iOS app
+                                 "windows": {"github": "https://github.com/amnezia-vpn/amnezia-client/releases"},
+                                 "linux":   {"github": "https://github.com/amnezia-vpn/amnezia-client/releases"}}},
+    "amneziawg":  {"name": "AmneziaWG", "page": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases",
+                   "platforms": {"android": {"store": "https://play.google.com/store/apps/details?id=org.amnezia.awg"},
+                                 "ios":     {"store": "https://apps.apple.com/app/amneziawg/id6478942365"},
+                                 "macos":   {"store": "https://apps.apple.com/app/amneziawg/id6478942365"},
+                                 "windows": {"github": "https://github.com/amnezia-vpn/amneziawg-windows-client/releases"}}},
+    "wireguard":  {"name": "WireGuard", "page": "https://www.wireguard.com/install/",
+                   "platforms": {"android": {"store": "https://play.google.com/store/apps/details?id=com.wireguard.android"},
+                                 "ios":     {"store": "https://apps.apple.com/app/wireguard/id1441195209"},
+                                 "macos":   {"store": "https://apps.apple.com/app/wireguard/id1451685025"},
+                                 "windows": {"url": "https://download.wireguard.com/windows-client/wireguard-installer.exe"},   # stable direct installer
+                                 "linux":   {"page": "https://www.wireguard.com/install/"}}},   # per-distro instructions (no single file)
+}
+# Per-fork `settings` = the typed schema for the obfuscation knobs (Axis 1). The SPA renders a form from it and
+# SERIALIZES it back to the ExecStart params tail (the wire truth the node still applies verbatim); a raw textarea
+# stays as the escape hatch, so a fork flag we don't model is never lost. Each descriptor:
+#   {key, flag, type, default, label, help?, secret?, rotatable?, values?, len?, showIf?}
+#   type: bool  (bare flag when true) · enum (-flag <value>) · flagenum (mutually-exclusive; each value carries its
+#         own flag) · hexkey (-flag <64hex>, generate/rotate + masked) · string/int (-flag <value>)
+# The defaults below reproduce today's `wrap`+`keyflag` strings EXACTLY (verified against the forks' `server -h`),
+# so a new install serialises byte-identically to the old free-text default. Only verified flags are modelled.
+_TS_WRAPKEY = {"key": "wrap_key", "flag": "-wrap-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True,
+               "label": "Wrap key", "help": "64 hex chars — must match the client app. Changing it breaks every client using the old key."}
+# The VK TURN Proxy Android app is a core-LAUNCHER: it loads a DIFFERENT core per server fork, so its knobs differ per
+# fork. One schema per core (the encoder, turn-artifacts.js vktgzCoreFlags, reads the matching set); the fork→schema map
+# below (_CLIENT_SCHEMA_BY_FORK) picks the right one so a fork never shows knobs its core ignores. `threads` (-n) +
+# `rawFlags` (the app's Raw-mode box) are common to every core.
+_CC_THREADS  = {"key": "threads", "type": "int", "default": "", "label": "Worker threads", "help": "Stream/worker count (-n). Blank = the app's default (8)."}
+_CC_RAWFLAGS = {"key": "rawFlags", "type": "textarea", "default": "", "label": "Extra flags (raw)", "placeholder": "-turn 1.2.3.4:3478", "help": "Extra command arguments, one per line — appended to the app's flags (the app's Raw-mode 'Флаги и аргументы'). Blank = none."}
+# cacggghp CORE (plain): the app's five built-in customFlags.
+_CACGGGHP_CORE_CS = [_CC_THREADS,
+                     {"key": "udp", "type": "bool", "default": True, "label": "UDP transport", "help": "Reach the TURN relay over UDP (-udp). On by default in the app."},
+                     {"key": "manualCaptcha", "type": "bool", "default": False, "label": "Manual captcha", "help": "Solve the VK captcha manually in the app (--manual-captcha)."},
+                     {"key": "debug", "type": "bool", "default": False, "label": "Debug logging", "help": "Verbose app logging (-debug)."},
+                     {"key": "linkArgument", "type": "enum", "values": ["-vk-link", "-yandex-link"], "default": "-vk-link", "label": "Link source", "help": "Which call-link source the app uses: -vk-link = VK Calls · -yandex-link = Yandex."},
+                     _CC_RAWFLAGS]
+# MYSOREZ CORE (mzrtp): password-derived AEAD + VK captcha. The password rides from the SERVER (-password), so it's not a
+# client knob; captcha/auth default to the resilient anonymous+auto path (the app's WebView satisfies URL captchas).
+_MYSOREZ_CORE_CS = [_CC_THREADS,
+                    {"key": "vkAnonPath", "type": "enum", "values": ["vkcalls", "legacy"], "default": "vkcalls", "label": "VK bypass path", "help": "Anonymous credential path (-vk-anon-path): vkcalls = the v1.5.x api.vk.me flow that usually SKIPS the captcha (recommended) · legacy = the old path. Needs the LATEST MYSOREZ core."},
+                    {"key": "captchaMode", "type": "enum", "values": ["auto", "wv", "rjs"], "default": "auto", "label": "Captcha mode", "help": "How the MYSOREZ core solves the VK captcha (-captcha-mode): auto = Go smart-captcha solver (recommended) · wv = in-app WebView (NOT wired to feed the token back) · rjs = remote JS."},
+                    {"key": "vkAuth", "type": "enum", "values": ["anonymous", "account"], "default": "anonymous", "label": "VK auth", "help": "VK authentication (-vk-auth): anonymous = proof-of-work (recommended) · account = needs a creds bridge the app doesn't provide."},
+                    {"key": "deviceId", "type": "string", "default": "", "label": "Device ID", "help": "Stable device id (-device-id) VK ties the session to. Blank = the core generates one."},
+                    _CC_RAWFLAGS]
+# An rtpopus CORE (Moroka8 / free-turn) loaded into the app as a universal launcher: the obf key rides from the SERVER
+# and those cores auto-solve the captcha, so only the common knobs apply.
+_RTPOPUS_CORE_CS = [_CC_THREADS, _CC_RAWFLAGS]
+TURN_SERVERS = {
+    "cacggghp":     {"label": "cacggghp",     "owner": "cacggghp/vk-turn-proxy",        "wrap": "",                     "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#5FB0E0", "light": "#2C7EC0"}, "clients": ["mysorez", "vkturnproxy", "sidecar"],    "reload": "restart",
+                     "settings": [], "client_settings": _CACGGGHP_CORE_CS},
+    "MYSOREZ":      {"label": "MYSOREZ",      "owner": "MYSOREZ/vk-turn-proxy",         "wrap": "-wrap",                "keyflag": "-password", "protocols": ["wg", "awg"], "color": {"dark": "#4FC7B4", "light": "#12897A"}, "clients": ["mysorez", "sidecar"],    "reload": "restart",
+                     # MYSOREZ's own `mzrtp` obfuscation: `-wrap -password <secret>` (the core HKDFs the password to a ChaCha20-Poly1305 key). `-wrap` FATAL-requires `-password`, so the password field carries it; leaving it blank serialises to plain (no -wrap). The client (VK TURN Proxy app + MYSOREZ core) matches it via -password — see turn-artifacts.js vktgz.
+                     "settings": [{"key": "wrap", "flag": "-wrap", "type": "bool", "default": True, "label": "Obfuscation (WRAP)", "help": "MYSOREZ mzrtp obfuscation (-wrap) — needs a password. Off = plain (VK throttles unobfuscated traffic)."},
+                                  {"key": "password", "flag": "-password", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Password", "help": "Shared secret the core HKDFs to the AEAD key — must match the client. Required when WRAP is on. Auto-generated."}],
+                     "client_settings": _MYSOREZ_CORE_CS},   # the VK TURN Proxy app loads the MYSOREZ CORE here → captcha/vk-auth/device knobs (the vktgz encoder emits -password + these)
+    "WINGS-N":      {"label": "WINGS-N",      "owner": "WINGS-N/vk-turn-proxy",          "wrap": "-wrap-mode on",        "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#C98BE0", "light": "#9B4FC7"}, "clients": ["wingsv", "vkturnproxy", "sidecar"],     "reload": "restart",
+                     "settings": [{"key": "wrap_mode", "flag": "-wrap-mode", "type": "enum", "values": ["on", "off"], "default": "on", "label": "Obfuscation"}, _TS_WRAPKEY],
+                     "client_settings": [{"key": "threads", "type": "int", "default": "", "label": "Worker threads", "help": "WINGS V worker count (-n). Blank = the app's own default."},
+                                         {"key": "sessionMode", "type": "enum", "values": ["auto", "mainline", "mux"], "default": "auto", "label": "Session mode", "help": "TURN session multiplexing (Turn.session_mode). auto = the app decides; mux shares one session across streams."},
+                                         {"key": "browserFingerprint", "type": "enum", "values": ["auto", "chrome", "edge", "safari", "firefox"], "default": "auto", "label": "Browser fingerprint", "help": "TLS/HTTP imitation family the relay presents (Turn.browser_fingerprint). auto = random per session."},
+                                         {"key": "runtimeMode", "type": "enum", "values": ["auto", "vpn", "proxy"], "default": "auto", "label": "Runtime mode", "help": "How the app runs the tunnel (Turn.runtime_mode). auto = the app decides; vpn = system VPN; proxy = local proxy."},
+                                         {"key": "userDns", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS resolvers the app uses (Turn.user_dns). Blank = the app's default."},
+                                         {"key": "manualCaptcha", "type": "bool", "default": False, "label": "Manual captcha", "help": "Force manual captcha entry in the app (Turn.manual_captcha). Off = the app's default."},
+                                         {"key": "captchaSolver", "type": "enum", "values": ["auto", "v2", "v1", "bypass"], "default": "auto", "label": "Captcha auto-solver", "help": "How the app solves the VK captcha (Turn.captcha_auto_solver): auto = the app's own default (Enhanced) · v2 = Enhanced · v1 = Classic · bypass = solve via vk.me."},
+                                         {"key": "restartOnNetworkChange", "type": "bool", "default": False, "label": "Restart on network change", "help": "Reconnect when the device network changes (Turn.restart_on_network_change). Off = the app's default."},
+                                         {"key": "useUDP", "type": "bool", "default": True, "label": "UDP transport", "help": "Reach the TURN relay over UDP (Turn.use_udp). On by default."},
+                                         {"key": "noObfuscation", "type": "bool", "default": False, "label": "Disable obfuscation", "help": "Turn off the app's traffic obfuscation (Turn.no_obfuscation). Off = the app's default (obfuscation on)."}]},
+    "samosvalishe": {"label": "samosvalishe", "owner": "samosvalishe/free-turn-proxy",   "wrap": "-obf-profile rtpopus", "keyflag": "-obf-key",  "protocols": ["wg"],        "color": {"dark": "#E0A85F", "light": "#C07A1E"}, "clients": ["freeturn", "vkturnproxy", "sidecar"],   "reload": "restart",
+                     "settings": [{"key": "obf_profile", "flag": "-obf-profile", "type": "enum", "values": ["none", "rtpopus", "rtpopus2", "rtpopus3"], "default": "rtpopus", "label": "Obfuscation profile", "help": "rtpopus* dress the traffic as an RTP/Opus call; none = plain. Must match the FreeTurn client."},
+                                  {"key": "obf_key", "flag": "-obf-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Obfuscation key", "help": "64 hex chars — must match the FreeTurn client."}],
+                     "client_settings": [{"key": "n", "type": "int", "default": "", "label": "Streams", "help": "Parallel TURN streams (-n). Blank = the app's default (10)."},
+                                         {"key": "spc", "type": "int", "default": "", "label": "Streams per credential", "help": "Streams sharing one VK credential (-streams-per-cred). Blank = default (10)."},
+                                         {"key": "dns", "type": "enum", "values": ["auto", "plain", "doh"], "default": "auto", "label": "DNS mode", "help": "Resolver mode (-dns-mode). auto = the app decides."},
+                                         {"key": "dnss", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS servers (-dns-servers). Blank = the app's default."},
+                                         {"key": "mcap", "type": "bool", "default": False, "label": "Manual captcha", "help": "Solve the VK captcha manually in the app (-manual-captcha)."}]},
+    "Moroka8":      {"label": "Moroka8",      "owner": "Moroka8/vk-turn-proxy",          "wrap": "-wrap",                "keyflag": "-wrap-key", "protocols": ["wg", "awg"], "color": {"dark": "#E07A9A", "light": "#C24468"}, "clients": ["sidecar", "mysorez", "vkturnproxy"],    "reload": "restart",
+                     "settings": [{"key": "wrap", "flag": "-wrap", "type": "bool", "default": True, "label": "WRAP"}, _TS_WRAPKEY]},
+    "kiper292":     {"label": "kiper292",     "owner": "kiper292/vk-turn-proxy",         "wrap": "",                     "keyflag": "-wrap-key", "protocols": ["wg"],        "color": {"dark": "#6FD9A8", "light": "#12A46B"}, "clients": ["wgturn", "vkturnproxy", "sidecar"],     "reload": "restart",
+                     "settings": [],
+                     "client_settings": [{"key": "streamNum", "type": "int", "default": 4, "label": "Streams", "help": "Parallel TURN streams (#@wgt:StreamNum, app range 1–16)."},
+                                         {"key": "streamsPerCred", "type": "int", "default": 4, "label": "Streams per credential", "help": "Streams sharing one VK credential (#@wgt:StreamsPerCred)."},
+                                         {"key": "watchdogTimeout", "type": "int", "default": "", "label": "Watchdog timeout", "help": "Reconnect after N seconds idle (#@wgt:WatchdogTimeout). Blank = off."}]},
+    "anton48":      {"label": "anton48",      "owner": "anton48/vk-turn-proxy",          "wrap": "-wrap-srtp",           "keyflag": "-wrap-key", "protocols": ["wg"],        "color": {"dark": "#D9CF5F", "light": "#8E8420"}, "clients": ["vkturnproxy", "mysorez", "sidecar"], "reload": "restart",
+                     "settings": [{"key": "srtp_mode", "type": "flagenum", "default": "wrap", "label": "SRTP mode",
+                                   "help": "WRAP = keyed (the key must match the app's WRAP KEY field); SRTP = keyless.",
+                                   "values": [{"value": "wrap", "flag": "-wrap-srtp", "label": "WRAP (keyed)"}, {"value": "plain", "flag": "-srtp", "label": "SRTP (keyless)"}]},
+                                  {"key": "wrap_key", "flag": "-wrap-key", "type": "hexkey", "len": 64, "secret": True, "rotatable": True, "label": "Wrap key", "showIf": {"srtp_mode": "wrap"}}],
+                     "client_settings": [{"key": "numConnections", "type": "int", "default": 30, "min": 1, "max": 50, "label": "Connections", "help": "Parallel TURN connections (1–50). The VK TURN Proxy app default is 30."},
+                                         {"key": "useUDP", "type": "bool", "default": False, "label": "UDP control transport", "help": "Off = TCP-control (bypasses VK's per-cred allocation-rate throttle — recommended). On only if your network throttles TCP to the relay."},
+                                         {"key": "dnsServers", "type": "text", "default": "", "label": "Custom DNS", "help": "Comma-separated DNS resolvers. Blank = the peer's own config DNS (else 1.1.1.1)."},
+                                         {"key": "turnServerOverride", "type": "text", "default": "", "label": "TURN relay override", "help": "Pin fresh connections to a specific TURN relay (ip:port). Blank = the VK-returned relay."},
+                                         {"key": "vkAuth", "type": "bool", "default": False, "label": "VK cookie auth", "help": "Use the VK cookie-auth path instead of anonymous proof-of-work."},
+                                         {"key": "obfProfile", "type": "enum", "values": ["auto", "rtpopus", "rtpopus2", "rtpopus3"], "default": "auto", "label": "Obfuscation profile", "help": "For rtpopus (WRAP-S) servers: which RTP/Opus profile the app mimics (Turn.obfProfile) — must match the server. auto = the app's default (rtpopus)."}]},
+}
+# client_settings = the app-DEDICATED knobs (per SETTINGS SPLIT): admin-chosen VALUES fed into the client
+# config/QR/link, stored per-fork in panel_settings.turn_client_settings. Server + coupled settings live in
+# `settings` above; the client encoder (turn-artifacts.js) reads these + reuses the server/coupled values.
+# Display order: cacggghp + WINGS-N pinned first; the rest by combined (server + client-app) GitHub stars,
+# descending — snapshot fetched 2026-07-16 (static, intentionally not live): MYSOREZ 17+443, samosvalishe
+# 141+314, kiper292 123+267, anton48 29+165, Moroka8 75+0.
+TURN_SERVER_ORDER = ["cacggghp", "WINGS-N", "MYSOREZ", "samosvalishe", "kiper292", "anton48", "Moroka8"]
+
+# A client APP's knob schema is defined once (on its NATIVE server's client_settings) and shared wherever that app
+# is offered — so the Clients tab edits it in ONE place. Maps each client id → the server that natively runs it.
+_CLIENT_NATIVE_FORK = {"wingsv": "WINGS-N", "vkturnproxy": "anton48", "wgturn": "kiper292",
+                       "freeturn": "samosvalishe", "mysorez": "MYSOREZ", "sidecar": None}
+# Per-(server fork, client id) compatibility class for the app picker, from the wire-compat matrix (docs/compat).
+#   native        = the fork's own app/CLI in its intended mode (obfuscated, or plain for a plain fork).
+#   friendly      = a cross-fork client that still connects WITH obfuscation (the shared rtpopus wire).
+#   friendly_core = the MYSOREZ Android app loading THIS fork's own core (universal launcher) → obfuscated.
+#   plain         = connects but WITHOUT obfuscation (a working tunnel; VK throttles it).
+# A client id absent from a fork's map = no usable connection → hidden from the picker (never offer a dead pairing).
+_TURN_CLIENT_COMPAT = {
+    "cacggghp":     {"mysorez": "native",  "sidecar": "native", "vkturnproxy": "plain"},
+    "kiper292":     {"wgturn": "native",   "sidecar": "native", "vkturnproxy": "plain"},   # NO mysorez: the VK TURN app is a core-launcher with no kiper292 (proxy_v2) core → not a real pairing
+    "MYSOREZ":      {"mysorez": "native",  "sidecar": "native"},   # NO vkturnproxy: MYSOREZ hard-requires its mzrtp wrap — with -wrap on (the default) the server replaces the plain listener with a wrapped one and drops every unwrapped packet (verified in MYSOREZ/vk-turn-proxy server/main.go + wrap.go), and the VK TURN Proxy app can't speak mzrtp → it never connects. (WINGS-N differs: it dual-listens plain, so its vkturnproxy pairing works, just throttled.)
+    "Moroka8":      {"sidecar": "native",  "vkturnproxy": "friendly", "freeturn": "friendly", "mysorez": "friendly_core"},
+    "samosvalishe": {"freeturn": "native", "sidecar": "native", "vkturnproxy": "friendly", "mysorez": "friendly_core"},
+    "anton48":      {"vkturnproxy": "native", "sidecar": "friendly", "freeturn": "friendly"},
+    "WINGS-N":      {"wingsv": "native",   "sidecar": "plain", "vkturnproxy": "plain", "wgturn": "plain", "freeturn": "plain"},   # NO mysorez: core-launcher with no WINGS core to load
+}
+# The sidecar CLI has no native GUI app, so its schema lives here: just a raw-flags text area (mirrors a server
+# ExecStart's extra-flags box) appended to the client command.
+_SIDECAR_CLIENT_SETTINGS = [{"key": "rawFlags", "type": "textarea", "default": "", "label": "Extra CLI flags",
+                             "placeholder": "-turn 1.2.3.4:3478", "help": "Extra arguments appended to the client command, one per line (e.g. -turn <relay>). Blank = none."}]
+def _client_schema(client_id):
+    if client_id == "sidecar":
+        return list(_SIDECAR_CLIENT_SETTINGS)
+    fork = _CLIENT_NATIVE_FORK.get(client_id)
+    return list((TURN_SERVERS.get(fork, {}).get("client_settings") or [])) if fork else []
+# The VK TURN Proxy (mysorez) app loads a DIFFERENT core per SERVER fork, so its knobs depend on the fork — not just the
+# client id. This override + _client_schema_for resolve the per-(fork, client) schema; every other pairing falls back to
+# the client's own native-fork schema. The picker, the sub encoder, AND the settings-save validator all go through this.
+_CLIENT_SCHEMA_BY_FORK = {
+    "cacggghp":     {"mysorez": _CACGGGHP_CORE_CS},   # cacggghp core (plain) — the app's built-in flags
+    "MYSOREZ":      {"mysorez": _MYSOREZ_CORE_CS},     # MYSOREZ core (mzrtp) — captcha / vk-auth / device
+    "Moroka8":      {"mysorez": _RTPOPUS_CORE_CS},     # Moroka8 core loaded as a launcher — key from the server
+    "samosvalishe": {"mysorez": _RTPOPUS_CORE_CS},     # free-turn core loaded as a launcher
+}
+def _client_schema_for(fork, client_id):
+    ov = (_CLIENT_SCHEMA_BY_FORK.get(fork) or {}).get(client_id)
+    return list(ov) if ov is not None else _client_schema(client_id)
+# The CLI binaries that can drive each fork's server, NATIVE (the fork's own build) first. Each is a separate picker
+# entry ("sidecar@<author>") so the admin chooses which one end-users get; the sub then hands out that one. Same wire
+# for the rtpopus pair, but native is the better build + independent release cadence (see the compat matrix / plan).
+_TURN_CLI_AUTHORS = {
+    "Moroka8":      ["Moroka8", "samosvalishe"],
+    "samosvalishe": ["samosvalishe", "Moroka8"],
+    "anton48":      ["samosvalishe", "Moroka8"],   # anton's own CLI is plain-only → the rtpopus authors reach its relay
+    "MYSOREZ":      ["MYSOREZ"],
+    "cacggghp":     ["samosvalishe"],              # plain forks + WINGS: the universal free-turn CLI (plain)
+    "kiper292":     ["samosvalishe"],
+    "WINGS-N":      ["samosvalishe"],
+}
+# The upstream GitHub file(s) each client's config/link schema is CURATED from (see the turn-client-config-sources
+# notes). The roster-check button fetches these and flags drift vs the last-acknowledged commit — it can't
+# auto-translate heterogeneous source (Python/Kotlin/Go/Markdown) into a schema, so it surfaces "changed" for review.
+_CLIENT_SOURCES = {
+    "wingsv":      [{"owner": "WINGS-N", "repo": "WINGSV_DeX", "branch": "main", "path": "external/wingsv-proto/wingsv.proto", "message": "Turn"}],
+    "vkturnproxy": [{"owner": "anton48", "repo": "vk-turn-proxy-ios", "branch": "main", "path": "quick_link.py"}],
+    "wgturn":      [{"owner": "kiper292", "repo": "wireguard-turn-android", "branch": "main", "path": "ui/src/main/java/com/wireguard/android/turn/TurnSettings.kt"}],
+    "freeturn":    [{"owner": "samosvalishe", "repo": "free-turn-proxy", "branch": "master", "path": "docs/uri.md"},
+                    {"owner": "samosvalishe", "repo": "free-turn-proxy", "branch": "master", "path": "docs/flags.md"}],
+    "mysorez":     [{"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/models/Configs.kt"},
+                    {"owner": "MYSOREZ", "repo": "vk-turn-proxy-android", "branch": "main", "path": "app/src/main/java/com/vkturn/proxy/data/AppPreferences.kt"}],
+    "sidecar":     [{"owner": "Moroka8", "repo": "vk-turn-proxy", "branch": "main", "path": "pkg/clientcore/main.go"}],
+}
+def _client_sources(client_id):
+    return [dict(s) for s in (_CLIENT_SOURCES.get(client_id) or [])]
+
+# P4a — our client_settings KEY → the field name as the schema-SOURCE parser yields it (proto field / Python CONFIG
+# key / Kotlin field / doc flag). This bridges our-key space (schema, knobs, the adopted `active` set) to upstream-name
+# space (what the inventory parsers return), for both the diff and seeding. Its VALUES are the per-client **wireable
+# set** — the fields the encoder (turn-artifacts.js) already serialises — which splits a newly-seen field into green
+# `+n` (adoptable) vs orange `+x` (needs wiring). Hand-declared next to the encoder; a mismatch only mis-colours a
+# counter, never breaks a config (the encoder stays the real gate). NB the encoder's own wire vocabulary (e.g.
+# kiper292 `#@wgt:StreamNum`) is a THIRD namespace — the upstream name here is the *parsed source* identifier.
+_CLIENT_FIELD_MAP = {
+    "wingsv": {  # wingsv.proto field names (see turn-artifacts.js wingsvConfigBytes)
+        "threads": "threads", "sessionMode": "session_mode", "browserFingerprint": "browser_fingerprint",
+        "runtimeMode": "runtime_mode", "userDns": "user_dns", "manualCaptcha": "manual_captcha",
+        "captchaSolver": "captcha_auto_solver", "restartOnNetworkChange": "restart_on_network_change",
+        "useUDP": "use_udp", "noObfuscation": "no_obfuscation",
+    },
+    "vkturnproxy": {  # anton quick_link.py CONFIG keys (turnServerOverride/vkAuth are panel-side, not in CONFIG)
+        "numConnections": "numConnections", "useUDP": "useUDP", "dnsServers": "dnsServers", "obfProfile": "obfProfile",
+    },
+    "wgturn": {  # kiper292 TurnSettings.kt property names (NOT the encoder's #@wgt keys)
+        "streamNum": "streams", "streamsPerCred": "streamsPerCred", "watchdogTimeout": "watchdogTimeout",
+    },
+    # mysorez — its Kotlin data classes are the raw-command/SSH model, not clean turn settings → raw-flags client, not
+    # field-diffed here. freeturn — Markdown (value-diff only). sidecar — no client_settings.
+}
+# Membership of _CLIENT_FIELD_MAP is the P4 FIELD-diff gate; value-only clients (freeturn) ride _CLIENT_VALUE_SOURCES.
+def _p4_field_client(cid):
+    return cid in _CLIENT_FIELD_MAP
+def _client_field_map(client_id):
+    return dict(_CLIENT_FIELD_MAP.get(client_id) or {})
+def _client_wireable(client_id):
+    return set((_CLIENT_FIELD_MAP.get(client_id) or {}).values())
+
+def _turn_field_classify(active, inventory_fields, wireable):
+    """Field-level 3-way split, all args iterables of UPSTREAM field names:
+      added        → green `+n` : upstream has it, not adopted, AND the encoder can emit it (∈ wireable)
+      needs_wiring  → orange `+x`: upstream has it, not adopted, encoder can't emit it yet (∉ wireable)
+      removed       → red `−m`   : we expose it, upstream dropped it
+    """
+    active, inv, W = set(active or ()), set(inventory_fields or ()), set(wireable or ())
+    added_all = inv - active
+    return {"added": sorted(added_all & W), "needs_wiring": sorted(added_all - W), "removed": sorted(active - inv)}
+
+def _client_base_keys(client_id):
+    return [s.get("key") for s in (_client_schema(client_id) or []) if s.get("key")]
+def _client_base_upstream(client_id):
+    """Upstream names of the client's currently-EXPOSED base fields (keys we curate that the field-map bridges)."""
+    fm = _client_field_map(client_id)
+    return set(fm[k] for k in _client_base_keys(client_id) if k in fm)
+def _turn_seed_active(client_id, inventory_fields):
+    """Seed `active` to 'no drift': adopt exactly the base fields the current inventory confirms. Base fields the
+    source doesn't show stay unverified — still exposed via the base schema, but absent from `active`, so they're
+    never mis-flagged `−m`. `active` is a DIFF-tracking set only; it does NOT gate what knobs render (base⊕overrides
+    −hidden does). `−m` therefore fires only when a field that WAS in the inventory (hence in `active`) later leaves."""
+    return sorted(_client_base_upstream(client_id) & set(inventory_fields or ()))
+
+# Structural / non-knob fields in a source that must NOT show up as `+x` "needs wiring" — connection plumbing,
+# per-peer secrets/identity, wrap/profile machinery. Hand-declared per fork beside the field-map. Genuine settings we
+# simply haven't exposed (e.g. wings `no_obfuscation`, `tunnel_mode`) are intentionally NOT here — they SHOULD surface
+# as `+x` (candidates to expose). Only truly-structural noise is filtered.
+_CLIENT_IGNORE_FIELDS = {
+    "wingsv": {"endpoint", "link", "links", "link_secondary", "local_endpoint", "host", "port", "creds_group_size",
+               "wrap_mode", "wrap_key", "wrap_ciphers", "wrap_key_delivery", "title", "active_profile_id",
+               "profiles", "merge_only", "tunnel_mode"},   # tunnel_mode is auto-derived from the interface type (WG/AWG), not a knob
+    "vkturnproxy": {"privateKey", "peerPublicKey", "tunnelAddress", "vkLink", "peerAddress", "presharedKey",
+                    "wrapKeyHex", "clientID", "useDTLS", "useSrtp", "useWrap", "useWrapA", "useWrapS"},   # mode booleans the encoder computes from server type — not operator knobs
+    "wgturn": {"enabled", "peer", "vkLink", "mode", "useUdp", "localPort", "turnIp", "turnPort", "peerType"},
+}
+def _filter_inventory(client_id, fields):
+    ig = _CLIENT_IGNORE_FIELDS.get(client_id) or set()
+    return [f for f in (fields or []) if f not in ig]
+
+# Per-(client, our_key) VALUE-source: where a field's allowed enum values are enumerated (often a different file than
+# the schema-source), + the extractor kind + `passthrough` (the encoder emits the raw value → an added value is
+# adoptable/live; else it's value-MAPPED and a new value needs wiring). Day-one: wings (Vue options arrays) +
+# samosvalishe (docs flags.md). Others dormant until their enum fields are exposed.
+_VUE = ("WINGS-N", "WINGSV_DeX", "main", "frontend/src/views/VkTurnSettingsView.vue")
+_CLIENT_VALUE_SOURCES = {
+    "wingsv": {   # PASSTHROUGH enum fields only — sessionMode/runtimeMode are value-MAPPED (their strings are UI labels
+                  # our encoder maps to wire codes), so a label-string diff is cosmetic noise, not real drift.
+        "captchaSolver":      {"src": _VUE, "kind": "jsarray", "marker": "captchaSolverOptions", "passthrough": True},
+        "browserFingerprint": {"src": _VUE, "kind": "jsarray", "marker": "browserFpOptions",     "passthrough": True},
+    },
+    "vkturnproxy": {
+        "obfProfile": {"src": ("anton48", "vk-turn-proxy-ios", "main", "quick_link.py"), "kind": "pytuple", "marker": "obfProfile", "passthrough": True},
+    },
+    "freeturn": {
+        "dns": {"src": ("samosvalishe", "free-turn-proxy", "master", "docs/flags.md"), "kind": "mdpipe", "marker": "-dns-mode", "passthrough": True},
+    },
+}
+_VALUE_SENTINELS = {"auto", ""}     # our UI omit-conventions, never real app values → excluded from the value diff
+def _client_value_sources(cid):
+    return _CLIENT_VALUE_SOURCES.get(cid) or {}
+def _client_value_passthrough(cid):
+    return {k for k, v in _client_value_sources(cid).items() if v.get("passthrough")}
+def _strip_sentinels(vals):
+    return [v for v in (vals or []) if v not in _VALUE_SENTINELS]
+def _client_base_values(cid):
+    """{our_key: [curated enum values, sentinel-stripped]} for the enum fields that have a value-source."""
+    vs, out = _client_value_sources(cid), {}
+    for s in (_client_schema(cid) or []):
+        k = s.get("key")
+        if k in vs and s.get("type") == "enum" and isinstance(s.get("values"), list):
+            out[k] = sorted(set(_strip_sentinels(s["values"])))
+    return out
+
+def _turn_value_classify(active_vals, inv_values, passthrough):
+    """Per-field value diff. active_vals/inv_values = {our_key: [values]}. Returns [{field, added, removed,
+    adoptable_add}]. adoptable_add = the field is passthrough (a new value works without a release)."""
+    out, keys = [], set(active_vals or {}) | set(inv_values or {})
+    for k in sorted(keys):
+        av, iv = set(_strip_sentinels((active_vals or {}).get(k))), set(_strip_sentinels((inv_values or {}).get(k)))
+        added, removed = sorted(iv - av), sorted(av - iv)
+        if added or removed:
+            out.append({"field": k, "added": added, "removed": removed, "adoptable_add": k in (passthrough or set())})
+    return out
+
+def _p4_pick_snapshot(rec):
+    """The snapshot the diff runs against: the pinned one (rollback) if set+valid, else the latest observed."""
+    snaps = (rec or {}).get("snapshots") or []
+    if not snaps:
+        return None
+    pin = (rec or {}).get("pinned_snapshot")
+    if isinstance(pin, int) and 0 <= pin < len(snaps):
+        return snaps[pin]
+    return snaps[-1]
+
+def _turn_client_p4_report(cid, rec):
+    """Field-level counters for a client from its stored P4a record — NO network (safe to call every SPA poll).
+    Seeds `active` into `rec` if absent (mutates rec; caller persists). None if no snapshot recorded yet."""
+    snap = _p4_pick_snapshot(rec)
+    if snap is None:
+        return None
+    inv = set(_filter_inventory(cid, snap.get("fields") or []))
+    if rec.get("active") is None:
+        rec["active"] = _turn_seed_active(cid, inv)
+    cls = _turn_field_classify(rec.get("active") or [], inv, _client_wireable(cid))
+    # value diff (+y adoptable value-adds · −z value-removes · mapped value-adds fold into +x needs-wiring)
+    if rec.get("active_vals") is None:
+        rec["active_vals"] = _client_base_values(cid)
+    vdiff = _turn_value_classify(rec.get("active_vals") or {}, snap.get("values") or {}, _client_value_passthrough(cid))
+    y = sum(len(v["added"]) for v in vdiff if v["adoptable_add"])
+    z = sum(len(v["removed"]) for v in vdiff)
+    xtra = sum(len(v["added"]) for v in vdiff if not v["adoptable_add"])   # value-adds on value-mapped fields need wiring
+    return {**cls, "value_diff": vdiff,
+            "counts": {"n": len(cls["added"]), "x": len(cls["needs_wiring"]) + xtra, "m": len(cls["removed"]), "y": y, "z": z},
+            "app_version": snap.get("app_version"), "snapshot_at": snap.get("at")}
+
+def _gh_latest_release(owner, repo):
+    """Latest release {tag,date} for a repo (the schema-source repo). None on error/no releases. ~1h cached in the
+    shared commit cache under a 'rel:' prefix. Stamps each snapshot with the app version current at check time."""
+    key = "rel:%s/%s" % (owner, repo)
+    ent = _GH_COMMIT_CACHE.get(key)
+    if ent and time.time() - ent["at"] < 3600:
+        return ent["res"]
+    res = None
+    try:
+        # the releases LIST (newest first) — NOT /releases/latest, which excludes pre-releases (WINGSV_DeX ships only prereleases).
+        url = "https://api.github.com/repos/%s/%s/releases?per_page=1" % (quote(owner), quote(repo))
+        hdr = {"User-Agent": "swg-panel", "Accept": "application/vnd.github+json"}
+        tok = os.environ.get("SWG_GH_TOKEN", "").strip()
+        if tok:
+            hdr["Authorization"] = "Bearer " + tok
+        with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        if isinstance(data, list) and data and data[0].get("tag_name"):
+            r0 = data[0]
+            res = {"tag": r0.get("tag_name"), "date": r0.get("published_at"), "html_url": r0.get("html_url"),
+                   "assets": [{"name": a.get("name"), "url": a.get("browser_download_url")}
+                              for a in (r0.get("assets") or []) if a.get("browser_download_url")]}
+    except Exception:
+        res = None
+    _GH_COMMIT_CACHE[key] = {"res": res, "at": time.time()}
+    return res
+
+# ---- latest-release download-asset resolution (per client, per OS) -----------------------------------------------
+# The turn-client catalog carries only a `platforms[os].github` URL — the repo's /releases *directory*. For the sub
+# page's Start/download button we want the LATEST version's actual per-OS asset (apk/exe/deb/dmg/…). We resolve those
+# in the background (warmed on startup + hourly), keyed by (owner,repo,os), and merge them into the catalog as
+# `platforms[os].url` (the SPA/sub already prefer `.url` over `.github`). iOS has no downloadable asset → App Store,
+# so it's left to the catalog's own `appstore`/`github` link.
+# Ordered FORMAT preference per OS — the first format that has ANY asset wins; within it the arch tie-break below picks.
+# Real releases vary wildly (universal APK vs arch-split; setup.exe vs arch zips; AppImage/deb/tar; extensionless Go
+# `client-<os>-<arch>` binaries), so this ranks "just works" formats first and resolves the exact filename from the
+# live release (never templated — names carry quirks like double-`v` and trailing-`-`).
+_OS_ASSET_FORMATS = {
+    "android": [r"\.apk$", r"\bclient-android-[^/]*$"],   # .apk = a GUI app; client-android-* = the Go CLI binary (Termux)
+    "windows": [r"(?:setup|installer)[^/]*\.exe$", r"\.msi$", r"\bclient-windows-[^/]*\.exe$", r"\.exe$", r"win(?:dows|64|32)?[-_.][^/]*\.zip$"],
+    "linux":   [r"\.appimage$", r"\.deb$", r"\.rpm$", r"\bclient-linux-[^/]*$", r"\.pkg\.tar\.[a-z]+$", r"\.tar(?:\.(?:gz|xz|zst))?$", r"[-_]linux[-_.]"],
+    "macos":   [r"\.dmg$", r"\.pkg$", r"\bclient-darwin-[^/]*$", r"[-_](?:mac(?:os)?|darwin)[-_.]", r"\.app\.zip$"],
+}
+# Within the chosen format, prefer these arch tokens in order (default arch first): a browser can't reliably tell us
+# the exact arch/distro, so default amd64/x64 on desktop, arm64 on macOS/Android, and let the "manually" bubble expose
+# every variant for the rare arm-desktop / 32-bit user.
+_OS_ARCH_PREF = {
+    "android": [r"universal", r"arm64[-_]?v8a", r"arm64|aarch64", r"armeabi[-_]?v7a|armv7"],
+    "windows": [r"x86[_-]?64|amd64|x64|win64", r"universal"],
+    "linux":   [r"x86[_-]?64|amd64|x64", r"universal"],
+    "macos":   [r"arm64|aarch64|apple", r"x86[_-]?64|amd64|x64|intel", r"universal"],
+}
+_PLATFORM_ASSET = {}     # (owner, repo, os) -> best single download URL (the button's direct installer)
+_RELEASE_INFO = {}       # (owner, repo)     -> {tag, page, assets:[{name,url}]} for the LATEST release (bubble source)
+
+def _match_os_asset(assets, oskind):
+    """The single best installer for an OS from a release's assets: highest-ranked FORMAT, then preferred ARCH within
+    it. Drops `server-*` role binaries (the free-turn CLI ships client+server; end users want the client)."""
+    names = [(a.get("name") or "", a.get("url")) for a in (assets or []) if a.get("url")]
+    names = [(n, u) for (n, u) in names if not re.match(r'server[-_]', n, re.I)]
+    fmts = _OS_ASSET_FORMATS.get(oskind)
+    if not fmts or not names:
+        return None
+    archp = _OS_ARCH_PREF.get(oskind, [])
+    for fmt in fmts:
+        cands = [(n, u) for (n, u) in names if re.search(fmt, n, re.I)]
+        if not cands:
+            continue
+        for arch in archp:                            # prefer the default arch within this format
+            for (n, u) in cands:
+                if re.search(arch, n, re.I):
+                    return u
+        return cands[0][1]                            # no arch token in this format → first candidate
+    return None
+
+def _gh_owner_repo(url):
+    m = re.match(r'https?://github\.com/([^/]+)/([^/#?]+)', url or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+def _turn_warm_assets():
+    """Pre-resolve, for every catalog client, the LATEST release's full asset list (→ _RELEASE_INFO, the bubble source)
+    and the single best per-OS installer (→ _PLATFORM_ASSET, the button). Non-blocking readers merge from these caches;
+    best-effort — any repo/OS that fails just keeps its /releases dir link."""
+    for _cat in (TURN_CLIENTS, WG_APPS):              # turn forks AND the plain WG/AWG apps share the resolver
+      for cid, c in _cat.items():
+        for oskind, links in (c.get("platforms") or {}).items():
+            owner, repo = _gh_owner_repo((links or {}).get("github"))
+            if not owner:
+                continue
+            try:
+                rel = _gh_latest_release(owner, repo)
+            except Exception:
+                rel = None
+            if not rel:
+                continue
+            assets = [{"name": a.get("name"), "url": a.get("url")} for a in (rel.get("assets") or []) if a.get("url")]
+            _RELEASE_INFO[(owner, repo)] = {"tag": rel.get("tag"), "page": rel.get("html_url"), "assets": assets}
+            u = _match_os_asset(assets, oskind)       # None for ios (no format prefs) → button falls back to store/page
+            if u:
+                _PLATFORM_ASSET[(owner, repo, oskind)] = u
+
+def _client_platforms_resolved(c):
+    """A client's `platforms` with, per OS, the resolved best installer (`url`), the latest-release page (`page`), its
+    version (`tag`), and the FULL latest-release asset list (`assets`) for the download bubble. Leaves `.github` as the
+    fallback page; any OS whose repo hasn't resolved yet just keeps its original links."""
+    out = {}
+    for oskind, links in (c.get("platforms") or {}).items():
+        links = dict(links or {})
+        owner, repo = _gh_owner_repo(links.get("github"))
+        if owner:
+            u = _PLATFORM_ASSET.get((owner, repo, oskind))
+            if u:
+                links["url"] = u
+            info = _RELEASE_INFO.get((owner, repo))
+            if info:
+                links["page"] = info.get("page") or links.get("github")
+                links["tag"] = info.get("tag")
+                links["assets"] = info.get("assets") or []
+        out[oskind] = links
+    return out
+
+def _turn_warm_assets_loop(deps):
+    while True:
+        try:
+            _turn_warm_assets()
+            # flush the freshly-resolved asset URLs into subs/serve.json so swg-sub serves them (the boot write ran
+            # before the warm finished). Preserve any active dual-base grace (base_alt) rather than clearing it.
+            ba = ""
+            with contextlib.suppress(Exception):
+                ba = ((json.load(open(_sub_serve_path(deps))).get("serve") or {}).get("base_alt") or "")
+            write_sub_serve(deps, base_alt=ba)
+        except Exception:
+            pass
+        time.sleep(3600)
+
+def _turn_p4_refresh(cid, roster):
+    """NETWORK. Snapshot-on-change across BOTH the parseable schema-sources (→ field inventory) and the value-sources
+    (→ per-field enum values). Bails before any raw fetch when no source-file commit moved. Appends a snapshot only
+    when the (fields, values) pair differs from the latest, stamped with the app's latest release. Returns True iff so."""
+    schema_srcs = [s for s in _client_sources(cid) if _source_field_parseable(s["path"])] if _p4_field_client(cid) else []
+    vsrcs = _client_value_sources(cid)
+    if not schema_srcs and not vsrcs:
+        return False
+    rec = roster.setdefault(cid, {})
+    snaps = rec.setdefault("snapshots", [])
+    last = snaps[-1] if snaps else None
+    # 1) every distinct source file (schema + value), keyed by path → (owner,repo,branch,path)
+    files = {}
+    for s in schema_srcs:
+        files[s["path"]] = (s["owner"], s["repo"], s["branch"], s["path"])
+    for cfg in vsrcs.values():
+        o, r, b, p = cfg["src"]
+        files[p] = (o, r, b, p)
+    commits = {}
+    for p, loc in files.items():
+        latest = _gh_latest_commit(*loc)
+        if latest and latest.get("sha"):
+            commits[p] = latest["sha"]
+    if not commits:
+        return False
+    if last is not None and (last.get("commits") or {}) == commits:
+        return False
+    # 2) a file moved (or first snapshot) → fetch each distinct file once
+    raw = {p: _gh_raw(*loc) for p, loc in files.items()}
+    fields, ok = set(), False
+    for s in schema_srcs:
+        flds = _parse_source_fields(s["path"], raw.get(s["path"]), s.get("message")) if raw.get(s["path"]) is not None else None
+        if flds is not None:
+            fields.update(flds)
+            ok = True
+    values = {}
+    for key, cfg in vsrcs.items():
+        p = cfg["src"][3]
+        if raw.get(p) is not None:
+            vals = _extract_values(cfg["kind"], raw[p], cfg["marker"])
+            if vals is not None:
+                values[key] = vals
+            ok = True
+    if not ok:
+        return False
+    fields = sorted(fields)
+    if last is not None and set(last.get("fields") or []) == set(fields) and (last.get("values") or {}) == values:
+        last["commits"] = commits          # files moved but (fields, values) identical → refresh commits only
+        return False
+    rel_loc = (schema_srcs[0]["owner"], schema_srcs[0]["repo"]) if schema_srcs else next(iter(vsrcs.values()))["src"][:2]
+    rel = _gh_latest_release(*rel_loc)
+    snaps.append({"app_version": (rel or {}).get("tag"), "at": int(time.time()), "commits": commits, "fields": fields, "values": values})
+    return True
+
+def _turn_p4_adopt(cid, roster, add=None, remove=None, vadd=None, vrem=None):
+    """Adopt per-field (`add`→active / `remove`→hidden) AND per-VALUE (`vadd`/`vrem` = {field:[values]} → active_vals).
+    Everything validated against the current report so only genuine items apply. Returns what was applied."""
+    rec = roster.setdefault(cid, {})
+    rep = _turn_client_p4_report(cid, rec) or {}
+    can_add, can_rm = set(rep.get("added") or []), set(rep.get("removed") or [])
+    active, hidden = set(rec.get("active") or []), set(rec.get("hidden") or [])
+    did_add = [f for f in (add or []) if f in can_add]
+    did_rm = [f for f in (remove or []) if f in can_rm]
+    active |= set(did_add)
+    for f in did_rm:
+        active.discard(f)
+        hidden.add(f)
+    rec["active"], rec["hidden"] = sorted(active), sorted(hidden)
+    # value adopts
+    vd = {v["field"]: v for v in (rep.get("value_diff") or [])}
+    av = dict(rec.get("active_vals") or {})
+    vdid = {"added": {}, "removed": {}}
+    for f, vals in (vadd or {}).items():
+        allow = set(vd.get(f, {}).get("added") or []) if vd.get(f, {}).get("adoptable_add") else set()
+        take = [v for v in (vals or []) if v in allow]
+        if take:
+            av[f] = sorted(set(av.get(f) or []) | set(take)); vdid["added"][f] = take
+    for f, vals in (vrem or {}).items():
+        allow = set(vd.get(f, {}).get("removed") or [])
+        take = [v for v in (vals or []) if v in allow]
+        if take:
+            av[f] = sorted(set(av.get(f) or []) - set(take)); vdid["removed"][f] = take
+    rec["active_vals"] = av
+    return {"added": did_add, "removed": did_rm, "values": vdid}
+
+def _turn_p4_setversion(cid, roster, index):
+    """Rollback: pin snapshot `index` (None = track latest) and reset `active`/`hidden` + `active_vals` to that
+    version's confirmed fields/values — toggling what's exposed to match the app version, curation metadata untouched."""
+    rec = roster.setdefault(cid, {})
+    snaps = rec.get("snapshots") or []
+    if index is None:
+        rec["pinned_snapshot"] = None
+        snap = snaps[-1] if snaps else None
+    elif isinstance(index, int) and 0 <= index < len(snaps):
+        rec["pinned_snapshot"] = index
+        snap = snaps[index]
+    else:
+        return None
+    if snap is not None:
+        rec["active"] = _turn_seed_active(cid, _filter_inventory(cid, snap.get("fields") or []))
+        rec["hidden"] = []
+        rec["active_vals"] = {k: sorted(set(_strip_sentinels(v))) for k, v in (snap.get("values") or {}).items()}
+    return rec
+
+def _turn_p4_report_all(do_refresh=False):
+    """Every P4-capable client's field report for the grid. `do_refresh` (operator re-check) hits GitHub; otherwise
+    reads stored snapshots only (fast, per-poll safe). Persists on refresh or first-seed."""
+    roster = _turn_roster_load()
+    dirty, out = False, {}
+    for cid in TURN_CLIENTS:
+        if not _p4_field_client(cid) and not _client_value_sources(cid):
+            continue                                    # not a field-diff client AND no value-source → P1 ack path covers it
+        rec = roster.setdefault(cid, {})
+        if do_refresh and _turn_p4_refresh(cid, roster):
+            dirty = True
+        had_active = rec.get("active") is not None
+        rep = _turn_client_p4_report(cid, rec)          # seeds rec["active"] in place on first read
+        if not had_active and rec.get("active") is not None:
+            dirty = True
+        if rep is None:
+            continue
+        out[cid] = {**rep, "name": TURN_CLIENTS[cid].get("name") or cid,
+                    "versions": [{"app_version": s.get("app_version"), "at": s.get("at")} for s in (rec.get("snapshots") or [])],
+                    "pinned_snapshot": rec.get("pinned_snapshot")}
+    if dirty:
+        _turn_roster_save(roster)
+    return {"clients": out, "checked_at": int(time.time())}
+
+def _gh_latest_commit(owner, repo, branch, path):
+    """Latest commit {sha,date,url} touching `path` on `branch`, via the GitHub API. None on any error/rate-limit.
+    Cached ~1h so a burst of re-checks doesn't exhaust the 60/hr unauthenticated budget (SWG_GH_TOKEN lifts it)."""
+    key = "%s/%s@%s:%s" % (owner, repo, branch, path)
+    ent = _GH_COMMIT_CACHE.get(key)
+    if ent and time.time() - ent["at"] < 3600:
+        return ent["res"]
+    res = None
+    try:
+        url = ("https://api.github.com/repos/%s/%s/commits?path=%s&sha=%s&per_page=1"
+               % (quote(owner), quote(repo), quote(path), quote(branch)))
+        hdr = {"User-Agent": "swg-panel", "Accept": "application/vnd.github+json"}
+        tok = os.environ.get("SWG_GH_TOKEN", "").strip()
+        if tok:
+            hdr["Authorization"] = "Bearer " + tok
+        with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        if isinstance(data, list) and data:
+            c = data[0]
+            res = {"sha": c.get("sha"), "date": (((c.get("commit") or {}).get("committer") or {}).get("date")), "url": c.get("html_url")}
+    except Exception:
+        res = None
+    _GH_COMMIT_CACHE[key] = {"res": res, "at": time.time()}
+    return res
+
+def _gh_raw(owner, repo, branch, path):
+    """Raw file content from raw.githubusercontent.com. None on any error."""
+    try:
+        url = "https://raw.githubusercontent.com/%s/%s/%s/%s" % (owner, repo, branch, path)
+        req = urllib.request.Request(url, headers={"User-Agent": "swg-panel", "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+def _proto_message_block(text, msg):
+    """The balanced-brace body of `message <msg> { … }`, or None. Scopes parsing to ONE message — a single .proto can
+    hold the app's entire config (dozens of messages); we only want the relevant one (e.g. Turn)."""
+    m = re.search(r'\bmessage\s+' + re.escape(msg) + r'\s*\{', text or "")
+    if not m:
+        return None
+    i, start, depth = m.end(), m.end(), 1
+    while i < len(text) and depth:
+        depth += 1 if text[i] == "{" else (-1 if text[i] == "}" else 0)
+        i += 1
+    return text[start:i - 1]
+
+def _parse_proto_fields(text, message=None):
+    """Message field names from a proto3 .proto — a field carries a TYPE before the name (`int32 threads = 1;`); enum
+    values (`NAME = 0;`) don't → excluded. When `message` is given, only that message's block is scanned (else the
+    whole file). Sorted unique list."""
+    if message:
+        text = _proto_message_block(text, message)
+        if text is None:
+            return None
+    fields = set()
+    for line in (text or "").splitlines():
+        m = re.match(r'\s*(?:repeated\s+|optional\s+)?(?:map<[^>]+>|[\w.]+)\s+(\w+)\s*=\s*\d+\s*;', line)
+        if m:
+            fields.add(m.group(1))
+    return sorted(fields)
+
+def _parse_python_config_fields(text):
+    """String keys of the top-level CONFIG dict in a quick_link.py-style module (anton48). Parses (never executes) via
+    ast; falls back to the union of every module-level string-keyed dict literal if there's no CONFIG. None if unparseable.
+    Best-effort ("assisted") — a rename/wrapper can hide keys, so the operator still confirms."""
+    try:
+        tree = ast.parse(text or "")
+    except Exception:
+        return None
+    named = {}
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+            keys = {k.value for k in node.value.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            if keys:
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        named[t.id] = keys
+    if not named:
+        return None
+    if "CONFIG" in named:
+        return sorted(named["CONFIG"])
+    out = set()
+    for v in named.values():
+        out |= v
+    return sorted(out)
+
+def _parse_go_struct_fields(text):
+    """Config field names from a Go source (Moroka8 clientcore): prefers serialization tag names
+    (`json/yaml/toml/mapstructure:"name"`), else exported field names inside `struct{…}` blocks. None if none found.
+    Best-effort ("assisted") — nested structs and untagged fields can slip through."""
+    text = text or ""
+    fields = set()
+    for m in re.finditer(r'`[^`]*\b(?:json|yaml|toml|mapstructure):"([^",]+)(?:,[^"]*)?"', text):
+        nm = m.group(1).strip()
+        if nm and nm != "-":
+            fields.add(nm)
+    if not fields:
+        for block in re.finditer(r'struct\s*\{([^{}]*)\}', text, re.S):
+            for line in block.group(1).splitlines():
+                fm = re.match(r'\s*([A-Z]\w*)\s+[\w\*\[\]\.]+', line)
+                if fm:
+                    fields.add(fm.group(1))
+    return sorted(fields) if fields else None
+
+def _parse_kotlin_fields(text):
+    """Property names from a Kotlin data-class/settings source — `val/var <name>: <Type>` (the TYPE annotation is
+    required, so constructor params & class properties match but untyped locals don't). Best-effort ('assisted')."""
+    fields = set()
+    for line in (text or "").splitlines():
+        m = re.match(r'\s*(?:@\w+\s+)*(?:override\s+|private\s+|public\s+|internal\s+|protected\s+|const\s+)*(?:val|var)\s+(\w+)\s*:\s*[\w<>?.,\[\]* ]+', line)
+        if m:
+            fields.add(m.group(1))
+    return sorted(fields) if fields else None
+
+def _source_field_parseable(path):
+    """True when a source path is one we can extract field names from (proto authoritative; py/go/kotlin assisted)."""
+    return (path or "").lower().endswith((".proto", ".py", ".go", ".kt"))
+
+def _parse_source_fields(path, text, message=None):
+    """Best-effort field-name list for a curated schema source; None for commit-only types (Markdown). `message`
+    scopes a proto to one message block (a wingsv.proto holds the whole app config; we want only Turn)."""
+    p = (path or "").lower()
+    if p.endswith(".proto"):
+        return _parse_proto_fields(text, message)
+    if p.endswith(".py"):
+        return _parse_python_config_fields(text)
+    if p.endswith(".go"):
+        return _parse_go_struct_fields(text)
+    if p.endswith(".kt"):
+        return _parse_kotlin_fields(text)
+    return None
+
+# ── Enriched extraction: beyond the field NAME (used by the roster diff), propose a TYPE, a DEFAULT (where the
+#    source literally carries one), and a LABEL (from an inline/preceding comment, else Title-cased from the name).
+#    Feeds P4's "provisional stub" so an adopted field arrives ~pre-filled for review instead of name-only.
+#    Still best-effort: proto3 declares no runtime defaults, Go struct decls carry none either — only the Python
+#    CONFIG dict is a literal with real values. Nothing here decides how a field SERIALISES (that's the encoder = code).
+def _label_from_name(name):
+    s = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', name or "").replace('_', ' ').replace('-', ' ')
+    s = re.sub(r'\s+', ' ', s).strip()
+    return (s[:1].upper() + s[1:]) if s else (name or "")
+
+def _norm_proto_type(t):
+    t = (t or "").strip()
+    if t.startswith("map<"):
+        return "map"
+    return {"int32": "int", "int64": "int", "uint32": "int", "uint64": "int", "sint32": "int", "sint64": "int",
+            "float": "float", "double": "float", "bool": "bool", "string": "string", "bytes": "bytes"}.get(t, t)
+
+def _norm_go_type(t):
+    t = (t or "").lstrip("*")
+    if t.startswith("[]"):
+        return "list"
+    return {"int": "int", "int32": "int", "int64": "int", "uint": "int", "uint32": "int", "uint64": "int",
+            "float32": "float", "float64": "float", "bool": "bool", "string": "string"}.get(t, t)
+
+def _py_type_name(v):
+    if isinstance(v, bool):
+        return "bool"
+    if isinstance(v, int):
+        return "int"
+    if isinstance(v, float):
+        return "float"
+    if isinstance(v, str):
+        return "string"
+    if isinstance(v, list):
+        return "list"
+    if isinstance(v, dict):
+        return "dict"
+    return None
+
+def _proto_fieldinfo(text, message=None):
+    if message:                                        # scope to one message block (a proto may hold the whole app config)
+        text = _proto_message_block(text, message)
+        if text is None:
+            return None
+    info, pending = {}, ""
+    for line in (text or "").splitlines():
+        st = line.strip()
+        m = re.match(r'(?:repeated\s+|optional\s+)?(map<[^>]+>|[\w.]+)\s+(\w+)\s*=\s*\d+\s*;\s*(?://+\s*(.*))?$', st)
+        if m:
+            nm, inline = m.group(2), (m.group(3) or "").strip()
+            info[nm] = {"type": _norm_proto_type(m.group(1)), "label": inline or pending or _label_from_name(nm)}
+            pending = ""
+            continue
+        c = re.match(r'//+\s?(.*)$', st)               # a standalone comment line becomes the next field's label
+        pending = ((pending + " " + c.group(1)).strip() if pending else c.group(1).strip()) if c else ""
+    return info or None
+
+def _python_config_fieldinfo(text):
+    try:
+        tree = ast.parse(text or "")
+    except Exception:
+        return None
+    src = (text or "").splitlines()
+    target, fallback = None, None
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict) \
+           and any(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in node.value.keys):
+            if any(isinstance(t, ast.Name) and t.id == "CONFIG" for t in node.targets):
+                target = node.value
+                break
+            if fallback is None:
+                fallback = node.value
+    d = target or fallback
+    if d is None:
+        return None
+    info = {}
+    for k, v in zip(d.keys, d.values):
+        if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
+            continue
+        nm = k.value
+        try:
+            default = ast.literal_eval(v)             # literal defaults only — the CONFIG dict actually carries them
+        except Exception:
+            default = None
+        rec = {}
+        ln = getattr(k, "lineno", 0)
+        cm = re.search(r'#\s*(.+)$', src[ln - 1]) if 0 < ln <= len(src) else None
+        rec["label"] = (cm.group(1).strip() if cm else "") or _label_from_name(nm)
+        typ = _py_type_name(default)
+        if typ:
+            rec["type"] = typ
+        if isinstance(default, (str, int, float, bool)):
+            rec["default"] = default
+        info[nm] = rec
+    return info or None
+
+def _go_struct_fieldinfo(text):
+    info = {}
+    for block in re.finditer(r'struct\s*\{([^{}]*)\}', text or "", re.S):
+        pending = ""
+        for line in block.group(1).splitlines():
+            st = line.strip()
+            fm = re.match(r'([A-Z]\w*)\s+([\w\*\[\]\.]+)(?:\s+`([^`]*)`)?\s*(?://+\s*(.*))?$', st)
+            if fm:
+                tag = fm.group(3) or ""
+                tm = re.search(r'\b(?:json|yaml|toml|mapstructure):"([^",]+)', tag)
+                nm = tm.group(1) if (tm and tm.group(1) != "-") else fm.group(1)
+                inline = (fm.group(4) or "").strip()
+                info[nm] = {"type": _norm_go_type(fm.group(2)), "label": inline or pending or _label_from_name(nm)}
+                pending = ""
+                continue
+            c = re.match(r'//+\s?(.*)$', st)
+            pending = ((pending + " " + c.group(1)).strip() if pending else c.group(1).strip()) if c else ""
+    return info or None
+
+def _norm_kotlin_type(t):
+    t = (t or "").strip().rstrip("?").rstrip(",").strip()
+    if t.startswith(("List<", "Array<", "Set<")):
+        return "list"
+    return {"Int": "int", "Long": "int", "Short": "int", "Float": "float", "Double": "float",
+            "Boolean": "bool", "String": "string"}.get(t, t)
+
+def _kotlin_fieldinfo(text):
+    info, pending = {}, ""
+    for line in (text or "").splitlines():
+        st = line.strip()
+        m = re.match(r'(?:@\w+\s+)*(?:override\s+|private\s+|public\s+|internal\s+|protected\s+|const\s+)*(?:val|var)\s+(\w+)\s*:\s*([\w<>?.\[\]* ]+?)\s*(?:=\s*(.+?))?\s*,?\s*(?://+\s*(.*))?$', st)
+        if m:
+            nm, inline = m.group(1), (m.group(4) or "").strip()
+            rec = {"type": _norm_kotlin_type(m.group(2)), "label": inline or pending or _label_from_name(nm)}
+            dv = (m.group(3) or "").strip().rstrip(",").strip()
+            if dv and dv not in ('""', "null"):
+                if (dv.startswith('"') and dv.endswith('"')):
+                    rec["default"] = dv[1:-1]
+                elif dv in ("true", "false"):
+                    rec["default"] = (dv == "true")
+                elif re.fullmatch(r'-?\d+', dv):
+                    rec["default"] = int(dv)
+            info[nm] = rec
+            pending = ""
+            continue
+        c = re.match(r'//+\s?(.*)$', st)
+        pending = ((pending + " " + c.group(1)).strip() if pending else c.group(1).strip()) if c else ""
+    return info or None
+
+def _parse_source_fieldinfo(path, text, message=None):
+    """{name: {type?, default?, label}} proposed metadata for each field; None for commit-only types. The label always
+    falls back to a Title-cased name so every field has one. Defaults only where the source literally carries them.
+    `message` scopes a proto to one message block (P4c consumers must pass the source's `message`, as the diff does)."""
+    p = (path or "").lower()
+    if p.endswith(".proto"):
+        return _proto_fieldinfo(text, message)
+    if p.endswith(".py"):
+        return _python_config_fieldinfo(text)
+    if p.endswith(".go"):
+        return _go_struct_fieldinfo(text)
+    if p.endswith(".kt"):
+        return _kotlin_fieldinfo(text)
+    return None
+
+# ── VALUE extraction (P4a value-diff): a field's allowed enum values, pulled from wherever the app ENUMERATES them —
+#    usually a different file than the schema-source (a UI options array / doc table / validation code). Each returns a
+#    sorted unique list or None. Fail-safe: None → no `+y/−z` for that field. See `_CLIENT_VALUE_SOURCES`.
+def _extract_values_jsarray(text, marker):
+    """JS options array `<marker> = [{ value: 'x', … }, …]` (wings VkTurnSettingsView.vue). `marker` = the const name."""
+    m = re.search(re.escape(marker) + r'\s*=\s*\[(.*?)\]', text or "", re.S)
+    if not m:
+        return None
+    vals = re.findall(r'\bvalue\s*:\s*[\'"]([^\'"]+)[\'"]', m.group(1))
+    return sorted(set(vals)) if vals else None
+
+def _extract_values_mdpipe(text, flag):
+    """Enum values for a flag from a markdown-table cell (samosvalishe flags.md): the value column is an ESCAPED-pipe
+    alternation of backtick tokens, possibly with annotations (`` `plain` (UDP/53) \\| `doh` \\| `auto` ``). On the
+    flag's row (which must contain an escaped `\\|` alternation) collect every backtick token that isn't a flag
+    reference (leading `-`) — that yields the value set while tolerating annotation text and the default column."""
+    for line in (text or "").splitlines():
+        if ("`" + flag + "`") not in line or not re.search(r'\\\|', line):
+            continue
+        toks = [t for t in re.findall(r'`([\w.-]+)`', line) if not t.startswith("-")]
+        if toks:
+            return sorted(set(toks))
+    return None
+
+def _extract_values_pytuple(text, field):
+    """Python membership check `<field> … in ("a","b",…)` / `[…]` (anton quick_link.py obfProfile)."""
+    m = re.search(re.escape(field) + r'\b[^\n]*?\bin\s*[\(\[]([^)\]]*)[)\]]', text or "")
+    if not m:
+        return None
+    vals = re.findall(r'[\'"]([^\'"]+)[\'"]', m.group(1))
+    return sorted(set(vals)) if vals else None
+
+def _extract_values_gochain(text, field):
+    """Go equality chain `<field> != "a" && <field> != "b"` / `== "a"` (Moroka8 main.go CaptchaSolver)."""
+    vals = {m.group(1) for m in re.finditer(re.escape(field) + r'\s*(?:==|!=)\s*"([^"]+)"', text or "")}
+    return sorted(vals) if vals else None
+
+def _extract_values_kotlinlist(text, field):
+    """Kotlin `<field> in listOf("a","b",…)` (kiper292 TurnSettings.kt peerType)."""
+    m = re.search(re.escape(field) + r'\b[^\n]*?\bin\s+listOf\s*\(([^)]*)\)', text or "")
+    if not m:
+        return None
+    vals = re.findall(r'"([^"]+)"', m.group(1))
+    return sorted(set(vals)) if vals else None
+
+_VALUE_EXTRACTORS = {"jsarray": _extract_values_jsarray, "mdpipe": _extract_values_mdpipe,
+                     "pytuple": _extract_values_pytuple, "gochain": _extract_values_gochain,
+                     "kotlinlist": _extract_values_kotlinlist}
+def _extract_values(kind, text, marker):
+    fn = _VALUE_EXTRACTORS.get(kind)
+    return fn(text, marker) if fn else None
+
+def _turn_roster_load():
+    with contextlib.suppress(Exception):
+        with open(TURN_ROSTER_PATH) as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            return d
+    return {}
+
+def _turn_roster_save(d):
+    with _TURN_ROSTER_LOCK, contextlib.suppress(Exception):
+        tmp = TURN_ROSTER_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(d, f)
+        os.replace(tmp, TURN_ROSTER_PATH)
+
+def _turn_roster_check(seed=True):
+    """For every client with curated sources, fetch each source file's latest commit and compare to the last-
+    acknowledged fingerprint. A client with NO stored fingerprint is SEEDED to current (baseline) + reported
+    up_to_date — drift is unknowable without a baseline. status: up_to_date | changed | unknown (fetch failed)."""
+    roster = _turn_roster_load()
+    out = {}
+    seeded = False
+    for cid in TURN_CLIENTS:
+        srcs = _client_sources(cid)
+        if not srcs:
+            continue
+        prev = (roster.get(cid) or {}).get("files") or {}
+        files, any_unknown, any_changed, seen = [], False, False, {}
+        for s in srcs:
+            p = s["path"]
+            latest = _gh_latest_commit(s["owner"], s["repo"], s["branch"], p)
+            if not latest or not latest.get("sha"):
+                files.append({"path": p, "status": "unknown", "url": "https://github.com/%s/%s/commits/%s/%s" % (s["owner"], s["repo"], s["branch"], p)})
+                any_unknown = True
+                continue
+            seen[p] = {"commit": latest["sha"], "at": int(time.time())}
+            old = (prev.get(p) or {}).get("commit")
+            ch = bool(old) and old != latest["sha"]
+            any_changed = any_changed or ch
+            frec = {"path": p, "status": ("changed" if ch else "up_to_date"),
+                    "latest_commit": (latest["sha"] or "")[:7], "latest_date": latest.get("date"), "url": latest.get("url"),
+                    "compare_url": ("https://github.com/%s/%s/compare/%s...%s" % (s["owner"], s["repo"], old, latest["sha"])) if ch else None}
+            if _source_field_parseable(p):                    # P2/P3: field-name diff (proto authoritative; py/go assisted)
+                prev_fields = (prev.get(p) or {}).get("fields")
+                if ch or not old:                             # fetch the raw source only when it moved (or seeding)
+                    raw = _gh_raw(s["owner"], s["repo"], s["branch"], p)
+                    cur_fields = _parse_source_fields(p, raw, s.get("message")) if raw is not None else None
+                    if cur_fields is not None:
+                        seen[p]["fields"] = cur_fields
+                        if ch and prev_fields is not None:
+                            frec["field_diff"] = {"added": [x for x in cur_fields if x not in prev_fields],
+                                                  "removed": [x for x in prev_fields if x not in cur_fields],
+                                                  "assisted": not p.endswith(".proto")}
+                    elif prev_fields is not None:
+                        seen[p]["fields"] = prev_fields       # raw fetch/parse failed → keep the baseline fields
+                elif prev_fields is not None:
+                    seen[p]["fields"] = prev_fields           # unchanged → carry the stored fields forward
+            files.append(frec)
+        if not prev and seed and seen:
+            roster[cid] = {"files": seen, "at": int(time.time())}
+            seeded = True
+            status = "up_to_date"
+        elif any_changed:
+            status = "changed"
+        elif any_unknown and not any(f["status"] == "up_to_date" for f in files):
+            status = "unknown"
+        else:
+            status = "up_to_date"
+        out[cid] = {"name": (TURN_CLIENTS[cid].get("name") or cid), "status": status, "files": files,
+                    "sources": srcs, "acknowledged_at": (roster.get(cid) or {}).get("at")}
+    if seeded:
+        _turn_roster_save(roster)
+    return {"clients": out, "checked_at": int(time.time())}
+
+def _turn_roster_ack(cid):
+    """Acknowledge a client's current upstream as the new baseline (writes its latest commits into the fingerprint)."""
+    srcs = _client_sources(cid)
+    if not srcs:
+        return None
+    files = {}
+    for s in srcs:
+        latest = _gh_latest_commit(s["owner"], s["repo"], s["branch"], s["path"])
+        if latest and latest.get("sha"):
+            rec = {"commit": latest["sha"], "at": int(time.time())}
+            if _source_field_parseable(s["path"]):
+                raw = _gh_raw(s["owner"], s["repo"], s["branch"], s["path"])
+                flds = _parse_source_fields(s["path"], raw, s.get("message")) if raw is not None else None
+                if flds is not None:
+                    rec["fields"] = flds
+            files[s["path"]] = rec
+    roster = _turn_roster_load()
+    roster[cid] = {"files": files, "at": int(time.time())}
+    _turn_roster_save(roster)
+    return files
+
+def turn_catalog_view():
+    """The turn catalog as the SPA + swg-sub consume it: servers in display order + the clients map (each client
+    carries its own `settings` schema + `native_fork`, so the Clients tab edits an app's knobs once). RAW — colour
+    overrides (turn_fork_colors) and the install-picker filter (enabled_turn_forks) stay in the consumers."""
+    return {"servers": [{"id": sid, "compat": _TURN_CLIENT_COMPAT.get(sid, {}),
+                         # per (this fork, client) schema — the mysorez app's knobs depend on which core THIS fork loads
+                         "client_schemas": {cid: _client_schema_for(sid, cid) for cid in _TURN_CLIENT_COMPAT.get(sid, {})},
+                         "cli_authors": _TURN_CLI_AUTHORS.get(sid, ["samosvalishe"]),   # per-author CLI builds (native first) for the picker
+                         **TURN_SERVERS[sid]} for sid in TURN_SERVER_ORDER],
+            "clients": {cid: {**c, "platforms": _client_platforms_resolved(c),
+                              "settings": _client_schema(cid), "native_fork": _CLIENT_NATIVE_FORK.get(cid)}
+                        for cid, c in TURN_CLIENTS.items()}}
+def wg_catalog_view():
+    """The WG/AWG client apps (Amnezia VPN / AmneziaWG / WireGuard) with each OS's resolved installer, for the sub
+    page's per-row download icon. Same resolver as the turn catalog; `page` is the app's downloads page (row body)."""
+    return {aid: {**a, "platforms": _client_platforms_resolved(a)} for aid, a in WG_APPS.items()}
 PROV_STATUS_PATH = "/var/lib/swg-panel/provider-status.json"    # overridden from the state dir in main()
 _CATALOG = {"idx": None, "at": 0, "err": "", "perr": {}}        # in-memory cache
 # per-provider update state {prov: {status, at, last_updated, error}} — status = idle|updating|updated|uptodate|failed.
@@ -3396,6 +4877,7 @@ PANEL_SETTINGS_DEFAULTS = {
     "throughput_perspective": "nodes",   # "nodes" = node rx=down/tx=up | "peers" = flip (peer's down = node's tx)
     "top_talkers": 10,        # Overview: rows in the Top talkers list (1–50)
     "top_destinations": 10,   # Overview: rows in the Top destinations list (1–50)
+    "expiry_warn_days": 3,    # Display: warn "about to expire" this many days before a subscription/peer expiry (0–365)
     # reserved ranges for the panel-managed inter-node mesh — user interfaces / turn-proxies may NOT use these
     "reserved": {"mesh_subnet": "10.255.0.0/16", "mesh_port_base": 9999, "port_span": 100, "iface_prefix": "swg_"},
     "advanced": {"node_stale_ms": 30000, "peer_grace_ms": 60000, "geo_ttl_days": 3},
@@ -3409,8 +4891,11 @@ PANEL_SETTINGS_DEFAULTS = {
     "turn_enabled": True,
     # which turn-proxy forks are offered in the "install a fork" dropdown (by fork id; the fork set itself lives
     # in the SPA's TURN_FORKS). Disabling one only HIDES it from the picker — it never touches deployed proxies.
-    "enabled_turn_forks": ["WINGS-N", "anton48"],
+    "enabled_turn_forks": ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"],
     "turn_fork_colors": {},   # per-fork colour overrides {fork_id: "#rrggbb"} (else the SPA's TURN_FORKS default)
+    "turn_client_settings": {},   # SETTINGS SPLIT: per-fork client (app) setting VALUES {fork: {key: value}} fed into config/QR/link generation (schema = catalog client_settings)
+    "turn_client_default": {},    # per (fork, OS) END-USER default app {fork: {os: client_id}} — which app the sub page hands out
+    "turn_server_defaults": {},   # per-fork SERVER obfuscation-flag DEFAULTS {fork: {key: value}} (schema = catalog `settings`) — pre-fill new proxies of that fork
     "provider_colors": {},    # per-provider source-tag colour overrides {prov_id: {dark,light}} (else CAT_PROVIDER_DEFAULTS)
     "custom_lists_enabled": True,   # Geo-data toggle: off → the routing UI hides the Custom lists section entirely
     # palette overrides — empty = the SPA's built-in defaults (wg green, awg cyan, blocked/faulty orange, brand cyan).
@@ -3725,7 +5210,9 @@ def turn_fork(service):   # fork id baked into a service name (vk-turn-proxy-<fo
     s = re.sub(r"^vk-turn-proxy-?", "", service or "turn-proxy") or "turn"
     s = re.sub(r"-\d+$", "", s) or "turn"
     return "cacggghp" if s == "main" else s
-def turn_fork_owner(fork):   # owner/repo for a fork — samosvalishe moved to free-turn-proxy (vk-turn-proxy is archived)
+def turn_fork_owner(fork):   # owner/repo for a fork — from the catalog; unknown forks fall back to <fork>/vk-turn-proxy
+    s = TURN_SERVERS.get(fork)
+    if s: return s["owner"]
     return "samosvalishe/free-turn-proxy" if fork == "samosvalishe" else (fork + "/vk-turn-proxy")
 def _ip_of(hp):   # "ip:port" → ip ("" if none)
     hp = hp or ""; return hp.rsplit(":", 1)[0] if ":" in hp else hp
@@ -4339,8 +5826,9 @@ def api(method, path, qs, body, deps):
 
     stats_dir = deps.get("stats_dir")
 
-    def nodes_view():
+    def nodes_view(roster=None):
         out = []
+        _refmap = _ghost_refs(roster if roster is not None else roster_load(roster_path))   # {node:{iface:[pid]}} — walked once; /api/state passes its already-loaded roster to avoid a 2nd disk read
         # operator-set order (POST /api/order): `pos` ascending, unordered nodes after, by created
         for nid, c in sorted(nodes.items(), key=lambda kv: (kv[1].get("pos", 1 << 30), kv[1].get("created", 0), kv[0])):
             snap = snaps.get(nid) or {}
@@ -4430,7 +5918,8 @@ def api(method, path, qs, body, deps):
                         "cmd_progress": (snap.get("cmd_progress") or {}),           # request key -> transient "what's happening now" (yellow card note)
                         "issues": _node_issues(c, snap),                            # health-check roll-up: drift / missing egress / turn down
                         "interfaces": list((snap.get("interfaces") or {}).keys()),
-                        "missing_ifaces": _missing_ifaces(c, snap)})                  # user ifaces expected but gone (restore signal + last-known config)
+                        "missing_ifaces": _missing_ifaces(c, snap),                  # user ifaces expected but gone (restore signal + last-known config)
+                        "ghost_ifaces": _ghost_ifaces(c, snap, _refmap.get(nid), online)})   # lost KEYLESS ifaces (no _lastcfg) → recreate-fresh + rekey, not restore (online-gated)
         return out
 
     def describe_view():
@@ -4497,11 +5986,12 @@ def api(method, path, qs, body, deps):
             _hp_at = os.path.getmtime(_hpf)              # no timestamp in the file → use its mtime for the timeout
         _mstat = _APPLY["status"] or {}
         _mgrace = int(_mstat.get("grace_until") or 0) > int(time.time())   # a just-confirmed move still gracing out (old address kept alive) → an instant undo is still possible
+        _roster = roster_load(roster_path)               # load ONCE per /api/state — reused by the "roster" key AND nodes_view's ghost ref-walk (was 2 reads/poll)
         return 200, {"ok": True, "data": {
             "host_proc": _proc_view(_hp, _hp_at),        # this panel host is mid re-install (UI tag); times out → "failed" → clears
             "host_proc_err": _hp_err,                    # failed-state log tail for the appbar error popup
-            "roster": roster_load(roster_path),          # {version, users, peers}
-            "nodes": nodes_view(),                       # fleet metadata + live counters
+            "roster": _roster,                           # {version, users, peers}
+            "nodes": nodes_view(_roster),                # fleet metadata + live counters
             "describe": describe_view(),                 # per-node interface meta for config building
             "snapshots": snaps,                          # raw observed state, keyed by node (reconcile input)
             "store_configs": store_mode,                 # enum "encrypted" | "off"
@@ -4515,6 +6005,7 @@ def api(method, path, qs, body, deps):
             "docker_awaiting": ({"nonce": _mstat.get("nonce"), "new_url": _mstat.get("new_url")}   # docker restart-safe recreate came up awaiting a reachability confirm → THIS browser reaching /api/state IS the proof, so any tab auto-commits (see the global effect); absent otherwise
                                 if _mstat.get("state") == "docker-awaiting" and _mstat.get("nonce") else None),
 
+            "turn_catalog": turn_catalog_view(),         # single-source turn fork/client catalog (SPA reads this instead of a hardcoded TURN_FORKS)
             "catalog_providers": catalog_providers_view((panel_settings.get("providers") or {}), nodes),   # Geo-data provider registry + enabled state (source tags + toggles)
             "cat_sizes": _cat_sizes,                     # per-cat resolved-list record counts {cat:{ip,host}} → UI list-size display
             "smart_caps": {**SMART_CAPS, **_cat_caps_extra},   # per-category {ip,host} capability → UI [IP]/[Host] grouping + kernel-mode greying (+ in-use catalog cats)
@@ -4527,6 +6018,7 @@ def api(method, path, qs, body, deps):
             "panel_outdated": _ver_behind(VERSIONS.get("panel"), LATEST_REMOTE.get("version")),   # ONLY a strictly-newer remote is a real upgrade — never offer a downgrade (a stale CDN-cached VERSION the panel already updated/converted past, or a dev build ahead of main)
             "env": {"docker": IN_DOCKER, "fleet_path": FLEET_PATH},   # for UI hints (e.g. enable store_configs)
             "tls": dict(TLS_STATUS),                                  # cert expiry watch — surface a stalled renewal before it goes dark
+            "panel_services": panel_service_health(),                # THIS host's own swg units (active/enabled/present) → SPA "needs attention" (bare-metal only)
         }}
 
     if method == "POST" and path == "/api/panel/settings":   # Panel settings: validate + persist + hot-reload in deps
@@ -4580,6 +6072,9 @@ def api(method, path, qs, body, deps):
             if _k in incoming:
                 try: cur[_k] = max(1, min(50, int(incoming[_k])))
                 except Exception: cur[_k] = 10
+        if "expiry_warn_days" in incoming:
+            try: cur["expiry_warn_days"] = max(0, min(365, int(incoming["expiry_warn_days"])))
+            except Exception: cur["expiry_warn_days"] = 3
         rsv = incoming.get("reserved")
         if isinstance(rsv, dict):
             base = dict(cur.get("reserved") or PANEL_SETTINGS_DEFAULTS["reserved"])
@@ -4614,6 +6109,7 @@ def api(method, path, qs, body, deps):
             # Subscriptions card no longer sends them, so PRESERVE whatever's stored (legacy fallback).
             cur["subscriptions"] = {
                 "enabled": bool(sub.get("enabled")),
+                "auto_generate": bool(sub.get("auto_generate")),   # mint a subscription link for each new user (browser fires it in the background)
                 "base_url": (sub.get("base_url") if "base_url" in sub else _cursub.get("base_url")) or "",
                 "serve": (sub.get("serve") if isinstance(sub.get("serve"), dict) else _cursub.get("serve")) or {},
                 "languages": {"enabled": _en, "default": _def}}
@@ -4659,6 +6155,114 @@ def api(method, path, qs, body, deps):
                 tc = _themed_color(v)
                 if tc: out_fc[re.sub(r"[^A-Za-z0-9_-]", "", str(k))[:48]] = tc
             cur["turn_fork_colors"] = out_fc
+        tcs = incoming.get("turn_client_settings")      # SETTINGS SPLIT: per (server, client, OS) app-setting VALUES {fork: {client: {os: {key: value}}}}, each os-set validated against the (fork, CLIENT) schema (_client_schema_for — the mysorez app's knobs depend on the fork's core).
+        if isinstance(tcs, dict):
+            valid_os = {"android", "ios", "linux", "windows", "macos"}
+            merged = dict(cur.get("turn_client_settings") or {})
+            for fk, cmap_in in list(tcs.items())[:32]:
+                fk = str(fk)
+                if fk not in TURN_SERVERS or not isinstance(cmap_in, dict):
+                    continue
+                fout = {}
+                for cid, osmap_in in list(cmap_in.items())[:16]:
+                    cid = str(cid); sch = {d["key"]: d for d in (_client_schema_for(fk, cid) or [])}   # schema for THIS (fork, client)
+                    if not sch or not isinstance(osmap_in, dict):
+                        continue                        # unknown client OR old flat shape → dropped
+                    cout = {}
+                    for osk, vals in list(osmap_in.items())[:8]:
+                        osk = str(osk)
+                        if osk not in valid_os or not isinstance(vals, dict):
+                            continue
+                        fv = {}
+                        for k, v in list(vals.items())[:32]:
+                            d = sch.get(str(k))
+                            if not d:
+                                continue
+                            t = d.get("type")
+                            if t == "int":
+                                if v == "" or v is None:
+                                    continue            # blank = fall back to the app default (omit)
+                                try: n = int(v)
+                                except (TypeError, ValueError): continue
+                                if "min" in d: n = max(d["min"], n)
+                                if "max" in d: n = min(d["max"], n)
+                                fv[str(k)] = n
+                            elif t == "bool":
+                                fv[str(k)] = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes", "on")
+                            elif t in ("enum", "flagenum"):
+                                vv = str(v)
+                                allowed = [(x.get("value") if isinstance(x, dict) else x) for x in (d.get("values") or [])]
+                                if vv in allowed: fv[str(k)] = vv
+                            else:
+                                s = str(v)[:256]
+                                if no_ctrl(s): fv[str(k)] = s
+                        if fv: cout[osk] = fv
+                    if cout: fout[cid] = cout
+                merged[fk] = fout                        # replace THIS fork's client settings (frontend sends the complete subtree)
+            cur["turn_client_settings"] = merged
+        tcd = incoming.get("turn_client_default")        # per (server, OS) END-USER default app {fork: {os: client_id}} — which app the sub page hands out
+        if isinstance(tcd, dict):
+            valid_os_d = {"android", "ios", "linux", "windows", "macos"}
+            dmerged = dict(cur.get("turn_client_default") or {})
+            for fk, osmap_in in list(tcd.items())[:32]:
+                fk = str(fk)
+                if fk not in TURN_SERVERS or not isinstance(osmap_in, dict):
+                    continue
+                compat = _TURN_CLIENT_COMPAT.get(fk, {})
+                cli_authors = _TURN_CLI_AUTHORS.get(fk, ["samosvalishe"])
+                fout = {}
+                for osk, cidv in list(osmap_in.items())[:8]:
+                    osk = str(osk); cidv = str(cidv)
+                    if osk not in valid_os_d:
+                        continue
+                    if cidv.startswith("sidecar@"):      # per-author CLI: sidecar@<author> — the author must drive this fork
+                        if "sidecar" in compat and cidv.split("@", 1)[1] in cli_authors:
+                            fout[osk] = cidv
+                    elif cidv in TURN_CLIENTS and cidv in compat:   # a GUI/app client that actually connects to this fork
+                        fout[osk] = cidv
+                dmerged[fk] = fout                       # replace THIS fork's default map (frontend sends the complete subtree)
+            cur["turn_client_default"] = dmerged
+        tsd = incoming.get("turn_server_defaults")      # per-fork SERVER-flag defaults {fork: {key: value}}, validated against the catalog `settings` schema
+        if isinstance(tsd, dict):
+            ssch_by_fork = {sid: {d["key"]: d for d in (TURN_SERVERS.get(sid, {}).get("settings") or [])} for sid in TURN_SERVERS}
+            smerged = dict(cur.get("turn_server_defaults") or {})
+            for fk, vals in list(tsd.items())[:32]:
+                fk = str(fk); sch = ssch_by_fork.get(fk)
+                if sch is None or not isinstance(vals, dict):
+                    continue
+                fv = {}
+                for k, v in list(vals.items())[:32]:
+                    d = sch.get(str(k))
+                    if not d:
+                        continue
+                    t = d.get("type")
+                    if t == "int":
+                        if v == "" or v is None: continue
+                        try: n = int(v)
+                        except (TypeError, ValueError): continue
+                        if "min" in d: n = max(d["min"], n)
+                        if "max" in d: n = min(d["max"], n)
+                        fv[str(k)] = n
+                    elif t == "bool":
+                        fv[str(k)] = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes", "on")
+                    elif t == "enum":
+                        vv = str(v)
+                        if vv in (d.get("values") or []): fv[str(k)] = vv
+                    elif t == "flagenum":
+                        vv = str(v)
+                        if vv in [str(x.get("value")) for x in (d.get("values") or [])]: fv[str(k)] = vv
+                    elif t == "hexkey":
+                        s = re.sub(r"[^0-9a-fA-F]", "", str(v))[:(d.get("len") or 64)]
+                        if s: fv[str(k)] = s
+                    else:
+                        s = str(v)[:256]
+                        if no_ctrl(s): fv[str(k)] = s
+                ex = vals.get("_extra")                  # free-entry extra ExecStart flags (appended verbatim per proxy)
+                if isinstance(ex, str):
+                    ex = ex.replace("\n", " ").replace("\r", " ").strip()[:512]
+                    if ex and no_ctrl(ex): fv["_extra"] = ex
+                smerged[fk] = fv
+            cur["turn_server_defaults"] = smerged
         ic = incoming.get("iface_colors")               # per-protocol interface colour overrides {wg,awg: {dark,light}}
         if isinstance(ic, dict):
             out_ic = {}
@@ -5614,6 +7218,10 @@ def api(method, path, qs, body, deps):
         if _sv:
             rec["sk_verify"] = _sv
         save_sub_vault(deps, rec)
+        try:   # a fresh vault (re)created → clear the swg-passwd reset marker so we don't re-prompt the SPA
+            os.remove(os.path.join(_sub_dir(deps), "vault.reset"))
+        except OSError:
+            pass
         return 200, {"ok": True, "data": {"saved": True}}
 
     if method == "GET" and path == "/api/sub/users":                 # admin UI state (authed): coverage + the SK-wrapped escrow
@@ -5630,7 +7238,8 @@ def api(method, path, qs, body, deps):
             blobs = sub_gc_orphan(deps, roster) if uid == SUB_ORPHAN else sub_gc_user(deps, uid, roster)
             live = sub_live_peers(roster, uid)
             out[uid] = {"enabled": bool(rec.get("enabled")), "created": esc.get("created"),
-                        "rotated": esc.get("rotated"), "peers": len(live), "provisioned": len(blobs),
+                        "rotated": esc.get("rotated"), "disabled_at": esc.get("disabled_at"),   # set when a subscription is turned OFF (URL retired) → the UI shows "disabled on <date>" instead of "active"
+                        "peers": len(live), "provisioned": len(blobs),
                         # the escrow is ciphertext (SK-wrapped) — safe to hand the AUTHENTICATED admin browser,
                         # which unwraps it locally with the encryption key to rebuild the URL / encrypt peers.
                         "unlock_by_sk": esc.get("unlock_by_sk"), "token_by_sk": esc.get("token_by_sk")}
@@ -5697,10 +7306,13 @@ def api(method, path, qs, body, deps):
         if uid in users:                             # drop the token map → swg-sub 404s this user (URL dies)
             del users[uid]; save_sub_users(deps, users); changed = True
         # KEEP escrow.unlock_by_sk + the blobs: they're the encrypted CONFIG store (panel Show-QR still needs them).
-        # Only the subscription token is retired — a re-enable mints a fresh URL over the same blobs.
+        # Only the subscription token is retired — a re-enable mints a fresh URL over the same blobs. Stamp
+        # disabled_at so the UI can say "Subscription was disabled on <date>" (re-enable writes a fresh escrow → clears it).
         rec = escrow.get(uid)
-        if rec and rec.get("token_by_sk"):
-            rec.pop("token_by_sk", None); escrow[uid] = rec; save_sub_escrow(deps, escrow); changed = True
+        if rec is not None and rec.get("token_by_sk"):   # only a record that HELD an active subscription token → retire it + stamp
+            rec.pop("token_by_sk", None); rec["disabled_at"] = now(); escrow[uid] = rec; save_sub_escrow(deps, escrow); changed = True
+            # (a config-store-only escrow with no token never had a subscription, so it's never mis-labelled
+            # "disabled"; a re-disable finds no token → no-op, so the original disabled_at date is preserved.)
         return 200, {"ok": True, "data": {"disabled": True, "changed": changed}}
 
     if method == "GET" and path == "/api/sub/blob":                  # read one peer's encrypted secret (authed admin → in-browser decrypt for Show-QR)
@@ -5918,6 +7530,18 @@ def api(method, path, qs, body, deps):
         if s is None:
             return 400, {"ok": False, "error": "range must be live|hour|day|week|month", "code": "bad_request"}
         return 200, {"ok": True, "data": s}
+
+    if method == "GET" and path == "/api/turn/versions":
+        # Rollback picker: the fork's MIRRORED tags (the panel's rollback cache — only versions it has a verified
+        # binary for) + this proxy's current hold, if any. The SPA marks the installed version from the snapshot.
+        owner = (qs.get("owner") or [""])[0].strip()
+        node = (qs.get("node") or [""])[0]; svc = (qs.get("service") or [""])[0].strip()
+        if (not owner or "/" not in owner) and svc:
+            owner = turn_fork_owner(turn_fork(svc))          # derive from the fork if the caller didn't pass one
+        if not owner or "/" not in owner:
+            return 400, {"ok": False, "error": "owner or service required", "code": "bad_request"}
+        held = _turn_hold_get(node, svc) if (node and svc) else ""
+        return 200, {"ok": True, "data": {"owner": owner, "tags": turn_available_tags(owner), "held": held}}
 
     if method == "GET" and path == "/api/mesh-series":
         node = (qs.get("node") or [""])[0]; peer = (qs.get("peer") or [""])[0]
@@ -6286,6 +7910,30 @@ def api(method, path, qs, body, deps):
             if vk and not _VK_CALL_RE.match(vk):
                 return 400, {"ok": False, "error": "Not a valid VK call link — expected https://vk.ru/call/join/…", "code": "bad_request"}
             fields["vk_link"] = vk
+        if "vk_links" in body:                               # the FULL ordered set of a user's VK call links (index 0 = primary)
+            raw = body.get("vk_links")
+            if not isinstance(raw, list):
+                return 400, {"ok": False, "error": "vk_links must be a list", "code": "bad_request"}
+            links = []
+            for item in raw:
+                s = str(item or "").strip()[:512]
+                if not s:
+                    continue
+                if not _VK_CALL_RE.match(s):
+                    return 400, {"ok": False, "error": "Not a valid VK call link — expected https://vk.ru/call/join/…", "code": "bad_request"}
+                links.append(s)
+            fields["vk_links"] = links
+        if "expiry" in body:                                 # subscription-wide expiry date (epoch secs; 0/"" clears it)
+            exp = coerce_expiry(body.get("expiry"))
+            if exp is None:
+                return 400, {"ok": False, "error": "expiry must be an epoch timestamp or 0", "code": "bad_request"}
+            if exp:
+                # A subscription can't expire before its longest-lived peer — that peer would outlive the sub.
+                maxpeer = max((int(p.get("expiry") or 0) for p in roster["peers"].values()
+                               if isinstance(p, dict) and p.get("user_id") == uid), default=0)
+                if maxpeer and exp < maxpeer:
+                    return 400, {"ok": False, "error": "Subscription expiry can't be earlier than a peer's expiry (" + fmt_day(maxpeer) + ")", "code": "bad_request"}
+            fields["expiry"] = exp
         renamed = "name" in fields
         u = user_set(roster, uid, fields, now())
         roster_save(roster_path, roster)
@@ -6431,6 +8079,28 @@ def api(method, path, qs, body, deps):
                   f"{node}/{iface}")
         return 200, {"ok": True, "data": p2}
 
+    if method == "POST" and path == "/api/peers/set-primary":
+        # Mark one deployment as the peer's PRIMARY connection (ordered first on the subscription page).
+        pid = body.get("peer_id") or ""
+        node = body.get("node") or ""; iface = body.get("iface") or ""
+        roster = roster_load(roster_path)
+        p = roster["peers"].get(pid)
+        if not p:
+            return 404, {"ok": False, "error": "unknown peer", "code": "not_found"}
+        tgts, found = [], False
+        for t in p.get("targets", []):
+            t = dict(t)
+            if t.get("node") == node and t.get("iface") == iface:
+                t["primary"] = True; found = True
+            else:
+                t.pop("primary", None)
+            tgts.append(t)
+        if not found:
+            return 404, {"ok": False, "error": "unknown target", "code": "not_found"}
+        p2 = peer_set(roster, pid, {"targets": tgts}, now())   # metadata only — no key/config touch
+        roster_save(roster_path, roster)
+        return 200, {"ok": True, "data": p2}
+
     if method == "POST" and path == "/api/peers/update":
         # Edit a peer's operator-facing label (title) and/or owner (user_id). Metadata only —
         # the key/PSK/config are untouched, so assigning an unassigned peer keeps the credential
@@ -6451,6 +8121,17 @@ def api(method, path, qs, body, deps):
             changed["user_id"] = uid or None
         if "overrides" in body:                 # per-peer non-secret DNS/MTU/AllowedIPs/keepalive (the roster copy)
             changed["overrides"] = body.get("overrides") or {}
+        if "expiry" in body:                     # per-peer expiry date (epoch secs; 0/"" clears it)
+            exp = coerce_expiry(body.get("expiry"))
+            if exp is None:
+                return 400, {"ok": False, "error": "expiry must be an epoch timestamp or 0", "code": "bad_request"}
+            if exp:
+                # A peer can't outlive its subscription — its expiry may not be later than the owning user's.
+                owner_uid = changed.get("user_id", p.get("user_id"))
+                uexp = int((roster["users"].get(owner_uid) or {}).get("expiry") or 0) if owner_uid else 0
+                if uexp and exp > uexp:
+                    return 400, {"ok": False, "error": "Peer expiry can't be later than the subscription's expiry (" + fmt_day(uexp) + ")", "code": "bad_request"}
+            changed["expiry"] = exp
         if not changed:
             return 400, {"ok": False, "error": "nothing to update", "code": "bad_request"}
         p2 = peer_set(roster, pid, changed, now())
@@ -6460,7 +8141,7 @@ def api(method, path, qs, body, deps):
         if "user_id" in changed:
             ev_append(roster_path, "peer", pid,
                       "Assigned peer" if changed["user_id"] else "Unassigned peer", peer_label(roster, p2))
-        elif "overrides" in changed and "title" not in changed:
+        elif ("overrides" in changed or "expiry" in changed) and "title" not in changed:
             ev_append(roster_path, "peer", pid, "Edited peer config", peer_label(roster, p2))
         return 200, {"ok": True, "data": p2}
 
@@ -7180,6 +8861,42 @@ def api(method, path, qs, body, deps):
             if fid and "/" in owner:
                 latest[fid] = _resolve_turn_tag(owner)
         return 200, {"ok": True, "data": {"latest": latest}}
+    if method == "GET" and path == "/api/turn/roster-check":
+        # Client-app schema drift: each curated source file's latest GitHub commit vs the last-acknowledged one.
+        return 200, {"ok": True, "data": _turn_roster_check()}
+    if method == "POST" and path == "/api/turn/roster-ack":
+        cid = re.sub(r"[^a-z0-9_]", "", str(body.get("client") or ""))[:32]
+        files = _turn_roster_ack(cid) if cid in TURN_CLIENTS else None
+        if files is None:
+            return 400, {"ok": False, "error": "unknown client"}
+        return 200, {"ok": True, "data": {"client": cid, "files": files}}
+    # ── P4a: versioned per-field roster (field diff + adopt + rollback) — the parseable forks. ?refresh=1 hits GitHub.
+    if method == "GET" and path == "/api/turn/p4/report":
+        return 200, {"ok": True, "data": _turn_p4_report_all((qs.get("refresh") or [""])[0] == "1")}
+    if method == "POST" and path in ("/api/turn/p4/adopt", "/api/turn/p4/setversion"):
+        cid = re.sub(r"[^a-z0-9_]", "", str(body.get("client") or ""))[:32]
+        if cid not in TURN_CLIENTS:
+            return 400, {"ok": False, "error": "unknown client"}
+        roster = _turn_roster_load()
+        if path.endswith("adopt"):
+            def _san(xs):
+                return [re.sub(r"[^\w.\-]", "", str(x))[:64] for x in (xs if isinstance(xs, list) else []) if str(x).strip()][:64]
+            def _sanv(d):   # {field: [values]} → sanitised
+                return {re.sub(r"[^\w.\-]", "", str(k))[:64]: _san(v) for k, v in (d if isinstance(d, dict) else {}).items()} if isinstance(d, dict) else {}
+            applied = _turn_p4_adopt(cid, roster, add=_san(body.get("add")), remove=_san(body.get("remove")),
+                                     vadd=_sanv(body.get("vadd")), vrem=_sanv(body.get("vrem")))
+        else:
+            idx = body.get("index")
+            if idx is not None:
+                try:
+                    idx = int(idx)
+                except Exception:
+                    return 400, {"ok": False, "error": "bad index"}
+            if _turn_p4_setversion(cid, roster, idx) is None:
+                return 400, {"ok": False, "error": "bad snapshot index"}
+            applied = {"pinned_snapshot": idx}
+        _turn_roster_save(roster)
+        return 200, {"ok": True, "data": {"client": cid, "applied": applied, "report": _turn_client_p4_report(cid, roster.get(cid) or {})}}
     if method == "POST" and path == "/api/turn/install":
         # Install a NEW turn-proxy: the node downloads the fork's prebuilt binary, writes the systemd
         # unit (listen → connect, + the fork's wrap flags & a fresh key), and enables it. Keyed by the
@@ -7210,6 +8927,7 @@ def api(method, path, qs, body, deps):
                 "wrap_flags": wrap_flags, "title": (body.get("title") or "").strip(), "at": now()}
         if "params" in body:   # explicit ExecStart tail from the create form (the node uses it verbatim, incl. its wrap key)
             ireq["params"] = body.get("params") or ""
+        ireq["pin"] = turn_pin(owner, _node_arch(deps, nid))   # checksum gate: fetch+hash THIS node's-arch binary (bounded+bg) so the pin rides the FIRST sync delivery
         nodes[nid].setdefault("turn", {})[svc] = ireq
         nodes_save(deps["nodes_path"], nodes)
         ev_append(roster_path, "node", nid, "Installing turn-proxy", svc)
@@ -7253,6 +8971,19 @@ def api(method, path, qs, body, deps):
                 if not _OWNER_RE.match(body["owner"].strip()):
                     return 400, {"ok": False, "error": "invalid owner repo", "code": "bad_request"}
                 req["owner"] = body["owner"].strip()
+            _owner = req.get("owner") or turn_fork_owner(turn_fork(svc))
+            _tag = (body.get("tag") or "").strip()
+            if _tag:                                 # ROLLBACK to a specific mirrored version
+                if not _TAG_RE.match(_tag):
+                    return 400, {"ok": False, "error": "invalid version tag", "code": "bad_request"}
+                req["pin"] = turn_pin_tag(_owner, _tag, _node_arch(deps, nid))
+                if not (req["pin"].get("sums") or {}):   # not in the rollback cache (pruned / never mirrored) → can't verify, refuse
+                    return 409, {"ok": False, "error": "that version isn't in the rollback cache — the panel has no verified binary for it", "code": "no_mirror"}
+                _turn_hold_set(nid, svc, _tag)       # pin the choice so the auto-updater doesn't roll it forward
+                verb = "Rolling back turn-proxy"
+            else:                                    # normal reinstall / update-to-latest → release any rollback hold
+                req["pin"] = turn_pin(_owner, _node_arch(deps, nid))   # checksum gate (owner from the request, else the fork's catalog owner; this node's arch)
+                _turn_hold_clear(nid, svc)
         else:
             req = {"action": "delete", "at": now()}; verb = "Deleting turn-proxy"
         nodes[nid].setdefault("turn", {})[svc] = req
@@ -8043,7 +9774,10 @@ class Handler(BaseHTTPRequestHandler):
         # of our no-cache header — so a browser can run a stale app.js against a freshly-updated backend.
         # A per-release query makes each version a distinct URL: index.html/HTML is never CDN-cached, so it's
         # always fresh and points at the current app.js?v=… , which the CDN then fetches anew on a version bump.
-        _av = (VERSIONS.get("panel") or "").strip()
+        # URL-ENCODE the version for the query: a "+sha" dev build (e.g. 1.3.12-beta+0e1fdcc) would otherwise put a
+        # literal "+" in the asset URL, which a CDN/WAF in front (Cloudflare) rejects outright — %2B keeps each
+        # version a distinct, VALID cache-bust key.
+        _av = quote((VERSIONS.get("panel") or "").strip(), safe="")
         if _av and STATIC[key] == "index.html":
             q = ("?v=" + _av).encode()
             data = (data.replace(b'href="app.css"', b'href="app.css' + q + b'"')
@@ -8170,7 +9904,15 @@ class Handler(BaseHTTPRequestHandler):
             if not ok2:
                 return self._send(200, {"ok": False, "twofa_required": True, "error": "that code isn't valid"})
         tok = make_session(creds[0], Handler.deps.get("session_secret"))
-        return self._send_with_cookie(200, {"ok": True, "data": {"username": creds[0]}},
+        data = {"username": creds[0]}
+        # swg-passwd reset the Encryption Vault (its old-password wrap is gone) → tell the SPA to re-create it under
+        # the password just entered, so stored configs / sub links re-connect without a manual "set up encryption" step.
+        try:
+            if os.path.exists(os.path.join(_sub_dir(Handler.deps), "vault.reset")):
+                data["vault_reset"] = True
+        except Exception:
+            pass
+        return self._send_with_cookie(200, {"ok": True, "data": data},
                                       self._session_cookie(tok, SESSION_TTL))
 
     def _logout(self):
@@ -8925,6 +10667,36 @@ class Handler(BaseHTTPRequestHandler):
         with contextlib.suppress(BrokenPipeError):
             self.wfile.write(data)
 
+    def _node_turn_binary(self, u):
+        # Serve a mirrored turn-proxy fork binary (Axis 2 · P2). Node-token auth. The node pulls this instead of
+        # GitHub (censorship-robust) after the pin gives it {owner,tag,arch}; it re-verifies against the pin sha.
+        # Fetch-on-miss (turn_sum mirrors it), so a rollback to any tag the panel can still fetch works too.
+        nid, _node, _ = self._node_token()
+        if not nid:
+            return
+        if not self._node_sig_ok(_node, b""):
+            return
+        q = parse_qs(u.query)
+        owner = (q.get("owner") or [""])[0].strip()
+        tag = (q.get("tag") or [""])[0].strip()
+        arch = (q.get("arch") or [""])[0].strip()
+        if not _OWNER_RE.match(owner) or not tag or "/" in tag or ".." in tag or arch not in TURN_ARCHES:
+            return self._send(400, {"error": "bad owner/tag/arch"})
+        sha = turn_sum(owner, tag, arch)               # ensures it's mirrored (fetch-on-miss) + returns the hash
+        dest = _turn_store_path(owner, tag, arch)
+        if not sha or not os.path.isfile(dest):
+            return self._send(404, {"error": "binary unavailable"})
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Turn-Sha256", sha)
+        self.send_header("Content-Length", str(os.path.getsize(dest)))
+        self.end_headers()
+        with contextlib.suppress(Exception):
+            with open(dest, "rb") as f:                 # stream in chunks — a fleet-wide update pull mustn't buffer 22MB per request
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    self.wfile.write(chunk)
+
     def _node_rename(self):
         # A node renames ITSELF (node-token auth) — so a re-install/convert can push a box-name change the
         # operator entered in the installer. name is a free display field (id-keyed store); no refs to migrate.
@@ -8964,6 +10736,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._node_whoami()
         if path == "/api/node/list":       # node-token auth — serve a resolved provider list (raw text) for a routed cat/tier
             return self._node_list(u)
+        if path == "/api/node/turn-binary":  # node-token auth — serve a mirrored turn-proxy fork binary (Axis 2 · P2)
+            return self._node_turn_binary(u)
         if path == "/healthz" or path == "/metrics" or path.startswith("/api/v1/"):
             return self._ext_api(path, u)  # external integration API — its OWN token/session auth (read-only)
         if not self._require_auth():       # everything else (data) needs a session
@@ -10028,7 +11802,12 @@ def main():
     globals()["CATALOG_PATH"] = os.path.join(_statedir, "catalog-index.json")   # catalog cache lives in the state dir
     globals()["PROV_STATUS_PATH"] = os.path.join(_statedir, "provider-status.json")   # per-provider update status
     globals()["LIST_DIR"] = os.path.join(_statedir, "lists")                    # resolved per-category lists served to nodes
+    globals()["TURN_SUMS_PATH"] = os.path.join(_statedir, "turn-sums.json")      # turn-proxy binary checksums (Axis 2 · P1)
+    globals()["TURN_BINS_DIR"] = os.path.join(_statedir, "turn-bins")            # mirrored turn-proxy binaries (Axis 2 · P2)
+    globals()["TURN_HOLDS_PATH"] = os.path.join(_statedir, "turn-holds.json")    # rolled-back turn proxies the auto-updater skips
+    globals()["TURN_ROSTER_PATH"] = os.path.join(_statedir, "turn-roster.json")  # client-schema drift baseline (roster-check)
     _prov_status_load()
+    _turn_sums_load()
     _lp = os.path.join(_statedir, ".panel.lock")
     def _other_panel_pid():
         # Any OTHER live swg-panel-server on this box? Scans /proc, matching PRECISELY (arg0 is the script, or python
@@ -10086,6 +11865,7 @@ def main():
     _psp = fleet.get("panel_settings_path") or os.path.join(os.path.dirname(nodes_path) or ".", "panel-settings.json")
     migrate_ru_split(nodes_path, _psp)   # 'ru' -> 'ru_net' (ru_blocked split out; one-time)
     migrate_provider_defaults(nodes_path, _psp)   # providers default OFF, but keep already-routed ones enabled (one-time)
+    migrate_enabled_turn_forks(nodes_path, _psp, fleet.get("stats_dir", "/var/www/wgstats"))   # keep already-deployed turn forks in the picker + dashboard after the default flip (one-time, UI-only)
     normalize_stats_files(nodes_path, fleet.get("stats_dir", "/var/www/wgstats"))   # stats_file -> stats-<id>.json (id-keyed health files survive convert)
     _hpp = os.path.join(os.path.dirname(nodes_path) or ".", "host_proc")   # this host's re-install/convert flag
     with contextlib.suppress(Exception):
@@ -10182,6 +11962,7 @@ def main():
         threading.Thread(target=_tls_watch_loop, daemon=True).start()   # watch cert expiry; warn before a stalled renewal goes dark
     threading.Thread(target=_remote_version_loop, daemon=True).start()   # poll the repo for newer releases
     threading.Thread(target=_turn_update_loop, daemon=True).start()       # scheduled turn-proxy auto-update (opt-in)
+    threading.Thread(target=_turn_warm_assets_loop, args=(Handler.deps,), daemon=True).start()   # resolve latest per-OS client download assets → serve.json
     threading.Thread(target=_node_watch_loop, args=(Handler.deps,), daemon=True).start()   # node online/offline → webhooks
     auth_note = "" if Handler.deps["auth"] else "  [no auth!]"
     LISTENERS.add(BIND_HOST, BIND_PORT, TLS_CERT if scheme == "https" else None,

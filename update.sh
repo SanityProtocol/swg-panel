@@ -296,44 +296,46 @@ EOF
   ok "swg-netctl root helper provisioned — Access & subscription-address changes will work now"
 }
 
-ensure_sub_server(){   # idempotent: provision the swg-sub subscription surface when a bare-metal panel LACKS it.
-  # swg-sub is the public, read-only per-user QR/config page. The panel drives it entirely over swg-netctl
-  # (set-listen / restart the swg-sub.service unit), so a panel with NO unit can't bind or rebind the sub
-  # server — every Settings → Subscriptions apply fails with "couldn't bind the subscription server …" and
-  # rolls back. Installs that predate swg-sub, or partial ones that dropped the files without the unit (and
-  # without swg-sub's own user), have no service at all, and the version-gated refresh below only runs when
-  # the binary already exists. Provision the whole thing here, unconditionally, so an update repairs such
-  # boxes. MUST mirror install-host.sh's swg-sub install + write_sub_unit. Inert until enabled in the panel
-  # (the whole surface 404s until then), so enabling --now here exposes nothing.
+ensure_sub_server(){   # HEAL (install-if-missing) the swg-sub subscription surface on a bare-metal panel.
+  # swg-sub is the public, read-only per-user QR/config page. The panel drives it over swg-netctl
+  # (set-listen / restart swg-sub.service), so a panel with NO unit can't bind or rebind it — Settings →
+  # Subscriptions then fails with "couldn't bind the subscription server …" and rolls back. Installs that
+  # predate swg-sub, or partial ones that dropped the files/user/unit, have no service at all, and the
+  # version-gated refresh below only touches an already-present binary.
+  #   HEAL CONTRACT (see the heal-section banner): install ONLY the pieces that are MISSING, never rewrite
+  #   or re-copy one that exists — writing the base unit when it's already there would clobber the panel's
+  #   set-listen drop-in — then enable so it survives a reboot. Piece templates MUST mirror install-host.sh's
+  #   swg-sub install + write_sub_unit. Inert until enabled in the panel (the surface 404s until then).
   [ -f "$SRC/swg-sub" ] || return 0
   local st="${STATE_DIR:-/var/lib/swg-panel}" etc="${ETC_DIR:-/etc/swg-panel}" tls="${TLS_DIR:-/etc/swg-panel/tls}"
-  local usr="${PANEL_USER:-swgpanel}" subusr="${SUB_USER:-swgsub}" subport="${SUB_PORT:-8444}" subbind="${SUB_BIND:-0.0.0.0}"
-  # already complete? (binary + own user + service unit) → nothing to do; the refresh path keeps it current.
-  if [ -f "$SUB_DIR/swg-sub" ] && id "$subusr" >/dev/null 2>&1 && [ -f /etc/systemd/system/swg-sub.service ]; then return 0; fi
-  info "provisioning the swg-sub subscription surface (missing/incomplete — needed for Settings → Subscriptions)"
-  if $DRYRUN; then echo "    [skip] install ${SUB_DIR}/swg-sub + user ${subusr} + /etc/swg-sub/tls + swg-sub.service (enable --now)"; return 0; fi
-  # swg-sub's OWN unprivileged user (group swg, read-only) — NOT the panel user. It reads only the
-  # group-readable subset of state; the secrets stay 0600/owner-only + masked by the unit (below).
+  local subusr="${SUB_USER:-swgsub}" subport="${SUB_PORT:-8444}" subbind="${SUB_BIND:-0.0.0.0}"
+  local unit=/etc/systemd/system/swg-sub.service
+  # fully present? leave every file exactly as-is; only make sure it's enabled for reboot, then stop.
+  if [ -f "$SUB_DIR/swg-sub" ] && id "$subusr" >/dev/null 2>&1 && [ -f "$unit" ]; then
+    $DRYRUN || systemctl is-enabled --quiet swg-sub 2>/dev/null || systemctl enable --quiet swg-sub 2>/dev/null || true
+    return 0
+  fi
+  info "healing the swg-sub subscription surface (installing missing pieces — needed for Settings → Subscriptions)"
+  if $DRYRUN; then echo "    [skip] install whichever is MISSING: user ${subusr} · ${SUB_DIR}/swg-sub · /etc/swg-sub/tls · ${unit} (then enable --now)"; return 0; fi
+  # swg-sub's OWN unprivileged user (group swg, read-only) — NOT the panel user. useradd sets home+group, so
+  # a freshly-made user needs no follow-up; an existing one we leave exactly as the operator has it.
   id "$subusr" >/dev/null 2>&1 || useradd -r -g swg -d "$SUB_DIR" -s /usr/sbin/nologin "$subusr" 2>/dev/null || true
-  usermod -d "$SUB_DIR" -g swg "$subusr" 2>/dev/null || true
-  # group(swg) traverse so swg-sub can reach the roster/nodes/subs it may read (idempotent on a live panel).
-  chown "$usr:swg" "$st" 2>/dev/null || true; chmod 750 "$st" 2>/dev/null || true
-  [ -d "$st/subs" ] && { chown -R "$usr:swg" "$st/subs" 2>/dev/null || true; chmod 750 "$st/subs" 2>/dev/null || true; [ -d "$st/subs/blobs" ] && chmod 750 "$st/subs/blobs" 2>/dev/null || true; }
-  mkdir -p "$SUB_DIR/vendor"
-  cp "$SRC/swg-sub" "$SUB_DIR/"; chmod 755 "$SUB_DIR/swg-sub"
-  for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SRC/$f" ] && cp "$SRC/$f" "$SUB_DIR/"; done
-  [ -f "$SRC/vendor/qrcode.js" ] && cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"
-  stamp "$SUB_DIR"
-  # swg-sub's OWN TLS dir — its cert lives here (never the panel's key). swg-netctl/acme write it as root;
-  # group swg (swgsub) reads it. Separate from — and NOT — the masked panel tls dir.
-  mkdir -p /etc/swg-sub/tls; chown root:swg /etc/swg-sub/tls 2>/dev/null || true; chmod 750 /etc/swg-sub/tls
-  local subextra=""
-  [ "$subport" -lt 1024 ] 2>/dev/null && subextra="AmbientCapabilities=CAP_NET_BIND_SERVICE
-"
+  if [ ! -f "$SUB_DIR/swg-sub" ]; then    # binary missing → lay down the binary + any missing web assets
+    mkdir -p "$SUB_DIR/vendor"
+    cp "$SRC/swg-sub" "$SUB_DIR/"; chmod 755 "$SUB_DIR/swg-sub"
+    for f in sub.html sub.js sub.css turn-artifacts.js; do [ -f "$SUB_DIR/$f" ] || { [ -f "$SRC/$f" ] && cp "$SRC/$f" "$SUB_DIR/"; }; done
+    [ -f "$SUB_DIR/vendor/qrcode.js" ] || { [ -f "$SRC/vendor/qrcode.js" ] && cp "$SRC/vendor/qrcode.js" "$SUB_DIR/vendor/"; }
+    [ -f "$SUB_DIR/VERSION" ] || stamp "$SUB_DIR"
+  fi
+  # swg-sub's OWN TLS dir — its cert lives here (never the panel's key). Root writes it, group swg reads.
+  [ -d /etc/swg-sub/tls ] || { mkdir -p /etc/swg-sub/tls; chown root:swg /etc/swg-sub/tls 2>/dev/null || true; chmod 750 /etc/swg-sub/tls; }
+  if [ ! -f "$unit" ]; then                # unit missing → write it (a separate FILE, so it never disturbs
+    local subextra=""                      # the panel's set-listen 10-access drop-in). This is the only
+    [ "$subport" -lt 1024 ] 2>/dev/null && subextra="AmbientCapabilities=CAP_NET_BIND_SERVICE
+"                                          # thing we CREATE here; host/port below is the pre-reconcile fallback.
   # served as PLAIN HTTP behind the operator's TLS (reverse proxy / Cloudflare) or swg-sub's own cert; it
-  # deliberately never reuses the panel's TLS key. The panel overrides the listen addr via a set-listen
-  # drop-in (10-access) after this, so the default host/port below is just the pre-reconcile fallback.
-  cat > /etc/systemd/system/swg-sub.service <<EOF
+  # deliberately never reuses the panel's TLS key.
+  cat > "$unit" <<EOF
 [Unit]
 Description=swg-sub subscription surface (public, read-only)
 After=network.target
@@ -369,9 +371,146 @@ InaccessiblePaths=-${etc}/auth -${tls} -${st}/subs/vault.json -${st}/subs/escrow
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload
+    systemctl daemon-reload
+  fi
   systemctl enable --quiet --now swg-sub 2>/dev/null || warn "couldn't enable swg-sub"
-  ok "swg-sub subscription surface provisioned — Settings → Subscriptions will work now"
+  ok "swg-sub subscription surface healed — Settings → Subscriptions will work now"
+}
+
+ensure_noded_unit(){   # HEAL (install-if-missing) the swg-noded systemd unit on a bare-metal node.
+  # swg-noded is the outbound sync daemon. Its unit is STATIC — the real config (panel URL, token, verify,
+  # interfaces) lives in the persisted /etc/swg-agent/config.json, so recreating a lost unit restores nothing
+  # but the systemd wrapper and is safe. Without it the node isn't managed by systemd and won't sync or
+  # survive a reboot. HEAL CONTRACT: only when the binary + config exist but the UNIT is gone; never rewrite
+  # an existing unit. Template MUST mirror install-node.sh's swg-noded.service.
+  [ -f "$SRC/swg-noded" ] || return 0
+  [ -f "$NODED_DIR/swg-noded" ] && [ -f /etc/swg-agent/config.json ] || return 0   # a configured bare-metal node
+  local unit=/etc/systemd/system/swg-noded.service
+  if [ -f "$unit" ]; then
+    $DRYRUN || systemctl is-enabled --quiet swg-noded 2>/dev/null || systemctl enable --quiet swg-noded 2>/dev/null || true
+    return 0
+  fi
+  info "healing the swg-noded unit (missing — the node isn't managed by systemd and won't sync or survive a reboot)"
+  if $DRYRUN; then echo "    [skip] install ${unit} (enable --now — config.json is preserved)"; return 0; fi
+  local nname; nname="$(hostname 2>/dev/null || echo node)"   # cosmetic Description only (config.json holds no node name)
+  cat > "$unit" <<EOF
+[Unit]
+Description=swg-noded (HTTPS sync to panel) — ${nname}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${NODED_DIR}/swg-noded
+Environment=SWG_AGENT_CONFIG=/etc/swg-agent/config.json
+Environment=SWG_NODED_STATE=/var/lib/swg-noded
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --quiet --now swg-noded 2>/dev/null || warn "couldn't enable swg-noded"
+  ok "swg-noded unit healed — the node will sync + survive a reboot now"
+}
+
+ensure_update_unit(){   # HEAL (install-if-missing) the one-click self-update wiring on a bare-metal panel.
+  # install_update_unit (below) is called during an actual version update to REFRESH this wiring, but on an
+  # up-to-date box with the units missing (a partial install / older host) nothing re-wires them, so the
+  # panel's one-click "Update" button silently does nothing. Provision them here when absent. All pieces are
+  # static templates (no operator config), so a full (re)provision via install_update_unit is safe.
+  [ -f "$PANEL_DIR/swg-panel-server" ] || return 0     # bare-metal panel only
+  if [ -x /usr/local/bin/swg-update ] && [ -x /usr/local/bin/swg-update-check ] \
+     && [ -f /etc/systemd/system/swg-update.service ] && [ -f /etc/systemd/system/swg-update.timer ]; then
+    $DRYRUN || systemctl is-enabled --quiet swg-update.timer 2>/dev/null || systemctl enable --quiet --now swg-update.timer 2>/dev/null || true
+    return 0
+  fi
+  info "healing the one-click self-update wiring (missing — the panel's Update button would do nothing)"
+  install_update_unit
+  $DRYRUN || ok "one-click self-update wiring healed"
+}
+
+ensure_panel_unit_warn(){   # DETECT + WARN only — never recreate. The panel unit bakes in the operator's
+  # bind host, port, TLS cert/key paths, and login; an update can't safely reconstruct those, and a blind
+  # recreate would serve on the wrong port, DROP TLS, or DROP the login — a security downgrade, not a repair.
+  # So we surface it loudly and point at the installer, which restores it with the real settings.
+  [ -f "$PANEL_DIR/swg-panel-server" ] || return 0
+  [ -f /etc/systemd/system/swg-panel-server.service ] && return 0
+  DID_FAIL=yes
+  warn "swg-panel-server.service is MISSING — the panel is not managed by systemd and won't survive a reboot."
+  warn "Its unit carries your TLS cert/key, port, and login, which an update must not guess. Re-run the host"
+  warn "installer to restore it with your real settings:"
+  warn "    curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host"
+}
+
+ensure_netctl_docker(){   # HEAL (install-if-missing) the docker address helper on a panel-bearing docker host.
+  # On docker the panel container can't `docker compose` the host, so it writes netctl requests to the bind-
+  # mounted data/lib/netctl/queue and THIS host unit drains them into compose actions (restart / rebind
+  # swg-sub on an address change). Missing on older/partial docker installs → one-click address changes fall
+  # back to a manual restart. HEAL CONTRACT: install only the missing pieces (binary + .service + .timer),
+  # never rewrite existing ones; enable the timer. Templates MUST mirror install-docker.sh's wire_docker_netctl.
+  case "${1:-}" in host|master|host-node) ;; *) return 0;; esac    # panel-bearing profiles only
+  local drainer="$SRC/docker/swg-netctl-docker"
+  [ -f "$drainer" ] || return 0
+  if [ -x /usr/local/bin/swg-netctl-docker ] && [ -f /etc/systemd/system/swg-netctl-docker.service ] \
+     && [ -f /etc/systemd/system/swg-netctl-docker.timer ]; then
+    $DRYRUN || systemctl is-enabled --quiet swg-netctl-docker.timer 2>/dev/null || systemctl enable --quiet --now swg-netctl-docker.timer 2>/dev/null || true
+    return 0
+  fi
+  info "healing the docker address helper (missing — one-click address changes would fall back to a manual restart)"
+  if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-netctl-docker + swg-netctl-docker.{service,timer} (enable --now)"; return 0; fi
+  mkdir -p "$DOCKER_DIR/data/lib/netctl/queue" "$DOCKER_DIR/data/lib/netctl/status"   # the panel writes requests here (bind mount)
+  [ -x /usr/local/bin/swg-netctl-docker ] || install -m755 "$drainer" /usr/local/bin/swg-netctl-docker
+  if [ ! -f /etc/systemd/system/swg-netctl-docker.service ]; then
+    cat > /etc/systemd/system/swg-netctl-docker.service <<EOF
+[Unit]
+Description=swg-panel docker address helper (drains the netctl queue into docker compose actions)
+
+[Service]
+Type=oneshot
+Environment=SWG_DOCKER_DIR=$DOCKER_DIR
+ExecStart=/usr/local/bin/swg-netctl-docker
+EOF
+  fi
+  if [ ! -f /etc/systemd/system/swg-netctl-docker.timer ]; then
+    cat > /etc/systemd/system/swg-netctl-docker.timer <<EOF
+[Unit]
+Description=poll the swg-panel docker netctl queue (address changes)
+
+[Timer]
+OnActiveSec=5s
+OnUnitActiveSec=1s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+EOF
+  fi
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --quiet --now swg-netctl-docker.timer 2>/dev/null || warn "couldn't enable swg-netctl-docker.timer"
+  ok "docker address helper healed — one-click address changes will work now"
+}
+
+ensure_update_unit_docker(){   # HEAL (install-if-missing) the docker one-click self-update wiring on a panel-bearing docker host.
+  # install-docker.sh's wire_host_updater lays this down at install time; on an older/partial docker host with the
+  # wrappers or units missing, the panel's one-click "Update" button silently does nothing. All pieces are STATIC
+  # templates (no operator config), shared with the installer via write_docker_updater (lib/common.sh), so a full
+  # (re)write is safe. HEAL CONTRACT: only when MISSING; enable the timer when present.
+  case "${1:-}" in host|master|host-node) ;; *) return 0;; esac    # panel-bearing profiles only (mirrors ensure_netctl_docker)
+  if [ -x /usr/local/bin/swg-update ] && [ -x /usr/local/bin/swg-update-check ] \
+     && [ -f /etc/systemd/system/swg-update.service ] && [ -f /etc/systemd/system/swg-update.timer ]; then
+    $DRYRUN || systemctl is-enabled --quiet swg-update.timer 2>/dev/null || systemctl enable --quiet --now swg-update.timer 2>/dev/null || true
+    return 0
+  fi
+  info "healing the docker one-click self-update wiring (missing — the panel's Update button would do nothing)"
+  if $DRYRUN; then echo "    [skip] install /usr/local/bin/swg-update{,-check} + swg-update.{service,timer} (enable --now)"; return 0; fi
+  write_docker_updater   # shared writer (lib/common.sh): same pieces install-docker.sh writes
+  ok "docker one-click self-update wiring healed — the Update button will work now"
 }
 
 # ───────────────────────── bare-metal panel (host or master) ─────────────────────────
@@ -398,6 +537,11 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
       stamp "$SUB_DIR"
       run systemctl restart swg-sub 2>/dev/null && ok "swg-sub updated + restarted" || warn "swg-sub present but not restarted"
     fi
+    # swg-passwd (admin login + Encryption-Vault reset helper) ships with the panel — refresh in place when present.
+    # It's coupled to the panel's vault, so a stale copy after an update can mismatch; keep it in lockstep with the panel.
+    if [ -f /usr/local/bin/swg-passwd ] && [ -f "$SRC/swg-passwd" ]; then
+      run cp "$SRC/swg-passwd" /usr/local/bin/swg-passwd; run chmod 755 /usr/local/bin/swg-passwd; ok "swg-passwd refreshed"
+    fi
     # swg-netctl (privileged network/TLS helper) — refresh the binary in place when already installed
     # (first-time provisioning of the binary + trigger units is done by install-host.sh).
     if [ -f /usr/local/bin/swg-netctl ] && [ -f "$SRC/swg-netctl" ]; then
@@ -415,8 +559,17 @@ if ! $NODE_ONLY && [ -f "$PANEL_DIR/swg-panel-server" ]; then
       fi
     fi
   else note "bare-metal swg-panel: unchanged (${pold})"; fi
-  ensure_netctl_helper   # runs regardless of should_update — repairs boxes whose helper was never installed
-  ensure_sub_server      # ditto — provisions swg-sub's unit/user on a panel that has the files but no service
+  # ── HEAL PASS (runs regardless of should_update) ──────────────────────────────────────────────────────
+  # Contract: START / ENABLE / INSTALL-IF-MISSING only. Each ensure_* installs the pieces (binary/user/dir/
+  # unit) that are ABSENT and enables the service; it must NEVER re-create, rewrite, or re-copy something
+  # that already exists (that could clobber the panel's runtime drop-ins or the operator's choices). Config-
+  # bearing scaffolding we can't safely template (the panel unit) is WARNED about, not recreated. Detecting
+  # present-but-broken services is NOT done here — that's the panel's runtime "needs attention" job.
+  # NEW SERVICE? add its ensure_<svc> here (and a matching writer in the installer) so update heals it too.
+  ensure_netctl_helper   # swg-netctl privileged helper (+ queue dirs + trigger units)
+  ensure_sub_server      # swg-sub subscription surface (user + binary + tls dir + unit)
+  ensure_update_unit     # one-click self-update wiring (wrappers + service/timer + trigger drop-in)
+  ensure_panel_unit_warn # swg-panel-server.service — detect + warn only (carries TLS/port/login)
 fi
 
 # ───────────────────────── bare-metal node daemon (node or master) ─────────────────────────
@@ -431,6 +584,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     if run systemctl restart swg-noded; then ok "swg-node updated + restarted"; note "bare-metal swg-node: ${nold} → ${NEW_VER}"
     else DID_FAIL=yes; warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
   else note "bare-metal swg-node: unchanged (${nold})"; fi
+  ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
 fi
 
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
@@ -468,12 +622,16 @@ open(f,"w").write("\n".join(o))
 PYHN
     fi ;;
   esac
+  ensure_netctl_docker "$prof"   # HEAL: install the docker address helper if a panel-bearing host lacks it
+  ensure_update_unit_docker "$prof"   # HEAL: install the docker one-click self-update wiring if a panel-bearing host lacks it
+  $DRYRUN || ensure_docker_mask_files "$DOCKER_DIR"   # HEAL: pre-create the files swg-sub /dev/null-masks (a pre-fix install may lack them → recreate would fail)
   if grep -qE '^[[:space:]]*build:' "$DOCKER_DIR/docker-compose.yml" 2>/dev/null; then
     # build-from-source deployment → restage the source and rebuild (don't touch the user's compose/.env)
     if should_update "docker ($prof, source build)" "$DOCKER_DIR"; then
       info "restaging source + rebuilding ($DOCKER_DIR)"
-      for f in Dockerfile Dockerfile.node Dockerfile.turn .dockerignore VERSION \
-               swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
+      for f in Dockerfile Dockerfile.node .dockerignore VERSION \
+               swg-panel-server swg-agent swg-noded swg-sni swg-sub swg-passwd \
+               index.html app.css app.js reconcile.js turn-artifacts.js sub.html sub.js sub.css; do
         [ -e "$SRC/$f" ] && run cp -a "$SRC/$f" "$DOCKER_DIR/"
       done
       [ -d "$SRC/vendor" ] && run cp -a "$SRC/vendor" "$DOCKER_DIR/"

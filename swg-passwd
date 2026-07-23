@@ -1,52 +1,51 @@
 #!/usr/bin/env python3
-"""swg-passwd — reset the swg-panel web login, like the system `passwd`.
+"""swg-passwd — reset the swgPanel admin login, like the system `passwd`.
 
 Run on the PANEL host as root:
 
-    sudo swg-passwd            # change the current user's password
-    sudo swg-passwd <newuser>  # also rename the login user
+    sudo swg-passwd            # reset the current admin's username / password
+    sudo swg-passwd <newuser>  # pre-fill a new username
 
-Prompts for the new password twice (hidden, no echo), writes the pbkdf2 hash to the panel's auth
-file (SWG_PANEL_AUTH, default /etc/swg-panel/auth) and restarts the panel so it takes effect now.
+Prompts (each skippable with Enter) for a new username and a new password, writes the pbkdf2 hash to the
+panel's auth file (SWG_PANEL_AUTH, default /etc/swg-panel/auth) and restarts the panel so it takes effect now.
+
+Changing the PASSWORD also resets the Encryption Vault (the browser-held key that protects stored configs,
+subscription links and interface-key escrow): its old password wrap is gone, so the wrap is dropped and the
+vault re-connects to the new password automatically at the next successful sign-in.
 """
 import sys, os, hashlib, base64, getpass, subprocess, contextlib
 
-AUTH = os.environ.get("SWG_PANEL_AUTH") or "/etc/swg-panel/auth"
-ITER = 200000
+AUTH  = os.environ.get("SWG_PANEL_AUTH")  or "/etc/swg-panel/auth"
+STATE = os.environ.get("SWG_PANEL_STATE") or "/var/lib/swg-panel"
+SUBS  = os.environ.get("SWG_PANEL_SUBS")  or os.path.join(STATE, "subs")
+ITER  = 200000
+
+_TTY = sys.stdout.isatty()
+def _c(s, codes):   return ("\033[" + codes + "m" + s + "\033[0m") if _TTY else s
+def B(s):     return _c(s, "1")       # bold
+def BBLUE(s): return _c(s, "1;34")    # bold blue
 
 
-def _current_user():
+def _read_auth():
+    """(user, 'pbkdf2_sha256$…' hash) from the auth file, or ('', '')."""
     with contextlib.suppress(OSError):
         with open(AUTH) as f:
-            return f.readline().split(":", 1)[0].strip()
-    return ""
+            u, _, h = f.readline().strip().partition(":")
+            return u.strip(), h.strip()
+    return "", ""
 
 
-def main():
-    user = (sys.argv[1] if len(sys.argv) > 1 else _current_user()).strip() or "admin"
-    if ":" in user:
-        sys.exit("swg-passwd: username can't contain a ':'")
-    etc = os.path.dirname(AUTH) or "/"
-    if not os.access(etc, os.W_OK):
-        sys.exit(f"swg-passwd: need root to write {AUTH}  (try: sudo swg-passwd)")
-
-    print(f"Changing panel password for {user}.")
-    try:
-        pw = getpass.getpass("New password: ")
-        if len(pw) < 8:
-            sys.exit("swg-passwd: password must be at least 8 characters")
-        if getpass.getpass("Retype new password: ") != pw:
-            sys.exit("swg-passwd: passwords do not match")
-    except (KeyboardInterrupt, EOFError):
-        sys.exit("\nswg-passwd: aborted — password unchanged")
-
+def _hash(pw):
     salt = os.urandom(16)
     h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, ITER)
-    line = "%s:pbkdf2_sha256$%d$%s$%s\n" % (user, ITER, base64.b64encode(salt).decode(), base64.b64encode(h).decode())
+    return "pbkdf2_sha256$%d$%s$%s" % (ITER, base64.b64encode(salt).decode(), base64.b64encode(h).decode())
+
+
+def _write_auth(user, hashval):
     tmp = AUTH + ".tmp"
     try:
         with open(tmp, "w") as f:
-            f.write(line)
+            f.write("%s:%s\n" % (user, hashval))
         os.chmod(tmp, 0o640)
         with contextlib.suppress(Exception):
             import grp
@@ -57,22 +56,95 @@ def main():
             os.remove(tmp)
         sys.exit(f"swg-passwd: cannot write {AUTH}: {e}")
 
-    # apply immediately — the panel reads the auth file once at startup, so it needs a restart.
+
+def _reset_vault():
+    """Drop the Encryption Vault wrap (its old-password key is unrecoverable) and leave a marker so the panel
+    re-creates it under the new password at the next successful sign-in. Best-effort — a box with no vault set
+    up just has nothing to remove."""
+    with contextlib.suppress(Exception):
+        os.makedirs(SUBS, exist_ok=True)
+    for fn in ("vault.json", "escrow.json"):
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(SUBS, fn))
+    with contextlib.suppress(OSError):
+        with open(os.path.join(SUBS, "vault.reset"), "w") as f:
+            f.write("reset\n")
+        os.chmod(os.path.join(SUBS, "vault.reset"), 0o640)
+        with contextlib.suppress(Exception):
+            import grp
+            os.chown(os.path.join(SUBS, "vault.reset"), 0, grp.getgrnam("swg").gr_gid)
+
+
+def _restart_panel():
     in_container = os.path.exists("/.dockerenv") or os.environ.get("container") == "docker"
-    applied = False
-    if not in_container:                       # bare-metal: bounce the systemd unit ourselves
+    if not in_container:
         with contextlib.suppress(Exception):
             if subprocess.run(["systemctl", "restart", "swg-panel-server"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-                applied = True
-    if applied:
-        print("swg-passwd: password updated.")
-    elif in_container:                         # a process INSIDE the container can't restart it — tell the host
-        print("swg-passwd: password updated. Restart the panel from the host to apply:\n"
-              "             docker compose restart swg-panel")
+                return "ok"
+        return "systemctl restart swg-panel-server"
+    return "docker compose restart swg-panel"
+
+
+def main():
+    etc = os.path.dirname(AUTH) or "/"
+    if not os.access(etc, os.W_OK):
+        sys.exit(f"swg-passwd: need root to write {AUTH}  (try: sudo swg-passwd)")
+
+    cur_user, cur_hash = _read_auth()
+    cur_user = cur_user or "admin"
+
+    print("This tool lets you reset your swgPanel admin " + B("username") + " / " + B("password") +
+          " and the " + BBLUE("Encryption Vault") + " " + B("password") + ".")
+    print()
+
+    try:
+        arg = (sys.argv[1].strip() if len(sys.argv) > 1 else "")
+        user = arg or input("Input new username or press " + B("Enter") + " to keep [" + BBLUE(cur_user) + "]: ").strip() or cur_user
+        if ":" in user:
+            sys.exit("swg-passwd: username can't contain a ':'")
+        print()
+
+        pw = getpass.getpass("New swgPanel password (Enter to keep current): ")
+        if pw:
+            if len(pw) < 8:
+                sys.exit("swg-passwd: password must be at least 8 characters")
+            if getpass.getpass("Retype new password: ") != pw:
+                sys.exit("swg-passwd: passwords do not match")
+        print()
+    except (KeyboardInterrupt, EOFError):
+        sys.exit("\nswg-passwd: aborted — nothing changed")
+
+    user_changed = user != cur_user
+    if not pw and not user_changed:
+        print("Nothing to change — same username, password kept.")
+        return
+
+    new_hash = _hash(pw) if pw else (cur_hash or _hash(""))   # keep the existing hash when only the username changes
+    _write_auth(user, new_hash)
+    if pw:
+        _reset_vault()
+    applied = _restart_panel()
+
+    # ── summary ──
+    print("Summary of changes:")
+    if user_changed:
+        print("  • Username:  %s → %s" % (cur_user, B(user)))
     else:
-        print("swg-passwd: password updated. Restart the panel to apply:\n"
-              "             systemctl restart swg-panel-server")
+        print("  • Username:  %s (unchanged)" % user)
+    if pw:
+        print("  • Password:  updated")
+        print("  • Sign in with:  " + B(user) + " / " + B(pw))
+        print("  • " + BBLUE("Encryption Vault") + B(" seal") + " has been reset. It will be re-connected with your "
+              + B("swgPanel admin password") + " the next time you sign in with the new credentials.")
+    else:
+        print("  • Password:  unchanged")
+
+    print()
+    if applied == "ok":
+        print("Applied — the panel was restarted.")
+    else:
+        print("Restart the panel to apply:\n    " + applied)
 
 
 if __name__ == "__main__":

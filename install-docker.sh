@@ -1064,7 +1064,7 @@ info "Staging project in $INSTALL_DIR"
 mkdir -p "$PREFIX$INSTALL_DIR"
 cp -a "$SRC/docker-compose.yml" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
 if $BUILD; then
-  for f in Dockerfile Dockerfile.node Dockerfile.turn .dockerignore VERSION \
+  for f in Dockerfile Dockerfile.node .dockerignore VERSION \
            swg-panel-server swg-agent swg-noded swg-sni swg-sub swg-passwd sub.html sub.js sub.css \
            index.html app.css app.js reconcile.js turn-artifacts.js; do
     [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$PREFIX$INSTALL_DIR/" 2>/dev/null || true
@@ -1339,6 +1339,7 @@ if [ "$PROFILE" != node ] && ! $DRYRUN; then
     [ -e "$INSTALL_DIR/data/lib/$_mf" ] || : > "$INSTALL_DIR/data/lib/$_mf" 2>/dev/null || true
   done
 fi
+ensure_docker_mask_files "$INSTALL_DIR"   # pre-create the files swg-sub /dev/null-masks, so a fresh install's read-only mount doesn't fail
 if $DRYRUN; then echo "    [skip] (cd $INSTALL_DIR && $COMPOSE --profile $PROFILE up -d $RECREATE $BUILDFLAG)"
 else
   for _c in $(case "$PROFILE" in node) echo swg-node;; host) echo swg-panel;; *) echo swg-panel swg-node;; esac); do docker ps -aq -f "name=$_c" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true; done   # drop any half-recreated/leftover container so `up` can't hit "container name already in use"
@@ -1385,61 +1386,11 @@ wire_host_updater(){
     *) return 0;;
   esac
   if $DRYRUN; then echo "    [skip] wire host one-click updater (swg-update.path → ${paths// /, })"; return 0; fi
-  cat > /usr/local/bin/swg-update <<'WRAP'
-#!/usr/bin/env bash
-# swg-update — root entrypoint for the panel/node one-click update. swg programs + images only (--no-components
-# skips docker engine / wg-awg / turn-proxies); on a docker box this is `compose pull && up`. A container can't
-# recreate itself, so the panel/node touches its trigger and THIS (host, root) unit does the recreate.
-set -euo pipefail
-URL="${SWG_BOOTSTRAP_URL:-https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh}"
-curl -fsSL "$URL" | bash -s update -y --no-components
-WRAP
-  chmod 755 /usr/local/bin/swg-update
-  # The trigger files are written by the panel/node CONTAINER through a bind mount, and inotify does NOT cross that
-  # bind mount — a host `.path` unit (PathModified) NEVER sees the container's write. So we POLL the trigger mtimes
-  # from the host instead (stat across the bind mount works — it's a shared inode). A timer runs this every 20s.
-  cat > /usr/local/bin/swg-update-check <<'WRAP2'
-#!/usr/bin/env bash
-set -euo pipefail
-STAMP=/var/lib/swg-update.stamp
-_run=no
-for _t in /var/lib/swg-panel/.update-request /var/lib/swg-noded/.update-request /opt/swg-panel-docker/data/lib/.update-request /opt/swg-panel-docker/data/node/.update-request; do
-  [ -f "$_t" ] || continue
-  { [ ! -e "$STAMP" ] || [ "$_t" -nt "$STAMP" ]; } && _run=yes
-done
-[ "$_run" = yes ] || exit 0
-touch "$STAMP"            # mark this batch handled BEFORE updating, so we never loop
-exec /usr/local/bin/swg-update
-WRAP2
-  chmod 755 /usr/local/bin/swg-update-check
-  cat > /etc/systemd/system/swg-update.service <<EOF
-[Unit]
-Description=swg-panel one-click self-update (swg programs only)
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/swg-update-check
-EOF
-  cat > /etc/systemd/system/swg-update.timer <<EOF
-[Unit]
-Description=poll for a swg-panel one-click update request (docker)
-
-[Timer]
-OnActiveSec=30s
-OnUnitActiveSec=30s
-
-[Install]
-WantedBy=timers.target
-EOF
-  systemctl disable --now swg-update.path >/dev/null 2>&1 || true   # retire the old inotify watch from a pre-poll install
-  rm -f /etc/systemd/system/swg-update.path
   # pre-create each trigger INSIDE its container (right owner — a root-created host file would be unwritable by the
-  # unprivileged container user). Only when missing (re-touch a live one = a spurious update run).
+  # unprivileged container user), BEFORE write_docker_updater stamps so the stamp lands newer. Only when missing.
   case "$PROFILE" in host|master) [ -e "$INSTALL_DIR/data/lib/.update-request" ]  || docker exec swg-panel sh -c ': > /var/lib/swg-panel/.update-request'  2>/dev/null || true;; esac
   case "$PROFILE" in node|master) [ -e "$INSTALL_DIR/data/node/.update-request" ] || docker exec swg-node  sh -c ': > /var/lib/swg-noded/.update-request' 2>/dev/null || true;; esac
-  touch /var/lib/swg-update.stamp   # stamp NOW (newer than the just-created triggers) so the first poll doesn't fire a spurious update
-  systemctl daemon-reload 2>/dev/null || true
-  systemctl enable --now swg-update.timer >/dev/null 2>&1 || warn "couldn't enable swg-update.timer"
+  write_docker_updater   # shared writer (lib/common.sh): wrappers + service/timer + retire .path + stamp + enable
   ok "one-click update wired — the $(b Update) button runs a swg-only update on the host"
 }
 wire_host_updater

@@ -104,6 +104,7 @@ EnvironmentFile=-${dir}/turn.env
 ExecStart=${bin} -listen \${SWG_LISTEN} -connect \${SWG_CONNECT} \$SWG_PARAMS
 Restart=on-failure
 RestartSec=3
+$TURN_HARDENING
 
 [Install]
 WantedBy=multi-user.target
@@ -356,7 +357,7 @@ PY
 
   # 2) stage the compose project (prebuilt image pulled from GHCR)
   cp -a "$SRC/docker-compose.yml" "$DOCKER_DIR/" 2>/dev/null || true
-  for f in Dockerfile Dockerfile.node Dockerfile.turn .dockerignore VERSION swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
+  for f in Dockerfile Dockerfile.node .dockerignore VERSION swg-panel-server swg-agent swg-noded index.html app.css app.js reconcile.js; do
     [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$DOCKER_DIR/" 2>/dev/null || true; done
   [ -d "$SRC/vendor" ] && cp -a "$SRC/vendor" "$DOCKER_DIR/" 2>/dev/null || true
   [ -d "$SRC/docker" ] && cp -a "$SRC/docker" "$DOCKER_DIR/" 2>/dev/null || true

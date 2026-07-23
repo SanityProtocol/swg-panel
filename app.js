@@ -28,6 +28,34 @@ const BASE = (() => { try { return new URL(document.baseURI).pathname.replace(/\
 const url = p => BASE + p;
 
 const tkey = (node, iface) => node + "|" + iface;          // session-config key for one target
+// A peer's targets ordered PRIMARY-first (the one flagged `primary`, else the first), then creation order.
+function orderedTargets(targets) {
+  const ts = (targets || []).slice();
+  const pi = ts.findIndex(t => t && t.primary);
+  if (pi > 0) { const [pt] = ts.splice(pi, 1); ts.unshift(pt); }
+  return ts;
+}
+// Is this target the peer's primary? (explicit `primary`, else the first target is the implicit primary.)
+function isPrimaryTarget(targets, t) {
+  const ts = targets || [];
+  const pi = ts.findIndex(x => x && x.primary);
+  const idx = ts.findIndex(x => x && x.node === t.node && x.iface === t.iface);
+  return pi >= 0 ? idx === pi : idx === 0;
+}
+// Primary-first order FROZEN on first render (per component mount) — so toggling the primary ★ or picking targets
+// inside a modal never re-shuffles the rows under the operator's cursor; the order re-sorts only on the next open.
+// New targets append (they stay put on subsequent renders too). Call at the top level of a component (it's a hook).
+function useStableOrder(targets) {
+  const ref = useRef(null);
+  const ts = targets || [];
+  if (ref.current === null && ts.length) ref.current = orderedTargets(ts).map(t => tkey(t.node, t.iface));
+  const pos = ref.current;
+  if (!pos) return ts.slice();
+  const rank = t => { const i = pos.indexOf(tkey(t.node, t.iface)); return i < 0 ? pos.length : i; };
+  const out = ts.slice().sort((a, b) => rank(a) - rank(b));
+  out.forEach(t => { const k = tkey(t.node, t.iface); if (!pos.includes(k)) pos.push(k); });
+  return out;
+}
 // wg vs awg for an interface. A single peer/key can't span both protocols, so the target pickers hide the other
 // kind once one is chosen (enforced wherever peers get interfaces — peers module, users module, …).
 const iTypeOf = (node, iface) => { const m = (Store.describe[node] || {})[iface] || {}; return (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg"; };
@@ -47,7 +75,7 @@ function turnLabel(service, port) {   // just the fork name — the port shows i
 // the fork id baked into a service name (vk-turn-proxy-<fork>-<port>) → its owner repo (for version/update checks)
 function turnFork(svc) { return turnLabel(svc, ""); }
 function turnOwner(svc) {
-  const f = turnFork(svc); const fk = (typeof TURN_FORKS !== "undefined") ? TURN_FORKS.find(x => x.id === f) : null;
+  const f = turnFork(svc); const fk = (typeof TURN_FORKS_FALLBACK !== "undefined") ? turnForkList().find(x => x.id === f) : null;   // guard the const TDZ (turnOwner is defined far above the catalog)
   return fk ? fk.owner : (f && f !== "turn" ? f + "/vk-turn-proxy" : "");
 }
 // turn create/edit sheet heading: "Turn-proxy · <title> · <fork>" (title omitted when blank)
@@ -169,6 +197,10 @@ const ICON = {
   users: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1"/><circle cx="9" cy="7" r="3.4"/><path d="M22 19v-1a4 4 0 0 0-3-3.85M16 3.2a4 4 0 0 1 0 7.6"/></svg>',
   user: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M19 20v-1a5 5 0 0 0-5-5h-4a5 5 0 0 0-5 5v1"/><circle cx="12" cy="7" r="4"/></svg>',
   device: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="7" y="3" width="10" height="18" rx="2.4"/><path d="M11 18h2"/></svg>',
+  android: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M7.2 9.3h9.6v7.2a1 1 0 0 1-1 1H15v2.1a1.1 1.1 0 0 1-2.2 0V17.5h-1.6v2.1a1.1 1.1 0 0 1-2.2 0V17.5h-.8a1 1 0 0 1-1-1zM5 9.6a1.1 1.1 0 0 1 1.1 1.1v4.4a1.1 1.1 0 0 1-2.2 0v-4.4A1.1 1.1 0 0 1 5 9.6zm14 0a1.1 1.1 0 0 1 1.1 1.1v4.4a1.1 1.1 0 0 1-2.2 0v-4.4A1.1 1.1 0 0 1 19 9.6zM8.3 8.4a3.9 3.9 0 0 1 1.7-2.7l-.82-1.35a.28.28 0 0 1 .48-.28l.83 1.4a4.6 4.6 0 0 1 3 0l.83-1.4a.28.28 0 0 1 .48.28L14.0 5.7a3.9 3.9 0 0 1 1.7 2.7zm1.8-1.6a.62.62 0 1 0 0-1.24.62.62 0 0 0 0 1.24zm3.8 0a.62.62 0 1 0 0-1.24.62.62 0 0 0 0 1.24z"/></svg>',
+  apple: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M15.8 12.7c-.02-2.2 1.8-3.26 1.88-3.32-1.02-1.5-2.62-1.7-3.19-1.72-1.36-.14-2.65.8-3.34.8-.68 0-1.75-.78-2.88-.76-1.5.02-2.85.86-3.61 2.19-1.54 2.68-.4 6.65 1.1 8.83.73 1.07 1.6 2.27 2.74 2.23 1.1-.045 1.52-.71 2.85-.71 1.33 0 1.7.71 2.87.69 1.18-.02 1.93-1.09 2.65-2.16.83-1.24 1.18-2.44 1.2-2.5-.026-.01-2.3-.885-2.32-3.51zM13.6 6.35c.6-.73.995-1.74.888-2.75-.86.035-1.9.57-2.52 1.3-.55.64-1.03 1.68-.9 2.66.955.075 1.93-.49 2.53-1.21z"/></svg>',
+  windows: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.6l7.4-1.02v7.06H3zm8.3-1.14L21 3.1v8.54h-9.7zM3 12.44h7.4v7.06L3 18.44zm8.3 0H21v8.5l-9.7-1.36z"/></svg>',
+  finder: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M11.8 3.8c-1.1 2.1-.9 3.4.8 4.9-1.9 1.2-2 2.7-.3 4.3-1.7 1.1-1.9 3.3.2 6.2"/><path d="M8.3 9v1.7M15.6 9v1.7"/><path d="M7.7 14.4c2.6 2.1 6.3 2.1 8.9 0"/></svg>',
   cpu: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="7" y="7" width="10" height="10" rx="1.6"/><path d="M9 1.5v3M15 1.5v3M9 19.5v3M15 19.5v3M1.5 9h3M1.5 15h3M19.5 9h3M19.5 15h3"/></svg>',
   disk: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M5.2 13 7.5 5h9l2.3 8M7 16.5h.01"/></svg>',
   database: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>',
@@ -196,6 +228,13 @@ const ICON = {
   trash: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/></svg>',
   link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M10 13a4 4 0 0 0 6 .5l2-2a4 4 0 0 0-5.7-5.7l-1.2 1.1M14 11a4 4 0 0 0-6-.5l-2 2A4 4 0 0 0 11.7 18l1.2-1.1"/></svg>',
   qr: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><path d="M14 14h3v3M21 14v3M17 21h4M14 21h.01M21 21v.01M17 17h.01"/></svg>',
+  doc: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>',
+  // OS/platform brand glyphs (Android/iOS/Windows/macOS from the sub-page picker; Linux = Simple Icons Tux) — viewBox-only, CSS-sized
+  os_android: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.2 9.3h9.6v7.2a1 1 0 0 1-1 1H15v2.1a1.1 1.1 0 0 1-2.2 0V17.5h-1.6v2.1a1.1 1.1 0 0 1-2.2 0V17.5h-.8a1 1 0 0 1-1-1zM5 9.6a1.1 1.1 0 0 1 1.1 1.1v4.4a1.1 1.1 0 0 1-2.2 0v-4.4A1.1 1.1 0 0 1 5 9.6zm14 0a1.1 1.1 0 0 1 1.1 1.1v4.4a1.1 1.1 0 0 1-2.2 0v-4.4A1.1 1.1 0 0 1 19 9.6zM8.3 8.4a3.9 3.9 0 0 1 1.7-2.7l-.82-1.35a.28.28 0 0 1 .48-.28l.83 1.4a4.6 4.6 0 0 1 3 0l.83-1.4a.28.28 0 0 1 .48.28L14 5.7a3.9 3.9 0 0 1 1.7 2.7zm1.8-1.6a.62.62 0 1 0 0-1.24.62.62 0 0 0 0 1.24zm3.8 0a.62.62 0 1 0 0-1.24.62.62 0 0 0 0 1.24z"/></svg>',
+  os_ios: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.8 12.7c-.02-2.2 1.8-3.26 1.88-3.32-1.02-1.5-2.62-1.7-3.19-1.72-1.36-.14-2.65.8-3.34.8-.68 0-1.75-.78-2.88-.76-1.5.02-2.85.86-3.61 2.19-1.54 2.68-.4 6.65 1.1 8.83.73 1.07 1.6 2.27 2.74 2.23 1.1-.045 1.52-.71 2.85-.71 1.33 0 1.7.71 2.87.69 1.18-.02 1.93-1.09 2.65-2.16.83-1.24 1.18-2.44 1.2-2.5-.026-.01-2.3-.885-2.32-3.51zM13.6 6.35c.6-.73.995-1.74.888-2.75-.86.035-1.9.57-2.52 1.3-.55.64-1.03 1.68-.9 2.66.955.075 1.93-.49 2.53-1.21z"/></svg>',
+  os_windows: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.6l7.4-1.02v7.06H3zm8.3-1.14L21 3.1v8.54h-9.7zM3 12.44h7.4v7.06L3 18.44zm8.3 0H21v8.5l-9.7-1.36z"/></svg>',
+  os_macos: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M11.8 3.8c-1.1 2.1-.9 3.4.8 4.9-1.9 1.2-2 2.7-.3 4.3-1.7 1.1-1.9 3.3.2 6.2"/><path d="M8.3 9v1.7M15.6 9v1.7"/><path d="M7.7 14.4c2.6 2.1 6.3 2.1 8.9 0"/></svg>',
+  os_linux: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z"/></svg>',
 };
 const Ic = ({ i }) => html`<span class="ic" dangerouslySetInnerHTML=${{ __html: ICON[i] || "" }}></span>`;
 
@@ -252,6 +291,7 @@ async function subVaultCreate(password) {
   if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't save the vault");
   _subSK = skKey;                                          // unlock immediately with the NEW SK (replaces any stale cache)
   try { sessionStorage.setItem(_SK_CACHE, b64(sk)); } catch (_) {}
+  try { await ivkSetEscrow(true); } catch (_) {}          // interface-key escrow ON by default — a fresh box vaults its interface keys from first setup
   return b64(sk);
 }
 
@@ -306,7 +346,7 @@ async function ivkUnseal(privRaw, blob) {     // open a {eph, ct, mac} blob with
 // keypair + blobs (so re-enabling reuses them) and just stops the panel handing nodes the vault key.
 async function ivkSetEscrow(enabled) {
   if (!enabled) { const r = await api.post("/api/sub/ivk", { enabled: false }); if (!r || !r.ok) throw new Error((r && r.error) || "couldn't disable escrow"); return false; }
-  const sk = subSKCached(); if (!sk) throw new Error("Unlock the encryption key first.");
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the Encryption Vault first.");
   const body = { enabled: true };
   const v = await api.subVault();
   if (!(v && v.ok && v.data && v.data.ivk_pub)) {   // first enable → mint the keypair in the browser
@@ -328,7 +368,7 @@ async function ivkVaultPriv() {               // the vault X25519 private key (r
 // the panel relays only ciphertext. Returns the sealed_key for /api/iface/recreate, or null if not a vault key.
 async function ivkResealForNode(node, mi) {
   if (!mi || mi.key_source !== "vault") return null;
-  if (!subSKCached()) throw new Error("Unlock the encryption key first.");
+  if (!subSKCached()) throw new Error("Unlock the Encryption Vault first.");
   if (!mi.key_blob) throw new Error("No escrowed key is stored for this interface.");
   const tpub = ((Store.stats[node] || {}).transport_pub) || "";
   if (!tpub) throw new Error("The node hasn't reported its transport key yet — try again in a few seconds.");
@@ -359,7 +399,7 @@ function lockVault() {
   try { localStorage.removeItem(_SK_PERSIST); } catch (_) {}
   try { for (const k in _healTried) delete _healTried[k]; } catch (_) {}
   Store.configEpoch++; bus.emit();
-  try { toast("Encryption key locked on this device.", "ok"); } catch (_) {}
+  try { toast("Encryption Vault locked on this device.", "ok"); } catch (_) {}
 }
 // Restore the session convenience cache after a reload (login reloads the page). Raw key bytes live in
 // sessionStorage — tab-scoped, cleared on logout, never sent to the server; the deliberate convenience-cache
@@ -390,7 +430,7 @@ async function subUnlock(password) {      // unwrap the SK from the vault with t
   try {
     if (new TextDecoder().decode(await subDec(wk, v.data.sk_check)) !== SUB_CHECK) throw new Error("bad");
     skBytes = await subDec(wk, v.data.sk_by_pw);        // GCM auth fails here on a wrong password
-  } catch (_) { throw new Error("That password didn't unlock the encryption key."); }
+  } catch (_) { throw new Error("That password didn't unlock the Encryption Vault."); }
   _subSK = await _importAes(skBytes, ["encrypt", "decrypt"]);
   try { sessionStorage.setItem(_SK_CACHE, b64(skBytes)); if (subPersistOn()) localStorage.setItem(_SK_CACHE, b64(skBytes)); } catch (_) {}   // tab cache; also localStorage when device-persist is opted in
   // self-heal: give an older vault (pre-sk_verify) an SK self-verifier so a cached SK can be validated on boot.
@@ -423,7 +463,7 @@ async function subRewrap(newPassword) {
 // they already hold one (their encrypted-config blobs are encrypted under it — minting a fresh key would orphan
 // them); only mint a fresh unlock-key for a brand-new escrow. Returns {token, unlockKeyB64} for the URL. SK unlocked.
 async function subEnableUser(uid) {
-  const sk = subSKCached(); if (!sk) throw new Error("Unlock the encryption key first.");
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the Encryption Vault first.");
   const token = b64url(crypto.getRandomValues(new Uint8Array(32)));   // the URL path segment (opaque, 256-bit)
   const rec = (await subUsersMap(true))[uid];
   let unlockBytes, unlock_by_sk;
@@ -436,6 +476,15 @@ async function subEnableUser(uid) {
   });
   if (!r || r.ok === false) throw new Error((r && r.error) || "couldn't enable the subscription");
   return { token, unlockKeyB64: b64url(unlockBytes) };
+}
+
+// If "auto-generate subscription links for new users" is on, mint the new user's link in the BACKGROUND so
+// user creation stays instant. Silently defers when subscriptions are off or the encryption key isn't unlocked
+// this session — the link is then created the next time the user is opened with the key unlocked.
+function subAutoGenIfEnabled(userId) {
+  if (!userId || !subFeatureOn() || !subSKCached()) return;
+  if (!(((Store.panelSettings || {}).subscriptions || {}).auto_generate)) return;
+  (async () => { try { await subEnableUser(userId); subUsersForget(); Store.configEpoch++; bus.emit(); } catch (_) {} })();
 }
 
 // Rotate a user's URL (kill the old link): fresh token, SAME unlock-key, so existing ciphertext stays valid.
@@ -454,7 +503,7 @@ async function subRotateUser(uid) {
 // Recover ONLY the unlock-key (CryptoKey, encrypt+decrypt) from a user's escrow — works for a plain
 // encrypted-config user (no subscription token) as well as a subscribed one. Used to encrypt/decrypt blobs.
 async function subRecoverUnlock(escRec) {
-  const sk = subSKCached(); if (!sk) throw new Error("Unlock the encryption key first.");
+  const sk = subSKCached(); if (!sk) throw new Error("Unlock the Encryption Vault first.");
   if (!escRec || !escRec.unlock_by_sk) throw new Error("no encryption key for this user");
   return _importAes(await subDec(sk, escRec.unlock_by_sk), ["encrypt", "decrypt"]);
 }
@@ -631,6 +680,16 @@ async function subFlushPending() {
   }
   if (n) bus.emit();
 }
+// Peers the backfill confirmed have NO recoverable config server-side (no session key, no stored plaintext, no
+// blob) — the panel never held their private key, so it can't rebuild or publish them (key custody). Re-probing
+// them just re-floods the console with 404s on every heal pass / reload. Remember them keyed by PUBKEY, so a
+// rekey / re-issue (which changes the pubkey) transparently re-probes. Persisted so a reload doesn't repeat the
+// whole sweep — the whole point is to stop the recurring flood, not just the in-session repeat.
+const _subNoConf = new Map((() => { try { return Object.entries(JSON.parse(localStorage.getItem("swg-sub-noconf") || "{}")); } catch (_) { return []; } })());
+function _saveSubNoConf() { try { localStorage.setItem("swg-sub-noconf", JSON.stringify(Object.fromEntries(_subNoConf))); } catch (_) {} }
+function subNoConfSet(pid, pubkey) { if (_subNoConf.get(pid) !== pubkey) { _subNoConf.set(pid, pubkey); _saveSubNoConf(); } }
+function subNoConfClear(pid) { if (_subNoConf.delete(pid)) _saveSubNoConf(); }
+function subNoConfHas(pid, pubkey) { return !!pubkey && _subNoConf.get(pid) === pubkey; }
 // Ensure the encryption vault is unlocked before an action that needs it. Resolves true when the key is
 // available (already unlocked, or the operator just unlocked it) or not needed (store mode isn't encrypted);
 // false when the operator chose to skip. Shows a modal (VaultPromptSheet) explaining the action + the cost of
@@ -707,10 +766,12 @@ async function subBackfillUser(uid, unlockKey) {
   const peers = Store.peersOfUser(uid);
   let published = 0, missing = 0; const missingPeers = [];
   for (const p of peers) {
+    if (subNoConfHas(p.id, p.pubkey)) { missing++; missingPeers.push(p.id); continue; }   // known: no recoverable config for this key → don't re-probe (kills the 404 sweep on every heal pass / reload)
     let conf = anySessionConf(p.pubkey);                          // just-created config still in this session
-    // the private key is the same on every deployment, so any target that has a stored config will do —
-    // try them all rather than give up if only the first is missing/unreadable (legacy plaintext or session)
-    if (!conf) {
+    // the private key is the same on every deployment, so any target that has a stored config will do — try them
+    // all. Only worth probing /api/config while legacy PLAINTEXT files still await migration; in the encrypted
+    // steady state (0 plaintext) it just 404s, so skip it and rely on the blob check below.
+    if (!conf && Store.configsPlaintext > 0) {
       for (const t of (p.targets || [])) {
         try { const r = await api.config(p.pubkey, t.node, t.iface); if (r && r.ok && r.data && r.data.config) { conf = r.data.config; break; } } catch (_) {}
       }
@@ -722,21 +783,22 @@ async function subBackfillUser(uid, unlockKey) {
       try {
         const g = await api.subBlobGet(p.id);
         if (g && g.ok && g.data && g.data.sec) {
-          if (g.data.user_id === uid) { published++; continue; }          // already in this user's bucket
+          if (g.data.user_id === uid) { subNoConfClear(p.id); published++; continue; }     // already in this user's bucket
           const srcRec = (await subUsersMap())[g.data.user_id];           // the bucket it's in now (e.g. orphan)
           if (srcRec && srcRec.unlock_by_sk) {
             const srcKey = await subRecoverUnlock(srcRec);
             const secret = JSON.parse(new TextDecoder().decode(await subDec(srcKey, g.data.sec)));
-            if (secret && secret.k) { await subEncryptPeer(uid, p.id, secret.k, secret.p, unlockKey); published++; continue; }
+            if (secret && secret.k) { await subEncryptPeer(uid, p.id, secret.k, secret.p, unlockKey); subNoConfClear(p.id); published++; continue; }
           }
         }
       } catch (_) {}
+      subNoConfSet(p.id, p.pubkey);                                 // remember: no recoverable config for this key → skip next time
       missing++; missingPeers.push(p.id); continue;                 // no key available → can't encrypt / flag for rekey
     }
     try {
       await subEncryptPeer(uid, p.id, parsed.privkey, parsed.psk, unlockKey);
       await captureOverridesFrom(p, parsed);                       // move the config's non-secret DNS/MTU/AllowedIPs into the roster
-      published++;
+      subNoConfClear(p.id); published++;
     } catch (_) { missing++; missingPeers.push(p.id); }
   }
   return { published, missing, total: peers.length, missingPeers };
@@ -793,7 +855,7 @@ async function captureOverridesFrom(peer, parsed) {
 // (dead keys, no live peer). Resumable — re-running does only the stragglers. `flagged` = peers that couldn't be
 // encrypted (unassigned, or no stored/importable key) → the rekey affordance. Requires the vault unlocked.
 async function runConfigMigration() {
-  if (!subSKCached()) throw new Error("Unlock the encryption key first.");
+  if (!subSKCached()) throw new Error("Unlock the Encryption Vault first.");
   let list = [];
   try { const pp = await api.plaintextPeers(); list = (pp && pp.data && pp.data.peers) || []; } catch (_) {}
   let migrated = 0; const flagged = [];
@@ -888,11 +950,12 @@ function configOverrides(opts, meta) {
   return ov;
 }
 
-function downloadConf(text, base) {
-  // octet-stream (not text/plain) so the browser keeps the .conf name instead of appending .txt
+function downloadConf(text, base, ext) {
+  // octet-stream (not text/plain) so the browser keeps the chosen name instead of appending .txt
+  ext = String(ext || "conf").replace(/^\./, "");
   const blob = new Blob([text], { type: "application/octet-stream" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
-  a.download = base.replace(/[^\w.-]+/g, "_").replace(/\.(conf|txt)$/i, "") + ".conf"; a.click();
+  a.download = base.replace(/[^\w.-]+/g, "_").replace(/\.(conf|txt)$/i, "") + "." + ext; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
@@ -903,7 +966,51 @@ function _b64ToBytes(b64) { try { const s = atob(String(b64 || "").trim()); cons
 
 // Client-import artifact for a peer behind a turn-proxy — the per-fork wire formats live in the shared
 // turn-artifacts.js (window.SWGTurn), loaded by both the admin app and the subscription page.
-function turnArtifact(baseConf, tp, vkLink) { return SWGTurn.artifact(baseConf, tp, vkLink); }
+function turnArtifact(baseConf, tp, vkLink, vkLinks, asClient, os) {
+  const fork = turnFork(tp.service);
+  // Every client (native OR experimental) gets the admin's saved values for THIS (server, client, OS); the encoder
+  // fills anything unset with the app's own default. `os` omitted → the client's primary platform (config-gen has
+  // no device context yet; the sub page can pass the visitor's OS later).
+  const native = (typeof SWGTurn.nativeEncoder === "function") ? SWGTurn.nativeEncoder(fork) : null;
+  const cs = turnClientSettingsFor(fork, asClient || native, os);
+  return SWGTurn.artifact(baseConf, tp, vkLink, cs, vkLinks, asClient);
+}
+// The client apps a server offers (from the catalog `clients` list) → {id, encoder, name, experimental}. Native
+// (the server's own app) first; cross-fork clients are experimental (shared-ancestor wire, interop unverified).
+function turnClientsFor(fork) {
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  const ids = ((turnForkList().find(x => x.id === fork) || {}).clients) || [];
+  const native = (typeof SWGTurn.nativeEncoder === "function") ? SWGTurn.nativeEncoder(fork) : null;
+  const PL = { android: "Android", ios: "iOS", windows: "Windows", linux: "Linux", macos: "macOS" };
+  const out = ids.map(id => {
+    const c = cmap[id] || {}; const plat = Object.keys(c.platforms || {})[0];
+    return { id, encoder: c.encoder || id, name: c.name || id, plat: plat ? (PL[plat] || plat) : "", experimental: (c.encoder || id) !== native };
+  });
+  return out.sort((a, b) => (a.experimental ? 1 : 0) - (b.experimental ? 1 : 0));
+}
+const EXP_WARN = "Experimental server-client combination — not the server's native app. The wire formats share an ancestor but this pairing is unverified; test it before relying on it.";
+// the catalog client id whose encoder matches (clients map their own encoder; id==encoder for most)
+function _clientIdForEncoder(encoder) {
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  for (const cid in cmap) if ((cmap[cid].encoder || cid) === encoder) return cid;
+  return encoder;
+}
+// merged client-app settings for (server, client, OS): the client's own schema defaults overlaid by the admin's
+// saved values at panel_settings.turn_client_settings[fork][clientId][os]. `os` omitted → the client's primary
+// platform. Fed into the config/QR/link encoder (the SETTINGS SPLIT). The SCHEMA is per-client (unchanged); this
+// just selects WHICH saved value-set to apply.
+function turnClientSettingsFor(fork, encoder, os) {
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  const cid = _clientIdForEncoder(encoder);
+  const c = cmap[cid] || {};
+  const srv = ((Store.turnCatalog || {}).servers || []).find(s => s.id === fork);   // the mysorez app's knobs depend on the fork's core → prefer the per-(fork,client) schema
+  const schema = (srv && srv.client_schemas && srv.client_schemas[cid]) || c.settings || [];
+  const useOs = os || Object.keys(c.platforms || {})[0] || "";
+  const saved = (((((Store.panelSettings && Store.panelSettings.turn_client_settings) || {})[fork]) || {})[cid] || {})[useOs] || {};
+  const out = {};
+  for (const d of schema) { const v = saved[d.key]; out[d.key] = (v === undefined || v === null) ? d.default : v; }
+  return out;
+}
 
 // ───────────────────────── QR ─────────────────────────
 function qrDataURL(text, targetPx) {
@@ -944,6 +1051,23 @@ function qrZoom(conf, label) {
   document.addEventListener("keydown", onKey, true);
   qrZoomEl = ov;
   document.body.appendChild(ov);
+}
+function dataUrlToBlob(url) {
+  const comma = url.indexOf(","), meta = url.slice(0, comma), b64 = url.slice(comma + 1);
+  const mime = (meta.match(/:(.*?);/) || [])[1] || "image/png";
+  const bin = atob(b64), arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+// Copy the QR *image* (a PNG) to the clipboard — used when the QR is what's on screen, so Copy acts on
+// what you see rather than the hidden config text. Mirrors sub.js copyImage.
+function copyQrImage(text, what) {
+  let url; try { url = qrDataURL(text, 640); } catch (_) { toast("QR too large to copy as an image.", "err", 2200); return; }
+  if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) { toast("This browser can't copy an image.", "err", 2200); return; }
+  try {
+    const blob = dataUrlToBlob(url), item = {}; item[blob.type] = blob;
+    navigator.clipboard.write([new ClipboardItem(item)]).then(() => toast((what || "QR") + " copied.", "ok", 1500), () => toast("Copy failed.", "err", 2200));
+  } catch (_) { toast("Copy failed.", "err", 2200); }
 }
 
 // ───────────────────────── api ─────────────────────────
@@ -1029,6 +1153,7 @@ const api = {
   peerAddTarget(b) { return this.post("/api/peers/add-target", b); },
   peerUpdateTarget(b) { return this.post("/api/peers/update-target", b); },
   peerRemoveTarget(b) { return this.post("/api/peers/remove-target", b); },
+  peerSetPrimary(b) { return this.post("/api/peers/set-primary", b); },
   peerDelete(b) { return this.post("/api/peers/delete", b); },
   peerUnassign(b) { return this.post("/api/peers/unassign", b); },
   peerRekey(b) { return this.post("/api/peers/rekey", b); },
@@ -1059,6 +1184,12 @@ const api = {
   turnOnboard(b) { return this.post("/api/turn/onboard", b); },       // adopt a host .service by path
   turnCancel(b) { return this.post("/api/turn/cancel", b); },
   turnCheckUpdates(b) { return this.post("/api/turn/check-updates", b); },   // resolve each fork's latest release tag
+  rosterCheck() { return this.get("/api/turn/roster-check"); },              // client-app schema drift vs upstream GitHub (P1 ack-only clients)
+  rosterAck(client) { return this.post("/api/turn/roster-ack", { client }); },   // acknowledge a client's current upstream as the baseline
+  p4Report(refresh) { return this.get("/api/turn/p4/report" + (refresh ? "?refresh=1" : "")); },  // P4a versioned per-field roster (parseable forks)
+  p4Adopt(client, body) { return this.post("/api/turn/p4/adopt", { client, ...(body || {}) }); },   // adopt {add,remove,vadd,vrem}
+  p4SetVersion(client, index) { return this.post("/api/turn/p4/setversion", { client, index }); },     // rollback to an observed version (index=null → latest)
+  turnVersions(q) { return this.get("/api/turn/versions?owner=" + encodeURIComponent(q.owner || "") + "&node=" + encodeURIComponent(q.node || "") + "&service=" + encodeURIComponent(q.service || "")); },   // mirrored (rollback-able) versions + any hold
   nodeSelfUpdate(b) { return this.post("/api/node/update", b); },   // flag a node to self-update (≠ nodeUpdate, which renames)
   hostUpdate() { return this.post("/api/host/update", {}); },
   checkUpdate() { return this.post("/api/update/check", {}); },
@@ -1080,6 +1211,7 @@ const Store = {
   rotating: {},              // peer id -> ts — key rotation in flight; grid shows "rotating" until the new key is live
   ifaceOp: {},               // "node|iface" -> { verb:start|restart, phase:busy|ok|fail, started, until, err }
   ifaceNew: {},              // "node|iface" -> { type } — optimistic "creating/onboarding" card shown the instant Create is clicked (until the server's own pending/meta picks it up)
+  ghostRekey: {},            // "node|iface" -> { peers:[id], at } — a ghost recreate staged its peers; maybeRekeyGhosts() rekeys them once the fresh interface reports its new key (phase 2)
   turnNew: {},               // "node|service" -> { listen, connect, ... } — optimistic "installing" turn card (full entered data), shown until the node reports the real proxy
   pending: {},               // opId -> { apply(store), done }  — optimistic overlay (Model B)
   rowErrors: {},             // entityKey -> { msg, at }        — explained failure, shown on the row
@@ -1106,6 +1238,8 @@ const Store = {
     this.storeConfigs = this.storeMode !== "off";
     this.configsPlaintext = d.configs_plaintext || 0;
     this.panelSettings = d.panel_settings || this.panelSettings || {};
+    this.panelServices = d.panel_services || {};   // THIS host's own swg units (active/enabled/present) → service-health needs-attention. {} on docker/older panels
+    this.turnCatalog = d.turn_catalog || this.turnCatalog || null;   // single-source turn fork/client catalog (server-owned); turnForks() falls back to TURN_FORKS_FALLBACK when absent (mixed-version safe)
     this.panelPublicUrl = d.panel_public_url || this.panelPublicUrl || "";   // CONFIRMED canonical address → flag a tab on an old panel address
     this.panelMigrateRevertable = !!d.panel_migrate_revertable;   // a still-gracing panel-controlled move → the ribbon offers an instant "cancel the move" (server auto-clears at grace end)
     this.panelMigratePrev = d.panel_migrate_prev || null;         // the OLD address to cancel back to (only while revertable)
@@ -1160,6 +1294,7 @@ const Store = {
     this.recon = reconcile(this.roster, this.stats, Date.now(), { retiring, systemIfaces, rotating: new Set(Object.keys(this.rotating)),
       history: this._rxHistory, faultyMs: _adv.faulty_ms || 45000, probSince: this._probSince,
       detectBlocked: _sc.blocked !== false, detectFaulty: _sc.faulty !== false,
+      expiryWarnDays: (this.panelSettings || {}).expiry_warn_days,   // "about to expire" warn window (days) for the derived status
       ...(_adv.restore_grace_ms ? { restoreGraceMs: _adv.restore_grace_ms } : {}),
       ...(_adv.node_stale_ms ? { nodeStaleMs: _adv.node_stale_ms } : {}), ...(_adv.peer_grace_ms ? { graceMs: _adv.peer_grace_ms } : {}) });
     // Missing-interface Restore gate: the node view carries `missing_ifaces` but the server doesn't stamp WHEN
@@ -1167,11 +1302,15 @@ const Store = {
     // has stayed missing past the grace window — so the node screen offers Restore only for a real outage.
     this._missIfSince = this._missIfSince || {};
     { const _now = Date.now(), _grace = _adv.restore_grace_ms || 120000, _seen = new Set();
-      for (const n of (this.nodes || [])) { const mi = n.missing_ifaces || {};
+      for (const n of (this.nodes || [])) { const mi = n.missing_ifaces || {}, gi = n.ghost_ifaces || {};
         for (const ifn of Object.keys(mi)) { const k = n.id + "|" + ifn; _seen.add(k);
           if (!this._missIfSince[k]) this._missIfSince[k] = _now;
           mi[ifn].problemMs = _now - this._missIfSince[k];
-          mi[ifn].ripe = mi[ifn].problemMs >= _grace; } }
+          mi[ifn].ripe = mi[ifn].problemMs >= _grace; }
+        for (const ifn of Object.keys(gi)) { const k = n.id + "|g|" + ifn; _seen.add(k);   // ghosts get the SAME grace (a briefly-lost iface isn't a ghost yet)
+          if (!this._missIfSince[k]) this._missIfSince[k] = _now;
+          gi[ifn].problemMs = _now - this._missIfSince[k];
+          gi[ifn].ripe = gi[ifn].problemMs >= _grace; } }
       for (const k of Object.keys(this._missIfSince)) if (!_seen.has(k)) delete this._missIfSince[k]; }
     // a rotation is "done" once the new key shows up live (or after a 45s safety cap) — drop the marker
     for (const id of Object.keys(this.rotating)) {
@@ -1193,6 +1332,8 @@ const Store = {
     }
     try { recordDashTick(); } catch (_) {}   // accumulate the dashboard's live-only trend series (online counts)
     bus.emit();
+    maybeAlertServices();   // raise the on-load modal for an un-silenced CRITICAL panel-service issue (guarded: once per incident, never over an open modal)
+    try { maybeRekeyGhosts(); } catch (_) {}   // phase 2 of a ghost recreate: rekey its peers once the fresh interface is live
   },
   node(id) { return this.fleet.find(n => n.id === id); },              // lookup by stable id
   nodeName(id) { const n = this.node(id); return (n && n.name) || id; }, // display title (falls back to id)
@@ -1352,7 +1493,7 @@ function TurnProxiesBlock({ node, nrec, snap, metas, title, iface }) {
         <div class="ifrow"><span class="l">Forwards to</span><span class="r">${fronted ? html`<a class=${"tg tg-" + ftype} href=${"#/node/" + encodeURIComponent(node) + "/" + encodeURIComponent(fronted)} onClick=${e => e.stopPropagation()}>${fronted}</a>` : (d.connect || "—")}</span></div>
       </div></div>`; };
   return html`<${Panel} icon="relay" title=${title} tone="turn" count=${cards.length + optTurns.length}
-      actions=${(!iface && nrec.turn_manage) ? html`<${Fragment}><button class="btn btn-mini ico" title="Turn-proxy settings in Settings → Turn proxies" onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node)}><${Ic} i="plus"/> Setup new proxy</button><//>` : null}>
+      actions=${nrec.turn_manage ? html`<${Fragment}><button class="btn btn-mini ico" title="Turn-proxy settings in Settings → Turn proxies" onClick=${() => goSettings("turn")}><${Ic} i="gear"/></button><button class="btn btn-mini" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : ""} onClick=${() => openSetupTurn(node, iface)}><${Ic} i="plus"/> Setup new proxy</button><//>` : null}>
     ${(!iface && !nrec.turn_manage) ? html`<div class="notice"><${Ic} i="info"/><span>Turn-proxy management is <b>off</b> on this node — no Docker socket was mounted at install (<b>TURN_MANAGE=manual</b>), so these are read-only here. Add, edit or restart them on the box directly.</span></div>` : null}
     <div class="ifgrid" ...${iface ? {} : tReorder.container()}>${cards.map(tp => html`<${TurnCard} key=${tp.service} node=${node} tp=${tp} nrec=${nrec} metas=${metas} showForwards=${!iface} reorder=${iface ? null : tReorder}/>`)}
     ${optTurns.map(o => optCard(o.svc, o.d))}
@@ -1424,14 +1565,43 @@ async function blobConfig(peer, node, iface) {
   } catch (_) { return null; }
 }
 
+// A config the server currently can't build (e.g. the peer's interface is a ghost — gone with no key) returns
+// EMPTY every time. Without a memory of that, a QR/config view re-requests it on every render/remount and floods
+// the console + server with identical 404s. Remember an empty result per (pubkey,node,iface) and skip re-fetching
+// it — invalidated by a configEpoch bump (an action that could change the answer: create / rekey / vault unlock)
+// or a short TTL (so a restored interface self-heals without a manual refresh).
+const _configMiss = new Map();   // "pubkey|node|iface" -> { epoch, at }
+const _CONFIG_MISS_TTL = 30000;
+function _configMissFresh(mk) {
+  const m = _configMiss.get(mk);
+  return !!(m && m.epoch === Store.configEpoch && (Date.now() - m.at) < _CONFIG_MISS_TTL);
+}
 function getConfig(pubkey, node, iface) {
   const s = Store.sessionConfigs[pubkey];
   if (s && s[tkey(node, iface)]) return Promise.resolve(rerenderConf(s[tkey(node, iface)], node, iface));
-  // encrypted-at-rest blob first (assigned peer + vault unlocked); else the transitional plaintext store.
   const peer = (Store.recon.peers || []).find(p => p.pubkey === pubkey);
+  // A peer PROVEN to have no config server-side (while the vault was unlocked / store isn't encrypted) survives
+  // reloads via _subNoConf — skip the blob + config probes that would just 404 again on every card render. A
+  // rekey / re-issue changes the pubkey, so this self-invalidates. A LOCKED vault is not proof, so below we
+  // neither trust nor write _subNoConf while locked (the short-TTL _configMiss handles that transient case).
+  if (peer && subNoConfHas(peer.id, pubkey)) return Promise.resolve(null);
+  const mk = pubkey + "|" + node + "|" + iface;
+  if (_configMissFresh(mk)) return Promise.resolve(null);   // known-empty this epoch → don't re-hammer the server
+  const definitive = Store.storeMode !== "encrypted" || subSKCached();   // a miss now means "no config", not "vault locked"
+  const miss = () => { _configMiss.set(mk, { epoch: Store.configEpoch, at: Date.now() }); if (peer && definitive) subNoConfSet(peer.id, pubkey); };
+  const hit = () => { _configMiss.delete(mk); if (peer) subNoConfClear(peer.id); };
+  // encrypted-at-rest blob first (assigned peer + vault unlocked); else the transitional plaintext store.
   return blobConfig(peer, node, iface).then(c => {
-    if (c) return c;
-    if (Store.storeConfigs) return api.config(pubkey, node, iface).then(r => rerenderConf(r.ok ? r.data.config : null, node, iface)).catch(() => null);
+    if (c) { hit(); return c; }
+    // /api/config is the LEGACY plaintext endpoint; in the (normal) encrypted-at-rest steady state there are no
+    // plaintext files, so it 404s for every peer. Only probe it while legacy files still await migration —
+    // otherwise skip it, which is what killed the recurring /api/config 404 flood.
+    if (Store.configsPlaintext > 0) return api.config(pubkey, node, iface).then(r => {
+      const conf = rerenderConf(r.ok ? r.data.config : null, node, iface);
+      if (conf) hit(); else miss();
+      return conf;
+    }).catch(() => { miss(); return null; });
+    miss();
     return null;
   });
 }
@@ -1641,10 +1811,10 @@ const rowNoSelect = e => { if (e.detail > 1) e.preventDefault(); };   // stop th
 const IFOP_BUSY = { start: "starting", stop: "stopping", restart: "restarting", apply: "applying" };   // interface op lifecycle labels
 const IFOP_DONE = { start: "started", stop: "stopped", restart: "restarted", apply: "applied" };
 const IFOP_FAIL = { start: "failed to start", stop: "failed to stop", restart: "failed to restart", apply: "failed to apply" };
-const STATUS_RANK = { disabled: -1, blocking: -1, dangling: 0, broken: 0, blocked: 1, faulty: 1, partial: 1, pending: 2, creating: 2, rotating: 2, restoring: 2, unknown: 3, unassigned: 4, online: 5, ready: 6 };
+const STATUS_RANK = { disabled: -1, expired: -1, blocking: -1, dangling: 0, broken: 0, blocked: 1, faulty: 1, partial: 1, pending: 2, creating: 2, rotating: 2, restoring: 2, expiring: 4, unknown: 3, unassigned: 4, online: 5, ready: 6 };
 const STATUS_ICON = { online: "check", ready: "clock", partial: "warn", pending: "clock", creating: "clock", rotating: "refresh",
   blocked: "warn", faulty: "warn", dangling: "err", broken: "warn", unknown: "info", unassigned: "user", orphan: "link", removing: "trash", empty: "info",
-  disabled: "off", blocking: "off", restoring: "refresh" };
+  disabled: "off", blocking: "off", restoring: "refresh", expired: "warn", expiring: "warn" };
 // Display label overrides where the internal status key differs from the word shown. Two remaps, both
 // display-only (keys stay put so persisted settings / filters / deep-links don't move):
 //   disabled → "blocked"    — the access-revoke settled state (key mirrors the roster `disabled` flag)
@@ -1696,6 +1866,17 @@ function Badge({ s, title }) {
   if (s === "online") return html`<span class="badge b-online" title=${title || ""}><span class="sdot"></span>${statusLabel(s)}</span>`;
   return html`<span class=${"badge b-" + s + (ic ? " ic" : "")} title=${title || ""}>${ic ? html`<${Ic} i=${ic}/>` : null}${statusLabel(s)}</span>`;
 }
+// Access-lifecycle flag icon shown AFTER the status badge, but only when the badge doesn't already say it (i.e. the
+// connectivity status — online / dangling / … — wasn't the neutral "ready" that the lifecycle overwrites). Red
+// circle = blocked, red triangle = expired, orange triangle = about to expire. `it` = a reconciled peer or user.
+function lifecycleIcon(it, st) {
+  if (!it) return null;
+  st = st || it.status;
+  if (it.disabled && st !== "disabled") return html`<span class="lc-ic lc-blocked" title="Blocked"><${Ic} i="off"/></span>`;
+  if (it.expired && st !== "expired") return html`<span class="lc-ic lc-expired" title="Access expired"><${Ic} i="warn"/></span>`;
+  if (it.expiring && st !== "expiring") return html`<span class="lc-ic lc-expiring" title="About to expire"><${Ic} i="warn"/></span>`;
+  return null;
+}
 
 // inline metadata tag (protocol / interface / turn-proxy / generic) — the dense, colored
 // row signature. iface tags take the node's colour via --tgc.
@@ -1720,6 +1901,9 @@ const STATUS_REASON = {
   blocked: "reaching the server but the handshake never completes — likely DPI / MTU / wrong Wireguard or AmneziaWG params",
   faulty: "connected, but no inbound data is flowing — likely a one-way block / DPI on the return path",
   broken: "the interface is up but this peer's IP is outside its subnet — the record needs correcting, not the interface",
+  disabled: "access is blocked — removed from every server until unblocked",
+  expired: "the access date has passed — removed from every server until the date is extended",
+  expiring: "the access date is coming up — will be removed from every server when it passes",
 };
 // The blocked "wrong params" hint, naming the datapath the deployment runs (wg → Wireguard, awg → AmneziaWG,
 // unknown → both) so it points at the right knobs. Mirrors the dynamic reason reconcile.js sets peer-wide.
@@ -2106,6 +2290,7 @@ function _missingIface(node, iface) {
 // stays consistent and always frames it as an interface, not a peer. `problemMs` drives the gate line; `mi` is
 // the node's missing-interface record (null => the panel never captured a config, so it can't recreate).
 function _openRestoreInterface({ node, iface, mi, problemMs, rowKey, back }) {
+  if (_ghostIface(node, iface)) return openRecreateRekey(node, iface, back);   // lost + keyless → can't restore, redirect to recreate + rekey
   const where = Store.nodeName(node) + " · " + iface;
   const gate = "This isn't a brief hiccup or a peer still being created — the interface has stayed missing for " + _durText(problemMs) + ".";
   const clean = !!(mi && mi.key_source);                 // "backup" | "vault" → original key recoverable
@@ -2132,6 +2317,62 @@ function confirmRestoreDeployment(peer, t, back) {
 }
 function confirmRestoreInterface(node, iface, mi, back) {
   _openRestoreInterface({ node, iface, mi, problemMs: (mi && mi.problemMs) || 0, rowKey: "iface:" + node + "|" + iface, back });
+}
+
+// ── GHOST interface: lost + KEYLESS — recreate FRESH + rekey every peer ───────────────────────────────
+// A ghost interface is gone from the node AND has no recoverable key/config, so Restore can't help (it would
+// hit /api/iface/recreate, which 400s without a saved config). The only fix is to recreate it fresh — a NEW
+// server key — and rekey every peer on it so their clients re-import. Two sources: a COLD ghost (server-
+// reported `ghost_ifaces`, no saved config at all) or a WARM-but-keyless missing interface (a `missing_ifaces`
+// entry whose key_source is '' — a config exists but no key to restore). Ripeness = the same ~2min grace as
+// Restore, so a brief blip is never called a ghost.
+function _ghostIface(node, iface) {
+  const nr = (Store.nodes || []).find(n => n.id === node) || {};
+  const g = (nr.ghost_ifaces || {})[iface];
+  if (g) return { cold: true, ripe: !!g.ripe, problemMs: g.problemMs || 0, subnet: null };
+  const mi = (nr.missing_ifaces || {})[iface];
+  if (mi && !mi.key_source) return { cold: false, ripe: !!mi.ripe, problemMs: mi.problemMs || 0, subnet: mi.subnet || null };
+  return null;
+}
+// the reconciled peers with a deployment on this (node, iface)
+function _ghostPeers(node, iface) {
+  return (Store.recon.peers || []).filter(p => (p.targets || []).some(t => t.node === node && t.iface === iface));
+}
+function _subnet24(ip) { const m = String(ip || "").match(/^(\d+)\.(\d+)\.(\d+)\.\d+/); return m ? m[1] + "." + m[2] + "." + m[3] + ".0/24" : ""; }
+// Open the recreate-and-rekey flow: the create form, pre-filled with parameters INFERRED from the ghost's
+// peers (protocol from a target's type, subnet widened from a peer IP, endpoint from the node's own IP), all
+// editable, with a warning that clients must re-import. On create it stages the peers for phase-2 auto-rekey.
+function openRecreateRekey(node, iface, back) {
+  const g = _ghostIface(node, iface) || {};
+  const peers = _ghostPeers(node, iface);
+  let proto = "wg"; const ips = [];
+  peers.forEach(p => (p.targets || []).forEach(t => { if (t.node === node && t.iface === iface) { if (t.type === "awg") proto = "awg"; if (t.ip) ips.push(t.ip); } }));
+  const nr = (Store.nodes || []).find(n => n.id === node) || {};
+  const pre = { iface, proto, subnet: g.subnet || _subnet24(ips[0]), endpoint: (nr.ips || [])[0] || "" };
+  const rekeyable = peers.filter(p => p.user_id).map(p => p.id);   // only ASSIGNED peers can be rekeyed (rekey needs a holder)
+  openModal(html`<${LoadIfaceSheet} node=${node} pre=${pre} ghost=${{ node, iface, peers: rekeyable, total: peers.length }} back=${back}/>`);
+}
+
+// Phase 2 of a ghost recreate: once the recreated interface reports back LIVE (with its brand-new server key),
+// rekey every peer that was on it so their clients get fresh configs. Staged by openRecreateRekey; fired here
+// on each poll. If the operator leaves before the interface returns, nothing is lost — the interface comes
+// back and its peers surface as needing a rekey (stale client config → faulty), so it degrades gracefully.
+function maybeRekeyGhosts() {
+  const staged = Store.ghostRekey || {};
+  for (const gk of Object.keys(staged)) {
+    const rec = staged[gk]; const bar = gk.indexOf("|"); const node = gk.slice(0, bar), iface = gk.slice(bar + 1);
+    if (Date.now() - (rec.at || 0) > 900000) { delete staged[gk]; continue; }   // give up after 15min
+    const m = Store.ifaceMeta(node, iface);
+    if (!m || !m.public_key) continue;                                          // fresh interface not live yet → wait
+    delete staged[gk];                                                          // clear BEFORE rekeying so we never double-fire
+    // The panel just recreated this interface, so the node's brand-new server key isn't drift to review — adopt it
+    // automatically instead of leaving it flagged MODIFIED (the panel initiated the change). Best-effort; the
+    // manual Adopt/Restore on the interface sheet stays as a fallback.
+    if (m.drift && m.drift.public_key) api.ifaceAdopt({ node, iface, key: "public_key" }).catch(() => {});
+    const peers = (rec.peers || []).map(id => (Store.recon.peers || []).find(p => p.id === id)).filter(p => p && p.user_id);
+    peers.forEach(p => { rotatePeerKeys(p).catch(() => {}); });
+    if (peers.length) toast("Interface " + iface + " is back — rekeying " + peers.length + " peer" + (peers.length === 1 ? "" : "s") + "; hand out the fresh configs.", "ok", 5000);
+  }
 }
 // Node-rebuild recovery (P5): after re-installing a wiped box (it re-enrolls empty), one press recreates ALL of
 // its missing interfaces with their original identities — vault keys released with a single unlock, then each
@@ -2242,6 +2483,72 @@ function userBlockBtn(user, back) {
     : html`<button class="btn btn-danger" onClick=${() => confirmBlockUser(user, back)}><${Ic} i="off"/> Block</button>`;
 }
 
+// ── Access expiry (a timed revoke): a peer/subscription stops working once its date passes. Enforced live on the
+// node side (dropped from the desired set) and surfaced as a subscription lifecycle badge. The "about to expire"
+// warn window is a panel Display setting (default 3 days). Dates are stored as epoch seconds, like every other
+// timestamp; a <input type=date> maps to the END of the chosen day so it stays valid THROUGH that date. ──
+const DAY_S = 86400;
+const expiryWarnDays = () => { const d = +((Store.panelSettings || {}).expiry_warn_days); return (d >= 0 && d <= 365) ? d : 3; };
+function fmtDate(sec) { if (!sec) return ""; try { return new Date(sec * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }); } catch (_) { return ""; } }
+function expiryInputVal(sec) { if (!sec) return ""; const d = new Date(sec * 1000); if (isNaN(d.getTime())) return ""; const p = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); }
+function expiryFromInput(str) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str || "").trim()); if (!m) return 0; const d = new Date(+m[1], +m[2] - 1, +m[3], 23, 59, 59); const s = Math.floor(d.getTime() / 1000); return s > 0 ? s : 0; }
+// The SUBSCRIPTION's lifecycle sentence for a user (block wins over a lapsed date; the soft "about to expire" warn
+// only shows inside the warn window). `cls` colours the whole line green (active) / orange (about-to-expire) / red
+// (blocked|expired). Block/expiry carry the date they happened / will happen.
+function subState(user) {
+  const now = now_s(), u = user || {}, exp = +(u.expiry || 0);
+  if (u.disabled) return { cls: "s-blocked", text: "Subscription was blocked" + (u.disabledAt ? " on " + fmtDate(u.disabledAt) : "") };
+  if (exp && now >= exp) return { cls: "s-expired", text: "Subscription expired on " + fmtDate(exp) };
+  if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: "Subscription is about to expire on " + fmtDate(exp) };
+  return { cls: "s-active", text: "Subscription is active" + (exp ? " until " + fmtDate(exp) : "") };
+}
+// The PEER's OWN lifecycle sentence — its own block flag + its own expiry date, independent of the subscription and
+// of the connectivity status (online/ready/…) shown elsewhere. Returns null for an active peer with no expiry (the
+// common case → nothing to show). Same colour scheme as subState.
+function peerState(peer) {
+  const now = now_s(), p = peer || {}, exp = +(p.ownExpiry || 0);
+  if (p.selfDisabled) return { cls: "s-blocked", text: "Peer was blocked" + (p.disabledAt ? " on " + fmtDate(p.disabledAt) : "") };
+  if (exp && now >= exp) return { cls: "s-expired", text: "Peer expired on " + fmtDate(exp) };
+  if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: "Peer is about to expire on " + fmtDate(exp) };
+  if (exp) return { cls: "s-active", text: "Peer is active until " + fmtDate(exp) };
+  return null;
+}
+// pos: "hd" = centred in a modal title row · "center" = its own centred line (edit-user card) · "bar" = a right-
+// aligned line UNDER the header (peer modal / edit-peer). Absent = a plain inline span.
+const _statCls = pos => pos ? " substat-" + pos : "";
+// The USER's own lifecycle sentence — used as the header fallback when there is NO active subscription to report on
+// (a disabled or never-enabled subscription). Mirrors peerState: block / expired / about-to-expire, else null (a
+// user with no expiry and no block has nothing to say, so the line stays empty).
+function userState(user) {
+  const now = now_s(), u = user || {}, exp = +(u.expiry || 0);
+  if (u.disabled) return { cls: "s-blocked", text: "User was blocked" + (u.disabledAt ? " on " + fmtDate(u.disabledAt) : "") };
+  if (exp && now >= exp) return { cls: "s-expired", text: "User expired on " + fmtDate(exp) };
+  if (exp && now >= exp - expiryWarnDays() * DAY_S) return { cls: "s-expiring", text: "User is about to expire on " + fmtDate(exp) };
+  return null;
+}
+// The subscription sentence, coloured whole (green active / orange about-to-expire / red blocked|expired). Shown
+// only when subscriptions are on; tracks state off each poll. With an ACTIVE subscription it reports the
+// subscription's lifecycle; with none (disabled or never enabled) it never claims one — it falls back to the user's
+// own expiry (userState) and stays silent when there's nothing noteworthy.
+function SubStatusLine({ user, pos }) {
+  useStore();
+  const rec = useSubRec(user.id);   // the subscription record — .enabled tells a live subscription from a disabled/never-enabled one
+  if (!subFeatureOn()) return null;
+  const u = (Store.recon.users || []).find(x => x.id === user.id) || user;
+  const st = (rec && rec.enabled) ? subState(u) : userState(u);
+  if (!st) return null;
+  return html`<span class=${"substat " + st.cls + _statCls(pos)}>${st.text}</span>`;
+}
+// The peer's own lifecycle sentence (null when there's nothing to say — active with no expiry). Independent of the
+// subscription feature — a peer's block/expiry applies either way.
+function PeerStatusLine({ peer, pos }) {
+  useStore();
+  const rp = (Store.recon.peers || []).find(p => p.id === peer.id) || peer;
+  const st = peerState(rp);
+  if (!st) return null;
+  return html`<span class=${"substat " + st.cls + _statCls(pos)}>${st.text}</span>`;
+}
+
 // A type-to-filter user picker (the "assign to" control for unassigned peers).
 // Anchored-dropdown positioning: a fixed-position list at the trigger's rect so it escapes a grid/table's
 // overflow:hidden (and any stacking context) — the list is PORTALED to <body>. Returns refs + pos; the
@@ -2295,7 +2602,9 @@ function UserPicker({ value, onChange, allowUnassigned, placeholder }) {
     <input class="uc-input" value=${open ? q : selText}
       placeholder=${placeholder || (allowUnassigned ? "— unassigned —" : "Assign to a user…")}
       onClick=${() => { setOpen(true); setQ(""); }} onInput=${e => { setQ(e.target.value); setOpen(true); }}
-      onKeyDown=${e => { if (e.key === "Enter" && open && q && shown.length === 1) { e.preventDefault(); pick(shown[0].id); } else if (e.key === "Escape") setOpen(false); }}/>
+      onKeyDown=${e => { if (e.key === "Escape") { setOpen(false); return; }
+        // while actively filtering, Enter never saves the form: exactly one match selects it, anything else does nothing.
+        if (e.key === "Enter" && open && q) { e.preventDefault(); if (shown.length === 1) pick(shown[0].id); } }}/>
     ${open && pos ? html`<${Portal}><div class="uc-list uc-pop" ref=${listRef} style=${popStyle}>
       ${allowUnassigned ? html`<button class="uc-opt" onClick=${() => pick("")}><span class="faint">— unassigned —</span></button>` : null}
       ${shown.length ? shown.map(u => html`<button class="uc-opt" key=${u.id} onClick=${() => pick(u.id)}><span>${u.name}</span>${u.tag ? html`<span class="tagchip">${u.tag}</span>` : null}</button>`)
@@ -3331,6 +3640,93 @@ function FlowMap2({ selIds, range, hist }) {
   </div>`;
 }
 
+// ═════════════════════════ panel-host service health ═════════════════════════
+// Reads THIS host's own swg units from Store.panelServices (a server self-probe, cached ~20s server-side →
+// essentially free) and turns them into "needs attention" records. Config-aware severity: a service that's
+// intentionally inert (swg-sub while subscriptions are OFF) is NOT a fault. Only swg-sub down/missing WHILE
+// subscriptions are ON is "critical" (the only thing that raises the on-load modal) — netctl/update matter
+// only when you change settings or press Update, so they stay warnings. That keeps the modal meaningful
+// instead of training people to Silence it. The panel host is one box, so these show regardless of the
+// node filter. Purely additive: an older/docker panel reports {} → serviceIssues() returns [].
+const SVC_LABEL = { sub: "Subscription server", netctl: "Network & TLS helper", update: "One-click self-update", panel: "Panel server" };
+const SVC_UNIT  = { sub: "swg-sub", netctl: "swg-netctl", update: "swg-update", panel: "swg-panel-server" };
+const SVC_KINDWORD = { missing: "not installed", down: "not running", disabled: "won’t survive a reboot" };
+function serviceIssues() {
+  const ps = Store.panelServices || {};
+  if (!ps || !Object.keys(ps).length) return [];
+  const out = [], add = (id, sev, kind, msg) => out.push({ id, sev, kind, msg, label: SVC_LABEL[id], unit: SVC_UNIT[id] });
+  const gone = u => u && !u.present;
+  const down = u => u && u.present && u.active !== "active";
+  const unen = u => u && u.present && u.enabled && u.enabled !== "enabled" && u.enabled !== "static";
+  const sub = ps.sub;
+  if (sub && subFeatureOn()) {                         // only meaningful while subscriptions are enabled
+    if (gone(sub))      add("sub", "critical", "missing", "the subscription server isn’t installed — subscribers can’t load their configs");
+    else if (down(sub)) add("sub", "critical", "down", "the subscription server isn’t running — subscribers can’t load their configs");
+    else if (unen(sub)) add("sub", "warn", "disabled", "the subscription server won’t start again after a reboot");
+  }
+  const np = ps.netctl_path, nt = ps.netctl_timer;    // path OR timer covers the helper; collapse to one record
+  if (gone(np) || gone(nt))       add("netctl", "warn", "missing", "Access & TLS and address changes can’t be applied until it’s restored");
+  else if (down(np) && down(nt))  add("netctl", "warn", "down", "Access & TLS and address changes can’t be applied right now");
+  else if (unen(np) || unen(nt))  add("netctl", "warn", "disabled", "the network helper won’t start again after a reboot");
+  const up = ps.update;
+  if (gone(up))      add("update", "warn", "missing", "the one-click Update button won’t work (a manual update still will)");
+  else if (down(up)) add("update", "warn", "down", "the one-click Update button won’t work right now");
+  else if (unen(up)) add("update", "warn", "disabled", "one-click self-update won’t arm again after a reboot");
+  if (unen(ps.panel)) add("panel", "warn", "disabled", "the panel won’t start again after a reboot");   // it's answering → it's up; only reboot-survival matters
+  out.sort((a, b) => (b.sev === "critical") - (a.sev === "critical"));
+  return out;
+}
+// Per-incident "Silence" — a localStorage set of "<id>:<kind>" keys the operator has hushed. Only the
+// on-load MODAL respects it; the needs-attention ROW always shows. Auto-pruned to currently-live incidents,
+// so a service that recovers then breaks again re-alerts.
+function svcKey(is) { return is.id + ":" + is.kind; }
+function svcSilencedSet() { try { return new Set(JSON.parse(localStorage.getItem("swg-svc-silence") || "[]")); } catch (_) { return new Set(); } }
+function svcSaveSilence(s) { try { localStorage.setItem("swg-svc-silence", JSON.stringify([...s])); } catch (_) {} }
+function svcSilence(is) { const s = svcSilencedSet(); s.add(svcKey(is)); svcSaveSilence(s); bus.emit(); }
+let _svcAlerted = new Set();   // incidents already popped THIS page-load (resets on hard refresh); clears per-incident when it recovers
+let _appReady = false;         // set once the App has mounted (so openModal's setState is wired) — the first poll can land BEFORE mount
+function maybeAlertServices() {
+  if (!_appReady) return;      // pre-mount: _setStack is a no-op → a modal opened now would be orphaned; wait for mount
+  try {
+    const issues = serviceIssues();
+    const live = new Set(issues.map(svcKey));
+    const sil = svcSilencedSet(); let silChanged = false;   // prune silences whose incident cleared → recurrence re-alerts
+    [...sil].forEach(k => { if (!live.has(k)) { sil.delete(k); silChanged = true; } });
+    if (silChanged) svcSaveSilence(sil);
+    [..._svcAlerted].forEach(k => { if (!live.has(k)) _svcAlerted.delete(k); });
+    if (_stack.length) return;                             // don't clobber a modal the operator has open
+    const crit = issues.filter(i => i.sev === "critical" && !sil.has(svcKey(i)));
+    const fresh = crit.filter(i => !_svcAlerted.has(svcKey(i)));
+    if (!fresh.length) return;
+    crit.forEach(i => _svcAlerted.add(svcKey(i)));
+    setTimeout(() => { if (!_stack.length) openModal(html`<${ServiceIssueSheet} issues=${crit}/>`); }, 0);   // defer past any hashchange (resets the stack)
+  } catch (_) {}
+}
+// The modal for service issues — the row click and the critical on-load alert both open it. Explains each
+// issue + the two honest remediations: "Run update" (reinstalls anything missing + re-enables) and the
+// exact status/log commands for a service that's actually crashing.
+function ServiceIssueSheet({ issues }) {
+  const list = (issues || []).filter(Boolean);
+  if (!list.length) { closeModal(); return null; }
+  return html`<${Sheet} noGuard=${true} onClose=${closeModal}
+      title=${list.length === 1 ? list[0].label + " needs attention" : "Panel services need attention"}
+      foot=${html`<${Fragment}>
+        <button class="btn btn-ghost" onClick=${() => { list.forEach(svcSilence); closeModal(); }}>Silence</button>
+        <span class="grow"></span>
+        <button class="btn btn-primary" onClick=${() => { closeModal(); updateHost(); }}>Run update</button>
+      <//>`}>
+    <div class="svc-modal">
+      ${list.map(i => html`<div class=${"svc-item " + i.sev} key=${svcKey(i)}>
+        <div class="svc-head"><span class=${"svc-dot " + i.sev}></span><b>${i.label}</b>
+          <span class=${"svc-tag " + i.sev}>${i.sev === "critical" ? "Critical" : "Warning"}</span></div>
+        <div class="svc-msg">${i.msg}.</div>
+        <div class="svc-cmd"><code>systemctl status ${i.unit}</code> · <code>journalctl -u ${i.unit} -e</code></div>
+      </div>`)}
+      <div class="svc-foot">“Run update” reinstalls anything missing and re-enables the service — the same repair the Update button runs. A service that keeps crashing needs the logs above.</div>
+    </div>
+  <//>`;
+}
+
 // ═════════════════════════ SCREEN: OVERVIEW ═════════════════════════
 function Overview() {
   useStore();
@@ -3393,7 +3789,8 @@ function Overview() {
   const orphByIf = {};
   orphans.forEach(o => { const k = o.node + "|" + o.iface; (orphByIf[k] || (orphByIf[k] = { node: o.node, iface: o.iface, n: 0 })).n++; });
   const orphGroups = Object.values(orphByIf);
-  const attnCount = statusGroups.length + unGroups.length + orphGroups.length;
+  const svcIssues = serviceIssues();   // panel-host service health — one box, so shown regardless of the node filter (critical first)
+  const attnCount = svcIssues.length + statusGroups.length + unGroups.length + orphGroups.length;
 
   const recent = recentActivity();
 
@@ -3513,7 +3910,7 @@ function Overview() {
           : html`<div class="harea-empty">gathering — no history yet</div>`}
       </div>
       <div class="trendcard">
-        <div class="donutcard-h"><h3>Online peers</h3><span class="grow"></span><span class="trend-now">${dRanged && _pres ? _pres.total.peers : online}</span></div>
+        <div class="donutcard-h"><h3>Online peers</h3><span class="grow"></span><span class="trend-now">${dRanged && _pres ? (_pres.total || {}).peers : online}</span></div>
         ${hasOnline
           ? html`<${OnlineBlocks} blocks=${onlineBlocks} step=${obStep} endTs=${onlineEndTs} range=${effRange} color="var(--online)" h=${70}/>`
           : html`<div class="harea-empty">gathering — fills as it polls</div>`}
@@ -3523,7 +3920,7 @@ function Overview() {
       : html`<div class="allclear">No servers configured in fleet.json.</div>`}
 
     ${fleetSel.length ? html`<${Fragment}>
-      ${secTitle("Distribution", html`${scoped ? "selected nodes" : "whole fleet"} · ${DASH_RANGES.find(r => r[0] === effRange)[1].toLowerCase()}`)}
+      ${secTitle("Distribution", html`${scoped ? "selected nodes" : "whole fleet"} · ${(DASH_RANGES.find(r => r[0] === effRange) || ["", "live"])[1].toLowerCase()}`)}
       <${DashDoughnuts} selIds=${selIds} range=${effRange} hist=${rangeHist}/>
     <//>` : null}
 
@@ -3562,6 +3959,10 @@ function Overview() {
     ${!attnCount
       ? html`<div class="allclear"><${Ic} i="check"/><span>Everything's deployed and reporting. No drift across the fleet.</span></div>`
       : html`<div class="attn">
+          ${svcIssues.map(is => html`<div class=${"attn-row svc " + is.sev} key=${"svc" + svcKey(is)} onClick=${() => openModal(html`<${ServiceIssueSheet} issues=${[is]}/>`)}>
+            <span class=${"svc-badge " + is.sev}><${Ic} i="warn"/>${is.sev === "critical" ? "Critical" : "Warning"}</span>
+            <span class="name">${is.label} — ${SVC_KINDWORD[is.kind] || is.kind}</span>
+            <span class="why">${is.msg}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
           ${statusGroups.map(g => html`<div class="attn-row" key=${"s" + g.status} onClick=${() => revealPeersFiltered({ status: g.status })}>
             <${Badge} s=${g.status}/><span class="name"><b>${g.peers.length}</b> peer${g.peers.length === 1 ? "" : "s"} ${STATUS_WORD[g.status] || g.status}</span>
             <span class="why">${why[g.status] || ""}</span><span class="grow"></span><span class="rowarrow"><${Ic} i="arrow"/></span></div>`)}
@@ -3757,13 +4158,26 @@ function NodeDetail({ node: rawName }) {
               <${StatusTag} cls="tg-del" icon="warn" label="missing" title="This interface is gone from the node"/>
               <button class="mi-restore" disabled=${blocked || !mi.ripe} title=${mi.ripe ? "Recreate this interface with its original identity — recovers every peer on it" : "Confirming it's really gone (a couple of minutes) before Restore is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); confirmRestoreInterface(name, ifn, mi); }}><${Ic} i="refresh"/> Restore</button><span class="grow"></span></div>
             <div class="ifcard-rows"><div class="mi-text">${sentence}</div></div></a>`; };
+        // GHOST card — a lost interface with NO recoverable key (cold: no saved config; or a keyless missing
+        // interface). Restore can't help, so it offers "Recreate" (fresh key + rekey every peer). Semi-
+        // transparent until hover (it's a phantom), mirroring the .ifcard.down treatment.
+        const gcard = (ifn, g) => { const gp = _ghostPeers(name, ifn);
+          return html`<a class="ifcard ghost" key=${"ghost:" + ifn} href=${"#/node/" + encodeURIComponent(name) + "/" + encodeURIComponent(ifn)} title="Open the interface (read-only) — recreate & rekey">
+            <div class="ifcard-top"><span class="iftype gh">gone</span><span class="ifname">${ifn}</span>
+              <${StatusTag} cls="tg-del" icon="warn" label="ghost" title="Gone with no recoverable key — recreate fresh + rekey"/>
+              <button class="mi-restore ghost" disabled=${blocked || !g.ripe} title=${g.ripe ? "Recreate this interface with a NEW key and rekey every peer on it (clients re-import)" : "Confirming it's really gone (a couple of minutes) before Recreate is offered"} onClick=${e => { e.preventDefault(); e.stopPropagation(); openRecreateRekey(name, ifn); }}><${Ic} i="refresh"/> Recreate</button><span class="grow"></span></div>
+            <div class="ifcard-rows"><div class="mi-text">The node no longer reports ${ifn}, and <span class="mi-bad">its server key can't be recovered</span> — there's nothing to restore. Recreate it with a new key; its ${gp.length} peer${gp.length === 1 ? " gets" : "s get"} fresh configs to re-import.</div></div></a>`; };
         const mcards = Object.entries(nrec.missing_ifaces || {})
-          .filter(([ifn]) => !(meta && meta[ifn]) && !isSysName(ifn))
+          .filter(([ifn, mi]) => mi.key_source && !(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn))   // RECOVERABLE only — keyless ones fall to gcard below; a recreate/restore in flight shows the "creating" card instead
           .map(([ifn, mi]) => mcard(ifn, mi));
+        const _gset = {};   // dedupe cold (ghost_ifaces) + keyless-missing into one gcard per iface; a recreate in flight (pending) drops the ghost card in favour of its "creating" card
+        for (const ifn of Object.keys(nrec.ghost_ifaces || {})) if (!(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn)) _gset[ifn] = 1;
+        for (const [ifn, mi] of Object.entries(nrec.missing_ifaces || {})) if (!mi.key_source && !(meta && meta[ifn]) && !pending.includes(ifn) && !isSysName(ifn)) _gset[ifn] = 1;
+        const gcards = Object.keys(_gset).map(ifn => [ifn, _ghostIface(name, ifn)]).filter(([, g]) => g).map(([ifn, g]) => gcard(ifn, g));
         return metaErr ? html`<div class="notice warn"><${Ic} i="warn"/><span>This node hasn't reported in yet — its interfaces will show up here once it runs the installer and syncs.<br/><br/>Lost the enrollment token or the install command? Rotate the node's token to generate a fresh install command.</span></div>`
           : !meta ? html`<div class="loading"><span class="spin"></span>reading server…</div>`
-          : (!userKeys.length && !pending.length && !mcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
-          : html`<div class="ifgrid" ...${ifReorder.container()}>${mcards}${orderById(userKeys, nrec.iface_order, x => x).map(ifn => {
+          : (!userKeys.length && !pending.length && !mcards.length && !gcards.length) ? html`<div class="notice warn"><${Ic} i="warn"/><span>No managed interfaces reported.</span></div>`
+          : html`<div class="ifgrid" ...${ifReorder.container()}>${mcards}${gcards}${orderById(userKeys, nrec.iface_order, x => x).map(ifn => {
               const m = meta[ifn];
               const it = ifReorder.item(ifn);
               if (ifaceWasBusy[name + "|" + ifn]) { ifaceReady[name + "|" + ifn] = Date.now() + 5000; ifaceWasBusy[name + "|" + ifn] = false; }   // just came up after being pending/creating → "ready" 5s
@@ -3823,12 +4237,16 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <div class="empty"><b>Unknown server</b>this server isn't in the fleet.</div></div>`;
   const dname = nrec.name || node;
   const meta = Store.ifaceMeta(node, iface);
-  const missIf = (!meta && nrec.missing_ifaces && nrec.missing_ifaces[iface]) || null;   // expected but GONE from the node → read-only view whose only action is Restore interface
+  const _rawMiss = (!meta && nrec.missing_ifaces && nrec.missing_ifaces[iface]) || null;
+  const missIf = (_rawMiss && _rawMiss.key_source) ? _rawMiss : null;   // RECOVERABLE (key backup/vault) → read-only, only action Restore interface
+  const ghostIf = (!meta && !missIf && _ghostIface(node, iface)) || null;   // lost + KEYLESS → read-only, only action Recreate and rekey interface
   const live = Store.recon.nodeStatus[node] === "live";
   const blocked = !live || inProc(nrec.proc_status) || !!missIf;   // missing → fully read-only (every edit/lifecycle button off; only Restore acts)
   // a pending listen-port change: desired (panel) != reported (node) until the node converges
   const updating = !!(meta && meta.desired_port && meta.listen_port && Number(meta.desired_port) !== Number(meta.listen_port));
-  const type = (((meta && meta.awg_params) || (missIf && missIf.awg_params)) && Object.keys((meta && meta.awg_params) || (missIf && missIf.awg_params) || {}).length) ? "awg" : "wg";
+  const type = ghostIf   // a ghost has no meta/awg_params → infer the badge from the peers that reference it (else it always reads "wg")
+    ? (Store.recon.peers.some(p => (p.targets || []).some(t => t.node === node && t.iface === iface && t.type === "awg")) ? "awg" : "wg")
+    : ((((meta && meta.awg_params) || (missIf && missIf.awg_params)) && Object.keys((meta && meta.awg_params) || (missIf && missIf.awg_params) || {}).length) ? "awg" : "wg");
   const peers = Store.recon.peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface));
   const onl = peers.filter(p => p.targets.some(t => t.node === node && t.iface === iface && t.online)).length;
   const orphans = Store.recon.orphans.filter(o => o.node === node && o.iface === iface);
@@ -3858,7 +4276,7 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
     <${NodeRail} active=${node}/>
     <div class="crumb"><a href="#/nodes">Nodes</a><span class="sep">/</span><a href=${"#/node/" + encodeURIComponent(node)}>${dname}</a><span class="sep">/</span><b>${iface}</b></div>
     <div class="detail-head">
-      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${missIf ? html`<span class="nstat down"><${Ic} i="warn"/> missing</span>` : istopped ? html`<span class="nstat stopped" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/> stopped</span>` : idown ? html`<span class="nstat down" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/> down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="nstat stale"><${Ic} i="info"/> stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
+      <div class="title"><h1>${iface}</h1><span class=${"iftype " + type}>${type}</span>${missIf ? html`<span class="nstat down"><${Ic} i="warn"/> missing</span>` : ghostIf ? html`<span class="nstat down"><${Ic} i="warn"/> ghost</span>` : istopped ? html`<span class="nstat stopped" title="Stopped by you — Start it whenever you're ready"><${Ic} i="stop"/> stopped</span>` : idown ? html`<span class="nstat down" style="cursor:pointer" title=${(nrec.cmd_errors || {})[iface] || ("down on the node — " + idown)} onClick=${() => openConfirm({ title: "Interface down on the node", log: (nrec.cmd_errors || {})[iface] || ("down on the node — " + idown), confirmLabel: "Close" })}><${Ic} i="warn"/> down</span>` : live ? html`<span class="reporting">reporting</span>` : html`<span class="nstat stale"><${Ic} i="info"/> stale</span>`}<span class="when"><${OnlinePeersTag} nodeId=${node} iface=${iface} total=${peers.length} orphans=${orphCount(node, iface)}/></span></div>
       <div class="grow"></div>
     </div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node — its config below is read from the <code>.conf</code> (not live). The node reported: <code>${(nrec.cmd_errors || {})[iface] || idown}</code>. Use <b>Start interface</b> — if the bring-up fails, the exact reason (port clash, a left-over kernel interface of the same name, an unsupported AmneziaWG parameter, …) shows here.</span></div>` : null}
@@ -3874,6 +4292,15 @@ function IfaceDetail({ node: rawNode, iface: rawIface }) {
             <div class="ig-item"><span class="ig-l">Listen port</span><span class="ig-v">${missIf.listen_port || "—"}</span></div>
           </div>
           ${type === "awg" ? html`<div class="iface-amnezia"><span class="ig-l">AmneziaWG</span><div class="iface-grid" style="margin-top:8px">${awgCols.map(g => html`<div class="ig-item"><span class="ig-v">${g.length ? g.map(l => html`<span>${l}</span>`) : "—"}</span></div>`)}</div></div>` : null}
+        <//></>`
+      : ghostIf ? html`<${Fragment}>
+          <div class="notice danger"><${Ic} i="warn"/><span>Interface <b>${iface}</b> is gone from ${dname} with <b>no recoverable key</b>, so it can't be restored — this view is <b>read-only</b>. Recreating it means a <b>new server key</b>, and every peer below must <b>re-import</b> a fresh QR / config. The only action here is <b>Recreate and rekey interface</b>.</span></div>
+        <${Panel} icon="key" title="Interface (lost — no recoverable key)" tone=""
+          actions=${html`<button class="btn btn-mini ghost" disabled=${!ghostIf.ripe} title=${ghostIf.ripe ? "Recreate this interface with a NEW key and rekey every peer on it (clients re-import)" : "Confirming it's really gone (a couple of minutes) before Recreate is offered"} onClick=${() => openRecreateRekey(node, iface)}><${Ic} i="refresh"/> Recreate and rekey interface</button>`}>
+          <div class="iface-grid">
+            <div class="ig-item"><span class="ig-l">Subnet</span><span class="ig-v">${ghostIf.subnet || "—"}</span></div>
+            <div class="ig-item"><span class="ig-l">Peers affected</span><span class="ig-v">${_ghostPeers(node, iface).length}</span></div>
+          </div>
         <//></>`
       : !meta ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface hasn't been reported in a snapshot yet.</span></div>`
       : html`<${Panel} icon="key" title="Interface details" tone=${type === "awg" ? "" : "online"}
@@ -4683,19 +5110,21 @@ function egressError(eg, mode) {
   }
   return null;
 }
-function LoadIfaceSheet({ node }) {
+function LoadIfaceSheet({ node, pre, ghost, back }) {
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";   // only bridge needs port publishing
-  const [proto, setProto] = useState("awg");   // awg | wg | existing
+  const [proto, setProto] = useState((pre && pre.proto) || "awg");   // awg | wg | existing
   const sugAwg = suggestIface(node, "awg"), sugWg = suggestIface(node, "wg");   // auto-suggested names (per base)
-  const [iface, setIface] = useState(sugAwg); const [subnet, setSubnet] = useState(suggestSubnet(node));
+  const [iface, setIface] = useState((pre && pre.iface) || sugAwg); const [subnet, setSubnet] = useState((pre && pre.subnet) || suggestSubnet(node));
   const [host, setHost] = useState(""); const [port, setPort] = useState(String(suggestPort(node, "iface")));
   const _idf = (Store.panelSettings || {}).interface_defaults || {};   // panel-wide new-interface defaults
   const [dns, setDns] = useState((_idf.dns || ["1.1.1.1"]).join(", ")); const [mtu, setMtu] = useState(String(_idf.mtu || 1280)); const [ka, setKa] = useState(String(_idf.keepalive || 25));
   const [conf, setConf] = useState("");
   const ips = nrec.ips || []; const [eg, setEg] = useState(() => egressInit({}));
   // endpoint host: dropdown of the node's known IPs (default the first), last entry = a free-text "Custom IP / Host…"
-  const [hostSel, setHostSel] = useState(ips[0] || "__custom__"); const [hostCustom, setHostCustom] = useState("");
+  const _preEp = pre && pre.endpoint;
+  const [hostSel, setHostSel] = useState(_preEp ? (ips.includes(_preEp) ? _preEp : "__custom__") : (ips[0] || "__custom__"));
+  const [hostCustom, setHostCustom] = useState(_preEp && !ips.includes(_preEp) ? _preEp : "");
   const pickProto = p => {   // switching base re-suggests the name only if the field is still an untouched suggestion
     if (p !== "existing" && (iface === sugAwg || iface === sugWg || !iface.trim())) setIface(p === "wg" ? sugWg : sugAwg);
     setProto(p);
@@ -4705,6 +5134,19 @@ function LoadIfaceSheet({ node }) {
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const save = async () => {
     setBusy(true); setMsg({ k: "work", t: "requesting…" });
+    // Recreating a ghost rekeys its peers in the background once the fresh interface returns — the ONE moment the
+    // browser holds each new private key. Unlock the vault UP FRONT so those fresh configs are captured as they're
+    // rekeyed (re-viewable in the panel + served on subscription pages) instead of being lost on the next reload.
+    // Proceed either way: if the operator skips, the prompt has already spelled out that the peers will be stranded.
+    if (ghost && !existing && Store.storeMode === "encrypted" && (ghost.peers || []).length && !subSKCached()) {
+      const n = ghost.peers.length;
+      await ensureVaultUnlocked({
+        title: "Unlock to capture the rekeyed configs",
+        reason: "Recreating " + ghost.iface + " gives its " + n + " peer" + (n === 1 ? "" : "s") + " brand-new keys once it's back. Unlock your encryption key now so each fresh config is captured the moment it's rekeyed — then it stays re-viewable in the panel and is served on the users' subscription pages.",
+        consequence: "the interface is recreated and its peers are rekeyed, but their new configs are NOT captured — they can't be re-viewed or served on subscription pages, and you'd have to hand every client a fresh QR by other means. (Unlock later in this same tab before reloading and they're still saved; after a reload the new keys are gone for good.)",
+      });
+      setMsg({ k: "work", t: "requesting…" });   // the prompt may have taken a while → restore the working state
+    }
     let r;
     if (existing) {
       const c = conf.trim();
@@ -4728,17 +5170,20 @@ function LoadIfaceSheet({ node }) {
     if (_newName) Store.ifaceNew[node + "|" + _newName] = existing
       ? { type: null, at: Date.now() }
       : { type: proto, subnet: subnet.trim(), port: port.trim(), endpoint: ipPickerVal(hostSel, hostCustom), at: Date.now() };
+    if (ghost && !existing) Store.ghostRekey[node + "|" + _newName] = { peers: ghost.peers || [], at: Date.now() };   // phase 2: rekey these once the fresh iface is live
     closeModal(); Store.apply(); await Store.poll();
-    if (!existing && isBridge) { openModal(html`<${BridgePortSheet} iface=${nm} port=${port.trim()}/>`); return; }
-    toast(existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync.", "ok");
+    if (!existing && isBridge) { openModal(html`<${BridgePortSheet} iface=${_newName} port=${port.trim()}/>`); return; }
+    toast(ghost ? ("Recreating " + _newName + " — keep this tab open and its " + (ghost.peers || []).length + " peer" + ((ghost.peers || []).length === 1 ? " is" : "s are") + " rekeyed automatically once it's back; otherwise rekey each from its peer view. Then hand out the fresh configs.")
+                : (existing ? "Onboarding requested — applies on the node's next sync." : "Interface creation requested — applies on the node's next sync."), "ok", ghost ? 6000 : 3600);
   };
-  return html`<${Sheet} title="Create new interface"
-    foot=${footRow({ onCancel: closeModal, disabled: busy || (!existing && !!egressError(eg, nrec.routing_mode || "kernel")), title: (!existing && egressError(eg, nrec.routing_mode || "kernel")) || "", onAction: save, action: existing ? "Adopt" : "Create" })}>
+  return html`<${Sheet} title=${ghost ? "Recreate & rekey · " + ghost.iface : "Create new interface"} onBack=${back || null}
+    foot=${footRow({ onCancel: back || closeModal, disabled: busy || (!existing && !!egressError(eg, nrec.routing_mode || "kernel")), title: (!existing && egressError(eg, nrec.routing_mode || "kernel")) || "", onAction: save, action: ghost ? "Recreate & rekey" : (existing ? "Adopt" : "Create") })}>
+    ${ghost ? html`<div class="notice danger" style="margin-bottom:16px"><${Ic} i="warn"/><span>Interface <span class="mono">${ghost.iface}</span> is gone from ${Store.nodeName(node)} with <b>no recoverable key</b>, so it can't be restored — only recreated with a <b>new server key</b>. Its <b>${ghost.total}</b> peer${ghost.total === 1 ? "" : "s"} will be rekeyed once it's back, so <b>every client must re-import</b> a fresh QR / config. Review the settings below (inferred from the peers) and recreate.</span></div>` : null}
     <div class="field"><label>Protocol</label>
-      <div class="chiprow proto3">
+      <div class=${"chiprow" + (ghost ? "" : " proto3")}>
         <button class=${"chip c-awg" + (proto === "awg" ? " on" : "")} onClick=${() => pickProto("awg")}>AmneziaWG</button>
         <button class=${"chip c-wg" + (proto === "wg" ? " on" : "")} onClick=${() => pickProto("wg")}>WireGuard</button>
-        <button class=${"chip c-ex" + (proto === "existing" ? " on" : "")} onClick=${() => pickProto("existing")}>Existing unbound interface</button>
+        ${ghost ? null : html`<button class=${"chip c-ex" + (proto === "existing" ? " on" : "")} onClick=${() => pickProto("existing")}>Existing unbound interface</button>`}
       </div></div>
     ${existing ? html`<${Fragment}>
       <div class="iface-intro big">
@@ -4750,7 +5195,7 @@ function LoadIfaceSheet({ node }) {
       <div class="field"><label>Public endpoint host / IP <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${host} onInput=${e => setHost(e.target.value)} placeholder="vpn.xyz.com or 203.0.113.7"/><div class="hint">What clients dial. Leave blank to use the node's detected address.</div></div>
     <//>` : html`<${Fragment}>
       <div class="row2">
-        <div class="field"><label>Interface name</label><input autofocus value=${iface} onInput=${e => setIface(e.target.value)} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/></div>
+        <div class="field"><label>Interface name</label><input autofocus=${!ghost} value=${iface} onInput=${e => { if (!ghost) setIface(e.target.value); }} readOnly=${!!ghost} placeholder=${proto === "wg" ? "wg0" : "awg0"} autocomplete="off"/>${ghost ? html`<div class="hint">Fixed — must match the peers that reference it.</div>` : null}</div>
         <div class="field"><label>Tunnel subnet (CIDR)</label><input value=${subnet} onInput=${e => setSubnet(e.target.value)} placeholder="10.8.0.0/24" autocomplete="off"/><div class="hint">The server takes the first host (e.g. 10.8.0.1);</div></div>
       </div>
       <div class="row2">
@@ -4868,6 +5313,7 @@ function ConnectionEditSheet({ node, iface }) {
       call: () => api.connectionUpdate({ node, peer, dial_src: dialSrc, dial_endpoint: dialEp }),
     });
   };
+  const connDirty = dialSrc !== (meta.dial_src || "") || dialEp !== (meta.dial_endpoint || "");   // enable Save only when the dial fields changed
   // user interfaces on THIS node whose traffic is forwarded out through this link (egress → peer)
   const allMeta = Store.describe[node] || {};
   const carried = Object.keys(allMeta).filter(k => !allMeta[k].system
@@ -4882,7 +5328,7 @@ function ConnectionEditSheet({ node, iface }) {
   const ifBadge = k => html`<span class=${"tg tg-" + ((allMeta[k].awg_params && Object.keys(allMeta[k].awg_params).length) ? "awg" : "wg")}>${k}</span>`;
   const peerNm = html`<b style=${"color:" + Store.nodeColor(peer)}>${Store.nodeName(peer)}</b>`;
   return html`<${Sheet} title=${"Connection to " + Store.nodeName(peer)} width=${680} onClose=${closeModal}
-      foot=${footRow({ onCancel: closeModal, disabled: nodeDown, title: nodeDown ? Store.nodeName(node) + " isn't reporting — reconnect it before changing this link" : "", onAction: saveDial, action: "Save" })}>
+      foot=${footRow({ onCancel: closeModal, disabled: nodeDown || !connDirty, title: nodeDown ? Store.nodeName(node) + " isn't reporting — reconnect it before changing this link" : (!connDirty ? "No changes to save" : ""), onAction: saveDial, action: "Save" })}>
     <div class="conncard">
       <div class="conncard-top">
         <span class=${"iftype " + proto}>System ${proto.toUpperCase()}</span>
@@ -4966,12 +5412,19 @@ function EditIfaceSheet({ node, iface }) {
     }
     doSave();
   };
+  // enable Save only when something would change — mirror doSave()'s body; a down/stopped iface always allows Save (= bring-up)
+  const _ifBody = { endpoint_host: host.trim(), listen_port: port.trim(), dns: dns.trim(), mtu: mtu.trim(), keepalive: ka.trim(), ...egressBody(eg) };
+  const _ifOrig = { endpoint_host: epHost, listen_port: String(meta.desired_port || meta.listen_port || ""), dns: (meta.dns || []).join(", "), mtu: String(meta.mtu || 1280), keepalive: String(meta.keepalive || 25), ...egressBody(egressInit(meta)) };
+  const _awgTrim = src => AWG_ORDER.reduce((o, k) => { const v = String((src || {})[k] == null ? "" : (src || {})[k]).trim(); if (v) o[k] = v; return o; }, {});
+  const ifaceDirty = notup
+    || JSON.stringify(_ifBody) !== JSON.stringify(_ifOrig)
+    || (isAwg && JSON.stringify(_awgTrim(awg)) !== JSON.stringify(_awgTrim(meta.awg_params)));
   return html`<${Sheet} title=${"Edit interface · " + iface} width=${720}
     foot=${html`<${Fragment}><button class="btn btn-ghost danger" onClick=${() => pushModal(html`<${DeleteIfaceSheet} node=${node} iface=${iface}/>`)}><${Ic} i="trash"/> Delete</button>
       ${notup
         ? html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bring this interface up on the node" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "start"); }}><${Ic} i="play"/> Start service</button>`
         : html`<${Fragment}><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Take this interface down on the node (stays down until started)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "stop"); }}><${Ic} i="stop"/> Stop service</button><button class="btn btn-ghost" style="margin-left:8px" disabled=${busy} title="Bounce this interface's service on the node (down then up)" onClick=${() => { closeModal(); startOrRestartIface(node, iface, "restart"); }}><${Ic} i="refresh"/> Restart service</button><//>`}
-      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode)} title=${egressError(eg, emode) || ""} onClick=${save}>Save</button></>`}>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button><button class="btn btn-primary" disabled=${busy || !!egressError(eg, emode) || !ifaceDirty} title=${egressError(eg, emode) || (!ifaceDirty ? "No changes to save" : "")} onClick=${save}>Save</button></>`}>
     <div class="iface-intro"><div>Changing the <b>endpoint</b> or <b>port</b> will break the existing clients' connections; you will need to re-distribute the configs / QR codes.</div><${SubAutoNote}/></div>
     ${idown ? html`<div class="notice warn"><${Ic} i="warn"/><span>This interface is <b>down</b> on the node. Change the <b>Listen port</b> to a free one and <b>Save</b> — the panel will write the new port and restart the interface to bring it up.</span></div>` : null}
     ${((meta.drift && meta.drift.public_key) || driftDone) ? (() => {
@@ -5070,7 +5523,9 @@ function TurnManageSheet({ node, tp }) {
   const [fwd, setFwd] = useState(match ? match.name : "__custom__");
   const [custom, setCustom] = useState(con || "127.0.0.1:");
   const [params, setParams] = useState(tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : ""));
-  const [showExec, setShowExec] = useState(false);   // Additional ExecStart params collapsed by default
+  const [openSec, setOpenSec] = useState(null);   // the strip's open section — null | "server" | "client" | "version"
+  const clientsCommitRef = useRef(null);   // the inline Client picker registers its commit here; this sheet's Save calls it
+  const clientsCtl = useTurnClients(fork, clientsCommitRef, null);   // shared: the inline picker + the Client-parameters panel both read this
   const origParams = tp.params != null ? tp.params : (tp.wrap_key ? "-wrap-key " + tp.wrap_key : "");
   const [title, setTitle] = useState(tp.title || "");
   const [msg, setMsg] = useState(null);
@@ -5099,14 +5554,19 @@ function TurnManageSheet({ node, tp }) {
       if (!(latest && installed && latest !== installed)) setTimeout(() => setVerChk(null), 5000);   // up to date → show the tag for 5s, then revert
     } catch (e) { setVerChk({ err: String((e && e.message) || e) }); setTimeout(() => setVerChk(null), 5000); }   // no connection → 5s, then revert
   };
-  const doReinstall = async (verb) => {
+  const doReinstall = async (verb, tag) => {
     setBusy(true); setMsg({ k: "work", t: verb.toLowerCase() + "…" });
     if (verb === "Update") turnUpdating[node + "|" + svc] = Date.now() + 120000;   // card shows "updating" (not "installing") while it applies
-    const r = await api.turnReinstall({ node, service: svc, owner });
+    const r = await api.turnReinstall({ node, service: svc, owner, ...(tag ? { tag } : {}) });
     if (!r.ok) { delete turnUpdating[node + "|" + svc]; return fail(r.error || "Request failed."); }
     closeModal(); await Store.poll();
     toast("Turn-proxy " + verb.toLowerCase() + " requested — applies on the node's next sync.", "ok");
   };
+  // Rollback: the panel's mirrored versions for this fork (its rollback cache) + any active hold. Fetched once on open.
+  const [vers, setVers] = useState(null);   // null=loading · {tags:[{tag,arches,at}], held}
+  const [rollTag, setRollTag] = useState("");
+  useEffect(() => { let live = true; api.turnVersions({ owner, node, service: svc }).then(r => { if (live) setVers(r && r.ok ? r.data : { tags: [], held: "" }); }); return () => { live = false; }; }, [owner, node, svc]);
+  const rollTargets = (vers && vers.tags || []).filter(v => v.tag !== installed);   // can't "roll back" to the version already running
   const save = async () => {
     if (!lhost) return fail("Listen IP is required.");
     if (!/^\d+$/.test(lport.trim())) return fail("Listen port must be a number.");
@@ -5114,12 +5574,15 @@ function TurnManageSheet({ node, tp }) {
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forward-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
     const newListen = lhost + ":" + lport.trim();
+    let clientChanged = false;
+    if (clientsCommitRef.current) { try { clientChanged = await clientsCommitRef.current(); } catch (_) {} }   // commit the embedded Client-apps default/settings alongside this Save; true iff it changed anything
     // title-only change → OPTIMISTIC: a cosmetic panel-side label, so close immediately + save in the background
     // (no status, no node round-trip, the proxy keeps running). Other field changes go the proper pending route.
     const titleOnly = newListen === (tp.listen || "") && connect === (tp.connect || "") && params.trim() === origParams.trim();
     if (titleOnly) {
+      const titleChanged = title.trim() !== (tp.title || "");
       closeModal();
-      if (title.trim() === (tp.title || "")) return toast("No changes.", "ok");
+      if (!titleChanged) return toast(clientChanged ? "Client app saved." : "No changes.", "ok");   // the embedded picker may have committed the only change
       const r = await api.turnTitle({ node, service: svc, title: title.trim() });
       if (r.ok) { await Store.poll(); toast("Title saved — the proxy keeps running.", "ok"); }
       else toast(r.error || "Failed to save the title.", "err");
@@ -5136,6 +5599,13 @@ function TurnManageSheet({ node, tp }) {
     const a = new Uint8Array(32); crypto.getRandomValues(a);
     copy(Array.from(a, b => b.toString(16).padStart(2, "0")).join(""), "Random 64-hex key copied — paste it into the parameters");
   };
+  // enable Save only when something would actually change (any field, or the inline client picker) — mirrors save()'s own diff
+  const _mConnect = isCustom ? custom.trim() : (((ifaces.find(i => i.name === fwd)) || {}).port ? "127.0.0.1:" + ifaces.find(i => i.name === fwd).port : (tp.connect || ""));
+  const turnDirty = (lhost + ":" + lport.trim()) !== (tp.listen || "")
+    || _mConnect !== (tp.connect || "")
+    || params.trim() !== origParams.trim()
+    || title.trim() !== (tp.title || "")
+    || !!(clientsCtl && clientsCtl.dirty);
   return html`<${Sheet} title=${html`${turnSheetTitle(turnFork(svc), title)}${installed ? html` <span class="sheet-ver">${installed}</span>` : ""}`} width=${660} headExtra=${html`<${TurnIpsHeader} node=${node} svc=${svc}/>`}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost danger" disabled=${dis} onClick=${() => openModal(html`<${DeleteTurnSheet} node=${node} service=${svc} label=${turnLabel(svc, lp)}/>`)}><${Ic} i="trash"/> Delete</button>
@@ -5150,7 +5620,7 @@ function TurnManageSheet({ node, tp }) {
           <//>`
         : html`<button class="btn btn-ghost" style="margin-left:8px" disabled=${dis} title="Re-download the binary and start the service on the node" onClick=${() => doReinstall("Reinstall")}><${Ic} i="refresh"/> Reinstall service</button>`}
       <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
-      <button class="btn btn-primary" disabled=${dis} onClick=${save}>Save</button></>`}>
+      <button class="btn btn-primary" disabled=${dis || !turnDirty} title=${!turnDirty ? "No changes to save" : ""} onClick=${save}>Save</button></>`}>
     ${blocked ? html`<div class="notice warn" style="margin-bottom:16px"><${Ic} i="warn"/><span>This node is busy or offline${nrec.proc_status ? html` (${PROC_LABEL[nrec.proc_status] || nrec.proc_status})` : ""} — turn-proxy actions are disabled until it's reporting again.</span></div>` : null}
     <${RangedHistory} node=${node} kind="throughput" h=${60} fetch=${r => api.turnSeries(node, turnFork(svc), r).then(x => x && x.ok ? x.data : {})}/>
     <div class="iface-intro" style="margin-top:8px">
@@ -5178,10 +5648,30 @@ function TurnManageSheet({ node, tp }) {
       <div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>
       <div class="notice warn" style="margin:-6px 0 16px"><${Ic} i="warn"/><span>This forwards to a port with no managed interface behind it. Make sure a wg/awg interface is really listening there, or clients reach the proxy but get no tunnel.</span></div>
     <//>` : null}
-    <button type="button" class="advtoggle" onClick=${() => setShowExec(a => !a)}><span class="advcaret">${showExec ? "▾" : "▸"}</span> Additional ExecStart parameters</button>
-    ${showExec ? html`<div class="field">
-      <textarea class="ta mono" rows="4" value=${params} onInput=${e => setParams(e.target.value)} placeholder="-wrap-mode on -wrap-key <64 hex chars>" spellcheck="false"></textarea>
-      <div class="hint">Free text appended after <span class="mono">-connect ip:port</span>. Changing the wrap key breaks every client using the old one. <button type="button" class="linkbtn" onClick=${randKey}>Copy a random 64-hex key</button></div>
+    <${TurnAppsPicker} ctl=${clientsCtl} offered=${true}/>
+    <div class="secbar">
+      <button type="button" class=${"secbar-item" + (openSec === "server" ? " on" : "")} onClick=${() => setOpenSec(s => s === "server" ? null : "server")}><span>Server parameters</span><span class="secbar-car">${openSec === "server" ? "▾" : "▸"}</span></button>
+      <button type="button" class=${"secbar-item" + (openSec === "client" ? " on" : "")} onClick=${() => setOpenSec(s => s === "client" ? null : "client")}><span>Client parameters</span><span class="secbar-car">${openSec === "client" ? "▾" : "▸"}</span></button>
+      <button type="button" class=${"secbar-item" + (openSec === "version" ? " on" : "")} onClick=${() => setOpenSec(s => s === "version" ? null : "version")}><span>Version & rollback</span>${vers && vers.held ? html`<span class="secbar-dot" title=${"held at " + vers.held}></span>` : null}<span class="secbar-car">${openSec === "version" ? "▾" : "▸"}</span></button>
+    </div>
+    ${openSec === "server" ? html`<div class="secpanel"><${TurnParamsEditor} fork=${fork} node=${node} value=${params} onChange=${setParams} listen=${(lhost || "server_ip") + ":" + (lport || "port")} connect=${isCustom ? (custom || "interface_ip:port") : ("127.0.0.1:" + (((ifaces.find(i => i.name === fwd)) || {}).port || "port"))}/></div>` : null}
+    ${openSec === "client" ? html`<div class="secpanel"><${TurnClientParams} ctl=${clientsCtl} embedded=${true}/></div>` : null}
+    ${openSec === "version" ? html`<div class="secpanel">
+      <div class="hint">Installed: <span class="mono">${installed || "—"}</span>${vers && vers.held ? html` · <b>held at <span class="mono">${vers.held}</span></b> — the auto-updater won't move it (Reinstall to release the hold).` : ""}</div>
+      ${vers == null
+        ? html`<div class="hint">Loading available versions…</div>`
+        : rollTargets.length
+        ? html`<${Fragment}>
+            <div class="row" style="gap:8px;align-items:center;margin-top:6px">
+              <select class="selwrap" style="max-width:220px" value=${rollTag} onChange=${e => setRollTag(e.target.value)}>
+                <option value="">Roll back to a previous version…</option>
+                ${rollTargets.map(v => html`<option value=${v.tag}>${v.tag}${v.tag === (vers && vers.held) ? " (held)" : ""}</option>`)}
+              </select>
+              <button class="btn btn-ghost" disabled=${dis || !rollTag} title="Re-install the selected version on the node and hold it there (the auto-updater won't move it)" onClick=${() => doReinstall("Roll back", rollTag)}><${Ic} i="refresh"/> Roll back</button>
+            </div>
+            <div class="hint" style="margin-top:6px">The panel keeps the last few versions it has installed (checksum-verified); the node re-downloads the chosen one from the panel and restarts. A rollback <b>holds</b> that version until you Reinstall/Update.</div>
+          <//>`
+        : html`<div class="hint" style="margin-top:6px">No earlier versions in the rollback cache yet — the panel keeps the last few it has installed for each fork.</div>`}
     </div>` : null}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -5206,27 +5696,60 @@ function DeleteTurnSheet({ node, service, label }) {
 // the installable turn-proxy forks (owner repo + the fork's obfuscation flags — the node appends a
 // fresh -wrap-key). Mirrors the installer's turn_repo_owner / turn_wrap_flags.
 // each fork has a dark-mode `color` and a deeper `colorL` (light-mode default, legible on white).
-const TURN_FORKS = [
-  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", color: "#5FB0E0", colorL: "#2C7EC0" },
-  { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7" },
-  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E" },
-  { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468" },
-  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", color: "#6FD9A8", colorL: "#12A46B" },
-  { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420" },
+// The turn fork registry is now SERVER-OWNED (swg-panel-server TURN_SERVERS → /api/state.turn_catalog).
+// `turnForks()` returns the served catalog mapped to the shape the SPA has always used ({id,label,owner,wrap,
+// keyflag,color,colorL,protocols}); this array is only the boot/offline FALLBACK (and a mixed-version safety
+// net if the panel predates the catalog). Keep it in step with TURN_SERVERS. `protocols` (a fork missing "awg"
+// is WireGuard-only) supersedes the old TURN_WG_ONLY set. See docs/TURN-PROXY-OVERHAUL-PLAN.md.
+// WireGuard-only rationale: kiper292 = plain wireguard-go + a parser that REJECTS awg params; anton48 (iOS) has
+// no AmneziaWG fields; samosvalishe = free-turn-proxy's FreeTurn app (integrated plain-WG client). WINGS-N is
+// app-integrated but DOES support awg; the sidecar forks relay UDP transparently.
+// Order mirrors the panel's TURN_SERVER_ORDER (cacggghp + WINGS-N pinned, then by server+app stars). This is
+// only the boot/offline fallback; the served catalog is authoritative.
+const TURN_FORKS_FALLBACK = [
+  { id: "cacggghp", label: "cacggghp", owner: "cacggghp/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#5FB0E0", colorL: "#2C7EC0", protocols: ["wg", "awg"] },
+  { id: "WINGS-N", label: "WINGS-N", owner: "WINGS-N/vk-turn-proxy", wrap: "-wrap-mode on", color: "#C98BE0", colorL: "#9B4FC7", protocols: ["wg", "awg"] },
+  { id: "MYSOREZ", label: "MYSOREZ", owner: "MYSOREZ/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#4FC7B4", colorL: "#12897A", protocols: ["wg", "awg"] },
+  { id: "samosvalishe", label: "samosvalishe", owner: "samosvalishe/free-turn-proxy", wrap: "-obf-profile rtpopus", keyflag: "-obf-key", color: "#E0A85F", colorL: "#C07A1E", protocols: ["wg"] },
+  { id: "kiper292", label: "kiper292", owner: "kiper292/vk-turn-proxy", wrap: "", keyflag: "-wrap-key", color: "#6FD9A8", colorL: "#12A46B", protocols: ["wg"] },
+  { id: "anton48", label: "anton48", owner: "anton48/vk-turn-proxy", wrap: "-wrap-srtp", color: "#D9CF5F", colorL: "#8E8420", protocols: ["wg"] },
+  { id: "Moroka8", label: "Moroka8", owner: "Moroka8/vk-turn-proxy", wrap: "-wrap", color: "#E07A9A", colorL: "#C24468", protocols: ["wg", "awg"] },
 ];
-// forks whose CLIENT is WireGuard-only — they can't front an AmneziaWG interface, so awg interfaces are hidden
-// from their "Forwards to" picker. kiper292 = plain wireguard-go + a config parser that REJECTS awg params;
-// anton48 (iOS) has no AmneziaWG fields at all; samosvalishe = free-turn-proxy's FreeTurn app, an integrated
-// plain-WireGuard client with no AmneziaWG support (unlike the old sidecar, which relayed UDP to the standalone
-// AmneziaWG app). WINGS-N is app-integrated but DOES support awg; the sidecar forks relay UDP transparently.
-const TURN_WG_ONLY = new Set(["kiper292", "anton48", "samosvalishe"]);
-function forkSupportsAwg(fork) { return !TURN_WG_ONLY.has(fork); }
+// the live fork list — served catalog mapped to the SPA shape, else the fallback (mixed-version safe).
+// (named turnForkList, not turnForks — the Settings card has a local `turnForks` Set for the picker toggles.)
+function turnForkList() {
+  const cat = Store.turnCatalog;
+  if (cat && Array.isArray(cat.servers) && cat.servers.length)
+    return cat.servers.map(s => ({ id: s.id, label: s.label || s.id, owner: s.owner || "",
+      wrap: s.wrap || "", keyflag: s.keyflag, color: (s.color || {}).dark, colorL: (s.color || {}).light,
+      protocols: (Array.isArray(s.protocols) && s.protocols.length) ? s.protocols : ["wg", "awg"],
+      settings: Array.isArray(s.settings) ? s.settings : [], client_settings: Array.isArray(s.client_settings) ? s.client_settings : [], clients: s.clients || [], compat: s.compat || {}, client_schemas: s.client_schemas || {}, cli_authors: Array.isArray(s.cli_authors) ? s.cli_authors : ["samosvalishe"] }));
+  return TURN_FORKS_FALLBACK;
+}
+function forkSupportsAwg(fork) {
+  const f = turnForkList().find(x => x.id === fork);
+  return f ? (f.protocols || ["wg", "awg"]).includes("awg") : true;   // unknown fork → assume awg-capable (permissive, matches prior default)
+}
 // stable colour for a turn-proxy fork in the ACTIVE mode (peers connected via it get their badge tinted this);
-// a Panel-settings override (turn_fork_colors[id] = {dark,light}) wins over the TURN_FORKS default.
+// a Panel-settings override (turn_fork_colors[id] = {dark,light}) wins over the fork's catalog default.
 function turnColor(label) {
   const ov = (Store.panelSettings && Store.panelSettings.turn_fork_colors) || {};
-  const fk = TURN_FORKS.find(x => x.id === label);
+  const fk = turnForkList().find(x => x.id === label);
   return pickThemed(ov[label], (fk && fk.color) || "#8FA8C0", (fk && fk.colorL) || "#5E7085");
+}
+// A client app's colour = its NATIVE fork's turn-proxy server colour (a cross-fork/experimental app still shows its
+// HOME server's colour). null for the generic CLI (no native fork) — callers fall back to the current fork's colour.
+function turnClientColor(clientId) {
+  const c = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[clientId] || {};
+  return c.native_fork ? turnColor(c.native_fork) : null;
+}
+// The app's author = its NATIVE fork (who makes it). null for the generic CLI (no native fork). `owner` is that
+// fork's GitHub owner/repo, so callers can link "by <author>" to the source.
+function turnClientAuthor(clientId) {
+  const c = ((Store.turnCatalog && Store.turnCatalog.clients) || {})[clientId] || {};
+  if (!c.native_fork) return null;
+  const f = turnForkList().find(x => x.id === c.native_fork) || {};
+  return { fork: c.native_fork, owner: f.owner || "" };
 }
 const _forkTag = svc => html`<span class="tg tg-turn" style=${"--tfc:" + turnColor(turnFork(svc))}>${turnFork(svc)}</span>`;
 const _lastSeen = last => last ? seen(Math.max(0, Math.floor(Date.now() / 1000) - last)) + " ago" : "—";
@@ -5309,7 +5832,7 @@ function TurnCollectedIps() {
 function applyForkColors() {
   let el = document.getElementById("tf-colors");
   if (!el) { el = document.createElement("style"); el.id = "tf-colors"; (document.head || document.documentElement).appendChild(el); }
-  el.textContent = TURN_FORKS.map(f => ".tf-" + f.id + "{--tfc:" + turnColor(f.id) + "}").join("");
+  el.textContent = turnForkList().map(f => ".tf-" + f.id + "{--tfc:" + turnColor(f.id) + "}").join("");
 }
 // ---- palette overrides (Panel settings → Interfaces / Display) ----
 // Interface protocol colours (wg / awg), peer-health colours (blocked / faulty) and the brand/theme colour
@@ -5464,8 +5987,580 @@ function turnEnabled() { return !(Store.panelSettings && Store.panelSettings.tur
 // only hides it here; deployed proxies are untouched. Default (setting unset) = WINGS-N + anton48.
 function enabledTurnForks() {
   const en = Store.panelSettings && Store.panelSettings.enabled_turn_forks;
-  const set = new Set(en || ["WINGS-N", "anton48"]);
-  return TURN_FORKS.filter(f => set.has(f.id));
+  const set = new Set(en || ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"]);
+  return turnForkList().filter(f => set.has(f.id));
+}
+
+// ═══════════ Typed turn-proxy settings (Axis 1) ═══════════
+// A fork's `settings` schema (served in the catalog) describes its obfuscation knobs as typed fields; the editor
+// renders a form from it and SERIALISES back to the ExecStart params tail (the wire truth the node applies
+// verbatim). A raw textarea stays as the escape hatch, so a flag we don't model is never lost. Descriptor:
+//   {key, flag, type, default, label, help?, secret?, rotatable?, values?, showIf?}
+//   type: bool (bare flag when true) · enum (-flag <value>) · flagenum (mutually-exclusive; value carries its own
+//   flag) · hexkey (-flag <64hex> + generate/copy) · string/int (-flag <value>). See TURN-PROXY-OVERHAUL-PLAN.md.
+function forkSettings(forkId) {
+  const f = turnForkList().find(x => x.id === forkId);
+  return (f && Array.isArray(f.settings)) ? f.settings : [];
+}
+// opts.key = a fixed hex for hexkey fields (stable across fork switches) · opts.fresh = generate one. Neither (the
+// PARSE baseline) → everything empty/false, so the params string is the sole truth.
+function defaultSettingValues(schema, opts) {
+  opts = opts || {}; const dflt = !!(opts.fresh || opts.key); const v = {};   // dflt: apply schema defaults (a new install); else the empty PARSE baseline
+  for (const d of schema) {
+    if (d.type === "hexkey") v[d.key] = opts.key || (opts.fresh ? randWrapKey() : "");
+    else if (d.type === "bool") v[d.key] = dflt ? !!d.default : false;
+    else v[d.key] = dflt ? (d.default != null ? d.default : "") : "";
+  }
+  return v;
+}
+function settingShown(d, values) {
+  return !d.showIf || Object.keys(d.showIf).every(k => values[k] === d.showIf[k]);
+}
+// options normalised to [{value,label}] for enum (string values) + flagenum (object values).
+function turnOptions(d) {
+  return (d.values || []).map(o => d.type === "flagenum" ? { value: o.value, label: o.label || o.value } : { value: o, label: String(o) });
+}
+// ANY parameter with exactly two states renders as a switch: a bool, or an enum/flagenum with exactly 2 values.
+// 3+ values → dropdown. The switch shows the selected value's LABEL so a 2-mode enum (e.g. WRAP/SRTP) is unambiguous.
+function turnIsToggle(d) {
+  return d.type === "bool" || ((d.type === "enum" || d.type === "flagenum") && (d.values || []).length === 2);
+}
+function serializeTurnSettings(schema, values) {   // typed values → ExecStart params tail (schema order; skips hidden + empty)
+  const parts = [];
+  for (const d of schema) {
+    if (!settingShown(d, values)) continue;
+    const v = values[d.key];
+    if (d.type === "bool") { if (v) parts.push(d.flag); }
+    else if (d.type === "flagenum") { const o = (d.values || []).find(x => x.value === v); if (o && o.flag) parts.push(o.flag); }
+    else if (v !== "" && v != null) { parts.push(d.flag + " " + v); }
+  }
+  return parts.join(" ");
+}
+// Does the current obfuscation mode use a key? (false for the keyless values: wrap-mode off / obf none / SRTP plain / -wrap off)
+const TURN_KEYLESS = new Set(["off", "none", "plain", "false"]);
+function turnKeyUsed(schema, vals) {
+  const keyField = schema.find(d => d.type === "hexkey"); if (!keyField) return false;
+  return schema.filter(d => d.type !== "hexkey").every(d => d.type === "bool" ? (vals[d.key] === true || vals[d.key] === "true") : !TURN_KEYLESS.has(String(vals[d.key])));
+}
+function parseTurnSettings(schema, params) {   // params tail → {values, ok, leftover}; ok=false (unknown tokens) → the extra box holds them
+  const toks = String(params || "").trim().split(/\s+/).filter(Boolean);
+  const values = defaultSettingValues(schema, {});
+  const boolFlag = {}, valFlag = {}, feFlag = {};
+  for (const d of schema) {
+    if (d.type === "bool") boolFlag[d.flag] = d.key;
+    else if (d.type === "flagenum") (d.values || []).forEach(o => { if (o.flag) feFlag[o.flag] = { key: d.key, value: o.value }; });
+    else valFlag[d.flag] = d.key;
+  }
+  const leftover = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (boolFlag[t] != null) values[boolFlag[t]] = true;
+    else if (feFlag[t]) values[feFlag[t].key] = feFlag[t].value;
+    else if (valFlag[t] != null && i + 1 < toks.length) values[valFlag[t]] = toks[++i];
+    else leftover.push(t);
+  }
+  return { values, ok: leftover.length === 0, leftover };
+}
+// ── Axis-1 dynamic: merge `-h`-discovered flags (node snapshot) with the curated overlay ──
+// Discovery (node snapshot `turn_flags[fork]` = [{name,type,default,usage}]) gives reliable STRUCTURE
+// (bool→toggle, else→textbox, defaults); the curated `settings` overlay supplies enum value-sets + secret/hexkey
+// + showIf for the flags we understand. We trust discovery for the flag SET, curated for enums — and HIDE
+// connection/management/transport flags (a stray -vless etc. would break the WG tunnel). See TURN-PROXY-OVERHAUL-PLAN.md.
+const TURN_FLAG_HIDE = new Set(["listen", "connect", "udp-connect", "tcp-connect", "tui"]);
+const TURN_FLAG_HIDE_PREFIX = ["gen-", "grpc-", "wg-", "panel-", "wb-", "node-"];
+const TURN_FLAG_TRANSPORT = new Set(["vless", "vless-bond", "mode"]);   // switch WG(UDP)→TCP/VLESS — footgun for our use
+function turnFlagHidden(forkId, name) {
+  const f = turnForkList().find(x => x.id === forkId);
+  if (f && Array.isArray(f.hide) && f.hide.includes(name)) return true;   // per-fork curated hide (optional)
+  if (TURN_FLAG_HIDE.has(name) || TURN_FLAG_TRANSPORT.has(name)) return true;
+  return TURN_FLAG_HIDE_PREFIX.some(p => name.startsWith(p));
+}
+function discoveredToDescriptor(df) {   // a discovered flag with no curated entry → synth: bool→toggle, else→textbox (NO enum guess)
+  const bool = df.type === "" || df.type === "bool";
+  return { key: df.name.replace(/[^A-Za-z0-9]+/g, "_"), flag: "-" + df.name, type: bool ? "bool" : "string",
+           default: bool ? false : (df.default || ""), label: df.name, help: df.usage || "" };
+}
+function mergedTurnSchema(forkId, node) {
+  const curated = forkSettings(forkId);
+  const discovered = (((Store.stats && Store.stats[node]) || {}).turn_flags || {})[forkId] || [];
+  if (!discovered.length) return curated;       // no discovery data (older node / fork not installed yet / -h failed) → pure curated (today's UX)
+  // discovered flag → its curated descriptor. A flagenum (e.g. srtp_mode) has NO top-level flag — its flags live
+  // in values[].flag — so index those too, else the discovered -srtp/-wrap-srtp lose their combined dropdown (and
+  // a curated field whose showIf targets the flagenum then hides). Dedup by key so a multi-flag flagenum is added once.
+  const byFlag = {};
+  for (const d of curated) {
+    if (d.flag) byFlag[d.flag] = d;
+    else if (d.type === "flagenum") (d.values || []).forEach(o => { if (o.flag) byFlag[o.flag] = d; });
+  }
+  const out = [], added = new Set();
+  for (const df of discovered) {                // discovery is authoritative for WHICH flags exist; curated enriches
+    if (turnFlagHidden(forkId, df.name)) continue;
+    const cur = byFlag["-" + df.name];
+    if (cur) { if (!added.has(cur.key)) { out.push(cur); added.add(cur.key); } }
+    else out.push(discoveredToDescriptor(df));
+  }
+  return out;
+}
+// Shared server-config form — used by the panel-settings DEFAULTS sheet AND the per-proxy create/edit editor.
+// An obfuscation control (+ Generate key, shown only for keyed modes with a live "Not generated yet"), a read-only
+// "-listen … -connect … <obf>" line, and a free-entry extra-flags textarea. `template`=true → the placeholder
+// (defaults) copy; false → a real proxy's actual listen/connect.
+function TurnServerFields({ schema, vals, setV, extra, setExtra, listen, connect, template }) {
+  const keyField = schema.find(d => d.type === "hexkey");
+  const obfFields = schema.filter(d => d.type !== "hexkey");
+  const keyUsed = turnKeyUsed(schema, vals);
+  const obfTail = serializeTurnSettings(schema, (keyUsed || !keyField) ? vals : { ...vals, [keyField.key]: "" });
+  const autoLine = "-listen " + (listen || "server_ip:port") + " -connect " + (connect || "interface_ip:port") + (obfTail ? " " + obfTail : "");
+  return html`<${Fragment}>
+    ${obfFields.length ? html`<div class="field"><label>Obfuscation</label>
+      <div class="obfrow">
+        ${obfFields.map(d => d.type === "bool"
+          ? html`<label class="obfctl" key=${d.key}><${Switch} on=${!!vals[d.key]} onChange=${v => setV(d.key, v)}/> <span class="obfctl-lbl">${d.label}</span></label>`
+          : html`<label class="obfctl" key=${d.key}><select class="selwrap" value=${vals[d.key]} onChange=${e => setV(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label}</option>`)}</select></label>`)}
+        ${keyField && keyUsed ? html`<button type="button" class="btn btn-mini" onClick=${() => setV(keyField.key, randWrapKey())}><${Ic} i="refresh"/> Generate key</button>${!vals[keyField.key] ? html`<span class="notgen">Not generated yet</span>` : null}` : null}
+      </div></div>` : null}
+    <div class="field"><label>ExecStart parameters</label>
+      <div class="execbox">
+        <div class="execbox-auto" title=${template ? "Auto-filled for each real proxy — read-only" : "This proxy's command — read-only"}>${autoLine}</div>
+        <textarea class="execbox-extra" value=${extra} onInput=${e => setExtra(e.target.value)} placeholder="extra flags — appended verbatim, e.g. -debug" spellcheck="false"></textarea>
+      </div>
+      <div class="hint">${template
+        ? html`You're setting the <b>default</b> parameters for the actual turn-proxies you'll create on nodes later — nothing is deployed now. The top line is filled in per real proxy: the node's <b>listen</b> address (<span class="mono">server_ip:port</span>), the <b>interface</b> it forwards to (<span class="mono">interface_ip:port</span>), and the obfuscation you set above — those are placeholders here. Whatever you type below is appended to the command as-is.`
+        : html`The top line is this proxy's actual command — the <b>listen</b> address and <b>interface</b> you set above, plus the obfuscation here. Whatever you type below is appended verbatim.`}</div>
+    </div>
+  <//>`;
+}
+// Controlled per-proxy editor: `value` is the ExecStart params tail (after -connect), `onChange` gets the new one.
+// Splits it into typed obfuscation (curated schema) + free extra flags; anything the schema doesn't model rides in
+// the extra box (the raw escape hatch). `listen`/`connect` feed the read-only preview line.
+function TurnParamsEditor({ fork, node, value, onChange, listen, connect }) {
+  const schema = forkSettings(fork);
+  const [obfVals, setObfVals] = useState(() => parseTurnSettings(schema, value).values);
+  const [extra, setExtra] = useState(() => (parseTurnSettings(schema, value).leftover || []).join(" "));
+  const serialize = (ov, ex) => { const t = serializeTurnSettings(schema, ov); const e = (ex || "").trim(); return t + (e ? (t ? " " : "") + e : ""); };
+  useEffect(() => { if (value !== serialize(obfVals, extra)) { const p = parseTurnSettings(schema, value); setObfVals(p.values); setExtra((p.leftover || []).join(" ")); } }, [value, fork]);   // re-sync on an external change (fork switch)
+  const setV = (k, v) => { const nv = { ...obfVals, [k]: v }; setObfVals(nv); onChange(serialize(nv, extra)); };
+  const onEx = s => { setExtra(s); onChange(serialize(obfVals, s)); };
+  return html`<${TurnServerFields} schema=${schema} vals=${obfVals} setV=${setV} extra=${extra} setExtra=${onEx} listen=${listen} connect=${connect} template=${false}/>`;
+}
+// A typed schema → plain {key:value} form (bool/enum/flagenum/hexkey/int/text), used by the Servers-tab and
+// Clients-tab DEFAULTS editors. onSet(key, value) persists one field; `values` are the saved overrides (else schema default).
+function TurnDefaultsForm({ schema, values, onSet, busy }) {
+  const cur = d => { const v = (values || {})[d.key]; return (v === undefined || v === null) ? d.default : v; };
+  // two fields per row; textarea (raw flags) spans the full width.
+  return html`<div class="fld2">${(schema || []).filter(d => settingShown(d, values || {})).map(d => html`<div class=${"field" + (d.type === "textarea" ? " span2" : "")} key=${d.key}>
+    <label>${d.label || d.key}</label>
+    ${d.type === "bool"
+      ? html`<div style="display:flex;align-items:center;gap:10px"><${Switch} on=${!!cur(d)} disabled=${busy} onChange=${v => onSet(d.key, v)}/> <span class="faint">${cur(d) ? "on" : "off"}</span></div>`
+      : (d.type === "enum" || d.type === "flagenum")
+      ? html`<select class="selwrap" value=${cur(d)} disabled=${busy} onChange=${e => onSet(d.key, e.target.value)}>${turnOptions(d).map(o => html`<option value=${o.value}>${o.label}</option>`)}</select>`
+      : d.type === "hexkey"
+      ? html`<div style="display:flex;gap:8px;align-items:center">
+          <input class="mono" style="flex:1" value=${cur(d)} spellcheck="false" autocomplete="off" placeholder="64 hex chars — blank = a fresh key per proxy" disabled=${busy} onChange=${e => onSet(d.key, e.target.value.trim())}/>
+          <button type="button" class="linkbtn" disabled=${busy} onClick=${() => onSet(d.key, randWrapKey())}>Generate</button></div>`
+      : d.type === "int"
+      ? html`<input type="number" value=${cur(d)} min=${d.min != null ? d.min : undefined} max=${d.max != null ? d.max : undefined} disabled=${busy} placeholder=${d.default === "" ? "app default" : String(d.default)} onChange=${e => onSet(d.key, e.target.value)}/>`
+      : d.type === "textarea"
+      ? html`<textarea class="ta" rows="3" value=${cur(d) || ""} disabled=${busy} spellcheck="false" placeholder=${d.placeholder || ""} onChange=${e => onSet(d.key, e.target.value)}></textarea>`
+      : html`<input value=${cur(d)} disabled=${busy} onChange=${e => onSet(d.key, e.target.value)}/>`}
+    ${d.help ? html`<div class="hint">${d.help}</div>` : null}
+  </div>`)}</div>`;
+}
+// Servers-tab "Clients" icon → the end-user apps that can connect to this fork's proxies, grouped by device/OS.
+// Four OS tabs; a tab with no app for the fork is disabled. Native app sorts first in the per-OS picker; under it,
+// how that app takes its config (import scheme, where to get the app, its in-app knobs).
+const _OS_TABS = [["android", "Android"], ["ios", "iOS"], ["linux", "Linux"], ["windows", "Windows"], ["macos", "macOS"]];
+const _OS_ICON = { android: "android", ios: "apple", linux: "os_linux", windows: "windows", macos: "finder" };
+// A compact styled OS dropdown (glyph + name), matching the Clients-sheet OS tabs. `value` is an os key, `options`
+// the os keys to offer (in _OS_TABS order), `onChange(os)`. Closes on outside-click or pick.
+function OsDropdown({ value, options, onChange }) {
+  const [open, setOpen] = useState(false);
+  const opts = _OS_TABS.filter(([o]) => (options || []).includes(o));
+  const cur = _OS_TABS.find(([o]) => o === value) || opts[0] || _OS_TABS[0];
+  useEffect(() => { if (!open) return; const h = () => setOpen(false); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [open]);
+  return html`<div class="osdd" onClick=${e => e.stopPropagation()}>
+    <button type="button" class=${"osdd-btn" + (open ? " open" : "")} onClick=${() => setOpen(o => !o)}>
+      <span class="osdd-ic"><${Ic} i=${_OS_ICON[cur[0]]}/></span><span class="osdd-lbl">${cur[1]}</span><span class="osdd-car">${open ? "▴" : "▾"}</span></button>
+    ${open ? html`<div class="osdd-menu">${opts.map(([o, label]) => html`<button key=${o} type="button"
+      class=${"osdd-opt" + (o === cur[0] ? " on" : "")} onClick=${() => { onChange(o); setOpen(false); }}>
+      <span class="osdd-ic"><${Ic} i=${_OS_ICON[o]}/></span><span class="osdd-lbl">${label}</span>${o === cur[0] ? html`<${Ic} i="check"/>` : null}</button>`)}</div>` : null}
+  </div>`;
+}
+function openServerClients(fork, os) { pushModal(html`<${ServerClientsSheet} fork=${fork} initialOs=${os}/>`); }
+function ServerClientsSheet({ fork, initialOs }) {
+  const f = turnForkList().find(x => x.id === fork) || {};
+  return html`<${Sheet} title=${html`Default client apps <span class="faint" style="text-transform:none;letter-spacing:0">— <b style=${"color:" + (turnColor(fork) || "var(--fg)") + ";font-weight:700"}>${f.label}</b></span>`} width=${640} noGuard=${true} onClose=${closeModal} onBack=${closeModal}>
+    <${ServerClientsBody} fork=${fork} initialOs=${initialOs}/>
+  <//>`;
+}
+// ── Client-picker entry model ── the apps/CLIs that can drive THIS fork's server, each a rich row for the styled
+// dropdown. GUI apps come from the compat map; the CLI is expanded into one entry PER author (native build first) so
+// the admin picks which binary end-users get. Three independent badge axes: relation (native vs cross), obfuscation
+// (the fork's wire, or plain), and kind (app vs CLI). `key` = the client id, or "sidecar@<author>" for a CLI build.
+const TURN_OBF_LABEL = { "Moroka8": "WRAP", "samosvalishe": "rtpopus", "anton48": "SRTP", "MYSOREZ": "WRAP", "WINGS-N": "WRAP" };
+const _FORK_GUI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1, "WINGS-N": 1 };   // a native/friendly GUI app rides the fork's obfuscation
+const _FORK_CLI_OBF = { "Moroka8": 1, "samosvalishe": 1, "anton48": 1, "MYSOREZ": 1 };                 // a listed CLI author obfuscates (NOT WINGS — its wrap needs the app's SessionHello)
+function pickerEntries(f, os) {
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  const fork = f.id, compat = f.compat || {}, obfLabel = TURN_OBF_LABEL[fork] || "";
+  const out = [];
+  Object.keys(cmap).forEach(cid => {
+    const cl = cmap[cid] || {};
+    if (cid === "sidecar" || cl.encoder === "sidecar") return;                    // the CLI is expanded per-author below
+    const rel = compat[cid];
+    if (!rel || !(cl.platforms && cl.platforms[os])) return;
+    const isCore = rel === "friendly_core", native = rel === "native";
+    const obf = ((native || rel === "friendly" || isCore) && _FORK_GUI_OBF[fork]) ? obfLabel : "";
+    out.push({ key: cid, cid, isCli: false, native, obf,
+      coreFork: cid === "mysorez" ? fork : null,          // the VK TURN Proxy app is a core-launcher — always name the core it loads (this fork's)
+      author: (turnClientAuthor(cid) || {}).fork || fork,
+      name: ((cl.platforms || {})[os] || {}).name || cl.name || cid,
+      color: turnClientColor(cid) || turnColor(fork) });
+  });
+  const sc = cmap.sidecar;
+  if (sc && sc.platforms && sc.platforms[os]) (f.cli_authors || ["samosvalishe"]).forEach(author => {
+    out.push({ key: "sidecar@" + author, cid: "sidecar", isCli: true, native: author === fork,
+      obf: _FORK_CLI_OBF[fork] ? obfLabel : "", coreFork: null, author, name: sc.name || "Sidecar", color: turnColor(author) });
+  });
+  // order: native app · friendly app · native sidecar · friendly sidecar · plain app · plain sidecar (apps before sidecars in every band; obf before plain)
+  const rank = e => e.obf ? (e.native ? (e.isCli ? 3 : 1) : (e.isCli ? 4 : 2)) : (e.isCli ? 6 : 5);
+  return out.sort((a, b) => rank(a) - rank(b) || ((b.native ? 1 : 0) - (a.native ? 1 : 0)) || String(a.name).localeCompare(String(b.name)));
+}
+// The OS-picker order (matches the sub page). Each fork row shows one platform button per OS that has a client.
+const _TURN_OS = [["android", "Android"], ["ios", "iOS"], ["windows", "Windows"], ["macos", "macOS"], ["linux", "Linux"]];
+// For a fork, the BEST client per OS (native app > friendly app > native sidecar > … , from pickerEntries' rank) →
+// the flags that colour its platform button: fill = native/crossplatform · border = plain (unobfuscated) · icon =
+// sidecar (CLI). OSes with no connectable client are dropped.
+function turnForkPlatforms(f) {
+  return _TURN_OS.map(([os, label]) => {
+    const es = pickerEntries(f, os);
+    if (!es.length) return { os, label, disabled: true };   // no connectable client for this OS → greyed, unclickable (not hidden)
+    const e = es[0];   // e.obf is the obfuscation label ("WRAP"/"SRTP"/"rtpopus"…) or "" for plain
+    return { os, label, native: !!e.native, obf: !!e.obf, isCli: !!e.isCli, name: e.name, author: e.author, coreFork: e.coreFork || null, obfLabel: e.obf || "" };
+  });
+}
+// One styled dropdown row's label parts (used in the button + the open menu). Left: name · by author · [with <core> core].
+function ClientEntryLabel({ e }) {
+  return html`<span class="ce-name"><b>${e.name}</b><span class="ce-by"> by </span><span class="ce-auth" style=${"color:" + e.color}>${e.author}</span>${e.coreFork ? html`<span class="ce-by"> with </span><span class="ce-auth" style=${"color:" + turnColor(e.coreFork)}>${e.coreFork}</span><span class="ce-by"> core</span>` : null}</span>`;
+}
+function ClientEntryBadges({ e }) {
+  return html`<span class="ce-badges">
+    <span class=${"ce-tag " + (e.native ? "ce-native" : "ce-cross")}>${e.native ? "Native" : "crossplatform"}</span>
+    <span class=${"ce-tag " + (e.obf ? "ce-obf" : "ce-plain")}>${e.obf || "plain"}</span>
+    <span class=${"ce-tag " + (e.isCli ? "ce-cli" : "ce-app")}>${e.isCli ? "CLI" : "app"}</span>
+  </span>`;
+}
+function ClientPicker({ entries, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const sel = entries.find(e => e.key === value) || entries[0];
+  useEffect(() => { if (!open) return; const h = () => setOpen(false); document.addEventListener("click", h); return () => document.removeEventListener("click", h); }, [open]);
+  if (!sel) return null;
+  return html`<div class="cpick" onClick=${e => e.stopPropagation()}>
+    <button type="button" class=${"cpick-btn" + (open ? " open" : "")} onClick=${() => setOpen(o => !o)}>
+      <${ClientEntryLabel} e=${sel}/><${ClientEntryBadges} e=${sel}/><span class="cpick-car">${open ? "▴" : "▾"}</span></button>
+    ${open ? html`<div class="cpick-menu">${entries.map(e => html`<button key=${e.key} type="button"
+      class=${"cpick-opt" + (e.key === sel.key ? " on" : "")} onClick=${() => { onChange(e.key); setOpen(false); }}>
+      <${ClientEntryLabel} e=${e}/><${ClientEntryBadges} e=${e}/></button>`)}</div>` : null}
+  </div>`;
+}
+// Reusable Clients body — OS segmented tabs + native-first app dropdown + per-(server,client,OS) config reference &
+// default-settings form. Used by the settings modal above AND inline (collapsible) in the create/edit-proxy sheets.
+// ── Shared client-picker state: OS tab + selected app + staged in-app settings — one hook so a proxy sheet can show
+// the app picker inline (under "Forwards to") and its settings in the "Client parameters" section, both driven off the
+// same selection. `commitRef` (embedded) lets the parent sheet's Save commit the staged default+settings (true iff changed). ──
+function useTurnClients(fork, commitRef, initialOs) {
+  useStore();
+  const f = turnForkList().find(x => x.id === fork) || {};
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  const byOs = {};
+  _OS_TABS.forEach(([o]) => { byOs[o] = pickerEntries(f, o); });               // rich entries (GUI apps + per-author CLIs), native-first
+  const first = (_OS_TABS.find(([o]) => byOs[o].length) || [])[0] || "android";
+  const [os, setOs] = useState((initialOs && (byOs[initialOs] || []).length) ? initialOs : first);   // opened from a specific OS button → land on that tab
+  const [sel, setSel] = useState({});                                          // {os: entry key}
+  const [drafts, setDrafts] = useState({});                                    // staged in-app settings, keyed "os|cid"; committed on Save
+  const [flash, setFlash] = useState(null); const [busy, setBusy] = useState(false);
+  const entries = byOs[os] || [];
+  // the admin's saved end-user default (an entry key) for this (fork, OS); falls back to the top-priority entry if unset / stale
+  const savedDefault = (o) => (((Store.panelSettings || {}).turn_client_default || {})[fork] || {})[o];
+  const validDefault = (o) => { const sd = savedDefault(o), es = byOs[o] || []; return (sd && es.some(e => e.key === sd)) ? sd : ((es[0] || {}).key || null); };
+  const selKey = sel[os] !== undefined ? sel[os] : validDefault(os);
+  const e = entries.find(x => x.key === selKey) || entries[0] || null;
+  const cid = e ? e.cid : null; const c = cid ? cmap[cid] : null;
+  const cSchema = (cid && f.client_schemas && f.client_schemas[cid]) || (c && c.settings) || [];   // per-(fork,client) knobs — the mysorez app's core differs per fork
+  const osLabel = (_OS_TABS.find(([o]) => o === os) || [])[1];
+  const cName = e ? e.name : "";
+  const appColor = e ? e.color : null;
+  // saved DEFAULT VALUES for THIS (server, client, OS) — per-author CLIs share the sidecar schema/value-set
+  const savedVals = ((((Store.panelSettings || {}).turn_client_settings || {})[fork] || {})[cid] || {})[os] || {};
+  const draftKey = os + "|" + cid;
+  const effVals = drafts[draftKey] !== undefined ? drafts[draftKey] : savedVals;                          // staged if edited, else saved
+  const stageSetting = (key, value) => setDrafts(m => ({ ...m, [draftKey]: { ...(m[draftKey] !== undefined ? m[draftKey] : savedVals), [key]: value } }));
+  const norm = v => JSON.stringify(v || {});
+  const isDefault = e && e.key === validDefault(os);                          // is the shown entry the current end-user default?
+  const settingsDirty = drafts[draftKey] !== undefined && norm(drafts[draftKey]) !== norm(savedVals);
+  const dirty = !!(e && (!isDefault || settingsDirty));                       // changed the default entry, or edited its settings
+  const save = async () => {
+    setBusy(true);
+    const def = { ...((Store.panelSettings || {}).turn_client_default || {}) };
+    const dfo = { ...(def[fork] || {}) }; dfo[os] = e.key; def[fork] = dfo;    // record this ENTRY (app or CLI-author) as the (fork, OS) default
+    const all = { ...((Store.panelSettings || {}).turn_client_settings || {}) };
+    const fo = { ...(all[fork] || {}) }; const co = { ...(fo[cid] || {}) };
+    co[os] = effVals; fo[cid] = co; all[fork] = fo;
+    const r = await api.panelSettings({ turn_client_default: def, turn_client_settings: all });
+    setBusy(false);
+    if (r && r.ok) { setFlash("Saved · " + cName + " · " + osLabel); setTimeout(() => setFlash(null), 2400); setDrafts(m => { const n = { ...m }; delete n[draftKey]; return n; }); await Store.poll(); }
+    else setFlash((r && r.error) || "Save failed");
+  };
+  if (commitRef) commitRef.current = () => (dirty && !busy ? save().then(() => true) : Promise.resolve(false));   // the parent proxy-sheet's Save commits the staged client default/settings; resolves true iff it actually changed something
+  return { f, byOs, os, setOs, setSel, entries, e, cSchema, osLabel, cName, appColor, effVals, stageSetting, dirty, isDefault, settingsDirty, save, busy, flash };
+}
+// The app picker — OS tabs + the styled client dropdown (the app the fork's sub page hands out). Shown inline, right
+// under "Forwards to", so the choice is visible without opening a section.
+// "<app> by <author> [with <core> core]" — same colouring as the dropdown row (name plain, author + core tinted)
+function clientAppLabel(e) {
+  if (!e) return "";
+  return html`<b>${e.name}</b><span class="ce-by"> by </span><span style=${"color:" + e.color}>${e.author}</span>${e.coreFork ? html`<span class="ce-by"> with </span><span style=${"color:" + turnColor(e.coreFork)}>${e.coreFork}</span><span class="ce-by"> core</span>` : null}`;
+}
+function TurnAppsPicker({ ctl, offered }) {   // offered → show the "<app> will be offered to <OS> users" line under the dropdown (proxy sheets)
+  const { f, byOs, os, setOs, setSel, entries, e, osLabel } = ctl;
+  return html`<${Fragment}>
+    <div style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600;margin-bottom:8px">Select an app for each OS</div>
+    <div class="osseg">
+      ${_OS_TABS.map(([o, label]) => { const has = byOs[o].length; return html`<button key=${o} type="button" disabled=${!has}
+        class=${"osseg-cell" + (o === os ? " on" : "") + (has ? "" : " off")}
+        title=${has ? label + " apps for " + f.label : "No " + f.label + " app for " + label + " yet"}
+        onClick=${() => has && setOs(o)}><span class="osseg-ic"><${Ic} i=${_OS_ICON[o]}/></span><span class="osseg-lbl">${label}</span></button>`; })}
+    </div>
+    ${entries.length
+      ? html`<${Fragment}><div class="field" style="margin-top:12px"><${ClientPicker} entries=${entries} value=${e ? e.key : null} onChange=${k => setSel(m => ({ ...m, [os]: k }))}/></div>${offered && e ? html`<div style="margin-top:-6px;font-size:11px;text-align:right"><b>${e.name}</b><span class="ce-by"> by </span><b>${e.author}</b>${e.coreFork ? html`<span class="ce-by"> with </span><b>${e.coreFork}</b><span class="ce-by"> core</span>` : null}<span class="ce-by"> will be offered to ${osLabel} users</span></div>` : null}<//>`
+      : html`<div class="notice" style="margin-top:12px"><${Ic} i="info"/><span>No ${f.label} client app for ${osLabel} yet.</span></div>`}
+  <//>`;
+}
+// The "Client parameters" body — the selected app's Default settings for this (server, OS). embedded → the parent
+// proxy sheet's Save commits; standalone (fork modal) → its own Save button.
+function TurnClientParams({ ctl, embedded }) {
+  const { cSchema, cName, osLabel, effVals, stageSetting, dirty, save, busy, flash, e } = ctl;
+  if (!e) return html`<div class="hint">Pick a client app above first.</div>`;
+  return html`<${Fragment}>
+    ${(cSchema && cSchema.length)
+      ? html`<${TurnDefaultsForm} schema=${cSchema} values=${effVals} onSet=${stageSetting} busy=${busy}/>`
+      : html`<div class="hint">${cName} has no in-app settings to configure.</div>`}
+    ${embedded ? null : html`<div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+        <span class="faint" style="font-size:12px">${clientAppLabel(e)} will be the ${osLabel} default app</span>
+        <span class="grow"></span>
+        ${flash ? html`<span class="vk-status ok">${flash}</span>` : null}
+        <button class="btn btn-primary" disabled=${busy || !dirty} onClick=${save}>${busy ? "Saving…" : "Save"}</button>
+      </div>`}
+  <//>`;
+}
+// Standalone client picker (opened from a fork-row platform button): app picker + its Default settings + a Save.
+function ServerClientsBody({ fork, initialOs }) {
+  const ctl = useTurnClients(fork, null, initialOs);
+  return html`<${Fragment}>
+    <${TurnAppsPicker} ctl=${ctl}/>
+    <div style="margin-top:16px"><${TurnClientParams} ctl=${ctl} embedded=${false}/></div>
+  <//>`;
+}
+// "Check client rosters" → fetch each client app's curated schema SOURCE from GitHub and flag drift vs the last-
+// acknowledged commit. Detection only (heterogeneous sources → the schema edit is a code change); "Mark reviewed"
+// records that we've caught up to the current upstream.
+function openRosterCheck() { pushModal(html`<${RosterCheckSheet}/>`); }
+// Always-on client grid: parseable forks (p4/report) get per-field counters + adopt + Set-version rollback; the
+// ack-only forks (Markdown/Kotlin-pending, roster-check) show commit drift + whole-client acknowledge.
+function RosterCheckSheet() {
+  const [data, setData] = useState(null); const [err, setErr] = useState(null);
+  const [checking, setChecking] = useState(false); const [busy, setBusy] = useState({});
+  const load = async (refresh) => {
+    setChecking(true); setErr(null);
+    try {
+      const [p4, p1] = await Promise.all([api.p4Report(refresh), api.rosterCheck()]);
+      if (p4 && p4.ok && p1 && p1.ok) setData({ p4: p4.data.clients || {}, p1: p1.data.clients || {} });
+      else setErr((p4 && p4.error) || (p1 && p1.error) || "check failed");
+    } catch (e) { setErr((e && e.message) || "check failed"); }
+    finally { setChecking(false); }
+  };
+  useEffect(() => { load(false); }, []);
+  const reload = () => load(false);
+  const withBusy = async (cid, fn) => { setBusy(m => ({ ...m, [cid]: true })); try { await fn(); } catch (_) {} setBusy(m => { const n = { ...m }; delete n[cid]; return n; }); };
+  const ack = (cid) => withBusy(cid, async () => { const r = await api.rosterAck(cid); if (r && r.ok) await load(false); });
+  const setVersion = (cid, index) => withBusy(cid, async () => { await api.p4SetVersion(cid, index); await load(false); });
+  const p1c = (data && data.p1) || {}, p4c = (data && data.p4) || {};
+  const cids = Object.keys(p1c).length ? Object.keys(p1c) : Object.keys(p4c);
+  const TAG = { up_to_date: ["tg-ready", "check", "up to date"], changed: ["tg-pending", "warn", "changed"], unknown: ["tg-off", "info", "couldn't check"] };
+  return html`<${Sheet} title="Client rosters" width=${740} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+      foot=${footRow({ left: html`<button class="btn btn-mini" disabled=${checking} onClick=${() => load(true)}><span class=${checking ? "ic-spin" : ""}><${Ic} i="refresh"/></span> ${checking ? "Checking…" : "Re-check"}</button>`, cancelLabel: "Close", onCancel: closeModal })}>
+    <p class="hint" style="margin:2px 0 14px">Each client app's config schema vs upstream on GitHub. <b style="color:var(--online)">+n</b> new adoptable fields · <b style="color:var(--ready)">+y</b> new values · <b style="color:var(--dangling)">−</b> removed · <b style="color:var(--fault)">+x</b> new items that need a panel update (encoder wiring) before they work. <b>Set version</b> rolls a client back to a previous app version.</p>
+    ${!data && !err ? html`<div class="loading"><span class="spin"></span>loading…</div>`
+      : err ? html`<div class="notice warn"><${Ic} i="warn"/><span>${err}</span></div>`
+      : html`<div class="rosterlist">
+          ${cids.map(cid => {
+            const p4 = p4c[cid], p1 = p1c[cid], t = p1 ? (TAG[p1.status] || TAG.unknown) : null;
+            const color = turnClientColor(cid), author = (turnClientAuthor(cid) || {}).fork;
+            const name = (p4 && p4.name) || (p1 && p1.name) || cid;
+            const p4has = p4 && rcTotal(p4.counts) > 0;
+            return html`<div class="roster-row" key=${cid}>
+              <div class="roster-hd">
+                <span class="roster-nm" style=${color ? "color:" + color : ""}>${name}</span>${author ? html`<span class="roster-by">by ${author}</span>` : null}
+                ${p4 ? RosterCounts(p4.counts) : (t ? html`<span class=${"tg " + t[0]}><${Ic} i=${t[1]}/>${t[2]}</span>` : null)}
+                <span class="grow"></span>
+                ${p4 && (p4.versions || []).length ? SetVersionPicker(p4, i => setVersion(cid, i), busy[cid]) : null}
+                ${p4has ? html`<button class="btn btn-mini" disabled=${busy[cid]} onClick=${() => openRosterP4Review(cid, p4, reload)}>Review</button>` : null}
+                ${!p4 && p1 && p1.status === "changed" ? html`<button class="btn btn-mini" disabled=${busy[cid]} onClick=${() => openRosterReview(cid, p1, ack)}>${busy[cid] ? "saving…" : "Review"}</button>` : null}
+              </div>
+              ${p4 ? null : (p1 ? RosterP1Files(p1) : null)}
+            </div>`;
+          })}
+          <div class="hint faint" style="margin-top:10px">Rate-limited by GitHub (60/hour unauthenticated); set <span class="mono">SWG_GH_TOKEN</span> to lift it. A field tagged "needs wiring" becomes usable after a panel update.</div>
+        </div>`}
+  <//>`;
+}
+function rcTotal(c) { return c ? (c.n + c.x + c.m + (c.y || 0) + (c.z || 0)) : 0; }
+function RosterCounts(c) {
+  if (rcTotal(c) === 0) return html`<span class="tg tg-ready"><${Ic} i="check"/>up to date</span>`;
+  return html`<span class="rc-counts">${c.n ? html`<span class="rc-cnt add" title="new adoptable fields">+${c.n}</span>` : null}${c.y ? html`<span class="rc-cnt val" title="new values for existing settings">+${c.y}</span>` : null}${c.m ? html`<span class="rc-cnt rem" title="fields removed upstream">−${c.m}</span>` : null}${c.z ? html`<span class="rc-cnt rem" title="values removed upstream">−${c.z}</span>` : null}${c.x ? html`<span class="rc-cnt wire" title="new fields/values — need a panel update to use">+${c.x}</span>` : null}</span>`;
+}
+function SetVersionPicker(p4, onPick, busy) {
+  const vs = p4.versions || [], pin = p4.pinned_snapshot;
+  return html`<select class="rc-ver" disabled=${busy} value=${pin === null || pin === undefined ? "" : String(pin)}
+      onChange=${e => onPick(e.target.value === "" ? null : parseInt(e.target.value, 10))} title="Roll this client's schema to a previous app version">
+    <option value="">↻ Track latest</option>
+    ${vs.map((v, i) => html`<option value=${i}>${v.app_version || ("v" + (i + 1))}${i === vs.length - 1 ? " (latest)" : ""}</option>`)}
+  </select>`;
+}
+function RosterP1Files(p1) {
+  return html`${(p1.files || []).map(f => html`<div class="roster-file"><span class="mono">${f.path.split("/").pop()}</span>
+    ${f.status === "changed" ? html`<a href=${f.compare_url || f.url} target="_blank" rel="noopener">view change → ${f.latest_commit}</a>`
+      : f.status === "unknown" ? html`<a class="faint" href=${f.url} target="_blank" rel="noopener">couldn't fetch</a>`
+      : html`<span class="faint">${f.latest_commit || "current"}</span>`}</div>`)}`;
+}
+// P4 review: adopt green (Add) / red (Remove) via p4/adopt; orange needs-wiring rows are disabled + labelled.
+function openRosterP4Review(cid, rep, onDone) { pushModal(html`<${RosterP4ReviewSheet} cid=${cid} rep=${rep} onDone=${onDone}/>`); }
+function turnClientFieldLabel(cid, key) {
+  const cs = ((((Store.turnCatalog || {}).clients || {})[cid] || {}).settings) || [];
+  const s = cs.find(x => x.key === key);
+  return (s && s.label) || key;
+}
+function RosterP4ReviewSheet({ cid, rep, onDone }) {
+  const lbl = f => turnClientFieldLabel(cid, f);
+  const items = [];
+  (rep.added || []).forEach(f => items.push({ key: "a:" + f, kind: "add", field: f, adoptable: true }));
+  (rep.removed || []).forEach(f => items.push({ key: "r:" + f, kind: "rem", field: f, adoptable: true }));
+  (rep.value_diff || []).forEach(v => {
+    (v.added || []).forEach(val => items.push({ key: "va:" + v.field + ":" + val, kind: v.adoptable_add ? "vadd" : "vwire", field: v.field, value: val, adoptable: !!v.adoptable_add }));
+    (v.removed || []).forEach(val => items.push({ key: "vr:" + v.field + ":" + val, kind: "vrem", field: v.field, value: val, adoptable: true }));
+  });
+  (rep.needs_wiring || []).forEach(f => items.push({ key: "w:" + f, kind: "wire", field: f, adoptable: false }));
+  const adoptable = items.filter(i => i.adoptable);
+  const [checked, setChecked] = useState(() => { const m = {}; adoptable.forEach(i => m[i.key] = true); return m; });
+  const [busy, setBusy] = useState(false);
+  const allOn = adoptable.length > 0 && adoptable.every(i => checked[i.key]);
+  const someOn = adoptable.some(i => checked[i.key]);
+  const toggleAll = () => { const v = !allOn; setChecked(() => { const m = {}; adoptable.forEach(i => m[i.key] = v); return m; }); };
+  const toggle = k => setChecked(m => ({ ...m, [k]: !m[k] }));
+  const adopt = async () => {
+    setBusy(true);
+    const add = items.filter(i => i.kind === "add" && checked[i.key]).map(i => i.field);
+    const remove = items.filter(i => i.kind === "rem" && checked[i.key]).map(i => i.field);
+    const vadd = {}, vrem = {};
+    items.filter(i => i.kind === "vadd" && checked[i.key]).forEach(i => (vadd[i.field] = vadd[i.field] || []).push(i.value));
+    items.filter(i => i.kind === "vrem" && checked[i.key]).forEach(i => (vrem[i.field] = vrem[i.field] || []).push(i.value));
+    try { await api.p4Adopt(cid, { add, remove, vadd, vrem }); } finally { closeModal(); onDone && onDone(); }
+  };
+  const color = turnClientColor(cid);
+  return html`<${Sheet} title="Review changes" width=${580} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" disabled=${busy} onClick=${closeModal}>Preserve current</button><button class="btn btn-primary" disabled=${busy || !adoptable.length} onClick=${adopt}>${busy ? "adopting…" : "Adopt changes"}</button><//>`}>
+    <p class="hint" style="margin:2px 0 12px">Schema changes for <b style=${color ? "color:" + color : ""}>${rep.name || cid}</b>${rep.app_version ? " (upstream " + rep.app_version + ")" : ""}. <b style="color:var(--fault)">Needs-wiring</b> items can't be adopted until a panel update teaches the encoder to emit them.</p>
+    <div class="revlist">
+      ${adoptable.length ? html`<label class="rev-all"><input type="checkbox" checked=${allOn} ref=${el => el && (el.indeterminate = !allOn && someOn)} onChange=${toggleAll}/><span>Check all</span></label>` : null}
+      ${items.map(i => html`<label class=${"rev-item " + i.kind + (i.adoptable ? "" : " disabled")} key=${i.key}>
+        <input type="checkbox" disabled=${!i.adoptable} checked=${i.adoptable ? !!checked[i.key] : false} onChange=${() => i.adoptable && toggle(i.key)}/>
+        ${i.kind === "add" ? html`<span class="fd-sum add">Add ${i.field}</span>`
+          : i.kind === "rem" ? html`<span class="fd-sum rem">Remove ${i.field}</span>`
+          : i.kind === "vadd" || i.kind === "vwire" ? html`<span class="fd-sum val">Add <b class="mono">${i.value}</b> to ${lbl(i.field)}</span>`
+          : i.kind === "vrem" ? html`<span class="fd-sum rem">Remove <b class="mono">${i.value}</b> from ${lbl(i.field)}</span>`
+          : html`<span class="rev-file mono">${i.field}</span>`}
+        <span class="grow"></span>
+        ${i.kind === "wire" || i.kind === "vwire" ? html`<span class="rc-wtag">Needs wiring</span>` : null}
+      </label>`)}
+    </div>
+  <//>`;
+}
+// Flatten a client's changed files into individual, reviewable changes: one item per added/removed field, or a single
+// "source changed" item for commit-only sources we can't field-parse (Kotlin / Markdown).
+function rosterChanges(client) {
+  const items = [];
+  for (const f of (client.files || [])) {
+    if (f.status !== "changed") continue;
+    const fname = f.path.split("/").pop(), fd = f.field_diff;
+    const na = fd ? (fd.added || []) : [], nr = fd ? (fd.removed || []) : [];
+    if (na.length || nr.length) {
+      na.forEach(x => items.push({ key: fname + ":+" + x, file: fname, kind: "add", field: x, assisted: !!fd.assisted }));
+      nr.forEach(x => items.push({ key: fname + ":-" + x, file: fname, kind: "rem", field: x, assisted: !!fd.assisted }));
+    } else {
+      items.push({ key: fname + ":src", file: fname, kind: "src", field: null });
+    }
+  }
+  return items;
+}
+// "Review" → child modal listing each upstream change with a checkbox. "Adopt changes" records we've caught up
+// (rosterAck); "Preserve current" backs out untouched. Field selection is a review aid — ack is whole-client (the
+// schema edit itself, when one's needed, stays a code change), so this confirms the operator has seen the drift.
+function openRosterReview(cid, client, onAdopt) { pushModal(html`<${RosterReviewSheet} cid=${cid} client=${client} onAdopt=${onAdopt}/>`); }
+function RosterReviewSheet({ cid, client, onAdopt }) {
+  const items = rosterChanges(client);
+  const [checked, setChecked] = useState(() => { const m = {}; items.forEach(i => m[i.key] = true); return m; });
+  const [busy, setBusy] = useState(false);
+  const allOn = items.length > 0 && items.every(i => checked[i.key]);
+  const someOn = items.some(i => checked[i.key]);
+  const toggleAll = () => { const v = !allOn; setChecked(() => { const m = {}; items.forEach(i => m[i.key] = v); return m; }); };
+  const toggle = k => setChecked(m => ({ ...m, [k]: !m[k] }));
+  const adopt = async () => { setBusy(true); try { await onAdopt(cid); } finally { closeModal(); } };
+  const color = turnClientColor(cid);
+  return html`<${Sheet} title="Review changes" width=${520} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+      foot=${html`<${Fragment}><span class="grow"></span><button class="btn btn-ghost" disabled=${busy} onClick=${closeModal}>Preserve current</button><button class="btn btn-primary" disabled=${busy} onClick=${adopt}>${busy ? "adopting…" : "Adopt changes"}</button><//>`}>
+    <p class="hint" style="margin:2px 0 12px">Upstream changes to <b style=${color ? "color:" + color : ""}>${client.name}</b>'s config schema since you last reviewed it. Adopting records you've caught up — the schema edit itself, if one's needed, is a code change.</p>
+    ${!items.length
+      ? html`<div class="notice"><${Ic} i="info"/><span>The source moved but nothing field-level was parsed — adopt to acknowledge the new commit.</span></div>`
+      : html`<div class="revlist">
+          <label class="rev-all"><input type="checkbox" checked=${allOn} ref=${el => el && (el.indeterminate = !allOn && someOn)} onChange=${toggleAll}/><span>Check all</span></label>
+          ${items.map(i => html`<label class=${"rev-item " + i.kind} key=${i.key}><input type="checkbox" checked=${!!checked[i.key]} onChange=${() => toggle(i.key)}/>
+            <span class="rev-file mono">${i.file}</span>
+            ${i.kind === "add" ? html`<span class="fd-sum add">+ ${i.field}</span>` : i.kind === "rem" ? html`<span class="fd-sum rem">− ${i.field}</span>` : html`<span class="faint">source changed</span>`}
+            ${i.assisted ? html`<span class="fd-approx" title="Best-effort parse (Python/Go source)">≈</span>` : null}</label>`)}
+        </div>`}
+  <//>`;
+}
+// Servers-tab gear → set a fork's SERVER-flag defaults (turn_server_defaults[fork]) — pre-fills new proxies of that fork.
+function openServerDefaults(fork) { pushModal(html`<${ServerDefaultsSheet} fork=${fork}/>`); }
+function ServerDefaultsSheet({ fork }) {
+  useStore();
+  const f = turnForkList().find(x => x.id === fork) || {};
+  const schema = f.settings || [];
+  const stored = ((Store.panelSettings || {}).turn_server_defaults || {})[fork] || {};
+  const keyField = schema.find(d => d.type === "hexkey");
+  const baseTyped = () => { const v = {}; schema.forEach(d => { const s = stored[d.key]; v[d.key] = (s === undefined || s === null) ? (d.default === undefined ? "" : d.default) : s; }); return v; };
+  const [vals, setVals] = useState(baseTyped);
+  const [extra, setExtra] = useState(stored._extra || "");
+  const [busy, setBusy] = useState(false); const [flash, setFlash] = useState(null); const [savedOnce, setSavedOnce] = useState(false);
+  const setV = (k, v) => setVals(o => ({ ...o, [k]: v }));
+  const dirty = JSON.stringify({ ...vals, _extra: extra }) !== JSON.stringify({ ...baseTyped(), _extra: (stored._extra || "") });
+  const save = async () => {
+    setBusy(true);
+    const keyUsed = turnKeyUsed(schema, vals);
+    const all = { ...((Store.panelSettings || {}).turn_server_defaults || {}) };
+    const clean = {}; schema.forEach(d => { if (d === keyField && !keyUsed) return; const vv = vals[d.key]; if (vv !== undefined && vv !== null && vv !== "") clean[d.key] = vv; });
+    if (extra.trim()) clean._extra = extra.trim();
+    all[fork] = clean;
+    const r = await api.panelSettings({ turn_server_defaults: all });
+    setBusy(false);
+    if (r.ok) { setSavedOnce(true); setFlash("StartExec params are saved, and will be used as default values when creating new " + fork + " proxies"); setTimeout(() => setFlash(null), 10000); await Store.poll(); }
+    else setFlash(r.error || "Save failed");
+  };
+  return html`<${Sheet} title=${html`Server defaults <span class="faint" style="text-transform:none;letter-spacing:0">— ${fork}</span>`} width=${620} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+      foot=${footRow({ left: flash ? html`<span class="vk-status ok savedmsg"><${Ic} i="check"/> ${flash}</span>` : null, cancelLabel: (savedOnce && !dirty) ? "Close" : "Cancel", onCancel: closeModal, disabled: busy || !dirty, onAction: save, action: busy ? "Saving…" : "Save" })}>
+    <p class="hint" style="margin:2px 0 14px">The ExecStart flags that <b>pre-fill</b> a new ${fork} proxy. Nothing here changes proxies you've already deployed.</p>
+    <${TurnServerFields} schema=${schema} vals=${vals} setV=${setV} extra=${extra} setExtra=${setExtra} listen="server_ip:port" connect="interface_ip:port" template=${true}/>
+  <//>`;
 }
 const TURN_PEND = { install: "installing", manage: "applying", rotate: "rotating", delete: "deleting", onboard: "adopting", restart: "restarting", reinstall: "installing", start: "starting", stop: "stopping" };
 // turn-proxy restart completion flash: when a queued 'restart' clears, show a green "restarted" tag 5s
@@ -5527,14 +6622,19 @@ async function startTurn(node, service) {
   if (!r.ok) return toast(r.error || "Failed to start.", "err");
   await Store.poll(); toast("Start requested — applies on the node's next sync.", "ok");
 }
-function openSetupTurn(node) { openModal(html`<${SetupTurnSheet} node=${node}/>`); }
-function SetupTurnSheet({ node }) {
+function openSetupTurn(node, forwardIface) { openModal(html`<${SetupTurnSheet} node=${node} forwardIface=${forwardIface}/>`); }
+function SetupTurnSheet({ node, forwardIface }) {
   const FORKS = enabledTurnForks();           // only the operator-enabled forks appear in the install picker
   const [mode, setMode] = useState("new");   // new (install) | existing (adopt)
-  const [fork, setFork] = useState((FORKS[0] || TURN_FORKS[0]).id);
   const nrec = (Store.nodes || []).find(n => n.id === node) || {};
   const snap = Store.stats[node] || {};
   const isBridge = nrec.kind === "docker" && (nrec.net_mode || "host") === "bridge";
+  const allIfaces = Object.entries(snap.interfaces || {})
+    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
+    .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
+  // launched from an interface's page → pre-select it as the forwards-to (and, if it's AmneziaWG, start on a fork that can front it)
+  const fwdPre = forwardIface ? allIfaces.find(i => i.name === forwardIface) : null;
+  const [fork, setFork] = useState(((fwdPre && fwdPre.awg ? FORKS.find(x => forkSupportsAwg(x.id)) : null) || FORKS[0] || turnForkList()[0]).id);
   const epIp = (() => {   // the node's PUBLIC endpoint (what clients dial); on bridge the proxy rebinds it to 0.0.0.0
     for (const b of Object.values(snap.interfaces || {})) {
       const ep = (b.meta || {}).endpoint || "";
@@ -5544,9 +6644,6 @@ function SetupTurnSheet({ node }) {
   })();
   // include the public endpoint so bridge nodes (whose reported ips are container-private + filtered) still offer it
   const ips = [...new Set([epIp, (nrec.endpoint_host || "").trim(), ...(nrec.ips || [])].filter(Boolean))];
-  const allIfaces = Object.entries(snap.interfaces || {})
-    .map(([n, b]) => ({ name: n, port: String((b.meta || {}).listen_port || ""), sys: !!(b.meta || {}).system || n.startsWith("swg_"), awg: !!Object.keys((b.meta || {}).awg_params || {}).length }))
-    .filter(i => i.port && !i.sys);   // turn proxies forward to USER interfaces only — never the system/mesh link (swg_*)
   // a WireGuard-only fork can't front an AmneziaWG interface → hide awg interfaces from its picker
   const ifaces = forkSupportsAwg(fork) ? allIfaces : allIfaces.filter(i => !i.awg);
   const hideAwg = !forkSupportsAwg(fork) && allIfaces.some(i => i.awg);
@@ -5554,22 +6651,28 @@ function SetupTurnSheet({ node }) {
   const [lsel, setLsel] = useState(lInit);
   const [lcustom, setLcustom] = useState(lInit === "__custom__" ? epIp : "");
   const [lport, setLport] = useState(String(suggestPort(node, "turn")));
-  const [fwd, setFwd] = useState(ifaces[0] ? ifaces[0].name : "__custom__");
+  const [fwd, setFwd] = useState(fwdPre ? fwdPre.name : (ifaces[0] ? ifaces[0].name : "__custom__"));
   const [custom, setCustom] = useState("127.0.0.1:51820");
   const [title, setTitle] = useState("");
   const [wrapKey] = useState(randWrapKey);            // one fresh key, reused so a fork switch is deterministic
-  const dflParams = fk => fk.wrap ? (fk.wrap + " " + (fk.keyflag || "-wrap-key") + " " + wrapKey) : "";
-  const [params, setParams] = useState(dflParams(FORKS[0] || TURN_FORKS[0]));
-  const [showExec, setShowExec] = useState(false);   // Additional ExecStart params collapsed by default
+  // default params = the fork's typed schema serialised with the fixed key (byte-identical to the old wrap+keyflag
+  // default, but now stable across renders so the pickFork "untouched default" check still fires).
+  const dflParams = fk => { const sch = forkSettings(fk.id); const sd = ((Store.panelSettings || {}).turn_server_defaults || {})[fk.id] || {};   // schema defaults (+ a fresh key), the fork's saved obfuscation DEFAULTS on top, then its free-entry extra flags appended
+    const base = serializeTurnSettings(sch, { ...defaultSettingValues(sch, { key: wrapKey }), ...sd });   // sd._extra isn't a schema key → serialize ignores it
+    return base + (sd._extra ? (base ? " " : "") + sd._extra : ""); };
+  const [params, setParams] = useState(dflParams(FORKS[0] || turnForkList()[0]));
+  const [openSec, setOpenSec] = useState(null);   // the strip's open section — null | "server" | "client"
+  const clientsCommitRef = useRef(null);   // the inline Client picker registers its commit here; this sheet's Save calls it
+  const clientsCtl = useTurnClients(fork, clientsCommitRef, null);   // shared: the inline picker + the Client-parameters panel both read this
   const [path, setPath] = useState("");
   const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
   const fail = t => { setBusy(false); setMsg({ k: "err", t }); };
   const isCustom = fwd === "__custom__";
-  const f = TURN_FORKS.find(x => x.id === fork) || FORKS[0] || TURN_FORKS[0];
+  const f = turnForkList().find(x => x.id === fork) || FORKS[0] || turnForkList()[0];
   const lhost = ipPickerVal(lsel, lcustom);
   const pickFork = id => {   // re-default params for the new fork only if the field is still an untouched default
-    const cf = TURN_FORKS.find(x => x.id === fork) || TURN_FORKS[0];
-    const nf = TURN_FORKS.find(x => x.id === id) || TURN_FORKS[0];
+    const cf = turnForkList().find(x => x.id === fork) || turnForkList()[0];
+    const nf = turnForkList().find(x => x.id === id) || turnForkList()[0];
     if (params === dflParams(cf)) setParams(dflParams(nf));
     // switching to a WG-only fork while an awg interface is selected → move to the first WG interface (or custom)
     if (!forkSupportsAwg(id) && fwd !== "__custom__" && !allIfaces.some(i => i.name === fwd && !i.awg)) {
@@ -5593,6 +6696,7 @@ function SetupTurnSheet({ node }) {
     let connect;
     if (isCustom) { connect = custom.trim(); if (!/:\d+$/.test(connect)) return fail("Forwards-to must be host:port."); }
     else { connect = "127.0.0.1:" + ifaces.find(i => i.name === fwd).port; }
+    if (clientsCommitRef.current) { try { await clientsCommitRef.current(); } catch (_) {} }   // commit the embedded Client-apps default/settings alongside this Save
     setBusy(true); setMsg({ k: "work", t: "installing… (the node downloads the binary, up to ~2 min)" });
     const r = await api.turnInstall({ node, fork: f.id, owner: f.owner, wrap_flags: f.wrap,
       listen: lhost + ":" + lport.trim(), connect, title: title.trim(), params: params.trim() });
@@ -5622,7 +6726,7 @@ function SetupTurnSheet({ node }) {
         <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input value=${title} onInput=${e => setTitle(e.target.value)} placeholder=${f.label} autocomplete="off"/></div>
         <div class="field"><label>Fork</label>
           <select class="selwrap" value=${fork} disabled=${!FORKS.length} onChange=${e => pickFork(e.target.value)}>
-            ${FORKS.map(x => html`<option value=${x.id}>${x.label}${x.wrap ? "" : " · no obfuscation"}</option>`)}
+            ${FORKS.map(x => html`<option value=${x.id}>${x.label}${(x.wrap || x.keyflag) ? "" : " · no obfuscation"}</option>`)}
           </select>
           <div class="hint">${FORKS.length ? f.owner : "No forks enabled — turn them on in Panel settings → Turn proxies."}</div></div>
       </div>
@@ -5643,11 +6747,13 @@ function SetupTurnSheet({ node }) {
         ${hideAwg ? html`<div class="hint">${fork} is WireGuard-only — AmneziaWG interfaces are hidden (its client doesn't do AmneziaWG).</div>` : null}
       </div>
       ${isCustom ? html`<div class="field"><input value=${custom} onInput=${e => setCustom(e.target.value)} placeholder="127.0.0.1:51820" autocomplete="off"/></div>` : null}
-      <button type="button" class="advtoggle" onClick=${() => setShowExec(a => !a)}><span class="advcaret">${showExec ? "▾" : "▸"}</span> Additional ExecStart parameters</button>
-      ${showExec ? html`<div class="field">
-        <textarea class="ta mono" rows="3" value=${params} onInput=${e => setParams(e.target.value)} placeholder="-wrap-mode on -wrap-key <64 hex chars>" spellcheck="false"></textarea>
-        <div class="hint">Appended after <span class="mono">-connect ip:port</span>. ${f.wrap ? "Pre-filled with this fork's obfuscation flags + a fresh key." : "This fork has no obfuscation flags."} <button type="button" class="linkbtn" onClick=${randKey}>Copy a random 64-hex key</button></div>
-      </div>` : null}
+      <${TurnAppsPicker} ctl=${clientsCtl} offered=${true}/>
+      <div class="secbar">
+        <button type="button" class=${"secbar-item" + (openSec === "server" ? " on" : "")} onClick=${() => setOpenSec(s => s === "server" ? null : "server")}><span>Server parameters${forkSettings(fork).length ? "" : " (none)"}</span><span class="secbar-car">${openSec === "server" ? "▾" : "▸"}</span></button>
+        <button type="button" class=${"secbar-item" + (openSec === "client" ? " on" : "")} onClick=${() => setOpenSec(s => s === "client" ? null : "client")}><span>Client parameters</span><span class="secbar-car">${openSec === "client" ? "▾" : "▸"}</span></button>
+      </div>
+      ${openSec === "server" ? html`<div class="secpanel"><${TurnParamsEditor} fork=${fork} node=${node} value=${params} onChange=${setParams} listen=${(lhost || "server_ip") + ":" + (lport || "port")} connect=${isCustom ? (custom || "interface_ip:port") : ("127.0.0.1:" + (((ifaces.find(i => i.name === fwd)) || {}).port || "port"))}/></div>` : null}
+      ${openSec === "client" ? html`<div class="secpanel"><${TurnClientParams} ctl=${clientsCtl} embedded=${true}/></div>` : null}
     <//>`}
     ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
   <//>`;
@@ -5659,7 +6765,7 @@ const peersView = { node: "", iface: "", q: "", sort: "status", dir: -1, status:
 // NB: the value is the internal status KEY (matched against p.status); the label is what's shown. Access-revoke's
 // key is `disabled` (shown "Blocked"); the DPI fault's key is `blocked` (shown "Restricted").
 const PEER_STATUS_FILTERS = [["", "All statuses"], ["online", "Online"], ["ready", "Ready"], ["unassigned", "Unassigned"],
-  ["disabled", "Blocked"], ["blocking", "Blocking"], ["restoring", "Restoring"],
+  ["disabled", "Blocked"], ["expired", "Expired"], ["expiring", "Expiring"], ["blocking", "Blocking"], ["restoring", "Restoring"],
   ["dangling", "Dangling"], ["broken", "Broken"], ["partial", "Partial"], ["blocked", "Restricted"], ["faulty", "Faulty"], ["pending", "Pending"], ["unknown", "Unknown"]];
 // Prominent warning when the panel keeps no client configs at rest — QRs/downloads then only work
 // in the session a peer is created, and existing peers can't be re-shared. Shown on Overview + Peers.
@@ -5696,16 +6802,35 @@ function ifaceMatch(iface, filter) {                                       // do
 }
 // <option>s for an interface dropdown: "All AmneziaWG" / "All WireGuard" shortcuts, then AmneziaWG / WireGuard
 // optgroups of the individual interfaces (used everywhere we list ifaces; the caller renders "All interfaces").
+// Type groups only matter when BOTH kinds are present — with one kind we list the interfaces flat (a group header
+// or "All <type>" would just duplicate "All interfaces"). "All AmneziaWG" / "All WireGuard" appear only when both
+// kinds exist AND there's more than one of that kind (otherwise they'd equal "All interfaces" or the lone iface).
 function ifaceOptGroups(names) {
   const awg = names.filter(ifaceIsAwg), wg = names.filter(n => !ifaceIsAwg(n));
-  return html`${awg.length ? html`<option value="*awg">All AmneziaWG</option>` : null}${wg.length ? html`<option value="*wg">All WireGuard</option>` : null}${awg.length ? html`<optgroup label="AmneziaWG">${awg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>` : null}${wg.length ? html`<optgroup label="WireGuard">${wg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>` : null}`;
+  if (!(awg.length && wg.length)) return html`${names.map(i => html`<option value=${i}>${i}</option>`)}`;
+  return html`${awg.length > 1 ? html`<option value="*awg">All AmneziaWG</option>` : null}${wg.length > 1 ? html`<option value="*wg">All WireGuard</option>` : null}<optgroup label="AmneziaWG">${awg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup><optgroup label="WireGuard">${wg.map(i => html`<option value=${i}>${i}</option>`)}</optgroup>`;
+}
+// Shared node / interface FILTER <option> lists so the Peers / Users / Live toolbars behave identically:
+//   0 available → a single "No nodes/interfaces" item · exactly 1 → that one (labelled, value=allVal so the list
+//   stays unfiltered and it reads pre-selected) · ≥2 → "All nodes/interfaces" + each. `allVal` is the caller's
+//   "all" sentinel ("" or "*").
+function nodeFilterOptions(allVal) {
+  const ns = Store.nodes || [];
+  if (!ns.length) return html`<option value=${allVal}>No nodes</option>`;
+  if (ns.length === 1) return html`<option value=${allVal}>${ns[0].name}</option>`;
+  return html`<option value=${allVal}>All nodes</option>${ns.map(n => html`<option value=${n.id}>${n.name}</option>`)}`;
+}
+function ifaceFilterOptions(names, allVal) {
+  if (!names.length) return html`<option value=${allVal}>No interfaces</option>`;
+  if (names.length === 1) return html`<option value=${allVal}>${names[0]}</option>`;
+  return html`<option value=${allVal}>All interfaces</option>${ifaceOptGroups(names)}`;
 }
 // column sort keys for the shared peer grid — every header is clickable (order-by). Callers hold sort/dir in
 // their view-state and sort BEFORE pagination via sortPeerRows(); PeerGrid renders the clickable headers.
 const _ipKey = ip => String(ip || "").split(/[./]/).map(n => String((+n) || 0).padStart(3, "0")).join(".");
 // status order for the clickable "Status" column — online FIRST (STATUS_RANK ranks ready above online, which is
 // right for the Peers-screen default grouping but backwards for an order-by; here online is the top of the sort).
-const PEER_STATUS_RANK = { online: 10, faulty: 9, ready: 8, blocked: 7, partial: 6, pending: 5, creating: 5, rotating: 5, restoring: 4, unassigned: 3, unknown: 2, dangling: 1, broken: 1, blocking: 0, disabled: 0 };
+const PEER_STATUS_RANK = { online: 10, faulty: 9, ready: 8, expiring: 8, blocked: 7, partial: 6, pending: 5, creating: 5, rotating: 5, restoring: 4, unassigned: 3, unknown: 2, dangling: 1, broken: 1, blocking: 0, disabled: 0, expired: 0 };
 const PEER_SORT = {
   status: ({ p, t }) => PEER_STATUS_RANK[t.status || p.status] || 0,
   server: ({ t }) => Store.nodeName(t.node).toLowerCase() + "|" + t.iface,
@@ -5805,7 +6930,7 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
             return html`<span class=${"condot " + (t.online ? "on" : "off")} title=${t.online ? "online" : "offline"}></span>${ifaceB}`;
           })()}</td>
           ${(() => {
-            const titleCell = html`<td data-label="Title" class="c-name">${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">Untitled</span>`}</td>`;
+            const titleCell = html`<td data-label="Title" class="c-name">${lifecycleIcon(p, t.status)}${p.title ? html`<b>${p.title}</b>` : html`<span class="faint">Untitled</span>`}</td>`;
             const addrCell = html`<td data-label="Address"><span class="addr">${t.ip || "—"}</span>${hidden.length ? html`<${DepBadge} others=${hidden}/>` : null}</td>`;
             const epCell = html`<td data-label="Endpoint">${endpointCell(t)}</td>`;
             const nodeCell = html`<td data-label="Node"><div class="srvcell"><span class="srv-name" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></div></td>`;
@@ -5824,11 +6949,13 @@ function PeerGrid({ rows, agg, node, iface, shownByPeer, q, blocked, hideUser, l
           <td data-label="Rate">${rateCell(obs ? obs.rx_speed : 0, obs ? obs.tx_speed : 0)}</td>
           <td data-label="Total">${xferCell(...dlul(obs ? obs.rx_bytes : 0, obs ? obs.tx_bytes : 0))}</td>
           ${live ? null : html`<td data-label="" class="rowacts" onClick=${e => e.stopPropagation()}>
-            ${t.restorable
-              ? html`<button class="iconbtn restore" title=${"Restore interface " + t.iface + " (recreate the missing interface with its original identity — recovers every peer on it)"} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>`
-              : t.correctable
-                ? html`<button class="iconbtn correct" title=${"Fix address — " + (t.ip || "?") + " is outside " + t.iface + "'s subnet"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>`
-                : html`<button class="iconbtn qr" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>`}
+            ${(() => { const gh = _ghostIface(t.node, t.iface); return (gh && gh.ripe)
+              ? html`<button class="iconbtn ghost" title=${"Recreate & rekey — " + t.iface + " is gone with no recoverable key; recreate it fresh and reissue every client's config"} onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/></button>`
+              : t.restorable
+                ? html`<button class="iconbtn restore" title=${"Restore interface " + t.iface + " (recreate the missing interface with its original identity — recovers every peer on it)"} onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/></button>`
+                : t.correctable
+                  ? html`<button class="iconbtn correct" title=${"Fix address — " + (t.ip || "?") + " is outside " + t.iface + "'s subnet"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/></button>`
+                  : html`<button class="iconbtn qr" title="Show QR / configs" onClick=${() => openPeerConfigs(p)}><${Ic} i="qr"/></button>`; })()}
             <button class="iconbtn" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Edit peer"} onClick=${() => openEditPeer(p, { node: t.node, iface: t.iface })}><${Ic} i="pencil"/></button>
             ${p.unassigned
               ? html`<button class="iconbtn danger" disabled=${blocked} title=${blocked ? "Unavailable while the node is down / converting" : "Delete peer"} onClick=${() => confirmDeletePeer(p)}><${Ic} i="trash"/></button>`
@@ -5902,12 +7029,12 @@ function PeersScreen() {
     <div class="toolbar">
       <${SearchBox} placeholder="Search title, user, address…" value=${peersView.q} onInput=${e => { peersView.q = e.target.value; peersView.page = 1; force(x => x + 1); }}/>
       <select class="selwrap" value=${node} onChange=${e => { peersView.node = e.target.value; peersView.iface = ""; peersView.page = 1; force(x => x + 1); }}>
-        ${multiServer ? html`<option value="*">All nodes</option>` : null}
+        ${multiServer ? html`<option value="*">All nodes</option>` : (!fleet.length ? html`<option value="*">No nodes</option>` : null)}
         ${fleet.map(n => html`<option value=${n.id}>${n.name}</option>`)}
       </select>
       <select class="selwrap" value=${iface} onChange=${e => { peersView.iface = e.target.value; peersView.page = 1; force(x => x + 1); }}>
-        ${(node === "*" || ifaceOpts.length > 1) ? html`<option value="*">All interfaces</option>` : null}
-        ${ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : (node === "*" ? null : html`<option value="">No interfaces reported</option>`)}
+        ${ifaceOpts.length && (node === "*" || ifaceOpts.length > 1) ? html`<option value="*">All interfaces</option>` : null}
+        ${ifaceOpts.length ? ifaceOptGroups(ifaceOpts) : html`<option value="">No interfaces</option>`}
       </select>
       <select class="selwrap" value=${peersView.status || ""} onChange=${e => { peersView.status = e.target.value || null; peersView.page = 1; force(x => x + 1); }}>
         ${PEER_STATUS_FILTERS.map(([v, l]) => html`<option value=${v}>${l}</option>`)}
@@ -6010,7 +7137,7 @@ function ActivityHistoryScreen() {
 // mode — dot status, endpoint column, no controls) and the shared UserRow list (also `live`). Node/interface
 // dropdowns + a global search + an Online filter narrow both. State lives in module scope so the 5s poll
 // never loses it; Preact keeps scroll + updates cells in place.
-const connView = { mode: "peers", node: "", iface: "", q: "", online: false, page: 1, pageSize: 20, sort: "status", dir: -1, usort: "status", udir: -1 };
+const connView = { mode: "peers", node: "", iface: "", q: "", online: true, page: 1, pageSize: 20, sort: "status", dir: -1, usort: "status", udir: -1 };   // Online filter ON by default → the Live view leads with what's connected now
 function ConnectionsScreen() {
   useStore();
   const [, force] = useState(0);
@@ -6047,10 +7174,10 @@ function ConnectionsScreen() {
     </div>
     <${SearchBox} placeholder=${mode === "users" ? "Search users, tags, peers…" : "Search peer, user, endpoint, IP…"} value=${connView.q} onInput=${e => { connView.q = e.target.value; reset(); }}/>
     <select class="selwrap" value=${connView.node} onChange=${e => { connView.node = e.target.value; connView.iface = ""; reset(); }}>
-      <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
+      ${nodeFilterOptions("")}
     </select>
     <select class="selwrap" value=${connView.iface} onChange=${e => { connView.iface = e.target.value; reset(); }}>
-      <option value="">All interfaces</option>${ifaceOptGroups(ifaceOpts)}
+      ${ifaceFilterOptions(ifaceOpts, "")}
     </select>
     <button class=${"onlbtn" + (connView.online ? " on" : "")} title="Show only online connections" onClick=${() => { connView.online = !connView.online; reset(); }}>Online</button>
   </div>`;
@@ -6070,13 +7197,13 @@ function ConnectionsScreen() {
     </div>`;
   }
 
-  // peers mode — one row per OBSERVED deployment (a live connection), rendered via the shared PeerGrid in live mode
+  // peers mode — one row per deployment, rendered via the shared PeerGrid in live mode. Lists ALL deployments with a
+  // live online/offline badge (matching Users mode, which lists every user); the Online filter narrows to live ones.
   let rows = [];
   for (const p of Store.recon.peers) for (const t of p.targets) {
-    if (!t.observed) continue;                                         // only present-on-node connections
     if (connView.node && t.node !== connView.node) continue;
     if (!ifaceMatch(t.iface, connView.iface)) continue;
-    if (connView.online && !t.online) continue;
+    if (connView.online && !t.online) continue;                        // Online filter → only live connections
     rows.push({ p, t });
   }
   if (q) rows = rows.filter(({ p, t }) => { const u = p.user_id ? Store.user(p.user_id) : null; const o = t.observed || {};
@@ -6401,17 +7528,6 @@ function useSubRec(userId) {
     return () => { ok = false; }; }, [userId, Store.configEpoch]);
   return rec;
 }
-// "Part of an active subscription" — a right-aligned line under the modal title. Only when the user has a
-// subscription record at all; nothing for unsubscribed users or with the feature off.
-function SubStatusTag({ userId, activeOnly, header }) {
-  const rec = useSubRec(userId);
-  if (!subFeatureOn() || !rec) return null;
-  if (activeOnly && !rec.enabled) return null;   // peer modal: only surface it for a live subscription
-  // compact header badge (peer modal): a green dot + "In subscription", right-aligned in the title row
-  if (header) return rec.enabled ? html`<span class="hsub"><span class="substatus-dot"></span><b>In subscription</b></span>` : null;
-  const s = rec.enabled ? "active" : "disabled";
-  return html`<div class=${"substatus " + s}><span class="substatus-dot"></span>Part of ${rec.enabled ? "an" : "a"} <b>${s}</b> subscription</div>`;
-}
 // The single unlock gate. One panel, one password — unlocking reveals BOTH the stored QRs and the subscription
 // link (one encryption key gates both). Renders nothing once unlocked, or when no vault is set up.
 function VaultUnlockPanel() {
@@ -6426,11 +7542,11 @@ function VaultUnlockPanel() {
   const unlock = async () => {
     if (!pw || busy) return; setBusy(true);
     try { await subUnlock(pw); subSetPersist(keep); setPw(""); setReady(true); Store.configEpoch++; bus.emit(); }
-    catch (e) { toast((e && e.message) || "That password didn’t unlock the key vault.", "err"); }
+    catch (e) { toast((e && e.message) || "That password didn’t unlock the Encryption Vault.", "err"); }
     setBusy(false);
   };
   return html`<div class="unlockpanel">
-    <div class="unlockpanel-msg"><${Ic} i="lock"/><span>Unlock the key vault to see configs, QR codes and the subscription link.</span></div>
+    <div class="unlockpanel-msg"><${Ic} i="lock"/><span>Unlock the Encryption Vault to see configs, QR codes and the subscription link.</span></div>
     <div class="unlockpanel-row">
       <input class="subpw" type="password" autofocus autocomplete="off" placeholder="Panel password" value=${pw}
         onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
@@ -6446,25 +7562,34 @@ function SubLinkActions({ user }) {
   const rec = useSubRec(user.id);
   const [url, setUrl] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [optim, setOptim] = useState(false);   // optimistic "link building" state — enable runs in the background
   const base = subBaseUrl();
   useEffect(() => { let ok = true;
     (async () => { if (rec && rec.enabled && subSKCached()) { try { const u = await subUrlFor(rec); if (ok) setUrl(u); } catch (_) { if (ok) setUrl(null); } } else if (ok) setUrl(null); })();
     return () => { ok = false; }; }, [rec && rec.enabled, Store.configEpoch]);
   if (!subFeatureOn() || !subSKCached() || rec === undefined) return null;   // locked → the unlock panel owns it
-  const after = async () => { subUsersForget(); Store.configEpoch++; bus.emit(); };
+  const after = async () => { setOptim(false); subUsersForget(); Store.configEpoch++; bus.emit(); };   // clear the optimistic flag once the real record is (re)fetched — else a later disable stays stuck "building"
   const settingsLink = html`<a href="#/panel/settings" onClick=${() => closeAllModals()}>Settings → Subscriptions</a>`;
   const confirm = opts => pushModal(html`<${ConfirmSheet} ...${opts}/>`);   // stacks over the user modal; pops back on cancel/confirm
   const act = fn => async () => { setBusy(true); try { await fn(); } catch (e) { toast((e && e.message) || "Failed", "err"); } setBusy(false); await after(); };
+  // Enable is OPTIMISTIC: the confirm closes instantly and the panel shows the link building right away while
+  // the token-mint + config-publish runs in the background (the browser already holds everything the link needs;
+  // the server only stores the token hash). On failure we roll the optimistic state back and toast.
+  const enableBg = async () => {
+    try { await subEnableUser(user.id); const r2 = (await subUsersMap(true))[user.id]; if (r2 && r2.enabled && r2.unlock_by_sk) { const { unlockKey } = await subRecover(r2); await subBackfillUser(user.id, unlockKey); } }
+    catch (e) { setOptim(false); toast((e && e.message) || "Couldn't create the subscription link", "err"); }
+    finally { await after(); }
+  };
   const enable = () => confirm({ title: "Enable subscription", confirmLabel: "Enable",
     body: "Create a shareable link to this user's QR codes. New peers appear on it automatically; the unlock secret rides in the link and never reaches the server.",
-    onConfirm: act(async () => { await subEnableUser(user.id); const r2 = (await subUsersMap(true))[user.id]; if (r2 && r2.enabled && r2.unlock_by_sk) { const { unlockKey } = await subRecover(r2); await subBackfillUser(user.id, unlockKey); } }) });
+    onConfirm: () => { setOptim(true); enableBg(); } });   // returns immediately → the confirm closes; work continues in the background
   const rotate = () => confirm({ title: "Rotate subscription link", confirmLabel: "Rotate", warn: true,
     body: "Issue a fresh link and invalidate the current one. A config already scanned keeps working until you rekey or remove the peer.",
     onConfirm: act(() => subRotateUser(user.id)) });
-  const disable = () => confirm({ title: "Disable subscription", confirmLabel: "Disable", danger: true,
-    body: "Stop serving this user's link. A config already scanned keeps working until you rekey or remove the peer.",
+  const disable = () => confirm({ title: "Disable subscription", confirmLabel: "Disable", warn: true,
+    body: "This only turns off this user's subscription LINK — the page stops resolving. It does NOT disconnect their peers: existing connections keep working, and a config already scanned keeps working until you rekey or remove the peer. To actually cut this user's access, use Block instead. Re-enabling later issues a fresh link over the same configs.",
     onConfirm: act(() => api.subUserDisable({ user_id: user.id })) });
-  const enabled = !!(rec && rec.enabled);
+  const enabled = !!(rec && rec.enabled) || optim;
   if (!enabled) return html`<div class="sublink sublink-off">
     <span class="sublink-off-msg">No subscription link yet — enable one to share this user's QRs.</span>
     <button class="btn btn-primary btn-mini" disabled=${busy} onClick=${enable}>Enable subscription</button>
@@ -6476,8 +7601,8 @@ function SubLinkActions({ user }) {
         ? html`<div class="hint warn">Set a public base URL in ${settingsLink} to build the link.</div>`
         : html`<div class="hint">Building link…</div>`}
       <span class="fieldbtns">
-        <button class="btn btn-ghost btn-mini" disabled=${busy} onClick=${rotate}>Rotate</button>
-        <button class="btn btn-ghost btn-mini danger" disabled=${busy} onClick=${disable}>Disable</button>
+        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${rotate}>Rotate token</button>
+        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy} onClick=${disable}>Disable URL</button>
       </span>
     </div>
   </div>`;
@@ -6519,6 +7644,14 @@ function UserPeerCard({ peer, onOpen }) {
 function userVkLink(user) {
   return (((user && user.vk_link) || "").trim()) || (((Store.panelSettings || {}).vk_link || "").trim());
 }
+// ALL of a user's VK call links (primary first) for the forks that embed several; falls back to the single link,
+// then the panel test link (panel-side only — subscriptions never fall back).
+function userVkLinks(user) {
+  let arr = (user && Array.isArray(user.vk_links) && user.vk_links.length) ? user.vk_links.slice()
+          : (user && (user.vk_link || "").trim() ? [user.vk_link] : []);
+  if (!arr.length) { const t = ((Store.panelSettings || {}).vk_link || "").trim(); if (t) arr = [t]; }
+  return arr.map(s => (s || "").trim()).filter(Boolean);
+}
 // Is any of these deployments behind a turn-proxy? (turn feature on AND a proxy forwards to the interface.) Gates
 // the per-user VK field + the sub's VK warning — no turn-proxy on a user's interfaces ⇒ they never use a VK link.
 function targetsBehindTurn(targets) {
@@ -6531,16 +7664,18 @@ function normVkLink(s) { s = (s || "").trim(); return s && !/^https?:\/\//i.test
 // turn-proxy. Empty → amber border + a hint (the panel falls back to the test link; the subscription page won't).
 // Saves on blur / Enter; re-renders turn configs with the new link.
 function VkLinkField({ user }) {
-  // track the SAVED value locally: the modal holds a stale `user` snapshot (openUserConfigs isn't re-invoked
-  // after a poll), so comparing against user.vk_link would leave the button "dirty" forever after a save.
-  const [saved, setSaved] = useState(user.vk_link || "");
-  const [val, setVal] = useState(user.vk_link || "");
+  useStore();   // re-render on each poll so the count + field reflect a Manage-modal save (or an inline Add) without reopening the modal
+  const lu = (Store.recon.users || []).find(x => x.id === user.id) || user;   // live user — the modal's `user` prop is a stale snapshot
+  const primary = (lu.vk_links && lu.vk_links.length) ? lu.vk_links[0] : (lu.vk_link || "");   // the true primary = vk_links[0] (the Manage modal reorders it there); fall back to the single vk_link
+  // track the SAVED value locally: the modal holds a stale `user` snapshot, so we key off the LIVE primary.
+  const [saved, setSaved] = useState(primary);
+  const [val, setVal] = useState(primary);
   const [busy, setBusy] = useState(false);
   const [subd, setSubd] = useState(false);
   const [saveStatus, setSaveStatus] = useState(null);   // "saved" | "failed" — shown ~5s next to the button
   const savedTimer = useRef(null);
   const flashStatus = s => { setSaveStatus(s); if (savedTimer.current) clearTimeout(savedTimer.current); savedTimer.current = setTimeout(() => setSaveStatus(null), 5000); };
-  useEffect(() => { setVal(user.vk_link || ""); setSaved(user.vk_link || ""); }, [user.id, user.vk_link]);
+  useEffect(() => { setVal(primary); setSaved(primary); }, [user.id, primary]);   // reset when the live primary changes (Manage save / external), but not while the user is typing (val isn't a dep)
   useEffect(() => { let ok = true; if (subFeatureOn()) subUsersMap().then(m => { if (ok) setSubd(!!(m[user.id] && m[user.id].enabled)); }).catch(() => {}); return () => { ok = false; }; }, [user.id]);
   useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
   const v = normVkLink(val);                    // accept the link with or without https:// — add it when missing
@@ -6548,15 +7683,17 @@ function VkLinkField({ user }) {
   const empty = !v;
   const set = !empty && !invalid;               // a valid link is present → blue highlight
   const dirty = v !== saved;
-  const save = async () => {
-    if (!dirty || invalid) return;
+  const add = async () => {
+    if (!dirty || invalid || empty) return;
     setBusy(true);
-    const r = await api.userUpdate({ id: user.id, vk_link: v });
+    const existing = (lu.vk_links && lu.vk_links.length ? lu.vk_links : (lu.vk_link ? [lu.vk_link] : []));
+    const ordered = [v, ...existing.filter(u => u !== v)];   // the typed link becomes primary; existing links are kept (dedup) → the count grows
+    const r = await api.userUpdate({ id: user.id, vk_links: ordered, vk_link: v });
     setBusy(false);
-    if (!r || !r.ok) { flashStatus("failed"); toast((r && r.error) || "Couldn't save the VK link", "err"); return; }
-    setSaved(v); setVal(v);                      // reflect the saved (normalised) value → dirty=false → button disables
+    if (!r || !r.ok) { flashStatus("failed"); toast((r && r.error) || "Couldn't add the VK link", "err"); return; }
+    setSaved(v);                                  // dirty=false → button disables; the live count reflects the new list on the next poll
     flashStatus("saved");
-    Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the new link
+    Store.poll(); Store.configEpoch++; bus.emit();   // turn configs re-render with the updated links
   };
   return html`<div class=${"field vkfield" + (invalid ? " warn" : set ? " set" : " warn")} style="margin-bottom:14px">
     <label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
@@ -6564,16 +7701,66 @@ function VkLinkField({ user }) {
       <div class="vkbox">
         <${Ic} i="link"/>
         <input class="vkbox-input" data-noautofocus value=${val} placeholder="vk.ru/call/join/…" disabled=${busy}
-          onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); save(); } }}/>
+          onInput=${e => setVal(e.target.value)} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); add(); } }}/>
       </div>
       <span class="fieldbtns">
         ${saveStatus === "saved" ? html`<span class="vk-status ok"><${Ic} i="check"/> Saved</span>`
           : saveStatus === "failed" ? html`<span class="vk-status err"><${Ic} i="warn"/> Failed</span>` : null}
-        <button class="btn btn-primary btn-mini" disabled=${busy || !dirty || invalid} onClick=${save}>${busy ? "Saving…" : "Save"}</button>
+        <button class="btn btn-ghost btn-mini fbtn" disabled=${busy || !dirty || invalid || empty} onClick=${add}>${busy ? "Adding…" : "Add link"}</button>
+        <button class="btn btn-ghost btn-mini fbtn" onClick=${() => pushModal(html`<${VkLinksSheet} user=${user}/>`)} title="Manage all of this user's VK call links (add more, set primary)">Manage${(lu.vk_links && lu.vk_links.length > 1) ? ` (${lu.vk_links.length})` : ""}</button>
       </span>
     </div>
     ${invalid ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
-      : empty ? html`<div class="hint vk-warn">No VK link for this user yet — the panel is using your <b>test</b> link to build these turn configs. Enter their own before you distribute.${subd ? html` Right now their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}
+      : empty ? html`<div class="hint vk-warn">No VK links for this user yet — panel is using your <b>test</b> link to build turn configs. Fix before distributing.${subd ? html` Right now their subscription page will show the turn configs <b>without</b> a VK link, so they'd have to add one in their turn app.` : ""}</div>` : null}
+  </div>`;
+}
+// Manage ALL of a user's VK call links (grid CRUD + which is primary). The primary is the one single-link apps use;
+// FreeTurn passes them all. Reordered so the primary is first on save (vk_links[0] = primary; vk_link mirrors it).
+function VkLinksSheet({ user }) {
+  const lu = (Store.recon.users || []).find(x => x.id === user.id) || user;   // live user — the modal's `user` prop is a stale snapshot
+  const start = (lu.vk_links && lu.vk_links.length ? lu.vk_links : (lu.vk_link ? [lu.vk_link] : [])).slice();
+  const [rows, setRows] = useState(start.length ? start.map(u => ({ url: u })) : [{ url: "" }]);
+  const [primary, setPrimary] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const setUrl = (i, v) => setRows(rs => rs.map((r, j) => j === i ? { url: v } : r));
+  const addRow = () => setRows(rs => [...rs, { url: "" }]);
+  const delRow = (i) => { setRows(rs => { const n = rs.filter((_, j) => j !== i); return n.length ? n : [{ url: "" }]; });
+    setPrimary(p => (i === p ? 0 : i < p ? p - 1 : p)); };
+  const norm = rows.map(r => normVkLink(r.url));                       // add https:// where missing
+  const bad = norm.some(u => u && !_VK_CALL_RE.test(u));
+  const save = async () => {
+    const clean = norm.filter(Boolean);
+    if (clean.some(u => !_VK_CALL_RE.test(u))) return toast("One of the links isn't a valid VK call link.", "err");
+    const uniq = [...new Set(clean)];
+    const primUrl = norm[primary];                                    // move the chosen primary to the front
+    const ordered = primUrl && uniq.includes(primUrl) ? [primUrl, ...uniq.filter(u => u !== primUrl)] : uniq;
+    setBusy(true);
+    const r = await api.userUpdate({ id: user.id, vk_links: ordered });
+    setBusy(false);
+    if (!r || !r.ok) return toast((r && r.error) || "Couldn't save the VK links", "err");
+    closeModal(); Store.poll(); Store.configEpoch++; bus.emit();      // turn configs re-render with the updated links
+    toast(ordered.length ? `Saved ${ordered.length} VK link${ordered.length !== 1 ? "s" : ""}.` : "VK links cleared.", "ok");
+  };
+  return html`<${Sheet} title=${html`VK call links <span class="faint" style="text-transform:none;letter-spacing:0">— ${user.name}</span>`} width=${560} onClose=${closeModal}
+    foot=${html`<${Fragment}><button class="btn btn-ghost" onClick=${addRow}><${Ic} i="plus"/> Add link</button>
+      <span class="grow"></span><button class="btn btn-ghost" onClick=${closeModal}>Cancel</button>
+      <button class="btn btn-primary" disabled=${busy || bad} onClick=${save}>${busy ? "Saving…" : "Save"}</button></>`}>
+    <div class="iface-intro" style="margin-top:2px"><div>Each link is a VK call room the user's turn proxy pulls TURN credentials from. Mark one <b>primary</b> — apps that take a single link use it; FreeTurn uses all of them (more links = more capacity).</div></div>
+    <div class="vklinks-grid">
+      ${rows.map((r, i) => { const nv = norm[i]; const rbad = nv && !_VK_CALL_RE.test(nv); return html`
+        <div class=${"vklinks-row" + (rbad ? " warn" : "")}>
+          <label class="vklinks-prim" title="Set as the primary link">
+            <input type="radio" name="vkprim" checked=${primary === i} onChange=${() => setPrimary(i)}/>
+            <span>${primary === i ? "Primary" : "Set"}</span>
+          </label>
+          <div class="vkbox" style="flex:1">
+            <${Ic} i="link"/>
+            <input class="vkbox-input" value=${r.url} placeholder="vk.ru/call/join/…" onInput=${e => setUrl(i, e.target.value)}/>
+          </div>
+          <button class="iconbtn" title="Remove this link" onClick=${() => delRow(i)}><${Ic} i="trash"/></button>
+        </div>`; })}
+    </div>
+    ${bad ? html`<div class="hint err">Every link must look like <span class="mono">https://vk.ru/call/join/…</span></div>` : null}
   </div>`;
 }
 // `child` = opened from another modal (user modal, peer view, edit peer). Then it's PUSHED onto the modal
@@ -6594,27 +7781,65 @@ function openPeerConfigs(peer, opts) {
   else if (!vkUser && ipShort) parts.push(ipShort);
   const nm = parts.join(" · ");
   const title = html`<span class="qrhd"><span class="qrhd-nm">${nm}</span></span>`;
-  const headExtra = vkUser ? html`<${SubStatusTag} userId=${vkUser.id} activeOnly=${true} header=${true}/>` : null;
+  // In a subscription: subscription status in the header (right), the peer's own status on a line under it.
+  // Not in a subscription: the peer's own status takes the header slot (nothing under it).
+  const headExtra = vkUser ? html`<${SubStatusLine} user=${vkUser} pos="hr"/>` : html`<${PeerStatusLine} peer=${peer} pos="hr"/>`;
   (child ? pushModal : openModal)(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${closeModal} onBack=${child ? closeModal : null}
     subject=${{ kind: "peer", id: peer.id }} foot=${html`<${QRPeerFoot} pid=${peer.id}/>`}>
+    ${vkUser ? html`<${PeerStatusLine} peer=${peer} pos="bar"/>` : null}
     <${VaultUnlockPanel}/>
     ${!hideVk && vkUser && targetsBehindTurn(peer.targets) ? html`<${VkLinkField} user=${vkUser}/>` : null}
-    <${QRRow} cards=${peer.targets.map((t, i) => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && i === 0}/>`)}/>
+    <${QRRow} cards=${orderedTargets(peer.targets).map(t => html`<${TargetCard} key=${tkey(t.node, t.iface)} peer=${peer} t=${t} bare=${true} primary=${peer.targets.length > 1 && isPrimaryTarget(peer.targets, t)}/>`)}/>
   <//>`);
 }
+// Quick "Set expiry" — a small date picker reachable straight from the QR modal (no trip to the edit screen).
+// A user sets the SUBSCRIPTION expiry; a peer sets its OWN expiry, capped at the user's (can't outlive it).
+function openSetExpiry(kind, id) { pushModal(html`<${SetExpirySheet} kind=${kind} id=${id}/>`); }
+function SetExpirySheet({ kind, id }) {
+  const isUser = kind === "user";
+  const rec = isUser ? Store.user(id) : Store.peer(id);   // Store.peer already returns the RECONCILED peer (carries ownExpiry)
+  const cur = isUser ? ((rec && rec.expiry) || 0) : ((rec && rec.ownExpiry) || 0);
+  const owner = !isUser && rec && rec.user_id ? Store.user(rec.user_id) : null;
+  const ownerExp = owner ? (owner.expiry || 0) : 0;   // a peer can't be set to outlive its user's subscription
+  const [d, setD] = useState(expiryInputVal(cur));
+  const [busy, setBusy] = useState(false);
+  if (!rec) { closeModal(); return null; }
+  const save = async () => {
+    setBusy(true);
+    const sec = expiryFromInput(d);
+    const r = isUser ? await api.userUpdate({ id, expiry: sec }) : await api.peerUpdate({ peer_id: id, expiry: sec });
+    setBusy(false);
+    if (!r || r.ok === false) { toast((r && r.error) || "Couldn't set the expiry", "err"); return; }
+    subUsersForget(); await Store.poll(); closeModal();
+    toast(sec ? "Expiry set to " + fmtDate(sec) : "Expiry cleared", "ok");
+  };
+  const nm = rec.name || rec.title || "";
+  return html`<${Sheet} title=${(isUser ? "Subscription expiry" : "Peer expiry") + (nm ? " · " + nm : "")} width=${430} noGuard=${true} onClose=${closeModal} onBack=${closeModal}
+      foot=${footRow({ onCancel: closeModal, disabled: busy, onAction: save, action: "Save" })}>
+    <p class="hint" style="margin:2px 0 14px">${isUser
+      ? "After this date the whole subscription counts as expired — its page shows “Expired” and its peers stop being served. Blank = never expires."
+      : "After this date just this peer expires (its config stops working); the rest of the user's peers are unaffected. It can't be set later than the user's subscription expiry. Blank = follows the subscription."}</p>
+    <div class="daterow"><input type="date" class="datein" min=${expiryInputVal(now_s())} max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${d} onInput=${e => setD(e.target.value)}/>${d ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setD("")}>Clear</button>` : null}</div>
+  <//>`;
+}
 // Live footer for the QR modals — re-renders on each poll (useStore), so the Block/Unblock label flips right
-// after the action without the modal being reopened.
+// after the action without the modal being reopened. "Set expiry" sits to the LEFT of Block.
 function QRPeerFoot({ pid }) {
   useStore();
   const p = Store.peer(pid);
   if (!p) return null;
-  return html`<${Fragment}><span class="grow"></span>${peerBlockBtn(p)}<//>`;
+  const hasExp = !!(p.ownExpiry && p.ownExpiry > 0);
+  return html`<${Fragment}><span class="grow"></span><button class=${"btn btn-exp" + (hasExp ? " on" : "")} onClick=${() => openSetExpiry("peer", pid)}><${Ic} i="clock"/> ${hasExp ? "Reset expiry" : "Set expiry"}</button>${peerBlockBtn(p)}<//>`;
 }
 function QRUserFoot({ uid }) {
   useStore();
   const u = Store.user(uid);
   if (!u) return null;
-  return html`<${Fragment}><span class="grow"></span>${userBlockBtn(u)}<//>`;
+  const hasExp = !!(u.expiry && u.expiry > 0);
+  const peers = Store.peersOfUser(uid);
+  const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
+  const count = peers.length + " peer" + (peers.length === 1 ? "" : "s") + (nCfg > 1 ? " (" + nCfg + " configs)" : "");
+  return html`<${Fragment}><span class="qrfoot-count">${count}</span><span class="grow"></span><button class=${"btn btn-exp" + (hasExp ? " on" : "")} onClick=${() => openSetExpiry("user", uid)}><${Ic} i="clock"/> ${hasExp ? "Reset expiry" : "Set expiry"}</button>${userBlockBtn(u)}<//>`;
 }
 function openUserEdit(user) {
   openModal(html`<${Sheet} title=${"Edit · " + user.name} subject=${{ kind: "user", id: user.id }}><${UserEditCard} user=${user} done=${closeModal}/><//>`);
@@ -6640,16 +7865,16 @@ function VaultPromptSheet({ opts, onDone }) {
   const unlock = async () => {
     if (!pw || busy) return; setBusy(true);
     try { await subUnlock(pw); subSetPersist(keep); Store.configEpoch++; bus.emit(); setBusy(false); done(true); }
-    catch (e) { setBusy(false); toast((e && e.message) || "That password didn’t unlock the encryption key.", "err"); }
+    catch (e) { setBusy(false); toast((e && e.message) || "That password didn’t unlock the Encryption Vault.", "err"); }
   };
   return html`<${Sheet} title=${opts.title || "Enter your password to continue"} width=${480} onClose=${() => done(false)}
     foot=${html`<${Fragment}><span class="grow"></span>
       <button class="btn btn-ghost" disabled=${busy} onClick=${() => done(false)}>Skip</button>
       <button class="btn btn-primary" disabled=${busy || !pw || exists === false} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock vault"}</button></>`}>
     <div class="vaultprompt">
-      <p class="vp-reason">${opts.reason || "This action needs your encryption key, which isn’t unlocked in this session."}</p>
+      <p class="vp-reason">${opts.reason || "This action needs your Encryption Vault, which isn’t unlocked in this session."}</p>
       ${exists === false
-        ? html`<div class="notice err"><${Ic} i="warn"/><span>No encryption key is set up yet — set one up in <a href="#/panel/settings" onClick=${() => done(false)}>Settings → Client configs → Encryption</a>, then try again.</span></div>`
+        ? html`<div class="notice err"><${Ic} i="warn"/><span>No Encryption Vault is set up yet — set one up in <a href="#/panel/settings" onClick=${() => done(false)}>Settings → Client configs → Encryption</a>, then try again.</span></div>`
         : html`<${Fragment}><div class="field"><label>Panel password</label>
             <input class="subpw" type="password" autofocus value=${pw} autocomplete="off" placeholder="Panel password"
               onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/></div>
@@ -6675,7 +7900,7 @@ function VaultUnlockBar() {
     setBusy(false);
   };
   return html`<div class="notice" style="margin-bottom:12px;align-items:center;gap:8px;flex-wrap:wrap">
-    <${Ic} i="lock"/><span style="min-width:120px;flex:1">Unlock your encryption key to show stored QRs.</span>
+    <${Ic} i="lock"/><span style="min-width:120px;flex:1">Unlock your Encryption Vault to show stored QRs.</span>
     <input class="subpw" type="password" style="max-width:200px" value=${pw} autocomplete="off" placeholder="Panel password"
       onKeyDown=${e => { if (e.key === "Enter") unlock(); }} onInput=${e => setPw(e.target.value)}/>
     <button class="btn btn-primary btn-mini" disabled=${busy || !pw} onClick=${unlock}>${busy ? "Unlocking…" : "Unlock"}</button>
@@ -6797,9 +8022,8 @@ function openUserConfigs(user, back) {
   const wcols = Math.max(cols, 2);                        // hold 2 cards wide even for a single peer (roomier layout)
   const width = wcols * 256 + (wcols - 1) * 14 + 56;
   const anyTurn = peers.some(p => targetsBehindTurn(p.targets));
-  const nCfg = peers.reduce((a, p) => a + ((p.targets || []).length || 0), 0);
   const title = html`<span class="qrhd"><span class="qrhd-nm">${user.name}</span>${user.tag ? html`<span class="qrhd-tag">${user.tag}</span>` : null}</span>`;
-  const headExtra = html`<span class="hcount">${peers.length} peer${peers.length === 1 ? "" : "s"}${nCfg > 1 ? ` (${nCfg} configs)` : ""}</span>`;
+  const headExtra = html`<${SubStatusLine} user=${user} pos="hr"/>`;   // subscription status, right-aligned (the count now sits by the name)
   openModal(html`<${Sheet} title=${title} width=${width} headExtra=${headExtra} noGuard=${true} onClose=${back || closeModal}
     subject=${{ kind: "user", id: user.id }} foot=${html`<${QRUserFoot} uid=${user.id}/>`}>
     <${VaultUnlockPanel}/>
@@ -6821,6 +8045,8 @@ function openTurnConfigs(peer, t, conf) {
 function TurnConfigSheet({ peer, t, conf }) {
   const [selFork, setSelFork] = useState(0);
   const [inst, setInst] = useState({});   // fork → chosen instance index (for redundant same-fork proxies)
+  const [selClient, setSelClient] = useState({});   // "fork|os" → chosen client-app index (servers that offer several apps on an OS)
+  const [selOs, setSelOs] = useState({});   // fork → chosen device OS (which platform's app + settings to generate for)
   // One badge PER FORK; the peer's own fork (observed viaTurn) sorts first and is selected by default. When a
   // fork has several proxies (redundancy), a dropdown picks which one. Only the selected proxy's config shows.
   const lt = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets || []).find(d => d.node === t.node && d.iface === t.iface) || t;
@@ -6830,48 +8056,70 @@ function TurnConfigSheet({ peer, t, conf }) {
   sorted.forEach(p => { const f = turnFork(p.service); if (!byFork[f]) { byFork[f] = []; order.push(f); } byFork[f].push(p); });
   const vkUser = peer.user_id ? Store.recon.users.find(u => u.id === peer.user_id) : null;
   const vk = userVkLink(vkUser);   // this user's own link, falling back to the panel test link (subs never fall back)
+  const vkLinks = userVkLinks(vkUser);   // all of the user's links — forks that support several embed them all
   const base = (peer.title || peer.name || "peer") + "-" + Store.nodeName(t.node);
   if (!order.length) return html`<div class="hint">No turn-proxy forwards to this interface.</div>`;
   const fi = Math.min(selFork, order.length - 1); const fork = order[fi];
   const list = byFork[fork]; const ii = Math.min(inst[fork] || 0, list.length - 1); const cur = list[ii];
+  const cmap = (Store.turnCatalog && Store.turnCatalog.clients) || {};
+  const allClients = turnClientsFor(fork);
+  const osOf = c => Object.keys((cmap[c.id] || {}).platforms || {});
+  const osList = _OS_TABS.map(([o]) => o).filter(o => allClients.some(c => osOf(c).includes(o)));   // OSes this fork's apps cover
+  const curOs = (selOs[fork] && osList.includes(selOs[fork])) ? selOs[fork] : (osList[0] || "");
+  const clients = allClients.filter(c => osOf(c).includes(curOs));   // apps available on the chosen OS
+  const okey = fork + "|" + curOs;
+  const ci = Math.min(selClient[okey] || 0, Math.max(0, clients.length - 1));
+  const client = clients[ci] || null;
+  const clientOsName = c => (((cmap[c.id] || {}).platforms || {})[curOs] || {}).name || c.name;   // per-OS app name (WINGS V vs WINGS DeX)
   return html`<div class="turncfg">
     ${order.length > 1 ? html`<div class="turntabs">${order.map((f, k) => html`<button key=${f}
       class=${"snbadge turntab" + (k === fi ? " on" : "")} style=${"--c:" + turnColor(f)} onClick=${() => setSelFork(k)}>${f}</button>`)}</div>` : null}
+    ${osList.length > 1 ? html`<div class="turncfg-os"><label>Device</label><${OsDropdown} value=${curOs} options=${osList} onChange=${o => setSelOs(m => ({ ...m, [fork]: o }))}/></div>` : null}
     ${list.length > 1 ? html`<div class="turninst">
       <label>Which ${fork} proxy</label>
       <select class="selwrap" value=${ii} onChange=${e => setInst(m => ({ ...m, [fork]: +e.target.value }))}>
         ${list.map((p, k) => html`<option value=${k}>${(p.listen || ("proxy " + (k + 1))) + (p.title ? " (" + p.title + ")" : "")}</option>`)}
       </select></div>` : null}
+    ${clients.length > 1 ? html`<div class="turntabs turnclients">${clients.map((c, k) => html`<button key=${c.id}
+      class=${"snbadge turntab" + (k === ci ? " on" : "")} style=${"--c:" + (turnClientColor(c.id) || turnColor(fork))} onClick=${() => setSelClient(m => ({ ...m, [okey]: k }))}>${clientOsName(c)}${c.experimental ? html`<span class="xtag" title=${EXP_WARN}>exp</span>` : null}</button>`)}</div>` : null}
     ${!vk ? html`<div class="notice warn"><${Ic} i="warn"/><span>No VK call link set — configs carry a placeholder. Set it in <a href="#/panel/settings" onClick=${() => closeAllModals()}>Panel settings → Turn proxies</a>.</span></div>` : null}
-    <${TurnCfgItem} key=${cur.service} conf=${conf} tp=${cur} vk=${vk} base=${base}/>
+    <${TurnCfgItem} key=${cur.service + "|" + (client ? client.encoder : "") + "|" + curOs} conf=${conf} tp=${cur} vk=${vk} vkLinks=${vkLinks} base=${base} client=${client} os=${curOs}/>
   </div>`;
 }
 // One turn-proxy's client artifact. Sync forks fill `text`; wingsv:// fills `buildAsync` (needs zlib), so
-// we resolve it in an effect and show "generating…" until ready. Textarea wraps + auto-grows (no scroll).
-function TurnCfgItem({ conf, tp, vk, base }) {
-  const a = turnArtifact(conf, tp, vk);
+// we resolve it in an effect and show "generating…" until ready. A QR⇄text toggle (default QR where the
+// client scans one, per `a.qr`) mirrors the sub page: in QR view the wg/awg config or link is a scannable
+// QR (tap to enlarge) and Copy grabs the IMAGE; the CLI command (`a.cmd`) always stays text — you can't scan a
+// shell line. Text view is the wrapping, auto-growing textarea.
+function TurnCfgItem({ conf, tp, vk, vkLinks, base, client, os }) {
+  const a = turnArtifact(conf, tp, vk, vkLinks, client ? client.encoder : undefined, os);
   const [text, setText] = useState(a.text != null ? a.text : null);
   const [err, setErr] = useState(null);
+  const [view, setView] = useState(a.qr ? "qr" : "text");   // default QR where the app scans one
   const taRef = useRef(null);
   useEffect(() => {
     if (a.text != null) { setText(a.text); return; }
     let ok = true; setText(null); setErr(null);
     Promise.resolve().then(a.buildAsync).then(t => { if (ok) setText(t); }).catch(e => { if (ok) setErr((e && e.message) || "couldn't generate"); });
     return () => { ok = false; };
-  }, [tp.service, conf, vk]);
-  useEffect(() => { autoGrow(taRef.current); }, [text]);   // dynamic height to fit wrapped content, no scroll
+  }, [tp.service, conf, vk, client && client.encoder, os]);
+  useEffect(() => { setView(a.qr ? "qr" : "text"); }, [tp.service, client && client.encoder]);   // reset to the default when the client changes
+  useEffect(() => { if (view === "text") autoGrow(taRef.current); }, [text, view]);   // dynamic height to fit wrapped content, no scroll
   const ready = text != null;
+  const qrView = a.qr && view === "qr";
   return html`<div class="turncfg-item">
-    <div class="turncfg-head"><span class="tcf-label">${a.label}</span></div>
+    <div class="turncfg-head"><span class="tcf-label">${a.label}</span>${a.experimental ? html`<span class="xtag xtag-tip" tabindex="0"><span class="xtip-bubble">${EXP_WARN}</span>experimental</span>` : null}</div>
     ${a.hint ? html`<div class="hint" style="margin:2px 0 6px">${a.hint}</div>` : null}
     ${a.cmd ? html`<div class="turncfg-cmd"><div class="tokenbox">${a.cmd}</div>
       <button class="cmd-copy" title="Copy command" onClick=${() => copy(a.cmd, "Command copied")}><${Ic} i="copy"/></button></div>` : null}
     ${err ? html`<div class="hint err">${err}</div>`
+      : qrView ? (ready ? html`<div class="turncfg-qr"><${QR} conf=${text} label=${a.label}/></div>` : html`<div class="turncfg-qr qr-pending">generating…</div>`)
       : html`<textarea class="turncfg-ta" readonly spellcheck="false" ref=${taRef} onClick=${e => e.target.select()}>${ready ? text : "generating…"}</textarea>`}
     <div class="turncfg-foot">
+      ${a.qr ? html`<button class="btn btn-mini" onClick=${() => setView(v => v === "qr" ? "text" : "qr")}><${Ic} i=${qrView ? "doc" : "qr"}/> ${qrView ? "Show config" : "Show QR"}</button>` : null}
       <span class="grow"></span>
-      <button class="btn btn-mini" disabled=${!ready} onClick=${() => copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
-      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""))}><${Ic} i="download"/> Download .conf</button>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => qrView ? copyQrImage(text, "QR image") : copy(text, (a.uri ? "Link" : "Config") + " copied")}><${Ic} i="copy"/> Copy</button>
+      <button class="btn btn-mini" disabled=${!ready} onClick=${() => downloadConf(text, base + "-" + a.fork + (portOf(tp.listen) ? "-" + portOf(tp.listen) : ""), a.ext)}><${Ic} i="download"/> Download .${a.ext || "conf"}</button>
     </div>
   </div>`;
 }
@@ -6905,7 +8153,7 @@ function UserRow({ user, live, onlineOnly, q }) {
     <div class="urow-head" title="Double-click for QR / configs" onMouseDown=${rowNoSelect} onClick=${e => rowSingle(e, toggle)} onDblClick=${e => rowDouble(e, () => openUserConfigs(user))}>
       <span class="u-exp"><${Ic} i="arrow"/></span>
       ${userStatTag(user, live)}
-      <span class="u-name"><span class="un">${user.name}</span>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
+      <span class="u-name">${lifecycleIcon(user, user.peerCount ? user.status : "empty")}<span class="un">${user.name}</span>${user.tag ? html`<span class="tagchip">${user.tag}</span>` : null}${user.note ? html`<span class="u-note" title=${user.note}>${user.note}</span>` : null}</span>
       <span class=${"u-right" + (live ? " live" : "")}>
         <span class="u-counts">${(() => {
           const onc = html`<span class=${"u-onc" + (user.onlineCount ? " on" : "")}>${user.onlineCount} Online</span>`;
@@ -6970,10 +8218,10 @@ function UsersScreen() {
     <div class="toolbar">
       <${SearchBox} placeholder="Search users, tags, notes, peers…" value=${usersView.q} onInput=${e => { usersView.q = e.target.value; usersView.page = 1; force(x => x + 1); }}/>
       <select class="selwrap" value=${usersView.node} onChange=${e => { usersView.node = e.target.value; usersView.iface = ""; usersView.page = 1; force(x => x + 1); }}>
-        <option value="">All nodes</option>${(Store.nodes || []).map(n => html`<option value=${n.id}>${n.name}</option>`)}
+        ${nodeFilterOptions("")}
       </select>
       <select class="selwrap" value=${usersView.iface} onChange=${e => { usersView.iface = e.target.value; usersView.page = 1; force(x => x + 1); }}>
-        <option value="">All interfaces</option>${ifaceOptGroups(ifaceOpts)}
+        ${ifaceFilterOptions(ifaceOpts, "")}
       </select>
       <button class="btn btn-ghost" onClick=${() => openCreatePeer({})}><span class="plus"><${Ic} i="plus"/></span> New peer</button>
       <button class="btn btn-primary" onClick=${openCreateUser}><span class="plus"><${Ic} i="plus"/></span> New user</button>
@@ -7028,17 +8276,23 @@ function UserEditCard({ user, done }) {
   const [tag, setTag] = useState(user.tag || "");
   const [note, setNote] = useState(user.note || "");
   const [vk, setVk] = useState(user.vk_link || "");
+  const [expDate, setExpDate] = useState(expiryInputVal(user.expiry || 0));   // subscription expiry (blank = never)
   const showVk = Store.peersOfUser(user.id).some(p => targetsBehindTurn(p.targets));   // only when they have a peer behind a turn-proxy
   const vkBad = vk.trim() && !_VK_CALL_RE.test(normVkLink(vk));
   const save = async () => {
     if (!name.trim()) { toast("Name can't be empty.", "err"); return; }
     if (vkBad) { toast("Not a valid VK call link — expected vk.ru/call/join/…", "err"); return; }
+    const expSec = expiryFromInput(expDate);
+    // A subscription can't expire before its longest-lived peer (the server enforces this too — check here for a
+    // clean message instead of a rejected save).
+    const maxPeer = Store.peersOfUser(user.id).reduce((m, p) => Math.max(m, +(p.ownExpiry || 0)), 0);
+    if (expSec && maxPeer && expSec < maxPeer) { toast("Subscription expiry can't be earlier than a peer's expiry (" + fmtDate(maxPeer) + ").", "err"); return; }
     const vkv = normVkLink(vk);
     done();   // close the editor immediately; the row updates optimistically
     mutate({
       key: "user:" + user.id,
-      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; if (showVk) u.vk_link = vkv; } },
-      call: () => api.userUpdate(Object.assign({ id: user.id, name: name.trim(), tag: tag.trim(), note }, showVk ? { vk_link: vkv } : {})),
+      patch: s => { const u = s.roster.users[user.id]; if (u) { u.name = name.trim(); u.tag = tag.trim(); u.note = note; u.expiry = expSec; if (showVk) u.vk_link = vkv; } },
+      call: () => api.userUpdate(Object.assign({ id: user.id, name: name.trim(), tag: tag.trim(), note, expiry: expSec }, showVk ? { vk_link: vkv } : {})),
     });
   };
   const del = () => openConfirm({ title: "Delete user · " + user.name, confirmLabel: "Delete user", danger: true, back: done,
@@ -7047,9 +8301,15 @@ function UserEditCard({ user, done }) {
       patch: s => { delete s.roster.users[user.id]; for (const p of Object.values(s.roster.peers)) if (p.user_id === user.id) p.user_id = null; },
       call: () => api.userDelete({ id: user.id }) }) });
   return html`<div class="card" style="max-width:560px">
+    <${SubStatusLine} user=${user} pos="center"/>
     <div class="field"><label>Name</label><input value=${name} onInput=${e => setName(e.target.value)} maxlength="64"/></div>
     <div class="field"><label>Tag</label><input value=${tag} onInput=${e => setTag(e.target.value)} placeholder="Friend, Family, Work…" maxlength="32"/></div>
     <div class="field"><label>Note</label><input value=${note} onInput=${e => setNote(e.target.value)} placeholder="Uses iPhone and router" maxlength="200"/></div>
+    <div class="field"><label>Access expires <span class="faint" style="text-transform:none;letter-spacing:0">— the whole subscription; blank = never</span></label>
+      <div class="daterow"><input type="date" class="datein" value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>Clear</button>` : null}</div>
+      <div class="hint">On this date the subscription and all its peers stop working (they reappear if you extend it). A peer's own expiry can't be later than this.</div></div>
+    <${VaultUnlockPanel}/>
+    <${SubLinkActions} user=${user}/>
     ${showVk ? html`<div class=${"field vkfield" + (vkBad ? " warn" : "")}><label>VK call link <span class="faint" style="text-transform:none;letter-spacing:0">— for this user's turn-proxy configs</span></label>
       <input value=${vk} onInput=${e => setVk(e.target.value)} placeholder="https://vk.ru/call/join/…" maxlength="512"/>
       ${vkBad ? html`<div class="hint err">Expected a VK call link like <span class="mono">https://vk.ru/call/join/…</span></div>`
@@ -7060,6 +8320,20 @@ function UserEditCard({ user, done }) {
 
 // one credential: its targets, each a QR card; owner controls + edit + add-target
 
+// A ★ toggle to mark one of a peer's deployments as PRIMARY (ordered first for the user). Persists immediately.
+// Hidden when the peer has a single connection (nothing to choose). Stop propagation so it never bubbles to a card link.
+function PrimaryToggle({ peer, t, compact }) {
+  useStore();
+  const targets = ((Store.recon.peers.find(p => p.id === peer.id) || {}).targets) || peer.targets || [];
+  if (targets.length < 2) return null;
+  const isP = isPrimaryTarget(targets, t);
+  const [busy, setBusy] = useState(false);
+  const set = async (ev) => { if (ev) ev.stopPropagation(); if (isP || busy) return; setBusy(true);
+    try { await api.peerSetPrimary({ peer_id: peer.id, node: t.node, iface: t.iface }); await Store.poll(); } catch (_) {} setBusy(false); };
+  return html`<button type="button" class=${"primtog" + (isP ? " on" : "")} disabled=${busy || isP}
+    title=${isP ? "Primary connection — the user's first choice" : "Make this the primary connection"} onClick=${set}>
+    <span class="primstar">${isP ? "★" : "☆"}</span>${compact ? null : html`<span>${isP ? "Primary" : "Make primary"}</span>`}</button>`;
+}
 function TargetCard({ peer, t, bare, primary, head }) {
   useStore();   // re-render on each poll so the status badge stays live (t is a snapshot from open)
   const [conf, setConf] = useState(null);
@@ -7813,7 +9087,7 @@ function AccountScreen() {
     <div class="crumb"><b>Account</b></div>
     <div class="card" style="max-width:520px">
       <h3 style="margin:0 0 4px">Admin login</h3>
-      <p class="hint" style="margin:0 0 18px">Change the panel username and password. Takes effect immediately — you'll be asked to sign in again.</p>
+      <p class="hint" style="margin:0 0 18px">Change the panel username and password. Takes effect immediately — you'll be asked to sign in again. Changing the password also re-keys your <b>Encryption Vault</b> here, so stored configs and subscription links keep working (no re-issue).</p>
       ${msg ? html`<div class=${"formmsg " + (msg.ok ? "ok" : "err")}>${msg.t}</div>` : null}
       <div class="field"><label>Username</label><input value=${user} onInput=${e => setUser(e.target.value)} autocomplete="username"/></div>
       <div class="field"><label>Current password</label><input type="password" value=${cur} onInput=${e => setCur(e.target.value)} autocomplete="current-password" placeholder="required to confirm changes"/></div>
@@ -8554,6 +9828,20 @@ function AccessTLSCard({ onChange }) {
   </div>`;
 }
 
+// Interface-key escrow (lives in Settings → Interfaces): each entry server seals its interface private key under
+// the browser-held Encryption Vault key, so a fully-wiped node's interface can be restored with its ORIGINAL key.
+// Presentational — the toggle only stages a value; the Settings screen applies it on Save (via ivkSetEscrow) like
+// every other field. Needs the Encryption Vault set up (Client configs) — independent of store_configs.
+function InterfaceKeyEscrow({ value, onChange, vaultExists }) {
+  if (vaultExists === null || value === null) return html`<div class="hint">Checking…</div>`;
+  if (!vaultExists) return html`<p class="hint" style="margin:0">Set up your <b>Encryption Vault</b> first in <button class="linkbtn" onClick=${() => goSettings("configs")}>Client configs → Encryption</button> — each server's interface key is sealed under it.</p>`;
+  return html`<div class="ivk-escrow">
+    <label class="ivk-esc-row"><${Switch} on=${!!value} onChange=${onChange}/>
+      <span><b>Escrow interface server keys</b> — each entry server seals its interface private key to your browser-held <b>Encryption Vault</b> key (the panel only ever stores ciphertext). Lets you <b>restore an interface cleanly after a full wipe / lost box</b>, with no client re-import. Off ⇒ a wiped node's interfaces can only be recreated with new keys, and every client on them re-imports.</span></label>
+    ${value && !subSKCached() ? html`<div class="hint" style="margin-top:6px">Keep the Encryption Vault unlocked when you need to restore — releasing an escrowed key requires it.</div>` : null}
+  </div>`;
+}
+
 // Subscription encryption setup. The Subscription Key is generated + wrapped IN THE BROWSER; the server only
 // ever gets the wrapped form. It's shown once (like 2FA recovery codes) and is independent of the login password.
 function SubVaultCard() {
@@ -8561,20 +9849,8 @@ function SubVaultCard() {
   const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false);
   const [sk, setSk] = useState(null);                    // the shown-once Subscription Key
   const [resetMode, setResetMode] = useState(false); const [confirm, setConfirm] = useState("");
-  const load = () => api.subVault().then(r => setState({ loading: false, exists: !!(r && r.ok && r.data && r.data.exists), escrow: !!(r && r.ok && r.data && r.data.ivk_enabled) })).catch(() => setState({ loading: false, exists: false }));
+  const load = () => api.subVault().then(r => setState({ loading: false, exists: !!(r && r.ok && r.data && r.data.exists) })).catch(() => setState({ loading: false, exists: false }));
   useEffect(() => { load(); }, []);
-  const toggleEscrow = async (on) => {
-    setBusy(true);
-    try {
-      if (on && !subSKCached()) {   // enabling stores a key wrapped under the SK → need it unlocked
-        const ok = await new Promise(res => pushModal(html`<${VaultPromptSheet} opts=${{ title: "Unlock to enable escrow", reason: "Enabling interface-key escrow stores each server's interface key wrapped under your encryption key. Unlock it to continue." }} onDone=${res}/>`));
-        if (!ok || !subSKCached()) { setBusy(false); return; }
-      }
-      await ivkSetEscrow(on); setState(s => ({ ...s, escrow: on }));
-      toast(on ? "Interface-key escrow enabled — entry servers will vault their interface keys." : "Interface-key escrow disabled.", "ok");
-    } catch (e) { toast((e && e.message) || "Failed", "err"); }
-    setBusy(false);
-  };
   const create = async () => {
     if (!pw) return; setBusy(true);
     try { setSk(await subVaultCreate(pw)); setPw(""); }
@@ -8603,18 +9879,13 @@ function SubVaultCard() {
       <div class="field" style="flex:none;align-self:end"><button class="btn btn-primary" disabled=${busy || !pw} onClick=${create}>${busy ? "Setting up…" : "Set up encryption"}</button></div>
     </div><//>`;
   return html`<${Fragment}>
-    <div class="notice ok" style="margin-bottom:8px"><${Ic} i="check"/><span>Encryption is configured — stored configs are wrapped automatically, and their QRs (and any subscription links) keep working across your password changes.</span></div>
-    <div class="ivk-escrow">
-      <label class="ivk-esc-row"><${Switch} on=${!!state.escrow} disabled=${busy} onChange=${toggleEscrow}/>
-        <span><b>Escrow interface server keys</b> — each entry server seals its interface private key to a browser-held vault key (the panel only ever stores ciphertext). Lets you <b>Restore an interface cleanly after a full wipe / lost box</b>, with no client re-import. Off ⇒ a wiped node's interfaces can only be recreated with new keys, and every client on them re-imports.</span></label>
-      ${state.escrow && Store.storeMode === "encrypted" && !subSKCached() ? html`<div class="hint" style="margin-top:6px">Keep the encryption key unlocked when you need to restore — releasing an escrowed key requires it.</div>` : null}
-    </div>
+    <div class="notice ok" style="margin-bottom:8px"><${Ic} i="check"/><span>Your <b>Encryption Vault</b> is configured — stored configs are wrapped automatically, and their QRs (and any subscription links) keep working across your password changes.</span></div>
     ${resetMode
       ? html`<div class="notice warn"><div style="min-width:0"><b>Reset drops all stored encrypted configs and invalidates every subscription URL.</b> You'll set up a new encryption key afterwards, then re-issue affected peers. Type <b>RESET</b> to confirm.
           <div class="chiprow" style="margin-top:8px"><input type="text" placeholder="RESET" value=${confirm} onInput=${e => setConfirm(e.target.value)} style="max-width:120px"/>
             <button class="btn btn-danger btn-mini" disabled=${busy || confirm !== "RESET"} onClick=${doReset}>Reset encryption</button>
             <button class="btn btn-ghost btn-mini" onClick=${() => { setResetMode(false); setConfirm(""); }}>Cancel</button></div></div></div>`
-      : html`<button class="btn btn-ghost btn-mini danger" onClick=${() => setResetMode(true)}>Reset encryption…</button>`}
+      : html`<div style="text-align:right"><button class="btn btn-ghost btn-mini danger" onClick=${() => setResetMode(true)}>Reset encryption…</button></div>`}
   <//>`;
 }
 // The one-time "Encrypt stored configs" migration prompt — shown in Client configs whenever LEGACY plaintext
@@ -8731,10 +10002,11 @@ function PanelSettingsScreen() {
   const [ttlD, setTtlD] = useState(String(adv.geo_ttl_days || 3));
   const [topTalk, setTopTalk] = useState(String(ps.top_talkers || 10));
   const [topDest, setTopDest] = useState(String(ps.top_destinations || 10));
+  const [warnDays, setWarnDays] = useState(String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days));
   const [hidden, setHidden] = useState(new Set(ps.hidden_categories || []));   // built-in categories hidden from the routing dropdown
   const [lists, setLists] = useState((ps.custom_lists || []).map(l => ({ ...l, _rid: newRid(), targets: [...(l.domains || []), ...(l.cidrs || [])].join(", ") })));
   const [turnEnabledS, setTurnEnabledS] = useState(ps.turn_enabled !== false);   // master turn-proxy switch
-  const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "anton48"]));   // forks offered in the install picker
+  const [turnForks, setTurnForks] = useState(new Set(ps.enabled_turn_forks || ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"]));   // forks offered in the install picker
   const [vkLinkS, setVkLinkS] = useState(ps.vk_link || "");   // VK call link baked into generated turn-proxy client configs
   // ---- themed colour pickers ({dark,light} each) — Interfaces / Display / Turn sections ----
   const asThemed = (v, dd, dl) => (v && typeof v === "object") ? { dark: v.dark || dd, light: v.light || dl } : { dark: v || dd, light: v || dl };
@@ -8744,7 +10016,7 @@ function PanelSettingsScreen() {
   const [provColors, setProvColors] = useState(() => Object.fromEntries(_provColKeys.map(k => [k, asThemed((ps.provider_colors || {})[k], _provColDefault(k).dark, _provColDefault(k).light)])));
   const provColorOverrides = () => { const o = {}; for (const k of _provColKeys) { const d = _provColDefault(k); const t = asThemed(provColors[k], d.dark, d.light); if (!sameThemed(t, d.dark, d.light)) o[k] = t; } return o; };
   const [customEnabled, setCustomEnabled] = useState(ps.custom_lists_enabled !== false);
-  const [forkColors, setForkColors] = useState(() => Object.fromEntries(TURN_FORKS.map(f => [f.id, asThemed((ps.turn_fork_colors || {})[f.id], f.color, f.colorL)])));
+  const [forkColors, setForkColors] = useState(() => Object.fromEntries(turnForkList().map(f => [f.id, asThemed((ps.turn_fork_colors || {})[f.id], f.color, f.colorL)])));
   const _tu = ps.turn_update || {};   // turn-proxy auto-update schedule: every_days (0=off) + node-checked panel-local hour
   const [tuEvery, setTuEvery] = useState(String(_tu.every_days == null ? 0 : _tu.every_days));
   const [tuAt, setTuAt] = useState(_tu.at || "04:00");
@@ -8757,9 +10029,14 @@ function PanelSettingsScreen() {
   // peer-health DETECTION toggles (not colours): each condition ON by default; unchecking stops it flagging the status.
   const _sc = ps.status_conditions || {};
   const [statusConds, setStatusConds] = useState({ blocked: _sc.blocked !== false, faulty: _sc.faulty !== false });
+  // interface-key escrow (Interfaces section): staged like a field — the toggle sets a pending value; Save applies it.
+  const [ivkEscrow, setIvkEscrow] = useState(null);           // pending value (null = still loading)
+  const [ivkEscrowInit, setIvkEscrowInit] = useState(null);   // saved value → dirty when they differ
+  const [ivkVaultExists, setIvkVaultExists] = useState(null); // vault set up? escrow needs it
+  useEffect(() => { api.subVault().then(r => { const okd = !!(r && r.ok && r.data); const on = okd && !!r.data.ivk_enabled; setIvkEscrow(on); setIvkEscrowInit(on); setIvkVaultExists(okd ? !!r.data.exists : false); }).catch(() => setIvkVaultExists(false)); }, []);
   // overrides derived from a raw source (state OR the stored panel-settings), normalized identically so a legacy
   // single-colour value in panel-settings compares equal to its normalized {dark,light} form (no phantom "dirty").
-  const forkOvFrom = src => { const o = {}; for (const f of TURN_FORKS) { const t = asThemed((src || {})[f.id], f.color, f.colorL); if (!sameThemed(t, f.color, f.colorL)) o[f.id] = t; } return o; };
+  const forkOvFrom = src => { const o = {}; for (const f of turnForkList()) { const t = asThemed((src || {})[f.id], f.color, f.colorL); if (!sameThemed(t, f.color, f.colorL)) o[f.id] = t; } return o; };
   const ifaceOvFrom = src => { const o = {}; for (const k of ["wg", "awg"]) { const t = asThemed((src || {})[k], IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light); if (!sameThemed(t, IFACE_COLOR_DEFAULTS[k].dark, IFACE_COLOR_DEFAULTS[k].light)) o[k] = t; } return o; };
   const forkColorOverrides = () => forkOvFrom(forkColors);
   const ifaceColorOverrides = () => ifaceOvFrom(ifaceColors);
@@ -8786,11 +10063,11 @@ function PanelSettingsScreen() {
   };
   const [turnCheck, setTurnCheck] = useState({});   // {forkId: {status:'checking'|'uptodate'|'update', latest}}
   const checkTurnUpdates = async () => {
-    setTurnCheck(Object.fromEntries(TURN_FORKS.map(f => [f.id, { status: "checking" }])));
-    const r = await api.turnCheckUpdates({ forks: TURN_FORKS.map(f => ({ id: f.id, owner: f.owner })) });
+    setTurnCheck(Object.fromEntries(turnForkList().map(f => [f.id, { status: "checking" }])));
+    const r = await api.turnCheckUpdates({ forks: turnForkList().map(f => ({ id: f.id, owner: f.owner })) });
     const latest = (r && r.ok && r.data.latest) || {};
     const next = {};
-    for (const f of TURN_FORKS) {
+    for (const f of turnForkList()) {
       const lt = latest[f.id] || "", dep = forkVersions(f.id);
       next[f.id] = (lt && dep.length && dep.some(v => v !== lt)) ? { status: "update", latest: lt } : { status: "uptodate" };
     }
@@ -8799,7 +10076,7 @@ function PanelSettingsScreen() {
   };
   // update every deployed instance of a fork to `latest` — reinstall (re-download binary) on each (node,service)
   const updateFork = async (fid, latest) => {
-    const owner = (TURN_FORKS.find(x => x.id === fid) || {}).owner || "";
+    const owner = (turnForkList().find(x => x.id === fid) || {}).owner || "";
     const targets = [];
     for (const [nid, snap] of Object.entries(Store.stats || {})) for (const tp of (snap.turn_proxies || [])) if (tp.service && turnFork(tp.service) === fid) targets.push({ node: nid, service: tp.service });
     if (!targets.length) return;
@@ -8842,6 +10119,7 @@ function PanelSettingsScreen() {
   // The sub's address, URL and certificate now live in the Access & TLS section (access.sub / access.tls).
   const subCfg = ps.subscriptions || {};
   const [subsOn, setSubsOn] = useState(!!subCfg.enabled);
+  const [autoGen, setAutoGen] = useState(!!subCfg.auto_generate);   // auto-mint a subscription link for each new user
   const subLangCfg = (subCfg.languages && typeof subCfg.languages === "object") ? subCfg.languages : {};
   const [subLangs, setSubLangs] = useState((subLangCfg.enabled && subLangCfg.enabled.length) ? [...subLangCfg.enabled] : ["en"]);
   const [subLangDef, setSubLangDef] = useState(subLangCfg.default || "en");
@@ -8888,11 +10166,12 @@ function PanelSettingsScreen() {
         custom_lists_enabled: customEnabled,
         geo_update: { every_days: Math.max(0, Math.min(30, parseInt(guEvery) || 0)), at: guAt },
         store_configs: sc === "off" ? "off" : "encrypted",
-        subscriptions: { enabled: subsOn,   // base_url + serve now live in Access & TLS (access.sub/access.tls)
+        subscriptions: { enabled: subsOn, auto_generate: autoGen,   // base_url + serve now live in Access & TLS (access.sub/access.tls)
           languages: { enabled: subLangs, default: subLangDef } },
         throughput_perspective: tput,
         top_talkers: Math.max(1, Math.min(50, parseInt(topTalk) || 10)),
         top_destinations: Math.max(1, Math.min(50, parseInt(topDest) || 10)),
+        expiry_warn_days: Math.max(0, Math.min(365, parseInt(warnDays) || 3)),
         reserved: { mesh_subnet: rsvSubnet.trim(), mesh_port_base: +rsvPort || 9999, iface_prefix: rsvPrefix.trim() || "swg_" },
         mesh_awg: awgSet ? awg : {},
         advanced: { node_stale_ms: (+staleS || 30) * 1000, peer_grace_ms: (+graceS || 60) * 1000, geo_ttl_days: +ttlD || 3 },
@@ -8909,6 +10188,15 @@ function PanelSettingsScreen() {
         vk_link: vkLinkS.trim(),
       });
       if (!r.ok) return setMsg({ ok: false, t: r.error || "Failed to save." });
+    }
+    // interface-key escrow — applied on Save (not on toggle), like every other field. Enabling needs the vault unlocked.
+    if (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit) {
+      if (ivkEscrow && !subSKCached()) {
+        const ok = await new Promise(res => pushModal(html`<${VaultPromptSheet} opts=${{ title: "Unlock to enable escrow", reason: "Enabling interface-key escrow seals each server's interface key under your Encryption Vault key. Unlock it to apply." }} onDone=${res}/>`));
+        if (!ok || !subSKCached()) return setMsg({ ok: false, t: "Enabling key escrow needs the Encryption Vault unlocked." });
+      }
+      try { await ivkSetEscrow(ivkEscrow); setIvkEscrowInit(ivkEscrow); }
+      catch (e) { return setMsg({ ok: false, t: (e && e.message) || "Couldn't update key escrow." }); }
     }
     // per-node changes: one nodeUpdate per node whose edits differ from the saved baseline
     const dSub = rsvSubnet.trim(), dPort = String(+rsvPort || 9999), dPfx = rsvPrefix.trim() || "swg_";
@@ -9046,12 +10334,12 @@ function PanelSettingsScreen() {
   const listsJSON = ls => JSON.stringify((ls || []).map(l => ({ id: l.id || "", title: l.title || "", enabled: l.enabled !== false, targets: (l.targets ?? [...(l.domains || []), ...(l.cidrs || [])].join(", ")).trim() })));
   const glDirty = sec =>
     sec === "routing" ? ([...hidden].sort().join() !== (ps.hidden_categories || []).slice().sort().join() || listsJSON(lists) !== listsJSON(ps.custom_lists || [])) :
-    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "anton48"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
+    sec === "turn" ? (turnEnabledS !== (ps.turn_enabled !== false) || [...turnForks].sort().join() !== (ps.enabled_turn_forks || ["WINGS-N", "MYSOREZ", "samosvalishe", "anton48", "Moroka8"]).slice().sort().join() || JSON.stringify(forkColorOverrides()) !== JSON.stringify(forkOvFrom(ps.turn_fork_colors)) || vkLinkS.trim() !== (ps.vk_link || "") || String(Math.max(0, parseInt(tuEvery) || 0)) !== String((ps.turn_update || {}).every_days == null ? 0 : (ps.turn_update || {}).every_days) || tuAt !== ((ps.turn_update || {}).at || "04:00")) :
     sec === "security" ? secChanged() :
     sec === "geo" ? (JSON.stringify(provEnabled) !== JSON.stringify(Object.fromEntries((Store.catalogProviders || []).map(p => [p.id, p.enabled !== false]))) || JSON.stringify(provColorOverrides()) !== JSON.stringify(ps.provider_colors || {}) || customEnabled !== (ps.custom_lists_enabled !== false) || String(Math.max(0, parseInt(guEvery) || 0)) !== String(_gu.every_days == null ? 1 : _gu.every_days) || guAt !== (_gu.at || "04:00")) :
-    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false })) :
+    sec === "defaults" ? (dns !== (idf.dns || []).join(", ") || mtu !== String(idf.mtu || 1280) || ka !== String(idf.keepalive || 25) || JSON.stringify(ifaceColorOverrides()) !== JSON.stringify(ifaceOvFrom(ps.iface_colors)) || JSON.stringify(statusCondsOut()) !== JSON.stringify({ blocked: (ps.status_conditions || {}).blocked !== false, faulty: (ps.status_conditions || {}).faulty !== false }) || (ivkEscrow !== null && ivkEscrow !== ivkEscrowInit)) :
     sec === "configs" ? (sc !== _scMode) :
-    sec === "subs" ? (subsOn !== !!subCfg.enabled || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
+    sec === "subs" ? (subsOn !== !!subCfg.enabled || autoGen !== !!subCfg.auto_generate || warnDays !== String(ps.expiry_warn_days == null ? 3 : ps.expiry_warn_days) || JSON.stringify([...subLangs].sort()) !== JSON.stringify([...(subLangCfg.enabled || ["en"])].sort()) || subLangDef !== (subLangCfg.default || "en")) :
     sec === "display" ? (tput !== (ps.throughput_perspective === "peers" ? "peers" : "nodes") || staleS !== String(Math.round((adv.node_stale_ms || 30000) / 1000)) || graceS !== String(Math.round((adv.peer_grace_ms || 60000) / 1000)) || topTalk !== String(ps.top_talkers || 10) || topDest !== String(ps.top_destinations || 10) || themeColorS.toLowerCase() !== clampBrand(ps.theme_color || THEME_COLOR_DEFAULT, false).toLowerCase() || themeColorLightS.toLowerCase() !== clampBrand(ps.theme_color_light || THEME_COLOR_LIGHT_DEFAULT, true).toLowerCase()) :
     sec === "mesh" ? (rsvSubnet !== (rsv.mesh_subnet || "10.255.0.0/16") || rsvPort !== String(rsv.mesh_port_base || 9999) || rsvPrefix !== (rsv.iface_prefix || "swg_") || JSON.stringify(awgSet ? awg : {}) !== JSON.stringify(ps.mesh_awg || {})) : false;
   const secDirty = sec => glDirty(sec) || (SECF[sec] ? (Store.nodes || []).some(n => nodeDirty(n.id, sec)) : false);
@@ -9173,11 +10461,12 @@ function PanelSettingsScreen() {
             <label class="swt" title=${turnEnabledS ? "Turn proxies are on" : "Turn proxies are off"}><input type="checkbox" checked=${turnEnabledS} onChange=${e => setTurnEnabledS(e.target.checked)}/><span class="track"></span><span class="knob"></span></label></div>
           ${!turnEnabledS ? html`<p class="hint" style="margin:0 0 12px"><b class="warntext">Turn proxies are off.</b> Creation buttons and the turn-proxy sections are hidden across the panel. Deployed proxies keep running — they're just not shown here.</p>`
             : html`<p class="hint" style="margin:0 0 12px">Which forks appear in the <b>"Install a fork"</b> picker when you add a proxy to a node, and each fork's colour. Unticking one only <b>hides it from that list</b> — it never touches proxies you've already deployed. ${turnForks.size === 0 ? html`<b class="warntext">No forks are enabled — the install picker will be empty.</b>` : null}</p>`}
-          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${TURN_FORKS.map(f => { const fcol = pickThemed(forkColors[f.id], f.color, f.colorL); return html`<div class=${"cl-row" + (turnForks.has(f.id) ? "" : " off")} key=${f.id}>
+          ${html`<${Fragment}>
+          <div class=${"cllist" + (turnEnabledS ? "" : " dimmed")}>${turnForkList().map(f => { const fcol = pickThemed(forkColors[f.id], f.color, f.colorL); return html`<div class=${"cl-row" + (turnForks.has(f.id) ? "" : " off")} key=${f.id}>
             <${Switch} on=${turnForks.has(f.id)} title=${"Offer " + f.label + " in the install picker"} onChange=${v => setTurnForks(s => { const n = new Set(s); v ? n.add(f.id) : n.delete(f.id); return n; })}/>
             <${ThemedSwatch} val=${forkColors[f.id]} title=${"Colour for " + f.label} onChange=${nv => setForkColors(c => ({ ...c, [f.id]: nv }))}
               sample=${(c) => html`<span class="tg tg-turn" style=${"--tfc:" + c}>${f.label}</span>`}/>
-            <span class=${"tf-name tf-" + f.id} style=${"color:" + fcol}>${f.label}</span>
+            <a class=${"tf-name tf-" + f.id} href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" style=${"color:" + fcol} title=${"github.com/" + f.owner}>${f.label}</a>
             <span class="cl-caps" title=${forkSupportsAwg(f.id) ? "Works with WireGuard and AmneziaWG interfaces" : f.label + " is WireGuard-only — its client can't front an AmneziaWG interface"}>
               <span class="tg tg-wg">wg</span>${forkSupportsAwg(f.id) ? html`<span class="tg tg-awg">awg</span>` : null}
             </span>
@@ -9200,7 +10489,20 @@ function PanelSettingsScreen() {
               if (cs.status === "updating") return html`<span class="tf-chk"><span class="tf-arrow"><${Ic} i="refresh"/></span> updating…</span>`;
               if (cs.status === "update") return html`<button class="tf-chk upd tf-updbtn" title=${"Update every deployed " + f.label + " proxy to " + cs.latest} onClick=${() => updateFork(f.id, cs.latest)}><${Ic} i="download"/> update to ${cs.latest}</button>`;
               return html`<span class="tf-chk ok"><${Ic} i="check"/> up to date</span>`; })()}
-            <a class="tf-repo" href=${"https://github.com/" + f.owner} target="_blank" rel="noopener" title=${"Open " + f.owner + " on GitHub"}>${f.owner}</a>
+            <span class="tf-plats">${turnForkPlatforms(f).map(p => html`<span key=${p.os} class="tf-platwrap turnwrap">
+              <button type="button" aria-disabled=${p.disabled ? "true" : null}
+                class=${"tf-plat" + (p.disabled ? " off" : ((p.native ? " nat" : " cross") + (p.obf ? "" : " plain") + (p.isCli ? " cli" : "")))}
+                onClick=${() => { if (!p.disabled) openServerClients(f.id, p.os); }}><${Ic} i=${"os_" + p.os}/></button>
+              <span class="turnbub tf-plbub">
+                ${p.disabled
+                  ? html`<span class="tf-plbub-l"><span class="tf-plbub-app">No ${f.label} app for ${p.label} yet</span></span>`
+                  : html`<${Fragment}><span class="tf-plbub-l">
+                      <span class="tf-plbub-app">${p.name}<span class="tf-plbub-by"> by </span><span style=${"color:" + turnColor(p.author)}>${p.author}</span></span>
+                      ${p.coreFork ? html`<span class="tf-plbub-core">with <span style=${"color:" + turnColor(p.coreFork)}>${p.coreFork}</span> core</span>` : null}
+                    </span>
+                    <span class=${"tf-plbub-obf" + (p.obfLabel ? "" : " plain")}>${p.obfLabel || "plain"}</span><//>`}
+              </span></span>`)}</span>
+            <button class="iconbtn tf-gear" title=${"Server-flag defaults for " + f.label + " (pre-fill new proxies)"} onClick=${() => openServerDefaults(f.id)}><${Ic} i="gear"/></button>
           </div>`; })}</div>
           ${turnEnabledS ? html`<${Fragment}>
           <div class="seclabel" style="margin-top:18px">Auto-update schedule</div>
@@ -9215,7 +10517,11 @@ function PanelSettingsScreen() {
               <div class="hint">${tuEvery === "0" ? "Auto-updates are off — use “Check for updates” below to update manually." : "The panel checks at this local time, on the chosen cadence."}</div></div>
           </div>
           <div class="georefresh"><span class="faint" style="font-size:11px">Check every deployed proxy's fork for a newer release now, and update the ones that are behind</span><button class="btn btn-mini" disabled=${Object.values(turnCheck).some(v => v && v.status === "checking")} onClick=${checkTurnUpdates}><span class=${Object.values(turnCheck).some(v => v && v.status === "checking") ? "tf-arrow" : ""}><${Ic} i="refresh"/></span> Check for updates</button></div>
+          <div class="seclabel" style="margin-top:18px">Client rosters</div>
+          <p class="hint" style="margin:0 0 8px">Whether any client app's config/link schema changed upstream on GitHub since we curated it — fetches each app's source file and flags drift per app to review.</p>
+          <div class="georefresh"><span class="faint" style="font-size:11px">Fetch each client app's schema source from GitHub and flag the ones whose upstream changed</span><button class="btn btn-mini" onClick=${() => openRosterCheck()}><${Ic} i="refresh"/> Check client rosters</button></div>
           <//>` : null}
+          <//>`}
           <div class="seclabel" style="margin-top:18px">Fallback VK call link</div>
           <p class="hint" style="margin:0 0 8px">Used for <b>unassigned</b> peers, and as the link the panel bakes in when you generate a config here to <b>test a connection yourself</b> before handing it out. Leave blank to emit a <span class="mono">${"<PASTE VK CALL LINK>"}</span> placeholder. Assigned users should get their <b>own</b> VK link — set it in their profile or QR view before you distribute. <b>Subscription pages ignore this link</b> and use only the per-user one.</p>
           <input class="vklink-in" value=${vkLinkS} onInput=${e => setVkLinkS(e.target.value)} placeholder="https://vk.com/call/join/…"/>
@@ -9293,10 +10599,13 @@ function PanelSettingsScreen() {
           <div class="field"><label>DNS</label><input value=${dns} onInput=${e => setDns(e.target.value)} placeholder="https://8.8.8.8/dns-query, 1.1.1.1"/><div class="hint">Comma-separated</div></div>
           <div class="row2"><div class="field"><label>MTU</label><input value=${mtu} onInput=${e => setMtu(e.target.value)} placeholder="1280"/></div>
             <div class="field"><label>Persistent keepalive (s)</label><input value=${ka} onInput=${e => setKa(e.target.value)} placeholder="25"/></div></div>
+          <div class="seclabel">Key escrow & recovery</div>
+          <p class="hint" style="margin:0 0 10px">Backup each server's interface key so a wiped / rebuilt node restores its interfaces with their original identities.</p>
+          <${InterfaceKeyEscrow} value=${ivkEscrow} onChange=${setIvkEscrow} vaultExists=${ivkVaultExists}/>
         </div>` : null}
         ${section === "security" ? html`<div class="card">
           <div class="seclabel" style="margin-top:0">Authentication</div>
-          <p class="hint" style="margin:0 0 14px">Change the panel username and password — applied on <b>Save</b>. Changing either takes effect immediately and you'll be asked to sign in again.</p>
+          <p class="hint" style="margin:0 0 14px">Change the panel username and password — applied on <b>Save</b>. Changing either takes effect immediately and you'll be asked to sign in again. Changing the password also re-keys your <b>Encryption Vault</b> in place, so stored configs and subscription links keep working (no re-issue).</p>
           ${!secAuth ? html`<div class="formmsg err">This panel has no login configured — changes are disabled.</div>` : (secErr() ? html`<div class="formmsg err">${secErr()}</div>` : null)}
           <div class="field"><label>Username</label><input value=${secUser} disabled=${!secAuth} onInput=${e => setSecUser(e.target.value)} autocomplete="username"/></div>
           <div class="field"><label>Current password</label><input type="password" value=${secCur} disabled=${!secAuth} onInput=${e => setSecCur(e.target.value)} autocomplete="current-password" placeholder="required to confirm a change"/></div>
@@ -9327,6 +10636,12 @@ function PanelSettingsScreen() {
             ${sc === "off"
               ? html`<div class="hint warn">Subscriptions serve the encrypted config blobs — turn on <b>Keep encrypted configs</b> in <button class="linkbtn" onClick=${() => setSection("configs")}>Client configs</button> first.</div>`
               : html`<div class="hint">Off returns 404 for every subscription URL, regardless of the rest.</div>`}</div>
+          <div class="field"><label class="ivk-esc-row toggle-row"><${Switch} on=${autoGen} disabled=${!subsOn} onChange=${setAutoGen}/>
+            <span>Auto-generate subscription links for new users</span></label>
+            <div class="hint">When you create a user, mint their subscription link automatically, in the background (user creation stays instant). Needs the encryption key unlocked at that moment; otherwise the link is created the next time you open that user with the key unlocked.</div></div>
+          <div class="seclabel">Access expiry</div>
+          <p class="hint" style="margin:0 0 12px">A subscription or peer with an expiry date shows an orange "about to expire" warning this many days ahead.</p>
+          <div class="field" style="max-width:340px"><label>Warn before expiry (days)</label><input type="text" inputmode="numeric" value=${warnDays} onDblClick=${e => e.target.select()} onInput=${e => { let v = e.target.value.replace(/[^0-9]/g, ""); if (+v > 365) v = "365"; setWarnDays(v); }} placeholder="Default: 3 (0 = warn only once expired)"/></div>
           <div class="seclabel">Address & certificate</div>
           <div class="subaddr">
             <div class="subaddr-row"><span class="subaddr-k">Public URL</span><span class="subaddr-v mono">${subBaseUrl() || html`<span class="faint">Not set</span>`}</span></div>
@@ -9504,7 +10819,7 @@ function SearchBox({ placeholder, value, onInput }) {
 // a left-aligned Cancel) stay inline. `danger` paints the action red; `actionCls` overrides the class outright;
 // `title`/`disabled` are only emitted when passed, so the rendered DOM stays byte-identical to the old inline form.
 function footRow({ left, cancelLabel, onCancel, action, onAction, danger, actionCls, disabled, title }) {
-  return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || "Cancel"}</button><button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button><//>`;
+  return html`<${Fragment}>${left || null}<span class="grow"></span><button class="btn btn-ghost" onClick=${onCancel}>${cancelLabel || "Cancel"}</button>${action != null ? html`<button class=${actionCls || ("btn " + (danger ? "btn-danger" : "btn-primary"))} disabled=${disabled} ...${title != null ? { title } : {}} onClick=${onAction}>${action}</button>` : null}<//>`;
 }
 // subject = {kind:"peer"|"user", id} — when that peer/user is blocked, the whole modal takes the red "blocked"
 // treatment (border + header tint + a BLOCKED chip). Looked up live (useStore) so it reacts to block/unblock
@@ -9655,7 +10970,7 @@ function CreateUserSheet() {
     const r = await api.userCreate({ name: name.trim(), tag: tag.trim(), note });
     setBusy(false);
     if (!r.ok) { setMsg({ k: "err", t: r.error || "couldn't create user" }); return null; }
-    Store.recentlyCreated[r.data.id] = Date.now(); await Store.poll();
+    Store.recentlyCreated[r.data.id] = Date.now(); subAutoGenIfEnabled(r.data.id); await Store.poll();
     return r.data;
   };
   const stayExpanded = uid => { usersView.expanded[uid] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
@@ -9671,129 +10986,73 @@ function CreateUserSheet() {
 }
 
 function openAddPeers(userId, userName) { openModal(html`<${AddPeersSheet} userId=${userId} userName=${userName}/>`); }
-// A multi-peer editor. The dropdown ADDS peers (existing unassigned — key kept — or a fresh "new peer") to a
-// working set; the carousel flips between them (◀ / ▶ / click-to-jump · N/M counter); the interfaces grid below
-// reflects THE SELECTED peer (existing peers' current interfaces pre-checked + locked; new peers all unchecked).
-// Save assigns each existing peer (+ any newly-ticked interfaces) and mints each new peer across its ticked
-// interfaces (one key). The user's already-assigned peers seed the carousel so they're editable in place too.
+// One peer as a bordered block: a deployment row per (node, iface) — status · title (once) · node · iface+address ·
+// action. Multi-deployment peers stack their targets under one border with the PRIMARY tagged and backups beneath, so
+// the set reads as one identity. `mode` picks the row action: "mine" unassigns (rotates the key), "free" assigns.
+function PeerBlockGrid({ peers, mode, act }) {
+  useStore();
+  const gridRef = useRef(null);
+  const ids = peers.map(p => p.id).join(",");
+  useEffect(() => {                                     // cap the grid at 7 peer blocks (styled scrollbar past that) + centre a just-added/moved peer
+    const el = gridRef.current; if (!el) return;
+    const kids = el.children;
+    el.style.maxHeight = kids.length > 7 ? Math.ceil(kids[6].getBoundingClientRect().bottom - el.getBoundingClientRect().top) + "px" : "";
+    const hot = peers.find(p => Store.recentlyCreated[p.id] && Date.now() - Store.recentlyCreated[p.id] < 2500);
+    if (hot) requestAnimationFrame(() => { const n = el.querySelector('[data-pid="' + hot.id + '"]'); if (!n) return;
+      const gr = el.getBoundingClientRect(), pr = n.getBoundingClientRect();
+      el.scrollTo({ top: Math.max(0, el.scrollTop + (pr.top - gr.top) - (el.clientHeight - pr.height) / 2), behavior: "smooth" }); });
+  }, [ids]);
+  if (!peers.length) return html`<div class="pg2-empty">${mode === "mine" ? "No peers assigned to this user yet." : "No unassigned peers to add."}</div>`;
+  return html`<div class="pg2" ref=${gridRef}>${peers.map(p => {
+    const ts = orderedTargets(p.targets || []); const multi = ts.length > 1;
+    const fresh = Store.recentlyCreated[p.id] && (Date.now() - Store.recentlyCreated[p.id] < 2500);   // reuse the users/peers-grid glow (recentlyCreated + pcreate)
+    return html`<div key=${p.id} data-pid=${p.id} class=${"pg2-peer" + (fresh ? " pcreate" : "")}>${(ts.length ? ts : [{}]).map((t, i) => html`
+      <div key=${tkey(t.node, t.iface)} class=${"pg2-dep clk" + (multi && i === 0 ? " primary" : "")} title="Double-click for QR / configs"
+        onMouseDown=${rowNoSelect} onClick=${e => rowSingle(e, () => openPeerView(p.id, t.node, t.iface, true))} onDblClick=${e => rowDouble(e, () => openPeerConfigs(p, { child: true }))}>
+        <span class="pg2-c pg2-st">${t.node ? gridStatusBadge(t, p) : null}</span>
+        <span class="pg2-c pg2-title">${i === 0
+          ? html`<${Fragment}><span class="pg2-nm">${(p.title || "").trim() || html`<span class="faint">untitled</span>`}</span>${multi ? html`<span class="pg2-rel primary">Primary</span>` : null}<//>`
+          : html`<span class="pg2-bk">Backup</span>`}</span>
+        <span class="pg2-c pg2-if">${t.node ? html`<${Tag} kind=${targetType(t)} label=${targetType(t)}/><span class="pg2-ifn">${t.iface}</span><span class="pg2-ip">${String(t.ip || "").split("/")[0] || "—"}</span>` : null}</span>
+        <span class="pg2-c pg2-ctl">${i === 0 ? html`<${Fragment}>${mode === "mine" ? html`<button type="button" class="pg2-act add" title="Add or edit interface deployments" onClick=${() => openAddTarget(p)}><${Ic} i="plus"/></button>` : null}<button type="button" class=${"pg2-act " + mode} title=${mode === "mine" ? "Unassign from this user" : "Assign to this user (keeps its key)"} onClick=${() => act(p)}><${Ic} i=${mode === "mine" ? "link" : "plus"}/></button><//>` : null}</span>
+      </div>`)}</div>`;
+  })}</div>`;
+}
+// Add peers to a user — two grids: the user's own peers (unassign) and the unassigned pool (assign, key kept). Both
+// actions persist immediately (assign is non-destructive; unassign rotates the key, so it confirms). "Create fresh
+// peer" opens the normal new-peer flow with this user locked in. No carousel, no staging, no Save.
 function AddPeersSheet({ userId, userName }) {
-  const cf = useConfigFields();
-  const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
-  const seq = useRef(0);
-  const lastOnline = p => { const a = (p.targets || []).map(t => t.observed && t.observed.handshake_age).filter(x => x != null); return a.length ? seen(Math.min(...a)) + " ago" : "never online"; };
-  // Type from the LIVE interface (awg_params), falling back to the peer's stored target.type only when the interface
-  // isn't reported — so the badge/label always agree with the interfaces grid (which reads the live interface too).
-  const tgtType = targetType;   // module helper — live interface authoritative, stored target.type only as fallback
-  const peerLabel = p => { const t = (p.targets || [])[0] || {}; return [p.title || "untitled", Store.nodeName(t.node), tgtType(t).toUpperCase() + " " + t.iface, t.ip].filter(Boolean).join(" · "); };
-  const peerCtx = p => { const t = (p.targets || [])[0] || {}; return [Store.nodeName(t.node), tgtType(t).toUpperCase() + " " + t.iface, t.ip].filter(Boolean).join(" · "); };   // the label MINUS the (now-editable) title
-  const rep = p => (p.targets || [])[0] || {};
-  const orderPeers = list => [...list].sort((a, b) => (Store.nodeName(rep(a).node) || "").localeCompare(Store.nodeName(rep(b).node) || "")
-    || (rep(a).iface || "").localeCompare(rep(b).iface || "") || String(rep(a).ip || "").localeCompare(String(rep(b).ip || ""), undefined, { numeric: true }));
-  const mkExisting = (p, assigned) => ({ key: "e:" + p.id, kind: "existing", peer: p, assigned, title: p.title || "", sel: Object.fromEntries((p.targets || []).map(t => [tkey(t.node, t.iface), { node: t.node, iface: t.iface, ip: String(t.ip || "").split("/")[0], existing: true }])) });
-  const mkNew = () => ({ key: "n:" + (seq.current++), kind: "new", title: "", sel: {} });
-  const [items, setItems] = useState(() => orderPeers(userId ? Store.peersOfUser(userId) : []).map(p => mkExisting(p, true)));
-  const [cursor, setCursor] = useState(0);
-  const [jump, setJump] = useState(false);
-  const [editTitle, setEditTitle] = useState(false);   // click the title → inline edit; blur/Enter keeps, Esc reverts
-  const editOrig = useRef("");                          // the title as it was when edit started → restored on Esc
-  const titleInput = useRef(null);
-  useEffect(() => { if (editTitle && titleInput.current) { titleInput.current.focus(); try { titleInput.current.select(); } catch (_) {} } }, [editTitle, cursor]);   // focus the inline box so typing starts immediately
-  const goTo = i => { setJump(false); setEditTitle(false); setCursor(i); };
-  const [toUnassign, setToUnassign] = useState([]);   // saved peers the operator unlinked → unassigned on Save
-  const dirty = useRef(false); const sheetClose = useRef(null);
-  const cur = items[cursor] || null;
-  const usedExisting = new Set(items.filter(it => it.kind === "existing").map(it => it.peer.id));
-  const addable = orderPeers(Store.unassignedPeers().filter(p => !usedExisting.has(p.id)));
-  const carLabel = it => (it.title || "").trim() || (it.kind === "new" ? "New peer" : peerLabel(it.peer));
+  useStore();
+  const rep = p => orderedTargets(p.targets || [])[0] || {};
+  const orderPeers = list => [...list].sort((a, b) =>
+    String(a.title || "").localeCompare(String(b.title || "")) ||
+    (Store.nodeName(rep(a).node) || "").localeCompare(Store.nodeName(rep(b).node) || "") ||
+    String(rep(a).ip || "").localeCompare(String(rep(b).ip || ""), undefined, { numeric: true }));
+  const mine = orderPeers(userId ? Store.peersOfUser(userId) : []);
+  const free = orderPeers(Store.unassignedPeers());
 
-  const stayExpanded = () => { usersView.expanded[userId] = true; usersView.q = ""; usersView.page = 1; closeModal(); go("#/users"); };
-  const addFromDrop = v => {
-    if (!v) return; const idx = items.length; dirty.current = true;
-    if (v === "__new") setItems(its => [...its, mkNew()]);
-    else { const p = Store.unassignedPeers().find(x => x.id === v); if (!p) return; setItems(its => [...its, mkExisting(p, false)]); }
-    setCursor(idx); setJump(false);
-  };
-  const updateSel = updater => { dirty.current = true; setItems(its => its.map((it, i) => i === cursor ? { ...it, sel: typeof updater === "function" ? updater(it.sel) : updater } : it)); };
-  const updateTitle = v => { dirty.current = true; setItems(its => its.map((it, i) => i === cursor ? { ...it, title: v } : it)); };
-  const dropAt = i => { setJump(false); setItems(its => its.filter((_, k) => k !== i)); setCursor(c => Math.max(0, Math.min(c, items.length - 2))); };
-  const removeCur = () => {
-    const it = items[cursor]; if (!it) return; dirty.current = true;
-    if (it.kind === "existing" && it.assigned)   // unlinking a SAVED peer = unassign on Save → confirm (pushed, keeps this sheet)
-      pushModal(html`<${ConfirmSheet} title=${"Unlink peer" + (userName ? " · " + userName : "")} confirmLabel="Unlink" danger=${true}
-        body=${html`Unassign <b>${it.peer.title || "this peer"}</b> from ${userName || "the user"} when you Save? Access is revoked and the key changes — re-adding later needs a fresh QR / config.`}
-        onConfirm=${() => { setToUnassign(u => [...u, it.peer.id]); dropAt(cursor); }}/>`);
-    else dropAt(cursor);
-  };
+  const doAssign = p => { Store.recentlyCreated[p.id] = Date.now(); return mutate({ key: "peer:" + p.id,   // keep the key, just link — publish the blob (prompts to unlock if locked)
+    patch: s => { const pp = s.roster.peers[p.id]; if (pp) pp.user_id = userId; },
+    call: () => api.peerUpdate({ peer_id: p.id, user_id: userId }),
+    onOk: () => subReconcileUser(userId) }); };
+  const doUnassign = p => pushModal(html`<${ConfirmSheet} title=${"Unassign peer" + (userName ? " · " + userName : "")} confirmLabel="Unassign" danger=${true}
+    body=${html`Revoke <b>${(p.title || "").trim() || "this peer"}</b> from ${userName || "the user"}? Access is cut immediately and the key changes — re-adding later needs a fresh QR / config.`}
+    onConfirm=${() => { Store.recentlyCreated[p.id] = Date.now(); mutate({ key: "peer:" + p.id,
+      patch: s => { const pp = s.roster.peers[p.id]; if (pp) pp.user_id = null; },
+      call: () => api.peerUnassign({ peer_id: p.id }),
+      onOk: () => { delete Store.sessionConfigs[p.pubkey]; Store.configEpoch++; } }); }}/>`);
+  const createFresh = () => openCreatePeer({ user_id: userId, userName, lockUser: true }, true);
 
-  const save = async () => {
-    if (!items.length && !toUnassign.length) return setMsg({ k: "err", t: "Add at least one peer." });
-    for (const it of items) {
-      for (const s of Object.values(it.sel)) if (!V.ipv4(String(s.ip || "").trim())) return setMsg({ k: "err", t: "Invalid address for " + Store.nodeName(s.node) + "/" + s.iface + "." });
-      if (it.kind === "new" && !Object.keys(it.sel).length) return setMsg({ k: "err", t: "A new peer has no interfaces — tick at least one (or remove it)." });
-    }
-    if (items.some(it => it.kind === "new")) { const ce = configErrors(cf); const ck = Object.keys(ce)[0]; if (ck) return setMsg({ k: "err", t: ce[ck] }); }
-    setBusy(true); setMsg({ k: "work", t: "saving…" });
-    const fails = []; let firstPid = null;
-    for (const it of items) {
-      if (it.kind === "new") {
-        const res = await createOneMultiTargetPeer(userId, Object.values(it.sel), cf.opts(), (it.title || "").trim());
-        if (!res.ok) fails.push(...res.fails); else if (res.id && !firstPid) firstPid = res.id;
-      } else {
-        const patch = {};
-        if (!it.assigned) patch.user_id = userId;
-        if ((it.title || "").trim() !== (it.peer.title || "")) patch.title = (it.title || "").trim();   // inline title edit
-        if (Object.keys(patch).length) { const r = await api.peerUpdate({ peer_id: it.peer.id, ...patch }); if (!r.ok) { fails.push(peerLabel(it.peer) + ": " + (r.error || "update failed")); continue; } }
-        const have = new Set((it.peer.targets || []).map(t => tkey(t.node, t.iface)));
-        for (const s of Object.values(it.sel)) {
-          if (have.has(tkey(s.node, s.iface))) continue;
-          const rr = await api.peerAddTarget({ peer_id: it.peer.id, target: { node: s.node, iface: s.iface, ip: String(s.ip).trim().split("/")[0] } });
-          if (!rr.ok) fails.push(Store.nodeName(s.node) + "/" + s.iface + ": " + (rr.error || rr.code || "failed"));
-        }
-        if (!firstPid) firstPid = it.peer.id;
-      }
-    }
-    for (const pid of toUnassign) { const r = await api.peerUnassign({ peer_id: pid }); if (!r.ok) fails.push("unassign: " + (r.error || r.code || "failed")); }
-    setBusy(false); await Store.poll();
-    if (fails.length) toast("Some operations failed: " + fails.join("; "), "err", 6000);
-    closeModal();
-    if (firstPid) revealAssignedPeer(userId, firstPid); else stayExpanded();
-    subReconcileUser(userId);   // assigning an EXISTING peer here only writes user_id — publish its (and any new peer's) blob, prompting to unlock if locked
-  };
-
-  const newCount = items.filter(it => it.kind === "new").length;
-  const cta = "Save" + (items.length ? " · " + items.length + " peer" + (items.length === 1 ? "" : "s") : (toUnassign.length ? " · unlink " + toUnassign.length : ""));
-  return html`<${Sheet} title=${"Add peers" + (userName ? " · " + userName : "")} dirtyRef=${dirty} closeRef=${sheetClose}
-    foot=${footRow({ onCancel: () => (sheetClose.current || closeModal)(), disabled: busy || (!items.length && !toUnassign.length), onAction: save, action: cta })}>
-    <div class="field"><label>Add peer</label>
-      <select class="selwrap" value="" onChange=${e => { addFromDrop(e.target.value); e.target.value = ""; }}>
-        <option value="">Add an existing peer or create a new one…</option>
-        <option value="__new">＋  Create new peer</option>
-        ${addable.map(p => html`<option value=${p.id}>${peerLabel(p)} · ${lastOnline(p)}</option>`)}
-      </select></div>
-    ${items.length && cur ? html`<${Fragment}>
-      <div class="peercar">
-        <button class="pc-arrow" title="Previous peer" disabled=${cursor <= 0} onClick=${() => goTo(Math.max(0, cursor - 1))}>◀</button>
-        <div class="pc-face" title="Pick a peer" onClick=${e => { if (!editTitle && !e.target.closest(".pc-titletext")) setJump(j => !j); }}>
-          <span class=${"pc-kind " + (cur.kind === "new" ? "new" : tgtType(rep(cur.peer)))}>${cur.kind === "new" ? "new" : tgtType(rep(cur.peer))}</span>
-          <span class="pc-name">${editTitle
-            ? html`<input class="pc-title" data-enter="self" ref=${titleInput} value=${cur.title} placeholder=${cur.kind === "new" ? "New peer" : "untitled"} onInput=${e => updateTitle(e.target.value)}
-                onBlur=${() => setEditTitle(false)} onClick=${e => e.stopPropagation()}
-                onKeyDown=${e => {
-                  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); setEditTitle(false); }          // keep the new title, back to static
-                  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); updateTitle(editOrig.current); setEditTitle(false); }   // revert to the pre-edit title
-                }}/>`
-            : html`<span class="pc-titletext" title="Click to rename this peer" onClick=${e => { e.stopPropagation(); editOrig.current = cur.title || ""; setEditTitle(true); }}>${(cur.title || "").trim() || (cur.kind === "new" ? "New peer" : "untitled")}</span>`}${cur.kind === "existing" ? html`<span class="pc-rest"> · ${peerCtx(cur.peer)}</span>` : null}</span>
-          <span class="pc-count">${cursor + 1}/${items.length}</span>
-        </div>
-        <button class="pc-arrow" title="Next peer" disabled=${cursor >= items.length - 1} onClick=${() => goTo(Math.min(items.length - 1, cursor + 1))}>▶</button>
-        <button class="pc-x" title=${(cur.kind === "existing" && cur.assigned) ? "Unlink (unassign on save)" : "Remove from the list"} onClick=${removeCur}><${Ic} i="link"/></button>
-        ${jump ? html`<div class="pc-menu">${items.map((it, i) => html`<button key=${it.key} class=${i === cursor ? "on" : ""} onClick=${() => goTo(i)}><span class="pc-mi">${i + 1}</span> ${carLabel(it)}</button>`)}</div>` : null}
-      </div>
-      <div class="field"><label>Interfaces${cur.kind === "new" ? " · pick where to deploy" : ""}</label>
-        <${PeerIfaceGrid} value=${cur.sel} onChange=${updateSel} lockExisting=${cur.kind === "existing"}/></div>
-      ${newCount ? html`<${AdvancedFields} st=${cf}/>` : null}
-    <//>` : html`<div class="hint" style="margin-top:6px">Add an existing unassigned peer (its key is kept) or create a new one, then tick which interfaces to deploy it on.</div>`}
-    ${msg ? html`<div class=${"formmsg " + msg.k}>${msg.t}</div>` : null}
+  return html`<${Sheet} title=${"Add peers" + (userName ? " · " + userName : "")} width=${680}>
+    <div class="pg2-sec">
+      <div class="pg2-hdr"><label>This user's peers</label><span class="grow"></span>
+        <button class="btn btn-mini pg2-fresh" onClick=${createFresh}><${Ic} i="plus"/> Create fresh peer</button></div>
+      <${PeerBlockGrid} peers=${mine} mode="mine" act=${doUnassign}/>
+    </div>
+    <div class="pg2-sec">
+      <div class="pg2-hdr"><label>Unassigned peers</label></div>
+      <${PeerBlockGrid} peers=${free} mode="free" act=${doAssign}/>
+    </div>
   <//>`;
 }
 
@@ -9848,13 +11107,12 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
   useEffect(() => { onChange(Object.values(sel)); }, [sel]);
 
   if (!targets.length) return html`<div class="hint">No interfaces available — is a node online?</div>`;
-  // order by the CURRENT checked state (checked targets on top), then node, then interface — so a ticked row
-  // jumps up to join the selected group and every selection stays gathered at the top with its IP visible.
+  // Steady order — by node, then interface. Ticking a target does NOT move its row (an on-the-fly "checked rows jump
+  // to the top" reshuffle read as confusing); the arrangement stays put while you pick, and re-sorts only on re-open.
   const _sv = Object.values(sel);
   const lockType = _sv.length ? iTypeOf(_sv[0].node, _sv[0].iface) : null;   // a peer is one protocol — hide the other kind once one is ticked
   const ordered = [...targets].filter(t => t.missing || !lockType || iTypeOf(t.node, t.iface) === lockType).sort((a, b) =>
-    (sel[tkey(a.node, a.iface)] ? 0 : 1) - (sel[tkey(b.node, b.iface)] ? 0 : 1)
-    || (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
+    (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "")
     || (a.iface || "").localeCompare(b.iface || ""));
   return html`<div class="targetpick">${ordered.map(t => {
     const k = tkey(t.node, t.iface); const s = sel[k];
@@ -9875,71 +11133,6 @@ function TargetPicker({ prefill, exclude, onChange, initial }) {
 // CONTROLLED interfaces grid for the Add-peers carousel: `value` = {tkey:{node,iface,ip,existing?}}; `onChange`
 // takes a functional updater so an async IP allocation merges against the LATEST selection. `lockExisting` keeps
 // already-deployed rows checked + read-only (removing a live deployment isn't done here). Scrolls past 5 rows.
-function PeerIfaceGrid({ value, onChange, lockExisting }) {
-  const all = useMemo(allTargets, [Store.describe]);
-  const allocIp = async (node, iface) => {
-    const k = tkey(node, iface);
-    onChange(sel => ({ ...sel, [k]: { node, iface, ip: "", ipHint: "finding a free address…" } }));
-    const r = await api.nextIp([node], iface);
-    onChange(sel => sel[k] ? { ...sel, [k]: { ...sel[k], ip: r.ok ? String(r.data.next_ip).split("/")[0] : "", ipHint: r.ok ? "" : (r.error || "no free address") } } : sel);
-  };
-  const toggle = (node, iface) => {
-    const k = tkey(node, iface); const s = value[k];
-    if (s) { if (s.existing && lockExisting) return; onChange(sel => { const n = { ...sel }; delete n[k]; return n; }); }
-    else allocIp(node, iface);
-  };
-  const setIp = (k, v) => onChange(sel => sel[k] ? { ...sel, [k]: { ...sel[k], ip: v } } : sel);
-  if (!all.length) return html`<div class="hint">No interfaces available — is a node online?</div>`;
-  const _sv = Object.values(value);
-  const lockType = _sv.length ? iTypeOf(_sv[0].node, _sv[0].iface) : null;   // a peer is one protocol — hide the other kind once one is ticked
-  const ordered = [...all].filter(t => !lockType || iTypeOf(t.node, t.iface) === lockType).sort((a, b) => (Store.nodeName(a.node) || "").localeCompare(Store.nodeName(b.node) || "") || (a.iface || "").localeCompare(b.iface || ""));
-  return html`<div class=${"targetpick" + (ordered.length > 5 ? " scroll" : "")}>${ordered.map(t => {
-    const k = tkey(t.node, t.iface); const s = value[k];
-    const im = (Store.describe[t.node] || {})[t.iface] || {};
-    const ity = (im.awg_params && Object.keys(im.awg_params).length) ? "awg" : "wg";
-    const locked = !!(s && s.existing && lockExisting);
-    return html`<div class=${"targetopt " + (s ? "sel " : "") + (locked ? "locked" : "")}>
-      <label class="topt-main" onClick=${locked ? null : () => toggle(t.node, t.iface)}>
-        <span class="box">${s ? html`<${Ic} i="check"/>` : ""}</span>
-        <span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span>
-        <span class="tp">${t.iface}</span></label>
-      <${Tag} kind=${ity} label=${ity}/>
-      ${s ? html`<input class=${"topt-ip " + (s.ip && !V.ipv4(s.ip) ? "bad" : "")} value=${s.ip} placeholder=${s.ipHint || "address"} readOnly=${locked} onInput=${e => setIp(k, e.target.value)}/>` : null}
-    </div>`;
-  })}</div>`;
-}
-
-// Mint ONE peer (single key + PSK) deployed to MULTIPLE targets in a single atomic peerCreate (per-target configs
-// keyed node|iface). Returns { ok, id?, fails:[...] }. Used by the Add-peers carousel for a "new peer" item.
-async function createOneMultiTargetPeer(userId, targets, opts, title) {
-  if (!targets.length) return { ok: false, fails: ["no interfaces"] };
-  const dnsArr = (opts.dns || "").split(",").map(s => s.trim()).filter(Boolean);
-  try {
-    const keys = await genKeys(); const psk = genPSK();
-    const tlist = []; const configs = {};
-    for (const t of targets) {
-      const m = Store.ifaceMeta(t.node, t.iface);
-      if (!m) return { ok: false, fails: [Store.nodeName(t.node) + "/" + t.iface + " (no interface meta)"] };
-      const ipClean = String(t.ip).trim().split("/")[0];
-      const ty = (m.awg_params && Object.keys(m.awg_params).length) ? "awg" : "wg";
-      tlist.push({ node: t.node, iface: t.iface, ip: ipClean, type: ty });
-      configs[tkey(t.node, t.iface)] = buildConf({ privkey: keys.priv, address: ipClean + "/32", dns: dnsArr, mtu: (opts.mtu || "").trim() || 1280,
-        awg_params: m.awg_params, server_pubkey: m.public_key, psk, endpoint: m.endpoint,
-        allowed: (opts.allowed || "").trim() || "0.0.0.0/0, ::/0", keepalive: (opts.keepalive || "").trim() });
-    }
-    const body = { user_id: userId, pubkey: keys.pub, psk, targets: tlist };
-    if (title) body.title = title;
-    const _ov = configOverrides(opts, Store.ifaceMeta(targets[0].node, targets[0].iface));
-    if (Object.keys(_ov).length) body.overrides = _ov;
-    // No plaintext to the server: the private key stays in the browser, encrypted into the blob by subMaybePublish below.
-    const r = await api.peerCreate(body);
-    if (!r.ok) return { ok: false, fails: ["create: " + (r.error || r.code || "failed")] };
-    Store.sessionConfigs[keys.pub] = Object.assign(Store.sessionConfigs[keys.pub] || {}, configs);
-    if (r.data && r.data.id) Store.recentlyCreated[r.data.id] = Date.now();
-    await subPublishOrPrompt(userId, r.data && r.data.id, keys.priv, psk);   // publish to the user's subscription (prompt to unlock if locked)
-    return { ok: true, id: r.data && r.data.id };
-  } catch (e) { return { ok: false, fails: [e.message || String(e)] }; }
-}
 
 // Advanced client-config fields (DNS / MTU / keepalive / AllowedIPs) — shared by the
 // peer-minting sheets. `v` is a {dns,mtu,keepalive,allowed,dnsTouched} ref-ish object.
@@ -9977,7 +11170,7 @@ function useConfigFields() {
 
 // New peer (mint a fresh keypair) deployed to one OR MORE (node,iface) targets as ONE
 // credential (redundancy / failover). For per-interface devices, use a user's "Add peers".
-function openCreatePeer(prefill) { openModal(html`<${CreatePeerSheet} prefill=${prefill || {}}/>`); }
+function openCreatePeer(prefill, child) { (child ? pushModal : openModal)(html`<${CreatePeerSheet} prefill=${prefill || {}}/>`); }
 function CreatePeerSheet({ prefill }) {
   const [chosen, setChosen] = useState([]);
   const [title, setTitle] = useState("");
@@ -10043,8 +11236,10 @@ function CreatePeerSheet({ prefill }) {
 
   return html`<${Sheet} title="New peer"
     foot=${footRow({ onCancel: closeModal, disabled: busy, onAction: create, action: "Create peer" })}>
-    <div class="field"><label>User</label>
-      <${UserPicker} value=${userId} allowUnassigned=${true} onChange=${setUserId}/></div>
+    ${prefill.lockUser
+      ? html`<div class="field"><label>User</label><div class="lockeduser">${prefill.userName || (Store.recon.users.find(u => u.id === userId) || {}).name || "—"}</div></div>`
+      : html`<div class="field"><label>User</label>
+      <${UserPicker} value=${userId} allowUnassigned=${true} onChange=${setUserId}/></div>`}
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional, to tell devices apart</span></label>
       <input value=${title} onInput=${e => setTitle(e.target.value)} maxlength="64" placeholder="iPhone, Router, Laptop…"/></div>
     <div class="field"><label>Targets <span class="faint" style="text-transform:none;letter-spacing:0">— one, or several for redundancy (same key)</span></label>
@@ -10166,17 +11361,21 @@ function AddTargetSheet({ peer, back, child }) {
 // rebuilds from it — available right after creation, or whenever store_configs is on.
 // (Address / interface / server are deployment moves — use copy + remove for those.)
 // Read-only peer view: all the peer's info + actions (edit / unassign|delete / close).
-function openPeerView(pid, node, iface) { openModal(html`<${PeerViewSheet} pid=${pid} node=${node} iface=${iface}/>`); }
+function openPeerView(pid, node, iface, child) { (child ? pushModal : openModal)(html`<${PeerViewSheet} pid=${pid} node=${node} iface=${iface}/>`); }
 function PeerViewSheet({ pid, node, iface }) {
   useStore();
   const p = Store.peer(pid);
+  const depsOrdered = useStableOrder(p ? p.targets : []);   // frozen at open — toggling ★ won't re-shuffle the cards
   if (!p) return html`<${Sheet} title="Peer" foot=${html`<button class="btn btn-ghost" onClick=${closeModal}>Close</button>`}><div class="empty"><b>Peer not found</b>It may have been removed.</div><//>`;
   const u = p.user_id ? Store.user(p.user_id) : null;
   // Editing is peer-WIDE (keys, AmneziaWG params, DNS, address apply to every deployment), so it's locked while any
   // deployment is on a missing (dangling) or misconfigured (broken) interface — a change there can't reach that
   // deployment and would leave the peer inconsistent. The operator must Restore/Fix the interface, or drop it from Targets.
   const editLocked = p.targets.some(t => t.status === "dangling" || t.status === "broken");
-  return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")} width=${640} subject=${{ kind: "peer", id: pid }}
+  // Same status treatment as the peer QR modal: in a subscription → subscription status in the header (right) + the
+  // peer's own status on a line under it; not in a subscription → the peer's own status takes the header slot.
+  const headExtra = u ? html`<${SubStatusLine} user=${u} pos="hr"/>` : html`<${PeerStatusLine} peer=${p} pos="hr"/>`;
+  return html`<${Sheet} title=${p.title || (u ? u.name : "Unassigned peer")} width=${640} headExtra=${headExtra} subject=${{ kind: "peer", id: pid }}
     foot=${html`<${Fragment}>
       <button class="btn btn-ghost" onClick=${closeModal}>Close</button><span class="grow"></span>
       <button class="btn btn-ghost" onClick=${() => openPeerConfigs(p, { child: true })}><${Ic} i="qr"/> QR</button>
@@ -10187,12 +11386,13 @@ function PeerViewSheet({ pid, node, iface }) {
       ${peerBlockBtn(p)}
       ${p.unassigned ? html`<button class="btn btn-danger" onClick=${() => confirmDeletePeer(p)}>Delete</button>`
         : html`<button class="btn btn-danger" onClick=${() => confirmUnassign(p)}>Unassign</button>`}<//>`}>
+    ${u ? html`<${PeerStatusLine} peer=${p} pos="bar"/>` : null}
     <div class="pv-head">
       <div class="pv-id"><div class="pv-sub">${u ? html`<a class="pv-user" href="#/users" onClick=${e => { e.preventDefault(); closeModal(); revealUser(u.id); }}>${u.name}</a>`
           : html`<${UserCombo} onPick=${uid => assignPeer(p, uid)} placeholder="Assign to a user…"/>`}</div></div>
       ${badgeWithReason(p.unassigned ? "unassigned" : p.status, p.reason)}</div>
     <div class="lbl" style="margin:16px 2px 4px">Deployments · ${p.targets.length}</div>
-    <div class="pv-deps">${p.targets.map(t => {
+    <div class="pv-deps">${depsOrdered.map(t => {
       const obs = t.observed;
       const proto = targetType(t);
       return html`<div class=${"pv-dep" + (node === t.node && iface === t.iface ? " hl" : "")} key=${tkey(t.node, t.iface)}>
@@ -10202,8 +11402,11 @@ function PeerViewSheet({ pid, node, iface }) {
             ${/* TURN tag hidden until we can detect a peer is *actively* connected via turn-proxy (nodes-interface work) */ null}
           </span>
           <span class="grow"></span>
-          ${t.restorable ? html`<button class="btn btn-ghost restore" title="Recreate this missing interface with its original identity — recovers every peer on it" onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/> Restore interface</button>`
-            : t.correctable ? html`<button class="btn btn-ghost correct" title=${"Assign the next free in-subnet address (" + (t.ip || "?") + " is out of range)"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/> Fix address</button>` : null}</div>
+          <${PrimaryToggle} peer=${p} t=${t}/>
+          ${(() => { const gh = _ghostIface(t.node, t.iface); return (gh && gh.ripe)
+            ? html`<button class="btn btn-ghost gh" title="Recreate this interface with a NEW key and rekey every peer on it — clients re-import" onClick=${() => openRecreateRekey(t.node, t.iface)}><${Ic} i="refresh"/> Recreate & rekey interface</button>`
+            : t.restorable ? html`<button class="btn btn-ghost restore" title="Recreate this missing interface with its original identity — recovers every peer on it" onClick=${() => confirmRestoreDeployment(p, t)}><${Ic} i="refresh"/> Restore interface</button>`
+            : t.correctable ? html`<button class="btn btn-ghost correct" title=${"Assign the next free in-subnet address (" + (t.ip || "?") + " is out of range)"} onClick=${() => confirmCorrectDeployment(p, t)}><${Ic} i="check"/> Fix address</button>` : null; })()}</div>
         <div class="pv-dep-grid">
           <span><span class="k">Node</span> <span style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span></span>
           <span><span class="k">Interface</span> ${t.iface}</span>
@@ -10227,14 +11430,23 @@ function openEditPeer(peer, focus, done, flash) {
 }
 function EditPeerSheet({ peer, focus, done, flash, child }) {
   done = done || closeModal;
+  useStore();                                        // re-render on poll so a target added via the Targets sheet shows up live
+  const live = Store.peer(peer.id) || peer;          // LIVE peer (the `peer` prop is a snapshot from open) — used for the target list
+  const targetsOrdered = useStableOrder(live.targets);   // frozen at open — the primary ★ won't re-shuffle rows mid-edit
   const [title, setTitle] = useState(peer.title || "");
-  const [ips, setIps] = useState(() => Object.fromEntries(peer.targets.map(t => [tkey(t.node, t.iface), (t.ip || "").split("/")[0]])));
+  const [ips, setIps] = useState(() => Object.fromEntries(live.targets.map(t => [tkey(t.node, t.iface), (t.ip || "").split("/")[0]])));
+  useEffect(() => {                                  // a newly-added target appears live → give it an IP field
+    setIps(prev => { const next = { ...prev }; let ch = false;
+      live.targets.forEach(t => { const k = tkey(t.node, t.iface); if (!(k in next)) { next[k] = (t.ip || "").split("/")[0]; ch = true; } });
+      return ch ? next : prev; });
+  }, [live.targets.map(t => tkey(t.node, t.iface)).join(",")]);
   const setIpFor = (k, v) => setIps(m => ({ ...m, [k]: v }));
   const [loaded, setLoaded] = useState(false);
   const [confs, setConfs] = useState({});            // "node|iface" -> conf text (those we can rebuild)
   const [dns, setDns] = useState(""); const [mtu, setMtu] = useState("1280");
   const [keepalive, setKeepalive] = useState("25"); const [allowed, setAllowed] = useState("0.0.0.0/0, ::/0");
   const [userId, setUserId] = useState(peer.user_id || "");   // staged owner (applied on Save for an unassigned peer)
+  const [expDate, setExpDate] = useState(expiryInputVal(peer.ownExpiry || 0));   // this peer's OWN expiry (blank = inherit the subscription's)
   const [msg, setMsg] = useState(flash || null); const [busy, setBusy] = useState(false);
   // reopening THIS sheet with a new flash (e.g. rotate: orange "Rotating…" → green "Keys rotated")
   // reuses the instance, so the useState initial above is ignored — sync the prop into state.
@@ -10258,15 +11470,22 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
   const ipBadFor = t => { const v = (ips[tkey(t.node, t.iface)] || "").trim(); return !!v && !V.ipv4(v.split("/")[0]); };
   const anyIpBad = peer.targets.some(ipBadFor);
   const errs = editable ? configErrors({ dns, mtu, keepalive, allowed }) : {};
+  const ownerExp = userId ? +(((Store.recon.users || []).find(u => u.id === userId) || {}).expiry || 0) : 0;
   const save = async () => {
     if (anyIpBad) return setMsg({ k: "err", t: "Each address must be a valid IPv4." });
     const ek = Object.keys(errs)[0]; if (ek) return setMsg({ k: "err", t: errs[ek] });
+    const expSec = expiryFromInput(expDate);
+    // A peer can't outlive its subscription (the server enforces it too — check here for a clean message).
+    if (expSec && ownerExp && expSec > ownerExp) return setMsg({ k: "err", t: "Expiry can't be later than the subscription's (" + fmtDate(ownerExp) + ")." });
     setBusy(true); setMsg({ k: "work", t: "saving…" });
     const dnsArr = dns.split(",").map(s => s.trim()).filter(Boolean);
     let fails = 0;
     try {
       if (title.trim() !== (peer.title || "")) {
         const r = await api.peerUpdate({ peer_id: peer.id, title: title.trim() }); if (!r.ok) fails++;
+      }
+      if (expSec !== (peer.ownExpiry || 0)) {   // this peer's own expiry date (independent of the subscription's)
+        const r = await api.peerUpdate({ peer_id: peer.id, expiry: expSec }); if (!r.ok) { fails++; if (r.error) setMsg({ k: "err", t: r.error }); }
       }
       // persist the roster copy of the non-secret overrides (custom DNS/MTU/AllowedIPs/keepalive), so a
       // blob-only render (encrypted store / the sub page) reproduces this peer's config faithfully.
@@ -10329,15 +11548,19 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
   // interface; Correct reassigns an in-subnet IP) — targeting the deployment the edit is focused on, or the
   // first problem deployment when it's not target-scoped. Otherwise the normal Rotate-keys button shows.
   const _rp = Store.peer(peer.id) || peer;
+  const _isGhostT = t => { const g = t && _ghostIface(t.node, t.iface); return !!(g && g.ripe); };
   const _fixT = (focus && (_rp.targets || []).find(t => t.node === focus.node && t.iface === focus.iface))
-             || (_rp.targets || []).find(t => t.restorable || t.correctable) || null;
-  const fixBtn = (_fixT && _fixT.restorable)
-    ? html`<button class="btn btn-ghost restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> Restore interface</button>`
-    : (_fixT && _fixT.correctable)
-      ? html`<button class="btn btn-ghost correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> Fix address</button>`
-      : html`<button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`;
-  return html`<${Sheet} title=${"Edit peer"} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
+             || (_rp.targets || []).find(t => t.restorable || t.correctable || _isGhostT(t)) || null;
+  const fixBtn = _isGhostT(_fixT)
+    ? html`<button class="btn btn-ghost gh" onClick=${() => openRecreateRekey(_fixT.node, _fixT.iface)}><${Ic} i="refresh"/> Recreate & rekey interface</button>`
+    : (_fixT && _fixT.restorable)
+      ? html`<button class="btn btn-ghost restore" onClick=${() => confirmRestoreDeployment(_rp, _fixT)}><${Ic} i="refresh"/> Restore interface</button>`
+      : (_fixT && _fixT.correctable)
+        ? html`<button class="btn btn-ghost correct" onClick=${() => confirmCorrectDeployment(_rp, _fixT)}><${Ic} i="check"/> Fix address</button>`
+        : html`<button class="btn btn-ghost" onClick=${rotate}><${Ic} i="key"/> Rotate keys</button>`;
+  return html`<${Sheet} title=${"Edit peer"} width=${644} onClose=${done} onBack=${child ? done : null} subject=${{ kind: "peer", id: peer.id }}
     foot=${footRow({ left: html`${editable ? html`<button class="btn btn-ghost" onClick=${() => openPeerConfigs(peer, { child: true })}><${Ic} i="qr"/> QR</button>` : null}<button class="btn btn-ghost" onClick=${() => openAddTarget(peer)}><${Ic} i="copy"/> Targets</button>${fixBtn}${peerBlockBtn(peer)}`, onCancel: done, disabled: busy, onAction: save, action: "Save" })}>
+    <${PeerStatusLine} peer=${peer} pos="bar"/>
     <div class="field"><label>Title <span class="faint" style="text-transform:none;letter-spacing:0">— optional</span></label><input autofocus value=${title} maxlength="64" onInput=${e => setTitle(e.target.value)} placeholder="e.g. iPhone, Work laptop"/></div>
     <div class="field"><label>User</label>
       <${UserPicker} value=${userId} allowUnassigned=${!peer.unassigned} onChange=${setUserId}/>
@@ -10347,13 +11570,17 @@ function EditPeerSheet({ peer, focus, done, flash, child }) {
         : !userId ? "On Save you'll confirm unassigning — access is revoked and the keys rotate."
         : "On Save you'll confirm reassigning — the current user loses access for good and the new user needs a fresh config."
       }</div></div>
+    <div class="field"><label>Access expires <span class="faint" style="text-transform:none;letter-spacing:0">— this peer only; blank = ${ownerExp ? "follows the subscription" : "never"}</span></label>
+      <div class="daterow"><input type="date" class="datein" max=${ownerExp ? expiryInputVal(ownerExp) : ""} value=${expDate} onInput=${e => setExpDate(e.target.value)}/>${expDate ? html`<button class="btn btn-ghost btn-mini" onClick=${() => setExpDate("")}>Clear</button>` : null}</div>
+      <div class=${"hint"}>On this date the peer stops working (it reappears if you extend it).${ownerExp ? " Can't be later than the subscription's expiry (" + fmtDate(ownerExp) + ")." : ""}</div></div>
     <div class="field"><label>Addresses</label>
-      <div class="targetpick">${peer.targets.map(t => {
+      <div class="targetpick">${targetsOrdered.map(t => {
         const k = tkey(t.node, t.iface);
         const im = (Store.describe[t.node] || {})[t.iface] || {};
         const ity = (im.awg_params && Object.keys(im.awg_params).length) ? "awg" : "wg";
         return html`<div class="targetopt sel locked" key=${k}>
           <div class="topt-main"><span class="box"><${Ic} i="check"/></span><span class="nm" style=${"color:" + (Store.nodeColor(t.node) || "var(--ink)")}>${Store.nodeName(t.node)}</span><span class="tp">${t.iface}</span></div>
+          <${PrimaryToggle} peer=${peer} t=${t} compact=${true}/>
           <${Tag} kind=${ity} label=${ity}/>
           <input class=${"topt-ip " + (ipBadFor(t) ? "bad" : "")} value=${ips[k] || ""} onInput=${e => setIpFor(k, e.target.value)}/>
         </div>`;
@@ -10663,6 +11890,10 @@ function App() {
   const [hash, setHash] = useState(location.hash || "#/");
   const [modalStack, setModalStack] = useState([]);
   useEffect(() => { _setStack = setModalStack; }, []);
+  // Arm the panel-service alert once App is mounted (so openModal's setState is live), and fire it immediately
+  // in case the first poll already landed a critical issue before mount. Later polls re-check via Store.apply.
+  useEffect(() => { _appReady = true; maybeAlertServices(); return () => { _appReady = false; }; }, []);
+
   // Access & TLS confirm handshake: the confirm itself fires at BOOT (maybeConfirmApply), before anything
   // auth-gated, because a domain change lands on a host our cookie doesn't cover — App wouldn't even mount.
   // Here we only report the OUTCOME once App is up: success (we reloaded, carrying our login onto this address)
@@ -10890,7 +12121,11 @@ function LoginScreen() {
     try {
       const r = await api.login({ username: u, password: p, code: twofa ? code.trim() : undefined });
       if (r && r.ok) {
-        try { await subUnlock(p); } catch (_) {}   // convenience cache: auto-unlock config encryption with the login password (no-op if no vault); survives the reload via sessionStorage
+        if (r.data && r.data.vault_reset) {   // swg-passwd reset the Encryption Vault → re-create it under the password just entered (silent reconnect)
+          try { await subVaultCreate(p); sessionStorage.setItem("__vault_reconnected", "1"); } catch (_) {}
+        } else {
+          try { await subUnlock(p); } catch (_) {}   // convenience cache: auto-unlock config encryption with the login password (no-op if no vault); survives the reload via sessionStorage
+        }
         location.reload(); return;
       }
       if (r && r.twofa_required) {                       // password OK — panel wants the 6-digit code
@@ -10965,4 +12200,5 @@ async function maybeConfirmApply() {
   // straight on Access & TLS, BEFORE it mounts and defaults to Display. (The outcome modal is shown by App.)
   try { if (sessionStorage.getItem("__apply_ok")) pendingSettingsSection = "access"; } catch (_) {}
   render(h(App), viewEl);
+  try { if (sessionStorage.getItem("__vault_reconnected")) { sessionStorage.removeItem("__vault_reconnected"); setTimeout(() => toast("Encryption Vault reconnected.", "ok"), 400); } } catch (_) {}
 })();

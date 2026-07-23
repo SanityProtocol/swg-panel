@@ -3,6 +3,46 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.4.0-beta] — 2026-07-23
+
+The headline of this release is **client apps for turn proxies**: the panel now manages the whole client
+side, so end-users get a ready-to-use connection from their subscription page with nothing to assemble.
+
+### Added
+- **Client apps for turn proxies.** For each fork, choose which app your end-users get on each platform
+  (Android / iOS / desktop) — VK TURN Proxy, WINGS V, FreeTurn, WireGuard-TURN, or the CLI sidecar — with
+  the compatible choices ranked (native · cross-fork · plain). The subscription page then hands out exactly
+  that app's config, matched to the visitor's device: a tap-to-open deep link, a scannable QR, a config
+  file, or a ready-to-paste command. Adds the **MYSOREZ** fork, typed per-proxy obfuscation settings,
+  panel-mirrored fork binaries with one-click version rollback, and drift detection for the app formats.
+- **Reworked subscription page.** One **Start** button per connection that does the right thing for the
+  chosen app, an OS picker that re-generates the config and downloads for the selected platform, per-app
+  "Get the app" install links, and one-tap **Amnezia VPN** import for WireGuard / AmneziaWG.
+- **Expiry dates** for a peer or a subscription — expired and blocked peers are clearly flagged throughout.
+- **Multiple VK call links per user**, handed to each app in the form it supports.
+- **Redesigned add-peers** — a two-panel layout (this user's peers · the unassigned pool) and a
+  primary / backup connection picker.
+- **`swg-passwd` — reset the panel login from the shell.** `sudo swg-passwd` resets the admin username and
+  password and re-keys the Encryption Vault in place; you're signed back in on the next login, and stored
+  configs / subscription links keep working (no re-issue).
+
+### Changed
+- **Updating now self-heals a panel or node that's missing pieces** — a lost service, unit, or root helper
+  is reinstalled in place (never re-created), so a plain update fixes it with no reinstall. A server that
+  lost a keyless interface now has it recreated and re-keyed, and service-health problems are surfaced
+  under a new *needs attention* panel.
+- **Interface-key escrow is now on by default** (previously off) and moved into the Interfaces screen —
+  each node seals its interface private keys to a vault key only you hold, so a wiped node's keys can be
+  restored without the panel ever seeing them.
+- The peer and turn-proxy status model was reworked for clearer at-a-glance state.
+
+### Fixed
+- A fresh **Docker** install no longer fails to start the subscription container.
+- Each device is now offered only an app that actually connects to its server, with the right obfuscation —
+  plain servers use the plain transport, obfuscated forks use their own — and blocked / expired peers no
+  longer show as *dangling*.
+- Stopped a background flood of 404s from the subscription surface.
+
 ## [1.3.13-beta] — 2026-07-20
 
 ### Fixed

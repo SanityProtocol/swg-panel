@@ -1056,39 +1056,102 @@ def _snat_reconcile_rule(tag, subnet, des, rules):
     return (True, None)
 
 
+def _has_foreign_egress(subnet, rules):
+    """True if some NON-swg-egress POSTROUTING rule already source-NATs `subnet` (a legacy .conf PostUp
+    MASQUERADE, or a hand-added rule). Lets the baseline heal DEFER to an existing working rule instead of
+    stacking a duplicate — so it only fills genuine gaps and never churns against PostUp."""
+    pat = re.compile(r'-s ' + re.escape(subnet) + r'(?:\s|$)')
+    for ln in rules:
+        if not ln.startswith("-A POSTROUTING") or "swg-egress:" in ln:
+            continue                                          # our own tag is not "foreign"
+        if pat.search(ln) and ("MASQUERADE" in ln or "SNAT" in ln):
+            return True
+    return False
+
+
+def _iface_is_mesh(node_cfg, iface, subnet):
+    """A node↔node mesh/cascade link — NOT a client-serving interface, so it must never get a client egress
+    MASQUERADE (cascade owns its routing). Detected purely LOCALLY (the node-sync `desired_ifaces` is a sparse
+    push-delta and doesn't carry `system`): the reserved link-name prefix, a point-to-point /31(+) subnet, or
+    `Table = off` in its .conf (wg-quick mesh links set it)."""
+    if iface.startswith("swg_"):
+        return True
+    try:
+        if int(str(subnet).rsplit("/", 1)[1]) >= 31:
+            return True
+    except Exception:
+        pass
+    ic = (node_cfg.get("interfaces") or {}).get(iface) or {}
+    try:
+        with open(ic.get("conf", "")) as f:
+            if re.search(r"(?im)^\s*Table\s*=\s*off\b", f.read()):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def reconcile_egress(node_cfg, desired_ifaces, default_egress_ip=""):
-    """Option-I source-NAT: per interface, ensure an SNAT rule to its chosen egress_ip (tagged with a
-    'swg-egress:<iface>' comment, inserted ahead of the default MASQUERADE), replace it on change, and
-    remove it when cleared (→ falls back to MASQUERADE). Runs iptables directly (root on bare-metal;
-    container root + NET_ADMIN + host netns on docker)."""
+    """Per LOCAL interface, ensure its egress source-NAT, tagged 'swg-egress:<iface>' (inserted ahead of any
+    default MASQUERADE), replaced on change, removed when cleared. Cases, in order:
+      egress_ip set        → SNAT to that source IP        (Option-I, from desired_ifaces)
+      node default_egress  → SNAT to the node default IP
+      wan_iface pinned     → MASQUERADE out that NIC        (from desired_ifaces)
+      plain default        → MASQUERADE out the auto WAN    (baseline)
+    The baseline exists because the panel documents blank egress_ip = "auto/MASQUERADE", yet that NAT historically
+    lived ONLY in the interface's .conf PostUp — fire-once, so an interface brought up outside wg-quick (manual /
+    onboarded / older create) or after an iptables flush has no SNAT and nothing re-adds it (handshake succeeds,
+    panel shows live, traffic can't return). Owning a reconciled baseline self-heals that. Guards keep it safe:
+      • never a node↔node mesh link (local detection — cascade owns those);
+      • never when SOMETHING ELSE already source-NATs the subnet — a legacy PostUp MASQUERADE, a hand rule, or the
+        cascade's swg-fwd-snat for a forward-mode iface — so it only fills genuine gaps, never duplicates or churns.
+    Runs iptables directly (root on bare-metal; container root + NET_ADMIN + host netns on docker)."""
     res = {"changed": 0, "errors": []}
-    if not desired_ifaces:
-        return res
     try:
         rules = run(["iptables", "-t", "nat", "-S", "POSTROUTING"]).stdout.splitlines()
     except Exception as e:
         res["errors"].append("iptables list: " + str(e)); return res
     default_wan = _detect_wan()
+    client_devs = []
     for iface in (node_cfg.get("interfaces") or {}):
         want = (desired_ifaces or {}).get(iface) or {}
         egress = (want.get("egress_ip") or "").strip()
-        wan_ov = _safe_wan(want.get("wan_iface"), "")     # reject shell metachars before it enters an iptables rule
+        wan_ov = _safe_wan(want.get("wan_iface"), "")         # reject shell metachars before it enters an iptables rule
         subnet = _iface_subnet(node_cfg, iface)
         if not subnet:
             continue
+        is_mesh = _iface_is_mesh(node_cfg, iface, subnet)
+        if not is_mesh:
+            client_devs.append(iface)                         # client tunnels also get FORWARD-accept + MSS-clamp (below)
         if egress:                                            # SNAT to a chosen source IP, out a chosen/auto WAN
             des = ("SNAT", wan_ov or default_wan, egress)
         elif default_egress_ip:                               # node-level default direct egress IP (fallback)
             des = ("SNAT", wan_ov or default_wan, default_egress_ip)
         elif wan_ov:                                          # just pin the WAN egress interface
             des = ("MASQUERADE", wan_ov, "")
-        else:
+        elif not is_mesh and not _has_foreign_egress(subnet, rules):   # baseline: a client interface must egress — heal a
+            des = ("MASQUERADE", default_wan, "")             #   plain MASQUERADE, but never a mesh link and never when the
+        else:                                                 #   subnet is already source-NATed (PostUp / cascade / hand)
             des = None
         changed, err = _snat_reconcile_rule("swg-egress:" + iface, subnet, des, rules)
         if err:
             res["errors"].append("egress " + iface + ": " + err); continue
         if changed:
             res["changed"] += 1
+    # FORWARD-accept (belt-and-suspenders — harmless under the usual ACCEPT policy, load-bearing under DROP) and — the
+    # real value — a TCP-MSS clamp TOWARD each client tunnel, so a website's return packets can't exceed the 1280 tunnel
+    # MTU and silently blackhole ("connects but pages time out"). Applied to ALL client tunnels (PostUp never wrote an
+    # MSS clamp), tagged apart from the cascade's link-dev rules; mesh links excluded (cascade owns theirs). Idempotent
+    # + self-cleaning (drops tags for interfaces that go away) via _ensure_dev_rules.
+    client_devs.sort()
+    _ensure_dev_rules("filter", "FORWARD", "swg-egress-acl:", client_devs, res,
+                      lambda d, direction: ["iptables", "-I", "FORWARD", direction, d,
+                                            "-m", "comment", "--comment", "swg-egress-acl:" + d, "-j", "ACCEPT"])
+    _ensure_dev_rules("mangle", "FORWARD", "swg-egress-mss:", client_devs, res,
+                      lambda d, direction: (["iptables", "-t", "mangle", "-I", "FORWARD", "-o", d,
+                                             "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN",
+                                             "-m", "comment", "--comment", "swg-egress-mss:" + d,
+                                             "-j", "TCPMSS", "--clamp-mss-to-pmtu"] if direction == "-o" else None))
     return res
 
 
@@ -2732,8 +2795,16 @@ def build_snapshot(node_cfg, online_max, last_samples, now=None):
             print(f"snapshot: skipping {iface}: {e}", flush=True)
             continue
     _addrs = _node_addrs()                         # one `ip -o addr show`, shared by the three derived views below
+    _tps = load_turn_proxies()
+    _tflags = {}                                   # Axis-1: per-fork flag discovery (`<binary> -h`), only where the panel manages turn (that's the only place the settings UI shows). Cached per (fork,version).
+    if TURN_MANAGE:
+        for _tp in _tps:
+            _fk = _turn_fork(_tp.get("service") or "")
+            if _fk and _fk not in _tflags:
+                _tflags[_fk] = _turn_discover_flags(_tp.get("service") or "")
     snap = {"hostname": socket.gethostname(), "generated_at": now,
-            "interfaces": interfaces, "turn_proxies": load_turn_proxies(),
+            "interfaces": interfaces, "turn_proxies": _tps, "turn_flags": _tflags,
+            "arch": _turn_arch(),   # so the panel mirrors/pins ONLY this node's arch for a turn install (not both → no slow/failed cross-arch fetch)
             "noded_version": NODED_VERSION, "kind": NODE_KIND, "net_mode": NODE_NET,
             "turn_manage": TURN_MANAGE, "cmd_errors": dict(NODE_ERRORS), "cmd_progress": dict(NODE_PROGRESS),
             "quarantined": op_quarantined(),   # ops in repeated-failure backoff — visible, not silently churning
@@ -3525,7 +3596,7 @@ def _parse_tp(svc, execl):
         m = re.search(r"-" + re.escape(flag) + r"[ =]+(\S+)", execl)
         return m.group(1) if m else ""
     return {"service": svc, "listen": g("listen"), "connect": g("connect"),
-            "wrap_key": g("wrap-key") or g("obf-key"), "params": _exec_params(execl)}   # free-turn-proxy carries the key in -obf-key
+            "wrap_key": g("wrap-key") or g("obf-key") or g("password"), "params": _exec_params(execl)}   # free-turn = -obf-key, MYSOREZ = -password
 
 def _installed_tp(svc):
     """Re-read a turn unit (after install/edit) so the record carries the real ExecStart, incl. the
@@ -3555,15 +3626,20 @@ def _turn_fork_in_use(svc, rec):   # is any OTHER instance of this fork still in
     return any(isinstance(tp, dict) and tp.get("service") and tp["service"] != svc and _turn_fork(tp["service"]) == fork for tp in items)
 
 def _params_wrapkey(params):
-    m = re.search(r"-(?:wrap|obf)-key[ =]+(\S+)", params or ""); return m.group(1) if m else ""
+    # the obfuscation secret each fork carries: free-turn = -obf-key, the vk-turn-proxy forks = -wrap-key,
+    # MYSOREZ = -password (a passphrase HKDF'd to the AEAD key).
+    m = re.search(r"-(?:wrap|obf)-key[ =]+(\S+)", params or "") or re.search(r"-password[ =]+(\S+)", params or "")
+    return m.group(1) if m else ""
 def _params_set_wrapkey(params, key):
     params = params or ""
     # rotate whichever obfuscation-key flag the unit already carries (free-turn-proxy = -obf-key,
-    # the vk-turn-proxy forks = -wrap-key); only fall back to appending -wrap-key on a keyless unit.
+    # the vk-turn-proxy forks = -wrap-key, MYSOREZ = -password); only fall back to appending -wrap-key on a keyless unit.
     if re.search(r"-obf-key[ =]+\S+", params):
         return re.sub(r"-obf-key[ =]+\S+", "-obf-key " + key, params)
     if re.search(r"-wrap-key[ =]+\S+", params):
         return re.sub(r"-wrap-key[ =]+\S+", "-wrap-key " + key, params)
+    if re.search(r"-password[ =]+\S+", params):
+        return re.sub(r"-password[ =]+\S+", "-password " + key, params)
     return (params + " -wrap-key " + key).strip()
 
 def _dturn_args(tp):
@@ -3579,18 +3655,87 @@ def _dturn_args(tp):
         except Exception: args += p.split()
     return args
 
-def _turn_dl_urls(owner, arch):
+def _turn_arch():
+    return "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+
+def _turn_dl_urls(owner, arch, tag=None):
     """GitHub release assets are single-origin (objects.githubusercontent.com). Try GitHub direct first, then
     any operator-configured proxy mirrors (SWG_TURN_MIRROR, space-separated prefixes — OPT-IN: proxying a binary
-    you execute is a supply-chain trust decision, so it's off by default)."""
-    base = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
+    you execute is a supply-chain trust decision, so it's off by default).
+    When the panel supplies a release TAG (the checksum gate), pin the IMMUTABLE per-tag asset
+    (releases/download/<tag>/…) instead of the moving 'latest' — so the bytes match the sha256 the panel hashed."""
+    path = ("download/" + tag) if tag else "latest/download"
+    base = "https://github.com/" + owner + "/releases/" + path + "/server-linux-" + arch
     urls = [base]
     for m in (os.environ.get("SWG_TURN_MIRROR") or "").split():
         urls.append(m.rstrip("/") + "/" + base)   # e.g. https://ghproxy.example/https://github.com/<owner>/releases/...
     return urls
 
-def _dturn_download(svc, owner):
-    arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+def _turn_pin(pin):
+    """(tag, expected_sha) from the panel-provided pin {tag, sums:{arch:sha}} for THIS node's arch. Pass the pin
+    dict itself (req.get("pin")), not the whole request. Either value may be '' — a mixed-version panel or one
+    that couldn't hash the asset sends no sha, and the node then proceeds UNVERIFIED (the pre-checksum-gate
+    behaviour). A PRESENT sha is ENFORCED fail-closed: a downloaded binary that doesn't match is deleted and
+    never chmod+exec'd. See docs/TURN-PROXY-OVERHAUL-PLAN.md (Axis 2 · P1)."""
+    pin = pin or {}
+    return (pin.get("tag") or ""), ((pin.get("sums") or {}).get(_turn_arch()) or "")
+
+def _turn_sha_ok(path, want):
+    """True if `path`'s sha256 == want, or want is empty (nothing to verify → caller proceeds, logged elsewhere)."""
+    if not want:
+        return True
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest() == want
+    except OSError:
+        return False
+
+def _turn_sha_shell(path_q, want):
+    """A shell fragment (for the host_sh install/reinstall heredocs) that verifies `path_q` (already shlex-quoted)
+    against `want`, removing it and failing the command on mismatch. '' when there's nothing to enforce."""
+    if not want:
+        return ""
+    return (" && { printf '%s  %s' " + shlex.quote(want) + " " + path_q
+            + " | sha256sum -c --status - || { rm -f " + path_q
+            + "; echo 'turn binary checksum mismatch — refusing to run unverified binary' >&2; false; }; }")
+
+_TURN_PANEL = {}   # the panel connection dict (url/token/fingerprint/verify) — set each sync so the turn-binary MIRROR pull works
+
+def _turn_panel_fetch(owner, tag, arch, dest, want):
+    """Pull the fork binary from the PANEL's mirror (Axis 2 · P2) → dest, verified against `want` (the pin sha).
+    Censorship-robust: the node reaches the panel over its existing outbound-only channel even where GitHub is
+    blocked. Returns True on a verified write (dest is left executable-ready), else False (caller falls back to
+    GitHub-direct). No-ops without a pin tag or panel config — so mixed-version panels keep GitHub-direct."""
+    panel = _TURN_PANEL or {}
+    base = (panel.get("url") or "").rstrip("/")
+    if not base or not tag or "/" not in (owner or ""):
+        return False
+    url = (base + "/api/node/turn-binary?owner=" + urllib.parse.quote(owner, safe="")
+           + "&tag=" + urllib.parse.quote(tag, safe="") + "&arch=" + arch)
+    st, data, _hv = _panel_get(url, panel.get("token") or "", panel, timeout=200)
+    if st != 200 or not data:
+        return False
+    if want and hashlib.sha256(data).hexdigest() != want:   # the mirror must still match the pin (belt & suspenders)
+        return False
+    try:
+        tmp = dest + ".pdl"
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, dest)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(dest + ".pdl")
+        return False
+    return True
+
+def _dturn_download(svc, owner, pin=None):
+    arch = _turn_arch()
+    tag, want = _turn_pin(pin)                            # panel checksum gate: pin the tag + expected sha256 (both '' → unverified)
     binp = _turn_bin_local(svc)   # shared per-fork slot
     if os.path.exists(binp):       # already have this fork's binary (another instance, or a prior install) → REUSE,
         return ""                  # no GitHub hit. (A panel Reinstall removes binp first, so it still forces a fresh fetch.)
@@ -3601,37 +3746,52 @@ def _dturn_download(svc, owner):
         with contextlib.suppress(OSError):
             os.replace(leg, binp); os.chmod(binp, 0o755)
         if os.path.exists(binp):
-            _turn_write_version(svc, _turn_resolve_tag(owner)); return ""
+            _turn_write_version(svc, tag or _turn_resolve_tag(owner)); return ""
+    if _turn_panel_fetch(owner, tag, arch, binp, want):  # P2: pull the (verified) binary from the panel mirror first — censorship-robust
+        _turn_write_version(svc, tag or _turn_resolve_tag(owner)); return ""
     err = "binary download failed"
-    for url in _turn_dl_urls(owner, arch):
-        r = run(["curl", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
+    for url in _turn_dl_urls(owner, arch, tag):          # GitHub-direct fallback (mirror miss / no pin / mixed-version)
+        r = run(["curl", "-4", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
                  "--retry-delay", "3", "--retry-all-errors", url, "-o", binp], timeout=320)
         if r.returncode == 0:
+            if not _turn_sha_ok(binp, want):             # downloaded but doesn't match the panel's hash → delete + refuse (never chmod/exec)
+                with contextlib.suppress(OSError): os.remove(binp)
+                return "checksum mismatch — refusing to run unverified turn binary (want " + want[:12] + "…)"
             with contextlib.suppress(OSError): os.chmod(binp, 0o755)
-            _turn_write_version(svc, _turn_resolve_tag(owner))   # record which release tag we just fetched
+            _turn_write_version(svc, tag or _turn_resolve_tag(owner))   # record which release tag we just fetched
             return ""
         err = (r.stderr or "binary download failed").strip()[:160]
     return err
 
-def _dturn_force_download(svc, owner):
+def _dturn_force_download(svc, owner, pin=None):
     """Reinstall/update: fetch the fork binary FRESH and atomically swap it in — WITHOUT ever unlinking the live
     shared file. A container bind-mounts this path (…:/turn-server); if it's momentarily missing when docker
     (re)creates a container, docker creates a *directory* there and everything breaks. So: temp + os.replace only."""
-    arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+    arch = _turn_arch()
+    pin_tag, want = _turn_pin(pin)                        # panel checksum gate: pin tag + expected sha (both '' → unverified)
     binp = _turn_bin_local(svc)
     try: os.makedirs(os.path.dirname(binp), exist_ok=True)
     except OSError as e: return "mkdir: " + str(e)
-    tag = _turn_resolve_tag(owner)
+    tag = pin_tag or _turn_resolve_tag(owner)             # prefer the panel-pinned tag (matches the hashed asset)
     if tag and os.path.isfile(binp):                     # a sibling instance of this fork already refreshed the
         with contextlib.suppress(Exception):             # shared binary this round → reuse, don't re-download 22MB
             with open(_turn_ver_path(svc)) as f:
                 if f.read().strip() == tag: return ""
     tmp = binp + ".new." + _turn_inst(svc)
+    if _turn_panel_fetch(owner, tag, arch, tmp, want):   # P2: pull the (verified, chmod'd) binary from the panel mirror first
+        try: os.replace(tmp, binp)                       # atomic swap; tmp was verified before this point
+        except OSError as e:
+            with contextlib.suppress(OSError): os.remove(tmp)
+            return ("swap failed (is " + binp + " a directory? — docker bind-mount footgun): " + str(e))[:160]
+        _turn_write_version(svc, tag); return ""
     err = "binary download failed"
-    for url in _turn_dl_urls(owner, arch):
-        r = run(["curl", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
+    for url in _turn_dl_urls(owner, arch, tag):          # GitHub-direct fallback
+        r = run(["curl", "-4", "-fsSL", "--connect-timeout", "20", "--max-time", "240", "--retry", "3",
                  "--retry-delay", "3", "--retry-all-errors", url, "-o", tmp], timeout=320)
         if r.returncode == 0:
+            if not _turn_sha_ok(tmp, want):              # verify BEFORE the atomic swap → the live binary is never replaced by unverified bytes
+                with contextlib.suppress(OSError): os.remove(tmp)
+                return "checksum mismatch — refusing to run unverified turn binary (want " + want[:12] + "…)"
             with contextlib.suppress(OSError): os.chmod(tmp, 0o755)
             try: os.replace(tmp, binp)                   # atomic: the path is a valid file at every instant
             except OSError as e:
@@ -3651,8 +3811,11 @@ def _dturn_run(tp):   # (re)create the container to match tp; returns the docker
     # and be visible to our nft client-IP capture. In bridge, its public listen port lives in our netns → publish it
     # on the swg-node container (compose ports:). (A swg-node recreate orphans netns-joined turns; reconcile re-runs them.)
     net = ["--network", "container:" + _SELF_CONTAINER] if NODE_NET == "bridge" else ["--network", "host"]
-    return run(["docker", "run", "-d", "--name", cn] + net + ["--restart", "unless-stopped",
-                "-v", _turn_bin_host(svc) + ":/turn-server:ro", "--entrypoint", "/turn-server",
+    # Axis-2 P3: drop every capability except NET_BIND_SERVICE (bind a <1024 listen port) + no-new-privileges —
+    # a turn proxy only forwards packets, so a compromised fork binary is confined to its sockets.
+    harden = ["--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges"]
+    return run(["docker", "run", "-d", "--name", cn] + net + ["--restart", "unless-stopped"] + harden +
+               ["-v", _turn_bin_host(svc) + ":/turn-server:ro", "--entrypoint", "/turn-server",
                 SWG_TURN_IMAGE] + _dturn_args(tp), timeout=60)
 
 def _dturn_netns_current(svc):
@@ -3693,6 +3856,71 @@ def _turn_ver_path_legacy(svc):
     if TURN_DOCKER:
         return "/var/lib/swg-noded/turn/" + _turn_inst(svc) + "/version.txt"
     return "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/version.txt"
+
+# ── Axis-1: dynamic flag discovery from the binary's own `-h` ──────────────────────────────────────────────
+# The authors already "authored the manifest" — they registered every flag via Go's `flag` package. We read it
+# from the (already checksum-verified, P1/P2) binary itself: run `<binary> -h`, parse name/type/default/usage,
+# and report it in the snapshot. The panel overlays curated metadata (enum value-sets, secret, hide footguns);
+# the SPA renders toggles (bool) / textboxes (else) + a raw-ExecStart override. We do NOT guess enum VALUES here
+# (that's a curated concern) — `-h` gives structure reliably, not value-sets. See docs/TURN-PROXY-OVERHAUL-PLAN.md.
+_TURN_FLAGS_CACHE = {}   # fork -> {"ver":<tag>, "flags":[...]}  (in-memory; mirrored to <fork-dir>/flags.json)
+
+def _turn_binpath(svc):   # the shared per-fork binary this node actually runs (docker mount / bare-metal)
+    if TURN_DOCKER:
+        return _turn_bin_local(svc)
+    return "/opt/vk-turn-proxy/.bin/" + _turn_fork(svc) + "/server"
+
+def _turn_help_flags(text):
+    """Parse Go `flag` `-h` output → [{name,type,default,usage}]. A flag line is `  -name [type]`; the following
+    tab/space-indented line(s) are its usage, with `(default X)`. type '' ⇒ bool. Structure only — no enum guess."""
+    flags, cur = [], None
+    for ln in (text or "").splitlines():
+        m = re.match(r"^  -([A-Za-z0-9][\w.-]*)(?:[ ]+(\S+))?[ ]*$", ln)
+        if m:
+            if cur: flags.append(cur)
+            cur = {"name": m.group(1), "type": (m.group(2) or "").strip(), "usage": ""}
+        elif cur is not None and (ln.startswith("\t") or ln.startswith("    ")):
+            cur["usage"] += (" " if cur["usage"] else "") + ln.strip()
+    if cur:
+        flags.append(cur)
+    for f in flags:
+        dm = re.search(r'\(default (?:"([^"]*)"|(\S+?))\)', f["usage"])
+        f["default"] = (dm.group(1) if (dm and dm.group(1) is not None) else (dm.group(2) if dm else "")) if dm else ""
+    return flags
+
+def _turn_discover_flags(svc):
+    """Run the fork's (verified) binary with `-h` once per (fork, version) → its flag list, cached in memory +
+    <fork-dir>/flags.json. Re-discovers when the version changes (a reinstall). [] on any failure — safe: the
+    SPA just shows the raw-ExecStart override then."""
+    fork = _turn_fork(svc)
+    ver = ""
+    with contextlib.suppress(Exception):
+        with open(_turn_ver_path(svc)) as f:
+            ver = f.read().strip()
+    c = _TURN_FLAGS_CACHE.get(fork)
+    if c and c.get("ver") == ver:
+        return c["flags"]
+    binp = _turn_binpath(svc)
+    fp = os.path.join(os.path.dirname(binp), "flags.json")
+    with contextlib.suppress(Exception):        # disk cache survives restarts; only re-run on a version change
+        with open(fp) as f:
+            d = json.load(f)
+        if d.get("ver") == ver and isinstance(d.get("flags"), list):
+            _TURN_FLAGS_CACHE[fork] = d
+            return d["flags"]
+    flags = []
+    if os.path.isfile(binp):
+        try:
+            r = run([binp, "-h"], timeout=6)    # Go flag prints usage + exits 2; static binary, direct exec both models
+            flags = _turn_help_flags((getattr(r, "stdout", "") or "") + "\n" + (getattr(r, "stderr", "") or ""))
+        except Exception:
+            flags = []
+    rec = {"ver": ver, "flags": flags}
+    _TURN_FLAGS_CACHE[fork] = rec
+    with contextlib.suppress(Exception):
+        with open(fp, "w") as f:
+            json.dump(rec, f)
+    return flags
 def _turn_repo_path_legacy(svc):
     return "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/repo.txt"
 def _turn_version(svc):
@@ -3720,7 +3948,7 @@ def _turn_resolve_tag(owner):
         return ""
     arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
     url = "https://github.com/" + owner + "/releases/latest/download/server-linux-" + arch
-    r = run(["curl", "-fsS", "-o", "/dev/null", "-w", "%{redirect_url}",
+    r = run(["curl", "-4", "-fsS", "-o", "/dev/null", "-w", "%{redirect_url}",
              "--connect-timeout", "15", "--max-time", "30", url], timeout=40)
     m = re.search(r"/releases/download/([^/]+)/", r.stdout or "")
     return m.group(1) if m else ""
@@ -3739,7 +3967,7 @@ def _dturn_install(svc, req):   # returns (err, tp_record_or_None)
         params = (req.get("params") or "").strip()
     else:                 # legacy: build from the fork's wrap flags + a generated key
         params = (wrap_flags + " -wrap-key " + secrets.token_hex(32)) if wrap_flags else ""
-    err = _dturn_download(svc, owner)
+    err = _dturn_download(svc, owner, req.get("pin"))   # panel checksum gate (pin absent → unverified, mixed-version safe)
     if err: return err, None
     tp = {"service": svc, "listen": listen, "connect": connect,
           "wrap_key": _params_wrapkey(params), "params": params, "owner": owner}
@@ -3920,8 +4148,24 @@ def _tp_from_unit(svc, unit_text):
     return {"service": svc, "listen": vals.get("SWG_LISTEN", ""), "connect": vals.get("SWG_CONNECT", ""),
             "wrap_key": _params_wrapkey(params), "params": params}
 
+# Axis-2 P3: systemd sandbox for the turn-proxy unit. A turn proxy only shuffles bytes between two sockets, so
+# confine it hard — a compromised/malicious fork binary is contained to its sockets, not root-on-the-box. The
+# reinstall (binary swap) runs as root via host_sh OUTSIDE this sandbox, so ProtectSystem=strict doesn't block it.
+# ⚠️ SystemCallFilter=@system-service is the one directive that could refuse an unusual Go syscall → if a proxy
+# fails to start right after a deploy, check `journalctl -u <svc>` for a seccomp kill and this is the first suspect.
+# Existing (pre-P3) units get hardened on their next reinstall/migration, not retroactively.
+_TURN_HARDEN_KEYS = ("NoNewPrivileges", "ProtectSystem", "ProtectHome", "PrivateTmp", "ProtectKernelTunables",
+                     "ProtectKernelModules", "ProtectControlGroups", "RestrictAddressFamilies", "RestrictNamespaces",
+                     "RestrictSUIDSGID", "LockPersonality", "CapabilityBoundingSet", "SystemCallFilter", "SystemCallErrorNumber")
+TURN_UNIT_HARDENING = (
+    "NoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\n"
+    "ProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n"
+    "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\nRestrictNamespaces=yes\nRestrictSUIDSGID=yes\n"
+    "LockPersonality=yes\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n"
+    "SystemCallFilter=@system-service\nSystemCallErrorNumber=EPERM\n")
+
 def _unit_to_envform(unit_text, svc, binp):
-    """Rewrite a baked-ExecStart unit to the EnvironmentFile form (one-time migration)."""
+    """Rewrite a baked-ExecStart unit to the EnvironmentFile form (one-time migration) + apply the P3 sandbox."""
     envp = _turn_env_path(svc); out = []; have_ef = any(l.startswith("EnvironmentFile=") for l in unit_text.splitlines())
     for l in unit_text.splitlines():
         if l.startswith("ExecStart="):
@@ -3929,8 +4173,16 @@ def _unit_to_envform(unit_text, svc, binp):
             out.append("ExecStart=" + binp + " -listen ${SWG_LISTEN} -connect ${SWG_CONNECT} $SWG_PARAMS")
         elif l.startswith("EnvironmentFile="):
             out.append("EnvironmentFile=-" + envp)
+        elif any(l.split("=", 1)[0].strip() == k for k in _TURN_HARDEN_KEYS):
+            continue                                    # drop any stale hardening lines; re-added fresh below
         else:
             out.append(l)
+    hard = TURN_UNIT_HARDENING.rstrip("\n").split("\n")   # inject the sandbox at the end of [Service] (before [Install])
+    if "[Install]" in out:
+        i = out.index("[Install]")
+        out = out[:i] + hard + [""] + out[i:]
+    else:
+        out += hard
     return "\n".join(out) + "\n"
 
 def _turn_install(svc, req):
@@ -3964,13 +4216,17 @@ def _turn_install(svc, req):
             "After=network-online.target\nWants=network-online.target\n\n"
             "[Service]\nEnvironmentFile=-" + envp + "\n"
             "ExecStart=" + binp + " -listen ${SWG_LISTEN} -connect ${SWG_CONNECT} $SWG_PARAMS\n"
-            "Restart=on-failure\nRestartSec=3\n\n"
+            "Restart=on-failure\nRestartSec=3\n" + TURN_UNIT_HARDENING + "\n"
             "[Install]\nWantedBy=multi-user.target\n")
-    tag = _turn_resolve_tag(owner)
-    dl = " || ".join("curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "
-                     + shlex.quote(u) + " -o " + shlex.quote(sbin) for u in _turn_dl_urls(owner, arch))
+    pin_tag, want = _turn_pin(req.get("pin"))             # panel checksum gate: pin the immutable tag + expected sha256
+    tag = pin_tag or _turn_resolve_tag(owner)
+    _turn_panel_fetch(owner, tag, arch, sbin, want)       # P2: place the (verified) binary from the panel mirror → the heredoc's [ -x sbin ] then skips GitHub
+    dl = " || ".join("curl -4 -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "
+                     + shlex.quote(u) + " -o " + shlex.quote(sbin) for u in _turn_dl_urls(owner, arch, tag))
+    # verify ONLY a freshly downloaded binary (reuse of this fork's already-present binary, incl. a panel-mirror pull above = validated already)
+    dlblock = "{ [ -x " + shlex.quote(sbin) + " ] || { { " + dl + "; }" + _turn_sha_shell(shlex.quote(sbin), want) + "; }; }"
     cmd = ("mkdir -p " + shlex.quote(fdir) + " " + shlex.quote(d)
-           + " && { [ -x " + shlex.quote(sbin) + " ] || { " + dl + "; }; } && chmod 755 " + shlex.quote(sbin)   # reuse this fork's binary if already downloaded
+           + " && " + dlblock + " && chmod 755 " + shlex.quote(sbin)
            + " && ln -sfn " + shlex.quote("../.bin/" + fork + "/server") + " " + shlex.quote(binp)
            + " && printf %s " + shlex.quote(owner) + " > " + shlex.quote(fdir + "/repo.txt")
            + ((" && printf %s " + shlex.quote(tag) + " > " + shlex.quote(fdir + "/version.txt")) if tag else "")
@@ -4045,10 +4301,11 @@ def apply_turn(turn, turn_onboard):
                     _TURN_ATTEMPTS.pop(svc, None)   # manual retry → clear the give-up counter so the bg reconcile resumes if this one also fails
                     _TURN_INSTALLING.add(svc)       # mark "installing/updating" for the docker card (attach_running keys off this set,
                                                     # overriding load_turn_proxies' job flag) — cleared in the done handler below
-                    def _work(svc=svc, tp=tp):      # runs in a thread — download fresh + (re)create the container
+                    _pin = req.get("pin")           # panel checksum gate — capture before the thread (req isn't in the closure's scope later)
+                    def _work(svc=svc, tp=tp, pin=_pin):      # runs in a thread — download fresh + (re)create the container
                         with _turn_fork_lock(_turn_fork(svc)):   # serialise same-fork refreshes; atomic-swap the shared binary
                             with contextlib.suppress(OSError): os.remove(_turn_bin_local_legacy(svc))   # drop a stale pre-dedup copy
-                            derr = _dturn_force_download(svc, tp["owner"])
+                            derr = _dturn_force_download(svc, tp["owner"], pin)
                         if derr: return derr
                         r = _dturn_run(tp)
                         if r.returncode != 0: return (r.stderr or "container start failed").strip()[:120]
@@ -4133,23 +4390,26 @@ def apply_turn(turn, turn_onboard):
                         if owner: break
                 if not owner:
                     fail(svc, "no owner repo for reinstall"); continue
-                arch = "arm64" if os.uname().machine in ("aarch64", "arm64") else "amd64"
+                arch = _turn_arch()
                 fork = _turn_fork(svc)
+                pin_tag, want = _turn_pin(req.get("pin"))                     # panel checksum gate: pin tag + expected sha256
                 sbin = "/opt/vk-turn-proxy/.bin/" + fork + "/server"          # shared per-fork binary (a reinstall refreshes it for every instance of the fork)
                 binp = "/opt/vk-turn-proxy/" + _turn_inst(svc) + "/server"    # this instance's symlink → the shared binary
-                tag = _turn_resolve_tag(owner); vp = _turn_ver_path(svc)
+                tag = pin_tag or _turn_resolve_tag(owner); vp = _turn_ver_path(svc)
                 tmp = sbin + ".new." + _turn_inst(svc)   # per-instance temp then atomically mv over the LIVE binary — curl -o onto a
-                dl = " || ".join("curl -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "   # running executable fails ETXTBSY ("Failure
-                                 + shlex.quote(u) + " -o " + shlex.quote(tmp) for u in _turn_dl_urls(owner, arch))          # writing output"); rename keeps the old
+                dl = " || ".join("curl -4 -fsSL --connect-timeout 20 --max-time 240 --retry 3 --retry-delay 3 --retry-all-errors "   # running executable fails ETXTBSY ("Failure
+                                 + shlex.quote(u) + " -o " + shlex.quote(tmp) for u in _turn_dl_urls(owner, arch, tag))          # writing output"); rename keeps the old
                 cmd = ("mkdir -p " + shlex.quote(os.path.dirname(sbin)) + " " + shlex.quote(os.path.dirname(binp))          # inode for the running proc until restart.
-                       + " && ( " + dl + " ) && chmod 755 " + shlex.quote(tmp) + " && mv -f " + shlex.quote(tmp) + " " + shlex.quote(sbin)
+                       + " && ( [ -f " + shlex.quote(tmp) + " ] || ( " + dl + " ) ) && chmod 755 " + shlex.quote(tmp)      # [ -f tmp ]: the panel-mirror pull (in _work) already placed it → skip GitHub. verify BEFORE the swap either way.
+                       + _turn_sha_shell(shlex.quote(tmp), want) + " && mv -f " + shlex.quote(tmp) + " " + shlex.quote(sbin)
                        + " && ln -sfn " + shlex.quote("../.bin/" + fork + "/server") + " " + shlex.quote(binp)
                        + " && printf %s " + shlex.quote(owner) + " > " + shlex.quote(_turn_repo_path(svc)))
                 if tag:
                     cmd += " && printf %s " + shlex.quote(tag) + " > " + shlex.quote(vp) + " && chmod 644 " + shlex.quote(vp)
                 cmd += " && systemctl restart " + shlex.quote(svc)
-                def _work(cmd=cmd, svc=svc, fork=fork):    # runs in a thread; serialise same-fork refreshes on the shared binary
+                def _work(cmd=cmd, svc=svc, fork=fork, owner=owner, tag=tag, arch=arch, tmp=tmp, want=want):    # runs in a thread; serialise same-fork refreshes on the shared binary
                     with _turn_fork_lock(fork):
+                        _turn_panel_fetch(owner, tag, arch, tmp, want)   # P2: pull the (verified) binary from the panel mirror → the heredoc's [ -f tmp ] then skips GitHub
                         w = host_sh(cmd, timeout=340)
                     if w.returncode != 0: return (w.stderr or "reinstall failed").strip()[:140]
                     return _turn_verify(svc)
@@ -4322,6 +4582,7 @@ def main():
     nd = node_cfg.get("node") or {}
     if not panel.get("url") or not panel.get("token"):
         sys.exit("config needs a 'panel' block with url + token")
+    globals()["_TURN_PANEL"] = panel   # so the turn-binary MIRROR pull (apply_turn + docker bg reconcile) can reach the panel
     url = panel["url"].rstrip("/") + "/api/node/sync"
     token = panel["token"]
     interval = nd.get("interval", 5)

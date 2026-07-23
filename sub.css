@@ -69,12 +69,31 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .ctl:hover { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand), 0 2px 10px rgba(0, 0, 0, .18); }   /* mouseover highlight */
 .ctl:active { transform: scale(.94); }
 .ctl[hidden] { display: none; }
+/* header OS picker: the "devices" button + its dropdown menu */
+.os-menu { position: fixed; z-index: 60; min-width: 148px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 5px; box-shadow: 0 10px 30px rgba(0, 0, 0, .32); display: flex; flex-direction: column; gap: 2px; }
+.os-menu[hidden] { display: none; }
+.os-mi { appearance: none; border: 0; background: none; cursor: pointer; text-align: left; font: inherit; font-weight: 700;
+  font-size: 14px; color: var(--ink); padding: 8px 12px 8px 9px; border-radius: 8px; display: flex; align-items: center; gap: 10px; }
+.os-mi-ic { display: inline-flex; width: 20px; height: 20px; color: var(--ink-2); flex: 0 0 auto; }
+.os-mi-ic svg { width: 100%; height: 100%; display: block; }
+.os-mi.on .os-mi-ic { color: var(--brand); }
+.os-mi:hover { background: var(--panel-2); }
+.os-mi.on { color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 32%, transparent); }
 
 /* loading / empty / error — centred in the remaining space */
 .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; padding: 32px 24px; color: var(--muted); }
 .state[hidden] { display: none; }   /* the class sets display:flex, which would otherwise defeat the hidden attribute */
 .state-msg { margin: 0; font-size: 19px; font-weight: 700; color: var(--ink); }
 .state-sub { margin: 0 auto; max-width: 34em; }
+/* BLOCKED / EXPIRED. Whole-sub: the status word (red) sits under the header username, above the text. Per-peer:
+   a dead cell shows the peer name + the same word + text where the QR/config would be. One red for both states. */
+.state-word { margin: 0; text-transform: uppercase; letter-spacing: .12em; font-weight: 800; font-size: clamp(26px, 9vw, 40px); line-height: 1.05; color: #e5484d; }
+.peer-dead { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; margin: auto; padding: 24px 16px; max-width: 34em; }
+.peer-dead-name { margin: 0; font-weight: 700; font-size: clamp(15px, 4.6vw, 19px); color: var(--ink); overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.peer-dead .state-word { font-size: clamp(22px, 8vw, 34px); }
+.peer-dead .state-sub { color: var(--muted); }
 .spin { width: 34px; height: 34px; margin: 0 auto 16px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -89,6 +108,8 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .modetab { flex: none; appearance: none; width: 62px; height: 62px; padding: 11px; border-radius: 16px; cursor: pointer;
   border: 1px solid var(--line); background: var(--panel-2); transition: border-color .18s, box-shadow .18s, transform .1s; }
 .modetab svg { display: block; width: 100%; height: 100%; }
+.modetab.mtab-wg svg { transform: translateY(2px) scale(.9); }    /* the dragon is tall+thick → trim it + nudge it down to sit level with the others */
+.modetab.mtab-awg svg { transform: scale(1.07); }  /* the Amnezia "A" a touch larger */
 /* the group you're viewing gets a thin, neutral cyan/blue ring; the others simply aren't ringed (never dimmed) */
 .modetab.on { background: var(--panel); border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
 .modetab:hover:not(:disabled) { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }   /* mouseover highlight */
@@ -113,25 +134,149 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .pdot.on { background: var(--brand); transform: scale(1.4); }
 
 /* horizontal swipe row of a peer's servers */
-.srow { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.srow { flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; touch-action: pan-x; }
 .srow::-webkit-scrollbar { display: none; }
 .scell { position: relative; flex: 0 0 100%; min-width: 0; scroll-snap-align: center; scroll-snap-stop: always; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 0 16px 6px; }
 
 /* the node label + protocol / fork tags — positioned by JS (top set live), centred horizontally */
 .scell-node { position: absolute; left: 0; right: 0; top: 0; z-index: 4; flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; max-width: 100%; }
 .scell-srv { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; max-width: 100%; }
-.scell-server { font-weight: 700; font-size: clamp(15px, 4.6vw, 18px); word-break: break-word; }
-.scell-primary { font-size: 11px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase; color: var(--brand); }
 /* turn role/interface label beside the app badge; primary/single = iface colour (inline), backup = grey */
 .scell-role { font-size: 11px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase; }
 .scell-backup { color: var(--muted); }
 /* fork tag — beside the server name, sized to its text (never truncated) */
 /* protocol / turn-app label: plain PRIMARY-style text (no pill), coloured by the iface (WG/AWG) or turn fork */
 .scell-tag { font-size: 11px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase; color: var(--brand); white-space: nowrap; }
-.scell-paste { color: var(--muted); font-size: 13px; font-weight: 600; margin-top: 2px; }
+.scell-tag-sep { color: var(--muted); opacity: .8; }
+/* plain/slow marker beside the role — warning-orange turtle (VK throttles unobfuscated transports) */
+.scell-slow { display: inline-flex; align-items: center; margin-left: -4px; color: #f97316; line-height: 0; }
+.scell-slow svg { width: 1.3em; height: 1.3em; display: block; }
+/* AXIS-3: "Get the app" install link under the fork badge — subtle secondary affordance (brand on hover) */
+.scell-getapp { max-width: 100%; }
+.scell-getapp-a { color: var(--muted); font-size: 12.5px; font-weight: 700; text-decoration: none; white-space: nowrap; transition: color .15s; }
+.scell-getapp-a:hover { color: var(--brand); }
+.scell-getapp-btn { appearance: none; border: 0; background: none; cursor: pointer; font-family: inherit; padding: 0; }
+/* download bubble — popover centred at the bottom, above the button bar, listing the latest release's installer files */
+.dl-bubble { position: fixed; z-index: 70; width: min(340px, calc(100vw - 24px)); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 14px; padding: 6px; box-shadow: 0 8px 40px rgba(0, 0, 0, .42);
+  display: flex; flex-direction: column; min-height: 0; }
+.dl-bubble-head { display: block; font-size: 12.5px; font-weight: 800; color: var(--brand); text-decoration: none;
+  padding: 8px 10px; border-radius: 8px; flex: 0 0 auto; }
+.dl-bubble-head:hover { background: var(--panel-2); }
+.dl-bubble-ver { font-size: 11px; font-weight: 700; letter-spacing: .4px; color: var(--muted); text-transform: uppercase;
+  padding: 2px 10px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; flex: 0 0 auto; }
+.dl-bubble-title { font-size: 12.5px; font-weight: 800; color: var(--ink); padding: 8px 10px 8px;
+  border-bottom: 1px solid var(--line); margin-bottom: 4px; flex: 0 0 auto; }
+.dl-bubble-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+.dl-bubble-item { display: flex; flex-direction: column; gap: 1px; text-decoration: none; padding: 7px 10px; border-radius: 8px; }
+.dl-bubble-item:hover { background: var(--panel-2); }
+.dl-item-label { font-size: 13px; font-weight: 700; color: var(--ink); }
+.dl-item-file { font-size: 10.5px; color: var(--muted); word-break: break-all; }
+.dl-bubble-item:hover .dl-item-label { color: var(--brand); }
+/* "Ask on tap" choice popover (Safari-on-iOS): Open the app vs Get the app — centred above the Start button */
+.start-choice { position: fixed; z-index: 72; width: min(300px, calc(100vw - 24px)); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 14px; padding: 8px; box-shadow: 0 -6px 40px rgba(0, 0, 0, .42);
+  display: flex; flex-direction: column; gap: 6px; }
+.start-choice-t { font-size: 12.5px; font-weight: 700; color: var(--muted); text-align: center; padding: 2px 4px 4px; }
+.start-choice-b { appearance: none; cursor: pointer; font-family: inherit; text-align: center; border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 1px; border: 1.5px solid var(--line); background: var(--panel-2); }
+.start-choice-b:active { transform: translateY(1px); }
+.start-choice-l { font-size: 14.5px; font-weight: 800; color: var(--ink); }
+.start-choice-s { font-size: 11px; color: var(--muted); }
+/* Get = the theme's main colour (--brand, follows the deployment's theme_color); Open = greenish (distinct) */
+.start-choice-b.get { border-color: color-mix(in srgb, var(--brand) 55%, transparent); background: color-mix(in srgb, var(--brand) 12%, transparent); }
+.start-choice-b.get .start-choice-l { color: var(--brand); }
+.start-choice-b.open { border-color: color-mix(in srgb, #22c55e 58%, transparent); background: color-mix(in srgb, #22c55e 13%, transparent); }
+.start-choice-b.open .start-choice-l { color: #22c55e; }
+@media (prefers-color-scheme: light) { .start-choice-b.open .start-choice-l { color: #16a34a } }
+:root[data-theme="light"] .start-choice-b.open .start-choice-l { color: #16a34a }
+:root[data-theme="dark"] .start-choice-b.open .start-choice-l { color: #4ade80 }
+/* anton48 iOS import-hint — full-screen overlay (like the enlarged QR): big instruction + the "Import Connection Link?"
+   screenshot with a wide brand-colour glow. */
+.ih-overlay { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, .9); display: flex;
+  align-items: center; justify-content: center; padding: 24px; cursor: zoom-out; }
+.ih-inner { display: flex; flex-direction: column; gap: 46px; align-items: center; max-width: 480px; width: 100%; }
+.ih-text { display: flex; flex-direction: column; gap: 12px; color: #fff; text-align: center; }
+.ih-line { font-size: 21px; font-weight: 600; line-height: 1.3; }
+.ih-lead { font-size: 25px; font-weight: 700; margin-bottom: 2px; }   /* first line a touch bigger still */
+.ih-text b { font-size: 27px; font-weight: 800; }   /* Settings / Import: bold + bigger, same colour as the rest (no accent) */
+.ih-countdown { font-size: 22px; font-weight: 700; color: var(--brand); text-align: center; letter-spacing: .3px; }   /* "App is opening in N…" — top of the anton48 iOS hint, hidden once the app opens */
+.ih-close { position: fixed; top: 14px; right: 14px; z-index: 91; width: 42px; height: 42px; border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, .35); background: rgba(255, 255, 255, .12); color: #fff; font-size: 25px;
+  line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+.ih-close:hover { background: rgba(255, 255, 255, .22); }
+/* brief "link copied" toast */
+.sub-toast { position: fixed; left: 50%; bottom: 22%; transform: translateX(-50%); z-index: 95; max-width: 88vw;
+  background: rgba(18, 24, 33, .96); color: #fff; font-size: 14px; font-weight: 700; text-align: center;
+  padding: 12px 18px; border-radius: 12px; box-shadow: 0 10px 34px rgba(0, 0, 0, .42);
+  border: 1px solid color-mix(in srgb, var(--brand) 45%, transparent); animation: toastin .2s ease; }
+@keyframes toastin { from { opacity: 0; transform: translate(-50%, 8px) } to { opacity: 1; transform: translate(-50%, 0) } }
+.ih-img { display: block; width: min(90vw, 480px); border-radius: 44px;   /* rounder than the card so the corners read soft; glow follows */
+  box-shadow: 0 0 60px 16px color-mix(in srgb, var(--brand) 66%, transparent); }
+/* WG/AWG "paste it into AmneziaVPN" hint (Windows/Linux) — same overlay, an app-icon header + 3 steps + a downloads link */
+.ph-inner { gap: 30px; cursor: default; }
+.ph-copied { display: flex; align-items: center; gap: 9px; color: #4ade80; font-size: 17px; font-weight: 800; margin-bottom: 44px; }   /* green "copied" confirmation, well above the steps */
+.ph-copied svg { width: 23px; height: 23px; stroke-width: 2.4; }
+.ph-head { display: flex; align-items: center; gap: 14px; }
+.ph-icon { width: 60px; height: 60px; border-radius: 14px; display: block; flex: 0 0 auto; }
+.ph-title { color: #fff; font-size: 30px; font-weight: 800; letter-spacing: .2px; }
+.cli-titcol { display: flex; flex-direction: column; align-items: flex-end; }   /* "by …" sits right-aligned under the title */
+.cli-by { font-size: 13px; font-weight: 800; letter-spacing: .3px; margin-top: -1px; }
+/* multi-author CLI: one block per compatible client build (native first) — a coloured "by <author>" download + its own command */
+.cli-authors { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 340px; }
+.cli-author { display: flex; flex-direction: column; gap: 6px; }
+.cli-auth-hd { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.cli-auth-dl { font-size: 15px; font-weight: 800; letter-spacing: .2px; }
+.cli-auth-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 1px 7px; border: 1px solid; border-radius: 999px; }
+.cli-auth-cmd { margin: 0; cursor: pointer; }
+.ph-steps { display: flex; flex-direction: column; gap: 16px; color: #fff; text-align: left; max-width: 340px; }
+.ph-step { font-size: 20px; font-weight: 600; line-height: 1.4; }
+.ph-step b { font-weight: 800; }
+.wt-step2 { line-height: 1.7; }   /* the WG-Turn "+" button row needs a little more height */
+/* WG Turn step 2: the app's blue rounded-square "+" button, inline with the text */
+.wt-plus { display: inline-flex; align-items: center; justify-content: center; width: 1.5em; height: 1.5em; margin: 0 .16em;
+  vertical-align: middle; background: #0b5cd6; border-radius: .4em; box-shadow: 0 1px 5px rgba(0, 0, 0, .35); }
+.wt-plus svg { width: 64%; height: 64%; display: block; }
+/* MYSOREZ: the 3-button choice — a compact popover above the button bar (like the Safari ask-on-tap) */
+.mz-choice .start-choice-t { font-size: 13px; font-weight: 800; color: var(--ink); letter-spacing: .2px; }
+.mz-cbtn { flex-direction: row; align-items: center; gap: 10px; text-align: left; }
+.mz-cbtn .start-choice-l { font-weight: 700; }
+.mz-cbtn-col { display: flex; flex-direction: column; gap: 1px; align-items: flex-start; min-width: 0; flex: 1 1 auto; }
+.mz-cbtn .start-choice-s { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mz-num { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--brand); color: #06222a; font-weight: 800; font-size: 12.5px; }
+.start-choice-b.go { border-color: color-mix(in srgb, #22c55e 58%, transparent); background: color-mix(in srgb, #22c55e 13%, transparent); }
+.start-choice-b.go .start-choice-l { color: #22c55e; }
+.start-choice-b.go .mz-num { background: #22c55e; }
+@media (prefers-color-scheme: light) { .start-choice-b.go .start-choice-l { color: #16a34a } }
+:root[data-theme="light"] .start-choice-b.go .start-choice-l { color: #16a34a }
+:root[data-theme="dark"] .start-choice-b.go .start-choice-l { color: #4ade80 }
+/* MYSOREZ 11-step overlay: top-aligned + scrollable so all steps fit and sit high, not vertically centred */
+.mz-ov { align-items: flex-start; overflow-y: auto; }
+.mz-ov .ph-inner { padding: 14px 0 34px; }
+.mz-ov .ph-copied { margin-bottom: 12px; }
+.mz-ov .ph-inner { gap: 20px; }
+.mz-ov .ph-steps { gap: 9px; }
+.mz-ov .ph-step { font-size: 16px; line-height: 1.35; }
+.mz-links { display: flex; flex-direction: column; gap: 12px; align-items: center; margin-top: 8px; }
+.mz-links .ph-dl { margin-top: 0; }
+.ph-dl { color: var(--brand); font-size: 16px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; margin-top: 26px; }   /* sits lower, clearly below the steps */
+.ph-dlpanel { position: static; width: min(320px, calc(100vw - 48px)); max-height: 40vh; cursor: default; }
+/* small app logo beside a download item (WG/AWG apps) */
+.dl-bubble-item.has-logo { flex-direction: row; align-items: center; gap: 10px; }
+.dl-item-logo { width: 26px; height: 26px; object-fit: contain; flex: 0 0 auto; border-radius: 6px; }
+.dl-item-col { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+/* WG/AWG two-target row: [logo + name] → downloads page  ·  [⬇] → best direct installer for this OS */
+.dl-bubble-item.wg-row { flex-direction: row; align-items: stretch; gap: 4px; padding: 0; }
+.dl-row-body { flex: 1 1 auto; display: flex; align-items: center; gap: 10px; text-decoration: none; padding: 7px 10px; border-radius: 8px; min-width: 0; }
+.dl-row-body:hover { background: var(--panel-2); }
+.dl-row-body:hover .dl-item-label { color: var(--brand); }
+.dl-row-dl { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 42px; border-radius: 8px; color: var(--muted); text-decoration: none; }
+.dl-row-dl:hover { background: var(--panel-2); color: var(--brand); }
+.dl-row-dl svg { width: 20px; height: 20px; }
 /* freeturn:// needs a VK call link the recipient adds in the app — shown here, tap to copy */
 /* VK-link notice (freeturn/samosvalishe forks) — placed by JS between the up-arrow and the box */
-.scell-vk { position: absolute; left: 0; right: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; gap: 5px; max-width: 100%; }
+.scell-vk { position: absolute; left: 0; right: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; gap: 2px; max-width: 100%; }
 .scell-vklbl { color: var(--muted); font-size: 12.5px; font-weight: 600; text-align: center; max-width: 92%; }
 .scell-vkbtn { max-width: 92%; appearance: none; cursor: pointer; font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: 12px; font-weight: 700; color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent); border-radius: 10px; padding: 7px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .scell-vkbtn:active { transform: translateY(1px); }
@@ -193,7 +338,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 /* copy affordances: config = corner OVERLAY (opaque bg masks the text); command = inline flex item (transparent) */
 .cmdcopy, .cfgcopy { padding: 0; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px; color: var(--brand); cursor: pointer; }
 .cfgcopy { position: absolute; right: 5px; bottom: 5px; width: 26px; height: 26px; background: var(--panel); }
-.cmdcopy { position: static; flex: none; width: 24px; height: 24px; background: transparent; }
+.cmdcopy { flex: none; width: 24px; height: 24px; background: transparent; }
 .cmdcopy svg, .cfgcopy svg { width: 16px; height: 16px; display: block; }
 .cmdcopy:active, .cfgcopy:active { transform: scale(.9); }
 /* "Copied to clipboard" bubble, centred over the clicked text box (its wrapper is position:relative) */
@@ -224,6 +369,24 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 .pbtn.ico { transition: border-color .15s, box-shadow .15s; }
 .pbtn.ico:hover { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand), 0 2px 10px rgba(0, 0, 0, .18); }   /* mouseover highlight */
 .pbtn.ico:active { transform: scale(.94); }
+/* ── the signature START button: a glowing brand orb (SVG face), round, 1.5× the icon buttons, brand-coloured glow.
+   Deep-links into the app if installed, else downloads it. The utility icons stay small, centred on its centre. ── */
+.pbtn-start { flex: 0 0 auto; appearance: none; border: 0; padding: 0; margin: 0 4px; background: none; cursor: pointer;
+  width: 90px; height: 90px; border-radius: 50%; position: relative;
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--brand) 60%, transparent),
+              0 0 36px color-mix(in srgb, var(--brand) 62%, transparent),
+              0 0 68px color-mix(in srgb, var(--brand) 34%, transparent), 0 6px 20px rgba(0, 0, 0, .28);
+  transition: box-shadow .18s ease, transform .12s ease; }
+.pbtn-start svg { width: 100%; height: 100%; display: block; border-radius: 50%; }
+.pbtn-start::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 44px color-mix(in srgb, var(--brand) 58%, transparent); animation: startpulse 2.6s ease-in-out infinite; }
+.pbtn-start:hover { transform: translateY(-1px);
+  box-shadow: 0 0 0 2px var(--brand), 0 0 48px color-mix(in srgb, var(--brand) 75%, transparent),
+              0 0 84px color-mix(in srgb, var(--brand) 42%, transparent), 0 8px 24px rgba(0, 0, 0, .3); }
+.pbtn-start:active, .pbtn-start.go { transform: scale(.95); }
+.pbtn-start:focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 70%, transparent); outline-offset: 3px; }
+@keyframes startpulse { 0%, 100% { opacity: .5 } 50% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) { .pbtn-start::after { animation: none } }
 
 /* up/down swipe HINT (non-interactive) — flanks the QR vertically (swipe between peers); gentle bounce; the
    caller hides it at the ends. Never intercepts taps/swipes (pointer-events:none). */
@@ -245,8 +408,6 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
 @keyframes navL { 0%, 100% { transform: translate(1px, -50%); } 50% { transform: translate(-2px, -50%); } }
 @keyframes navR { 0%, 100% { transform: translate(-1px, -50%); } 50% { transform: translate(2px, -50%); } }
 @media (prefers-reduced-motion: reduce) { .vhint, .navarrow { animation: none; } }
-.pbtn.primary { background: var(--brand); color: var(--brand-ink); }
-.pbtn.ghost { background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
 .pbtn[hidden] { display: none; }
 .pbtn:active { transform: translateY(1px); }
 
@@ -263,8 +424,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   .qrimg { width: min(43vw, 40vh, 216px); }   /* …and on tall portrait windows */
 }
 /* Phones: a compact inline QR (about half size — tap it for the fullscreen scan view) and a config box ~15%
-   smaller, LEFT-aligned (auto right margin pushes it to the left edge, clear of the right-hand icon rail;
-   the QR stays centred). Placed AFTER the taller-screen rule so it wins on tall phones. */
+   smaller, centred. Placed AFTER the taller-screen rule so it wins on tall phones. */
 @media (max-width: 560px) {
   .qrimg { width: min(43vw, 40vh, 216px); }
   .textwrap { max-width: 92%; margin-left: auto; margin-right: auto; }
@@ -279,6 +439,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   .pbar { min-height: 84px; padding: 9px 0 calc(9px + env(safe-area-inset-bottom)); }
   .pbtn.ico { width: 52px; height: 52px; min-height: 52px; }
   .pbtn.ico svg { width: 24px; height: 24px; }
+  .pbtn-start { width: 78px; height: 78px; }
   .qrimg { width: min(43vw, 34vh, 200px); }   /* shorter viewport → smaller QR so it + the command clear the bar */
 }
 @media (max-height: 600px) {
@@ -290,6 +451,7 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
   .pbar { min-height: 66px; padding: 7px 0 calc(7px + env(safe-area-inset-bottom)); }
   .pbtn.ico { width: 46px; height: 46px; min-height: 46px; }
   .pbtn.ico svg { width: 22px; height: 22px; }
+  .pbtn-start { width: 69px; height: 69px; }
   .qrimg { width: min(40vw, 30vh, 170px); }
 }
 /* PORTRAIT on a mouse device (a desktop/laptop browser, at ANY width — not a touch phone): keep the single-screen
@@ -310,6 +472,9 @@ body.logo-inline .brand { align-self: flex-start; min-height: 41px; }
    viewport doesn't have, so fall back to a normal scrolling document centred in a column — desktop style. The
    servers still swipe within a peer; the action bar sits inline under each peer. ── */
 @media (orientation: landscape) {
+  /* overflow-anchor:none — the collapsing sticky header (below) changes document height; Firefox's scroll
+     anchoring reacts by re-adjusting scrollY, which fought the user and jumped the page back up. */
+  html, body { overflow-anchor: none; }
   body { height: auto; min-height: 100dvh; overflow-x: hidden; overflow-y: auto; display: block; }
   #app, #peers, .pager { display: block; height: auto; min-height: 0; overflow: visible; }
   .pager { scroll-snap-type: none; }

@@ -67,7 +67,8 @@ CTYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8"
 # Static assets are served under this prefix so a bare "/<token>" is unambiguous.
 ASSET_PREFIX = "/_a/"
 STATIC = {"sub.js": "sub.js", "sub.css": "sub.css", "qrcode.js": "vendor/qrcode.js",
-          "turn-artifacts.js": "turn-artifacts.js"}
+          "turn-artifacts.js": "turn-artifacts.js", "import-hint.png": "import-hint.png",
+          "amneziavpn.svg": "amneziavpn.svg", "amneziawg.png": "amneziawg.png", "wireguard.svg": "wireguard.svg"}
 
 # Reverse-proxy mount base, e.g. "/swgsub" (empty = served at root), mirroring the panel's SWG_PANEL_BASE. Set
 # once at startup from SWG_SUB_BASE or the panel-written serve.base, and stripped off every request path so the
@@ -316,6 +317,13 @@ def _rate_ok(ident):
         return True
 
 
+def is_expired(rec, nowv):
+    """True if rec (a user or a peer) has an expiry date that has already passed. 0/absent = never expires.
+    Evaluated live on every request — no scheduler; a peer/sub reappears the instant the date is extended."""
+    exp = (rec or {}).get("expiry") or 0
+    return bool(exp) and nowv >= int(exp)
+
+
 def read_data(state, token):
     """The public page's data for a token: the user's CURRENT peers, each target's NON-SECRET
     params + the encrypted secret blob. Never returns a plaintext key. None if subscriptions are
@@ -337,10 +345,15 @@ def read_data(state, token):
     langs = subs.get("languages") if isinstance(subs.get("languages"), dict) else {}
     theme = {"theme_color": subs.get("theme_color") or "", "theme_color_light": subs.get("theme_color_light") or "",
              "langs": {"enabled": langs.get("enabled") or ["en"], "default": langs.get("default") or "en"}}
+    nowv = int(time.time())
     # BLOCKED user (subscription suspended, or the roster flag set): resolve the token to show the name +
     # theme, but serve NO peers or secrets. The page renders the centered "Subscription disabled" screen.
     if not rec.get("enabled") or user.get("disabled"):
         return {"disabled": True, "user": {"name": user.get("name") or ""}, **theme}
+    # EXPIRED subscription: same treatment as blocked, but the page shows "Subscription expired". Expiry is a live
+    # date test (the sub record stays enabled), so it's evaluated here on every request rather than at set-time.
+    if is_expired(user, nowv):
+        return {"expired": True, "user": {"name": user.get("name") or ""}, **theme}
     live = {pid: p for pid, p in (roster.get("peers") or {}).items()
             if isinstance(p, dict) and p.get("user_id") == uid}
     blobs = state.sub_blobs(uid)                        # per-user file — small, read fresh so a new peer shows at once
@@ -379,15 +392,32 @@ def read_data(state, token):
                 "turn": turn,
                 "primary": (n_t > 1 and i == 0),       # the default deployment, tagged first
             })
-        peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts})
+        # A blocked/expired peer still appears on the page, but the cell shows a "BLOCKED"/"EXPIRED" placeholder
+        # instead of its QR/config/buttons — so the holder sees WHY it stopped working. (A whole-user block/expiry
+        # is handled above; these per-peer flags cover the case where only some of a user's peers are cut off.)
+        peers_out.append({"peer_id": pid, "title": p.get("title") or "", "sec": sec, "targets": tgts,
+                          "disabled": bool(p.get("disabled")), "expired": is_expired(p, nowv)})
+    # active peers first (A-Z by title, untitled by IP), then blocked/expired at the bottom (also A-Z). The sub page
+    # renders live-then-dead within this order, so a single title sort here gives both groups their A-Z ordering.
+    def _peer_key(po):
+        t = (po.get("title") or "").strip().lower()
+        ip = ((po.get("targets") or [{}])[0] or {}).get("ip") or ""
+        return (bool(po.get("disabled") or po.get("expired")), t == "", t, ip)   # active-first · titled-first · A-Z · then IP
+    peers_out.sort(key=_peer_key)
     subs = state.subscriptions()
     langs = subs.get("languages") if isinstance(subs.get("languages"), dict) else {}
     return {"user": {"name": user.get("name") or ""}, "peers": peers_out,
             # PER-USER VK link only — subscriptions NEVER fall back to the panel-wide vk_link (that one is for
             # the admin's own testing + unassigned peers). Empty here → the sub page shows a "create one" warning.
             "turn_enabled": bool(subs.get("turn_enabled")), "vk_link": (user.get("vk_link") or ""),
+            "vk_links": (user.get("vk_links") if isinstance(user.get("vk_links"), list) else ([user.get("vk_link")] if user.get("vk_link") else [])),   # all of the user's VK links (primary first); forks that support it embed all, freeturn lists them
+
             "theme_color": subs.get("theme_color") or "", "theme_color_light": subs.get("theme_color_light") or "",
             "turn_fork_colors": subs.get("turn_fork_colors") or {}, "iface_colors": subs.get("iface_colors") or {},
+            "turn_client_default": subs.get("turn_client_default") or {},   # admin's END-USER default app per (fork, OS) → the page hands out THIS app instead of the compat-ranked top one
+            "turn_client_settings": subs.get("turn_client_settings") or {},   # SETTINGS SPLIT: admin's per-fork client (app) values → the sub page generates configs with them (encoder fills any unset with defaults)
+            "turn_catalog": subs.get("turn_catalog") or {},   # AXIS-3: server→client/app/scheme/store metadata so the page can offer "Get the app" install links (public app links only, no secrets)
+            "wg_catalog": subs.get("wg_catalog") or {},   # WG/AWG client apps + per-OS resolved installer (download bubble): body → downloads page, icon → direct file
             "node_colors": subs.get("node_colors") or {},   # per-node colour so each server name renders in its panel colour
             "langs": {"enabled": langs.get("enabled") or ["en"], "default": langs.get("default") or "en"}}
 
@@ -460,7 +490,8 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return self._send(500, "subscription page missing\n")
         if VERSION:
-            q = ("?v=" + VERSION).encode()   # asset refs are RELATIVE (no leading /) so they resolve under any reverse-proxy mount
+            # a "+sha" dev build must be %2B in the query — a literal "+" makes a CDN/WAF (Cloudflare) reject the URL.
+            q = ("?v=" + VERSION.replace("+", "%2B")).encode()   # asset refs are RELATIVE (no leading /) so they resolve under any reverse-proxy mount
             data = (data.replace(b'href="_a/sub.css"', b'href="_a/sub.css' + q + b'"')
                         .replace(b'src="_a/sub.js"', b'src="_a/sub.js' + q + b'"')
                         .replace(b'src="_a/qrcode.js"', b'src="_a/qrcode.js' + q + b'"')
