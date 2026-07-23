@@ -1293,19 +1293,22 @@ button.tf-updbtn:hover{background:color-mix(in srgb,#F0913C 15%,transparent)}
 /* per-OS platform buttons: fill = native(emerald)/crossplatform(sky) @30% · border = plain(red)/obfs(neutral) · icon = sidecar(yellow)/app(ink) */
 .tf-plats{display:flex;align-items:center;gap:9px;margin-right:12px}
 .tf-plat{width:32px;height:32px;flex:none;border-radius:8px;display:grid;place-items:center;border:1px solid var(--line-solid);background:transparent;color:var(--ink-2);cursor:pointer;padding:0;transition:transform .1s,box-shadow .1s}
-.tf-plat:hover{transform:translateY(-1px);box-shadow:0 2px 6px -2px rgba(30,52,84,.35)}
+.tf-plat:hover{transform:translateY(-1px);box-shadow:0 3px 8px -3px rgba(30,52,84,.4)}
 .tf-plat .ic{display:grid;place-items:center;line-height:0}
 .tf-plat .ic svg{width:17px;height:17px;display:block}
-.tf-plat.nat{background:color-mix(in srgb,#10B981 30%,transparent)}
-.tf-plat.cross{background:color-mix(in srgb,#0EA5E9 30%,transparent)}
-.tf-plat.plain{border-color:#EF4444}
-.tf-plat.cli{color:#EAB308}
-.tf-plat.off{cursor:not-allowed;background:color-mix(in srgb,var(--dim) 22%,transparent);border-color:var(--line-solid);color:var(--faint)}
+/* solid-neon fill by client kind (cli's hue wins over nat/cross for a CLI); plain = dark-red glyph; off = 25% ghosted grey tile */
+.tf-plat.nat,.tf-plat.cross,.tf-plat.cli{color:#06121c;background:linear-gradient(158deg,color-mix(in srgb,var(--pc) 94%,#fff 6%),color-mix(in srgb,var(--pc) 72%,#000 14%));border:1px solid color-mix(in srgb,var(--pc) 50%,#fff 10%);box-shadow:0 4px 12px -5px color-mix(in srgb,var(--pc) 55%,transparent),inset 0 1px 0 color-mix(in srgb,#fff 40%,transparent)}
+.tf-plat.nat{--pc:#14E39A}
+.tf-plat.cross{--pc:#38CCF5}
+.tf-plat.cli{--pc:#FFC531}
+.tf-plat.plain{color:#9E2E1B}
+.tf-plat.off{cursor:not-allowed;color:#06121c;background:linear-gradient(158deg,#9dabc0,#7a8698);border:1px solid #7f8ca0;box-shadow:none;opacity:.25}
 .tf-plat.off:hover{transform:none;box-shadow:none}
 /* a disabled fork dims its row via opacity — keep the platform GROUP at full opacity (so the hover bubble stays solid)
    and dim just the buttons instead; the bubble is a sibling of the button, so it reads clearly even when the fork is off */
 .cl-row.off > .tf-plats{opacity:1}
-.cl-row.off .tf-plat{opacity:.5}
+.cl-row.off .tf-plat:not(.off){opacity:.5}
+.cl-row.off .tf-plat.off{opacity:.2}
 /* hover bubble on a platform button: app · by author / with <core> core, obfuscation type aligned right */
 .tf-platwrap{display:inline-flex}
 .tf-plbub{left:auto;right:18px;top:calc(100% - 9px);flex-direction:row;align-items:flex-start;gap:20px;white-space:nowrap;z-index:5}
