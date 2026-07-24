@@ -78,7 +78,7 @@ Four one-liners — each **prompts for whatever it needs**. Choose a method (bar
 **Panel** — asks the role: master (panel + this box is a node) or host (panel only)
 
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s bare-metal
 ```
 
 **Node** — asks for the panel URL + the key from Nodes → Add node
@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **Panel** — installs Docker if needed, then asks the role (master: panel + this box is a node, auto-enrolled · host: panel only) and a domain + TLS choice (login auto-generated, change it later in the panel)
 
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
 ```
 
 **Node** — asks for the panel URL + the key from Nodes → Add node
@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 ## Installing the panel
 
-`install-host.sh` (run by `bootstrap.sh host`, or directly from a clone) sets up the panel and, for a `master`, the local entry server. Two sequenced sections — **Panel setup**, then **Node setup** (master only):
+`install-host.sh` (run by `bootstrap.sh` for a `master`/`host` role, or directly from a clone) sets up the panel and, for a `master`, the local entry server. Two sequenced sections — **Panel setup**, then **Node setup** (master only):
 
 | section | prompt | meaning |
 |---|---|---|
@@ -138,7 +138,7 @@ Unattended example (config via env):
 
 ```
 sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.net \
-     BASIC_USER=admin BASIC_PASS='…' bash -s host \
+     BASIC_USER=admin BASIC_PASS='…' bash -s bare-metal \
      < <(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)
 ```
 
@@ -189,7 +189,7 @@ Live status (online, partial, dangling, …) is computed every refresh from the 
 **Panel** — Step 1 asks the role, exactly like bare-metal: **master** (panel + this box also runs WG/AWG as a co-located node container, auto-enrolled in one pass) or **host** (panel only). `master` is the default.
 
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
 ```
 
 **Node** — a separate entry server; asks for the panel URL + the key from **Nodes → Add node** (this is how the `host` role's nodes are deployed)

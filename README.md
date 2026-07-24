@@ -127,25 +127,21 @@ You can mix freely: a Docker panel with bare-metal servers, and so on.
 
 ## Step 1 — Install the panel
 
-Copy the command onto your server and run it. It **asks you a few simple questions** (is this just the
-panel or also a VPN server? what domain? pick a password) and sets everything up, including HTTPS.
+Copy the command onto your server and run it. It **asks you a few simple questions** and sets everything
+up, including HTTPS.
 
-**Bare-metal:**
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
-```
-
-**Docker:**
-```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s
 ```
 
-The first question is the role: choose **Master** to make this box your panel *and* your first VPN server
-in one go (recommended if you only have one server), or **Host** for just the panel. Either way, when it
-finishes it prints your panel’s web address and login — open it and sign in.
+The **first question is how to run it** — **bare-metal** (directly on the host, best throughput) or
+**Docker** (in containers). The **second is the role**: choose **Master** to make this box your panel
+*and* your first VPN server in one go (recommended if you only have one server), or **Host** for just the
+panel. It then asks for your domain and a password, and when it finishes prints your panel’s web address
+and login — open it and sign in.
 
-> Prefer to install Docker yourself and use `docker compose`? That works too — see the
-> [Technical guide](README.technical.md#docker).
+> Want the details on bare-metal vs Docker, or to run `docker compose` yourself? See the
+> [Technical guide](README.technical.md#quick-start).
 
 ## Step 2 — Add your servers
 

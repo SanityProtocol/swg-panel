@@ -78,7 +78,7 @@
 **Панель** — спрашивает роль: master (панель + эта машина является узлом) или host (только панель)
 
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s host
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s bare-metal
 ```
 
 **Узел** — спрашивает URL панели + ключ из Nodes → Add node
@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 **Панель** — при необходимости устанавливает Docker, затем спрашивает роль (master: панель + эта машина является узлом, заводится автоматически · host: только панель) и домен + выбор TLS (логин генерируется автоматически, поменяете его позже в панели)
 
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
 ```
 
 **Узел** — спрашивает URL панели + ключ из Nodes → Add node
@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 ## Установка панели
 
-`install-host.sh` (запускается из `bootstrap.sh host` или напрямую из клона) настраивает панель и, для роли `master`, локальный входной сервер. Две последовательные части — **настройка панели**, затем **настройка узла** (только для master):
+`install-host.sh` (запускается из `bootstrap.sh` для роли `master`/`host` или напрямую из клона) настраивает панель и, для роли `master`, локальный входной сервер. Две последовательные части — **настройка панели**, затем **настройка узла** (только для master):
 
 | часть | запрос | значение |
 |---|---|---|
@@ -138,7 +138,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 ```
 sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.net \
-     BASIC_USER=admin BASIC_PASS='…' bash -s host \
+     BASIC_USER=admin BASIC_PASS='…' bash -s bare-metal \
      < <(curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh)
 ```
 
@@ -189,7 +189,7 @@ sudo -E ROLE=master TLS_MODE=cloudflare CF_TOKEN=… PANEL_DOMAIN=panel.example.
 **Панель** — Шаг 1 спрашивает роль, ровно как на bare-metal: **master** (панель + эта машина также запускает WG/AWG как совмещённый контейнер-узел, заводится в один проход) или **host** (только панель). По умолчанию — `master`.
 
 ```
-curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker host
+curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s docker
 ```
 
 **Узел** — отдельный входной сервер; спрашивает URL панели + ключ из **Nodes → Add node** (именно так разворачиваются узлы для роли `host`)
