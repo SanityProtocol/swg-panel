@@ -3,6 +3,23 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.4.2-beta] — 2026-07-24
+
+A follow-up to 1.4.1: the AmneziaWG datapath now **actually rebuilds** on repair, and you can trigger a
+repair from the panel **even when there's no new version**.
+
+### Fixed
+- **The AmneziaWG kernel-module heal now forces a DKMS rebuild.** 1.4.1 installed the build dependencies but,
+  on a box where the `amneziawg` package was already present, `apt install` was a no-op and never compiled the
+  module — so the interface still failed to come up. The installers and the updater now run `dkms autoinstall`
+  (with an `amneziawg-dkms` reinstall fallback) to actually build and load the module for the running kernel.
+
+### Changed
+- **The panel's Update repairs even when you're already up to date.** The "up to date" indicator is now a
+  button that re-runs the updater — reinstalling anything missing, re-enabling services, and rebuilding the
+  datapath (e.g. the AmneziaWG module) — so you can fix a broken node without waiting for a new release. The
+  update dialog spells this out.
+
 ## [1.4.1-beta] — 2026-07-24
 
 A maintenance release that makes **AmneziaWG install reliably on a fresh box**, and lets the panel's

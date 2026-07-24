@@ -543,12 +543,21 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   run apt-get update -qq || true
   # REQUIRED so amneziawg-dkms can build against THIS kernel; try the exact headers, fall back to the meta package.
   run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
-  run apt-get install -y amneziawg || run apt-get install -y amneziawg-dkms amneziawg-tools || true
-  run modprobe amneziawg 2>/dev/null || true
+  run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
+  build_awg_module
   $DRYRUN && return 0
   have awg && modprobe amneziawg 2>/dev/null && return 0
   have awg && warn "AmneziaWG tools installed, but its kernel module didn't build/load on kernel $(uname -r) — this box is missing matching linux-headers (dkms couldn't compile it). 'awg' interfaces can't come up until that's fixed; you can create a plain WireGuard interface instead, or install linux-headers-$(uname -r) + reboot and re-run."
   return 1
+}
+build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the running kernel. Critical: `apt install
+  # amneziawg` is a NO-OP when the package is already present (the tool is on disk) but its module never built
+  # (headers were missing at first install), so nothing rebuilds it. dkms autoinstall builds every registered
+  # module for THIS kernel; a --reinstall of the dkms package re-runs its build postinst as a fallback.
+  run dkms autoinstall 2>/dev/null || true
+  modprobe amneziawg 2>/dev/null && return 0
+  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  run modprobe amneziawg 2>/dev/null || true
 }
 ensure_smart_tools(){ # nftables (smart-routing marking, every mode) + dnsmasq (Force-DNS host tier) — idempotent, non-fatal
   have nft     || { run apt-get update -qq || true; run apt-get install -y nftables || true; }

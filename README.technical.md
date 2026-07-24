@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.4.1-beta</code></p>
+<p align="center"><code>1.4.2-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.4.1-beta** — [full changelog](CHANGELOG.md)
-> - **Restore a missing or broken interface** — one click recreates it with the *same keys* and re-adds every peer; a peer whose address drifted out of subnet gets a **Fix**. Works per-peer or across a whole node.
-> - **Optional interface-key escrow** — nodes seal their server keys to a vault only you hold, so a wiped node can be rebuilt without the panel ever seeing a private key.
-> - **Fixes** — flip a subpath reverse proxy to built-in HTTPS (and back) without stranding nodes; a peer's address is checked against its subnet before it's applied; Docker↔bare-metal convert keeps your address and settings.
+> **What's new in 1.4.2-beta** — [full changelog](CHANGELOG.md)
+> - **Reliable AmneziaWG install** — the installer now builds and verifies the AmneziaWG kernel module (DKMS + kernel headers), so interfaces come up on a fresh box instead of failing with "Unknown device type".
+> - **Self-healing datapath** — the panel's **Update** rebuilds a missing or stale kernel module (e.g. after a kernel upgrade) and repairs a node even when there's no new version.
+> - **Clearer install** — the one-liner asks the method (bare-metal / Docker) and role instead of silently installing a panel with no node.
 <!-- WHATS-NEW:END -->
 
 ---

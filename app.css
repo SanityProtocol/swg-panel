@@ -117,6 +117,8 @@ h1,h2,h3{font-family:var(--sans)}
    Asymmetric top/bottom padding nudges the mono label ~1px down so it optically centres against the icon
    (the icon is pulled back up 1px so it stays put). */
 .updpill,.upd-busy,.upd-uptodate{font-size:10px;padding:4px 9px 2px;gap:6px;letter-spacing:.06em;line-height:1}
+button.upd-uptodate{cursor:pointer}   /* up-to-date pill is clickable → re-run/repair (heals the datapath with no new version) */
+button.upd-uptodate:hover{border-color:var(--online);background:color-mix(in srgb,var(--online) 12%,transparent)}
 .updpill b,.upd-busy b,.upd-uptodate b{font-size:11px}
 .updpill svg,.upd-busy svg,.upd-uptodate svg{width:11px;height:11px;position:relative;top:-1px}
 /* on the panel header (appbar) these pills sit next to the ONLINE / bare-metal pills — stretch to the same

@@ -188,12 +188,19 @@ ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module 
   run add-apt-repository -y ppa:amnezia/ppa || true
   run apt-get update -qq || true
   run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
-  run apt-get install -y amneziawg || run apt-get install -y amneziawg-dkms amneziawg-tools || true
-  run modprobe amneziawg 2>/dev/null || true
+  run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
+  build_awg_module
   $DRYRUN && return 0
   have awg && modprobe amneziawg 2>/dev/null && return 0
   have awg && warn "AmneziaWG tools installed, but its kernel module didn't build/load on kernel $(uname -r) — this box is missing matching linux-headers (dkms couldn't compile it). 'awg' interfaces can't come up until that's fixed; install linux-headers-$(uname -r) + reboot and re-run, or use a plain WireGuard interface."
   return 1
+}
+build_awg_module(){ # FORCE the amneziawg DKMS module to COMPILE for the running kernel — `apt install amneziawg` is
+  # a NO-OP when the package is already present (tool on disk) yet its module never built (headers missing then).
+  run dkms autoinstall 2>/dev/null || true
+  modprobe amneziawg 2>/dev/null && return 0
+  run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
+  run modprobe amneziawg 2>/dev/null || true
 }
 ensure_smart_tools(){ # nftables (smart-routing marking) + dnsmasq (domain-tier set filling) — idempotent, non-fatal
   have nft     || { run apt-get update -qq || true; run apt-get install -y nftables || true; }

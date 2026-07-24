@@ -435,7 +435,12 @@ ensure_awg_module(){   # HEAL (rebuild-if-missing) the AmneziaWG kernel module o
   run add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
   run apt-get update -qq 2>/dev/null || true
   run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
-  run apt-get install -y amneziawg || run apt-get install -y amneziawg-dkms amneziawg-tools || true
+  run apt-get install -y amneziawg amneziawg-dkms amneziawg-tools || run apt-get install -y amneziawg || true
+  # FORCE the DKMS module to COMPILE for THIS kernel — `apt install amneziawg` is a NO-OP when the package is
+  # already installed (tool present) but its module never built (headers were missing then), so nothing rebuilds
+  # it. dkms autoinstall builds every registered module for the running kernel; --reinstall re-runs the postinst.
+  run dkms autoinstall 2>/dev/null || true
+  modprobe amneziawg 2>/dev/null || run apt-get install --reinstall -y amneziawg-dkms 2>/dev/null || true
   run modprobe amneziawg 2>/dev/null || true
   if $DRYRUN || modprobe amneziawg 2>/dev/null; then
     DID_UPDATE=yes; ok "AmneziaWG kernel module healed — awg interfaces can come up now"; note "awg kernel module: rebuilt for $(uname -r)"
