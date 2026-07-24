@@ -646,6 +646,22 @@ def op_create_iface(cfg, req):
     except Exception as e:
         with contextlib.suppress(Exception):
             os.unlink(conf)
+        msg = str(e)
+        # "Unknown device type" / "Protocol not supported" == the kernel datapath module isn't loadable (the awg
+        # DKMS module never built against this kernel, or a kernel upgrade left it stale). The agent is sandboxed
+        # (can't apt-install), so translate the cryptic failure into the exact fix instead of blaming the port.
+        if "Unknown device type" in msg or "Protocol not supported" in msg:
+            kr = os.uname().release
+            if tool == "awg":
+                how = (f"sudo apt-get install -y dkms linux-headers-{kr} && "
+                       f"sudo apt-get install -y amneziawg && sudo modprobe amneziawg")
+            else:
+                how = "sudo apt-get install -y wireguard && sudo modprobe wireguard"
+            raise AgentError("no_module",
+                             f"the {'amneziawg' if tool == 'awg' else 'wireguard'} kernel module isn't built/loaded "
+                             f"on this node (kernel {kr}) — its DKMS module needs matching linux-headers. Run on the "
+                             f"node:  {how}  — then the interface creates automatically on the next sync. "
+                             f"(Re-running the node installer, or swg-update, does this for you.)")
         raise AgentError("up_failed", f"{tool}-quick up {iface} failed (port/subnet may be in use): {e}")
     with contextlib.suppress(Exception):
         run(["systemctl", "enable", f"{tool}-quick@{iface}"], check=False)

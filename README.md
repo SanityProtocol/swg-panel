@@ -1,9 +1,9 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.4.0-beta</code></p>
+<p align="center"><code>1.4.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.4.0-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.4.1-beta** — [full changelog](CHANGELOG.md)
 > - **Restore a missing or broken interface** — one click recreates it with the *same keys* and re-adds every peer; a peer whose address drifted out of subnet gets a **Fix**. Works per-peer or across a whole node.
 > - **Optional interface-key escrow** — nodes seal their server keys to a vault only you hold, so a wiped node can be rebuilt without the panel ever seeing a private key.
 > - **Fixes** — flip a subpath reverse proxy to built-in HTTPS (and back) without stranding nodes; a peer's address is checked against its subnet before it's applied; Docker↔bare-metal convert keeps your address and settings.
@@ -133,6 +133,9 @@ up, including HTTPS.
 ```
 curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/bootstrap.sh | sudo bash -s
 ```
+
+> **Already `root`?** Many fresh Debian/VPS images log you in as root with **no `sudo` installed** — just drop
+> the `sudo` and run `… | bash -s`. (The same applies to every command below.)
 
 The **first question is how to run it** — **bare-metal** (directly on the host, best throughput) or
 **Docker** (in containers). The **second is the role**: choose **Master** to make this box your panel

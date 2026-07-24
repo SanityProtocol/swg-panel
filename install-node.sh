@@ -169,15 +169,31 @@ detect_wg(){ # scan everything under /etc/amnezia (any subdir) for awg, and /etc
   fi
   for f in /etc/wireguard/*.conf; do [ -e "$f" ] || continue; n="$(basename "$f" .conf)"; IF_CMD[$n]=wg; IF_CONF[$n]="$f"; done
 }
-ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools if missing (idempotent, non-fatal -> 0/1)
+ensure_wg_tools(){ # ensure_wg_tools <awg|wg> — install tools + kernel module if missing (idempotent, non-fatal -> 0/1).
+  # Success = the CLI is present AND its kernel module LOADS. `apt install amneziawg` installs the `awg` tool but the
+  # datapath is a DKMS module that must COMPILE against the running kernel (needs dkms + linux-headers-$(uname -r));
+  # without them `awg` exists yet `ip link add type amneziawg` dies with "Unknown device type". So install the build
+  # deps and verify `modprobe` before declaring success.
   local cmd="$1"
-  have "$cmd" && return 0
-  info "installing $([ "$cmd" = wg ] && echo 'WireGuard' || echo 'AmneziaWG') tools via apt — this can take a minute…"
-  if [ "$cmd" = wg ]; then run apt-get update -qq || true; run apt-get install -y wireguard || true
-  else run apt-get update -qq || true; run apt-get install -y software-properties-common || true
-       run add-apt-repository -y ppa:amnezia/ppa || true; run apt-get update -qq || true; run apt-get install -y amneziawg || true; fi
+  if [ "$cmd" = wg ]; then
+    have wg || { info "installing WireGuard tools via apt — this can take a minute…"; run apt-get update -qq || true; run apt-get install -y wireguard || true; }
+    $DRYRUN && return 0
+    have wg && { modprobe wireguard 2>/dev/null || true; return 0; }
+    return 1
+  fi
+  if have awg && modprobe amneziawg 2>/dev/null; then return 0; fi
+  info "installing AmneziaWG (tools + DKMS kernel module) via apt — this can take a minute…"
+  run apt-get update -qq || true
+  run apt-get install -y software-properties-common || true
+  run add-apt-repository -y ppa:amnezia/ppa || true
+  run apt-get update -qq || true
+  run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
+  run apt-get install -y amneziawg || run apt-get install -y amneziawg-dkms amneziawg-tools || true
+  run modprobe amneziawg 2>/dev/null || true
   $DRYRUN && return 0
-  have "$cmd"
+  have awg && modprobe amneziawg 2>/dev/null && return 0
+  have awg && warn "AmneziaWG tools installed, but its kernel module didn't build/load on kernel $(uname -r) — this box is missing matching linux-headers (dkms couldn't compile it). 'awg' interfaces can't come up until that's fixed; install linux-headers-$(uname -r) + reboot and re-run, or use a plain WireGuard interface."
+  return 1
 }
 ensure_smart_tools(){ # nftables (smart-routing marking) + dnsmasq (domain-tier set filling) — idempotent, non-fatal
   have nft     || { run apt-get update -qq || true; run apt-get install -y nftables || true; }

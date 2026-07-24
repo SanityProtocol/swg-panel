@@ -1,9 +1,9 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.4.0-beta</code></p>
+<p align="center"><code>1.4.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.4.0-beta** — [full changelog](CHANGELOG.md)
+> **What's new in 1.4.1-beta** — [full changelog](CHANGELOG.md)
 > - **Restore a missing or broken interface** — one click recreates it with the *same keys* and re-adds every peer; a peer whose address drifted out of subnet gets a **Fix**. Works per-peer or across a whole node.
 > - **Optional interface-key escrow** — nodes seal their server keys to a vault only you hold, so a wiped node can be rebuilt without the panel ever seeing a private key.
 > - **Fixes** — flip a subpath reverse proxy to built-in HTTPS (and back) without stranding nodes; a peer's address is checked against its subnet before it's applied; Docker↔bare-metal convert keeps your address and settings.
@@ -72,6 +72,8 @@ You never edit `users.json` or `nodes.json` by hand — the UI does it.
 ## Quick start
 
 Four one-liners — each **prompts for whatever it needs**. Choose a method (bare-metal or Docker) per box; mix freely.
+
+> On a root shell with no `sudo` (common on fresh Debian/VPS images), drop the `sudo` — `… | bash -s …`. bootstrap requires root either way and exits with a clear message if it isn't.
 
 ### A — bare-metal (systemd)
 

@@ -3,6 +3,30 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
+## [1.4.1-beta] — 2026-07-24
+
+A maintenance release that makes **AmneziaWG install reliably on a fresh box**, and lets the panel's
+**Update** button repair a broken datapath on its own.
+
+### Fixed
+- **AmneziaWG interfaces failing to come up** — `ip link add … type amneziawg → Unknown device type`.
+  Installing the `amneziawg` package only lays down the `awg` *tool*; the datapath is a **DKMS kernel
+  module** that has to compile against your running kernel. The installers now also install `dkms` +
+  `linux-headers-$(uname -r)` and verify the module actually loads (success is no longer "the CLI exists").
+  When you create an interface from the panel, the node now reports the **real cause — with the exact fix —**
+  instead of the misleading "a port or subnet may be in use".
+
+### Changed
+- **Update now rebuilds the AmneziaWG kernel module when it's missing or stale** — e.g. after a kernel
+  upgrade left the previous DKMS build behind, so awg interfaces silently stopped coming up. Clicking
+  **Update** in the panel (or running `swg-update`) repairs the node automatically.
+- **Turn-proxy platform chips** in the fork list get a cleaner solid-neon look, filled by client kind.
+
+### Docs
+- The install one-liner now **asks the method** (bare-metal / Docker) **and role** instead of silently
+  installing a panel with no node.
+- Noted that on a root shell without `sudo` (common on fresh Debian / VPS images) you simply drop the `sudo`.
+
 ## [1.4.0-beta] — 2026-07-23
 
 The headline of this release is **client apps for turn proxies**: the panel now manages the whole client

@@ -419,6 +419,31 @@ EOF
   ok "swg-noded unit healed — the node will sync + survive a reboot now"
 }
 
+ensure_awg_module(){   # HEAL (rebuild-if-missing) the AmneziaWG kernel module on a bare-metal node/master that USES awg.
+  # `apt install amneziawg` only lays down the `awg` TOOL; the datapath is a DKMS module that must COMPILE against
+  # linux-headers-$(uname -r). Two ways it goes missing: a first install that lacked dkms/headers (tool present,
+  # module never built → `ip link add type amneziawg` = "Unknown device type"), or a KERNEL UPGRADE that left the
+  # old build stale so awg interfaces silently fail after a reboot. This rebuilds it — a cheap no-op when already
+  # loadable. Docker nodes run userspace amneziawg-go (no kernel module) → skipped by the HAVE_BNODE gate.
+  [ "$HAVE_BNODE" = yes ] || return 0
+  have awg || ls /etc/amnezia/amneziawg/*.conf >/dev/null 2>&1 || return 0    # node doesn't use awg → nothing to heal
+  { $DRYRUN || modprobe amneziawg 2>/dev/null; } && return 0                  # already loadable → done (silent)
+  have apt-get || { warn "AmneziaWG kernel module not loadable — install amneziawg-dkms + linux-headers for kernel $(uname -r) with your package manager"; return 0; }
+  info "healing the AmneziaWG kernel module (not loadable on kernel $(uname -r) — awg interfaces can't come up; rebuilding its DKMS module)"
+  apt_refresh
+  run apt-get install -y software-properties-common 2>/dev/null || true
+  run add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
+  run apt-get update -qq 2>/dev/null || true
+  run apt-get install -y dkms "linux-headers-$(uname -r)" || run apt-get install -y dkms linux-headers-generic || true
+  run apt-get install -y amneziawg || run apt-get install -y amneziawg-dkms amneziawg-tools || true
+  run modprobe amneziawg 2>/dev/null || true
+  if $DRYRUN || modprobe amneziawg 2>/dev/null; then
+    DID_UPDATE=yes; ok "AmneziaWG kernel module healed — awg interfaces can come up now"; note "awg kernel module: rebuilt for $(uname -r)"
+  else
+    DID_FAIL=yes; warn "AmneziaWG kernel module still won't load on kernel $(uname -r) — this box may lack matching linux-headers (or the PPA has no build for it); awg interfaces can't come up"; note "awg kernel module: heal FAILED"
+  fi
+}
+
 ensure_update_unit(){   # HEAL (install-if-missing) the one-click self-update wiring on a bare-metal panel.
   # install_update_unit (below) is called during an actual version update to REFRESH this wiring, but on an
   # up-to-date box with the units missing (a partial install / older host) nothing re-wires them, so the
@@ -585,6 +610,7 @@ if [ -f "$NODED_DIR/swg-noded" ] || [ -f "$AGENT_DIR/swg-agent" ]; then
     else DID_FAIL=yes; warn "couldn't restart swg-noded — run: systemctl restart swg-noded"; note "bare-metal swg-node: updated but RESTART FAILED"; fi
   else note "bare-metal swg-node: unchanged (${nold})"; fi
   ensure_noded_unit      # HEAL: recreate the swg-noded unit if it's gone (config.json is preserved)
+  ensure_awg_module      # HEAL: rebuild the AmneziaWG DKMS kernel module if it's missing/stale (e.g. after a kernel upgrade)
 fi
 
 # ───────────────────────── Docker (host / node / master) ─────────────────────────
