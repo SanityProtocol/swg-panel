@@ -277,7 +277,12 @@ def _fetch_latest_changelog():
             text = r.read(24000).decode("utf-8", "replace")
     except Exception:
         return "", []
-    date, notes, started = "", [], False
+    date, notes, started, cur = "", [], False, []
+    def _flush():
+        if cur:
+            b = re.sub(r"[*`]", "", " ".join(cur)).strip()   # join wrapped lines + drop **bold**/`code` marks
+            if b:
+                notes.append(b)
     for ln in text.splitlines():
         s = ln.strip()
         if s.startswith("## ["):
@@ -288,10 +293,15 @@ def _fetch_latest_changelog():
             if m:
                 date = m.group(1).strip()
             continue
-        if started and s.startswith("- "):
-            b = re.sub(r"[*`]", "", s[2:]).strip()       # drop **bold** / `code` marks
-            if b:
-                notes.append(b)
+        if not started:
+            continue
+        if s.startswith("- "):                           # a new bullet → flush the previous, start this one
+            _flush(); cur = [s[2:]]
+        elif s.startswith("### ") or not s:              # section header / blank line → the bullet ended
+            _flush(); cur = []
+        elif cur:                                        # a wrapped continuation of the current bullet
+            cur.append(s)
+    _flush()
     return date, notes[:8]
 # In-place updater — swg programs only (--no-components leaves wg/awg/turn-proxies alone), unattended.
 UPDATE_CMD = os.environ.get(

@@ -2766,17 +2766,21 @@ table.peergrid{border-collapse:separate;border-spacing:0}
   border-radius:var(--r-sm);box-shadow:0 12px 34px rgba(0,0,0,.5);cursor:default}
 .deppop .deprow{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;white-space:nowrap}
 /* header update-widget hover bubbles (update-to / fix-issues) — rich content in place of the plain title tooltip */
-.hostupd-bub{z-index:90;min-width:236px;max-width:360px;padding:10px 12px;white-space:normal;line-height:1.42;text-transform:none;letter-spacing:0;font-family:var(--font)}
-.hub-h{font-size:12.5px;font-weight:600;color:var(--ink);margin-bottom:7px}
-.hub-h b{color:var(--ready)}
-.hub-date{font-family:var(--mono);font-size:10px;color:var(--faint);font-weight:400;margin-left:5px}
-.hub-row{display:flex;gap:7px;font-size:11.5px;color:var(--dim);padding:2px 0}
+.hostupd-bub{z-index:90;min-width:440px;max-width:680px;padding:14px 17px 12px;white-space:normal;line-height:1.5;text-transform:none;letter-spacing:0;font-family:var(--sans)}
+.hub-h{display:flex;align-items:baseline;gap:10px;margin-bottom:11px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.hub-title{font-size:13px;font-weight:600;color:var(--ink)}
+.hub-title b{color:var(--ready);font-weight:700}
+.hub-date{margin-left:auto;flex:none;font-family:var(--mono);font-size:10.5px;color:var(--faint);font-weight:400}
+.hub-list{display:flex;flex-direction:column;gap:7px}
+.hub-row{display:flex;gap:10px;font-size:12px;color:var(--dim);align-items:flex-start}
 .hub-row.faint{color:var(--faint)}
-.hub-bul{color:var(--faint);flex:none}
+.hub-bul{flex:none;width:5px;height:5px;border-radius:50%;background:var(--ready);opacity:.7;margin-top:6px}
+.hub-txt{flex:1;min-width:0}
+.hub-txt b{color:var(--ink-2);font-weight:600}
 .hub-dot{width:7px;height:7px;border-radius:50%;flex:none;position:relative;top:5px;background:var(--muted)}
 .hub-dot.critical{background:#e0524a}
 .hub-dot.warn{background:#e0a83a}
-.hub-foot{margin-top:8px;font-size:10.5px;color:var(--faint);border-top:1px solid var(--line);padding-top:7px}
+.hub-foot{margin-top:12px;font-size:10.5px;color:var(--faint);border-top:1px solid var(--line);padding-top:8px}
 .deppop .deprow:hover{background:var(--surface)}
 .deppop .dep-name{font-size:12px;color:var(--ink)}
 .deppop .dep-ip{margin-left:auto;font-size:11.5px;color:var(--ink-2)}

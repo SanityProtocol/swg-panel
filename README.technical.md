@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <b>Technical (EN)</b> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.5.0-beta</code></p>
+<p align="center"><code>1.5.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.5.0-beta** — [full changelog](CHANGELOG.md)
-> - **Content filtering** — per-interface blocking of ads/trackers/malware/adult/gambling from curated category lists. Every feed unions into **one set per node** (O(1) match); domain filters enforce in Force-DNS / Hybrid-SNI, IP-tier in every mode. The panel resolves the union with a **streaming external-sort** so a multi-million-domain list can't OOM the box, and the node **memory-gates** the Force-DNS fill.
-> - **Protection dashboard** — an Overview card driven by `/api/block-stats`: blocked packets + distinct sites per category, torrents caught, port-scanners flagged (ranged, from per-node RRDs), with a panel-attributed "who" bubble (source IP → peer → user).
-> - **Overview** — flow-map card height is now fixed (no per-poll resize), Top nodes by peers *and* traffic.
+> **What's new in 1.5.1-beta** — [full changelog](CHANGELOG.md)
+> - **Content filtering** (1.5.0) — per-interface blocking of ads/trackers/malware/adult/gambling from curated category lists. Every feed unions into **one set per node** (O(1) match); domain filters enforce in Force-DNS / Hybrid-SNI, IP-tier in every mode. The panel resolves the union with a **streaming external-sort** so a multi-million-domain list can't OOM the box, and the node **memory-gates** the Force-DNS fill.
+> - **Protection dashboard** (1.5.0) — an Overview card driven by `/api/block-stats`: blocked packets + distinct sites per category, torrents caught, port-scanners flagged (ranged, from per-node RRDs), with a panel-attributed "who" bubble (source IP → peer → user).
+> - **1.5.1 fix** — the header's "update to …" changelog popover was orphaned by the per-poll header re-render (never closed, stacked a growing glow) and truncated wrapped bullets; now a self-hiding singleton, wider, with full bullets.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -125,7 +125,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 | Node · 1 | **Node name** | *(master)* this box's node name (default: hostname) |
 | Node · 2 | **Endpoint IP** | *(master)* public IP clients dial for this box (default: detected) |
 | Node · 3 | **Interfaces** | *(master)* manages **every** wg/awg interface found (scanning all of `/etc/amnezia` and `/etc/wireguard`); offers to **create** one if none exist; press **Enter** to proceed or **`new`** to add another. New interfaces get a server key, tunnel subnet, and an automatic forward + masquerade (`PostUp`/`PostDown`) so clients reach the internet. |
-| Node · 4 | **Turn-proxy** | *(master)* optional [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — tunnels wg/awg through VK/Yandex TURN servers. Detects any installed proxy (by its `-listen`/`-connect` unit) and lists it; **Enter** to skip or pick a fork by **number** to install one (`WINGS-N`/`samosvalishe`/`kiper292`/`Moroka8` for Android, `anton48` for iOS). It fetches the release binary, **auto-derives** the `-connect` port from the wg/awg interface you just set up (lists all of them), **generates a 64-hex wrap key** with the fork's flags (`-wrap-srtp`/`-wrap`/`-wrap-mode`; `kiper292` has none), and records `listen`/`connect`/`wrap_key` for the panel + client configs. On **bare-metal** each proxy is a systemd service whose target lives in an `EnvironmentFile`, so a panel edit just rewrites it + restarts (no `daemon-reload`); on **Docker** it's a sibling **container** (`swg-turn-*`, managed over the mounted Docker socket — no `--privileged`/`--pid=host`). |
+| Node · 4 | **Turn-proxy** | *(master)* optional [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — tunnels wg/awg through VK TURN servers. Detects any installed proxy (by its `-listen`/`-connect` unit) and lists it; **Enter** to skip or pick a fork by **number** to install one (`WINGS-N`/`samosvalishe`/`kiper292`/`Moroka8` for Android, `anton48` for iOS). It fetches the release binary, **auto-derives** the `-connect` port from the wg/awg interface you just set up (lists all of them), **generates a 64-hex wrap key** with the fork's flags (`-wrap-srtp`/`-wrap`/`-wrap-mode`; `kiper292` has none), and records `listen`/`connect`/`wrap_key` for the panel + client configs. On **bare-metal** each proxy is a systemd service whose target lives in an `EnvironmentFile`, so a panel edit just rewrites it + restarts (no `daemon-reload`); on **Docker** it's a sibling **container** (`swg-turn-*`, managed over the mounted Docker socket — no `--privileged`/`--pid=host`). |
 
 **TLS:**
 - **letsencrypt** (default) — real cert via `acme.sh` (HTTP-01 standalone for `internal`/`caddy`, webroot behind `nginx`); needs port 80 reachable.
@@ -418,21 +418,35 @@ Full reference: [`docs/API.md`](docs/API.md).
 
 swgPanel integrates several excellent open-source projects — huge thanks to their authors.
 
-**Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK/Yandex TURN relays to get past tough blocks:
+**Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK TURN relays to get past tough blocks:
 
-- [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — the original
-- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe/free-turn-proxy](https://github.com/samosvalishe/free-turn-proxy)
-- [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
-- [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
-- [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)
+- [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
+- [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
+- [samosvalishe](https://github.com/samosvalishe/free-turn-proxy)
+- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
+- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [anton48](https://github.com/anton48/vk-turn-proxy)
+- [kiper292](https://github.com/kiper292/vk-turn-proxy)
 
 **Routing / geo-data lists** — the domain & IP lists behind smart routing:
 
-- [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
-- [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
-- [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
-- [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists)
-- [blackmatrix7/ios_rule_script](https://github.com/blackmatrix7/ios_rule_script)
+- [MetaCubeX](https://github.com/MetaCubeX/meta-rules-dat)
+- [v2fly](https://github.com/v2fly/domain-list-community)
+- [Loyalsoldier](https://github.com/Loyalsoldier/geoip)
+- [1andrevich](https://github.com/1andrevich/Re-filter-lists)
+- [blackmatrix7](https://github.com/blackmatrix7/ios_rule_script)
+
+**Content filters / block lists** — the ad, tracker, malware & threat-IP feeds behind content filtering:
+
+- [HaGeZi](https://github.com/hagezi/dns-blocklists)
+- [The Block List Project](https://github.com/blocklistproject/Lists)
+- [UT1 · Toulouse](https://github.com/olbat/ut1-blacklists)
+- [OISD](https://oisd.nl)
+- [FireHOL](https://github.com/firehol/blocklist-ipsets)
+- [Tor Project](https://check.torproject.org)
+- [StevenBlack](https://github.com/StevenBlack/hosts)
+- [Peter Lowe](https://pgl.yoyo.org/adservers/)
+- [1Hosts](https://github.com/badmojr/1Hosts)
+- [Phishing Army](https://phishing.army)
 
 And, of course, [WireGuard](https://www.wireguard.com/) and [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go).

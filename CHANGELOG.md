@@ -3,7 +3,7 @@
 All notable user-facing changes to **swgPanel**. This file starts at `1.3.11-beta`;
 earlier releases predate the changelog — see the git history. · Русский: [CHANGELOG.ru.md](CHANGELOG.ru.md)
 
-## [1.5.0-beta] — 2026-07-26
+## [1.5.1-beta] — 2026-07-26
 
 The big one: **content filtering** and a live **Protection** dashboard on the Overview.
 

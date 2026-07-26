@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <b>Техническое (RU)</b></p>
 
-<p align="center"><code>1.5.0-beta</code></p>
+<p align="center"><code>1.5.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **Что нового в 1.5.0-beta** — [полный список изменений](CHANGELOG.ru.md)
-> - **Фильтрация контента** — поинтерфейсная блокировка рекламы/трекеров/вредоносного ПО/контента для взрослых/азартных игр из курируемых списков категорий. Все списки объединяются в **один набор на узел** (сопоставление за O(1)); доменные фильтры действуют в Force-DNS / Hybrid-SNI, IP-уровень — в любом режиме. Панель собирает объединение **потоковой внешней сортировкой**, чтобы список на миллионы доменов не вызвал OOM, а узел **ограничивает по памяти** заполнение Force-DNS.
-> - **Панель «Защита»** — карточка на обзоре на основе `/api/block-stats`: заблокированные пакеты и различимые сайты по категориям, пойманные торренты, отмеченные сканеры портов (с учётом диапазона, из RRD по узлам), со всплывающей подсказкой «кто» (IP источника → пир → пользователь).
-> - **Обзор** — высота карточки карты потоков теперь фиксирована (без изменения размера при опросе), топ узлов по пирам *и* по трафику.
+> **Что нового в 1.5.1-beta** — [полный список изменений](CHANGELOG.ru.md)
+> - **Фильтрация контента** (1.5.0) — поинтерфейсная блокировка рекламы/трекеров/вредоносного ПО/контента для взрослых/азартных игр из курируемых списков категорий. Все списки объединяются в **один набор на узел** (сопоставление за O(1)); доменные фильтры действуют в Force-DNS / Hybrid-SNI, IP-уровень — в любом режиме. Панель собирает объединение **потоковой внешней сортировкой**, чтобы список на миллионы доменов не вызвал OOM, а узел **ограничивает по памяти** заполнение Force-DNS.
+> - **Панель «Защита»** (1.5.0) — карточка на обзоре на основе `/api/block-stats`: заблокированные пакеты и различимые сайты по категориям, пойманные торренты, отмеченные сканеры портов (с учётом диапазона, из RRD по узлам), со всплывающей подсказкой «кто» (IP источника → пир → пользователь).
+> - **Исправление в 1.5.1** — всплывающее окно списка изменений на кнопке «обновить до …» в шапке «сиротело» при перерисовке шапки на каждом опросе (не закрывалось, накапливало свечение) и обрезало перенесённые строки; теперь это самозакрывающийся синглтон, шире, с полными пунктами.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -125,7 +125,7 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 | Node · 1 | **Имя узла** | *(master)* имя узла этой машины (по умолчанию: hostname) |
 | Node · 2 | **Endpoint IP** | *(master)* публичный IP, на который клиенты подключаются к этой машине (по умолчанию: определённый) |
 | Node · 3 | **Интерфейсы** | *(master)* управляет **всеми** найденными интерфейсами wg/awg (сканирует всё в `/etc/amnezia` и `/etc/wireguard`); предлагает **создать** интерфейс, если их нет; нажмите **Enter**, чтобы продолжить, или **`new`**, чтобы добавить ещё один. Новые интерфейсы получают серверный ключ, туннельную подсеть и автоматический forward + masquerade (`PostUp`/`PostDown`), чтобы клиенты выходили в интернет. |
-| Node · 4 | **Turn-proxy** | *(master)* опциональный [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — туннелирует wg/awg через TURN-серверы VK/Yandex. Определяет любой установленный прокси (по его unit'у с `-listen`/`-connect`) и показывает его; **Enter** — пропустить, либо выберите форк по **номеру**, чтобы установить (`WINGS-N`/`samosvalishe`/`kiper292`/`Moroka8` для Android, `anton48` для iOS). Он скачивает release-бинарник, **автоматически выводит** порт `-connect` из только что настроенного интерфейса wg/awg (перечисляет все), **генерирует 64-hex wrap-ключ** с флагами форка (`-wrap-srtp`/`-wrap`/`-wrap-mode`; у `kiper292` их нет) и записывает `listen`/`connect`/`wrap_key` для конфигов панели + клиентов. На **bare-metal** каждый прокси — systemd-сервис, чья цель хранится в `EnvironmentFile`, поэтому правка в панели просто переписывает его + перезапускает (без `daemon-reload`); в **Docker** это отдельный **контейнер**-сосед (`swg-turn-*`, управляемый через смонтированный сокет Docker — без `--privileged`/`--pid=host`). |
+| Node · 4 | **Turn-proxy** | *(master)* опциональный [vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — туннелирует wg/awg через TURN-серверы VK. Определяет любой установленный прокси (по его unit'у с `-listen`/`-connect`) и показывает его; **Enter** — пропустить, либо выберите форк по **номеру**, чтобы установить (`WINGS-N`/`samosvalishe`/`kiper292`/`Moroka8` для Android, `anton48` для iOS). Он скачивает release-бинарник, **автоматически выводит** порт `-connect` из только что настроенного интерфейса wg/awg (перечисляет все), **генерирует 64-hex wrap-ключ** с флагами форка (`-wrap-srtp`/`-wrap`/`-wrap-mode`; у `kiper292` их нет) и записывает `listen`/`connect`/`wrap_key` для конфигов панели + клиентов. На **bare-metal** каждый прокси — systemd-сервис, чья цель хранится в `EnvironmentFile`, поэтому правка в панели просто переписывает его + перезапускает (без `daemon-reload`); в **Docker** это отдельный **контейнер**-сосед (`swg-turn-*`, управляемый через смонтированный сокет Docker — без `--privileged`/`--pid=host`). |
 
 **TLS:**
 - **letsencrypt** (по умолчанию) — настоящий сертификат через `acme.sh` (HTTP-01 standalone для `internal`/`caddy`, webroot за `nginx`); нужен доступный порт 80.
@@ -418,21 +418,35 @@ Uptime Kuma: добавьте монитор **HTTP(s) - Keyword** на `/api/v1
 
 swgPanel использует несколько прекрасных проектов с открытым исходным кодом — огромная благодарность их авторам.
 
-**Форки turn-proxy** — оборачивают WireGuard/AmneziaWG через TURN-реле VK/Yandex, чтобы обходить жёсткие блокировки:
+**Форки turn-proxy** — оборачивают WireGuard/AmneziaWG через TURN-реле VK, чтобы обходить жёсткие блокировки:
 
-- [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — оригинал
-- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe/free-turn-proxy](https://github.com/samosvalishe/free-turn-proxy)
-- [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
-- [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
-- [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)
+- [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — оригинал
+- [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
+- [samosvalishe](https://github.com/samosvalishe/free-turn-proxy)
+- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
+- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [anton48](https://github.com/anton48/vk-turn-proxy)
+- [kiper292](https://github.com/kiper292/vk-turn-proxy)
 
 **Списки маршрутизации / гео-данные** — доменные и IP-списки, на которых работает умная маршрутизация:
 
-- [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
-- [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
-- [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
-- [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists)
-- [blackmatrix7/ios_rule_script](https://github.com/blackmatrix7/ios_rule_script)
+- [MetaCubeX](https://github.com/MetaCubeX/meta-rules-dat)
+- [v2fly](https://github.com/v2fly/domain-list-community)
+- [Loyalsoldier](https://github.com/Loyalsoldier/geoip)
+- [1andrevich](https://github.com/1andrevich/Re-filter-lists)
+- [blackmatrix7](https://github.com/blackmatrix7/ios_rule_script)
+
+**Фильтры контента / списки блокировки** — фиды рекламы, трекеров, вредоносного ПО и угроз-IP, стоящие за фильтрацией:
+
+- [HaGeZi](https://github.com/hagezi/dns-blocklists)
+- [The Block List Project](https://github.com/blocklistproject/Lists)
+- [UT1 · Toulouse](https://github.com/olbat/ut1-blacklists)
+- [OISD](https://oisd.nl)
+- [FireHOL](https://github.com/firehol/blocklist-ipsets)
+- [Tor Project](https://check.torproject.org)
+- [StevenBlack](https://github.com/StevenBlack/hosts)
+- [Peter Lowe](https://pgl.yoyo.org/adservers/)
+- [1Hosts](https://github.com/badmojr/1Hosts)
+- [Phishing Army](https://phishing.army)
 
 И, конечно, [WireGuard](https://www.wireguard.com/) и [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go).

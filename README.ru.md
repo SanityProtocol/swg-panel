@@ -1,12 +1,12 @@
 <p align="center"><a href="README.md">English</a> · <b>Русский</b> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.5.0-beta</code></p>
+<p align="center"><code>1.5.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **Что нового в 1.5.0-beta** — [полный список изменений](CHANGELOG.ru.md)
-> - **Фильтрация контента** — блокируйте рекламу, трекеры, вредоносное ПО, контент для взрослых, азартные игры и другое, по каждому серверу, из курируемых списков. Применяется на входном узле; потоковый резолвер не даёт даже спискам на миллионы доменов исчерпать память небольшой машины.
-> - **Панель «Защита»** — живая карточка на обзоре показывает, что ловит фильтрация (заблокированные сайты по категориям, торренты, сканеры портов), со всплывающей подсказкой «кто», связывающей торренты и сканеры с пользователем.
-> - **Стабильнее обзор** — карта потоков больше не меняет размер при каждом обновлении, а топ узлов виден и по онлайн-пользователям, и по трафику.
+> **Что нового в 1.5.1-beta** — [полный список изменений](CHANGELOG.ru.md)
+> - **Фильтрация контента** (появилось в 1.5.0) — блокируйте рекламу, трекеры, вредоносное ПО, контент для взрослых, азартные игры и другое, по каждому серверу, из курируемых списков. Применяется на входном узле; потоковый резолвер не даёт даже спискам на миллионы доменов исчерпать память небольшой машины.
+> - **Панель «Защита»** (появилось в 1.5.0) — живая карточка на обзоре показывает, что ловит фильтрация (заблокированные сайты по категориям, торренты, сканеры портов), со всплывающей подсказкой «кто», связывающей торренты и сканеры с пользователем.
+> - **Исправление в 1.5.1** — всплывающее окно списка изменений «доступно обновление» больше не залипает и не накапливается; оно также стало шире и читается полностью.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -68,7 +68,7 @@ swgPanel — это панель управления для запуска со
   другое — по каждому серверу, из курируемых списков категорий — и следите за живой панелью **«Защита»**, которая
   показывает, что ловится, по категориям, и какой пользователь стоит за торрентами и сканерами портов.
 - **Turn-прокси уже встроены.** Интегрируется с ведущими серверами реле **vk-turn-proxy** и их клиентскими
-  приложениями — оборачивайте трафик через TURN-реле VK/Yandex, чтобы обходить даже самые жёсткие блокировки, всё из панели.
+  приложениями — оборачивайте трафик через TURN-реле VK, чтобы обходить даже самые жёсткие блокировки, всё из панели.
 - **Всё под вашим контролем.** Она размещается на ваших серверах, не хранит паролей и ключей, которые ей не нужны, и никуда не «звонит домой».
 
 <details>
@@ -283,21 +283,35 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 swgPanel использует несколько прекрасных проектов с открытым исходным кодом — огромная благодарность их авторам.
 
-**Форки turn-proxy** — оборачивают WireGuard/AmneziaWG через TURN-реле VK/Yandex, чтобы обходить жёсткие блокировки:
+**Форки turn-proxy** — оборачивают WireGuard/AmneziaWG через TURN-реле VK, чтобы обходить жёсткие блокировки:
 
-- [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — оригинал
-- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe/free-turn-proxy](https://github.com/samosvalishe/free-turn-proxy)
-- [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
-- [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
-- [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)
+- [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — оригинал
+- [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
+- [samosvalishe](https://github.com/samosvalishe/free-turn-proxy)
+- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
+- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [anton48](https://github.com/anton48/vk-turn-proxy)
+- [kiper292](https://github.com/kiper292/vk-turn-proxy)
 
 **Списки маршрутизации / гео-данные** — доменные и IP-списки, на которых работает умная маршрутизация:
 
-- [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
-- [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
-- [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
-- [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists)
-- [blackmatrix7/ios_rule_script](https://github.com/blackmatrix7/ios_rule_script)
+- [MetaCubeX](https://github.com/MetaCubeX/meta-rules-dat)
+- [v2fly](https://github.com/v2fly/domain-list-community)
+- [Loyalsoldier](https://github.com/Loyalsoldier/geoip)
+- [1andrevich](https://github.com/1andrevich/Re-filter-lists)
+- [blackmatrix7](https://github.com/blackmatrix7/ios_rule_script)
+
+**Фильтры контента / списки блокировки** — фиды рекламы, трекеров, вредоносного ПО и угроз-IP, стоящие за фильтрацией:
+
+- [HaGeZi](https://github.com/hagezi/dns-blocklists)
+- [The Block List Project](https://github.com/blocklistproject/Lists)
+- [UT1 · Toulouse](https://github.com/olbat/ut1-blacklists)
+- [OISD](https://oisd.nl)
+- [FireHOL](https://github.com/firehol/blocklist-ipsets)
+- [Tor Project](https://check.torproject.org)
+- [StevenBlack](https://github.com/StevenBlack/hosts)
+- [Peter Lowe](https://pgl.yoyo.org/adservers/)
+- [1Hosts](https://github.com/badmojr/1Hosts)
+- [Phishing Army](https://phishing.army)
 
 И, конечно, [WireGuard](https://www.wireguard.com/) и [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go).

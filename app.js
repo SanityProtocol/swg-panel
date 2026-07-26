@@ -9250,29 +9250,52 @@ async function checkForUpdate(e, nodeId) {
 // Rich hover bubble for the innerHTML header update widget (no Preact there) — right-aligned under the anchor;
 // contentFn() returns HTML (empty string → no bubble). Replaces the plain title= tooltip.
 function hostHoverBubble(anchor, contentFn) {
+  // SINGLETON, self-hiding bubble. The header is innerHTML-driven and re-renders every poll, replacing `anchor` —
+  // so the anchor's own mouseleave can't be trusted to clean up. Guard against orphans (remove any stray bubble
+  // before showing) and hide when the pointer leaves the BUBBLE too, so it never gets stuck or stacks a glow.
   let bub = null, t = null;
-  const hide = () => { clearTimeout(t); if (bub) { bub.remove(); bub = null; } };
+  const hide = () => {                                   // a poll re-render removes the anchor → its mouseleave fires; if the
+    if (bub && bub.matches(":hover")) { later(); return; }   // pointer is actually over the BUBBLE, keep it (don't vanish mid-read)
+    clearTimeout(t); if (bub) { bub.remove(); bub = null; }
+  };
+  const later = () => { clearTimeout(t); t = setTimeout(hide, 140); };   // grace to travel between anchor and bubble
   const show = () => {
-    hide();
+    clearTimeout(t);
+    if (bub && bub.isConnected) return;                                   // already showing → don't stack
+    document.querySelectorAll(".hostupd-bub").forEach(x => x.remove());   // kill any orphan left by a re-render
     const inner = contentFn(); if (!inner) return;
     bub = document.createElement("div");
     bub.className = "deppop hostupd-bub";
     bub.innerHTML = inner;
     document.body.appendChild(bub);
     const r = anchor.getBoundingClientRect();
-    bub.style.top = Math.round(r.bottom + 7) + "px";
+    bub.style.top = Math.round(r.bottom + 8) + "px";
     bub.style.left = Math.round(r.right) + "px";
     bub.style.transform = "translateX(-100%)";   // right edge aligns under the button
+    bub.addEventListener("mouseenter", () => clearTimeout(t));
+    bub.addEventListener("mouseleave", later);
   };
   anchor.addEventListener("mouseenter", show);
-  anchor.addEventListener("mouseleave", () => { t = setTimeout(hide, 60); });
+  anchor.addEventListener("mouseleave", later);
+}
+// Bold the "lead" of a changelog line — the phrase up to its first sentence period, colon, or em-dash (capped so a
+// long clause can't bold half the row); otherwise the first few words. Returns [lead, rest].
+function noteLead(n) {
+  n = String(n).trim();
+  const dot = n.indexOf(". "), dash = n.search(/\s[—–-]\s/);
+  let cut = -1, keep = 0;
+  if (dot >= 0 && dot <= 54 && (dash < 0 || dot < dash)) { cut = dot; keep = 1; }        // include the '.'
+  else if (dash >= 0 && dash <= 54) { cut = dash; keep = 0; }
+  if (cut < 0) { const w = n.split(" "); return [w.slice(0, 3).join(" "), w.slice(3).join(" ")]; }
+  return [n.slice(0, cut + keep).trim(), n.slice(cut + keep).replace(/^\s*[—–-]\s*/, "").trim()];
 }
 function updBubbleHtml() {
   const notes = Store.latestRemoteNotes || [];
-  const head = `<div class="hub-h">update to <b>${esc(Store.latestRemote || "?")}</b>${Store.latestRemoteDate ? ` <span class="hub-date">${esc(Store.latestRemoteDate)}</span>` : ""}</div>`;
-  const body = notes.length ? notes.map(n => `<div class="hub-row"><span class="hub-bul">•</span><span>${esc(n)}</span></div>`).join("")
-    : `<div class="hub-row faint">See the changelog for what's new.</div>`;
-  return head + body + `<div class="hub-foot">Click to update this server.</div>`;
+  const head = `<div class="hub-h"><span class="hub-title">What's new in <b>${esc(Store.latestRemote || "?")}</b></span>${Store.latestRemoteDate ? `<span class="hub-date">${esc(Store.latestRemoteDate)}</span>` : ""}</div>`;
+  const body = notes.length ? notes.map(n => { const [lead, rest] = noteLead(n);
+      return `<div class="hub-row"><span class="hub-bul"></span><span class="hub-txt"><b>${esc(lead)}</b>${rest ? " " + esc(rest) : ""}</span></div>`; }).join("")
+    : `<div class="hub-row faint"><span class="hub-txt">See the changelog for what's new.</span></div>`;
+  return head + `<div class="hub-list">${body}</div>` + `<div class="hub-foot">Click to update this server.</div>`;
 }
 function fixBubbleHtml() {
   const iss = serviceIssues(); if (!iss.length) return "";

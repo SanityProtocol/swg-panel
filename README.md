@@ -1,12 +1,12 @@
 <p align="center"><b>English</b> · <a href="README.ru.md">Русский</a> · <a href="README.technical.md">Technical (EN)</a> · <a href="README.technical.ru.md">Техническое (RU)</a></p>
 
-<p align="center"><code>1.5.0-beta</code></p>
+<p align="center"><code>1.5.1-beta</code></p>
 
 <!-- WHATS-NEW:START -->
-> **What's new in 1.5.0-beta** — [full changelog](CHANGELOG.md)
-> - **Content filtering** — block ads, trackers, malware, adult content, gambling and more, per server, from curated lists. Enforced on the entry node; a streaming resolver keeps even multi-million-domain lists from running a small box out of memory.
-> - **Protection dashboard** — a live Overview card showing what filtering is catching (blocked sites per category, torrents, port-scanners), with a hover "who" bubble that ties torrents and scanners back to the user behind them.
-> - **Steadier Overview** — the flow map no longer resizes on every refresh, and you can see top nodes by both online users and traffic.
+> **What's new in 1.5.1-beta** — [full changelog](CHANGELOG.md)
+> - **Content filtering** (new in 1.5.0) — block ads, trackers, malware, adult content, gambling and more, per server, from curated lists. Enforced on the entry node; a streaming resolver keeps even multi-million-domain lists from running a small box out of memory.
+> - **Protection dashboard** (new in 1.5.0) — a live Overview card showing what filtering is catching (blocked sites per category, torrents, port-scanners), with a hover "who" bubble that ties torrents and scanners back to the user behind them.
+> - **1.5.1 fix** — the "update available" changelog popover no longer sticks on screen or piles up; it's also wider and reads in full.
 <!-- WHATS-NEW:END -->
 
 ---
@@ -66,7 +66,7 @@ subscription and no one else sitting in the middle of your traffic.
   curated category lists — and watch a live **Protection** panel show what's being caught, per category, plus
   which user is behind the torrents and port-scans it flags.
 - **Turn-proxies built in.** Integrates with the leading **vk-turn-proxy** relay servers and their client
-  apps — wrap traffic through VK/Yandex TURN relays to slip past even the toughest blocks, all from the panel.
+  apps — wrap traffic through VK TURN relays to slip past even the toughest blocks, all from the panel.
 - **You’re in control.** It’s self-hosted, stores no passwords or keys it doesn’t need, and never phones home.
 
 <details>
@@ -275,21 +275,35 @@ curl -fsSL https://raw.githubusercontent.com/SanityProtocol/swg-panel/main/boots
 
 swgPanel integrates several excellent open-source projects — huge thanks to their authors.
 
-**Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK/Yandex TURN relays to get past tough blocks:
+**Turn-proxy forks** — wrap WireGuard/AmneziaWG through VK TURN relays to get past tough blocks:
 
-- [cacggghp/vk-turn-proxy](https://github.com/cacggghp/vk-turn-proxy) — the original
-- [WINGS-N/vk-turn-proxy](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
-- [samosvalishe/free-turn-proxy](https://github.com/samosvalishe/free-turn-proxy)
-- [Moroka8/vk-turn-proxy](https://github.com/Moroka8/vk-turn-proxy)
-- [kiper292/vk-turn-proxy](https://github.com/kiper292/vk-turn-proxy)
-- [anton48/vk-turn-proxy](https://github.com/anton48/vk-turn-proxy)
+- [cacggghp](https://github.com/cacggghp/vk-turn-proxy) — the original
+- [WINGS-N](https://github.com/WINGS-N/vk-turn-proxy) — ❤️
+- [samosvalishe](https://github.com/samosvalishe/free-turn-proxy)
+- [Moroka8](https://github.com/Moroka8/vk-turn-proxy)
+- [MYSOREZ](https://github.com/MYSOREZ/vk-turn-proxy)
+- [anton48](https://github.com/anton48/vk-turn-proxy)
+- [kiper292](https://github.com/kiper292/vk-turn-proxy)
 
 **Routing / geo-data lists** — the domain & IP lists behind smart routing:
 
-- [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat)
-- [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
-- [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)
-- [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists)
-- [blackmatrix7/ios_rule_script](https://github.com/blackmatrix7/ios_rule_script)
+- [MetaCubeX](https://github.com/MetaCubeX/meta-rules-dat)
+- [v2fly](https://github.com/v2fly/domain-list-community)
+- [Loyalsoldier](https://github.com/Loyalsoldier/geoip)
+- [1andrevich](https://github.com/1andrevich/Re-filter-lists)
+- [blackmatrix7](https://github.com/blackmatrix7/ios_rule_script)
+
+**Content filters / block lists** — the ad, tracker, malware & threat-IP feeds behind content filtering:
+
+- [HaGeZi](https://github.com/hagezi/dns-blocklists)
+- [The Block List Project](https://github.com/blocklistproject/Lists)
+- [UT1 · Toulouse](https://github.com/olbat/ut1-blacklists)
+- [OISD](https://oisd.nl)
+- [FireHOL](https://github.com/firehol/blocklist-ipsets)
+- [Tor Project](https://check.torproject.org)
+- [StevenBlack](https://github.com/StevenBlack/hosts)
+- [Peter Lowe](https://pgl.yoyo.org/adservers/)
+- [1Hosts](https://github.com/badmojr/1Hosts)
+- [Phishing Army](https://phishing.army)
 
 And, of course, [WireGuard](https://www.wireguard.com/) and [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-go).
